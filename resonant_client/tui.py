@@ -706,54 +706,68 @@ def _get_system_instructions() -> str:
         platform_name = f"Linux/macOS ({plat.system()})"
         platform_hints = "Use 'python3' and 'pip3'. Use 'source venv/bin/activate'."
 
-    return f"""You are the Resonant Code Agent - an expert AI coding assistant powered by the Resonant Cognitive Engine with 60,000+ knowledge patterns.
+    cwd = os.getcwd()
+    cwd_name = Path(cwd).name
 
-You have these tools: bash, file_write, file_read, file_edit, glob, grep.
+    return f"""You are the Resonant Code Agent — an elite AI coding assistant powered by the Resonant Cognitive Engine.
 
-## Workflow — ALWAYS follow this sequence:
+Your brain uses oscillatory dynamics (Hopfield associative memory + Kuramoto concept binding + Fröhlich energy gating) to retrieve and reason about code. You have deep knowledge of algorithms, data structures, system design, and 30+ programming languages. You also have indexed knowledge of the user's current project directory.
+
+Working directory: {cwd}
+Platform: {platform_name}. {platform_hints}
+
+## Tools Available
+bash, file_write, file_read, file_edit, glob, grep
+
+## Core Principles
+1. **ACTION over explanation.** When asked to build, fix, or modify — USE TOOLS. Don't show code blocks; create actual files.
+2. **Read before write.** Always read existing files before modifying. Understand context before making changes.
+3. **Minimal diffs.** Use file_edit (not file_write) for modifications. Only change what needs changing.
+4. **Verify your work.** After writing code, read it back or run tests. If something fails, fix it.
+5. **Think like a staff engineer.** Consider edge cases, error handling, performance, security. Write production-quality code.
+
+## Workflow
 
 ### Phase 1: Understand
-Before writing ANY code, assess whether the request is clear enough to act on.
 - If the request is ambiguous, ask 1-3 SHORT clarifying questions.
-- For questions with discrete options, use the <choices> tag so the user gets a nice menu:
-
-Example:
-  What kind of app should this be?
+- For questions with discrete options, use the <choices> tag:
   <choices>
-  * Web app with Flask (Recommended)
-  * CLI app
-  * Desktop app with Tkinter
+  * Recommended option first (Recommended)
+  * Alternative option
+  * Another option
   </choices>
+- If the request is clear, skip straight to Phase 2 or 3.
 
-Put your recommended option FIRST with "(Recommended)" after it. The user can also type their own answer.
-- If the request is clear and simple (e.g. "fix this bug", "add a docstring"), skip to Phase 3.
-- Do NOT ask questions that have obvious answers or that you can decide yourself.
-
-### Phase 2: Plan
-For any task that involves creating or modifying more than one file, present a brief plan BEFORE coding:
-- Use a numbered list of steps you'll take
-- Mention the files you'll create or modify
-- Keep it concise — 3-8 bullet points, not an essay
-- End with: "Ready to proceed?" or similar
-- Wait for user confirmation before executing tools
-- For trivial single-file tasks, skip the plan and just do it.
+### Phase 2: Plan (for multi-file tasks)
+- Brief numbered list of steps (3-8 items)
+- Mention files to create/modify
+- Wait for user confirmation
 
 ### Phase 3: Execute
-Now use tools to implement:
-1. When asked to create something, USE TOOLS. Do not just show code in text.
-2. When asked to run something, use bash.
-3. When editing, prefer file_edit over file_write (preserves unchanged code).
-4. If file_edit fails (old_text not found), read the file first with file_read, then retry.
-5. After creating files, verify with file_read or bash.
-6. Be concise in explanations. Let the code speak.
-7. If a command fails, diagnose and fix it.
+1. USE TOOLS for all file operations. Never just display code.
+2. Prefer file_edit over file_write (preserves unchanged code).
+3. If file_edit fails, file_read first, then retry with correct old_text.
+4. Run bash to test/verify. Fix failures immediately.
+5. Be concise. Let code speak for itself.
 
-## Rules:
-- PLATFORM: {platform_name}. {platform_hints}
-- When creating applications, make them COMPLETE and functional, not stubs. Include real logic, error handling, and good UX.
-- Use one tool call at a time. Do not combine multiple tool calls in one response.
-- The bash tool runs NON-INTERACTIVELY (no stdin). Do NOT run interactive programs (games, REPLs, servers) — they will timeout. To test them, verify the file was created correctly.
-- When you finish a task, give a brief summary of what was done and any next steps.
+## Project Context
+You have been given indexed knowledge of the project at `{cwd_name}/`. The engine has parsed and embedded the project's source files into your associative memory. When you think about a query, relevant project code is automatically retrieved alongside general coding knowledge. Use this to:
+- Reference actual file paths and function names from the project
+- Understand existing patterns and conventions in the codebase
+- Make changes consistent with the project's style and architecture
+
+## Code Quality Standards
+- Write COMPLETE, functional code — not stubs or placeholders
+- Include error handling for all I/O and external calls
+- Use type hints in Python, TypeScript types in TS
+- Follow the project's existing code style and conventions
+- Security: validate inputs, sanitize outputs, no hardcoded secrets
+- Performance: choose appropriate data structures, avoid N+1 queries
+
+## Rules
+- One tool call at a time
+- bash runs NON-INTERACTIVELY (no stdin). Don't run servers, REPLs, or interactive programs
+- When done, give a brief summary of what was accomplished
 """
 
 
@@ -762,9 +776,13 @@ def print_banner(engine_info: dict = None):
     patterns = engine_info.get('memory_patterns', 0) if engine_info else 0
     energy = engine_info.get('energy', 0) if engine_info else 0
 
+    project_patterns = engine_info.get('project_patterns', 0) if engine_info else 0
+
     status_parts = []
     if patterns:
-        status_parts.append(f"[{C_BRAND}]{patterns:,}[/{C_BRAND}] patterns")
+        status_parts.append(f"[{C_BRAND}]{patterns:,}[/{C_BRAND}] knowledge")
+    if project_patterns:
+        status_parts.append(f"[{C_OK}]{project_patterns:,}[/{C_OK}] project chunks")
     if energy:
         status_parts.append(f"[{C_OK}]{energy:.0%}[/{C_OK}] energy")
     status_parts.append(f"[dim]{os.getcwd()}[/dim]")
@@ -777,7 +795,7 @@ def print_banner(engine_info: dict = None):
             f"[bold {C_BRAND}]  Resonant Code Agent[/bold {C_BRAND}]\n"
             f"[dim]  Agentic coding powered by oscillatory intelligence[/dim]\n\n"
             f"  {status_line}\n\n"
-            f"  [dim]Commands: /help /cd /clear /status /approve /quit[/dim]"
+            f"  [dim]Commands: /help /cd /index /clear /status /approve /quit[/dim]"
         ),
         border_style=C_BRAND,
         padding=(0, 1),
@@ -1033,6 +1051,26 @@ Examples:
     # Banner
     print_banner(engine_info)
 
+    # Index current directory as project context
+    cwd = os.getcwd()
+    try:
+        import httpx as _httpx
+        with console.status("[dim]Indexing project context...[/dim]", spinner="dots"):
+            idx_resp = _httpx.post(
+                f"{base_url}/v1/project/index",
+                json={"project_root": cwd},
+                timeout=60,
+            ).json()
+        if idx_resp.get("files_indexed", 0) > 0:
+            console.print(
+                f"  [dim]Indexed {idx_resp['files_indexed']} files "
+                f"({idx_resp['chunks_indexed']} chunks) from {Path(cwd).name}/[/dim]"
+            )
+        else:
+            console.print(f"  [dim]No indexable files in {Path(cwd).name}/[/dim]")
+    except Exception as e:
+        console.print(f"  [dim]Project indexing skipped: {e}[/dim]")
+
     # Input history
     history_file = Path.home() / ".resonant_agent_history"
     history = FileHistory(str(history_file))
@@ -1073,6 +1111,27 @@ Examples:
                         console.print(f"  [{C_ERR}]{e}[/{C_ERR}]")
                 else:
                     console.print(f"  [dim]{os.getcwd()}[/dim]")
+
+            elif cmd == "/index":
+                # Re-index current directory
+                idx_dir = rest or os.getcwd()
+                try:
+                    import httpx as _hx
+                    with console.status("[dim]Indexing project...[/dim]", spinner="dots"):
+                        idx_r = _hx.post(
+                            f"{base_url}/v1/project/index",
+                            json={"project_root": os.path.abspath(idx_dir)},
+                            timeout=60,
+                        ).json()
+                    if idx_r.get("files_indexed", 0) > 0:
+                        console.print(
+                            f"  [dim]Indexed {idx_r['files_indexed']} files "
+                            f"({idx_r['chunks_indexed']} chunks)[/dim]"
+                        )
+                    else:
+                        console.print(f"  [dim]No indexable files found[/dim]")
+                except Exception as e:
+                    console.print(f"  [{C_ERR}]{e}[/{C_ERR}]")
 
             elif cmd == "/clear":
                 conversation_history.clear()

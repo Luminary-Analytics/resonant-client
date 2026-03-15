@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resonant-client"
+version = "0.1.0"
+description = "Agentic coding TUI/GUI client for the Resonant Cognitive Engine"
+readme = "README.md"
+license = {text = "Proprietary"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Luminary Analytics"}
+]
+
+dependencies = [
+    "rich>=13.9.0",
+    "prompt-toolkit>=3.0.0",
+    "httpx>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "ruff>=0.3.0",
+]
+
+[project.scripts]
+resonant = "resonant_client.__main__:main"
+resonant-tui = "resonant_client.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["resonant_client*"]

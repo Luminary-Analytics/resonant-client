@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: resonant-client
+Version: 0.1.0
+Summary: Agentic coding TUI/GUI client for the Resonant Cognitive Engine
+Author: Luminary Analytics
+License: Proprietary
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: rich>=13.9.0
+Requires-Dist: prompt-toolkit>=3.0.0
+Requires-Dist: httpx>=0.27.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.3.0; extra == "dev"
+Requires-Dist: ruff>=0.3.0; extra == "dev"

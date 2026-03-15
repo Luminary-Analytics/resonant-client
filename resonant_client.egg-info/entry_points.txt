@@ -1,0 +1,3 @@
+[console_scripts]
+resonant = resonant_client.__main__:main
+resonant-tui = resonant_client.__main__:main

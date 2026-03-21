@@ -428,17 +428,40 @@ class OllamaBackend:
                     })
             elif role == "tool_result":
                 if use_native:
-                    messages.append({
-                        "role": "tool",
-                        "content": content,
-                    })
+                    # Check for screenshot image in tool result (computer use loop)
+                    if turn.get("image"):
+                        img = turn["image"]
+                        # Ollama: include screenshot as user message with image
+                        # since tool role doesn't support images in Ollama
+                        messages.append({
+                            "role": "tool",
+                            "content": content,
+                        })
+                        messages.append({
+                            "role": "user",
+                            "content": "[Screenshot from tool result]",
+                            "images": [img.get("data", "")],
+                        })
+                    else:
+                        messages.append({
+                            "role": "tool",
+                            "content": content,
+                        })
                 else:
                     # Text mode: tool results become user messages
                     tool_name = turn.get("name", "tool")
-                    messages.append({
-                        "role": "user",
-                        "content": f"[{tool_name} result]\n{content}",
-                    })
+                    if turn.get("image"):
+                        img = turn["image"]
+                        messages.append({
+                            "role": "user",
+                            "content": f"[{tool_name} result]\n{content}",
+                            "images": [img.get("data", "")],
+                        })
+                    else:
+                        messages.append({
+                            "role": "user",
+                            "content": f"[{tool_name} result]\n{content}",
+                        })
             elif role in ("user", "assistant"):
                 # Handle multimodal content (images + text)
                 if isinstance(content, list):

@@ -326,7 +326,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_click",
-            "description": "Click at a specific position on the desktop screen.",
+            "description": "Click at a specific position on the desktop screen. Automatically captures a follow-up screenshot so you can see the result.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -340,6 +340,10 @@ AGENT_TOOLS = [
                     "clicks": {
                         "type": "integer",
                         "description": "Number of clicks (1=single, 2=double). Default: 1"
+                    },
+                    "screenshot": {
+                        "type": "boolean",
+                        "description": "Take a follow-up screenshot after clicking (default: true)"
                     }
                 },
                 "required": ["x", "y"]
@@ -350,7 +354,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_type",
-            "description": "Type text or press key combinations on the desktop. Use 'text' for typing strings, 'key' for hotkeys like 'ctrl+s' or 'enter'.",
+            "description": "Type text or press key combinations on the desktop. Use 'text' for typing strings, 'key' for hotkeys like 'ctrl+s' or 'enter'. Automatically captures a follow-up screenshot.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -365,6 +369,10 @@ AGENT_TOOLS = [
                     "hotkey": {
                         "type": "string",
                         "description": "Alias for 'key' — key combo to press"
+                    },
+                    "screenshot": {
+                        "type": "boolean",
+                        "description": "Take a follow-up screenshot after typing (default: true)"
                     }
                 }
             }
@@ -374,7 +382,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_scroll",
-            "description": "Scroll the mouse wheel at a position on the desktop.",
+            "description": "Scroll the mouse wheel at a position on the desktop. Automatically captures a follow-up screenshot.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -388,11 +396,154 @@ AGENT_TOOLS = [
                     "amount": {
                         "type": "integer",
                         "description": "Number of scroll clicks (default: 3)"
+                    },
+                    "screenshot": {
+                        "type": "boolean",
+                        "description": "Take a follow-up screenshot after scrolling (default: true)"
                     }
                 }
             }
         }
     },
+    # ── Enhanced Computer Use tools ──────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_drag",
+            "description": "Drag from one screen position to another. Use for moving windows, selecting text, drag-and-drop.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_x": {"type": "integer", "description": "Starting X coordinate"},
+                    "start_y": {"type": "integer", "description": "Starting Y coordinate"},
+                    "end_x": {"type": "integer", "description": "Ending X coordinate"},
+                    "end_y": {"type": "integer", "description": "Ending Y coordinate"},
+                    "button": {
+                        "type": "string",
+                        "enum": ["left", "right", "middle"],
+                        "description": "Mouse button (default: left)"
+                    },
+                    "duration": {
+                        "type": "number",
+                        "description": "Drag duration in seconds (default: 0.5)"
+                    }
+                },
+                "required": ["start_x", "start_y", "end_x", "end_y"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_hover",
+            "description": "Move the mouse cursor to a position without clicking. Use to trigger hover menus, tooltips, or preview effects.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X coordinate"},
+                    "y": {"type": "integer", "description": "Y coordinate"},
+                    "duration": {
+                        "type": "number",
+                        "description": "Movement duration in seconds (default: 0.3)"
+                    }
+                },
+                "required": ["x", "y"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "window_list",
+            "description": "List all visible windows on the desktop with their titles, positions, and sizes.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "window_focus",
+            "description": "Bring a window to the foreground by matching its title. Uses substring match.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Partial window title to match (e.g. 'Chrome', 'Visual Studio')"
+                    }
+                },
+                "required": ["title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_wait",
+            "description": "Wait for the screen to change or pause for a duration. Use 'change' mode after clicking something that triggers a load.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["duration", "change"],
+                        "description": "'duration' = wait N seconds; 'change' = wait until screen changes (default: duration)"
+                    },
+                    "seconds": {
+                        "type": "number",
+                        "description": "Seconds to wait (duration mode, default: 1.0)"
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Max seconds to wait for change (change mode, default: 10)"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_ocr",
+            "description": "Extract text from the screen using OCR. Useful for reading text that's in images, non-selectable UI, or desktop applications.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "region": {
+                        "type": "object",
+                        "description": "Optional region to OCR: {x, y, width, height}. Omit for full screen.",
+                        "properties": {
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"}
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_application",
+            "description": "Open a desktop application by name. Cross-platform: uses 'start' on Windows, 'open -a' on macOS, direct exec on Linux.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Application name or path (e.g. 'chrome', 'notepad', 'Firefox', 'code')"
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    # ── Batch tool ────────────────────────────────────────────────────
     {
         "type": "function",
         "function": {
@@ -454,6 +605,13 @@ TOOL_ICONS = {
     "computer_click":      "◎",
     "computer_type":       "⌨",
     "computer_scroll":     "↕",
+    "computer_drag":       "↗",
+    "computer_hover":      "⊙",
+    "computer_wait":       "⏳",
+    "window_list":         "☰",
+    "window_focus":        "◉",
+    "screen_ocr":          "🔍",
+    "open_application":    "▶",
 }
 
 
@@ -547,6 +705,28 @@ def execute_tool(name: str, arguments: dict) -> ToolResult:
         elif name == "computer_scroll":
             from .computer import exec_computer_scroll
             return exec_computer_scroll(arguments, start)
+        # Enhanced Computer Use tools
+        elif name == "computer_drag":
+            from .computer_use import exec_computer_drag
+            return exec_computer_drag(arguments, start)
+        elif name == "computer_hover":
+            from .computer_use import exec_computer_hover
+            return exec_computer_hover(arguments, start)
+        elif name == "window_list":
+            from .computer_use import exec_window_list
+            return exec_window_list(arguments, start)
+        elif name == "window_focus":
+            from .computer_use import exec_window_focus
+            return exec_window_focus(arguments, start)
+        elif name == "computer_wait":
+            from .computer_use import exec_computer_wait
+            return exec_computer_wait(arguments, start)
+        elif name == "screen_ocr":
+            from .computer_use import exec_screen_ocr
+            return exec_screen_ocr(arguments, start)
+        elif name == "open_application":
+            from .computer_use import exec_open_application
+            return exec_open_application(arguments, start)
         else:
             return ToolResult(f"Error: Unknown tool '{name}'", is_error=True, elapsed=time.time() - start)
 

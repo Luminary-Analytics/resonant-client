@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+pytest-cache-files-*/
+
+# IDE
+.vscode/
+.idea/
+
+# Resonant runtime
+.resonant/
+
+# OS
+.DS_Store
+Thumbs.db
+~$*
+
+# Temp files
+%TEMP%*
+~/

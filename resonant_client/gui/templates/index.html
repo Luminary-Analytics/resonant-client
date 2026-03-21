@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resonant</title>
+    <link rel="stylesheet" href="/static/styles.css?v=13">
+    <!-- Markdown rendering -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Syntax highlighting -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css">
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <!-- Sanitizer -->
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <!-- ═══ Sidebar ═══ -->
+        <aside id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-brand">
+                    <span class="brand-icon">┃</span>
+                    <span class="brand-text">Resonant</span>
+                </div>
+                <button id="new-session-btn" class="icon-btn" title="New session">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                    </svg>
+                </button>
+            </div>
+            <!-- ═══ Sidebar Navigation ═══ -->
+            <div class="sidebar-nav" id="sidebar-nav">
+                <div class="sidebar-nav-item active" data-view="chat" id="nav-chat">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3a1 1 0 011-1h8a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 2V10H3a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.2"/></svg>
+                    <span>Chat</span>
+                </div>
+                <div class="sidebar-nav-item" data-view="schedule" id="nav-schedule">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M7 4v3.5l2.5 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                    <span>Scheduled</span>
+                </div>
+                <div class="sidebar-nav-item" data-view="dispatch" id="nav-dispatch">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10v2h10v-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span>Dispatch</span>
+                </div>
+                <div class="sidebar-nav-item" data-view="settings" id="nav-settings">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M11.2 2.8l-1.1 1.1M3.9 10.1l-1.1 1.1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
+                    <span>Customize</span>
+                </div>
+            </div>
+            <div class="sidebar-search">
+                <input type="text" placeholder="Search..." id="search-input" />
+            </div>
+            <div class="sidebar-project-filter" id="sidebar-project-filter">
+                <div class="project-filter-selected" id="project-filter-selected">
+                    <span class="pf-icon">&#128193;</span>
+                    <span class="pf-name" id="pf-selected-name">All Projects</span>
+                    <span class="pf-arrow">&#9662;</span>
+                </div>
+                <div class="project-filter-dropdown" id="project-filter-dropdown" style="display:none">
+                    <input type="text" class="pf-search" id="pf-search" placeholder="Filter projects..." autocomplete="off" />
+                    <div class="pf-options" id="pf-options"></div>
+                </div>
+            </div>
+            <div id="session-list" class="session-list">
+                <!-- Sessions will be rendered here -->
+                <div class="session-empty">No previous sessions</div>
+            </div>
+            <div class="sidebar-footer">
+                <div class="sidebar-project" id="project-selector" title="Current project folder">
+                    <span class="sidebar-project-icon">&#128193;</span>
+                    <div class="sidebar-project-info">
+                        <div class="sidebar-project-name" id="sidebar-project-name"></div>
+                        <div class="sidebar-cwd" id="sidebar-cwd"></div>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ═══ Main Content ═══ -->
+        <main id="main">
+            <!-- Header bar -->
+            <header id="header">
+                <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <rect x="1" y="1" width="5" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                        <rect x="8" y="1" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                    </svg>
+                </button>
+                <div class="header-title">
+                    <span id="header-project"></span>
+                </div>
+                <div class="header-indicators">
+                    <button class="header-badge resonant-md-badge" id="resonant-md-badge" title="RESONANT.md" style="display:none">
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 1h5l3 3v7a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1"/><path d="M7 1v3h3" stroke="currentColor" stroke-width="1"/></svg>
+                        <span>RESONANT.md</span>
+                    </button>
+                    <button class="header-badge git-badge" id="git-badge" title="Git status" style="display:none">
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="3" r="1.5" stroke="currentColor" stroke-width="1"/><circle cx="6" cy="9" r="1.5" stroke="currentColor" stroke-width="1"/><line x1="6" y1="4.5" x2="6" y2="7.5" stroke="currentColor" stroke-width="1"/></svg>
+                        <span id="git-branch-name">main</span>
+                        <span class="git-changes-count" id="git-changes-count" style="display:none">0</span>
+                    </button>
+                </div>
+                <div class="header-status" id="header-status"></div>
+                <button id="preview-toggle" class="icon-btn preview-toggle-btn" title="Toggle preview panel">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                        <rect x="1" y="1" width="14" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+                        <line x1="9" y1="1" x2="9" y2="15" stroke="currentColor" stroke-width="1.2"/>
+                        <circle cx="12.5" cy="5" r="1.2" fill="currentColor" opacity="0.5"/>
+                    </svg>
+                </button>
+            </header>
+
+            <!-- ═══ Split content area (chat + preview) ═══ -->
+            <div id="main-split" class="main-split">
+
+                <!-- ═══ Primary content column ═══ -->
+                <div id="main-content" class="main-content">
+
+                    <!-- ═══ Welcome / New Session Setup ═══ -->
+                    <div id="welcome-screen" class="welcome-screen">
+                        <div class="welcome-content">
+                            <div class="welcome-brand">
+                                <span class="welcome-icon">┃</span>
+                                <h1>Resonant</h1>
+                            </div>
+                            <p class="welcome-subtitle">Agentic coding assistant</p>
+
+                            <!-- Step 1: Project Folder Picker -->
+                            <div id="project-step" class="setup-step">
+                                <p class="setup-label">Select a project folder</p>
+                                <div class="project-path-input" id="welcome-path-input">
+                                    <input type="text" id="welcome-folder-input" placeholder="Enter folder path..." />
+                                    <button id="welcome-folder-browse" title="Browse for folder">&#128193;</button>
+                                    <button id="welcome-folder-open">Open</button>
+                                </div>
+                                <div id="welcome-dir-browser" class="dir-browser" style="display:none"></div>
+                                <div id="welcome-recent-projects" class="recent-projects-list"></div>
+                            </div>
+
+                            <!-- Step 2: Backend Selection (shown after folder picked) -->
+                            <div id="backend-step" class="setup-step" style="display:none;">
+                                <div class="setup-project-badge" id="setup-project-badge"></div>
+                                <div id="backend-selector" class="backend-selector">
+                                    <p class="backend-label">Select a backend</p>
+                                    <div id="backend-list" class="backend-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ═══ Chat Area ═══ -->
+                    <div id="chat-container" class="chat-container" style="display:none;">
+                        <div id="chat-messages" class="chat-messages">
+                            <!-- Messages will be rendered here -->
+                        </div>
+                    </div>
+
+                    <!-- ═══ Bottom Input Bar ═══ -->
+                    <div id="input-bar" class="input-bar" style="display:none;">
+                        <div class="input-wrapper">
+                            <div class="drop-hint">Drop image here</div>
+                            <textarea id="user-input"
+                                      placeholder="Reply..."
+                                      rows="1"
+                                      autocomplete="off"
+                                      spellcheck="false"></textarea>
+                            <button id="send-btn" class="send-btn" title="Send (Enter)">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                            </button>
+                            <button id="stop-btn" class="stop-btn" title="Stop" style="display:none;">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                    <rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/>
+                                </svg>
+                            </button>
+                        </div>
+                        <div class="input-footer">
+                            <div class="input-footer-left">
+                                <button class="add-context-btn" id="add-context-btn" title="Add context">+</button>
+                                <div class="permission-dropdown" id="permission-dropdown">
+                                    <button class="permission-toggle" id="permission-toggle">
+                                        <span class="perm-icon" id="perm-icon">&#9651;</span>
+                                        <span id="perm-label">Bypass permissions</span>
+                                        <span class="perm-chevron">&#9662;</span>
+                                    </button>
+                                    <div class="permission-menu" id="permission-menu">
+                                        <div class="perm-option" data-mode="ask">
+                                            <span class="perm-opt-icon">&#9881;</span>
+                                            <div class="perm-opt-text">
+                                                <div class="perm-opt-name">Ask permissions</div>
+                                                <div class="perm-opt-desc">Always ask before making changes</div>
+                                            </div>
+                                        </div>
+                                        <div class="perm-option" data-mode="auto-edit">
+                                            <span class="perm-opt-icon">&lt;/&gt;</span>
+                                            <div class="perm-opt-text">
+                                                <div class="perm-opt-name">Auto accept edits</div>
+                                                <div class="perm-opt-desc">Automatically accept all file edits</div>
+                                            </div>
+                                        </div>
+                                        <div class="perm-option" data-mode="plan">
+                                            <span class="perm-opt-icon">&#9776;</span>
+                                            <div class="perm-opt-text">
+                                                <div class="perm-opt-name">Plan mode</div>
+                                                <div class="perm-opt-desc">Create a plan before making changes</div>
+                                            </div>
+                                        </div>
+                                        <div class="perm-option active" data-mode="bypass">
+                                            <span class="perm-opt-icon">&#9651;</span>
+                                            <div class="perm-opt-text">
+                                                <div class="perm-opt-name">Bypass permissions</div>
+                                                <div class="perm-opt-desc">Accepts all permissions</div>
+                                            </div>
+                                            <span class="perm-check">&#10003;</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="input-footer-right">
+                                <span class="token-info" id="token-info"></span>
+                                <select id="model-selector" class="model-selector">
+                                    <option value="">No model</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ═══ Settings / Customize View ═══ -->
+                    <div id="settings-view" class="feature-view" style="display:none">
+                        <div class="feature-view-header">
+                            <h2>Customize</h2>
+                            <p class="feature-view-sub">Settings persist across sessions</p>
+                        </div>
+                        <div class="feature-view-body" id="settings-body">
+                            <!-- Sections rendered by JS -->
+                        </div>
+                    </div>
+
+                    <!-- ═══ Scheduled Tasks View ═══ -->
+                    <div id="schedule-view" class="feature-view" style="display:none">
+                        <div class="feature-view-header">
+                            <div class="feature-view-header-row">
+                                <h2>Scheduled Tasks</h2>
+                                <button class="btn-primary btn-sm" id="schedule-new-btn">+ New Task</button>
+                            </div>
+                            <p class="feature-view-sub">Run prompts on a schedule or whenever you need them</p>
+                        </div>
+                        <div class="feature-view-body" id="schedule-body">
+                            <div class="feature-empty">
+                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="1.5"/><path d="M16 8v9l6 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                                <span>No scheduled tasks yet.</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ═══ Dispatch View ═══ -->
+                    <div id="dispatch-view" class="feature-view" style="display:none">
+                        <div class="feature-view-header">
+                            <div class="feature-view-header-row">
+                                <h2>Dispatch</h2>
+                                <button class="btn-primary btn-sm" id="dispatch-new-btn">+ New Dispatch</button>
+                            </div>
+                            <p class="feature-view-sub">Send work to background agents</p>
+                        </div>
+                        <div class="feature-view-body" id="dispatch-body">
+                            <div class="feature-empty">
+                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M16 4v16M10 14l6 6 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 22v4h24v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <span>No dispatched tasks yet.</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ═══ Keyboard Shortcuts Overlay ═══ -->
+                    <div id="shortcuts-overlay" class="shortcuts-overlay" style="display:none">
+                        <div class="shortcuts-panel">
+                            <div class="shortcuts-header">
+                                <h3>Keyboard Shortcuts</h3>
+                                <button class="icon-btn" id="shortcuts-close">&times;</button>
+                            </div>
+                            <div class="shortcuts-body" id="shortcuts-body">
+                                <!-- Rendered by JS -->
+                            </div>
+                        </div>
+                    </div>
+
+                </div><!-- /#main-content -->
+
+                <!-- ═══ Resize handle ═══ -->
+                <div id="preview-resize" class="preview-resize"></div>
+
+                <!-- ═══ Preview Panel ═══ -->
+                <aside id="preview-panel" class="preview-panel">
+                    <!-- Tab bar -->
+                    <div class="preview-tab-bar">
+                        <div class="preview-tab active" id="preview-tab">
+                            <span class="preview-tab-dot"></span>
+                            <span class="preview-tab-name" id="preview-tab-name">Preview</span>
+                            <button id="preview-close" class="preview-tab-close" title="Close preview">&times;</button>
+                        </div>
+                    </div>
+                    <!-- Browser chrome — nav + URL bar -->
+                    <div class="preview-chrome">
+                        <div class="preview-nav">
+                            <button class="preview-nav-btn" id="preview-back" title="Previous screenshot" disabled>
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </button>
+                            <button class="preview-nav-btn" id="preview-forward" title="Next screenshot" disabled>
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </button>
+                            <button class="preview-nav-btn" id="preview-reload" title="Reload">
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M10 6a4 4 0 11-1.2-2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1.5V4H7.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </button>
+                        </div>
+                        <div class="preview-url-bar" id="preview-url-bar">
+                            <span class="preview-url-text" id="preview-url-text"></span>
+                        </div>
+                    </div>
+                    <!-- Viewport — screenshot display -->
+                    <div id="preview-viewport" class="preview-viewport">
+                        <div class="preview-empty" id="preview-empty">
+                            <div class="preview-empty-icon">
+                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                                    <rect x="2" y="4" width="28" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                                    <line x1="2" y1="10" x2="30" y2="10" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+                                    <circle cx="6" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                    <circle cx="10" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                    <circle cx="14" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                    <rect x="8" y="26" width="16" height="2" rx="1" fill="currentColor" opacity="0.2"/>
+                                </svg>
+                            </div>
+                            <span>Waiting for output...</span>
+                        </div>
+                    </div>
+                    <!-- Console / logs panel -->
+                    <div class="preview-console" id="preview-console">
+                        <div class="preview-console-header">
+                            <input type="text" class="preview-console-search" placeholder="Search..." id="preview-console-search" />
+                            <div class="preview-console-tabs">
+                                <button class="preview-console-tab active" data-filter="all">all</button>
+                                <button class="preview-console-tab" data-filter="stdout">stdout</button>
+                                <button class="preview-console-tab" data-filter="stderr">stderr</button>
+                            </div>
+                        </div>
+                        <div class="preview-console-body" id="preview-console-body">
+                            <div class="preview-console-waiting">Waiting for output...</div>
+                        </div>
+                    </div>
+                </aside>
+
+            </div><!-- /#main-split -->
+        </main>
+    </div>
+
+    <!-- ═══ Permission Dialog ═══ -->
+    <div id="permission-dialog" class="dialog-overlay" style="display:none;">
+        <div class="dialog diff-review-dialog">
+            <div class="dialog-header">
+                <span id="permission-title">Tool Approval</span>
+                <span id="permission-risk" class="risk-badge"></span>
+            </div>
+            <div class="dialog-body">
+                <p id="permission-text"></p>
+                <div id="permission-warnings" class="review-warnings" style="display:none;"></div>
+                <div id="permission-diff" class="review-diff" style="display:none;"></div>
+                <pre id="permission-details" class="permission-details"></pre>
+            </div>
+            <div class="dialog-actions">
+                <button id="permission-deny" class="dialog-btn deny">Deny</button>
+                <button id="permission-allow" class="dialog-btn allow">Allow</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/app.js?v=19"></script>
+</body>
+</html>

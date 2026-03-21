@@ -1,0 +1,3607 @@
+/**
+ * Resonant GUI — Frontend Application
+ *
+ * Handles WebSocket communication, event rendering, streaming markdown,
+ * tool call display, and step collapsing.
+ */
+
+// ═══════════════════════════════════════════════════════════════════
+//  Tool Display Config (mirrors TUI's TOOL_DISPLAY)
+// ═══════════════════════════════════════════════════════════════════
+
+const TOOL_DISPLAY = {
+    file_read:  { icon: '→', label: 'Read',  color: 'tool' },
+    file_write: { icon: '←', label: 'Write', color: 'ok' },
+    file_edit:  { icon: '~', label: 'Edit',  color: 'warn' },
+    bash:       { icon: '$', label: 'Shell', color: 'tool' },
+    glob:       { icon: '✱', label: 'Glob',  color: 'tool' },
+    grep:       { icon: '/', label: 'Grep',  color: 'tool' },
+    task:       { icon: '│', label: 'Task',  color: 'brand2' },
+    batch:      { icon: '⚡', label: 'Batch', color: 'brand' },
+    browser_navigate:   { icon: '⊕', label: 'Navigate',   color: 'brand2', category: 'browser' },
+    browser_click:      { icon: '◎', label: 'Click',      color: 'brand2', category: 'browser' },
+    browser_type:       { icon: '⌨', label: 'Type',       color: 'brand2', category: 'browser' },
+    browser_read:       { icon: '◫', label: 'Read Page',  color: 'brand2', category: 'browser' },
+    browser_screenshot: { icon: '◰', label: 'Screenshot', color: 'brand2', category: 'browser' },
+    browser_js:         { icon: '⟐', label: 'JavaScript', color: 'brand2', category: 'browser' },
+    computer_screenshot: { icon: '▣', label: 'Desktop Screenshot', color: 'warn', category: 'desktop' },
+    computer_click:      { icon: '◎', label: 'Desktop Click',      color: 'warn', category: 'desktop' },
+    computer_type:       { icon: '⌨', label: 'Desktop Type',       color: 'warn', category: 'desktop' },
+    computer_scroll:     { icon: '↕', label: 'Desktop Scroll',     color: 'warn', category: 'desktop' },
+};
+
+const COLLAPSIBLE_TOOLS = new Set([
+    'file_read', 'glob', 'grep', 'browser_read', 'computer_screenshot', 'browser_screenshot'
+]);
+
+const BLOCK_TOOLS = new Set(['bash', 'file_write', 'file_edit', 'browser_js']);
+
+const MAX_OUTPUT_LINES = 5;
+
+function getToolInfo(name) {
+    return TOOL_DISPLAY[name] || { icon: '⚙', label: name, color: 'tool' };
+}
+
+/**
+ * Infer a human-readable action label from a set of tool counts.
+ * Returns a string like "Exploring codebase", "Editing files", etc.
+ */
+function inferActionLabel(toolCounts) {
+    const reads = (toolCounts.file_read || 0);
+    const writes = (toolCounts.file_write || 0);
+    const edits = (toolCounts.file_edit || 0);
+    const shells = (toolCounts.bash || 0);
+    const greps = (toolCounts.grep || 0);
+    const globs = (toolCounts.glob || 0);
+    const tasks = (toolCounts.task || 0);
+    const batches = (toolCounts.batch || 0);
+
+    const browserKeys = ['browser_navigate', 'browser_click', 'browser_type',
+                         'browser_read', 'browser_screenshot', 'browser_js'];
+    const desktopKeys = ['computer_screenshot', 'computer_click',
+                         'computer_type', 'computer_scroll'];
+    const browserTotal = browserKeys.reduce((s, k) => s + (toolCounts[k] || 0), 0);
+    const desktopTotal = desktopKeys.reduce((s, k) => s + (toolCounts[k] || 0), 0);
+
+    const searchTotal = greps + globs;
+    const writeTotal = writes + edits;
+    const total = Object.values(toolCounts).reduce((s, v) => s + v, 0);
+
+    // Browser / desktop dominant
+    if (browserTotal > 0 && browserTotal >= total * 0.5) return 'Browsing';
+    if (desktopTotal > 0 && desktopTotal >= total * 0.5) return 'Using desktop';
+
+    // Task / batch dominant
+    if (tasks + batches > 0 && tasks + batches >= total * 0.5) return 'Running sub-tasks';
+
+    // Write/edit dominant
+    if (writeTotal > 0 && writeTotal >= total * 0.4) return 'Editing files';
+    if (writes > 0 && writes >= edits) return 'Writing files';
+
+    // Shell dominant
+    if (shells > 0 && shells >= total * 0.5) return 'Running commands';
+
+    // Search dominant
+    if (searchTotal > 0 && searchTotal >= total * 0.4) return 'Searching codebase';
+
+    // Read dominant (exploration)
+    if (reads > 0 && reads + searchTotal >= total * 0.5) return 'Exploring codebase';
+
+    // Mixed reads + writes → implementing
+    if (reads > 0 && writeTotal > 0) return 'Implementing changes';
+
+    // Fallback
+    if (total === 0) return 'Working...';
+    return 'Processing';
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Resonant App Class
+// ═══════════════════════════════════════════════════════════════════
+
+class ResonantApp {
+    constructor() {
+        this.ws = null;
+        this.reconnectAttempts = 0;
+        this.isRunning = false;
+        this.planMode = false;
+
+        // Streaming state
+        this.streamBuffer = '';
+        this.isStreaming = false;
+        this.currentMessageEl = null;
+        this._renderScheduled = false;
+
+        // Step collapsing state
+        this.currentStepEvent = null;
+        this.stepToolCalls = [];
+        this.stepToolResults = [];
+        this.stepIsInlineOnly = true;
+        this.stepRendered = false;
+        this.collapsedGroup = [];
+        this.lastModel = '';
+        this.lastStats = null;
+
+        // CLI backend tool activity group
+        this.handlesTools = false;
+        this.activeToolGroup = null;      // current DOM container
+        this.activeToolGroupCount = 0;
+        this.activeToolGroupCounts = {};  // {name: count}
+
+        // Attached images for multimodal input
+        this.attachedImages = [];
+
+        // Subagent nesting
+        this.subagentDepth = 0;
+        this.subagentContainer = null;
+
+        // Preview panel state
+        this.previewOpen = false;
+        this.previewImages = []; // {src, toolName, timestamp}
+        this._previewResizing = false;
+
+        // Session management state
+        this.sessions = [];
+        this.allSessions = [];
+        this.currentSessionId = '';
+        this.recentProjects = [];
+        this.projectFilter = 'all'; // 'all' = all projects (default), null = current project, or a path
+
+        // View state
+        this.currentView = 'chat';
+        this.settings = {};
+
+        // Git state
+        this.gitData = null;
+        this.gitPopoverOpen = false;
+
+        // RESONANT.md state
+        this.resonantMd = null;
+
+        // DOM refs
+        this.chatMessages = document.getElementById('chat-messages');
+        this.chatContainer = document.getElementById('chat-container');
+        this.welcomeScreen = document.getElementById('welcome-screen');
+        this.inputBar = document.getElementById('input-bar');
+        this.userInput = document.getElementById('user-input');
+        this.sendBtn = document.getElementById('send-btn');
+        this.stopBtn = document.getElementById('stop-btn');
+        this.modelSelector = document.getElementById('model-selector');
+        this.headerStatus = document.getElementById('header-status');
+        this.headerProject = document.getElementById('header-project');
+        this.sidebarCwd = document.getElementById('sidebar-cwd');
+        this.sidebarProjectName = document.getElementById('sidebar-project-name');
+        this.sessionList = document.getElementById('session-list');
+        this.tokenInfo = document.getElementById('token-info');
+
+        // Preview panel DOM refs
+        this.previewPanel = document.getElementById('preview-panel');
+        this.previewViewport = document.getElementById('preview-viewport');
+        this.previewToggle = document.getElementById('preview-toggle');
+        this.previewResize = document.getElementById('preview-resize');
+        this.previewClose = document.getElementById('preview-close');
+        this.previewUrlText = document.getElementById('preview-url-text');
+        this.previewTabName = document.getElementById('preview-tab-name');
+        this.previewConsoleBody = document.getElementById('preview-console-body');
+        this.previewCurrentIndex = -1; // current screenshot index for back/forward
+
+        // Feature view refs
+        this.settingsView = document.getElementById('settings-view');
+        this.scheduleView = document.getElementById('schedule-view');
+        this.dispatchView = document.getElementById('dispatch-view');
+        this.settingsBody = document.getElementById('settings-body');
+
+        // Header indicator refs
+        this.gitBadge = document.getElementById('git-badge');
+        this.gitBranchName = document.getElementById('git-branch-name');
+        this.gitChangesCount = document.getElementById('git-changes-count');
+        this.resonantMdBadge = document.getElementById('resonant-md-badge');
+
+        // Configure marked
+        if (typeof marked !== 'undefined') {
+            marked.setOptions({
+                gfm: true,
+                breaks: true,
+                highlight: function(code, lang) {
+                    if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
+                        return hljs.highlight(code, { language: lang }).value;
+                    }
+                    return code;
+                }
+            });
+        }
+
+        this.bindEvents();
+        this.connect();
+    }
+
+    // ── WebSocket ───────────────────────────────────────────────
+
+    connect() {
+        const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        this.ws = new WebSocket(`${protocol}//${location.host}/ws`);
+
+        this.ws.onopen = () => {
+            this.reconnectAttempts = 0;
+            this.headerStatus.textContent = 'Connected';
+            this.ws.send(JSON.stringify({ command: 'init' }));
+        };
+
+        this.ws.onmessage = (e) => {
+            try {
+                this.handleEvent(JSON.parse(e.data));
+            } catch (err) {
+                console.error('Event parse error:', err, e.data);
+            }
+        };
+
+        this.ws.onclose = () => {
+            this.headerStatus.textContent = 'Disconnected';
+            this.scheduleReconnect();
+        };
+
+        this.ws.onerror = (err) => {
+            console.error('WebSocket error:', err);
+        };
+    }
+
+    scheduleReconnect() {
+        if (this.reconnectAttempts < 10) {
+            const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
+            this.reconnectAttempts++;
+            setTimeout(() => this.connect(), delay);
+        }
+    }
+
+    send(data) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(data));
+        }
+    }
+
+    // ── Event Binding ───────────────────────────────────────────
+
+    bindEvents() {
+        // Send message
+        this.sendBtn.addEventListener('click', () => this.sendMessage());
+        this.userInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendMessage();
+            }
+        });
+
+        // Auto-resize textarea
+        this.userInput.addEventListener('input', () => {
+            this.userInput.style.height = 'auto';
+            this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+        });
+
+        // Stop button
+        this.stopBtn.addEventListener('click', () => {
+            this.send({ command: 'cancel' });
+        });
+
+        // Model selector — value is "backend:model" (model may contain colons like "nemotron:cloud")
+        this.modelSelector.addEventListener('change', () => {
+            const val = this.modelSelector.value;
+            const idx = val.indexOf(':');
+            if (idx > 0) {
+                const backend = val.substring(0, idx);
+                const model = val.substring(idx + 1);
+                this.send({ command: 'switch_model', backend, model });
+            }
+        });
+
+        // Permission dropdown
+        this.permissionMode = 'bypass'; // default: bypass permissions
+        const permToggle = document.getElementById('permission-toggle');
+        const permMenu = document.getElementById('permission-menu');
+
+        permToggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            permMenu.classList.toggle('open');
+        });
+
+        document.addEventListener('click', (e) => {
+            if (!permMenu.contains(e.target) && e.target !== permToggle) {
+                permMenu.classList.remove('open');
+            }
+        });
+
+        permMenu.addEventListener('click', (e) => {
+            const option = e.target.closest('.perm-option');
+            if (!option) return;
+            const mode = option.dataset.mode;
+            this.setPermissionMode(mode);
+            permMenu.classList.remove('open');
+        });
+
+        // Sidebar toggle
+        document.getElementById('sidebar-toggle').addEventListener('click', () => {
+            document.getElementById('sidebar').classList.toggle('collapsed');
+        });
+
+        // Permission dialog
+        document.getElementById('permission-allow').addEventListener('click', () => {
+            this.send({ command: 'approve', approved: true });
+            document.getElementById('permission-dialog').style.display = 'none';
+        });
+        document.getElementById('permission-deny').addEventListener('click', () => {
+            this.send({ command: 'approve', approved: false });
+            document.getElementById('permission-dialog').style.display = 'none';
+        });
+
+        // New session — show project picker / welcome screen
+        document.getElementById('new-session-btn').addEventListener('click', () => {
+            this.showNewSessionSetup();
+        });
+
+        // Image paste (Ctrl+V)
+        this.userInput.addEventListener('paste', (e) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            for (const item of items) {
+                if (item.type.startsWith('image/')) {
+                    e.preventDefault();
+                    const file = item.getAsFile();
+                    if (file) this.addImageAttachment(file);
+                }
+            }
+        });
+
+        // Drag and drop images
+        const inputWrapper = document.querySelector('.input-wrapper');
+        inputWrapper.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            inputWrapper.classList.add('dragover');
+        });
+        inputWrapper.addEventListener('dragleave', () => {
+            inputWrapper.classList.remove('dragover');
+        });
+        inputWrapper.addEventListener('drop', (e) => {
+            e.preventDefault();
+            inputWrapper.classList.remove('dragover');
+            const files = e.dataTransfer?.files;
+            if (files) {
+                for (const file of files) {
+                    if (file.type.startsWith('image/')) {
+                        this.addImageAttachment(file);
+                    }
+                }
+            }
+        });
+
+        // Preview panel toggle
+        this.previewToggle.addEventListener('click', () => {
+            this.togglePreviewPanel();
+        });
+        this.previewClose.addEventListener('click', () => {
+            this.closePreviewPanel();
+        });
+
+        // Preview back/forward navigation
+        document.getElementById('preview-back').addEventListener('click', () => {
+            this.previewNavigate(-1);
+        });
+        document.getElementById('preview-forward').addEventListener('click', () => {
+            this.previewNavigate(1);
+        });
+
+        // Preview console tab switching
+        document.querySelectorAll('.preview-console-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.preview-console-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                this.filterPreviewConsole(tab.dataset.filter);
+            });
+        });
+
+        // Preview console search
+        document.getElementById('preview-console-search').addEventListener('input', (e) => {
+            this.filterPreviewConsole(
+                document.querySelector('.preview-console-tab.active')?.dataset.filter || 'all',
+                e.target.value
+            );
+        });
+
+        // Preview panel resize handle
+        this.previewResize.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            this._previewResizing = true;
+            this.previewResize.classList.add('dragging');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+
+            const onMove = (ev) => {
+                if (!this._previewResizing) return;
+                const mainEl = document.getElementById('main');
+                const mainRect = mainEl.getBoundingClientRect();
+                const newWidth = mainRect.right - ev.clientX;
+                const minW = 280;
+                const maxW = mainRect.width * 0.7;
+                const clamped = Math.max(minW, Math.min(maxW, newWidth));
+                this.previewPanel.style.width = clamped + 'px';
+                this.previewPanel.style.minWidth = clamped + 'px';
+            };
+
+            const onUp = () => {
+                this._previewResizing = false;
+                this.previewResize.classList.remove('dragging');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+            };
+
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+
+        // Lightbox close on Escape
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                const lb = document.querySelector('.lightbox-overlay');
+                if (lb) lb.remove();
+                const pp = document.querySelector('.project-picker-overlay');
+                if (pp) pp.remove();
+                // Close preview panel on Escape too
+                if (this.previewOpen) this.closePreviewPanel();
+            }
+        });
+
+        // Close context menu on click anywhere
+        document.addEventListener('click', () => {
+            document.querySelector('.session-context-menu')?.remove();
+        });
+
+        // ── Sidebar Navigation ──
+        document.querySelectorAll('.sidebar-nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                this.switchView(item.dataset.view);
+            });
+        });
+
+        // ── Keyboard Shortcuts ──
+        document.addEventListener('keydown', (e) => {
+            this._handleKeyboardShortcut(e);
+        });
+
+        // Shortcuts overlay close
+        document.getElementById('shortcuts-close')?.addEventListener('click', () => {
+            document.getElementById('shortcuts-overlay').style.display = 'none';
+        });
+
+        // Dispatch + Schedule "New" buttons
+        document.getElementById('dispatch-new-btn')?.addEventListener('click', () => this.showDispatchDialog());
+        document.getElementById('schedule-new-btn')?.addEventListener('click', () => this.showScheduleDialog());
+
+        // Git badge click → popover
+        this.gitBadge?.addEventListener('click', () => this.toggleGitPopover());
+
+        // RESONANT.md badge click → fetch and show content
+        this.resonantMdBadge?.addEventListener('click', () => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ command: 'get_resonant_md' }));
+            }
+        });
+    }
+
+    // ── Image Attachments ────────────────────────────────────────
+
+    addImageAttachment(file) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const dataUrl = e.target.result;
+            // Extract base64 part
+            const [header, data] = dataUrl.split(',');
+            const mediaType = header.match(/:(.*?);/)?.[1] || 'image/png';
+
+            this.attachedImages.push({ data, media_type: mediaType, dataUrl });
+            this.renderAttachedImages();
+        };
+        reader.readAsDataURL(file);
+    }
+
+    renderAttachedImages() {
+        let container = document.getElementById('attached-images');
+        if (!container) {
+            container = document.createElement('div');
+            container.id = 'attached-images';
+            container.className = 'attached-images';
+            const inputWrapper = document.querySelector('.input-wrapper');
+            inputWrapper.parentNode.insertBefore(container, inputWrapper.nextSibling);
+        }
+
+        container.innerHTML = '';
+        if (this.attachedImages.length === 0) {
+            container.style.display = 'none';
+            return;
+        }
+
+        container.style.display = 'flex';
+        this.attachedImages.forEach((img, idx) => {
+            const el = document.createElement('div');
+            el.className = 'attached-image';
+            el.innerHTML = `
+                <img src="${img.dataUrl}" alt="Attached image">
+                <button class="remove-btn" data-idx="${idx}">&times;</button>
+            `;
+            el.querySelector('.remove-btn').addEventListener('click', () => {
+                this.attachedImages.splice(idx, 1);
+                this.renderAttachedImages();
+            });
+            container.appendChild(el);
+        });
+    }
+
+    // ── Send Message ────────────────────────────────────────────
+
+    sendMessage() {
+        const text = this.userInput.value.trim();
+        if (!text || this.isRunning) return;
+
+        // Add user message to chat (with image thumbnails if attached)
+        this.addUserMessage(text, this.attachedImages);
+
+        // Reset streaming state
+        this.streamBuffer = '';
+        this.isStreaming = false;
+        this.currentMessageEl = null;
+        this.currentStepEvent = null;
+        this.stepToolCalls = [];
+        this.stepToolResults = [];
+        this.stepIsInlineOnly = true;
+        this.stepRendered = false;
+        this.collapsedGroup = [];
+        this.subagentDepth = 0;
+        this.subagentContainer = null;
+
+        // Send to server (include images if attached)
+        const msg = { command: 'message', text };
+        if (this.attachedImages.length > 0) {
+            msg.images = this.attachedImages.map(img => ({
+                data: img.data,
+                media_type: img.media_type,
+            }));
+        }
+        this.send(msg);
+
+        // Clear input and attachments
+        this.userInput.value = '';
+        this.userInput.style.height = 'auto';
+        this.attachedImages = [];
+        this.renderAttachedImages();
+        this.setRunning(true);
+    }
+
+    setRunning(running) {
+        this.isRunning = running;
+        this.sendBtn.style.display = running ? 'none' : 'flex';
+        this.stopBtn.style.display = running ? 'flex' : 'none';
+        this.userInput.disabled = running;
+        if (!running) {
+            this.userInput.focus();
+        }
+    }
+
+    // ── Event Handler ───────────────────────────────────────────
+
+    handleEvent(event) {
+        const type = event.event;
+
+        switch (type) {
+            case 'init':
+                this.handleInit(event);
+                break;
+            case 'session.start':
+                this.handleSessionStart(event);
+                break;
+            case 'step.start':
+                this.handleStepStart(event);
+                break;
+            case 'text.delta':
+                this.handleTextDelta(event);
+                break;
+            case 'text.done':
+                this.handleTextDone(event);
+                break;
+            case 'tool.call':
+                this.handleToolCall(event);
+                break;
+            case 'tool.result':
+                this.handleToolResult(event);
+                break;
+            case 'status':
+                this.handleStatus(event);
+                break;
+            case 'step.end':
+                this.handleStepEnd(event);
+                break;
+            case 'session.end':
+                this.handleSessionEnd(event);
+                break;
+            case 'error':
+                this.handleError(event);
+                break;
+            case 'subagent.start':
+                this.handleSubagentStart(event);
+                break;
+            case 'subagent.end':
+                this.handleSubagentEnd(event);
+                break;
+            case 'tool_permission':
+                this.handleToolPermission(event);
+                break;
+            case 'choices':
+                this.handleChoices(event);
+                break;
+            case 'status_msg':
+                this.showStatusMessage(event.message);
+                break;
+            case 'sessions_updated':
+                this.sessions = event.sessions || [];
+                this.currentSessionId = event.current_session_id || '';
+                this.renderFilteredSessions();
+                break;
+            case 'session_cleared':
+                this.chatMessages.innerHTML = '';
+                this.sessions = event.sessions || [];
+                this.currentSessionId = event.current_session_id || '';
+                this.renderFilteredSessions();
+                this.showChatInterface();
+                break;
+            case 'session_loaded':
+                this.chatMessages.innerHTML = '';
+                this.currentSessionId = event.current_session_id || '';
+                this.sessions = event.sessions || [];
+                this.renderFilteredSessions();
+                this.showChatInterface();
+                // Clear preview panel for loaded session
+                this.clearPreviewPanel();
+                // Replay display events to rebuild the conversation in the UI
+                if (event.display_events && event.display_events.length > 0) {
+                    this.replayDisplayEvents(event.display_events);
+                }
+                break;
+            case 'dir_list':
+                this.handleDirList(event);
+                break;
+            case 'folder_picked':
+                // Native folder dialog returned a path
+                if (event.path) {
+                    const folderInput = document.getElementById('welcome-folder-input');
+                    if (folderInput) folderInput.value = event.path;
+                    this.selectProjectFolder(event.path);
+                }
+                break;
+            case 'settings':
+                this.settings = event.data || {};
+                this.renderSettingsView();
+                break;
+            case 'costs':
+                // Update cost display
+                break;
+            case 'git_status':
+                this.handleGitStatus(event.data);
+                break;
+            case 'git_result':
+                this.handleGitResult(event);
+                break;
+            case 'resonant_md':
+                this.resonantMd = event.info;
+                this.updateResonantMdBadge();
+                break;
+            case 'context.compression':
+                this.handleCompression(event);
+                break;
+            case 'dispatch_submitted':
+            case 'dispatch_cancelled':
+                this.requestDispatchList();
+                break;
+            case 'dispatch_list':
+                this.renderDispatchList(event.tasks || []);
+                break;
+            case 'dispatch_result':
+                this.renderDispatchResult(event.task);
+                break;
+            case 'schedule_created':
+                this.requestScheduleList();
+                break;
+            case 'schedule_list':
+                this.renderScheduleList(event.schedules || []);
+                break;
+            case 'mcp_list':
+                // Refresh settings view if open
+                if (this.currentView === 'settings') {
+                    this.renderSettingsView();
+                }
+                break;
+            case 'rag_indexed':
+                this.ragStats = event;
+                this.showStatusMessage(`Indexed ${event.total_files} files in ${event.elapsed_ms}ms`);
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'rag_results':
+                this.handleRagResults(event);
+                break;
+            case 'rag_stats':
+                this.ragStats = event;
+                break;
+        }
+    }
+
+    handleRagResults(event) {
+        const results = event.results || [];
+        if (!results.length) {
+            this.showStatusMessage('No matching files found');
+            return;
+        }
+        // Show results in a brief status
+        const top = results.slice(0, 3).map(r => r.path.split('/').pop()).join(', ');
+        this.showStatusMessage(`Found ${results.length} relevant files: ${top}`);
+    }
+
+    // ── Init ────────────────────────────────────────────────────
+
+    handleInit(event) {
+        const { backends, current_backend, current_model, cwd, sessions, all_sessions, current_session_id, recent_projects } = event;
+
+        // Update project info
+        if (cwd) {
+            const short = cwd.split('/').pop();
+            this.headerProject.textContent = short;
+            this.sidebarProjectName.textContent = short;
+            this.sidebarCwd.textContent = cwd;
+            this.currentCwd = cwd;
+        }
+
+        // Store backends for later use
+        this.backends = backends || {};
+        this.handlesTools = event.handles_tools || false;
+
+        // Store recent projects
+        if (recent_projects) {
+            this.recentProjects = recent_projects;
+        }
+
+        // Store settings
+        if (event.settings) {
+            this.settings = event.settings;
+        }
+
+        // RESONANT.md indicator
+        if (event.resonant_md) {
+            this.resonantMd = event.resonant_md;
+            this.updateResonantMdBadge();
+        }
+
+        // RAG index status
+        if (event.rag) {
+            this.ragStats = event.rag;
+        }
+
+        // Fetch git status
+        this.requestGitStatus();
+
+        // Update sessions list
+        if (sessions) {
+            this.sessions = sessions;
+            this.allSessions = all_sessions || [];
+            this.currentSessionId = current_session_id || '';
+            this.buildProjectFilter();
+            this.renderFilteredSessions();
+        }
+
+        // If already connected to a backend, show chat
+        if (current_backend) {
+            this.showChatInterface();
+            this.headerStatus.textContent = `${current_backend} · ${current_model}`;
+            this.populateModelSelector(backends, current_backend, current_model);
+            return;
+        }
+
+        // If we're on the backend step (project already selected), refresh backend cards
+        const backendStep = document.getElementById('backend-step');
+        if (backendStep && backendStep.style.display !== 'none') {
+            this.showBackendSelector(backends);
+            return;
+        }
+
+        // Show new session setup (project picker first)
+        this.showNewSessionSetup();
+    }
+
+    showBackendSelector(backends) {
+        const list = document.getElementById('backend-list');
+        list.innerHTML = '';
+
+        const label = document.querySelector('.backend-label');
+        const keys = Object.keys(backends);
+        if (keys.length === 0) {
+            label.textContent = 'No backends found. Start Ollama, set ANTHROPIC_API_KEY, or set OPENAI_API_KEY.';
+            return;
+        }
+
+        label.textContent = 'Select a backend';
+
+        const backendLabels = {
+            resonant: 'Resonant Engine',
+            ollama: 'Ollama',
+            claude: 'Claude',
+            openai: 'OpenAI',
+            lmstudio: 'LM Studio',
+            'claude-code': 'Claude Code',
+            codex: 'Codex',
+        };
+
+        const backendIcons = {
+            'claude-code': '⌘',
+            codex: '>_',
+            resonant: '◈',
+            ollama: '🦙',
+            claude: '◆',
+            openai: '◎',
+            lmstudio: '⬡',
+        };
+
+        const backendDescs = {
+            'claude-code': 'CLI agent',
+            codex: 'CLI agent',
+            resonant: 'Cognitive engine',
+            ollama: 'Local models',
+            claude: 'Anthropic API',
+            openai: 'OpenAI API',
+            lmstudio: 'Local server',
+        };
+
+        // Group backends by category
+        const groups = [
+            { label: 'Agents', keys: ['claude-code', 'codex', 'resonant'] },
+            { label: 'Cloud APIs', keys: ['claude', 'openai'] },
+            { label: 'Local', keys: ['ollama', 'lmstudio'] },
+        ];
+
+        for (const group of groups) {
+            const available = group.keys.filter(k => backends[k]);
+            if (available.length === 0) continue;
+
+            const section = document.createElement('div');
+            section.className = 'backend-group';
+
+            const groupLabel = document.createElement('div');
+            groupLabel.className = 'backend-group-label';
+            groupLabel.textContent = group.label;
+            section.appendChild(groupLabel);
+
+            const cardsContainer = document.createElement('div');
+            cardsContainer.className = 'backend-group-cards' + (available.length === 1 ? ' single' : '');
+
+            for (const key of available) {
+                const info = backends[key];
+                const card = document.createElement('div');
+                card.className = 'backend-card';
+                card.dataset.backend = key;
+
+                const modelCount = info.models ? info.models.length : 0;
+                const detail = info.patterns
+                    ? info.patterns.toLocaleString() + ' patterns'
+                    : modelCount + (modelCount === 1 ? ' model' : ' models');
+
+                card.innerHTML = `
+                    <div class="backend-card-icon">${backendIcons[key] || '●'}</div>
+                    <div class="backend-card-info">
+                        <div class="backend-card-name">${backendLabels[key] || key}</div>
+                        <div class="backend-card-detail">${backendDescs[key] || detail}</div>
+                    </div>
+                    <div class="backend-card-dot"></div>
+                `;
+
+                card.addEventListener('click', () => {
+                    if (info.models && info.models.length > 1) {
+                        this.showModelPicker(key, info.models, cardsContainer, card, info.model_labels);
+                    } else {
+                        const model = info.models ? info.models[0] : '';
+                        this.selectBackend(key, model);
+                    }
+                });
+
+                cardsContainer.appendChild(card);
+            }
+
+            section.appendChild(cardsContainer);
+            list.appendChild(section);
+        }
+    }
+
+    showModelPicker(backendType, models, container, card, modelLabels) {
+        // Remove existing pickers and deselect cards
+        document.querySelectorAll('.model-picker').forEach(el => el.remove());
+        document.querySelectorAll('.backend-card.selected').forEach(el => el.classList.remove('selected'));
+
+        card.classList.add('selected');
+
+        const picker = document.createElement('div');
+        picker.className = 'model-picker visible';
+        const labels = modelLabels || {};
+
+        const row = document.createElement('div');
+        row.className = 'model-picker-row';
+
+        const select = document.createElement('select');
+        for (const m of models) {
+            const opt = document.createElement('option');
+            opt.value = m;
+            opt.textContent = labels[m] || m;
+            select.appendChild(opt);
+        }
+
+        const btn = document.createElement('button');
+        btn.className = 'connect-btn';
+        btn.textContent = 'Connect';
+        btn.addEventListener('click', () => {
+            this.selectBackend(backendType, select.value);
+        });
+
+        // Allow Enter in select to connect
+        select.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') this.selectBackend(backendType, select.value);
+        });
+
+        row.appendChild(select);
+        row.appendChild(btn);
+        picker.appendChild(row);
+        container.appendChild(picker);
+        select.focus();
+    }
+
+    selectBackend(backendType, model) {
+        document.querySelector('.backend-label').textContent = 'Connecting...';
+        this.send({ command: 'select_backend', backend: backendType, model });
+    }
+
+    showChatInterface() {
+        this.welcomeScreen.style.display = 'none';
+        this.chatContainer.style.display = 'flex';
+        this.inputBar.style.display = 'block';
+        // Hide other views if they were visible
+        if (this.settingsView) this.settingsView.style.display = 'none';
+        if (this.scheduleView) this.scheduleView.style.display = 'none';
+        if (this.dispatchView) this.dispatchView.style.display = 'none';
+        // Update nav
+        this.currentView = 'chat';
+        document.querySelectorAll('.sidebar-nav-item').forEach(el =>
+            el.classList.toggle('active', el.dataset.view === 'chat'));
+        this.userInput.focus();
+    }
+
+    setPermissionMode(mode) {
+        this.permissionMode = mode;
+
+        const icons = { ask: '⚙', 'auto-edit': '</>', plan: '☰', bypass: '△' };
+        const labels = { ask: 'Ask permissions', 'auto-edit': 'Auto accept edits', plan: 'Plan mode', bypass: 'Bypass permissions' };
+
+        document.getElementById('perm-icon').textContent = icons[mode] || '△';
+        document.getElementById('perm-label').textContent = labels[mode] || mode;
+
+        // Update active state + checkmark
+        document.querySelectorAll('.perm-option').forEach(opt => {
+            const isActive = opt.dataset.mode === mode;
+            opt.classList.toggle('active', isActive);
+            // Remove existing checkmarks
+            const existingCheck = opt.querySelector('.perm-check');
+            if (existingCheck) existingCheck.remove();
+            // Add checkmark to active
+            if (isActive) {
+                const check = document.createElement('span');
+                check.className = 'perm-check';
+                check.textContent = '✓';
+                opt.appendChild(check);
+            }
+        });
+
+        // Apply mode effects
+        this.planMode = (mode === 'plan');
+
+        // Notify server of permission mode change
+        this.send({ command: 'set_permission_mode', mode });
+    }
+
+    populateModelSelector(backends, currentBackend, currentModel) {
+        this.modelSelector.innerHTML = '';
+
+        const backendLabels = {
+            'claude-code': 'Claude Code',
+            codex: 'Codex',
+            resonant: 'Resonant',
+            ollama: 'Ollama',
+            claude: 'Claude API',
+            openai: 'OpenAI',
+            lmstudio: 'LM Studio',
+        };
+
+        // Preferred display order
+        const order = ['claude-code', 'codex', 'resonant', 'claude', 'openai', 'ollama', 'lmstudio'];
+        const sortedKeys = order.filter(k => backends[k]);
+        // Add any remaining backends not in the order list
+        for (const k of Object.keys(backends)) {
+            if (!sortedKeys.includes(k)) sortedKeys.push(k);
+        }
+
+        for (const key of sortedKeys) {
+            const info = backends[key];
+            if (!info || !info.models || info.models.length === 0) continue;
+
+            const labels = info.model_labels || {};
+            const groupLabel = backendLabels[key] || key;
+
+            const group = document.createElement('optgroup');
+            group.label = groupLabel;
+
+            for (const m of info.models) {
+                const opt = document.createElement('option');
+                opt.value = `${key}:${m}`;
+                opt.textContent = labels[m] || m;
+                if (key === currentBackend && m === currentModel) opt.selected = true;
+                group.appendChild(opt);
+            }
+
+            this.modelSelector.appendChild(group);
+        }
+    }
+
+    // ── Step Handling ────────────────────────────────────────────
+
+    handleSessionStart(event) {
+        // Show tool mode indicator for adaptive backends
+        const toolMode = event.tool_mode || 'native';
+        if (toolMode === 'text') {
+            this.showStatusMessage(`⚡ Using text-based tool calling for ${event.model || 'this model'}`);
+        }
+        // Store tool mode for potential UI use
+        this.currentToolMode = toolMode;
+    }
+
+    handleStepStart(event) {
+        this.currentStepEvent = event;
+        this.stepToolCalls = [];
+        this.stepToolResults = [];
+        this.stepIsInlineOnly = true;
+        this.stepRendered = false;
+        this.isStreaming = false;
+        this._currentStepHeaderEl = null;
+        this._currentStepToolCounts = {};
+
+        // Add thinking indicator
+        this.removeThinking();
+        this.addThinking();
+    }
+
+    ensureStepRendered() {
+        if (!this.stepRendered && this.currentStepEvent) {
+            // Flush collapsed group first
+            this.flushCollapsedGroup();
+
+            // Render step header
+            this.renderStepHeader(this.currentStepEvent);
+
+            // Flush any buffered inline tools
+            for (const tc of this.stepToolCalls) {
+                this.renderToolCall(tc);
+            }
+            for (const tr of this.stepToolResults) {
+                this.renderToolResult(tr);
+            }
+
+            this.stepRendered = true;
+        }
+    }
+
+    renderStepHeader(event) {
+        const step = event.step || 0;
+
+        const el = document.createElement('div');
+        el.className = 'step-header';
+        el.dataset.step = step;
+        el.innerHTML = `
+            <div class="step-divider"></div>
+            <span class="step-label">◆ Working...</span>
+            <span class="step-meta">step ${step}</span>
+            <div class="step-divider"></div>
+        `;
+        this.getRenderTarget().appendChild(el);
+        this._currentStepHeaderEl = el;
+        this._currentStepToolCounts = {};
+    }
+
+    /** Update the current step header label based on tools used so far. */
+    updateStepActionLabel() {
+        if (!this._currentStepHeaderEl || !this._currentStepToolCounts) return;
+        const total = Object.values(this._currentStepToolCounts).reduce((s, v) => s + v, 0);
+        if (total === 0) return;
+        const action = inferActionLabel(this._currentStepToolCounts);
+        const step = this._currentStepHeaderEl.dataset.step || '0';
+        const labelEl = this._currentStepHeaderEl.querySelector('.step-label');
+        if (labelEl) labelEl.textContent = `◆ ${action}`;
+        const metaEl = this._currentStepHeaderEl.querySelector('.step-meta');
+        if (metaEl) metaEl.textContent = `step ${step}`;
+    }
+
+    handleStepEnd(event) {
+        this.removeThinking();
+
+        if (this.stepIsInlineOnly && this.stepToolCalls.length > 0) {
+            // Inline-only step → add to collapsed group
+            this.collapsedGroup.push({
+                stepEvent: this.currentStepEvent,
+                toolCalls: [...this.stepToolCalls],
+                toolResults: [...this.stepToolResults],
+                endEvent: event,
+                model: this.lastModel,
+                stats: this.lastStats,
+            });
+        } else if (this.stepRendered) {
+            // Fully rendered step → show footer
+            this.renderStepFooter(event);
+        }
+    }
+
+    renderStepFooter(event) {
+        const elapsed = event.elapsed || 0;
+        if (elapsed <= 0 && !this.lastModel) return;
+
+        const parts = [];
+        if (this.lastModel) parts.push(this.lastModel);
+        if (this.lastStats) {
+            const inp = this.lastStats.input_tokens;
+            const out = this.lastStats.output_tokens;
+            if (inp && out) parts.push(`${inp}→${out} tok`);
+        }
+        if (elapsed > 0) parts.push(`${elapsed.toFixed(1)}s`);
+
+        const el = document.createElement('div');
+        el.className = 'step-footer';
+        el.innerHTML = `▣ ${parts.map(p => `<span>${p}</span>`).join('<span class="sep">·</span>')}`;
+        this.getRenderTarget().appendChild(el);
+    }
+
+    // ── Collapsed Group ─────────────────────────────────────────
+
+    flushCollapsedGroup() {
+        if (this.collapsedGroup.length === 0) return;
+
+        const group = this.collapsedGroup;
+        const firstStep = group[0].stepEvent.step || 0;
+        const lastStep = group[group.length - 1].stepEvent.step || 0;
+
+        // Count tools
+        const toolCounts = {};
+        const allCalls = [];
+        for (const g of group) {
+            for (let i = 0; i < g.toolCalls.length; i++) {
+                const tc = g.toolCalls[i];
+                const name = tc.name || '';
+                toolCounts[name] = (toolCounts[name] || 0) + 1;
+                allCalls.push({
+                    call: tc,
+                    result: g.toolResults[i] || {},
+                });
+            }
+        }
+
+        // Summary
+        const summaryParts = [];
+        for (const [name, count] of Object.entries(toolCounts)) {
+            const info = getToolInfo(name);
+            summaryParts.push(count > 1 ? `${info.label} ×${count}` : info.label);
+        }
+
+        const actionLabel = inferActionLabel(toolCounts);
+        const stepMeta = firstStep === lastStep
+            ? `step ${firstStep}`
+            : `steps ${firstStep}–${lastStep}`;
+
+        const container = document.createElement('div');
+        container.className = 'collapsed-group';
+
+        const header = document.createElement('div');
+        header.className = 'collapsed-header';
+        header.innerHTML = `
+            <span class="collapsed-icon">▸</span>
+            <span class="collapsed-summary">◆ ${actionLabel}</span>
+            <span class="collapsed-meta">${stepMeta} · ${allCalls.length} calls</span>
+        `;
+
+        const items = document.createElement('div');
+        items.className = 'collapsed-items';
+
+        for (const { call, result } of allCalls) {
+            const name = call.name || '';
+            const args = call.arguments || {};
+            const info = getToolInfo(name);
+            const meta = result.metadata || {};
+            const isError = result.is_error || false;
+
+            let desc = '';
+            let metaText = '';
+
+            if (name === 'file_read') {
+                const p = args.path || '';
+                desc = `<span style="color:var(--file)">${this.shortenPath(p)}</span>`;
+                metaText = meta.lines ? `${meta.lines} lines` : '';
+            } else if (name === 'glob') {
+                desc = args.pattern || '';
+                metaText = meta.count != null ? `${meta.count} files` : '';
+            } else if (name === 'grep') {
+                desc = `'${args.pattern || ''}'`;
+                metaText = meta.count != null ? `${meta.count} matches` : '';
+            } else {
+                desc = info.label;
+            }
+
+            const statusIcon = isError ? '✗' : '✓';
+            const statusColor = isError ? 'var(--err)' : 'var(--ok)';
+
+            const line = document.createElement('div');
+            line.className = 'tool-inline';
+            line.innerHTML = `
+                <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
+                <span class="tool-desc">${desc}</span>
+                <span class="tool-meta">${metaText}</span>
+                <span class="tool-status" style="color:${statusColor}">${statusIcon}</span>
+            `;
+            items.appendChild(line);
+        }
+
+        header.addEventListener('click', () => {
+            container.classList.toggle('expanded');
+            header.querySelector('.collapsed-icon').textContent =
+                container.classList.contains('expanded') ? '▾' : '▸';
+        });
+
+        container.appendChild(header);
+        container.appendChild(items);
+        this.getRenderTarget().appendChild(container);
+
+        this.collapsedGroup = [];
+    }
+
+    // ── Tool Activity Group (CLI backends) ─────────────────────
+
+    addToToolActivityGroup(event) {
+        const name = event.name || '';
+        const args = event.arguments || {};
+        const info = getToolInfo(name);
+
+        // Stop any active streaming cursor — tool calls arrived mid-stream
+        if (this.isStreaming && this.currentMessageEl) {
+            this.isStreaming = false;
+            this.renderMarkdown(this.currentMessageEl, this.streamBuffer);
+            this.currentMessageEl.querySelector('.message-content')?.classList.remove('streaming-cursor');
+            this.currentMessageEl = null;
+        }
+
+        // Create group container if not yet present
+        if (!this.activeToolGroup) {
+            this.activeToolGroupCount = 0;
+            this.activeToolGroupCounts = {};
+
+            const container = document.createElement('div');
+            container.className = 'tool-activity-group running';
+
+            const header = document.createElement('div');
+            header.className = 'tool-activity-header';
+            header.innerHTML = `
+                <span class="tool-activity-chevron">▸</span>
+                <span class="tool-activity-spinner"></span>
+                <span class="tool-activity-done-icon">✓</span>
+                <span class="tool-activity-label">Working...</span>
+                <span class="tool-activity-count">0</span>
+            `;
+
+            const items = document.createElement('div');
+            items.className = 'tool-activity-items';
+
+            header.addEventListener('click', () => {
+                container.classList.toggle('expanded');
+                header.querySelector('.tool-activity-chevron').textContent =
+                    container.classList.contains('expanded') ? '▾' : '▸';
+            });
+
+            container.appendChild(header);
+            container.appendChild(items);
+            this.getRenderTarget().appendChild(container);
+            this.activeToolGroup = container;
+        }
+
+        // Add item to the group
+        this.activeToolGroupCount++;
+        this.activeToolGroupCounts[name] = (this.activeToolGroupCounts[name] || 0) + 1;
+
+        // Build detail text
+        let detail = '';
+        if (name === 'bash') {
+            const cmd = args.command || '';
+            detail = cmd.length > 80 ? cmd.slice(0, 77) + '...' : cmd;
+        } else if (name === 'file_read') {
+            detail = args.path || '';
+        } else if (name === 'file_edit') {
+            detail = args.path || '';
+        } else if (name === 'file_write') {
+            detail = args.path || '';
+        } else if (name === 'grep') {
+            detail = `'${args.pattern || ''}' in ${args.path || '.'}`;
+        } else if (name === 'glob') {
+            detail = args.pattern || '';
+        } else {
+            detail = JSON.stringify(args).slice(0, 60);
+        }
+
+        const item = document.createElement('div');
+        item.className = 'tool-activity-item';
+        item.innerHTML = `
+            <span class="ta-icon" style="color:var(--${info.color})">${info.icon}</span>
+            <span class="ta-name">${info.label}</span>
+            <span class="ta-detail">${this.escapeHtml(detail)}</span>
+        `;
+
+        const itemsContainer = this.activeToolGroup.querySelector('.tool-activity-items');
+        itemsContainer.appendChild(item);
+
+        // Update header summary
+        const summaryParts = [];
+        const order = ['bash', 'file_read', 'file_edit', 'file_write', 'grep', 'glob'];
+        const shown = new Set();
+        for (const k of order) {
+            if (this.activeToolGroupCounts[k]) {
+                const i = getToolInfo(k);
+                summaryParts.push(`${i.label} ×${this.activeToolGroupCounts[k]}`);
+                shown.add(k);
+            }
+        }
+        for (const [k, c] of Object.entries(this.activeToolGroupCounts)) {
+            if (!shown.has(k)) {
+                const i = getToolInfo(k);
+                summaryParts.push(`${i.label} ×${c}`);
+            }
+        }
+
+        const actionLabel = inferActionLabel(this.activeToolGroupCounts);
+        this.activeToolGroup.querySelector('.tool-activity-label').textContent = actionLabel;
+        this.activeToolGroup.querySelector('.tool-activity-count').textContent =
+            summaryParts.join(' · ');
+
+        // Scroll to keep visible
+        this.scrollToBottom();
+    }
+
+    finalizeToolActivityGroup() {
+        if (!this.activeToolGroup) return;
+
+        this.activeToolGroup.classList.remove('running');
+        this.activeToolGroup = null;
+        this.activeToolGroupCount = 0;
+        this.activeToolGroupCounts = {};
+    }
+
+    // ── Text Streaming ──────────────────────────────────────────
+
+    handleTextDelta(event) {
+        this.removeThinking();
+        this.stepIsInlineOnly = false;
+
+        // Finalize tool activity group before text appears
+        this.finalizeToolActivityGroup();
+
+        if (!this.isStreaming) {
+            this.isStreaming = true;
+            this.streamBuffer = '';
+            this.ensureStepRendered();
+            this.currentMessageEl = this.addAssistantMessage();
+        }
+
+        this.streamBuffer += (event.delta || '');
+        this.scheduleRender();
+    }
+
+    handleTextDone(event) {
+        if (this.isStreaming && this.currentMessageEl) {
+            this.isStreaming = false;
+            this.renderMarkdown(this.currentMessageEl, this.streamBuffer);
+            this.currentMessageEl.querySelector('.message-content')?.classList.remove('streaming-cursor');
+        }
+    }
+
+    scheduleRender() {
+        if (!this._renderScheduled) {
+            this._renderScheduled = true;
+            requestAnimationFrame(() => {
+                this._renderScheduled = false;
+                if (this.currentMessageEl) {
+                    this.renderMarkdown(this.currentMessageEl, this.streamBuffer, true);
+                }
+            });
+        }
+    }
+
+    renderMarkdown(el, text, streaming = false) {
+        const contentEl = el.querySelector('.message-content');
+        if (!contentEl) return;
+
+        try {
+            let html = '';
+            if (typeof marked !== 'undefined') {
+                html = marked.parse(text);
+            } else {
+                html = text.replace(/\n/g, '<br>');
+            }
+
+            if (typeof DOMPurify !== 'undefined') {
+                html = DOMPurify.sanitize(html);
+            }
+
+            contentEl.innerHTML = html;
+
+            if (streaming) {
+                contentEl.classList.add('streaming-cursor');
+            } else {
+                contentEl.classList.remove('streaming-cursor');
+            }
+
+            // Syntax highlight code blocks
+            contentEl.querySelectorAll('pre code').forEach(block => {
+                if (typeof hljs !== 'undefined') {
+                    hljs.highlightElement(block);
+                }
+            });
+        } catch (err) {
+            contentEl.textContent = text;
+        }
+
+        this.scrollToBottom();
+    }
+
+    // ── Tool Calls ──────────────────────────────────────────────
+
+    handleToolCall(event) {
+        this.removeThinking();
+        const name = event.name || '';
+
+        // CLI backends: group ALL tool calls into a collapsible activity panel
+        if (this.handlesTools) {
+            this.addToToolActivityGroup(event);
+            return;
+        }
+
+        // Track tool counts for action-based step labels
+        if (this._currentStepToolCounts) {
+            this._currentStepToolCounts[name] = (this._currentStepToolCounts[name] || 0) + 1;
+            this.updateStepActionLabel();
+        }
+
+        if (COLLAPSIBLE_TOOLS.has(name) && this.stepIsInlineOnly) {
+            // Buffer inline tool
+            this.stepToolCalls.push(event);
+        } else {
+            // Block tool → render immediately
+            this.stepIsInlineOnly = false;
+            this.ensureStepRendered();
+            this.renderToolCall(event);
+        }
+    }
+
+    handleToolResult(event) {
+        const name = event.name || '';
+        const hasImage = event.image && event.image.data;
+
+        // If a screenshot comes back with an image, force step to render (don't collapse)
+        if (hasImage && this.stepIsInlineOnly) {
+            this.stepIsInlineOnly = false;
+            this.ensureStepRendered();
+            this.renderToolResult(event);
+            return;
+        }
+
+        if (this.stepIsInlineOnly && COLLAPSIBLE_TOOLS.has(name)) {
+            this.stepToolResults.push(event);
+        } else {
+            if (!this.stepRendered) this.ensureStepRendered();
+            this.renderToolResult(event);
+        }
+    }
+
+    renderToolCall(event) {
+        const name = event.name || '';
+        const args = event.arguments || {};
+        const info = getToolInfo(name);
+        const category = info.category || '';
+
+        if (BLOCK_TOOLS.has(name)) {
+            this.renderBlockToolCall(name, args, info, category, event);
+        } else {
+            this.renderInlineToolCall(name, args, info, category);
+        }
+        this.scrollToBottom();
+    }
+
+    getRenderTarget() {
+        return this.subagentContainer || this.chatMessages;
+    }
+
+    renderInlineToolCall(name, args, info, category) {
+        let desc = '';
+        let meta = '';
+
+        switch (name) {
+            case 'file_read':
+                desc = `<span style="color:var(--file)">${this.escapeHtml(args.path || '')}</span>`;
+                break;
+            case 'glob':
+                desc = this.escapeHtml(args.pattern || '');
+                meta = args.path || '.';
+                break;
+            case 'grep':
+                desc = `'${this.escapeHtml(args.pattern || '')}'`;
+                meta = args.path || '.';
+                break;
+            case 'browser_navigate':
+                desc = `<span style="color:var(--file)">${this.escapeHtml(args.url || '')}</span>`;
+                // Update preview panel URL bar
+                if (args.url) this.updatePreviewUrl(args.url);
+                break;
+            case 'browser_click':
+                const target = args.text || args.selector || `(${args.x || '?'}, ${args.y || '?'})`;
+                desc = `Click ${this.escapeHtml(target)}`;
+                break;
+            case 'browser_type':
+                const t = args.text || '';
+                desc = `Type '${this.escapeHtml(t.length > 40 ? t.slice(0, 37) + '...' : t)}'`;
+                break;
+            case 'browser_read':
+                desc = 'Read page';
+                meta = args.mode || 'text';
+                break;
+            case 'browser_screenshot':
+                desc = 'Page screenshot';
+                meta = args.full_page ? 'full page' : 'viewport';
+                break;
+            case 'computer_screenshot':
+                desc = 'Desktop screenshot';
+                meta = args.region ? `${args.region.width}×${args.region.height}` : 'full screen';
+                break;
+            case 'computer_click':
+                const ct = args.clicks === 2 ? 'Double-click' : 'Click';
+                desc = `${ct} (${args.x}, ${args.y})`;
+                meta = args.button || 'left';
+                break;
+            case 'computer_type':
+                const key = args.key || args.hotkey || '';
+                if (key) {
+                    desc = `Press ${this.escapeHtml(key)}`;
+                } else {
+                    const tx = args.text || '';
+                    desc = `Type '${this.escapeHtml(tx.length > 40 ? tx.slice(0, 37) + '...' : tx)}'`;
+                }
+                break;
+            case 'computer_scroll':
+                desc = `Scroll ${args.direction || 'down'} ×${args.amount || 3}`;
+                break;
+            default:
+                desc = info.label;
+        }
+
+        const el = document.createElement('div');
+        el.className = `tool-inline ${category}`;
+        el.setAttribute('data-tool', name);
+        el.innerHTML = `
+            <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
+            <span class="tool-desc">${desc}</span>
+            ${meta ? `<span class="tool-meta">(${this.escapeHtml(meta)})</span>` : ''}
+        `;
+        this.getRenderTarget().appendChild(el);
+    }
+
+    renderBlockToolCall(name, args, info, category, event) {
+        const el = document.createElement('div');
+        el.className = `tool-block ${category}`;
+        el.setAttribute('data-tool', name);
+        el.style.borderLeftColor = `var(--${info.color})`;
+
+        let headerContent = '';
+        let bodyContent = '';
+
+        if (name === 'bash') {
+            const cmd = args.command || '';
+            const displayCmd = cmd.length > 100 ? cmd.slice(0, 97) + '...' : cmd;
+            headerContent = `<span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
+                             <span class="tool-name" style="color:var(--${info.color})">${info.label}</span>`;
+            bodyContent = `<span style="color:var(--muted)">$ </span>${this.escapeHtml(displayCmd)}`;
+
+            // Push command to preview console
+            this.pushPreviewConsole(`$ ${cmd}`, 'stdout');
+
+        } else if (name === 'file_write') {
+            const fpath = args.path || '';
+            const content = args.content || '';
+            const lines = content.split('\n');
+            const lineCount = lines.length;
+            const preview = lines.slice(0, 15).join('\n');
+
+            headerContent = `<span class="tool-icon" style="color:var(--ok)">${info.icon}</span>
+                             <span class="tool-name" style="color:var(--ok)">${info.label}</span>
+                             <span class="tool-file">${this.escapeHtml(fpath)}</span>`;
+            bodyContent = this.escapeHtml(preview);
+            if (lineCount > 15) bodyContent += `\n<span style="color:var(--dim)"># ... (${lineCount - 15} more lines)</span>`;
+
+        } else if (name === 'file_edit') {
+            const fpath = args.path || '';
+            const diffLines = event.diff_lines || [];
+
+            headerContent = `<span class="tool-icon" style="color:var(--warn)">${info.icon}</span>
+                             <span class="tool-name" style="color:var(--warn)">${info.label}</span>
+                             <span class="tool-file">${this.escapeHtml(fpath)}</span>`;
+
+            if (diffLines.length > 2) {
+                const rendered = diffLines.slice(2, 20).map(line => {
+                    if (line.startsWith('+')) return `<span class="diff-line add">+ ${this.escapeHtml(line.slice(1))}</span>`;
+                    if (line.startsWith('-')) return `<span class="diff-line del">- ${this.escapeHtml(line.slice(1))}</span>`;
+                    if (line.startsWith('@@')) return `<span class="diff-line hunk">${this.escapeHtml(line)}</span>`;
+                    return `<span class="diff-line ctx">  ${this.escapeHtml(line)}</span>`;
+                }).join('');
+                bodyContent = rendered;
+                if (diffLines.length > 20) bodyContent += `<span class="diff-line ctx">  ⋯ ${diffLines.length - 20} more lines</span>`;
+            } else {
+                bodyContent = '<span style="color:var(--dim)">(no visible diff)</span>';
+            }
+
+        } else if (name === 'browser_js') {
+            const code = args.code || '';
+            const display = code.length > 200 ? code.slice(0, 197) + '...' : code;
+            headerContent = `<span class="tool-icon" style="color:var(--brand2)">${info.icon}</span>
+                             <span class="tool-name" style="color:var(--brand2)">${info.label}</span>`;
+            bodyContent = this.escapeHtml(display);
+        }
+
+        el.innerHTML = `
+            <div class="tool-block-header">${headerContent}</div>
+            <div class="tool-block-body">${bodyContent}</div>
+            <div class="tool-block-footer" data-tool-footer="${name}"></div>
+        `;
+
+        this.getRenderTarget().appendChild(el);
+    }
+
+    renderToolResult(event) {
+        const name = event.name || '';
+        const output = event.output || '';
+        const isError = event.is_error || false;
+        const elapsed = event.elapsed || 0;
+        const meta = event.metadata || {};
+        const denied = event.denied || false;
+        const image = event.image || null;
+
+        if (denied) {
+            this.appendToolStatus(name, '✗ denied', 'warn');
+            return;
+        }
+
+        if (BLOCK_TOOLS.has(name)) {
+            this.renderBlockToolResult(name, output, isError, elapsed, meta);
+        } else {
+            this.renderInlineToolResult(name, output, isError, elapsed, meta);
+        }
+
+        // Render screenshot image if present
+        if (image && image.data) {
+            this.renderScreenshotImage(image.data, image.media_type || 'image/png', name);
+        }
+
+        this.scrollToBottom();
+    }
+
+    renderInlineToolResult(name, output, isError, elapsed, meta) {
+        // Find the last matching inline tool and add status
+        const target = this.getRenderTarget();
+        const tools = target.querySelectorAll(`.tool-inline[data-tool="${name}"]`);
+        const last = tools[tools.length - 1];
+        if (!last) return;
+
+        let statusText = '';
+        let statusClass = isError ? 'err' : 'ok';
+
+        switch (name) {
+            case 'file_read':
+                statusText = isError ? '✗' : (meta.lines ? `${meta.lines} lines` : '✓');
+                break;
+            case 'glob':
+                statusText = `${meta.count || 0} files`;
+                break;
+            case 'grep':
+                statusText = `${meta.count || 0} matches`;
+                break;
+            case 'browser_navigate':
+                statusText = isError ? '✗' : (meta.title || '✓');
+                // Update preview tab name with page title
+                if (meta.title) this.updatePreviewUrl(null, meta.title);
+                break;
+            case 'browser_read':
+                statusText = isError ? '✗' : `${(meta.chars || 0).toLocaleString()} chars`;
+                break;
+            case 'browser_screenshot':
+            case 'computer_screenshot': {
+                const kb = meta.size_bytes ? Math.round(meta.size_bytes / 1024) : 0;
+                const dims = meta.width && meta.height ? `${meta.width}×${meta.height} · ` : '';
+                statusText = isError ? '✗' : `${dims}${kb}KB`;
+                break;
+            }
+            default:
+                statusText = isError ? '✗' : '✓';
+        }
+
+        const status = document.createElement('span');
+        status.className = `tool-status ${statusClass}`;
+        status.textContent = statusText;
+
+        // Remove existing status if any
+        const existing = last.querySelector('.tool-status');
+        if (existing) existing.remove();
+        last.appendChild(status);
+    }
+
+    renderBlockToolResult(name, output, isError, elapsed, meta) {
+        const target = this.getRenderTarget();
+        const footers = target.querySelectorAll(`[data-tool-footer="${name}"]`);
+        const footer = footers[footers.length - 1];
+        if (!footer) return;
+
+        if (name === 'bash') {
+            const lines = output.split('\n');
+            const displayLines = lines.length > MAX_OUTPUT_LINES
+                ? [...lines.slice(0, MAX_OUTPUT_LINES), `⋯ +${lines.length - MAX_OUTPUT_LINES} lines`]
+                : lines;
+
+            // Add output to block body
+            const body = footer.previousElementSibling;
+            if (body) {
+                const outputEl = document.createElement('div');
+                outputEl.style.marginTop = '8px';
+                outputEl.style.borderTop = '1px solid var(--border)';
+                outputEl.style.paddingTop = '6px';
+                outputEl.style.color = isError ? 'var(--err)' : 'var(--dim)';
+                outputEl.textContent = displayLines.join('\n');
+                body.appendChild(outputEl);
+            }
+
+            const parts = [`${elapsed.toFixed(1)}s`];
+            if (meta.timed_out) parts.push('timeout');
+            if (meta.exit_code && meta.exit_code !== 0) parts.push(`exit ${meta.exit_code}`);
+            footer.innerHTML = `<span class="tool-status ${isError ? 'err' : 'ok'}">${isError ? '✗' : '✓'}</span> ${parts.join(' · ')}`;
+
+            // Push to preview console
+            if (output && output.trim()) {
+                const type = isError ? 'stderr' : 'stdout';
+                this.pushPreviewConsole(output.trim(), type);
+            }
+
+        } else if (name === 'file_write') {
+            const lineCount = meta.lines || 0;
+            const chars = meta.chars || 0;
+            const icon = isError ? '✗' : '✓';
+            footer.innerHTML = `<span class="tool-status ${isError ? 'err' : 'ok'}">${icon}</span> ${lineCount} lines, ${chars} chars`;
+
+        } else if (name === 'file_edit') {
+            const icon = isError ? '✗' : '✓';
+            const msg = isError ? output : 'applied';
+            footer.innerHTML = `<span class="tool-status ${isError ? 'err' : 'ok'}">${icon}</span> ${msg}`;
+
+        } else if (name === 'browser_js') {
+            const lines = output.split('\n');
+            const display = lines.length > MAX_OUTPUT_LINES
+                ? [...lines.slice(0, MAX_OUTPUT_LINES), `⋯ +${lines.length - MAX_OUTPUT_LINES} lines`].join('\n')
+                : output;
+            footer.innerHTML = `<span style="color:${isError ? 'var(--err)' : 'var(--dim)'}">${this.escapeHtml(display)}</span>`;
+        }
+    }
+
+    appendToolStatus(name, text, color) {
+        const el = document.createElement('div');
+        el.className = 'tool-inline';
+        el.innerHTML = `<span class="tool-status" style="color:var(--${color})">${text}</span>`;
+        this.getRenderTarget().appendChild(el);
+    }
+
+    // ── Screenshot Image ────────────────────────────────────────
+
+    renderScreenshotImage(base64Data, mediaType, toolName) {
+        const category = toolName.startsWith('computer_') ? 'desktop' : '';
+        const container = document.createElement('div');
+        container.className = `screenshot-container ${category}`;
+
+        const img = document.createElement('img');
+        img.className = 'screenshot-thumb';
+        img.src = `data:${mediaType};base64,${base64Data}`;
+        img.alt = 'Screenshot';
+        img.loading = 'lazy';
+
+        img.addEventListener('click', () => {
+            this.showLightbox(img.src);
+        });
+
+        container.appendChild(img);
+
+        // Append to current render target (subagent container or chat)
+        const target = this.subagentContainer || this.chatMessages;
+        target.appendChild(container);
+
+        // Also push to preview panel
+        this.pushPreviewImage(base64Data, mediaType, toolName);
+    }
+
+    showLightbox(src) {
+        const overlay = document.createElement('div');
+        overlay.className = 'lightbox-overlay';
+        overlay.innerHTML = `
+            <img class="lightbox-img" src="${src}" alt="Screenshot">
+            <button class="lightbox-close">&times;</button>
+        `;
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay || e.target.classList.contains('lightbox-close')) {
+                overlay.remove();
+            }
+        });
+        document.body.appendChild(overlay);
+    }
+
+    // ── Preview Panel ────────────────────────────────────────────
+
+    togglePreviewPanel() {
+        if (this.previewOpen) {
+            this.closePreviewPanel();
+        } else {
+            this.openPreviewPanel();
+        }
+    }
+
+    openPreviewPanel() {
+        this.previewOpen = true;
+        this.previewPanel.classList.add('open');
+        this.previewResize.style.display = 'block';
+        this.previewToggle.classList.add('active');
+        this.previewToggle.classList.remove('has-update');
+    }
+
+    closePreviewPanel() {
+        this.previewOpen = false;
+        this.previewPanel.classList.remove('open');
+        this.previewPanel.style.width = '';
+        this.previewPanel.style.minWidth = '';
+        this.previewResize.style.display = 'none';
+        this.previewToggle.classList.remove('active');
+    }
+
+    /** Update the preview URL bar when a browser_navigate tool is called */
+    updatePreviewUrl(url, title) {
+        this._previewUrl = url || this._previewUrl || '';
+        this._previewTitle = title || this._previewTitle || '';
+        if (this.previewUrlText) {
+            this.previewUrlText.textContent = this._previewUrl;
+        }
+        if (this.previewTabName && this._previewTitle) {
+            this.previewTabName.textContent = this._previewTitle;
+        } else if (this.previewTabName && this._previewUrl) {
+            try {
+                const u = new URL(this._previewUrl);
+                this.previewTabName.textContent = u.hostname + u.pathname;
+            } catch {
+                this.previewTabName.textContent = this._previewUrl;
+            }
+        }
+    }
+
+    /** Push a screenshot image to the preview panel viewport */
+    pushPreviewImage(base64Data, mediaType, toolName) {
+        const src = `data:${mediaType};base64,${base64Data}`;
+        const now = new Date();
+
+        // Store in history
+        this.previewImages.push({
+            src, toolName, timestamp: now,
+            url: this._previewUrl || '', title: this._previewTitle || ''
+        });
+        this.previewCurrentIndex = this.previewImages.length - 1;
+
+        // Show the latest screenshot in the viewport
+        this._renderPreviewScreenshot(this.previewCurrentIndex);
+
+        // Update nav button states
+        this._updatePreviewNav();
+
+        // Auto-open panel on first screenshot (if closed)
+        if (!this.previewOpen) {
+            this.openPreviewPanel();
+        } else {
+            this.previewToggle.classList.remove('has-update');
+        }
+    }
+
+    /** Render the screenshot at the given index in the viewport */
+    _renderPreviewScreenshot(index) {
+        const item = this.previewImages[index];
+        if (!item) return;
+
+        // Clear viewport
+        const empty = document.getElementById('preview-empty');
+        if (empty) empty.remove();
+
+        // Find or create the img element
+        let img = this.previewViewport.querySelector('img.preview-screenshot');
+        if (!img) {
+            img = document.createElement('img');
+            img.className = 'preview-screenshot';
+            img.addEventListener('click', () => {
+                const current = this.previewImages[this.previewCurrentIndex];
+                if (current) this.showLightbox(current.src);
+            });
+            this.previewViewport.appendChild(img);
+        }
+        img.src = item.src;
+        img.alt = 'Screenshot';
+
+        // Update URL bar to match this screenshot's context
+        if (item.url) this.previewUrlText.textContent = item.url;
+        if (item.title) {
+            this.previewTabName.textContent = item.title;
+        }
+    }
+
+    /** Navigate back/forward through screenshots */
+    previewNavigate(delta) {
+        const newIndex = this.previewCurrentIndex + delta;
+        if (newIndex < 0 || newIndex >= this.previewImages.length) return;
+        this.previewCurrentIndex = newIndex;
+        this._renderPreviewScreenshot(newIndex);
+        this._updatePreviewNav();
+    }
+
+    /** Update back/forward button enabled states */
+    _updatePreviewNav() {
+        const back = document.getElementById('preview-back');
+        const fwd = document.getElementById('preview-forward');
+        if (back) back.disabled = this.previewCurrentIndex <= 0;
+        if (fwd) fwd.disabled = this.previewCurrentIndex >= this.previewImages.length - 1;
+    }
+
+    /** Push a log line to the preview console */
+    pushPreviewConsole(text, type = 'stdout') {
+        if (!this.previewConsoleBody) return;
+
+        // Remove "waiting" placeholder
+        const waiting = this.previewConsoleBody.querySelector('.preview-console-waiting');
+        if (waiting) waiting.remove();
+
+        const line = document.createElement('div');
+        line.className = `preview-console-line ${type}`;
+        line.dataset.type = type;
+        line.textContent = text;
+        this.previewConsoleBody.appendChild(line);
+        this.previewConsoleBody.scrollTop = this.previewConsoleBody.scrollHeight;
+    }
+
+    /** Filter console lines by type and search text */
+    filterPreviewConsole(filter = 'all', search = '') {
+        if (!this.previewConsoleBody) return;
+        const lines = this.previewConsoleBody.querySelectorAll('.preview-console-line');
+        const searchLower = search.toLowerCase();
+        lines.forEach(line => {
+            const typeMatch = filter === 'all' || line.dataset.type === filter;
+            const textMatch = !search || line.textContent.toLowerCase().includes(searchLower);
+            line.style.display = (typeMatch && textMatch) ? '' : 'none';
+        });
+    }
+
+    /** Clear preview panel (e.g. on new session) */
+    clearPreviewPanel() {
+        this.previewImages = [];
+        this.previewCurrentIndex = -1;
+        this._previewUrl = '';
+        this._previewTitle = '';
+
+        // Reset viewport
+        if (this.previewViewport) {
+            this.previewViewport.innerHTML = `
+                <div class="preview-empty" id="preview-empty">
+                    <div class="preview-empty-icon">
+                        <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                            <rect x="2" y="4" width="28" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                            <line x1="2" y1="10" x2="30" y2="10" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+                            <circle cx="6" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                            <circle cx="10" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                            <circle cx="14" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                            <rect x="8" y="26" width="16" height="2" rx="1" fill="currentColor" opacity="0.2"/>
+                        </svg>
+                    </div>
+                    <span>Waiting for output...</span>
+                </div>
+            `;
+        }
+
+        // Reset URL bar & tab
+        if (this.previewUrlText) this.previewUrlText.textContent = '';
+        if (this.previewTabName) this.previewTabName.textContent = 'Preview';
+
+        // Reset console
+        if (this.previewConsoleBody) {
+            this.previewConsoleBody.innerHTML = '<div class="preview-console-waiting">Waiting for output...</div>';
+        }
+
+        // Reset nav buttons
+        this._updatePreviewNav();
+    }
+
+    // ── View Switching ────────────────────────────────────────────
+
+    switchView(viewName) {
+        this.currentView = viewName;
+
+        // Hide all views
+        this.welcomeScreen.style.display = 'none';
+        this.chatContainer.style.display = 'none';
+        this.inputBar.style.display = 'none';
+        if (this.settingsView) this.settingsView.style.display = 'none';
+        if (this.scheduleView) this.scheduleView.style.display = 'none';
+        if (this.dispatchView) this.dispatchView.style.display = 'none';
+
+        // Show session list only in chat view
+        const sessionList = document.getElementById('session-list');
+        if (sessionList) sessionList.style.display = viewName === 'chat' ? '' : 'none';
+
+        // Show project filter only in chat view
+        const pf = document.getElementById('sidebar-project-filter');
+        if (pf) pf.style.display = viewName === 'chat' ? '' : 'none';
+
+        // Show search only in chat view
+        const search = document.querySelector('.sidebar-search');
+        if (search) search.style.display = viewName === 'chat' ? '' : 'none';
+
+        // Update nav active state
+        document.querySelectorAll('.sidebar-nav-item').forEach(el =>
+            el.classList.toggle('active', el.dataset.view === viewName));
+
+        // Show the requested view
+        switch (viewName) {
+            case 'chat':
+                // Restore chat or welcome based on whether a backend is connected
+                if (this.backends && Object.keys(this.backends).length > 0 && this.headerStatus.textContent) {
+                    this.chatContainer.style.display = 'flex';
+                    this.inputBar.style.display = 'flex';
+                } else {
+                    this.welcomeScreen.style.display = 'flex';
+                }
+                break;
+            case 'settings':
+                this.settingsView.style.display = 'flex';
+                if (!this.settings || !Object.keys(this.settings).length) {
+                    this.send({ command: 'get_settings' });
+                } else {
+                    this.renderSettingsView();
+                }
+                break;
+            case 'schedule':
+                this.scheduleView.style.display = 'flex';
+                this.requestScheduleList();
+                break;
+            case 'dispatch':
+                this.dispatchView.style.display = 'flex';
+                this.requestDispatchList();
+                break;
+        }
+    }
+
+    // ── Settings View ────────────────────────────────────────────
+
+    renderSettingsView() {
+        if (!this.settingsBody) return;
+
+        const sections = [
+            {
+                id: 'general', title: 'General', open: true,
+                fields: [
+                    { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
+                      options: [
+                          { value: 'bypass', label: 'Bypass permissions' },
+                          { value: 'ask', label: 'Always ask' },
+                          { value: 'auto-edit', label: 'Auto accept edits' },
+                          { value: 'plan', label: 'Plan mode' },
+                      ]
+                    },
+                    { key: 'theme', label: 'Theme', type: 'select',
+                      options: [{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light (coming soon)' }]
+                    },
+                ]
+            },
+            {
+                id: 'api_keys', title: 'API Keys',
+                fields: [
+                    { key: 'anthropic', label: 'Anthropic API Key', type: 'password' },
+                    { key: 'openai', label: 'OpenAI API Key', type: 'password' },
+                ]
+            },
+            {
+                id: 'cost_tracking', title: 'Cost Tracking',
+                fields: [
+                    { key: 'enabled', label: 'Enable cost tracking', type: 'toggle' },
+                    { key: 'budget_alert_usd', label: 'Daily budget alert ($)', type: 'number' },
+                ]
+            },
+            {
+                id: 'engram', title: 'Memory (Engram)',
+                fields: [
+                    { key: 'enabled', label: 'Enable memory', type: 'toggle' },
+                    { key: 'server_url', label: 'Engram server URL', type: 'text' },
+                ]
+            },
+            {
+                id: 'rag', title: 'Codebase Index (RAG)', custom: true },
+            {
+                id: 'hooks', title: 'Hooks', custom: true },
+            {
+                id: 'mcp_servers', title: 'MCP Servers', custom: true },
+        ];
+
+        this.settingsBody.innerHTML = '';
+
+        for (const section of sections) {
+            const data = this.settings[section.id] || {};
+            const el = document.createElement('div');
+            el.className = `settings-section${section.open ? ' open' : ''}`;
+
+            let bodyHtml = '';
+            if (section.id === 'rag') {
+                const rag = this.ragStats || {};
+                const indexed = rag.total_files > 0;
+                bodyHtml = `
+                    <div class="settings-row">
+                        <span class="settings-row-label">Status</span>
+                        <span style="color:${indexed ? 'var(--ok)' : 'var(--muted)'}">${indexed ? `${rag.total_files} files indexed (${rag.total_lines || 0} lines)` : 'Not indexed'}</span>
+                    </div>
+                `;
+                if (rag.languages) {
+                    const langs = Object.entries(rag.languages).sort((a,b) => b[1]-a[1]).slice(0,5);
+                    bodyHtml += `<div class="settings-row"><span class="settings-row-label">Languages</span><span style="color:var(--muted);font-size:12px">${langs.map(([l,c]) => `${l}: ${c}`).join(', ')}</span></div>`;
+                }
+                bodyHtml += `
+                    <div class="settings-row" style="margin-top:8px;gap:8px">
+                        <button class="btn-sm rag-index-btn" style="font-size:12px">${indexed ? 'Re-index' : 'Index Codebase'}</button>
+                        <button class="btn-sm rag-force-btn" style="font-size:12px">Force Re-index</button>
+                    </div>
+                    <div class="settings-row" style="margin-top:4px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Index enables semantic file search for better context in prompts</span></div>
+                `;
+            } else if (section.id === 'hooks') {
+                const hooks = Array.isArray(data) ? data : [];
+                if (hooks.length === 0) {
+                    bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No hooks configured</span></div>`;
+                } else {
+                    bodyHtml = hooks.map((h, i) => `
+                        <div class="settings-row">
+                            <span class="settings-row-label">${h.name || h.hook_type}: <code style="font-size:11px">${h.command}</code></span>
+                            <span style="color:${h.enabled ? 'var(--ok)' : 'var(--muted)'}">${h.enabled ? '●' : '○'}</span>
+                        </div>
+                    `).join('');
+                }
+                bodyHtml += `<div class="settings-row" style="margin-top:8px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Edit hooks in ~/.resonant/settings.json</span></div>`;
+            } else if (section.id === 'mcp_servers') {
+                const servers = typeof data === 'object' && !Array.isArray(data) ? Object.entries(data) : [];
+                if (servers.length === 0) {
+                    bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No MCP servers configured</span></div>`;
+                } else {
+                    bodyHtml = servers.map(([name, cfg]) => `
+                        <div class="settings-row">
+                            <span class="settings-row-label">${name}: <code style="font-size:11px">${cfg.command || ''}</code></span>
+                            <button class="btn-sm mcp-connect-btn" data-server="${name}" style="font-size:11px">Connect</button>
+                        </div>
+                    `).join('');
+                }
+                bodyHtml += `<div class="settings-row" style="margin-top:8px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Edit MCP servers in ~/.resonant/settings.json</span></div>`;
+            } else if (section.custom) {
+                bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">Configure in settings.json</span></div>`;
+            } else if (section.fields) {
+                for (const field of section.fields) {
+                    const val = data[field.key] ?? '';
+                    let input = '';
+                    if (field.type === 'select') {
+                        const opts = field.options.map(o =>
+                            `<option value="${o.value}" ${val === o.value ? 'selected' : ''}>${o.label}</option>`
+                        ).join('');
+                        input = `<select class="settings-select" data-section="${section.id}" data-key="${field.key}">${opts}</select>`;
+                    } else if (field.type === 'toggle') {
+                        const checked = val ? 'checked' : '';
+                        input = `<label style="cursor:pointer"><input type="checkbox" ${checked} data-section="${section.id}" data-key="${field.key}" style="cursor:pointer" /> ${val ? 'On' : 'Off'}</label>`;
+                    } else if (field.type === 'password') {
+                        input = `<input class="settings-input" type="password" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}" placeholder="••••" />`;
+                    } else if (field.type === 'number') {
+                        input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${section.id}" data-key="${field.key}" placeholder="None" style="width:80px" />`;
+                    } else {
+                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}" />`;
+                    }
+                    bodyHtml += `<div class="settings-row"><span class="settings-row-label">${field.label}</span><div class="settings-row-value">${input}</div></div>`;
+                }
+            }
+
+            el.innerHTML = `
+                <div class="settings-section-header">
+                    <span class="settings-section-title">${section.title}</span>
+                    <span class="settings-section-arrow">▶</span>
+                </div>
+                <div class="settings-section-body">${bodyHtml}</div>
+            `;
+
+            // Toggle open/close
+            el.querySelector('.settings-section-header').addEventListener('click', () => {
+                el.classList.toggle('open');
+            });
+
+            this.settingsBody.appendChild(el);
+        }
+
+        // Bind change events for settings inputs
+        this.settingsBody.querySelectorAll('select, input').forEach(input => {
+            const eventType = input.type === 'checkbox' ? 'change' : 'blur';
+            input.addEventListener(eventType, () => {
+                const section = input.dataset.section;
+                const key = input.dataset.key;
+                if (!section || !key) return;
+                let value;
+                if (input.type === 'checkbox') {
+                    value = input.checked;
+                    const label = input.parentElement;
+                    if (label) label.lastChild.textContent = value ? ' On' : ' Off';
+                } else if (input.type === 'number') {
+                    value = input.value ? Number(input.value) : null;
+                } else {
+                    value = input.value;
+                }
+                this.send({ command: 'update_settings', section, key, value });
+            });
+        });
+
+        // MCP connect buttons
+        this.settingsBody.querySelectorAll('.mcp-connect-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const serverName = btn.dataset.server;
+                this.send({ command: 'mcp_connect', name: serverName });
+                btn.textContent = 'Connecting...';
+                btn.disabled = true;
+            });
+        });
+
+        // RAG index buttons
+        const ragIndexBtn = this.settingsBody.querySelector('.rag-index-btn');
+        if (ragIndexBtn) {
+            ragIndexBtn.addEventListener('click', () => {
+                this.send({ command: 'rag_index' });
+                ragIndexBtn.textContent = 'Indexing...';
+                ragIndexBtn.disabled = true;
+            });
+        }
+        const ragForceBtn = this.settingsBody.querySelector('.rag-force-btn');
+        if (ragForceBtn) {
+            ragForceBtn.addEventListener('click', () => {
+                this.send({ command: 'rag_index', force: true });
+                ragForceBtn.textContent = 'Indexing...';
+                ragForceBtn.disabled = true;
+            });
+        }
+    }
+
+    // ── Keyboard Shortcuts ──────────────────────────────────────
+
+    _handleKeyboardShortcut(e) {
+        // Don't intercept when typing in inputs (except specific combos)
+        const tag = e.target.tagName.toLowerCase();
+        const inInput = tag === 'input' || tag === 'textarea' || tag === 'select';
+
+        // Ctrl+/ or Ctrl+? → shortcuts help
+        if ((e.ctrlKey || e.metaKey) && (e.key === '/' || e.key === '?')) {
+            e.preventDefault();
+            this.toggleShortcutsOverlay();
+            return;
+        }
+
+        // Escape → close overlays (already handled elsewhere, but also close shortcuts)
+        if (e.key === 'Escape') {
+            const so = document.getElementById('shortcuts-overlay');
+            if (so && so.style.display !== 'none') {
+                so.style.display = 'none';
+                e.preventDefault();
+                return;
+            }
+        }
+
+        // Don't intercept other shortcuts when in input
+        if (inInput) return;
+
+        // Ctrl+N → new session
+        if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+            e.preventDefault();
+            document.getElementById('new-session-btn')?.click();
+            return;
+        }
+
+        // Ctrl+, → settings
+        if ((e.ctrlKey || e.metaKey) && e.key === ',') {
+            e.preventDefault();
+            this.switchView('settings');
+            return;
+        }
+
+        // Ctrl+Shift+D → toggle sidebar
+        if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'D') {
+            e.preventDefault();
+            document.getElementById('sidebar-toggle')?.click();
+            return;
+        }
+
+        // 1-4 keys → switch views (when not in input)
+        if (e.altKey && e.key >= '1' && e.key <= '4') {
+            e.preventDefault();
+            const views = ['chat', 'schedule', 'dispatch', 'settings'];
+            this.switchView(views[parseInt(e.key) - 1]);
+            return;
+        }
+    }
+
+    toggleShortcutsOverlay() {
+        const overlay = document.getElementById('shortcuts-overlay');
+        if (!overlay) return;
+
+        const visible = overlay.style.display !== 'none';
+        overlay.style.display = visible ? 'none' : 'flex';
+
+        if (!visible) {
+            // Render shortcuts
+            const body = document.getElementById('shortcuts-body');
+            if (!body) return;
+            const shortcuts = [
+                { label: 'New session', keys: ['Ctrl', 'N'] },
+                { label: 'Settings', keys: ['Ctrl', ','] },
+                { label: 'Shortcuts help', keys: ['Ctrl', '/'] },
+                { label: 'Toggle sidebar', keys: ['Ctrl', 'Shift', 'D'] },
+                { label: 'Switch to Chat', keys: ['Alt', '1'] },
+                { label: 'Switch to Scheduled', keys: ['Alt', '2'] },
+                { label: 'Switch to Dispatch', keys: ['Alt', '3'] },
+                { label: 'Switch to Settings', keys: ['Alt', '4'] },
+                { label: 'Close overlay', keys: ['Escape'] },
+                { label: 'Send message', keys: ['Enter'] },
+                { label: 'New line in message', keys: ['Shift', 'Enter'] },
+            ];
+            body.innerHTML = shortcuts.map(s => `
+                <div class="shortcut-row">
+                    <span class="shortcut-label">${s.label}</span>
+                    <span class="shortcut-keys">${s.keys.map(k => `<span class="shortcut-key">${k}</span>`).join('')}</span>
+                </div>
+            `).join('');
+        }
+    }
+
+    // ── Status ──────────────────────────────────────────────────
+
+    handleStatus(event) {
+        this.lastModel = event.model || this.lastModel;
+        this.lastStats = event.stats || this.lastStats;
+
+        // Update header
+        if (this.lastModel) {
+            const parts = [this.lastModel];
+            if (this.lastStats) {
+                const inp = this.lastStats.input_tokens;
+                const out = this.lastStats.output_tokens;
+                if (inp && out) parts.push(`${inp}→${out} tok`);
+                const sessionCost = this.lastStats.session_cost_usd;
+                if (sessionCost) {
+                    parts.push(`$${Number(sessionCost).toFixed(4)}`);
+                }
+            }
+            this.tokenInfo.textContent = parts.join(' · ');
+        }
+    }
+
+    // ── Session End ─────────────────────────────────────────────
+
+    handleSessionEnd(event) {
+        this.removeThinking();
+
+        // Finalize CLI tool activity group
+        this.finalizeToolActivityGroup();
+
+        // Flush collapsed group
+        this.flushCollapsedGroup();
+
+        const totalElapsed = event.total_elapsed || 0;
+        const totalSteps = event.total_steps || 0;
+
+        if (totalSteps > 1) {
+            const el = document.createElement('div');
+            el.className = 'session-end';
+            el.innerHTML = `<span class="check">✓</span> Done · ${totalSteps} steps · ${totalElapsed.toFixed(1)}s`;
+            this.chatMessages.appendChild(el);
+        }
+
+        this.setRunning(false);
+        this.scrollToBottom();
+
+        // Refresh git status after session (files may have changed)
+        this.requestGitStatus();
+    }
+
+    // ── Subagents ───────────────────────────────────────────────
+
+    handleSubagentStart(event) {
+        this.removeThinking();
+        this.ensureStepRendered();
+
+        const agentType = event.agent_type || '';
+        const prompt = event.prompt || '';
+        const display = prompt.length > 100 ? prompt.slice(0, 97) + '...' : prompt;
+
+        const el = document.createElement('div');
+        el.className = 'subagent-block';
+        el.setAttribute('data-agent-type', agentType);
+
+        const header = document.createElement('div');
+        header.className = 'subagent-header';
+        header.innerHTML = `
+            <span class="subagent-toggle">▸</span>
+            <span class="subagent-label">Task</span>
+            <span style="color:var(--muted);font-size:12px">${this.escapeHtml(agentType)}</span>
+            <span class="subagent-prompt">"${this.escapeHtml(display)}"</span>
+        `;
+
+        const children = document.createElement('div');
+        children.className = 'subagent-children';
+
+        header.addEventListener('click', () => {
+            el.classList.toggle('expanded');
+            header.querySelector('.subagent-toggle').textContent =
+                el.classList.contains('expanded') ? '▾' : '▸';
+        });
+
+        el.appendChild(header);
+        el.appendChild(children);
+
+        // Append to current render target
+        const target = this.subagentContainer || this.chatMessages;
+        target.appendChild(el);
+
+        // Push nesting — child events render into this subagent's children div
+        this.subagentDepth++;
+        this.subagentContainer = children;
+
+        this.scrollToBottom();
+    }
+
+    handleSubagentEnd(event) {
+        const agentType = event.agent_type || '';
+        const steps = event.steps || 0;
+        const elapsed = event.elapsed || 0;
+
+        // Find the current subagent block and add result footer
+        if (this.subagentContainer) {
+            const block = this.subagentContainer.closest('.subagent-block');
+            if (block) {
+                const result = document.createElement('div');
+                result.className = 'subagent-result';
+                result.textContent = `✓ ${agentType} · ${steps} steps · ${elapsed.toFixed(1)}s`;
+                block.appendChild(result);
+
+                // If subagent had content, auto-expand it
+                if (this.subagentContainer.children.length > 0) {
+                    block.classList.add('expanded');
+                    const toggle = block.querySelector('.subagent-toggle');
+                    if (toggle) toggle.textContent = '▾';
+                }
+            }
+        }
+
+        // Pop nesting
+        this.subagentDepth = Math.max(0, this.subagentDepth - 1);
+        if (this.subagentDepth === 0) {
+            this.subagentContainer = null;
+        } else {
+            // Find parent subagent container
+            const parentBlock = this.subagentContainer?.closest('.subagent-block')?.parentElement?.closest('.subagent-block');
+            this.subagentContainer = parentBlock ? parentBlock.querySelector('.subagent-children') : null;
+        }
+    }
+
+    // ── Error ───────────────────────────────────────────────────
+
+    handleError(event) {
+        this.removeThinking();
+        this.ensureStepRendered();
+
+        const el = document.createElement('div');
+        el.className = 'error-block';
+        el.textContent = `✗ ${event.message || 'Unknown error'}`;
+        this.getRenderTarget().appendChild(el);
+        this.scrollToBottom();
+
+        // If it was a fatal-ish error, stop running
+        if (event.message && (
+            event.message.includes('step limit') ||
+            event.message.includes('No backend')
+        )) {
+            this.setRunning(false);
+        }
+    }
+
+    // ── Permission ──────────────────────────────────────────────
+
+    handleToolPermission(event) {
+        const name = event.name || '';
+        const args = event.arguments || {};
+        const review = event.review || null;
+
+        const titleEl = document.getElementById('permission-title');
+        const riskEl = document.getElementById('permission-risk');
+        const textEl = document.getElementById('permission-text');
+        const warningsEl = document.getElementById('permission-warnings');
+        const diffEl = document.getElementById('permission-diff');
+        const detailsEl = document.getElementById('permission-details');
+
+        // Reset
+        warningsEl.style.display = 'none';
+        warningsEl.innerHTML = '';
+        diffEl.style.display = 'none';
+        diffEl.innerHTML = '';
+        detailsEl.style.display = 'block';
+        riskEl.className = 'risk-badge';
+        riskEl.textContent = '';
+
+        if (review) {
+            // Rich diff review mode
+            titleEl.textContent = review.action === 'execute' ? 'Command Review' : 'Change Review';
+            textEl.textContent = review.summary || `Allow ${name}?`;
+
+            // Risk badge
+            if (review.risk_level) {
+                riskEl.textContent = review.risk_level;
+                riskEl.className = `risk-badge risk-${review.risk_level}`;
+            }
+
+            // Warnings
+            if (review.warnings && review.warnings.length > 0) {
+                warningsEl.style.display = 'block';
+                warningsEl.innerHTML = review.warnings
+                    .map(w => `<div class="review-warning">${this.escapeHtml(w)}</div>`)
+                    .join('');
+            }
+
+            // Bash command
+            if (name === 'bash' && review.command) {
+                diffEl.style.display = 'block';
+                diffEl.innerHTML = `
+                    <div class="review-command">
+                        <div class="review-command-label">Command</div>
+                        <div class="review-command-text">${this.escapeHtml(review.command)}</div>
+                    </div>
+                `;
+                detailsEl.style.display = 'none';
+            }
+            // File diff
+            else if (review.hunks && review.hunks.length > 0) {
+                diffEl.style.display = 'block';
+                let diffHtml = '';
+
+                if (review.file_path) {
+                    diffHtml += `<div class="diff-header">${this.escapeHtml(review.file_path)}</div>`;
+                }
+
+                for (const hunk of review.hunks) {
+                    const hunkHeader = `@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`;
+                    diffHtml += `<div class="diff-hunk-header">${this.escapeHtml(hunkHeader)}${hunk.context ? ' ' + this.escapeHtml(hunk.context) : ''}</div>`;
+
+                    for (const line of hunk.lines) {
+                        let cls = 'diff-context';
+                        if (line.startsWith('+')) cls = 'diff-add';
+                        else if (line.startsWith('-')) cls = 'diff-remove';
+                        diffHtml += `<div class="diff-line ${cls}">${this.escapeHtml(line)}</div>`;
+                    }
+                }
+
+                diffEl.innerHTML = diffHtml;
+                detailsEl.style.display = 'none'; // Hide raw JSON when we have a diff
+            }
+            // No diff, show raw args
+            else {
+                detailsEl.textContent = JSON.stringify(args, null, 2);
+            }
+        } else {
+            // Basic permission mode (no review data)
+            titleEl.textContent = 'Tool Approval';
+            textEl.textContent = `Allow ${name}?`;
+            detailsEl.textContent = JSON.stringify(args, null, 2);
+        }
+
+        document.getElementById('permission-dialog').style.display = 'flex';
+    }
+
+    // ── Choices ─────────────────────────────────────────────────
+
+    handleChoices(event) {
+        // For now, auto-select first choice
+        const options = event.options || [];
+        if (options.length > 0) {
+            this.send({ command: 'choice_select', selected: options[0] });
+        }
+    }
+
+    // ── DOM Helpers ─────────────────────────────────────────────
+
+    addUserMessage(text, images = []) {
+        const el = document.createElement('div');
+        el.className = 'msg-user';
+
+        let imagesHtml = '';
+        if (images && images.length > 0) {
+            const thumbs = images.map(img =>
+                `<img src="${img.dataUrl || `data:${img.media_type};base64,${img.data}`}"
+                      style="max-width:120px;max-height:80px;border-radius:4px;border:1px solid var(--border);cursor:pointer"
+                      onclick="app.showLightbox(this.src)"
+                      alt="Attached">`
+            ).join('');
+            imagesHtml = `<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">${thumbs}</div>`;
+        }
+
+        el.innerHTML = `<div class="msg-user-content">${imagesHtml}${this.escapeHtml(text)}</div>`;
+        this.chatMessages.appendChild(el);
+        this.scrollToBottom();
+    }
+
+    addAssistantMessage() {
+        const el = document.createElement('div');
+        el.className = 'msg-assistant';
+        el.innerHTML = `<div class="message-content streaming-cursor"></div>`;
+        this.getRenderTarget().appendChild(el);
+        return el;
+    }
+
+    addThinking() {
+        const el = document.createElement('div');
+        el.className = 'thinking-indicator';
+        el.setAttribute('data-thinking', 'true');
+        el.innerHTML = `
+            <div class="thinking-dots">
+                <span></span><span></span><span></span>
+            </div>
+            <span>thinking</span>
+        `;
+        this.getRenderTarget().appendChild(el);
+        this.scrollToBottom();
+    }
+
+    removeThinking() {
+        // Remove from current target or anywhere in chat
+        const target = this.getRenderTarget();
+        const el = target.querySelector('[data-thinking]') ||
+                   this.chatMessages.querySelector('[data-thinking]');
+        if (el) el.remove();
+    }
+
+    showStatusMessage(message) {
+        // Brief toast-like status message
+        const el = document.createElement('div');
+        el.style.cssText = 'text-align:center;color:var(--muted);font-size:12px;padding:8px;';
+        el.textContent = message;
+        this.chatMessages.appendChild(el);
+        this.scrollToBottom();
+    }
+
+    scrollToBottom() {
+        requestAnimationFrame(() => {
+            this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+        });
+    }
+
+    // ── Session Replay ──────────────────────────────────────────
+
+    replayDisplayEvents(events) {
+        /**
+         * Replay saved display events to rebuild the conversation UI.
+         * This handles user_message, text.done, tool.call, tool.result,
+         * step.start, step.end, session.end, subagent.start/end, and error events.
+         *
+         * We skip streaming deltas (text.delta, thinking.delta) — instead we
+         * use text.done to render the final text in one shot.
+         */
+
+        // Reset all rendering state
+        this.streamBuffer = '';
+        this.isStreaming = false;
+        this.currentMessageEl = null;
+        this.currentStepEvent = null;
+        this.stepToolCalls = [];
+        this.stepToolResults = [];
+        this.stepIsInlineOnly = true;
+        this.stepRendered = false;
+        this.collapsedGroup = [];
+        this.subagentDepth = 0;
+        this.subagentContainer = null;
+
+        // Skip these event types during replay (streaming deltas, markers)
+        const SKIP_REPLAY = new Set([
+            'text.delta', 'thinking.delta', 'session.start', 'status',
+            'init', 'status_msg', 'sessions_updated',
+        ]);
+
+        for (const event of events) {
+            const type = event.event;
+
+            // Skip ephemeral events
+            if (SKIP_REPLAY.has(type)) continue;
+
+            if (type === 'user_message') {
+                // Replay user message bubble
+                this.addUserMessage(event.text);
+                continue;
+            }
+
+            // For text.done — render the full text as a completed message
+            if (type === 'text.done') {
+                this.handleTextDoneReplay(event);
+                continue;
+            }
+
+            // Step start/end, tool call/result, subagent — use normal handlers
+            if (type === 'step.start') {
+                this.handleStepStart(event);
+            } else if (type === 'tool.call') {
+                this.handleToolCall(event);
+            } else if (type === 'tool.result') {
+                this.handleToolResult(event);
+            } else if (type === 'step.end') {
+                this.handleStepEnd(event);
+            } else if (type === 'session.end') {
+                this.handleSessionEnd(event);
+            } else if (type === 'subagent.start') {
+                this.handleSubagentStart(event);
+            } else if (type === 'subagent.end') {
+                this.handleSubagentEnd(event);
+            } else if (type === 'error') {
+                this.handleError(event);
+            }
+        }
+
+        // Flush any pending collapsed groups
+        this.flushCollapsedGroup();
+
+        // Ensure we're not in a running state after replay
+        this.setRunning(false);
+
+        // Detect interrupted session — if last event isn't session.end,
+        // the model was cut off mid-response
+        if (events.length > 0) {
+            const lastEvent = events[events.length - 1];
+            const lastType = lastEvent.event;
+            if (lastType !== 'session.end' && lastType !== 'error') {
+                this.showResumeButton();
+            }
+        }
+
+        // Scroll to bottom
+        this.scrollToBottom();
+    }
+
+    showResumeButton() {
+        const el = document.createElement('div');
+        el.className = 'resume-banner';
+        el.innerHTML = `
+            <span class="resume-text">Session was interrupted</span>
+            <button class="resume-btn">Resume</button>
+        `;
+        el.querySelector('.resume-btn').addEventListener('click', () => {
+            el.remove();
+            this.userInput.value = 'Continue where you left off.';
+            this.sendMessage();
+        });
+        this.chatMessages.appendChild(el);
+    }
+
+    handleTextDoneReplay(event) {
+        /**
+         * Render a completed text block (used during replay instead of
+         * streaming delta-by-delta).
+         */
+        const text = event.text || '';
+        if (!text.trim()) return;
+
+        // Ensure the step is rendered if needed
+        this.ensureStepRendered();
+
+        // Create a message element
+        const el = document.createElement('div');
+        el.className = 'message assistant';
+
+        // Render markdown
+        let html = text;
+        if (typeof marked !== 'undefined') {
+            html = marked.parse(text);
+            if (typeof DOMPurify !== 'undefined') {
+                html = DOMPurify.sanitize(html);
+            }
+        }
+
+        el.innerHTML = `<div class="message-content markdown-body">${html}</div>`;
+
+        // Syntax highlighting on code blocks
+        el.querySelectorAll('pre code').forEach((block) => {
+            if (typeof hljs !== 'undefined') hljs.highlightElement(block);
+        });
+
+        const container = this.subagentContainer || this.chatMessages;
+        container.appendChild(el);
+    }
+
+    // ── Session List ─────────────────────────────────────────────
+
+    renderSessionList() {
+        if (!this.sessionList) return;
+        this.sessionList.innerHTML = '';
+
+        if (this.sessions.length === 0) {
+            this.sessionList.innerHTML = '<div class="session-empty">No previous sessions</div>';
+            return;
+        }
+
+        for (const session of this.sessions) {
+            const el = document.createElement('div');
+            el.className = 'session-item' + (session.id === this.currentSessionId ? ' active' : '');
+
+            const date = new Date(session.updated_at * 1000);
+            const timeStr = this.formatRelativeTime(date);
+
+            // Show project name when viewing all projects or a different project
+            const showProject = this.projectFilter === 'all' || (this.projectFilter && this.projectFilter !== this.currentCwd);
+            const projectTag = showProject && session.project_name
+                ? `<span class="session-project-tag">${this.escapeHtml(session.project_name)}</span> · `
+                : '';
+
+            el.innerHTML = `
+                <div class="session-item-title">${this.escapeHtml(session.title || 'New session')}</div>
+                <div class="session-item-date">${projectTag}${session.model || ''} · ${timeStr}</div>
+                <div class="session-item-actions">
+                    <button class="session-menu-btn" title="More actions">&#8943;</button>
+                </div>
+            `;
+
+            // Click to switch session (include project_path for cross-project sessions)
+            el.addEventListener('click', (e) => {
+                if (e.target.closest('.session-menu-btn')) return; // handled below
+                if (session.id !== this.currentSessionId) {
+                    const msg = { command: 'switch_session', session_id: session.id };
+                    if (session.project_path) msg.project_path = session.project_path;
+                    this.send(msg);
+                }
+            });
+
+            // Context menu button (three dots)
+            el.querySelector('.session-menu-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.showSessionContextMenu(e, session);
+            });
+
+            // Right-click context menu
+            el.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                this.showSessionContextMenu(e, session);
+            });
+
+            this.sessionList.appendChild(el);
+        }
+    }
+
+    // ── Project Filter ──────────────────────────────────────────
+
+    buildProjectFilter() {
+        const selected = document.getElementById('project-filter-selected');
+        const dropdown = document.getElementById('project-filter-dropdown');
+        const searchInput = document.getElementById('pf-search');
+        const optionsContainer = document.getElementById('pf-options');
+        if (!selected || !dropdown) return;
+
+        // Build unique project list from allSessions
+        const projectMap = new Map();
+        for (const s of this.allSessions) {
+            const path = (s.project_path || '').replace(/\\/g, '/');
+            const name = s.project_name || path.split('/').pop() || path;
+            if (path && !projectMap.has(path)) {
+                projectMap.set(path, { name, path, count: 0 });
+            }
+            if (projectMap.has(path)) {
+                projectMap.get(path).count++;
+            }
+        }
+        this._projectOptions = projectMap;
+
+        // Set the selected label
+        this._updateFilterLabel();
+
+        // Toggle dropdown
+        selected.onclick = () => {
+            const isOpen = dropdown.style.display !== 'none';
+            dropdown.style.display = isOpen ? 'none' : 'flex';
+            document.getElementById('sidebar-project-filter').classList.toggle('open', !isOpen);
+            if (!isOpen) {
+                searchInput.value = '';
+                this._renderProjectOptions('');
+                searchInput.focus();
+            }
+        };
+
+        // Search filtering
+        searchInput.oninput = () => {
+            this._renderProjectOptions(searchInput.value.trim().toLowerCase());
+        };
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('#sidebar-project-filter')) {
+                dropdown.style.display = 'none';
+                document.getElementById('sidebar-project-filter')?.classList.remove('open');
+            }
+        });
+
+        this._renderProjectOptions('');
+    }
+
+    _updateFilterLabel() {
+        const nameEl = document.getElementById('pf-selected-name');
+        if (!nameEl) return;
+        if (this.projectFilter === 'all') {
+            nameEl.textContent = 'All Projects';
+        } else if (this.projectFilter) {
+            const name = this.projectFilter.replace(/\\/g, '/').split('/').pop();
+            nameEl.textContent = name;
+        } else {
+            const name = (this.currentCwd || '').split('/').pop() || 'Current Project';
+            nameEl.textContent = name;
+        }
+    }
+
+    _renderProjectOptions(filter) {
+        const container = document.getElementById('pf-options');
+        if (!container) return;
+        container.innerHTML = '';
+
+        const currentPath = (this.currentCwd || '').replace(/\\/g, '/');
+
+        // "All Projects" option (always first)
+        if (!filter || 'all projects'.includes(filter)) {
+            const opt = document.createElement('div');
+            opt.className = 'pf-option' + (this.projectFilter === 'all' ? ' active' : '');
+            opt.innerHTML = `<span class="pf-opt-name">All Projects</span><span class="pf-opt-count">${this.allSessions.length}</span>`;
+            opt.addEventListener('click', () => this._selectProjectFilter('all'));
+            container.appendChild(opt);
+        }
+
+        // "Current Project" option
+        const currentName = currentPath.split('/').pop() || 'Current';
+        if (!filter || currentName.toLowerCase().includes(filter)) {
+            const opt = document.createElement('div');
+            opt.className = 'pf-option' + (!this.projectFilter ? ' active' : '');
+            opt.innerHTML = `<span class="pf-opt-name">${this.escapeHtml(currentName)}</span><span class="pf-opt-count">${this.sessions.length}</span>`;
+            opt.addEventListener('click', () => this._selectProjectFilter(null));
+            container.appendChild(opt);
+        }
+
+        // Individual projects
+        for (const [path, info] of this._projectOptions || []) {
+            const normPath = path.replace(/\\/g, '/');
+            if (normPath === currentPath) continue; // already shown as "Current"
+            if (filter && !info.name.toLowerCase().includes(filter)) continue;
+
+            const opt = document.createElement('div');
+            opt.className = 'pf-option' + (this.projectFilter === path ? ' active' : '');
+            opt.innerHTML = `<span class="pf-opt-name">${this.escapeHtml(info.name)}</span><span class="pf-opt-count">${info.count}</span>`;
+            opt.addEventListener('click', () => this._selectProjectFilter(path));
+            container.appendChild(opt);
+        }
+    }
+
+    _selectProjectFilter(value) {
+        this.projectFilter = value;
+        this._updateFilterLabel();
+        this.renderFilteredSessions();
+        // Close dropdown
+        const dropdown = document.getElementById('project-filter-dropdown');
+        if (dropdown) dropdown.style.display = 'none';
+        document.getElementById('sidebar-project-filter')?.classList.remove('open');
+    }
+
+    renderFilteredSessions() {
+        let sessionsToShow;
+        if (this.projectFilter === 'all') {
+            sessionsToShow = this.allSessions;
+        } else if (this.projectFilter) {
+            // Specific project path
+            const norm = this.projectFilter.replace(/\\/g, '/').toLowerCase();
+            sessionsToShow = this.allSessions.filter(s =>
+                (s.project_path || '').replace(/\\/g, '/').toLowerCase() === norm
+            );
+        } else {
+            // Current project (default)
+            sessionsToShow = this.sessions;
+        }
+
+        // Temporarily swap sessions and render
+        const saved = this.sessions;
+        this.sessions = sessionsToShow;
+        this.renderSessionList();
+        this.sessions = saved;
+    }
+
+    showSessionContextMenu(e, session) {
+        // Remove any existing menu
+        document.querySelector('.session-context-menu')?.remove();
+
+        const menu = document.createElement('div');
+        menu.className = 'session-context-menu';
+
+        menu.innerHTML = `
+            <div class="ctx-item" data-action="rename">&#9998; Rename</div>
+            <div class="ctx-separator"></div>
+            <div class="ctx-item danger" data-action="delete">&#128465; Delete</div>
+        `;
+
+        // Position near the click
+        menu.style.left = `${e.clientX}px`;
+        menu.style.top = `${e.clientY}px`;
+
+        // Handle actions
+        menu.addEventListener('click', (ev) => {
+            const action = ev.target.closest('.ctx-item')?.dataset.action;
+            if (action === 'delete') {
+                this.send({ command: 'delete_session', session_id: session.id });
+            } else if (action === 'rename') {
+                const newTitle = prompt('Rename session:', session.title);
+                if (newTitle && newTitle.trim()) {
+                    this.send({ command: 'rename_session', session_id: session.id, title: newTitle.trim() });
+                }
+            }
+            menu.remove();
+        });
+
+        document.body.appendChild(menu);
+
+        // Keep menu in viewport
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) {
+            menu.style.left = `${window.innerWidth - rect.width - 8}px`;
+        }
+        if (rect.bottom > window.innerHeight) {
+            menu.style.top = `${window.innerHeight - rect.height - 8}px`;
+        }
+    }
+
+    formatRelativeTime(date) {
+        const now = new Date();
+        const diffMs = now - date;
+        const diffMins = Math.floor(diffMs / 60000);
+        if (diffMins < 1) return 'just now';
+        if (diffMins < 60) return `${diffMins}m ago`;
+        const diffHours = Math.floor(diffMins / 60);
+        if (diffHours < 24) return `${diffHours}h ago`;
+        const diffDays = Math.floor(diffHours / 24);
+        if (diffDays < 7) return `${diffDays}d ago`;
+        return date.toLocaleDateString();
+    }
+
+    // ── New Session Setup ──────────────────────────────────────
+
+    showNewSessionSetup() {
+        // Show welcome screen with project picker
+        this.welcomeScreen.style.display = 'flex';
+        this.chatContainer.style.display = 'none';
+        this.inputBar.style.display = 'none';
+        // Hide other views
+        if (this.settingsView) this.settingsView.style.display = 'none';
+        if (this.scheduleView) this.scheduleView.style.display = 'none';
+        if (this.dispatchView) this.dispatchView.style.display = 'none';
+        // Update nav
+        this.currentView = 'chat';
+        document.querySelectorAll('.sidebar-nav-item').forEach(el =>
+            el.classList.toggle('active', el.dataset.view === 'chat'));
+
+        // Clear and close preview panel for new session
+        this.clearPreviewPanel();
+        this.closePreviewPanel();
+
+        const projectStep = document.getElementById('project-step');
+        const backendStep = document.getElementById('backend-step');
+        projectStep.style.display = 'block';
+        backendStep.style.display = 'none';
+
+        const input = document.getElementById('welcome-folder-input');
+        input.value = this.currentCwd || '';
+
+        // Bind folder open
+        const openBtn = document.getElementById('welcome-folder-open');
+        openBtn.onclick = () => {
+            const path = input.value.trim();
+            if (path) this.selectProjectFolder(path);
+        };
+
+        // Bind native folder browse button
+        const browseBtn = document.getElementById('welcome-folder-browse');
+        browseBtn.onclick = () => {
+            this.send({ command: 'folder_dialog' });
+        };
+
+        input.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                const path = input.value.trim();
+                if (path) this.selectProjectFolder(path);
+            }
+        };
+
+        // Dir browsing on input change
+        input.oninput = () => {
+            const val = input.value.trim();
+            if (val.length > 2) {
+                this._dirBrowserTarget = 'welcome-dir-browser';
+                this.send({ command: 'list_dirs', path: val });
+            }
+        };
+
+        // Render recent projects
+        const recentSection = document.getElementById('welcome-recent-projects');
+        recentSection.innerHTML = '';
+
+        if (this.recentProjects.length > 0) {
+            recentSection.innerHTML = '<div class="recent-projects-label">Recent</div>';
+            for (const proj of this.recentProjects) {
+                const item = document.createElement('div');
+                item.className = 'recent-project-item';
+
+                // Check if this is the current project
+                const isCurrent = proj.path.replace(/\\/g, '/') === (this.currentCwd || '').replace(/\\/g, '/');
+
+                item.innerHTML = `
+                    <span class="proj-icon">&#128193;</span>
+                    <div style="flex:1;min-width:0">
+                        <div class="proj-name">${this.escapeHtml(proj.name || '')}</div>
+                        <div class="proj-path">${this.escapeHtml(proj.path || '')}</div>
+                    </div>
+                    ${isCurrent ? '<span style="color:var(--ok)">&#10003;</span>' : ''}
+                `;
+                item.addEventListener('click', () => {
+                    this.selectProjectFolder(proj.path);
+                });
+                recentSection.appendChild(item);
+            }
+
+            // "Choose a different folder" option — opens native folder picker
+            const chooseItem = document.createElement('div');
+            chooseItem.className = 'recent-project-item';
+            chooseItem.innerHTML = `
+                <span class="proj-icon" style="font-size:12px">&#10133;</span>
+                <div style="flex:1"><div class="proj-name">Choose a different folder</div></div>
+            `;
+            chooseItem.addEventListener('click', () => {
+                this.send({ command: 'folder_dialog' });
+            });
+            recentSection.appendChild(chooseItem);
+        }
+
+        input.focus();
+    }
+
+    selectProjectFolder(path) {
+        // Set the project and move to backend selection step
+        this.send({ command: 'set_project', path });
+
+        // Update UI immediately
+        const short = path.replace(/\\/g, '/').split('/').pop();
+        this.currentCwd = path.replace(/\\/g, '/');
+        this.headerProject.textContent = short;
+        this.sidebarProjectName.textContent = short;
+        this.sidebarCwd.textContent = path;
+        // Reset filter to current project
+        this.projectFilter = null;
+        this._updateFilterLabel();
+
+        // Show backend step
+        const projectStep = document.getElementById('project-step');
+        const backendStep = document.getElementById('backend-step');
+        projectStep.style.display = 'none';
+        backendStep.style.display = 'block';
+
+        // Show project badge (clickable to go back)
+        const badge = document.getElementById('setup-project-badge');
+        badge.innerHTML = `
+            <span class="badge-icon">&#128193;</span>
+            ${this.escapeHtml(short)}
+            <span class="badge-change">change</span>
+        `;
+        badge.onclick = () => {
+            projectStep.style.display = 'block';
+            backendStep.style.display = 'none';
+        };
+
+        // Populate backend cards with what we have (will be refreshed by init event)
+        const backends = this.backends || {};
+        if (Object.keys(backends).length > 0) {
+            this.showBackendSelector(backends);
+        } else {
+            // Show scanning message — init event will refresh
+            const label = document.querySelector('.backend-label');
+            if (label) label.textContent = 'Scanning backends...';
+        }
+    }
+
+    handleDirList(event) {
+        const browserId = this._dirBrowserTarget || 'welcome-dir-browser';
+        const browser = document.getElementById(browserId);
+        if (!browser) return;
+
+        const dirs = event.dirs || [];
+        if (dirs.length === 0) {
+            browser.style.display = 'none';
+            return;
+        }
+
+        browser.style.display = 'block';
+        browser.innerHTML = '';
+
+        for (const dir of dirs) {
+            const item = document.createElement('div');
+            item.className = 'dir-item';
+            const name = dir.split(/[/\\]/).filter(Boolean).pop() || dir;
+            item.innerHTML = `<span class="dir-icon">&#128193;</span> ${this.escapeHtml(name)}`;
+            item.addEventListener('click', () => {
+                // Update the folder input
+                const input = document.getElementById('welcome-folder-input');
+                if (input) {
+                    input.value = dir;
+                    this._dirBrowserTarget = browserId;
+                    this.send({ command: 'list_dirs', path: dir });
+                }
+            });
+            item.addEventListener('dblclick', () => {
+                this.selectProjectFolder(dir);
+            });
+            browser.appendChild(item);
+        }
+    }
+
+    escapeHtml(str) {
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    shortenPath(path) {
+        const p = path.replace(/\\/g, '/');
+        if (p.length > 50) {
+            const parts = p.split('/');
+            return '…/' + parts.slice(-2).join('/');
+        }
+        return p;
+    }
+
+    // ── Git Integration ─────────────────────────────────────────
+
+    requestGitStatus() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'git_status' }));
+        }
+    }
+
+    handleGitStatus(data) {
+        this.gitData = data;
+        if (!data || !data.is_repo) {
+            this.gitBadge.style.display = 'none';
+            return;
+        }
+        this.gitBadge.style.display = 'flex';
+        this.gitBranchName.textContent = data.branch || 'unknown';
+        if (data.change_count > 0) {
+            this.gitChangesCount.style.display = 'flex';
+            this.gitChangesCount.textContent = data.change_count;
+        } else {
+            this.gitChangesCount.style.display = 'none';
+        }
+    }
+
+    handleGitResult(event) {
+        // Handle results from git_quick actions
+        const data = event.data || {};
+        if (this.gitPopoverOpen) {
+            this.requestGitStatus(); // Refresh after actions
+        }
+    }
+
+    toggleGitPopover() {
+        if (this.gitPopoverOpen) {
+            const existing = document.querySelector('.git-popover');
+            if (existing) existing.remove();
+            this.gitPopoverOpen = false;
+            return;
+        }
+        if (!this.gitData || !this.gitData.is_repo) return;
+
+        this.gitPopoverOpen = true;
+        const popover = document.createElement('div');
+        popover.className = 'git-popover';
+
+        const data = this.gitData;
+        popover.innerHTML = `
+            <div class="git-popover-header">
+                <span>${data.branch}</span>
+                <button class="icon-btn git-popover-close">&times;</button>
+            </div>
+            <div class="git-popover-tabs">
+                <button class="git-popover-tab active" data-tab="changes">Changes (${data.changes.length})</button>
+                <button class="git-popover-tab" data-tab="commits">Commits</button>
+            </div>
+            <div class="git-popover-body" id="git-popover-body"></div>
+        `;
+
+        document.getElementById('main').appendChild(popover);
+
+        // Close button
+        popover.querySelector('.git-popover-close').addEventListener('click', () => this.toggleGitPopover());
+
+        // Tab switching
+        popover.querySelectorAll('.git-popover-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                popover.querySelectorAll('.git-popover-tab').forEach(t => t.classList.remove('active'));
+                tab.classList.add('active');
+                this._renderGitPopoverTab(tab.dataset.tab);
+            });
+        });
+
+        // Close on click outside
+        setTimeout(() => {
+            const handler = (e) => {
+                if (!popover.contains(e.target) && !this.gitBadge.contains(e.target)) {
+                    this.toggleGitPopover();
+                    document.removeEventListener('click', handler);
+                }
+            };
+            document.addEventListener('click', handler);
+        }, 100);
+
+        this._renderGitPopoverTab('changes');
+    }
+
+    _renderGitPopoverTab(tab) {
+        const body = document.getElementById('git-popover-body');
+        if (!body || !this.gitData) return;
+
+        if (tab === 'changes') {
+            if (this.gitData.changes.length === 0) {
+                body.innerHTML = '<div style="padding:16px;color:var(--muted);text-align:center">No changes</div>';
+                return;
+            }
+            body.innerHTML = this.gitData.changes.map(c => {
+                let statusClass = 'modified';
+                if (c.status === '??' || c.status === 'A') statusClass = 'added';
+                if (c.status === 'D') statusClass = 'deleted';
+                if (c.status === '??') statusClass = 'untracked';
+                return `<div class="git-file-item">
+                    <span class="git-status-code ${statusClass}">${c.status}</span>
+                    <span>${c.file}</span>
+                </div>`;
+            }).join('');
+        } else {
+            body.innerHTML = (this.gitData.commits || []).map(c =>
+                `<div class="git-commit-item">
+                    <span class="git-commit-hash">${c.hash}</span>
+                    <span class="git-commit-msg">${c.message}</span>
+                </div>`
+            ).join('');
+        }
+    }
+
+    // ── RESONANT.md Badge ───────────────────────────────────────
+
+    updateResonantMdBadge() {
+        if (this.resonantMd && this.resonantMd.exists) {
+            this.resonantMdBadge.style.display = 'flex';
+        } else {
+            this.resonantMdBadge.style.display = 'none';
+        }
+    }
+
+    // ── Context Compression ─────────────────────────────────────
+
+    handleCompression(event) {
+        const el = document.createElement('div');
+        el.className = 'compression-banner';
+        el.innerHTML = `
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 4h8M5 7h4M3 10h8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+            <span>Context compressed: ${event.old_entries} → ${event.new_entries} entries (~${Math.round((event.old_tokens - event.new_tokens)/1000)}k tokens saved)</span>
+        `;
+        this.chatMessages.appendChild(el);
+        this.scrollToBottom();
+    }
+
+    // ── Dispatch (Background Tasks) ─────────────────────────
+
+    requestDispatchList() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'dispatch_list' }));
+        }
+    }
+
+    submitDispatch(name, prompt) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'dispatch', name, prompt }));
+        }
+    }
+
+    renderDispatchList(tasks) {
+        const body = document.getElementById('dispatch-body');
+        if (!body) return;
+
+        if (tasks.length === 0) {
+            body.innerHTML = `
+                <div class="feature-empty">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M16 4v16M10 14l6 6 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 22v4h24v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span>No dispatched tasks yet.</span>
+                </div>`;
+            return;
+        }
+
+        body.innerHTML = tasks.map(t => {
+            const statusClass = t.status === 'completed' ? 'ok' : t.status === 'failed' ? 'err' : t.status === 'running' ? 'brand' : 'muted';
+            const statusIcon = t.status === 'completed' ? '✓' : t.status === 'failed' ? '✗' : t.status === 'running' ? '⟳' : '○';
+            return `<div class="dispatch-item" data-task-id="${t.id}">
+                <div class="dispatch-item-header">
+                    <span class="dispatch-status" style="color:var(--${statusClass})">${statusIcon}</span>
+                    <span class="dispatch-name">${t.name}</span>
+                    <span class="dispatch-meta">${t.model || ''} · ${t.steps} steps · ${t.elapsed}s</span>
+                </div>
+                <div class="dispatch-prompt">${t.prompt.substring(0, 100)}${t.prompt.length > 100 ? '...' : ''}</div>
+                ${t.error ? `<div class="dispatch-error">${t.error}</div>` : ''}
+            </div>`;
+        }).join('');
+
+        body.querySelectorAll('.dispatch-item').forEach(el => {
+            el.addEventListener('click', () => {
+                const taskId = el.dataset.taskId;
+                this.ws.send(JSON.stringify({ command: 'dispatch_result', task_id: taskId }));
+            });
+        });
+    }
+
+    renderDispatchResult(task) {
+        const body = document.getElementById('dispatch-body');
+        if (!body || !task) return;
+
+        const resultHtml = task.result ? this.renderMarkdown(task.result) : '<em>No output</em>';
+        body.innerHTML = `
+            <div class="dispatch-result-view">
+                <button class="btn-sm dispatch-back-btn">&larr; Back to list</button>
+                <h3>${task.name}</h3>
+                <div class="dispatch-result-meta">${task.status} · ${task.model} · ${task.steps} steps · ${task.elapsed}s</div>
+                <div class="dispatch-result-content markdown-body">${resultHtml}</div>
+            </div>
+        `;
+        body.querySelector('.dispatch-back-btn')?.addEventListener('click', () => this.requestDispatchList());
+    }
+
+    showDispatchDialog() {
+        const body = document.getElementById('dispatch-body');
+        if (!body) return;
+
+        body.innerHTML = `
+            <div class="dispatch-form">
+                <div class="settings-row"><label>Name</label>
+                    <input type="text" class="settings-input" id="dispatch-name" placeholder="Task name (optional)" /></div>
+                <div class="settings-row"><label>Prompt</label>
+                    <textarea class="settings-input" id="dispatch-prompt" rows="4" placeholder="What should the agent do?"></textarea></div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                    <button class="btn-primary btn-sm" id="dispatch-submit-btn">Submit</button>
+                    <button class="btn-sm" id="dispatch-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('dispatch-submit-btn')?.addEventListener('click', () => {
+            const name = document.getElementById('dispatch-name')?.value || '';
+            const prompt = document.getElementById('dispatch-prompt')?.value || '';
+            if (prompt.trim()) {
+                this.submitDispatch(name, prompt);
+                this.requestDispatchList();
+            }
+        });
+        document.getElementById('dispatch-cancel-btn')?.addEventListener('click', () => this.requestDispatchList());
+    }
+
+    // ── Scheduled Tasks ─────────────────────────────────────
+
+    requestScheduleList() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'schedule_list' }));
+        }
+    }
+
+    renderScheduleList(schedules) {
+        const body = document.getElementById('schedule-body');
+        if (!body) return;
+
+        if (schedules.length === 0) {
+            body.innerHTML = `
+                <div class="feature-empty">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="1.5"/><path d="M16 8v9l6 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>No scheduled tasks yet.</span>
+                </div>`;
+            return;
+        }
+
+        body.innerHTML = schedules.map(s => {
+            const statusDot = s.enabled ? '<span style="color:var(--ok)">●</span>' : '<span style="color:var(--muted)">○</span>';
+            return `<div class="schedule-item" data-schedule-id="${s.id}">
+                <div class="dispatch-item-header">
+                    ${statusDot}
+                    <span class="dispatch-name">${s.name}</span>
+                    <span class="dispatch-meta">${s.schedule} · ${s.run_count} runs</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" ${s.enabled ? 'checked' : ''} data-id="${s.id}" class="schedule-toggle" />
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="dispatch-prompt">${s.prompt.substring(0, 100)}${s.prompt.length > 100 ? '...' : ''}</div>
+                ${s.next_run ? `<div class="schedule-next">Next: ${new Date(s.next_run).toLocaleTimeString()}</div>` : ''}
+            </div>`;
+        }).join('');
+
+        body.querySelectorAll('.schedule-toggle').forEach(toggle => {
+            toggle.addEventListener('change', (e) => {
+                const id = e.target.dataset.id;
+                this.ws.send(JSON.stringify({ command: 'schedule_update', task_id: id, enabled: e.target.checked }));
+            });
+        });
+    }
+
+    showScheduleDialog() {
+        const body = document.getElementById('schedule-body');
+        if (!body) return;
+
+        body.innerHTML = `
+            <div class="dispatch-form">
+                <div class="settings-row"><label>Name</label>
+                    <input type="text" class="settings-input" id="schedule-name" placeholder="Task name" /></div>
+                <div class="settings-row"><label>Prompt</label>
+                    <textarea class="settings-input" id="schedule-prompt" rows="4" placeholder="What should the agent do?"></textarea></div>
+                <div class="settings-row"><label>Schedule</label>
+                    <input type="text" class="settings-input" id="schedule-interval" placeholder="every:5m, every:1h, every:30s" /></div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                    <button class="btn-primary btn-sm" id="schedule-submit-btn">Create</button>
+                    <button class="btn-sm" id="schedule-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('schedule-submit-btn')?.addEventListener('click', () => {
+            const name = document.getElementById('schedule-name')?.value || '';
+            const prompt = document.getElementById('schedule-prompt')?.value || '';
+            const schedule = document.getElementById('schedule-interval')?.value || '';
+            if (prompt.trim() && schedule.trim()) {
+                this.ws.send(JSON.stringify({ command: 'schedule_create', name, prompt, schedule }));
+            }
+        });
+        document.getElementById('schedule-cancel-btn')?.addEventListener('click', () => this.requestScheduleList());
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════
+//  Initialize
+// ═══════════════════════════════════════════════════════════════════
+
+document.addEventListener('DOMContentLoaded', () => {
+    window.app = new ResonantApp();
+});

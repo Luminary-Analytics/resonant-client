@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.1.0"
-description = "Agentic coding TUI/GUI client for the Resonant Cognitive Engine"
+version = "0.2.0"
+description = "Agentic coding client with client/server architecture for the Resonant Cognitive Engine"
 readme = "README.md"
 license = {text = "Proprietary"}
 requires-python = ">=3.11"
@@ -20,14 +20,80 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+claude = ["anthropic>=0.40.0"]
+openai = ["openai>=1.50.0"]
+server = ["websockets>=12.0"]
+browser = ["playwright>=1.40.0"]
+desktop = ["pyautogui>=0.9.54", "mss>=9.0.0", "Pillow>=10.0.0"]
+gui = [
+    "starlette>=0.40.0",
+    "uvicorn>=0.30.0",
+    "jinja2>=3.1.0",
+    "pywebview>=5.0",
+]
+all = [
+    "anthropic>=0.40.0",
+    "openai>=1.50.0",
+    "websockets>=12.0",
+    "playwright>=1.40.0",
+    "pyautogui>=0.9.54",
+    "mss>=9.0.0",
+    "Pillow>=10.0.0",
+    "starlette>=0.40.0",
+    "uvicorn>=0.30.0",
+    "jinja2>=3.1.0",
+    "pywebview>=5.0",
+]
 dev = [
     "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "pytest-xdist>=3.5.0",
     "ruff>=0.3.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Fast isolated unit tests",
+    "integration: Tests that touch filesystem or network",
+    "adversarial: Stress tests and edge cases",
+    "slow: Tests that take >1 second",
+]
+addopts = [
+    "-v",
+    "--tb=short",
+    "--strict-markers",
+    "-x",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.coverage.run]
+source = ["resonant_client"]
+omit = [
+    "resonant_client/gui/*",
+    "resonant_client/tui.py",
+    "resonant_client/__main__.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 0
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__",
+    "logger\\.",
+    "except Exception",
 ]
 
 [project.scripts]
 resonant = "resonant_client.__main__:main"
 resonant-tui = "resonant_client.__main__:main"
+resonant-gui = "resonant_client.gui.server:main"
 
 [tool.setuptools.packages.find]
 include = ["resonant_client*"]

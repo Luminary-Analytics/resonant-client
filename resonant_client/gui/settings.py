@@ -5,7 +5,6 @@ Reads/writes ~/.resonant/settings.json with section-based access.
 
 import json
 import logging
-import os
 import threading
 from pathlib import Path
 from typing import Any
@@ -46,10 +45,8 @@ class SettingsManager:
         self._data: dict = {}
         self._load()
 
-    # ── Public API ───────────────────────────────────────────
-
     def get(self, section: str, key: str | None = None, default: Any = None) -> Any:
-        """Get a value.  get('general', 'theme') or get('hooks')."""
+        """Get a value. get('general', 'theme') or get('hooks')."""
         with self._lock:
             sect = self._data.get(section, DEFAULTS.get(section))
             if key is None:
@@ -59,7 +56,7 @@ class SettingsManager:
             return default
 
     def set(self, section: str, key: str | None, value: Any) -> None:
-        """Set a value and persist.  set('general', 'theme', 'light') or set('hooks', None, [...])."""
+        """Set a value and persist. set('general', 'theme', 'light') or set('hooks', None, [...])."""
         with self._lock:
             if key is None:
                 self._data[section] = value
@@ -86,17 +83,16 @@ class SettingsManager:
             self._save_locked()
 
     def get_masked(self) -> dict:
-        """Return settings with API keys masked for frontend display."""
+        """Return frontend-safe settings data with secret presence metadata."""
         data = self.get_all()
+        meta = data.setdefault("_meta", {})
         if "api_keys" in data:
-            for k, v in data["api_keys"].items():
-                if v:
-                    data["api_keys"][k] = v[:4] + "•" * max(0, len(v) - 8) + v[-4:] if len(v) > 8 else "••••"
-                else:
-                    data["api_keys"][k] = ""
+            present = {}
+            for key, value in data["api_keys"].items():
+                present[key] = bool(value)
+                data["api_keys"][key] = ""
+            meta["api_keys_present"] = present
         return data
-
-    # ── Internal ─────────────────────────────────────────────
 
     def _load(self) -> None:
         """Load from disk, merging with defaults for any missing keys."""
@@ -104,8 +100,8 @@ class SettingsManager:
             if self._path.exists():
                 try:
                     self._data = json.loads(self._path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.warning(f"Failed to read settings: {e}")
+                except (json.JSONDecodeError, OSError) as exc:
+                    logger.warning(f"Failed to read settings: {exc}")
                     self._data = {}
             else:
                 self._data = {}
@@ -114,17 +110,17 @@ class SettingsManager:
 
     def _apply_defaults(self) -> None:
         """Merge missing keys from DEFAULTS into current data."""
-        for section, default_val in DEFAULTS.items():
+        for section, default_value in DEFAULTS.items():
             if section not in self._data:
                 self._data[section] = (
-                    dict(default_val) if isinstance(default_val, dict)
-                    else list(default_val) if isinstance(default_val, list)
-                    else default_val
+                    dict(default_value) if isinstance(default_value, dict)
+                    else list(default_value) if isinstance(default_value, list)
+                    else default_value
                 )
-            elif isinstance(default_val, dict) and isinstance(self._data[section], dict):
-                for k, v in default_val.items():
-                    if k not in self._data[section]:
-                        self._data[section][k] = v
+            elif isinstance(default_value, dict) and isinstance(self._data[section], dict):
+                for key, value in default_value.items():
+                    if key not in self._data[section]:
+                        self._data[section][key] = value
 
     def _save_locked(self) -> None:
         """Write to disk (caller must hold lock)."""
@@ -134,5 +130,5 @@ class SettingsManager:
                 json.dumps(self._data, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except OSError as e:
-            logger.error(f"Failed to save settings: {e}")
+        except OSError as exc:
+            logger.error(f"Failed to save settings: {exc}")

@@ -11,6 +11,7 @@ import re
 import sys
 import time
 import logging
+import threading
 import platform as plat
 from typing import Iterator, Optional, Callable
 
@@ -171,6 +172,7 @@ class Session:
         parent_session: Optional["Session"] = None,
         allowed_tools: Optional[list[dict]] = None,
         project_instructions: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
     ):
         self.backend = backend
         self.max_steps = max_steps
@@ -188,6 +190,7 @@ class Session:
         self.mcp_tools: list[dict] = []  # Extra tools from MCP servers
         self._engram = None  # EngramIntegration, set externally
         self._codebase_index = None  # CodebaseIndex, set externally
+        self._cancel_event = cancel_event or threading.Event()
 
     @property
     def is_subagent(self) -> bool:
@@ -221,6 +224,26 @@ class Session:
         """Switch to a different backend (clears history)."""
         self.backend = backend
         self.conversation_history.clear()
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancel_event.is_set()
+
+    def cancel(self):
+        """Request cooperative cancellation for the current run."""
+        self._cancel_event.set()
+
+    def reset_cancel(self):
+        """Clear any pending cancellation request before starting a new run."""
+        self._cancel_event.clear()
+
+    def _cancelled_events(self, total_start: float, total_steps: int) -> Iterator[dict]:
+        yield make_event(EngineEvent.ERROR, message="Interrupted")
+        yield make_event(
+            EngineEvent.SESSION_END,
+            total_elapsed=time.time() - total_start,
+            total_steps=total_steps,
+        )
 
     def run(
         self,
@@ -265,6 +288,10 @@ class Session:
         executing_plan = False
         last_tool_used = None
 
+        if self.cancel_requested:
+            yield from self._cancelled_events(total_start, 0)
+            return
+
         tool_mode = getattr(self.backend, 'tool_mode', 'native')
         yield make_event(EngineEvent.SESSION_START,
                         plan_mode=self.plan_mode,
@@ -291,6 +318,9 @@ class Session:
                 logger.warning(f"Context compression failed: {e}")
 
         while iteration < self.max_steps:
+            if self.cancel_requested:
+                yield from self._cancelled_events(total_start, exec_step)
+                return
             iteration += 1
             is_planning = self.plan_mode and not executing_plan
 
@@ -347,7 +377,11 @@ class Session:
                     instructions=instructions,
                     tools=[] if is_planning else self.tools,
                     max_tokens=self.max_tokens,
+                    cancel_event=self._cancel_event,
                 ):
+                    if self.cancel_requested:
+                        yield from self._cancelled_events(total_start, exec_step)
+                        return
                     if event_type == EVENT_TEXT_DELTA:
                         delta = data.get("delta", "")
                         collected_text.append(delta)
@@ -382,10 +416,8 @@ class Session:
                         return
 
             except KeyboardInterrupt:
-                yield make_event(EngineEvent.ERROR, message="Interrupted")
-                yield make_event(EngineEvent.SESSION_END,
-                                total_elapsed=time.time() - total_start,
-                                total_steps=exec_step)
+                self.cancel()
+                yield from self._cancelled_events(total_start, exec_step)
                 return
             except Exception as e:
                 yield make_event(EngineEvent.ERROR, message=f"Stream error: {e}")
@@ -451,6 +483,9 @@ class Session:
                 break  # Exit the agentic loop — CLI ran to completion
 
             for item in tool_calls:
+                if self.cancel_requested:
+                    yield from self._cancelled_events(total_start, exec_step)
+                    return
                 fn_name = item.get("name", "")
                 fn_args_str = item.get("arguments", "{}")
                 call_id = item.get("call_id", "")
@@ -544,7 +579,7 @@ class Session:
                         "content": result.output,
                     })
                 else:
-                    result = execute_tool(fn_name, fn_args)
+                    result = execute_tool(fn_name, fn_args, cancel_event=self._cancel_event)
 
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
@@ -580,6 +615,14 @@ class Session:
                             context={"tool_args": fn_args, "result": result.output[:500]},
                             tool_name=fn_name,
                         )
+
+                    if self.cancel_requested or result.metadata.get("cancelled"):
+                        yield from self._cancelled_events(total_start, exec_step)
+                        return
+
+                if self.cancel_requested:
+                    yield from self._cancelled_events(total_start, exec_step)
+                    return
 
             # ── Status ──
             yield make_event(EngineEvent.STATUS,
@@ -693,6 +736,7 @@ class Session:
             auto_approve=True,  # Sub-agents auto-approve (no interactive prompts)
             parent_session=self,
             allowed_tools=allowed_tools,
+            cancel_event=self._cancel_event,
         )
 
         # Run the sub-agent, collecting text output and forwarding events

@@ -11,6 +11,7 @@ import re
 import subprocess
 import sys
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
@@ -641,7 +642,7 @@ class ToolResult:
         }
 
 
-def execute_tool(name: str, arguments: dict) -> ToolResult:
+def execute_tool(name: str, arguments: dict, cancel_event: Optional[threading.Event] = None) -> ToolResult:
     """
     Execute a tool and return structured result.
 
@@ -654,7 +655,7 @@ def execute_tool(name: str, arguments: dict) -> ToolResult:
 
     try:
         if name == "bash":
-            return _exec_bash(arguments, start)
+            return _exec_bash(arguments, start, cancel_event=cancel_event)
         elif name == "file_write":
             return _exec_file_write(arguments, start)
         elif name == "file_read":
@@ -664,9 +665,9 @@ def execute_tool(name: str, arguments: dict) -> ToolResult:
         elif name == "glob":
             return _exec_glob(arguments, start)
         elif name == "grep":
-            return _exec_grep(arguments, start)
+            return _exec_grep(arguments, start, cancel_event=cancel_event)
         elif name == "batch":
-            return _exec_batch(arguments, start)
+            return _exec_batch(arguments, start, cancel_event=cancel_event)
         elif name == "task":
             # Task tool requires session context — handled by Session, not here
             return ToolResult(
@@ -734,28 +735,91 @@ def execute_tool(name: str, arguments: dict) -> ToolResult:
         return ToolResult(f"Error: {e}", is_error=True, elapsed=time.time() - start)
 
 
-def _exec_bash(args: dict, start: float) -> ToolResult:
+def _run_subprocess_with_cancel(
+    cmd,
+    *,
+    timeout: float,
+    shell: bool,
+    text: bool,
+    cwd: str,
+    stdin=None,
+    cancel_event: Optional[threading.Event] = None,
+):
+    proc = subprocess.Popen(
+        cmd,
+        shell=shell,
+        cwd=cwd,
+        stdin=stdin,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=text,
+    )
+
+    watcher = None
+    if cancel_event is not None:
+        def _watch_cancel():
+            cancel_event.wait()
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+        watcher = threading.Thread(target=_watch_cancel, daemon=True)
+        watcher.start()
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, stdout, stderr, False
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        stdout, stderr = proc.communicate()
+        return proc.returncode, stdout, stderr, True
+    finally:
+        if watcher:
+            watcher.join(timeout=0)
+
+
+def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
     cmd = args.get("command", "")
     timeout = args.get("timeout", 30)
 
     try:
-        result = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
-            timeout=timeout, cwd=os.getcwd(),
+        returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
+            cmd,
+            shell=True,
+            text=True,
+            timeout=timeout,
+            cwd=os.getcwd(),
             stdin=subprocess.DEVNULL,
+            cancel_event=cancel_event,
         )
         elapsed = time.time() - start
-        output = result.stdout
-        if result.stderr:
-            output += ("\n" if output else "") + result.stderr
-        if result.returncode != 0:
-            output += f"\n(exit code: {result.returncode})"
+        if cancel_event is not None and cancel_event.is_set():
+            return ToolResult(
+                "Command cancelled.",
+                is_error=True,
+                elapsed=elapsed,
+                metadata={"command": cmd, "cancelled": True},
+            )
+        if timed_out:
+            return ToolResult(
+                f"Command timed out after {timeout}s.",
+                is_error=True,
+                elapsed=timeout,
+                metadata={"command": cmd, "timed_out": True},
+            )
+        output = stdout
+        if stderr:
+            output += ("\n" if output else "") + stderr
+        if returncode != 0:
+            output += f"\n(exit code: {returncode})"
         output = output.strip() or "(no output)"
         return ToolResult(
             output,
-            is_error=result.returncode != 0,
+            is_error=returncode != 0,
             elapsed=elapsed,
-            metadata={"command": cmd, "exit_code": result.returncode},
+            metadata={"command": cmd, "exit_code": returncode},
         )
     except subprocess.TimeoutExpired:
         return ToolResult(
@@ -838,7 +902,7 @@ def _exec_glob(args: dict, start: float) -> ToolResult:
     )
 
 
-def _exec_grep(args: dict, start: float) -> ToolResult:
+def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
     pattern = args.get("pattern", "")
     path = args.get("path", ".")
     file_glob = args.get("glob", "")
@@ -852,15 +916,38 @@ def _exec_grep(args: dict, start: float) -> ToolResult:
         if file_glob:
             cmd = f'grep -rn --include="{file_glob}" "{pattern}" "{path}"'
 
-    result = subprocess.run(cmd, shell=True, capture_output=True, timeout=30, cwd=os.getcwd())
+    returncode, stdout, _stderr, timed_out = _run_subprocess_with_cancel(
+        cmd,
+        shell=True,
+        text=False,
+        timeout=30,
+        cwd=os.getcwd(),
+        cancel_event=cancel_event,
+    )
+
+    if cancel_event is not None and cancel_event.is_set():
+        return ToolResult(
+            "Search cancelled.",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"pattern": pattern, "cancelled": True},
+        )
+
+    if timed_out:
+        return ToolResult(
+            "Search timed out after 30s.",
+            is_error=True,
+            elapsed=30,
+            metadata={"pattern": pattern, "timed_out": True},
+        )
 
     try:
-        output = result.stdout.decode("utf-8").strip()
+        output = stdout.decode("utf-8").strip()
     except (UnicodeDecodeError, AttributeError):
         try:
-            output = result.stdout.decode("latin-1").strip()
+            output = stdout.decode("latin-1").strip()
         except (UnicodeDecodeError, AttributeError):
-            output = str(result.stdout).strip()
+            output = str(stdout).strip()
 
     lines = output.split("\n") if output else []
     count = len(lines)
@@ -871,7 +958,7 @@ def _exec_grep(args: dict, start: float) -> ToolResult:
     return ToolResult(
         output or "(no matches)",
         elapsed=elapsed,
-        metadata={"pattern": pattern, "count": count},
+        metadata={"pattern": pattern, "count": count, "exit_code": returncode},
     )
 
 
@@ -883,7 +970,7 @@ BATCH_MAX_CALLS = 25
 BATCH_MAX_WORKERS = 10
 
 
-def _exec_batch(args: dict, start: float) -> ToolResult:
+def _exec_batch(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
     """
     Execute multiple tool calls in parallel using ThreadPoolExecutor.
 
@@ -895,6 +982,14 @@ def _exec_batch(args: dict, start: float) -> ToolResult:
     calls = args.get("calls", [])
     if not calls:
         return ToolResult("Error: No calls provided", is_error=True, elapsed=time.time() - start)
+
+    if cancel_event is not None and cancel_event.is_set():
+        return ToolResult(
+            "Batch cancelled.",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"cancelled": True, "results": []},
+        )
 
     if len(calls) > BATCH_MAX_CALLS:
         calls = calls[:BATCH_MAX_CALLS]
@@ -917,7 +1012,7 @@ def _exec_batch(args: dict, start: float) -> ToolResult:
                 forbidden_indices.add(i)
                 continue
 
-            future = pool.submit(execute_tool, name, call_args)
+            future = pool.submit(execute_tool, name, call_args, cancel_event)
             futures[future] = (i, name)
 
         for future in as_completed(futures):
@@ -955,12 +1050,13 @@ def _exec_batch(args: dict, start: float) -> ToolResult:
     elapsed = time.time() - start
     return ToolResult(
         output="\n".join(summary_lines),
-        is_error=failures > 0,
+        is_error=failures > 0 or (cancel_event is not None and cancel_event.is_set()),
         elapsed=elapsed,
         metadata={
             "results": results,
             "successes": successes,
             "failures": failures,
             "total": len(results),
+            "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
         },
     )

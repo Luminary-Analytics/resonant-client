@@ -1,17 +1,17 @@
 """
 Scheduled Tasks for Resonant Client.
 
-Runs prompts on a schedule (cron-like or interval-based).
-Uses TaskRunner for actual execution.
+Runs prompts on an interval schedule and uses TaskRunner for execution.
 """
+
+from __future__ import annotations
 
 import json
 import logging
 import re
 import threading
-import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional
@@ -22,30 +22,32 @@ logger = logging.getLogger(__name__)
 
 
 def _parse_interval(schedule: str) -> Optional[int]:
-    """Parse 'every:Nm' or 'every:Nh' to seconds. Returns None if not interval format."""
-    m = re.match(r"every:(\d+)(m|h|s)", schedule.strip().lower())
-    if not m:
+    """Parse 'every:Nm' or 'every:Nh' to seconds."""
+    match = re.match(r"every:(\d+)(m|h|s)", schedule.strip().lower())
+    if not match:
         return None
-    val = int(m.group(1))
-    unit = m.group(2)
+    value = int(match.group(1))
+    unit = match.group(2)
     if unit == "s":
-        return val
+        return value
     if unit == "m":
-        return val * 60
+        return value * 60
     if unit == "h":
-        return val * 3600
+        return value * 3600
     return None
 
 
 @dataclass
 class ScheduledTask:
     """A recurring scheduled task."""
+
     id: str
     name: str
     prompt: str
-    schedule: str  # "every:5m", "every:1h", etc.
+    schedule: str
     backend_type: str
     model: str
+    backend_spec: dict = None
     project_path: str = ""
     enabled: bool = True
     last_run: str = ""
@@ -54,20 +56,19 @@ class ScheduledTask:
     created_at: str = ""
 
     def __post_init__(self):
+        self.backend_spec = dict(self.backend_spec or {})
         if not self.created_at:
             self.created_at = datetime.now().isoformat()
         if not self.next_run and self.enabled:
             self._compute_next_run()
 
     def _compute_next_run(self):
-        """Compute next run time based on schedule."""
         interval = _parse_interval(self.schedule)
         if interval:
             base = datetime.fromisoformat(self.last_run) if self.last_run else datetime.now()
             self.next_run = (base + timedelta(seconds=interval)).isoformat()
 
     def is_due(self) -> bool:
-        """Check if this task should run now."""
         if not self.enabled or not self.next_run:
             return False
         try:
@@ -76,7 +77,6 @@ class ScheduledTask:
             return False
 
     def mark_run(self):
-        """Mark that this task just ran."""
         self.last_run = datetime.now().isoformat()
         self.run_count += 1
         self._compute_next_run()
@@ -89,6 +89,7 @@ class ScheduledTask:
             "schedule": self.schedule,
             "backend_type": self.backend_type,
             "model": self.model,
+            "backend_spec": self.backend_spec,
             "project_path": self.project_path,
             "enabled": self.enabled,
             "last_run": self.last_run,
@@ -101,12 +102,12 @@ class ScheduledTask:
 class Scheduler:
     """Manages scheduled tasks with a daemon thread."""
 
-    CHECK_INTERVAL = 30  # seconds between checks
+    CHECK_INTERVAL = 30
 
     def __init__(
         self,
         task_runner: TaskRunner,
-        backend_factory: Optional[Callable] = None,
+        backend_factory: Optional[Callable[[ScheduledTask], Callable]] = None,
         persist_path: str | Path | None = None,
     ):
         self._runner = task_runner
@@ -116,19 +117,17 @@ class Scheduler:
         self._persist_path = Path(persist_path) if persist_path else Path.home() / ".resonant" / "schedules.json"
         self._daemon: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
-        self._on_trigger: Optional[Callable] = None  # callback(scheduled_task) when triggered
+        self._on_trigger: Optional[Callable] = None
         self._load()
 
-    def set_backend_factory(self, factory: Callable):
-        """Set the backend factory for creating backends when tasks run."""
+    def set_backend_factory(self, factory: Callable[[ScheduledTask], Callable]):
+        """Set the task session factory builder for scheduled runs."""
         self._backend_factory = factory
 
     def set_on_trigger(self, callback: Callable):
-        """Set callback when a scheduled task triggers."""
         self._on_trigger = callback
 
     def start(self):
-        """Start the scheduler daemon thread."""
         if self._daemon and self._daemon.is_alive():
             return
         self._stop_event.clear()
@@ -137,45 +136,41 @@ class Scheduler:
         logger.info("Scheduler daemon started")
 
     def stop(self):
-        """Stop the scheduler daemon."""
         self._stop_event.set()
         if self._daemon:
             self._daemon.join(timeout=5)
 
     def _daemon_loop(self):
-        """Main loop — check for due tasks every CHECK_INTERVAL seconds."""
         while not self._stop_event.is_set():
             try:
                 self._check_and_run()
-            except Exception as e:
-                logger.error(f"Scheduler check error: {e}")
+            except Exception as exc:
+                logger.error(f"Scheduler check error: {exc}")
             self._stop_event.wait(timeout=self.CHECK_INTERVAL)
 
     def _check_and_run(self):
-        """Check for due tasks and submit them."""
         with self._lock:
-            due_tasks = [t for t in self._schedules.values() if t.is_due()]
+            due_tasks = [task for task in self._schedules.values() if task.is_due()]
 
         for task in due_tasks:
             if not self._backend_factory:
                 logger.warning(f"No backend factory for scheduled task {task.id}")
                 continue
 
-            def make_factory(bt=task.backend_type, m=task.model):
-                def factory():
-                    from ..backends import create_backend
-                    # Simplified — real implementation would use stored config
-                    return create_backend(bt, model=m)
-                return factory
+            session_factory = self._backend_factory(task)
+            if not session_factory:
+                logger.warning(f"No session factory for scheduled task {task.id}")
+                continue
 
             logger.info(f"Triggering scheduled task: {task.name} ({task.id})")
             self._runner.submit(
                 name=f"[scheduled] {task.name}",
                 prompt=task.prompt,
-                backend_factory=make_factory(),
+                session_factory=session_factory,
                 backend_type=task.backend_type,
                 model=task.model,
                 project_path=task.project_path,
+                backend_spec=task.backend_spec,
             )
 
             task.mark_run()
@@ -195,8 +190,8 @@ class Scheduler:
         backend_type: str,
         model: str,
         project_path: str = "",
+        backend_spec: Optional[dict] = None,
     ) -> ScheduledTask:
-        """Add a new scheduled task."""
         interval = _parse_interval(schedule)
         if interval is None:
             raise ValueError(f"Invalid schedule format: {schedule}. Use 'every:Nm', 'every:Nh', or 'every:Ns'")
@@ -208,6 +203,7 @@ class Scheduler:
             schedule=schedule,
             backend_type=backend_type,
             model=model,
+            backend_spec=backend_spec or {},
             project_path=project_path,
         )
 
@@ -248,7 +244,7 @@ class Scheduler:
             task = self._schedules.get(task_id)
             if not task:
                 return False
-            for key in ("name", "prompt", "schedule", "backend_type", "model", "enabled"):
+            for key in ("name", "prompt", "schedule", "backend_type", "model", "enabled", "backend_spec"):
                 if key in kwargs:
                     setattr(task, key, kwargs[key])
             if "schedule" in kwargs:
@@ -258,42 +254,42 @@ class Scheduler:
 
     def list_schedules(self) -> list[dict]:
         with self._lock:
-            return [t.to_dict() for t in sorted(
-                self._schedules.values(),
-                key=lambda t: t.created_at,
-                reverse=True,
-            )]
+            return [
+                task.to_dict()
+                for task in sorted(self._schedules.values(), key=lambda item: item.created_at, reverse=True)
+            ]
 
     def _save(self):
         try:
             self._persist_path.parent.mkdir(parents=True, exist_ok=True)
-            data = {tid: t.to_dict() for tid, t in self._schedules.items()}
+            data = {task_id: task.to_dict() for task_id, task in self._schedules.items()}
             self._persist_path.write_text(
                 json.dumps(data, indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except OSError as e:
-            logger.error(f"Failed to save schedules: {e}")
+        except OSError as exc:
+            logger.error(f"Failed to save schedules: {exc}")
 
     def _load(self):
         if not self._persist_path.exists():
             return
         try:
             data = json.loads(self._persist_path.read_text(encoding="utf-8"))
-            for tid, td in data.items():
-                self._schedules[tid] = ScheduledTask(
-                    id=td["id"],
-                    name=td.get("name", ""),
-                    prompt=td.get("prompt", ""),
-                    schedule=td.get("schedule", ""),
-                    backend_type=td.get("backend_type", ""),
-                    model=td.get("model", ""),
-                    project_path=td.get("project_path", ""),
-                    enabled=td.get("enabled", True),
-                    last_run=td.get("last_run", ""),
-                    next_run=td.get("next_run", ""),
-                    run_count=td.get("run_count", 0),
-                    created_at=td.get("created_at", ""),
+            for task_id, task_data in data.items():
+                self._schedules[task_id] = ScheduledTask(
+                    id=task_data["id"],
+                    name=task_data.get("name", ""),
+                    prompt=task_data.get("prompt", ""),
+                    schedule=task_data.get("schedule", ""),
+                    backend_type=task_data.get("backend_type", ""),
+                    model=task_data.get("model", ""),
+                    backend_spec=task_data.get("backend_spec", {}),
+                    project_path=task_data.get("project_path", ""),
+                    enabled=task_data.get("enabled", True),
+                    last_run=task_data.get("last_run", ""),
+                    next_run=task_data.get("next_run", ""),
+                    run_count=task_data.get("run_count", 0),
+                    created_at=task_data.get("created_at", ""),
                 )
-        except Exception as e:
-            logger.warning(f"Failed to load schedules: {e}")
+        except Exception as exc:
+            logger.warning(f"Failed to load schedules: {exc}")

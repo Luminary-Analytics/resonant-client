@@ -59,6 +59,10 @@ Supports multiple backends (Resonant Engine, Ollama, Claude, OpenAI) with both a
 - **Auto-recall** at session start based on user query
 - **Session summaries** persisted at session end
 
+## Recent Notes
+
+- GUI/runtime hardening summary: [docs/gui-hardening.md](docs/gui-hardening.md)
+
 ## Prerequisites
 
 - Python 3.11+
@@ -130,7 +134,7 @@ resonant-gui
 
 ## Testing
 
-The project has a comprehensive automated test suite with 465 tests covering all features.
+The project has a comprehensive automated test suite with 512 tests covering all features.
 
 ```bash
 # Run all tests
@@ -169,7 +173,7 @@ pytest -k "test_crlf"              # name filter
 | `tests/test_diff_review.py` | 113 | diff_review.py (98%) — file diffs, risk detection, sensitive paths |
 | `tests/test_rag.py` | 161 | rag.py (91%) — indexing, search, symbol extraction, caching |
 | `tests/test_backends.py` | 129 | backends.py — tool conversion, model detection, adaptive calling |
-| **Total** | **465** | All passing |
+| **Total** | **512** | All passing |
 
 ## Architecture
 

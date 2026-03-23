@@ -125,9 +125,13 @@ class ResonantApp {
 
         // CLI backend tool activity group
         this.handlesTools = false;
+        this.isReplaying = false;
         this.activeToolGroup = null;      // current DOM container
         this.activeToolGroupCount = 0;
         this.activeToolGroupCounts = {};  // {name: count}
+
+        // Terminal tracking — active bash/tool executions
+        this.activeTerminals = new Map(); // call_id → {name, command, startTime}
 
         // Attached images for multimodal input
         this.attachedImages = [];
@@ -174,6 +178,13 @@ class ResonantApp {
         this.sidebarProjectName = document.getElementById('sidebar-project-name');
         this.sessionList = document.getElementById('session-list');
         this.tokenInfo = document.getElementById('token-info');
+
+        // Terminal bar DOM refs
+        this.terminalBar = document.getElementById('terminal-bar');
+        this.terminalBarLabel = document.getElementById('terminal-bar-label');
+        this.terminalBarList = document.getElementById('terminal-bar-list');
+        this.terminalBarToggle = document.getElementById('terminal-bar-toggle');
+        this.terminalStopAll = document.getElementById('terminal-stop-all');
 
         // Preview panel DOM refs
         this.previewPanel = document.getElementById('preview-panel');
@@ -280,6 +291,21 @@ class ResonantApp {
 
         // Stop button
         this.stopBtn.addEventListener('click', () => {
+            this.send({ command: 'cancel' });
+        });
+
+        // Terminal bar — toggle expand/collapse
+        this.terminalBarToggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.terminalBar.classList.toggle('expanded');
+        });
+        document.getElementById('terminal-bar-header').addEventListener('click', () => {
+            this.terminalBar.classList.toggle('expanded');
+        });
+
+        // Terminal bar — stop all
+        this.terminalStopAll.addEventListener('click', (e) => {
+            e.stopPropagation();
             this.send({ command: 'cancel' });
         });
 
@@ -557,6 +583,7 @@ class ResonantApp {
         this.collapsedGroup = [];
         this.subagentDepth = 0;
         this.subagentContainer = null;
+        this.clearTerminals();
 
         // Send to server (include images if attached)
         const msg = { command: 'message', text };
@@ -584,6 +611,117 @@ class ResonantApp {
         if (!running) {
             this.userInput.focus();
         }
+    }
+
+    // ── Terminal Bar ─────────────────────────────────────────────
+
+    trackTerminalStart(callId, name, args) {
+        const command = name === 'bash' ? (args.command || '') : name;
+        this.activeTerminals.set(callId, {
+            name,
+            command,
+            startTime: Date.now(),
+        });
+        this.updateTerminalBar();
+        this.startTerminalTimer();
+    }
+
+    trackTerminalEnd(callId) {
+        const entry = this.activeTerminals.get(callId);
+        if (entry) {
+            this.activeTerminals.delete(callId);
+            // Update the list entry to show done state
+            const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"]`);
+            if (el) {
+                const spinner = el.querySelector('.terminal-entry-spinner');
+                if (spinner) {
+                    spinner.outerHTML = '<span class="terminal-entry-done">✓</span>';
+                }
+                const stopBtn = el.querySelector('.terminal-entry-stop');
+                if (stopBtn) stopBtn.remove();
+                // Remove after brief delay to show completion
+                setTimeout(() => {
+                    el.remove();
+                    this.updateTerminalBar();
+                }, 800);
+            } else {
+                this.updateTerminalBar();
+            }
+        }
+    }
+
+    updateTerminalBar() {
+        const count = this.activeTerminals.size;
+        if (count === 0) {
+            this.terminalBar.style.display = 'none';
+            this.terminalBar.classList.remove('expanded');
+            return;
+        }
+
+        this.terminalBar.style.display = 'block';
+        this.terminalBarLabel.textContent = `Running ${count} terminal${count !== 1 ? 's' : ''}`;
+
+        // Rebuild list entries
+        this.terminalBarList.innerHTML = '';
+        for (const [callId, info] of this.activeTerminals) {
+            const displayCmd = info.command.length > 60
+                ? info.command.slice(0, 57) + '...'
+                : info.command;
+            const elapsed = ((Date.now() - info.startTime) / 1000).toFixed(1);
+
+            const entry = document.createElement('div');
+            entry.className = 'terminal-entry';
+            entry.setAttribute('data-call-id', callId);
+            entry.innerHTML = `
+                <div class="terminal-entry-left">
+                    <span class="terminal-entry-spinner"></span>
+                    <span class="terminal-entry-cmd" title="${this.escapeHtml(info.command)}">$ ${this.escapeHtml(displayCmd)}</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <span class="terminal-entry-elapsed">${elapsed}s</span>
+                    <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${callId}">
+                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                            <rect x="1.5" y="1.5" width="7" height="7" rx="1" fill="currentColor"/>
+                        </svg>
+                    </button>
+                </div>
+            `;
+
+            // Wire individual stop button
+            entry.querySelector('.terminal-entry-stop').addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.send({ command: 'cancel' });
+            });
+
+            this.terminalBarList.appendChild(entry);
+        }
+    }
+
+    clearTerminals() {
+        this.activeTerminals.clear();
+        this.updateTerminalBar();
+        if (this._terminalTimer) {
+            clearInterval(this._terminalTimer);
+            this._terminalTimer = null;
+        }
+    }
+
+    startTerminalTimer() {
+        if (this._terminalTimer) return;
+        this._terminalTimer = setInterval(() => {
+            if (this.activeTerminals.size === 0) {
+                clearInterval(this._terminalTimer);
+                this._terminalTimer = null;
+                return;
+            }
+            // Update elapsed times in the list
+            for (const [callId, info] of this.activeTerminals) {
+                const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"] .terminal-entry-elapsed`);
+                if (el) {
+                    el.textContent = ((Date.now() - info.startTime) / 1000).toFixed(1) + 's';
+                }
+            }
+        }, 500);
     }
 
     // ── Event Handler ───────────────────────────────────────────
@@ -678,6 +816,12 @@ class ResonantApp {
                 break;
             case 'settings':
                 this.settings = event.data || {};
+                if (!this.isRunning) {
+                    this.setPermissionMode(
+                        this.settings.general?.default_permission_mode || this.permissionMode || 'bypass',
+                        false
+                    );
+                }
                 this.renderSettingsView();
                 break;
             case 'costs':
@@ -746,7 +890,17 @@ class ResonantApp {
     // ── Init ────────────────────────────────────────────────────
 
     handleInit(event) {
-        const { backends, current_backend, current_model, cwd, sessions, all_sessions, current_session_id, recent_projects } = event;
+        const {
+            backends,
+            current_backend,
+            current_model,
+            cwd,
+            sessions,
+            all_sessions,
+            current_session_id,
+            recent_projects,
+            refresh_only,
+        } = event;
 
         // Update project info
         if (cwd) {
@@ -770,6 +924,10 @@ class ResonantApp {
         if (event.settings) {
             this.settings = event.settings;
         }
+        this.setPermissionMode(
+            event.permission_mode || this.settings.general?.default_permission_mode || 'bypass',
+            false
+        );
 
         // RESONANT.md indicator
         if (event.resonant_md) {
@@ -796,9 +954,19 @@ class ResonantApp {
 
         // If already connected to a backend, show chat
         if (current_backend) {
-            this.showChatInterface();
+            if (!refresh_only) {
+                this.showChatInterface();
+            }
             this.headerStatus.textContent = `${current_backend} · ${current_model}`;
             this.populateModelSelector(backends, current_backend, current_model);
+            return;
+        }
+
+        if (refresh_only) {
+            const backendStep = document.getElementById('backend-step');
+            if (backendStep && backendStep.style.display !== 'none') {
+                this.showBackendSelector(backends);
+            }
             return;
         }
 
@@ -976,7 +1144,7 @@ class ResonantApp {
         this.userInput.focus();
     }
 
-    setPermissionMode(mode) {
+    setPermissionMode(mode, notifyServer = true) {
         this.permissionMode = mode;
 
         const icons = { ask: '⚙', 'auto-edit': '</>', plan: '☰', bypass: '△' };
@@ -1005,7 +1173,9 @@ class ResonantApp {
         this.planMode = (mode === 'plan');
 
         // Notify server of permission mode change
-        this.send({ command: 'set_permission_mode', mode });
+        if (notifyServer) {
+            this.send({ command: 'set_permission_mode', mode });
+        }
     }
 
     populateModelSelector(backends, currentBackend, currentModel) {
@@ -1467,6 +1637,12 @@ class ResonantApp {
     handleToolCall(event) {
         this.removeThinking();
         const name = event.name || '';
+        const callId = event.call_id || '';
+
+        // Track in terminal bar (bash commands and long-running tools)
+        if (!this.handlesTools && !this.isReplaying && name === 'bash' && callId) {
+            this.trackTerminalStart(callId, name, event.arguments || {});
+        }
 
         // CLI backends: group ALL tool calls into a collapsible activity panel
         if (this.handlesTools) {
@@ -1493,7 +1669,13 @@ class ResonantApp {
 
     handleToolResult(event) {
         const name = event.name || '';
+        const callId = event.call_id || '';
         const hasImage = event.image && event.image.data;
+
+        // Remove from terminal bar
+        if (!this.handlesTools && !this.isReplaying && name === 'bash' && callId) {
+            this.trackTerminalEnd(callId);
+        }
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
         if (hasImage && this.stepIsInlineOnly) {
@@ -2218,6 +2400,15 @@ class ResonantApp {
                         const checked = val ? 'checked' : '';
                         input = `<label style="cursor:pointer"><input type="checkbox" ${checked} data-section="${section.id}" data-key="${field.key}" style="cursor:pointer" /> ${val ? 'On' : 'Off'}</label>`;
                     } else if (field.type === 'password') {
+                        const hasSecret = Boolean(this.settings._meta?.api_keys_present?.[field.key]);
+                        input = `
+                            <div style="display:flex;align-items:center;gap:8px;">
+                                <input class="settings-input" type="password" value="" data-section="${section.id}" data-key="${field.key}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}" style="flex:1" />
+                                <span style="color:var(--muted);font-size:11px;white-space:nowrap">${hasSecret ? 'Stored' : 'Not set'}</span>
+                                ${hasSecret ? `<button class="btn-sm settings-clear-secret" data-section="${section.id}" data-key="${field.key}" style="font-size:11px">Clear</button>` : ''}
+                            </div>
+                        `;
+                    } else if (field.type === 'password') {
                         input = `<input class="settings-input" type="password" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}" placeholder="••••" />`;
                     } else if (field.type === 'number') {
                         input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${section.id}" data-key="${field.key}" placeholder="None" style="width:80px" />`;
@@ -2258,10 +2449,25 @@ class ResonantApp {
                     if (label) label.lastChild.textContent = value ? ' On' : ' Off';
                 } else if (input.type === 'number') {
                     value = input.value ? Number(input.value) : null;
+                } else if (input.type === 'password') {
+                    value = input.value;
+                    if (!value) return;
                 } else {
                     value = input.value;
                 }
                 this.send({ command: 'update_settings', section, key, value });
+            });
+        });
+
+        this.settingsBody.querySelectorAll('.settings-clear-secret').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.send({
+                    command: 'update_settings',
+                    section: btn.dataset.section,
+                    key: btn.dataset.key,
+                    value: '',
+                    clear_secret: true,
+                });
             });
         });
 
@@ -2411,6 +2617,9 @@ class ResonantApp {
     handleSessionEnd(event) {
         this.removeThinking();
 
+        // Clear terminal bar
+        this.clearTerminals();
+
         // Finalize CLI tool activity group
         this.finalizeToolActivityGroup();
 
@@ -2431,7 +2640,9 @@ class ResonantApp {
         this.scrollToBottom();
 
         // Refresh git status after session (files may have changed)
-        this.requestGitStatus();
+        if (!this.isReplaying) {
+            this.requestGitStatus();
+        }
     }
 
     // ── Subagents ───────────────────────────────────────────────
@@ -2734,8 +2945,10 @@ class ResonantApp {
             'init', 'status_msg', 'sessions_updated',
         ]);
 
-        for (const event of events) {
-            const type = event.event;
+        this.isReplaying = true;
+        try {
+            for (const event of events) {
+                const type = event.event;
 
             // Skip ephemeral events
             if (SKIP_REPLAY.has(type)) continue;
@@ -2771,12 +2984,16 @@ class ResonantApp {
                 this.handleError(event);
             }
         }
+        } finally {
+            this.isReplaying = false;
+        }
 
         // Flush any pending collapsed groups
         this.flushCollapsedGroup();
 
         // Ensure we're not in a running state after replay
         this.setRunning(false);
+        this.clearTerminals();
 
         // Detect interrupted session — if last event isn't session.end,
         // the model was cut off mid-response

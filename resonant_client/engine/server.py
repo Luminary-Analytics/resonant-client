@@ -12,6 +12,8 @@ import asyncio
 import json
 import logging
 import os
+import queue
+import threading
 from typing import Optional
 
 from ..events import EngineEvent, ClientCommand, make_event
@@ -44,6 +46,7 @@ class EngineServer:
             auto_approve=True,  # Server mode: auto-approve by default
         )
         self._clients = set()
+        self._run_task: Optional[asyncio.Task] = None
 
     async def handle_client(self, websocket):
         """Handle a single WebSocket client connection."""
@@ -81,8 +84,13 @@ class EngineServer:
                 if cmd == ClientCommand.MESSAGE.value:
                     user_msg = msg.get("text", "")
                     if user_msg:
-                        # Run the session in a thread to not block the event loop
-                        await self._run_session(websocket, user_msg)
+                        if self._run_task and not self._run_task.done():
+                            await websocket.send(json.dumps(
+                                make_event(EngineEvent.ERROR, message="Already running")
+                            ))
+                            continue
+                        self.session.reset_cancel()
+                        self._run_task = asyncio.create_task(self._run_session(websocket, user_msg))
 
                 elif cmd == ClientCommand.CLEAR.value:
                     self.session.clear()
@@ -91,6 +99,11 @@ class EngineServer:
                     ))
 
                 elif cmd == ClientCommand.SWITCH_MODEL.value:
+                    if self._run_task and not self._run_task.done():
+                        await websocket.send(json.dumps(
+                            make_event(EngineEvent.ERROR, message="Cannot switch model while running")
+                        ))
+                        continue
                     model = msg.get("model", "")
                     if model and hasattr(self.backend, 'model'):
                         self.backend = create_backend(
@@ -107,8 +120,10 @@ class EngineServer:
                         ))
 
                 elif cmd == ClientCommand.CANCEL.value:
-                    # TODO: Implement cancellation via threading event
-                    pass
+                    self.session.cancel()
+                    await websocket.send(json.dumps(
+                        make_event(EngineEvent.STATUS, message="Cancelling...")
+                    ))
 
                 else:
                     await websocket.send(json.dumps(
@@ -118,23 +133,40 @@ class EngineServer:
         except Exception as e:
             logger.error("Client error: %s", e)
         finally:
+            if self._run_task and not self._run_task.done():
+                self.session.cancel()
             self._clients.discard(websocket)
             logger.info("Client disconnected")
 
     async def _run_session(self, websocket, user_msg: str):
         """Run session.run() in a thread and stream events via WebSocket."""
         loop = asyncio.get_event_loop()
+        event_queue: queue.Queue = queue.Queue()
 
         def _generate_events():
-            return list(self.session.run(user_msg))
-
-        events = await loop.run_in_executor(None, _generate_events)
-
-        for event in events:
             try:
-                await websocket.send(json.dumps(event))
-            except Exception:
-                break
+                for event in self.session.run(user_msg):
+                    event_queue.put(event)
+            except Exception as exc:
+                event_queue.put(make_event(EngineEvent.ERROR, message=str(exc)))
+            finally:
+                event_queue.put(None)
+
+        worker = threading.Thread(target=_generate_events, daemon=True)
+        worker.start()
+
+        try:
+            while True:
+                event = await loop.run_in_executor(None, event_queue.get)
+                if event is None:
+                    break
+                try:
+                    await websocket.send(json.dumps(event))
+                except Exception:
+                    self.session.cancel()
+                    break
+        finally:
+            self._run_task = None
 
     async def start(self):
         """Start the WebSocket server."""

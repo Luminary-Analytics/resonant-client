@@ -23,9 +23,7 @@ class EngramIntegration:
         self._mcp_manager = None  # Set externally if using MCP transport
 
         if settings:
-            engram_config = settings.get("engram") or {}
-            self._enabled = engram_config.get("enabled", False)
-            self._server_url = engram_config.get("server_url", "")
+            self.reload()
 
     @property
     def enabled(self) -> bool:
@@ -38,6 +36,21 @@ class EngramIntegration:
     def set_namespace(self, namespace: str):
         """Set the memory namespace (e.g., project name)."""
         self._namespace = namespace
+
+    def reload(self):
+        """Reload runtime config from settings."""
+        if not self._settings:
+            return
+        engram_config = self._settings.get("engram") or {}
+        self._enabled = engram_config.get("enabled", False)
+        self._server_url = engram_config.get("server_url", "")
+
+    def clone(self, namespace: str = "") -> "EngramIntegration":
+        """Create a project-scoped copy that shares the same settings source."""
+        clone = EngramIntegration(self._settings)
+        clone.set_mcp_manager(self._mcp_manager)
+        clone.set_namespace(namespace or self._namespace)
+        return clone
 
     def recall(self, query: str, namespace: str = "") -> list[str]:
         """Recall memories relevant to a query.

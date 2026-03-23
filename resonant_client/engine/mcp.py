@@ -270,12 +270,30 @@ class MCPManager:
 
     def call_tool(self, prefixed_name: str, arguments: dict) -> dict:
         """Call an MCP tool by its prefixed name (mcp_server_tool)."""
-        parts = prefixed_name.split("_", 2)
-        if len(parts) < 3 or parts[0] != "mcp":
+        if not prefixed_name.startswith("mcp_"):
             return {"error": f"Invalid MCP tool name: {prefixed_name}"}
 
-        server_name = parts[1]
-        tool_name = parts[2]
+        suffix = prefixed_name[4:]
+        candidates: set[str] = set()
+
+        if self._settings:
+            configured = self._settings.get("mcp_servers") or {}
+            candidates.update(configured.keys())
+
+        with self._lock:
+            candidates.update(self._connections.keys())
+
+        server_name = ""
+        tool_name = ""
+        for candidate in sorted(candidates, key=len, reverse=True):
+            prefix = f"{candidate}_"
+            if suffix.startswith(prefix):
+                server_name = candidate
+                tool_name = suffix[len(prefix):]
+                break
+
+        if not server_name or not tool_name:
+            return {"error": f"Invalid MCP tool name: {prefixed_name}"}
 
         with self._lock:
             conn = self._connections.get(server_name)

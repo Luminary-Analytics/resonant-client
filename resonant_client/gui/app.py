@@ -7,6 +7,7 @@ events are pushed through a queue to the async WebSocket handler.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -16,7 +17,8 @@ import threading
 import time
 import difflib
 from pathlib import Path
-from typing import Optional
+from datetime import date
+from typing import Any, Optional
 
 from starlette.applications import Starlette
 from starlette.routing import Route, WebSocketRoute, Mount
@@ -26,17 +28,17 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..events import EngineEvent, make_event
 from ..backends import (
-    create_backend, OllamaBackend, ClaudeBackend, OpenAIBackend, ResonantBackend,
+    ClaudeBackend, OpenAIBackend,
     ClaudeCodeBackend, CodexBackend, _find_cli,
 )
 from ..engine import Session
-from ..engine.tools import AGENT_TOOLS
 from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
 from .project_instructions import load_project_instructions, get_instruction_info
 from .task_runner import TaskRunner
 from .scheduler import Scheduler
+from .runtime import BackendSpec
 from ..engine.hooks import HookRunner
 from ..engine.mcp import MCPManager
 from ..engine.memory import EngramIntegration
@@ -62,9 +64,13 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 class AppState:
     """Shared application state."""
 
+    SESSION_MAX_STEPS = 25
+    SESSION_MAX_TOKENS = 4096
+
     def __init__(self):
         self.available_backends: dict = {}
         self.backend = None
+        self.backend_spec: Optional[BackendSpec] = None
         self.session: Optional[Session] = None
         self.api_url = ""
         self.ollama_url = ""
@@ -81,7 +87,11 @@ class AppState:
         self._first_message_sent = False
         # Settings & cost tracking
         self.settings = SettingsManager()
+        self.permission_mode = str(
+            self.settings.get("general", "default_permission_mode", "bypass") or "bypass"
+        )
         self.costs = CostTracker()
+        self._budget_alert_days: set[str] = set()
         # Project instructions (RESONANT.md)
         self._project_instructions: str | None = None
         # Background tasks & scheduler
@@ -91,9 +101,94 @@ class AppState:
         # Extension systems
         self.hook_runner = HookRunner(self.settings)
         self.mcp_manager = MCPManager(self.settings)
-        self.engram = EngramIntegration(self.settings)
-        self.engram.set_mcp_manager(self.mcp_manager)
+        self.base_engram = EngramIntegration(self.settings)
+        self.base_engram.set_mcp_manager(self.mcp_manager)
+        self.engram = self.base_engram.clone(namespace=self._project_namespace(self.project.project_path))
         self.codebase_index: Optional[CodebaseIndex] = None
+        self.scheduler.set_backend_factory(lambda _task: self.make_background_session)
+        self.apply_project_context(self.project.project_path, refresh_index=True)
+
+    @staticmethod
+    def _normalize_path(project_path: str) -> str:
+        return os.path.normpath(project_path).replace("\\", "/").lower()
+
+    def _project_namespace(self, project_path: str) -> str:
+        normalized = os.path.normpath(project_path).replace("\\", "/").lower()
+        digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
+        return f"project:{digest}"
+
+    def _session_auto_approve(self, mode: Optional[str] = None) -> bool:
+        return (mode or self.permission_mode) != "ask"
+
+    def apply_permission_mode(self, mode: str, session: Optional[Session] = None) -> str:
+        self.permission_mode = mode or "bypass"
+        target = session or self.session
+        if target:
+            target.auto_approve = self._session_auto_approve(self.permission_mode)
+        return self.permission_mode
+
+    def _api_key_details(self, provider: str, env_var: str) -> tuple[str, str, str, str]:
+        settings_value = str(self.settings.get("api_keys", provider, "") or "")
+        if settings_value:
+            return settings_value, "settings", "", provider
+
+        env_value = os.environ.get(env_var, "")
+        if env_value:
+            return env_value, "env", env_var, ""
+
+        return "", "", "", ""
+
+    def apply_project_context(self, project_path: str, refresh_index: bool = True) -> str:
+        project_path = os.path.normpath(project_path or self.project.project_path or os.getcwd())
+        os.chdir(project_path)
+
+        if self._normalize_path(project_path) != self._normalize_path(self.project.project_path):
+            self.project.set_project(project_path)
+        else:
+            self.project.project_path = project_path
+            self.project._ensure_storage()
+            self.project._save_recent_project()
+
+        self._project_instructions = load_project_instructions(project_path)
+        self.engram = self.base_engram.clone(namespace=self._project_namespace(project_path))
+        self.engram.set_mcp_manager(self.mcp_manager)
+
+        current_index_path = (
+            self._normalize_path(str(self.codebase_index.project_path))
+            if self.codebase_index else ""
+        )
+        if refresh_index or not self.codebase_index or current_index_path != self._normalize_path(project_path):
+            self.codebase_index = CodebaseIndex(project_path, engram=self.engram)
+        else:
+            self.codebase_index._engram = self.engram
+
+        if self.session:
+            self._wire_session(
+                self.session,
+                project_path=project_path,
+                engram=self.engram,
+                codebase_index=self.codebase_index,
+            )
+
+        return project_path
+
+    def _wire_session(
+        self,
+        session: Session,
+        *,
+        project_path: Optional[str] = None,
+        engram: Optional[EngramIntegration] = None,
+        codebase_index: Optional[CodebaseIndex] = None,
+    ) -> Session:
+        target_path = project_path or self.project.project_path
+        session.project_instructions = load_project_instructions(target_path)
+        session.hook_runner = self.hook_runner
+        session.mcp_tools = self.mcp_manager.get_all_tools()
+        session._mcp_manager = self.mcp_manager
+        session._engram = engram or self.engram
+        session._codebase_index = codebase_index or self.codebase_index
+        session.auto_approve = self._session_auto_approve()
+        return session
 
     def detect_backends(self):
         """Detect available backends (same logic as TUI)."""
@@ -126,26 +221,32 @@ class AppState:
         except Exception:
             pass
 
-        # Claude
-        anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        anthropic_key, anthropic_source, anthropic_env, anthropic_setting = self._api_key_details(
+            "anthropic", "ANTHROPIC_API_KEY"
+        )
         if anthropic_key:
             try:
                 import anthropic  # noqa: F401
                 available["claude"] = {
-                    "api_key": anthropic_key,
                     "models": ClaudeBackend.MODELS,
+                    "api_key_source": anthropic_source,
+                    "api_key_env": anthropic_env,
+                    "api_key_setting": anthropic_setting,
                 }
             except ImportError:
                 pass
 
-        # OpenAI
-        openai_key = os.environ.get("OPENAI_API_KEY", "")
+        openai_key, openai_source, openai_env, openai_setting = self._api_key_details(
+            "openai", "OPENAI_API_KEY"
+        )
         if openai_key:
             try:
                 import openai  # noqa: F401
                 available["openai"] = {
-                    "api_key": openai_key,
                     "models": OpenAIBackend.MODELS,
+                    "api_key_source": openai_source,
+                    "api_key_env": openai_env,
+                    "api_key_setting": openai_setting,
                 }
             except ImportError:
                 pass
@@ -192,6 +293,11 @@ class AppState:
                     available["claude-code"] = {
                         "models": list(ClaudeCodeBackend.MODELS),
                         "model_labels": ClaudeCodeBackend.MODEL_LABELS,
+                        "permission_mode": (
+                            self.backend_spec.permission_mode
+                            if self.backend_spec and self.backend_spec.backend_type == "claude-code"
+                            else "bypassPermissions"
+                        ),
                     }
             except Exception:
                 pass
@@ -216,52 +322,185 @@ class AppState:
         self.available_backends = available
         return available
 
-    def create_backend(self, backend_type: str, model: str = None):
-        """Create a backend and session."""
+    def build_backend_spec(
+        self,
+        backend_type: str,
+        model: str | None = None,
+        project_path: str | None = None,
+    ) -> BackendSpec:
+        project_path = os.path.normpath(project_path or self.project.project_path)
+
+        if (
+            self.backend_spec and
+            self.backend_spec.backend_type == backend_type and
+            (not model or self.backend_spec.model == model)
+        ):
+            spec = BackendSpec.from_dict(self.backend_spec.to_dict(include_sensitive=True))
+            if model:
+                spec.model = model
+            if backend_type in {"claude-code", "codex"}:
+                spec.cwd = project_path
+            return spec
+
         info = self.available_backends.get(backend_type)
         if not info:
             raise ValueError(f"Backend '{backend_type}' not available")
 
+        models = info.get("models") or []
+        selected_model = model or (models[0] if models else "")
+        spec = BackendSpec(backend_type=backend_type, model=selected_model)
+
         if backend_type == "resonant":
-            self.backend = create_backend("resonant", info["url"])
+            spec.url = info.get("url", "")
         elif backend_type == "ollama":
-            model = model or info["models"][0]
-            self.backend = create_backend("ollama", info["url"], model=model)
+            spec.url = info.get("url", "")
         elif backend_type == "claude":
-            model = model or info["models"][0]
-            self.backend = create_backend("claude", api_key=info["api_key"], model=model)
+            spec.api_key_source = info.get("api_key_source", "")
+            spec.api_key_env = info.get("api_key_env", "")
+            spec.api_key_setting = info.get("api_key_setting", "")
         elif backend_type == "openai":
-            model = model or info["models"][0]
-            self.backend = create_backend("openai", api_key=info["api_key"], model=model)
+            spec.api_key_source = info.get("api_key_source", "")
+            spec.api_key_env = info.get("api_key_env", "")
+            spec.api_key_setting = info.get("api_key_setting", "")
         elif backend_type == "lmstudio":
-            model = model or info["models"][0]
-            self.backend = create_backend("lmstudio", api_key="lm-studio", model=model, base_url=info["url"])
+            spec.base_url = info.get("url", "")
+            spec.api_key = "lm-studio"
+            spec.api_key_source = "literal"
         elif backend_type == "claude-code":
-            model = model or info["models"][0]
-            self.backend = create_backend("claude-code", model=model, cwd=self.project.project_path)
+            spec.cwd = project_path
+            spec.permission_mode = info.get("permission_mode", "bypassPermissions")
         elif backend_type == "codex":
-            model = model or info["models"][0]
-            self.backend = create_backend("codex", model=model, cwd=self.project.project_path)
+            spec.cwd = project_path
 
-        # Load project instructions
-        self._project_instructions = load_project_instructions(self.project.project_path)
+        return spec
 
-        self.session = Session(
-            backend=self.backend,
-            max_steps=25,
-            max_tokens=4096,
-            auto_approve=True,
-            project_instructions=self._project_instructions,
+    def build_session(
+        self,
+        backend=None,
+        *,
+        backend_spec: Optional[BackendSpec | dict[str, Any]] = None,
+        project_path: Optional[str] = None,
+        auto_approve: Optional[bool] = None,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> Session:
+        project_path = os.path.normpath(project_path or self.project.project_path)
+        spec = (
+            backend_spec if isinstance(backend_spec, BackendSpec)
+            else BackendSpec.from_dict(backend_spec)
+            if backend_spec else None
         )
-        # Wire extension systems
-        self.session.hook_runner = self.hook_runner
-        self.session.mcp_tools = self.mcp_manager.get_all_tools()
-        self.session._mcp_manager = self.mcp_manager
-        self.session._engram = self.engram
-        self.session._codebase_index = self.codebase_index
+        backend = backend or (spec.create_backend(self.settings) if spec else None)
+        if backend is None:
+            raise ValueError("Backend or backend spec is required to build a session")
+
+        if self._normalize_path(project_path) == self._normalize_path(self.project.project_path):
+            project_instructions = self._project_instructions or load_project_instructions(project_path)
+            engram = self.engram
+            codebase_index = self.codebase_index
+        else:
+            project_instructions = load_project_instructions(project_path)
+            engram = self.base_engram.clone(namespace=self._project_namespace(project_path))
+            engram.set_mcp_manager(self.mcp_manager)
+            codebase_index = CodebaseIndex(project_path, engram=engram)
+
+        session = Session(
+            backend=backend,
+            max_steps=self.SESSION_MAX_STEPS,
+            max_tokens=self.SESSION_MAX_TOKENS,
+            auto_approve=self._session_auto_approve() if auto_approve is None else auto_approve,
+            project_instructions=project_instructions,
+            cancel_event=cancel_event,
+        )
+        return self._wire_session(
+            session,
+            project_path=project_path,
+            engram=engram,
+            codebase_index=codebase_index,
+        )
+
+    def create_backend(self, backend_type: str, model: str = None):
+        """Create a backend and session."""
+        spec = self.build_backend_spec(backend_type, model=model, project_path=self.project.project_path)
+        self.backend = spec.create_backend(self.settings)
+        self.backend_spec = spec
+        self._project_instructions = load_project_instructions(self.project.project_path)
+        self.session = self.build_session(
+            backend=self.backend,
+            backend_spec=spec,
+            project_path=self.project.project_path,
+        )
+        self.apply_permission_mode(self.permission_mode, session=self.session)
         return self.backend
 
-    def get_init_data(self) -> dict:
+    def apply_settings(self, section: str = "", key: str | None = None):
+        if section == "mcp_servers":
+            self.mcp_manager.disconnect_all()
+
+        self.hook_runner.reload()
+        self.base_engram.reload()
+        self.base_engram.set_mcp_manager(self.mcp_manager)
+        self.apply_project_context(self.project.project_path, refresh_index=True)
+        self.detect_backends()
+
+        if section == "general" and key == "default_permission_mode":
+            configured_mode = str(
+                self.settings.get("general", "default_permission_mode", self.permission_mode) or "bypass"
+            )
+            self.apply_permission_mode(configured_mode, session=self.session)
+        elif self.session:
+            self.apply_permission_mode(self.permission_mode, session=self.session)
+
+        if (
+            self.backend_spec and
+            self.backend_spec.backend_type in {"claude", "openai", "lmstudio"} and
+            section in {"api_keys", "engram", "general"}
+        ):
+            try:
+                self.backend = self.backend_spec.create_backend(self.settings)
+                if self.session:
+                    self.session.backend = self.backend
+            except Exception:
+                logger.warning("Failed to refresh current backend after settings update", exc_info=True)
+
+        return self.settings.get_masked()
+
+    def update_setting_value(
+        self,
+        section: str,
+        key: str | None,
+        value: Any,
+        *,
+        clear_secret: bool = False,
+    ) -> dict:
+        if section:
+            if section == "api_keys" and key:
+                if clear_secret:
+                    self.settings.set(section, key, "")
+                elif value not in ("", None):
+                    self.settings.set(section, key, value)
+            elif key:
+                self.settings.set(section, key, value)
+            else:
+                self.settings.update_section(section, value or {})
+
+        return self.apply_settings(section, key)
+
+    def make_background_session(self, task) -> Session:
+        project_path = os.path.normpath(task.project_path or self.project.project_path)
+        spec = (
+            BackendSpec.from_dict(task.backend_spec)
+            if task.backend_spec else
+            self.build_backend_spec(task.backend_type, model=task.model, project_path=project_path)
+        )
+        backend = spec.create_backend(self.settings)
+        return self.build_session(
+            backend=backend,
+            backend_spec=spec,
+            project_path=project_path,
+            cancel_event=task.cancel_event,
+        )
+
+    def get_init_data(self, refresh_only: bool = False) -> dict:
         """Get initial state for the frontend."""
         backends_info = {}
         for key, info in self.available_backends.items():
@@ -284,10 +523,12 @@ class AppState:
 
         return {
             "event": "init",
+            "refresh_only": refresh_only,
             "backends": backends_info,
             "current_backend": current_backend,
             "current_model": current_model,
             "handles_tools": handles_tools,
+            "permission_mode": self.permission_mode,
             "cwd": self.project.project_path.replace("\\", "/"),
             "sessions": self.project.list_sessions(),
             "all_sessions": self.project.list_all_sessions(),
@@ -392,6 +633,7 @@ async def websocket_endpoint(ws: WebSocket):
                             pass
 
                 state.cancel_requested.clear()
+                state.session.reset_cancel()
                 display_events = await _run_session_streaming(ws, state.session, text, images=images)
 
                 # Save session after each message exchange (with display events for replay)
@@ -405,20 +647,19 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif command == "cancel":
                 state.cancel_requested.set()
-                # Send immediate feedback so UI stops showing "thinking"
-                await ws.send_json({"event": "error", "message": "Cancelled"})
-                await ws.send_json({"event": "session.end", "total_elapsed": 0, "total_steps": 0})
+                if state.session:
+                    state.session.cancel()
+                await ws.send_json({"event": "status_msg", "message": "Cancelling..."})
 
             elif command == "clear":
                 # Create a new session (don't destroy old one)
                 if state.backend:
                     backend_type = getattr(state.backend, "name", "")
                     model = getattr(state.backend, "model", "")
-                    state.session = Session(
+                    state.session = state.build_session(
                         backend=state.backend,
-                        max_steps=25,
-                        max_tokens=4096,
-                        auto_approve=True,
+                        backend_spec=state.backend_spec,
+                        project_path=state.project.project_path,
                     )
                     state.project.create_session(backend_type=backend_type, model=model)
                     state._first_message_sent = False
@@ -445,25 +686,17 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif command == "set_permission_mode":
                 mode = msg.get("mode", "bypass")
-                if state.session:
-                    if mode == "bypass":
-                        state.session.auto_approve = True
-                    elif mode == "ask":
-                        state.session.auto_approve = False
-                    elif mode == "auto-edit":
-                        # Auto-approve file edits, ask for others
-                        state.session.auto_approve = True  # TODO: granular per-tool control
-                    elif mode == "plan":
-                        state.session.auto_approve = True  # Plan mode handled client-side
+                state.apply_permission_mode(mode)
 
             elif command == "switch_session":
                 session_id = msg.get("session_id", "")
                 # If session is from a different project, switch project first
                 project_path = msg.get("project_path", "")
-                if project_path and os.path.normpath(project_path).replace("\\", "/").lower() != os.path.normpath(state.project.project_path).replace("\\", "/").lower():
+                if project_path and state._normalize_path(project_path) != state._normalize_path(state.project.project_path):
                     if os.path.isdir(project_path):
-                        state.project = ProjectManager(project_path)
-                        state.project._save_recent_project()
+                        state.apply_project_context(project_path, refresh_index=True)
+                        state.backend = None
+                        state.backend_spec = None
                         state.session = None
                         state._first_message_sent = False
                         await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
@@ -477,6 +710,10 @@ async def websocket_endpoint(ws: WebSocket):
                             await asyncio.get_event_loop().run_in_executor(
                                 None, state.create_backend, backend_type, model or None
                             )
+                        else:
+                            state.backend = None
+                            state.backend_spec = None
+                            state.session = None
                         if state.session and record.conversation_history:
                             state.session.conversation_history = record.conversation_history
                         state._first_message_sent = record.message_count > 0
@@ -528,14 +765,13 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "set_project":
                 project_path = msg.get("path", "").strip()
                 if project_path and os.path.isdir(project_path):
-                    os.chdir(project_path)
-                    state.project.set_project(project_path)
+                    state.apply_project_context(project_path, refresh_index=True)
                     # Reset backend + session
                     state.backend = None
+                    state.backend_spec = None
                     state.session = None
                     state._first_message_sent = False
-                    # Create codebase index for new project
-                    state.codebase_index = CodebaseIndex(project_path, engram=state.engram)
+                    state.costs.reset_session()
                     # Re-detect backends
                     await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
                     await ws.send_json(state.get_init_data())
@@ -615,12 +851,15 @@ async def websocket_endpoint(ws: WebSocket):
                 section = msg.get("section", "")
                 key = msg.get("key")
                 value = msg.get("value")
-                if section:
-                    if key:
-                        state.settings.set(section, key, value)
-                    else:
-                        state.settings.update_section(section, value or {})
-                await ws.send_json({"event": "settings", "data": state.settings.get_masked()})
+                clear_secret = bool(msg.get("clear_secret", False))
+                data = state.update_setting_value(
+                    section,
+                    key,
+                    value,
+                    clear_secret=clear_secret,
+                )
+                await ws.send_json({"event": "settings", "data": data})
+                await ws.send_json(state.get_init_data(refresh_only=True))
 
             # ── Cost Tracking ───────────────────────────────
             elif command == "get_costs":
@@ -635,22 +874,27 @@ async def websocket_endpoint(ws: WebSocket):
                 if not prompt:
                     await ws.send_json({"event": "error", "message": "No prompt provided"})
                     continue
-
-                def _make_backend(bt=backend_type, m=model):
-                    return lambda: create_backend(bt, model=m)
-
-                task = state.task_runner.submit(
-                    name=name,
-                    prompt=prompt,
-                    backend_factory=_make_backend(),
-                    backend_type=backend_type,
-                    model=model,
-                    project_path=state.project.project_path,
-                )
-                await ws.send_json({
-                    "event": "dispatch_submitted",
-                    "task": task.to_dict(),
-                })
+                try:
+                    spec = state.build_backend_spec(
+                        backend_type,
+                        model=model or None,
+                        project_path=state.project.project_path,
+                    )
+                    task = state.task_runner.submit(
+                        name=name,
+                        prompt=prompt,
+                        session_factory=state.make_background_session,
+                        backend_type=backend_type,
+                        model=spec.model,
+                        project_path=state.project.project_path,
+                        backend_spec=spec.to_dict(),
+                    )
+                    await ws.send_json({
+                        "event": "dispatch_submitted",
+                        "task": task.to_dict(),
+                    })
+                except Exception as e:
+                    await ws.send_json({"event": "error", "message": str(e)})
 
             elif command == "dispatch_list":
                 tasks = state.task_runner.list_tasks()
@@ -683,12 +927,18 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "message": "Prompt and schedule are required"})
                     continue
                 try:
+                    spec = state.build_backend_spec(
+                        backend_type,
+                        model=model or None,
+                        project_path=state.project.project_path,
+                    )
                     sched = state.scheduler.add(
                         name=name,
                         prompt=prompt,
                         schedule=schedule,
                         backend_type=backend_type,
-                        model=model,
+                        model=spec.model,
+                        backend_spec=spec.to_dict(),
                         project_path=state.project.project_path,
                     )
                     await ws.send_json({"event": "schedule_created", "schedule": sched.to_dict()})
@@ -705,6 +955,17 @@ async def websocket_endpoint(ws: WebSocket):
                 for key in ("name", "prompt", "schedule", "backend_type", "model", "enabled"):
                     if key in msg:
                         updates[key] = msg[key]
+                if "backend_type" in updates or "model" in updates:
+                    schedules = state.scheduler.list_schedules()
+                    existing = next((item for item in schedules if item["id"] == task_id), None)
+                    if existing:
+                        spec = state.build_backend_spec(
+                            updates.get("backend_type", existing.get("backend_type", "")),
+                            model=updates.get("model", existing.get("model", "")) or None,
+                            project_path=existing.get("project_path", state.project.project_path),
+                        )
+                        updates["backend_spec"] = spec.to_dict()
+                        updates["model"] = spec.model
                 state.scheduler.update(task_id, **updates)
                 schedules = state.scheduler.list_schedules()
                 await ws.send_json({"event": "schedule_list", "schedules": schedules})
@@ -864,9 +1125,12 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
             event_data["review"] = review.to_dict()
 
         event_queue.put(event_data)
-        state.permission_response.wait(timeout=300)
-        state.permission_response.clear()
-        return state.permission_result[0]
+        while True:
+            if session.cancel_requested or state.cancel_requested.is_set():
+                return False
+            if state.permission_response.wait(timeout=0.1):
+                state.permission_response.clear()
+                return state.permission_result[0]
 
     def on_choice(options):
         """Push choice request to frontend, block until response."""
@@ -874,9 +1138,12 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
             "event": "choices",
             "options": options,
         })
-        state.choice_response.wait(timeout=300)
-        state.choice_response.clear()
-        return state.choice_result[0]
+        while True:
+            if session.cancel_requested or state.cancel_requested.is_set():
+                return options[0] if options else ""
+            if state.choice_response.wait(timeout=0.1):
+                state.choice_response.clear()
+                return state.choice_result[0]
 
     def _engine_thread():
         try:
@@ -887,8 +1154,6 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
                 images=images,
             ):
                 event_queue.put(event)
-                if state.cancel_requested.is_set():
-                    break
         except Exception as e:
             event_queue.put(make_event(EngineEvent.ERROR, message=str(e)))
         finally:
@@ -902,11 +1167,8 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
     # because text.done captures the final text; status/session.start are ephemeral)
     SKIP_FOR_REPLAY = {"text.delta", "thinking.delta", "session.start", "status"}
 
-    def _get_event_with_cancel():
-        """Get next event from queue, checking cancel every 0.5s."""
+    def _get_event():
         while True:
-            if state.cancel_requested.is_set():
-                return None
             try:
                 return event_queue.get(timeout=0.5)
             except queue.Empty:
@@ -915,7 +1177,7 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
     loop = asyncio.get_event_loop()
     try:
         while True:
-            event = await loop.run_in_executor(None, _get_event_with_cancel)
+            event = await loop.run_in_executor(None, _get_event)
             if event is None:
                 break
             # Enrich file_edit events with diff lines for frontend rendering
@@ -950,10 +1212,23 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
                 model = event.get("model", "")
                 in_tok = stats.get("input_tokens", 0)
                 out_tok = stats.get("output_tokens", 0)
-                if in_tok or out_tok:
+                if (in_tok or out_tok) and state.settings.get("cost_tracking", "enabled", True):
                     cost = state.costs.record_usage(model, in_tok, out_tok)
                     stats["cost_usd"] = round(cost, 6)
                     stats["session_cost_usd"] = state.costs.get_session_cost()["cost_usd"]
+                    budget_alert = state.settings.get("cost_tracking", "budget_alert_usd", None)
+                    today = date.today().isoformat()
+                    today_cost = state.costs.get_daily_cost(today)["cost_usd"]
+                    if (
+                        budget_alert is not None and
+                        today_cost >= float(budget_alert) and
+                        today not in state._budget_alert_days
+                    ):
+                        state._budget_alert_days.add(today)
+                        await ws.send_json({
+                            "event": "status_msg",
+                            "message": f"Daily spend crossed ${float(budget_alert):.2f} (${today_cost:.4f} today)",
+                        })
 
             # Collect display events for session replay (skip streaming deltas)
             if event_type not in SKIP_FOR_REPLAY:
@@ -962,6 +1237,7 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
             try:
                 await ws.send_json(event)
             except Exception:
+                session.cancel()
                 break
     finally:
         state.active_thread = None

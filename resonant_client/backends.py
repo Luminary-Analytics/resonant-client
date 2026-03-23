@@ -367,6 +367,7 @@ class OllamaBackend:
         instructions: str,
         tools: list,
         max_tokens: int = 4096,
+        cancel_event=None,
     ) -> Iterator[Tuple[str, dict]]:
         """
         Stream a chat completion from Ollama with adaptive tool calling.
@@ -524,6 +525,8 @@ class OllamaBackend:
                     resp.raise_for_status()
                     buf = b""
                     for chunk in resp.iter_raw():
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
                         buf += chunk
                         while b"\n" in buf:
                             line_bytes, buf = buf.split(b"\n", 1)
@@ -709,6 +712,7 @@ class ResonantBackend:
         instructions: str,
         tools: list,
         max_tokens: int = 4096,
+        cancel_event=None,
     ) -> Iterator[Tuple[str, dict]]:
         """
         Stream events from the Resonant Engine /v1/responses endpoint.
@@ -750,6 +754,8 @@ class ResonantBackend:
                     resp.raise_for_status()
                     event_type = None
                     for line in resp.iter_lines():
+                        if cancel_event is not None and cancel_event.is_set():
+                            return
                         line = line.strip()
                         if not line:
                             continue
@@ -871,6 +877,7 @@ class ClaudeBackend:
         instructions: str,
         tools: list,
         max_tokens: int = 16384,
+        cancel_event=None,
     ) -> Iterator[Tuple[str, dict]]:
         """Stream a response from the Claude API with native tool use."""
         client = self._get_client()
@@ -984,6 +991,8 @@ class ClaudeBackend:
                 pending_tools = {}  # block_index -> {"id": ..., "name": ..., "json_parts": [...]}
 
                 for event in stream:
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
                     if not hasattr(event, 'type'):
                         continue
 
@@ -1159,6 +1168,7 @@ class OpenAIBackend:
         instructions: str,
         tools: list,
         max_tokens: int = 4096,
+        cancel_event=None,
     ) -> Iterator[Tuple[str, dict]]:
         """Stream a response from OpenAI API with native function calling."""
         # LM Studio / local models: use text-based tool calling (system prompt + XML parsing)
@@ -1274,6 +1284,8 @@ class OpenAIBackend:
 
             response = client.chat.completions.create(**kwargs)
             for chunk in response:
+                if cancel_event is not None and cancel_event.is_set():
+                    return
                 choice = chunk.choices[0] if chunk.choices else None
                 if not choice:
                     # Usage chunk at the end
@@ -1378,7 +1390,7 @@ def _clean_env_for_cli(strip_prefixes: list = None) -> dict:
     return env
 
 
-def _stream_subprocess(cmd: list, cwd: str = None, env: dict = None) -> Iterator[str]:
+def _stream_subprocess(cmd: list, cwd: str = None, env: dict = None, cancel_event=None) -> Iterator[str]:
     """Spawn a subprocess and yield stdout lines as they arrive."""
     creation_flags = 0
     if sys.platform == "win32":
@@ -1398,6 +1410,22 @@ def _stream_subprocess(cmd: list, cwd: str = None, env: dict = None) -> Iterator
         shell=(sys.platform == "win32"),  # Required for .cmd files on Windows
         env=env,
     )
+
+    watcher = None
+    if cancel_event is not None:
+        import threading as _threading
+
+        def _watch_cancel():
+            cancel_event.wait()
+            if proc.poll() is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+
+        watcher = _threading.Thread(target=_watch_cancel, daemon=True)
+        watcher.start()
+
     try:
         for line in proc.stdout:
             line = line.strip()
@@ -1469,7 +1497,7 @@ class ClaudeCodeBackend:
         return ""  # Skip classification for CLI backends
 
     def stream(self, user_msg: str, conversation_history: list, instructions: str,
-               tools: list, max_tokens: int = 16384) -> Iterator[Tuple[str, dict]]:
+               tools: list, max_tokens: int = 16384, cancel_event=None) -> Iterator[Tuple[str, dict]]:
         if not self._cli:
             yield (EVENT_ERROR, {"message": "claude CLI not found. Install: npm install -g @anthropic-ai/claude-code"})
             return
@@ -1493,7 +1521,7 @@ class ClaudeCodeBackend:
 
         got_result = False
         try:
-            for line in _stream_subprocess(cmd, cwd=self.cwd, env=env):
+            for line in _stream_subprocess(cmd, cwd=self.cwd, env=env, cancel_event=cancel_event):
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -1643,7 +1671,7 @@ class CodexBackend:
         return ""  # Skip classification for CLI backends
 
     def stream(self, user_msg: str, conversation_history: list, instructions: str,
-               tools: list, max_tokens: int = 16384) -> Iterator[Tuple[str, dict]]:
+               tools: list, max_tokens: int = 16384, cancel_event=None) -> Iterator[Tuple[str, dict]]:
         if not self._cli:
             yield (EVENT_ERROR, {"message": "codex CLI not found. Install: npm install -g @openai/codex"})
             return
@@ -1669,7 +1697,7 @@ class CodexBackend:
         last_agent_text = ""
 
         try:
-            for line in _stream_subprocess(cmd, cwd=self.cwd):
+            for line in _stream_subprocess(cmd, cwd=self.cwd, cancel_event=cancel_event):
                 try:
                     event = json.loads(line)
                 except json.JSONDecodeError:
@@ -1768,7 +1796,8 @@ class CodexBackend:
 # ---------------------------------------------------------------------------
 
 def create_backend(backend_type: str, url: str = None, model: str = None,
-                   api_key: str = None, base_url: str = None, cwd: str = None):
+                   api_key: str = None, base_url: str = None, cwd: str = None,
+                   permission_mode: str = None):
     if backend_type == "ollama":
         if not model:
             raise ValueError("Model name required for Ollama backend")
@@ -1784,7 +1813,11 @@ def create_backend(backend_type: str, url: str = None, model: str = None,
             api_key = "lm-studio"  # LM Studio doesn't need a real key
         return OpenAIBackend(api_key, model=model or "gpt-4o", base_url=base_url)
     elif backend_type == "claude-code":
-        return ClaudeCodeBackend(model=model or "sonnet", cwd=cwd)
+        return ClaudeCodeBackend(
+            model=model or "sonnet",
+            cwd=cwd,
+            permission_mode=permission_mode or "bypassPermissions",
+        )
     elif backend_type == "codex":
         return CodexBackend(model=model, cwd=cwd)
     else:

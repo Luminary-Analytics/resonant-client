@@ -1,9 +1,11 @@
 """
 Background Task Runner for Resonant Client.
 
-Executes prompts in background threads using the engine,
-shared by both Dispatch (one-off) and Scheduled Tasks (recurring).
+Executes prompts in background threads using the same session wiring as chat.
+Shared by both Dispatch (one-off) and Scheduled Tasks (recurring).
 """
+
+from __future__ import annotations
 
 import json
 import logging
@@ -31,12 +33,14 @@ class TaskStatus(str, Enum):
 @dataclass
 class BackgroundTask:
     """A single background task."""
+
     id: str
     name: str
     prompt: str
     backend_type: str
     model: str
     project_path: str
+    backend_spec: dict[str, Any] = field(default_factory=dict)
     status: TaskStatus = TaskStatus.PENDING
     created_at: str = ""
     started_at: str = ""
@@ -46,6 +50,9 @@ class BackgroundTask:
     display_events: list = field(default_factory=list)
     steps: int = 0
     elapsed: float = 0.0
+    cancel_event: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
+    session_factory: Optional[Callable[["BackgroundTask"], Any]] = field(default=None, repr=False, compare=False)
+    session: Any = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if not self.created_at:
@@ -59,6 +66,7 @@ class BackgroundTask:
             "backend_type": self.backend_type,
             "model": self.model,
             "project_path": self.project_path,
+            "backend_spec": self.backend_spec,
             "status": self.status.value,
             "created_at": self.created_at,
             "started_at": self.started_at,
@@ -70,10 +78,10 @@ class BackgroundTask:
         }
 
     def to_full_dict(self) -> dict:
-        d = self.to_dict()
-        d["result"] = self.result
-        d["display_events"] = self.display_events
-        return d
+        data = self.to_dict()
+        data["result"] = self.result
+        data["display_events"] = self.display_events
+        return data
 
 
 class TaskRunner:
@@ -84,7 +92,7 @@ class TaskRunner:
         self._tasks: dict[str, BackgroundTask] = {}
         self._lock = threading.Lock()
         self._persist_dir = Path(persist_dir) if persist_dir else Path.home() / ".resonant" / "tasks"
-        self._on_complete: Optional[Callable] = None  # callback(task) when done
+        self._on_complete: Optional[Callable] = None
         self._load_persisted()
 
     def set_on_complete(self, callback: Callable):
@@ -95,10 +103,11 @@ class TaskRunner:
         self,
         name: str,
         prompt: str,
-        backend_factory: Callable,
+        session_factory: Callable[[BackgroundTask], Any],
         backend_type: str = "",
         model: str = "",
         project_path: str = "",
+        backend_spec: Optional[dict[str, Any]] = None,
     ) -> BackgroundTask:
         """Submit a new background task. Returns the task object."""
         task = BackgroundTask(
@@ -108,33 +117,36 @@ class TaskRunner:
             backend_type=backend_type,
             model=model,
             project_path=project_path,
+            backend_spec=backend_spec or {},
+            session_factory=session_factory,
         )
 
         with self._lock:
             self._tasks[task.id] = task
 
-        self._pool.submit(self._run_task, task, backend_factory)
+        self._pool.submit(self._run_task, task)
         return task
 
-    def _run_task(self, task: BackgroundTask, backend_factory: Callable):
+    def _run_task(self, task: BackgroundTask):
         """Execute a task in a worker thread."""
+        if task.cancel_event.is_set():
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = datetime.now().isoformat()
+            return
+
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.now().isoformat()
+        start = time.time()
 
         try:
-            backend = backend_factory()
-            from ..engine import Session
+            if not task.session_factory:
+                raise ValueError("No session factory configured for background task")
 
-            session = Session(
-                backend=backend,
-                max_steps=25,
-                max_tokens=4096,
-                auto_approve=True,
-            )
+            session = task.session_factory(task)
+            task.session = session
 
             collected_text = []
             steps = 0
-            start = time.time()
 
             for event in session.run(task.prompt):
                 event_type = event.get("event", "")
@@ -147,26 +159,46 @@ class TaskRunner:
                 elif event_type == "step.end":
                     steps += 1
                 elif event_type == "error":
-                    task.error = event.get("message", "Unknown error")
+                    message = event.get("message", "Unknown error")
+                    if task.cancel_event.is_set() or message == "Interrupted":
+                        task.status = TaskStatus.CANCELLED
+                    else:
+                        task.error = message
+
+                if task.cancel_event.is_set():
+                    session.cancel()
 
             task.result = "\n\n".join(collected_text) if collected_text else "(no output)"
             task.steps = steps
             task.elapsed = time.time() - start
-            task.status = TaskStatus.COMPLETED
 
-        except Exception as e:
-            task.status = TaskStatus.FAILED
-            task.error = str(e)
-            logger.error(f"Task {task.id} failed: {e}")
+            if task.cancel_event.is_set():
+                task.status = TaskStatus.CANCELLED
+                if not task.result or task.result == "(no output)":
+                    task.result = "Cancelled"
+            elif task.status != TaskStatus.CANCELLED and task.error:
+                task.status = TaskStatus.FAILED
+            else:
+                task.status = TaskStatus.COMPLETED
 
-        task.completed_at = datetime.now().isoformat()
-        self._persist_task(task)
+        except Exception as exc:
+            if task.cancel_event.is_set():
+                task.status = TaskStatus.CANCELLED
+                task.error = ""
+            else:
+                task.status = TaskStatus.FAILED
+                task.error = str(exc)
+                logger.error(f"Task {task.id} failed: {exc}")
+        finally:
+            task.completed_at = datetime.now().isoformat()
+            task.session = None
+            self._persist_task(task)
 
-        if self._on_complete:
-            try:
-                self._on_complete(task)
-            except Exception as e:
-                logger.error(f"Task completion callback error: {e}")
+            if self._on_complete:
+                try:
+                    self._on_complete(task)
+                except Exception as exc:
+                    logger.error(f"Task completion callback error: {exc}")
 
     def get_task(self, task_id: str) -> Optional[BackgroundTask]:
         with self._lock:
@@ -176,19 +208,24 @@ class TaskRunner:
         with self._lock:
             tasks = sorted(
                 self._tasks.values(),
-                key=lambda t: t.created_at,
+                key=lambda task: task.created_at,
                 reverse=True,
             )[:limit]
-            return [t.to_dict() for t in tasks]
+            return [task.to_dict() for task in tasks]
 
     def cancel(self, task_id: str) -> bool:
         with self._lock:
             task = self._tasks.get(task_id)
-            if task and task.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
+            if not task or task.status not in (TaskStatus.PENDING, TaskStatus.RUNNING):
+                return False
+            task.cancel_event.set()
+            if task.session:
+                task.session.cancel()
+            if task.status == TaskStatus.PENDING:
                 task.status = TaskStatus.CANCELLED
                 task.completed_at = datetime.now().isoformat()
-                return True
-            return False
+                self._persist_task(task)
+            return True
 
     def _persist_task(self, task: BackgroundTask):
         """Save task to disk for history."""
@@ -199,8 +236,8 @@ class TaskRunner:
                 json.dumps(task.to_full_dict(), indent=2, ensure_ascii=False),
                 encoding="utf-8",
             )
-        except OSError as e:
-            logger.error(f"Failed to persist task: {e}")
+        except OSError as exc:
+            logger.error(f"Failed to persist task: {exc}")
 
     def _load_persisted(self):
         """Load completed tasks from disk."""
@@ -216,6 +253,7 @@ class TaskRunner:
                     backend_type=data.get("backend_type", ""),
                     model=data.get("model", ""),
                     project_path=data.get("project_path", ""),
+                    backend_spec=data.get("backend_spec", {}),
                     status=TaskStatus(data.get("status", "completed")),
                     created_at=data.get("created_at", ""),
                     started_at=data.get("started_at", ""),
@@ -229,5 +267,5 @@ class TaskRunner:
                 with self._lock:
                     if task.id not in self._tasks:
                         self._tasks[task.id] = task
-        except Exception as e:
-            logger.warning(f"Failed to load persisted tasks: {e}")
+        except Exception as exc:
+            logger.warning(f"Failed to load persisted tasks: {exc}")

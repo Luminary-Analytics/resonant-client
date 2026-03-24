@@ -130,8 +130,15 @@ class ResonantApp {
         this.activeToolGroupCount = 0;
         this.activeToolGroupCounts = {};  // {name: count}
 
+        // Mode tabs — Chat vs Code
+        this.sessionMode = 'code';          // active tab (affects new session creation)
+        this.currentSessionMode = 'code';   // loaded session's mode (affects rendering)
+        this.chatGroups = [];               // ordered list of group names
+        this.expandedGroups = new Set();     // which groups are expanded in sidebar
+
         // Terminal tracking — active bash/tool executions
         this.activeTerminals = new Map(); // call_id → {name, command, startTime}
+        this._terminalTimer = null;
 
         // Attached images for multimodal input
         this.attachedImages = [];
@@ -224,6 +231,7 @@ class ResonantApp {
         }
 
         this.bindEvents();
+        this.showSessionSkeletons();
         this.connect();
     }
 
@@ -274,6 +282,11 @@ class ResonantApp {
     // ── Event Binding ───────────────────────────────────────────
 
     bindEvents() {
+        // Mode tabs (Chat / Code)
+        document.querySelectorAll('.mode-tab').forEach(tab => {
+            tab.addEventListener('click', () => this.setSessionMode(tab.dataset.mode));
+        });
+
         // Send message
         this.sendBtn.addEventListener('click', () => this.sendMessage());
         this.userInput.addEventListener('keydown', (e) => {
@@ -294,12 +307,10 @@ class ResonantApp {
             this.send({ command: 'cancel' });
         });
 
-        // Terminal bar — toggle expand/collapse
-        this.terminalBarToggle.addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.terminalBar.classList.toggle('expanded');
-        });
-        document.getElementById('terminal-bar-header').addEventListener('click', () => {
+        // Terminal bar — header click toggles expand/collapse
+        document.getElementById('terminal-bar-header').addEventListener('click', (e) => {
+            // Don't toggle if clicking the stop-all button
+            if (e.target.closest('.terminal-bar-stop')) return;
             this.terminalBar.classList.toggle('expanded');
         });
 
@@ -307,6 +318,15 @@ class ResonantApp {
         this.terminalStopAll.addEventListener('click', (e) => {
             e.stopPropagation();
             this.send({ command: 'cancel' });
+        });
+
+        // Terminal bar — event delegation for individual stop buttons
+        this.terminalBarList.addEventListener('click', (e) => {
+            const stopBtn = e.target.closest('.terminal-entry-stop');
+            if (stopBtn) {
+                e.stopPropagation();
+                this.send({ command: 'cancel' });
+            }
         });
 
         // Model selector — value is "backend:model" (model may contain colons like "nemotron:cloud")
@@ -363,6 +383,28 @@ class ResonantApp {
         document.getElementById('new-session-btn').addEventListener('click', () => {
             this.showNewSessionSetup();
         });
+
+        // Add project button (next to project filter dropdown)
+        document.getElementById('pf-add-project')?.addEventListener('click', () => {
+            this.send({ command: 'folder_dialog' });
+        });
+
+        // Chat welcome screen — send button and Enter key
+        const chatWelcomeSend = document.getElementById('chat-welcome-send');
+        const chatWelcomeTextarea = document.getElementById('chat-welcome-textarea');
+        if (chatWelcomeSend && chatWelcomeTextarea) {
+            chatWelcomeSend.addEventListener('click', () => this._sendChatWelcomeMessage());
+            chatWelcomeTextarea.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    this._sendChatWelcomeMessage();
+                }
+            });
+            chatWelcomeTextarea.addEventListener('input', () => {
+                chatWelcomeTextarea.style.height = 'auto';
+                chatWelcomeTextarea.style.height = Math.min(chatWelcomeTextarea.scrollHeight, 200) + 'px';
+            });
+        }
 
         // Image paste (Ctrl+V)
         this.userInput.addEventListener('paste', (e) => {
@@ -483,7 +525,7 @@ class ResonantApp {
         });
 
         // ── Sidebar Navigation ──
-        document.querySelectorAll('.sidebar-nav-item').forEach(item => {
+        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(item => {
             item.addEventListener('click', () => {
                 this.switchView(item.dataset.view);
             });
@@ -616,7 +658,7 @@ class ResonantApp {
     // ── Terminal Bar ─────────────────────────────────────────────
 
     trackTerminalStart(callId, name, args) {
-        const command = name === 'bash' ? (args.command || '') : name;
+        const command = name.toLowerCase() === 'bash' ? (args.command || '') : name;
         this.activeTerminals.set(callId, {
             name,
             command,
@@ -627,26 +669,25 @@ class ResonantApp {
     }
 
     trackTerminalEnd(callId) {
-        const entry = this.activeTerminals.get(callId);
-        if (entry) {
-            this.activeTerminals.delete(callId);
-            // Update the list entry to show done state
-            const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"]`);
-            if (el) {
-                const spinner = el.querySelector('.terminal-entry-spinner');
-                if (spinner) {
-                    spinner.outerHTML = '<span class="terminal-entry-done">✓</span>';
-                }
-                const stopBtn = el.querySelector('.terminal-entry-stop');
-                if (stopBtn) stopBtn.remove();
-                // Remove after brief delay to show completion
-                setTimeout(() => {
-                    el.remove();
-                    this.updateTerminalBar();
-                }, 800);
-            } else {
-                this.updateTerminalBar();
+        if (!this.activeTerminals.has(callId)) return; // guard against duplicate results
+        this.activeTerminals.delete(callId);
+
+        // Update the list entry to show done state
+        const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"]`);
+        if (el) {
+            const spinner = el.querySelector('.terminal-entry-spinner');
+            if (spinner) {
+                spinner.outerHTML = '<span class="terminal-entry-done">✓</span>';
             }
+            const stopBtn = el.querySelector('.terminal-entry-stop');
+            if (stopBtn) stopBtn.remove();
+            // Remove after brief delay to show completion
+            setTimeout(() => {
+                if (el.parentNode) el.remove();
+                this.updateTerminalBar();
+            }, 800);
+        } else {
+            this.updateTerminalBar();
         }
     }
 
@@ -687,12 +728,6 @@ class ResonantApp {
                 </div>
             `;
 
-            // Wire individual stop button
-            entry.querySelector('.terminal-entry-stop').addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.send({ command: 'cancel' });
-            });
-
             this.terminalBarList.appendChild(entry);
         }
     }
@@ -722,6 +757,69 @@ class ResonantApp {
                 }
             }
         }, 500);
+    }
+
+    // ── Mode Tabs (Chat / Code) ─────────────────────────────────
+
+    setSessionMode(mode) {
+        this.sessionMode = mode;
+        document.querySelectorAll('.mode-tab').forEach(tab =>
+            tab.classList.toggle('active', tab.dataset.mode === mode));
+
+        // Toggle sidebar content — project filter vs chat groups
+        const projectFilter = document.getElementById('sidebar-project-filter');
+        if (projectFilter) projectFilter.style.display = mode === 'code' ? '' : 'none';
+
+        // Update "New Session" / "New Chat" label
+        const newBtn = document.getElementById('new-session-btn');
+        if (newBtn) {
+            const label = newBtn.querySelector('span');
+            if (label) label.textContent = mode === 'chat' ? 'New Chat' : 'New Session';
+        }
+
+        this.renderFilteredSessions();
+    }
+
+    applySessionModeUI(mode) {
+        this.currentSessionMode = mode || 'code';
+        document.body.classList.toggle('chat-mode', this.currentSessionMode === 'chat');
+    }
+
+    _populateChatWelcomeModels() {
+        const select = document.getElementById('chat-welcome-model');
+        if (!select || !this.backends) return;
+        const currentVal = this.modelSelector?.value || '';
+        const idx = currentVal.indexOf(':');
+        const curBackend = idx > 0 ? currentVal.substring(0, idx) : '';
+        const curModel = idx > 0 ? currentVal.substring(idx + 1) : '';
+        this._populateSelectWithGroupedModels(select, this.backends, curBackend, curModel);
+    }
+
+    _sendChatWelcomeMessage() {
+        const textarea = document.getElementById('chat-welcome-textarea');
+        const select = document.getElementById('chat-welcome-model');
+        if (!textarea || !select) return;
+        const text = textarea.value.trim();
+        if (!text) return;
+
+        // Parse backend:model from select
+        const val = select.value;
+        const idx = val.indexOf(':');
+        if (idx <= 0) return;
+        const backend = val.substring(0, idx);
+        const model = val.substring(idx + 1);
+
+        // Select backend (creates session), then send message once connected
+        this._pendingChatMessage = text;
+        this.send({ command: 'select_backend', backend, model, session_mode: 'chat' });
+
+        // Clear and hide welcome
+        textarea.value = '';
+        const chatWelcome = document.getElementById('chat-welcome-screen');
+        if (chatWelcome) chatWelcome.style.display = 'none';
+        this.chatContainer.style.display = 'flex';
+        this.inputBar.style.display = 'flex';
+        this.applySessionModeUI('chat');
     }
 
     // ── Event Handler ───────────────────────────────────────────
@@ -780,6 +878,7 @@ class ResonantApp {
                 break;
             case 'sessions_updated':
                 this.sessions = event.sessions || [];
+                if (event.all_sessions) this.allSessions = event.all_sessions;
                 this.currentSessionId = event.current_session_id || '';
                 this.renderFilteredSessions();
                 break;
@@ -787,6 +886,7 @@ class ResonantApp {
                 this.chatMessages.innerHTML = '';
                 this.sessions = event.sessions || [];
                 this.currentSessionId = event.current_session_id || '';
+                this.applySessionModeUI(this.sessionMode);
                 this.renderFilteredSessions();
                 this.showChatInterface();
                 break;
@@ -794,6 +894,8 @@ class ResonantApp {
                 this.chatMessages.innerHTML = '';
                 this.currentSessionId = event.current_session_id || '';
                 this.sessions = event.sessions || [];
+                // Apply saved session mode before replay
+                this.applySessionModeUI(event.session_mode || 'code');
                 this.renderFilteredSessions();
                 this.showChatInterface();
                 // Clear preview panel for loaded session
@@ -802,6 +904,10 @@ class ResonantApp {
                 if (event.display_events && event.display_events.length > 0) {
                     this.replayDisplayEvents(event.display_events);
                 }
+                break;
+            case 'chat_groups':
+                this.chatGroups = event.groups || [];
+                if (this.sessionMode === 'chat') this.renderFilteredSessions();
                 break;
             case 'dir_list':
                 this.handleDirList(event);
@@ -915,9 +1021,12 @@ class ResonantApp {
         this.backends = backends || {};
         this.handlesTools = event.handles_tools || false;
 
-        // Store recent projects
+        // Store recent projects and chat groups
         if (recent_projects) {
             this.recentProjects = recent_projects;
+        }
+        if (event.chat_groups) {
+            this.chatGroups = event.chat_groups;
         }
 
         // Store settings
@@ -959,6 +1068,16 @@ class ResonantApp {
             }
             this.headerStatus.textContent = `${current_backend} · ${current_model}`;
             this.populateModelSelector(backends, current_backend, current_model);
+
+            // Send pending chat message (from chat welcome screen)
+            if (this._pendingChatMessage) {
+                const text = this._pendingChatMessage;
+                this._pendingChatMessage = null;
+                // Render user message and send
+                this.addUserMessage(text);
+                this.send({ command: 'message', text });
+                this.setRunning(true);
+            }
             return;
         }
 
@@ -1126,11 +1245,13 @@ class ResonantApp {
 
     selectBackend(backendType, model) {
         document.querySelector('.backend-label').textContent = 'Connecting...';
-        this.send({ command: 'select_backend', backend: backendType, model });
+        this.send({ command: 'select_backend', backend: backendType, model, session_mode: this.sessionMode });
     }
 
     showChatInterface() {
         this.welcomeScreen.style.display = 'none';
+        const chatWelcome = document.getElementById('chat-welcome-screen');
+        if (chatWelcome) chatWelcome.style.display = 'none';
         this.chatContainer.style.display = 'flex';
         this.inputBar.style.display = 'block';
         // Hide other views if they were visible
@@ -1139,7 +1260,7 @@ class ResonantApp {
         if (this.dispatchView) this.dispatchView.style.display = 'none';
         // Update nav
         this.currentView = 'chat';
-        document.querySelectorAll('.sidebar-nav-item').forEach(el =>
+        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === 'chat'));
         this.userInput.focus();
     }
@@ -1178,47 +1299,98 @@ class ResonantApp {
         }
     }
 
-    populateModelSelector(backends, currentBackend, currentModel) {
-        this.modelSelector.innerHTML = '';
+    _getModelGroups() {
+        // Categorize backends into display groups
+        return {
+            subscriptions: {
+                label: 'Subscriptions',
+                backends: ['claude-code', 'codex'],
+            },
+            apis: {
+                label: 'APIs',
+                backends: ['claude', 'openai'],
+            },
+            local: {
+                label: 'Local',
+                backends: ['ollama', 'lmstudio', 'resonant'],
+            },
+        };
+    }
 
-        const backendLabels = {
+    _getBackendLabels() {
+        return {
             'claude-code': 'Claude Code',
             codex: 'Codex',
             resonant: 'Resonant',
             ollama: 'Ollama',
-            claude: 'Claude API',
-            openai: 'OpenAI',
+            claude: 'Anthropic API',
+            openai: 'OpenAI API',
             lmstudio: 'LM Studio',
         };
+    }
 
-        // Preferred display order
-        const order = ['claude-code', 'codex', 'resonant', 'claude', 'openai', 'ollama', 'lmstudio'];
-        const sortedKeys = order.filter(k => backends[k]);
-        // Add any remaining backends not in the order list
-        for (const k of Object.keys(backends)) {
-            if (!sortedKeys.includes(k)) sortedKeys.push(k);
+    _populateSelectWithGroupedModels(selectEl, backends, currentBackend, currentModel) {
+        selectEl.innerHTML = '';
+        const groups = this._getModelGroups();
+        const backendLabels = this._getBackendLabels();
+        const placed = new Set();
+
+        for (const group of Object.values(groups)) {
+            // Collect all models in this category
+            const categoryOptions = [];
+            for (const key of group.backends) {
+                const info = backends[key];
+                if (!info || !info.models || info.models.length === 0) continue;
+                placed.add(key);
+                const labels = info.model_labels || {};
+                const bLabel = backendLabels[key] || key;
+                for (const m of info.models) {
+                    categoryOptions.push({
+                        value: `${key}:${m}`,
+                        text: `${labels[m] || m}`,
+                        prefix: bLabel,
+                        isSelected: key === currentBackend && m === currentModel,
+                    });
+                }
+            }
+            if (categoryOptions.length === 0) continue;
+
+            const optgroup = document.createElement('optgroup');
+            optgroup.label = group.label;
+            for (const o of categoryOptions) {
+                const opt = document.createElement('option');
+                opt.value = o.value;
+                // Show backend prefix if multiple backends in this group
+                const backendsInGroup = group.backends.filter(k => backends[k]?.models?.length > 0);
+                opt.textContent = backendsInGroup.length > 1 ? `${o.prefix} · ${o.text}` : o.text;
+                if (o.isSelected) opt.selected = true;
+                optgroup.appendChild(opt);
+            }
+            selectEl.appendChild(optgroup);
         }
 
-        for (const key of sortedKeys) {
+        // Any backends not categorized above
+        for (const key of Object.keys(backends)) {
+            if (placed.has(key)) continue;
             const info = backends[key];
             if (!info || !info.models || info.models.length === 0) continue;
-
             const labels = info.model_labels || {};
-            const groupLabel = backendLabels[key] || key;
-
-            const group = document.createElement('optgroup');
-            group.label = groupLabel;
-
+            const bLabel = backendLabels[key] || key;
+            const optgroup = document.createElement('optgroup');
+            optgroup.label = bLabel;
             for (const m of info.models) {
                 const opt = document.createElement('option');
                 opt.value = `${key}:${m}`;
                 opt.textContent = labels[m] || m;
                 if (key === currentBackend && m === currentModel) opt.selected = true;
-                group.appendChild(opt);
+                optgroup.appendChild(opt);
             }
-
-            this.modelSelector.appendChild(group);
+            selectEl.appendChild(optgroup);
         }
+    }
+
+    populateModelSelector(backends, currentBackend, currentModel) {
+        this._populateSelectWithGroupedModels(this.modelSelector, backends, currentBackend, currentModel);
     }
 
     // ── Step Handling ────────────────────────────────────────────
@@ -1234,6 +1406,7 @@ class ResonantApp {
     }
 
     handleStepStart(event) {
+        if (this.currentSessionMode === 'chat') return;
         this.currentStepEvent = event;
         this.stepToolCalls = [];
         this.stepToolResults = [];
@@ -1299,6 +1472,7 @@ class ResonantApp {
     }
 
     handleStepEnd(event) {
+        if (this.currentSessionMode === 'chat') return;
         this.removeThinking();
 
         if (this.stepIsInlineOnly && this.stepToolCalls.length > 0) {
@@ -1561,6 +1735,11 @@ class ResonantApp {
         this.removeThinking();
         this.stepIsInlineOnly = false;
 
+        // Text streaming means tools are done — clear terminal bar
+        if (this.activeTerminals.size > 0) {
+            this.clearTerminals();
+        }
+
         // Finalize tool activity group before text appears
         this.finalizeToolActivityGroup();
 
@@ -1638,11 +1817,18 @@ class ResonantApp {
         this.removeThinking();
         const name = event.name || '';
         const callId = event.call_id || '';
+        const nameLower = name.toLowerCase();
 
-        // Track in terminal bar (bash commands and long-running tools)
-        if (!this.handlesTools && !this.isReplaying && name === 'bash' && callId) {
+        // Track in terminal bar (bash commands — works for all backends and modes)
+        // For CLI backends: a new tool call means the previous one finished
+        if (!this.isReplaying && this.activeTerminals.size > 0) {
+            this.clearTerminals();
+        }
+        if (!this.isReplaying && nameLower === 'bash' && callId) {
             this.trackTerminalStart(callId, name, event.arguments || {});
         }
+
+        if (this.currentSessionMode === 'chat') return;
 
         // CLI backends: group ALL tool calls into a collapsible activity panel
         if (this.handlesTools) {
@@ -1670,12 +1856,15 @@ class ResonantApp {
     handleToolResult(event) {
         const name = event.name || '';
         const callId = event.call_id || '';
+        const nameLower = name.toLowerCase();
         const hasImage = event.image && event.image.data;
 
-        // Remove from terminal bar
-        if (!this.handlesTools && !this.isReplaying && name === 'bash' && callId) {
+        // Remove from terminal bar (works for all backends and modes)
+        if (!this.isReplaying && nameLower === 'bash' && callId) {
             this.trackTerminalEnd(callId);
         }
+
+        if (this.currentSessionMode === 'chat') return;
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
         if (hasImage && this.stepIsInlineOnly) {
@@ -2238,16 +2427,16 @@ class ResonantApp {
         const sessionList = document.getElementById('session-list');
         if (sessionList) sessionList.style.display = viewName === 'chat' ? '' : 'none';
 
-        // Show project filter only in chat view
+        // Show project filter only in chat view + code mode
         const pf = document.getElementById('sidebar-project-filter');
-        if (pf) pf.style.display = viewName === 'chat' ? '' : 'none';
+        if (pf) pf.style.display = (viewName === 'chat' && this.sessionMode === 'code') ? '' : 'none';
 
         // Show search only in chat view
         const search = document.querySelector('.sidebar-search');
         if (search) search.style.display = viewName === 'chat' ? '' : 'none';
 
         // Update nav active state
-        document.querySelectorAll('.sidebar-nav-item').forEach(el =>
+        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === viewName));
 
         // Show the requested view
@@ -2737,11 +2926,13 @@ class ResonantApp {
         this.getRenderTarget().appendChild(el);
         this.scrollToBottom();
 
-        // If it was a fatal-ish error, stop running
+        // If it was a fatal-ish error, stop running and clean up terminals
         if (event.message && (
             event.message.includes('step limit') ||
-            event.message.includes('No backend')
+            event.message.includes('No backend') ||
+            event.message.includes('Cancelled')
         )) {
+            this.clearTerminals();
             this.setRunning(false);
         }
     }
@@ -3061,6 +3252,15 @@ class ResonantApp {
 
     // ── Session List ─────────────────────────────────────────────
 
+    showSessionSkeletons() {
+        if (!this.sessionList) return;
+        let html = '';
+        for (let i = 0; i < 5; i++) {
+            html += '<div class="session-skeleton"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>';
+        }
+        this.sessionList.innerHTML = html;
+    }
+
     renderSessionList() {
         if (!this.sessionList) return;
         this.sessionList.innerHTML = '';
@@ -3250,11 +3450,220 @@ class ResonantApp {
             sessionsToShow = this.sessions;
         }
 
-        // Temporarily swap sessions and render
+        // Filter by session mode (Chat vs Code tab)
+        sessionsToShow = sessionsToShow.filter(s =>
+            (s.session_mode || 'code') === this.sessionMode
+        );
+
+        // Chat mode: render grouped sidebar
+        if (this.sessionMode === 'chat') {
+            this.renderChatSidebar(sessionsToShow);
+            return;
+        }
+
+        // Code mode: flat list
         const saved = this.sessions;
         this.sessions = sessionsToShow;
         this.renderSessionList();
         this.sessions = saved;
+    }
+
+    // ── Chat Sidebar (grouped sessions) ────────────────────────
+
+    renderChatSidebar(sessions) {
+        if (!this.sessionList) return;
+        this.sessionList.innerHTML = '';
+
+        if (sessions.length === 0 && this.chatGroups.length === 0) {
+            this.sessionList.innerHTML = '<div class="session-empty">No chat sessions</div>';
+            return;
+        }
+
+        // Partition sessions by group
+        const grouped = {};
+        const ungrouped = [];
+        for (const s of sessions) {
+            const g = s.chat_group || '';
+            if (g) {
+                (grouped[g] = grouped[g] || []).push(s);
+            } else {
+                ungrouped.push(s);
+            }
+        }
+
+        // Render ungrouped sessions first (no header)
+        for (const s of ungrouped) {
+            this.sessionList.appendChild(this._createChatSessionItem(s));
+        }
+
+        // Render each group
+        for (const groupName of this.chatGroups) {
+            const groupSessions = grouped[groupName] || [];
+            const isExpanded = this.expandedGroups.has(groupName);
+
+            const header = document.createElement('div');
+            header.className = 'chat-group-header' + (isExpanded ? ' expanded' : '');
+            header.innerHTML = `
+                <span class="chat-group-chevron">${isExpanded ? '▾' : '▸'}</span>
+                <span class="chat-group-name">${this.escapeHtml(groupName)}</span>
+                <span class="chat-group-count">${groupSessions.length}</span>
+                <button class="chat-group-menu-btn" title="Group options">&#8943;</button>
+            `;
+
+            header.addEventListener('click', (e) => {
+                if (e.target.closest('.chat-group-menu-btn')) return;
+                if (this.expandedGroups.has(groupName)) {
+                    this.expandedGroups.delete(groupName);
+                } else {
+                    this.expandedGroups.add(groupName);
+                }
+                this.renderFilteredSessions();
+            });
+
+            header.querySelector('.chat-group-menu-btn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.showGroupContextMenu(e, groupName);
+            });
+
+            this.sessionList.appendChild(header);
+
+            if (isExpanded) {
+                const container = document.createElement('div');
+                container.className = 'chat-group-sessions';
+                for (const s of groupSessions) {
+                    container.appendChild(this._createChatSessionItem(s));
+                }
+                this.sessionList.appendChild(container);
+            }
+        }
+
+        // "New group" button
+        const addBtn = document.createElement('div');
+        addBtn.className = 'chat-group-add';
+        addBtn.innerHTML = '<span>+</span> New group';
+        addBtn.addEventListener('click', () => {
+            const name = prompt('Group name:');
+            if (name && name.trim()) {
+                this.send({ command: 'create_chat_group', name: name.trim() });
+            }
+        });
+        this.sessionList.appendChild(addBtn);
+    }
+
+    _createChatSessionItem(session) {
+        const el = document.createElement('div');
+        el.className = 'session-item' + (session.id === this.currentSessionId ? ' active' : '');
+
+        const date = new Date(session.updated_at * 1000);
+        const timeStr = this.formatRelativeTime(date);
+
+        el.innerHTML = `
+            <div class="session-item-title">${this.escapeHtml(session.title || 'New session')}</div>
+            <div class="session-item-date">${session.model || ''} · ${timeStr}</div>
+            <div class="session-item-actions">
+                <button class="session-menu-btn" title="More actions">&#8943;</button>
+            </div>
+        `;
+
+        el.addEventListener('click', (e) => {
+            if (e.target.closest('.session-menu-btn')) return;
+            if (session.id !== this.currentSessionId) {
+                const msg = { command: 'switch_session', session_id: session.id };
+                if (session.project_path) msg.project_path = session.project_path;
+                this.send(msg);
+            }
+        });
+
+        el.querySelector('.session-menu-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.showChatSessionContextMenu(e, session);
+        });
+
+        return el;
+    }
+
+    showGroupContextMenu(e, groupName) {
+        document.querySelector('.session-context-menu')?.remove();
+
+        const menu = document.createElement('div');
+        menu.className = 'session-context-menu';
+        menu.innerHTML = `
+            <div class="ctx-item" data-action="rename">&#9998; Rename</div>
+            <div class="ctx-separator"></div>
+            <div class="ctx-item danger" data-action="delete">&#128465; Delete</div>
+        `;
+        menu.style.left = `${e.clientX}px`;
+        menu.style.top = `${e.clientY}px`;
+
+        menu.addEventListener('click', (ev) => {
+            const action = ev.target.closest('.ctx-item')?.dataset.action;
+            if (action === 'rename') {
+                const newName = prompt('Rename group:', groupName);
+                if (newName && newName.trim()) {
+                    this.send({ command: 'rename_chat_group', old_name: groupName, new_name: newName.trim() });
+                }
+            } else if (action === 'delete') {
+                this.send({ command: 'delete_chat_group', name: groupName });
+            }
+            menu.remove();
+        });
+
+        document.body.appendChild(menu);
+        setTimeout(() => {
+            const close = (e2) => { if (!menu.contains(e2.target)) { menu.remove(); document.removeEventListener('click', close); } };
+            document.addEventListener('click', close);
+        }, 0);
+    }
+
+    showChatSessionContextMenu(e, session) {
+        document.querySelector('.session-context-menu')?.remove();
+
+        const menu = document.createElement('div');
+        menu.className = 'session-context-menu';
+
+        // Build group submenu items
+        const groupItems = this.chatGroups.map(g =>
+            `<div class="ctx-item ctx-sub" data-action="move" data-group="${this.escapeHtml(g)}">${this.escapeHtml(g)}${(session.chat_group === g) ? ' ✓' : ''}</div>`
+        ).join('');
+
+        menu.innerHTML = `
+            <div class="ctx-item" data-action="rename">&#9998; Rename</div>
+            ${this.chatGroups.length > 0 ? `
+                <div class="ctx-separator"></div>
+                <div class="ctx-label">Move to group</div>
+                ${groupItems}
+                ${session.chat_group ? `<div class="ctx-item ctx-sub" data-action="ungroup">Remove from group</div>` : ''}
+            ` : ''}
+            <div class="ctx-separator"></div>
+            <div class="ctx-item danger" data-action="delete">&#128465; Delete</div>
+        `;
+        menu.style.left = `${e.clientX}px`;
+        menu.style.top = `${e.clientY}px`;
+
+        menu.addEventListener('click', (ev) => {
+            const item = ev.target.closest('.ctx-item');
+            if (!item) return;
+            const action = item.dataset.action;
+            if (action === 'rename') {
+                const newTitle = prompt('Rename session:', session.title);
+                if (newTitle && newTitle.trim()) {
+                    this.send({ command: 'rename_session', session_id: session.id, title: newTitle.trim() });
+                }
+            } else if (action === 'delete') {
+                this.send({ command: 'delete_session', session_id: session.id });
+            } else if (action === 'move') {
+                this.send({ command: 'set_session_group', session_id: session.id, group: item.dataset.group });
+            } else if (action === 'ungroup') {
+                this.send({ command: 'set_session_group', session_id: session.id, group: '' });
+            }
+            menu.remove();
+        });
+
+        document.body.appendChild(menu);
+        setTimeout(() => {
+            const close = (e2) => { if (!menu.contains(e2.target)) { menu.remove(); document.removeEventListener('click', close); } };
+            document.addEventListener('click', close);
+        }, 0);
     }
 
     showSessionContextMenu(e, session) {
@@ -3316,17 +3725,34 @@ class ResonantApp {
     // ── New Session Setup ──────────────────────────────────────
 
     showNewSessionSetup() {
-        // Show welcome screen with project picker
-        this.welcomeScreen.style.display = 'flex';
+        // Hide all main views
+        this.welcomeScreen.style.display = 'none';
         this.chatContainer.style.display = 'none';
         this.inputBar.style.display = 'none';
-        // Hide other views
+        const chatWelcome = document.getElementById('chat-welcome-screen');
+        if (chatWelcome) chatWelcome.style.display = 'none';
         if (this.settingsView) this.settingsView.style.display = 'none';
         if (this.scheduleView) this.scheduleView.style.display = 'none';
         if (this.dispatchView) this.dispatchView.style.display = 'none';
+
+        // Chat mode: show simple chat welcome
+        if (this.sessionMode === 'chat') {
+            if (chatWelcome) {
+                chatWelcome.style.display = 'flex';
+                this._populateChatWelcomeModels();
+                document.getElementById('chat-welcome-textarea')?.focus();
+            }
+            this.currentView = 'chat';
+            document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
+                el.classList.toggle('active', el.dataset.view === 'chat'));
+            return;
+        }
+
+        // Code mode: show project picker
+        this.welcomeScreen.style.display = 'flex';
         // Update nav
         this.currentView = 'chat';
-        document.querySelectorAll('.sidebar-nav-item').forEach(el =>
+        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === 'chat'));
 
         // Clear and close preview panel for new session

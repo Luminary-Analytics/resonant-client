@@ -191,36 +191,84 @@ class AppState:
         return session
 
     def detect_backends(self):
-        """Detect available backends (same logic as TUI)."""
+        """Detect available backends with parallel network checks."""
         import httpx
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         api_url = self.api_url
         ollama_url = self.ollama_url
         available = {}
 
-        # Resonant Engine
-        try:
-            resp = httpx.get(f"{api_url}/health", timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            if data.get("status") == "ready":
-                available["resonant"] = {"url": api_url, "health": data}
-        except Exception:
-            pass
+        # Short connect timeout so unreachable hosts don't block startup
+        _timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=4.0)
 
-        # Ollama
-        try:
-            resp = httpx.get(f"{ollama_url}/api/tags", timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            models = [m["name"] for m in data.get("models", [])
-                      if not any(kw in m["name"].lower()
-                                 for kw in ("embed", "bert", "bge", "nomic"))]
-            if models:
-                available["ollama"] = {"url": ollama_url, "models": models}
-        except Exception:
-            pass
+        # ── Parallel network checks ──────────────────────────────────
+        def _check_resonant():
+            try:
+                resp = httpx.get(f"{api_url}/health", timeout=_timeout)
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("status") == "ready":
+                    return "resonant", {"url": api_url, "health": data}
+            except Exception:
+                pass
+            return None, None
 
+        def _check_ollama():
+            try:
+                resp = httpx.get(f"{ollama_url}/api/tags", timeout=_timeout)
+                resp.raise_for_status()
+                data = resp.json()
+                models = [m["name"] for m in data.get("models", [])
+                          if not any(kw in m["name"].lower()
+                                     for kw in ("embed", "bert", "bge", "nomic"))]
+                if models:
+                    return "ollama", {"url": ollama_url, "models": models}
+            except Exception:
+                pass
+            return None, None
+
+        def _check_lmstudio_url(url):
+            """Check a single LM Studio URL candidate."""
+            try:
+                resp = httpx.get(f"{url}/models", timeout=_timeout)
+                resp.raise_for_status()
+                data = resp.json()
+                models = [m["id"] for m in data.get("data", [])]
+                if models:
+                    return url, models
+            except Exception:
+                pass
+            return None, None
+
+        def _check_lmstudio():
+            lmstudio_url = os.environ.get("LMSTUDIO_URL", "").rstrip("/")
+            if lmstudio_url:
+                url, models = _check_lmstudio_url(lmstudio_url)
+                if url:
+                    self.lmstudio_url = url
+                    return "lmstudio", {"url": url, "models": models}
+                return None, None
+            # Try candidates in parallel
+            candidates = [c for c in [self.lmstudio_url, "http://10.0.0.133:1234/v1", "http://localhost:1234/v1"] if c]
+            with ThreadPoolExecutor(max_workers=len(candidates)) as p:
+                futs = {p.submit(_check_lmstudio_url, c): c for c in candidates}
+                for fut in as_completed(futs):
+                    url, models = fut.result()
+                    if url:
+                        self.lmstudio_url = url
+                        return "lmstudio", {"url": url, "models": models}
+            return None, None
+
+        # Run network checks in parallel
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [pool.submit(fn) for fn in [_check_resonant, _check_ollama, _check_lmstudio]]
+            for f in as_completed(futures):
+                key, val = f.result()
+                if key:
+                    available[key] = val
+
+        # ── Local / API-key checks (instant) ─────────────────────────
         anthropic_key, anthropic_source, anthropic_env, anthropic_setting = self._api_key_details(
             "anthropic", "ANTHROPIC_API_KEY"
         )
@@ -251,42 +299,13 @@ class AppState:
             except ImportError:
                 pass
 
-        # LM Studio — check env var or common default URLs
-        lmstudio_url = os.environ.get("LMSTUDIO_URL", "").rstrip("/")
-        if not lmstudio_url:
-            # Try common LM Studio endpoints
-            for candidate in [self.lmstudio_url, "http://10.0.0.133:1234/v1", "http://localhost:1234/v1"]:
-                if not candidate:
-                    continue
-                try:
-                    resp = httpx.get(f"{candidate}/models", timeout=3)
-                    resp.raise_for_status()
-                    lmstudio_url = candidate
-                    break
-                except Exception:
-                    pass
-        if lmstudio_url:
-            try:
-                resp = httpx.get(f"{lmstudio_url}/models", timeout=5)
-                resp.raise_for_status()
-                data = resp.json()
-                models = [m["id"] for m in data.get("data", [])]
-                if models:
-                    self.lmstudio_url = lmstudio_url
-                    available["lmstudio"] = {
-                        "url": lmstudio_url,
-                        "models": models,
-                    }
-            except Exception:
-                pass
-
         # Claude Code CLI
         if _find_cli("claude"):
             try:
                 import subprocess as _sp
                 result = _sp.run(
                     [_find_cli("claude"), "--version"],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True, text=True, timeout=5,
                     shell=(sys.platform == "win32"),
                 )
                 if result.returncode == 0:
@@ -308,7 +327,7 @@ class AppState:
                 import subprocess as _sp
                 result = _sp.run(
                     [_find_cli("codex"), "--version"],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True, text=True, timeout=5,
                     shell=(sys.platform == "win32"),
                 )
                 if result.returncode == 0:
@@ -537,6 +556,7 @@ class AppState:
             "settings": self.settings.get_masked(),
             "resonant_md": get_instruction_info(self.project.project_path),
             "rag": self.codebase_index.get_stats() if self.codebase_index else {"total_files": 0, "is_indexed": False},
+            "chat_groups": self.project.list_chat_groups(),
         }
 
 
@@ -587,6 +607,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "select_backend":
                 backend_type = msg.get("backend", "")
                 model = msg.get("model", "")
+                session_mode = msg.get("session_mode", "code")
                 try:
                     await asyncio.get_event_loop().run_in_executor(
                         None, state.create_backend, backend_type, model or None
@@ -595,6 +616,7 @@ async def websocket_endpoint(ws: WebSocket):
                     state.project.create_session(
                         backend_type=backend_type,
                         model=model or getattr(state.backend, "model", ""),
+                        session_mode=session_mode,
                     )
                     state._first_message_sent = False
                     await ws.send_json(state.get_init_data())
@@ -653,6 +675,7 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif command == "clear":
                 # Create a new session (don't destroy old one)
+                session_mode = msg.get("session_mode", "code")
                 if state.backend:
                     backend_type = getattr(state.backend, "name", "")
                     model = getattr(state.backend, "model", "")
@@ -661,7 +684,7 @@ async def websocket_endpoint(ws: WebSocket):
                         backend_spec=state.backend_spec,
                         project_path=state.project.project_path,
                     )
-                    state.project.create_session(backend_type=backend_type, model=model)
+                    state.project.create_session(backend_type=backend_type, model=model, session_mode=session_mode)
                     state._first_message_sent = False
                     state.costs.reset_session()
                 await ws.send_json({
@@ -726,11 +749,13 @@ async def websocket_endpoint(ws: WebSocket):
                             "backend_type": record.backend_type,
                             "model": record.model,
                             "message_count": record.message_count,
+                            "session_mode": record.session_mode or "code",
                             "display_events": record.display_events,
                             "sessions": state.project.list_sessions(),
                             "current_session_id": record.id,
                         })
-                        await ws.send_json(state.get_init_data())
+                        # Send lightweight init refresh (skip re-detecting backends)
+                        await ws.send_json(state.get_init_data(refresh_only=True))
                     except Exception as e:
                         await ws.send_json({"event": "error", "message": str(e)})
                 else:
@@ -742,6 +767,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({
                     "event": "sessions_updated",
                     "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
                     "current_session_id": state.project.current_session.id if state.project.current_session else "",
                 })
 
@@ -759,8 +785,50 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({
                         "event": "sessions_updated",
                         "sessions": state.project.list_sessions(),
+                        "all_sessions": state.project.list_all_sessions(),
                         "current_session_id": state.project.current_session.id if state.project.current_session else "",
                     })
+
+            # ── Chat Group Commands ───────────────────────────
+            elif command == "create_chat_group":
+                name = msg.get("name", "").strip()
+                groups = state.project.create_chat_group(name)
+                await ws.send_json({"event": "chat_groups", "groups": groups})
+
+            elif command == "rename_chat_group":
+                old_name = msg.get("old_name", "")
+                new_name = msg.get("new_name", "").strip()
+                groups = state.project.rename_chat_group(old_name, new_name)
+                await ws.send_json({"event": "chat_groups", "groups": groups})
+                # Sessions may have changed group names
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
+                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                })
+
+            elif command == "delete_chat_group":
+                name = msg.get("name", "")
+                groups = state.project.delete_chat_group(name)
+                await ws.send_json({"event": "chat_groups", "groups": groups})
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
+                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                })
+
+            elif command == "set_session_group":
+                session_id = msg.get("session_id", "")
+                group = msg.get("group", "")
+                state.project.set_session_group(session_id, group)
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
+                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                })
 
             elif command == "set_project":
                 project_path = msg.get("path", "").strip()

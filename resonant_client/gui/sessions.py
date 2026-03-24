@@ -38,6 +38,49 @@ def _sessions_dir(project_path: str) -> Path:
     return _project_dir(project_path) / "sessions"
 
 
+def _read_session_summary(filepath: Path) -> Optional[dict]:
+    """Read only metadata fields from a session file without parsing full history.
+
+    Session files can be large (100KB+) due to conversation_history and
+    display_events arrays.  This reads the first ~2KB to extract just the
+    metadata fields needed for the sidebar, falling back to full parse only
+    if the fast path fails.
+    """
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            # Read a small prefix — metadata fields are at the top of the JSON
+            prefix = f.read(4096)
+
+        # Try to extract fields from the prefix using simple string scanning
+        # JSON keys are at the top level: "id", "title", "backend_type", "model",
+        # "created_at", "updated_at", "message_count"
+        import re
+        summary = {}
+        for key in ("id", "title", "backend_type", "model", "session_mode", "chat_group"):
+            m = re.search(rf'"{key}"\s*:\s*"([^"]*)"', prefix)
+            if m:
+                summary[key] = m.group(1)
+        for key in ("created_at", "updated_at", "message_count"):
+            m = re.search(rf'"{key}"\s*:\s*([\d.]+)', prefix)
+            if m:
+                val = m.group(1)
+                summary[key] = float(val) if "." in val else int(val)
+
+        if "id" in summary and "updated_at" in summary:
+            return summary
+    except Exception:
+        pass
+
+    # Fallback: full parse
+    try:
+        with open(filepath, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        record = SessionRecord.from_dict(data)
+        return record.to_summary()
+    except Exception:
+        return None
+
+
 class SessionRecord:
     """A serializable session record (metadata + conversation history).
 
@@ -58,6 +101,8 @@ class SessionRecord:
         conversation_history: list = None,
         display_events: list = None,
         message_count: int = 0,
+        session_mode: str = "code",
+        chat_group: str = "",
     ):
         self.id = session_id or str(uuid.uuid4())[:8]
         self.title = title
@@ -69,6 +114,8 @@ class SessionRecord:
         self.conversation_history = conversation_history or []
         self.display_events = display_events or []
         self.message_count = message_count
+        self.session_mode = session_mode or "code"
+        self.chat_group = chat_group
 
     def to_dict(self) -> dict:
         return {
@@ -82,6 +129,8 @@ class SessionRecord:
             "conversation_history": self.conversation_history,
             "display_events": self.display_events,
             "message_count": self.message_count,
+            "session_mode": self.session_mode,
+            "chat_group": self.chat_group,
         }
 
     def to_summary(self) -> dict:
@@ -94,6 +143,8 @@ class SessionRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "message_count": self.message_count,
+            "session_mode": self.session_mode,
+            "chat_group": self.chat_group,
         }
 
     @classmethod
@@ -109,6 +160,8 @@ class SessionRecord:
             conversation_history=data.get("conversation_history", []),
             display_events=data.get("display_events", []),
             message_count=data.get("message_count", 0),
+            session_mode=data.get("session_mode", "code"),
+            chat_group=data.get("chat_group", ""),
         )
 
     def save(self):
@@ -201,13 +254,9 @@ class ProjectManager:
             return sessions
 
         for filepath in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                record = SessionRecord.from_dict(data)
-                sessions.append(record.to_summary())
-            except Exception as e:
-                logger.error(f"Failed to load session {filepath}: {e}")
+            summary = _read_session_summary(filepath)
+            if summary:
+                sessions.append(summary)
 
         return sessions
 
@@ -238,28 +287,24 @@ class ProjectManager:
             if not d.exists():
                 continue
             for filepath in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    record = SessionRecord.from_dict(data)
-                    summary = record.to_summary()
+                summary = _read_session_summary(filepath)
+                if summary:
                     summary["project_name"] = os.path.basename(path)
                     summary["project_path"] = path
                     all_sessions.append(summary)
-                except Exception:
-                    pass
 
         # Sort all by updated_at descending
         all_sessions.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
         return all_sessions
 
-    def create_session(self, backend_type: str = "", model: str = "") -> SessionRecord:
+    def create_session(self, backend_type: str = "", model: str = "", session_mode: str = "code") -> SessionRecord:
         """Create a new session for the current project."""
         record = SessionRecord(
             project_path=self.project_path,
             backend_type=backend_type,
             model=model,
             title="New session",
+            session_mode=session_mode,
         )
         record.save()
         self.current_session = record
@@ -319,3 +364,109 @@ class ProjectManager:
             filepath.unlink()
         if self.current_session and self.current_session.id == session_id:
             self.current_session = None
+
+    # ── Chat Groups ────────────────────────────────────────────────
+
+    _GROUPS_FILE = _RESONANT_DIR / "chat_groups.json"
+
+    def list_chat_groups(self) -> list[str]:
+        """Return ordered list of chat group names."""
+        try:
+            if self._GROUPS_FILE.exists():
+                with open(self._GROUPS_FILE, "r", encoding="utf-8") as f:
+                    groups = json.load(f)
+                if isinstance(groups, list):
+                    return groups
+        except Exception:
+            pass
+        return []
+
+    def _save_groups(self, groups: list[str]):
+        self._GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(self._GROUPS_FILE, "w", encoding="utf-8") as f:
+            json.dump(groups, f, indent=2, ensure_ascii=False)
+
+    def create_chat_group(self, name: str) -> list[str]:
+        """Create a new chat group. Returns updated list."""
+        groups = self.list_chat_groups()
+        if name and name not in groups:
+            groups.append(name)
+            self._save_groups(groups)
+        return groups
+
+    def rename_chat_group(self, old_name: str, new_name: str) -> list[str]:
+        """Rename a chat group and update all sessions referencing it."""
+        groups = self.list_chat_groups()
+        if old_name in groups and new_name:
+            groups = [new_name if g == old_name else g for g in groups]
+            self._save_groups(groups)
+            # Update sessions across all projects
+            self._update_group_in_sessions(old_name, new_name)
+        return groups
+
+    def delete_chat_group(self, name: str) -> list[str]:
+        """Delete a chat group and ungroup its sessions."""
+        groups = self.list_chat_groups()
+        if name in groups:
+            groups.remove(name)
+            self._save_groups(groups)
+            # Ungroup affected sessions
+            self._update_group_in_sessions(name, "")
+        return groups
+
+    def set_session_group(self, session_id: str, group: str):
+        """Assign a session to a chat group (or ungroup with empty string)."""
+        # Search across all project session directories
+        for proj in self.get_recent_projects():
+            path = proj.get("path", "") if isinstance(proj, dict) else str(proj)
+            if not path:
+                continue
+            filepath = _sessions_dir(path) / f"{session_id}.json"
+            if filepath.exists():
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    data["chat_group"] = group
+                    with open(filepath, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
+                return
+        # Also check current project
+        filepath = _sessions_dir(self.project_path) / f"{session_id}.json"
+        if filepath.exists():
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                data["chat_group"] = group
+                with open(filepath, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+    def _update_group_in_sessions(self, old_group: str, new_group: str):
+        """Update chat_group in all session files across all projects."""
+        seen = set()
+        paths = [self.project_path]
+        for proj in self.get_recent_projects():
+            p = proj.get("path", "") if isinstance(proj, dict) else str(proj)
+            if p:
+                paths.append(p)
+        for path in paths:
+            norm = os.path.normpath(path).replace("\\", "/").lower()
+            if norm in seen:
+                continue
+            seen.add(norm)
+            d = _sessions_dir(path)
+            if not d.exists():
+                continue
+            for filepath in d.glob("*.json"):
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if data.get("chat_group") == old_group:
+                        data["chat_group"] = new_group
+                        with open(filepath, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass

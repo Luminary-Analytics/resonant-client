@@ -2,7 +2,7 @@
 
 Agentic coding client for the [Resonant Cognitive Engine](https://github.com/Luminary-Analytics/resonant-engine) — a Claude Code-like interface powered by oscillatory intelligence.
 
-Supports multiple backends (Resonant Engine, Ollama, Claude, OpenAI) with both a terminal TUI and a web-based GUI. The client is lightweight (no torch/transformers) and connects over HTTP, so you can run it anywhere on your network.
+Supports multiple backends (Resonant Engine, Ollama, Claude, OpenAI, LM Studio) with both a terminal TUI and a web-based GUI. The client is lightweight (no torch/transformers) and connects over HTTP, so you can run it anywhere on your network.
 
 ```
 ┌───────────────────────┐                ┌─────────────────────────┐
@@ -11,7 +11,7 @@ Supports multiple backends (Resonant Engine, Ollama, Claude, OpenAI) with both a
 │  TUI (terminal)       │ ──────────────>│  - Ollama (local LLMs)  │
 │  GUI (web browser)    │   LAN / WAN   │  - Claude API           │
 │                       │               │  - OpenAI API           │
-│  Any machine          │               │                         │
+│  Any machine          │               │  - LM Studio            │
 │  No GPU needed        │               │                         │
 └───────────────────────┘                └─────────────────────────┘
 ```
@@ -19,11 +19,14 @@ Supports multiple backends (Resonant Engine, Ollama, Claude, OpenAI) with both a
 ## Features
 
 ### Core
-- **Multi-backend support** — Ollama, Resonant Engine, Claude (Anthropic), OpenAI
+- **Multi-backend support** — Ollama, Resonant Engine, Claude (Anthropic), OpenAI, LM Studio
 - **Agentic tool loop** — bash, file_write, file_read, file_edit, glob, grep
 - **SSE streaming** — tokens appear live as the model generates them
 - **Plan-first workflow** — asks clarifying questions, presents a plan, then executes
+- **Auto-plan classification** — LLM-based complexity check routes small asks straight to execution
 - **Interactive choice menus** — multiple-choice prompts with recommended defaults
+- **Sub-agents** — spawn isolated agents for explore, plan, and build subtasks
+- **Batch tool execution** — parallel tool calls via ThreadPoolExecutor
 - **Works cross-platform** — Windows, macOS, Linux
 
 ### Adaptive Tool Calling (Ollama)
@@ -47,12 +50,29 @@ Supports multiple backends (Resonant Engine, Ollama, Claude, OpenAI) with both a
 - **Persistent cache** at `.resonant/index.json`
 - **Optional engram integration** for semantic search
 
+### Computer Use & Desktop Automation
+- **Full desktop control** — click, type, scroll, drag, hover via pyautogui
+- **Vision loop** — auto-screenshots after every action with coordinate scaling
+- **Window management** — list, focus, resize, minimize windows
+- **OCR** — text extraction from screen regions for context
+- **Browser automation** — Playwright-based navigation, clicking, JS execution, screenshots
+
 ### GUI (Web Interface)
 - **Browser-based UI** with real-time WebSocket streaming
-- **Project management** — switch projects, manage settings
+- **Terminal status bar** — Codex-style running terminal indicator with per-terminal stop buttons
+- **Project management** — switch projects, manage settings, session history
 - **Tool permission dialogs** with diff preview and risk badges
+- **Preview panel** — side-by-side screenshot viewer for computer/browser use
+- **Dispatch system** — background task execution with status tracking
+- **Scheduler** — cron-based recurring tasks
 - **RAG controls** — index, search, view stats
 - **Engram memory panel** — recall, remember, status
+- **Settings management** — API keys, backend config, permissions
+
+### Hooks & Extensions
+- **Pre/post tool hooks** — custom shell commands triggered before or after tool execution
+- **MCP server management** — integrate external tools via Model Context Protocol
+- **Project instructions** — RESONANT.md files for per-project conventions
 
 ### Memory (Engram Integration)
 - **Cross-session memory** via engram MCP server
@@ -93,6 +113,7 @@ pip install -e ".[dev]"        # Testing (pytest, ruff)
 |----------|---------|-------------|
 | `RESONANT_API` | `http://localhost:8000` | Resonant Engine API URL |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama server URL |
+| `LMSTUDIO_URL` | — | LM Studio server URL (OpenAI-compatible) |
 | `ANTHROPIC_API_KEY` | — | Claude API key |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 
@@ -109,6 +130,9 @@ resonant --backend ollama --model llama3.1:8b
 
 # Connect to Ollama on another machine
 resonant --backend ollama --api http://10.0.0.133:11434 --model qwen2.5-coder:14b
+
+# LM Studio backend (OpenAI-compatible)
+resonant --lmstudio-url http://10.0.0.133:1234
 
 # Require approval before tool execution
 resonant --approve
@@ -181,13 +205,13 @@ pytest -k "test_crlf"              # name filter
 resonant_client/
 ├── __init__.py              # Package version
 ├── __main__.py              # CLI entry point
-├── backends.py              # Backend abstraction (Ollama, Engine, Claude, OpenAI)
+├── backends.py              # Backend abstraction (Ollama, Engine, Claude, OpenAI, LM Studio)
 ├── protocol.py              # Tool prompt building, JSON parsing
 ├── events.py                # Event type definitions
 ├── tui.py                   # Terminal UI (Rich + prompt-toolkit)
 ├── engine/
 │   ├── session.py           # Agentic loop orchestration
-│   ├── tools.py             # Tool execution (bash, file ops, search)
+│   ├── tools.py             # Tool execution (bash, file ops, browser, desktop)
 │   ├── diff_review.py       # Diff generation and risk analysis
 │   ├── rag.py               # Codebase indexing and search
 │   ├── memory.py            # Engram memory integration
@@ -195,13 +219,15 @@ resonant_client/
 │   ├── mcp.py               # MCP server management
 │   ├── hooks.py             # Pre/post tool hooks
 │   ├── compression.py       # Context compression
-│   ├── browser.py           # Browser automation
-│   ├── computer.py          # Desktop automation
+│   ├── browser.py           # Browser automation (Playwright)
+│   ├── computer.py          # Desktop automation (pyautogui + mss)
+│   ├── computer_use.py      # Vision loop coordination, OCR
 │   ├── clipboard.py         # Clipboard access
 │   └── worktree.py          # Git worktree isolation
 └── gui/
     ├── app.py               # Starlette web application
     ├── server.py             # Uvicorn launcher
+    ├── runtime.py            # Shared backend/session construction
     ├── sessions.py           # Session management
     ├── settings.py           # Settings persistence
     ├── costs.py              # Token cost tracking

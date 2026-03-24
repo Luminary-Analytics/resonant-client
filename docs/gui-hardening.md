@@ -88,6 +88,15 @@ Fixes included:
 - interrupted/cancelled sessions do not resurrect phantom running terminals
 - the per-row terminal action is labeled to match its real session-wide cancel behavior
 
+### Terminal Bar Code Review Fixes
+
+Post-hardening review identified and resolved:
+
+- **Event listener leak** — per-button click handlers on dynamically created stop buttons replaced with event delegation on the list container
+- **Missing error cleanup** — `clearTerminals()` now called on fatal errors and cancellation, not just session end
+- **Race guard** — `trackTerminalEnd()` guards against duplicate `tool.result` events for the same `call_id`
+- **DOM safety** — `el.parentNode` check before removing entries in delayed cleanup callbacks
+
 ## MCP Routing
 
 MCP tool dispatch now resolves the longest matching server-name prefix after `mcp_`.

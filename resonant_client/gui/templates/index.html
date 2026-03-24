@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Resonant</title>
-    <link rel="stylesheet" href="/static/styles.css?v=14">
+    <link rel="stylesheet" href="/static/styles.css?v=19">
     <!-- Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <!-- Syntax highlighting -->
@@ -22,14 +22,13 @@
                     <span class="brand-icon">┃</span>
                     <span class="brand-text">Resonant</span>
                 </div>
-                <button id="new-session-btn" class="icon-btn" title="New session">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-                    </svg>
-                </button>
             </div>
             <!-- ═══ Sidebar Navigation ═══ -->
             <div class="sidebar-nav" id="sidebar-nav">
+                <div class="sidebar-nav-item new-session-nav" id="new-session-btn">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+                    <span>New Session</span>
+                </div>
                 <div class="sidebar-nav-item active" data-view="chat" id="nav-chat">
                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3a1 1 0 011-1h8a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 2V10H3a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.2"/></svg>
                     <span>Chat</span>
@@ -51,10 +50,15 @@
                 <input type="text" placeholder="Search..." id="search-input" />
             </div>
             <div class="sidebar-project-filter" id="sidebar-project-filter">
-                <div class="project-filter-selected" id="project-filter-selected">
-                    <span class="pf-icon">&#128193;</span>
-                    <span class="pf-name" id="pf-selected-name">All Projects</span>
-                    <span class="pf-arrow">&#9662;</span>
+                <div class="project-filter-row">
+                    <div class="project-filter-selected" id="project-filter-selected">
+                        <span class="pf-icon">&#128193;</span>
+                        <span class="pf-name" id="pf-selected-name">All Projects</span>
+                        <span class="pf-arrow">&#9662;</span>
+                    </div>
+                    <button class="pf-add-btn" id="pf-add-project" title="Add project">
+                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                    </button>
                 </div>
                 <div class="project-filter-dropdown" id="project-filter-dropdown" style="display:none">
                     <input type="text" class="pf-search" id="pf-search" placeholder="Filter projects..." autocomplete="off" />
@@ -80,34 +84,42 @@
         <main id="main">
             <!-- Header bar -->
             <header id="header">
-                <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <rect x="1" y="1" width="5" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
-                        <rect x="8" y="1" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
-                    </svg>
-                </button>
-                <div class="header-title">
-                    <span id="header-project"></span>
-                </div>
-                <div class="header-indicators">
-                    <button class="header-badge resonant-md-badge" id="resonant-md-badge" title="RESONANT.md" style="display:none">
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 1h5l3 3v7a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1"/><path d="M7 1v3h3" stroke="currentColor" stroke-width="1"/></svg>
-                        <span>RESONANT.md</span>
+                <div class="header-left">
+                    <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <rect x="1" y="1" width="5" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                            <rect x="8" y="1" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                        </svg>
                     </button>
-                    <button class="header-badge git-badge" id="git-badge" title="Git status" style="display:none">
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="3" r="1.5" stroke="currentColor" stroke-width="1"/><circle cx="6" cy="9" r="1.5" stroke="currentColor" stroke-width="1"/><line x1="6" y1="4.5" x2="6" y2="7.5" stroke="currentColor" stroke-width="1"/></svg>
-                        <span id="git-branch-name">main</span>
-                        <span class="git-changes-count" id="git-changes-count" style="display:none">0</span>
+                    <div class="header-title">
+                        <span id="header-project"></span>
+                    </div>
+                </div>
+                <div class="mode-tabs" id="mode-tabs">
+                    <button class="mode-tab active" data-mode="code">Code</button>
+                    <button class="mode-tab" data-mode="chat">Chat</button>
+                </div>
+                <div class="header-right">
+                    <div class="header-indicators">
+                        <button class="header-badge resonant-md-badge" id="resonant-md-badge" title="RESONANT.md" style="display:none">
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 1h5l3 3v7a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1"/><path d="M7 1v3h3" stroke="currentColor" stroke-width="1"/></svg>
+                            <span>RESONANT.md</span>
+                        </button>
+                        <button class="header-badge git-badge" id="git-badge" title="Git status" style="display:none">
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="3" r="1.5" stroke="currentColor" stroke-width="1"/><circle cx="6" cy="9" r="1.5" stroke="currentColor" stroke-width="1"/><line x1="6" y1="4.5" x2="6" y2="7.5" stroke="currentColor" stroke-width="1"/></svg>
+                            <span id="git-branch-name">main</span>
+                            <span class="git-changes-count" id="git-changes-count" style="display:none">0</span>
+                        </button>
+                    </div>
+                    <div class="header-status" id="header-status"></div>
+                    <button id="preview-toggle" class="icon-btn preview-toggle-btn" title="Toggle preview panel">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                            <rect x="1" y="1" width="14" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+                            <line x1="9" y1="1" x2="9" y2="15" stroke="currentColor" stroke-width="1.2"/>
+                            <circle cx="12.5" cy="5" r="1.2" fill="currentColor" opacity="0.5"/>
+                        </svg>
                     </button>
                 </div>
-                <div class="header-status" id="header-status"></div>
-                <button id="preview-toggle" class="icon-btn preview-toggle-btn" title="Toggle preview panel">
-                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                        <rect x="1" y="1" width="14" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
-                        <line x1="9" y1="1" x2="9" y2="15" stroke="currentColor" stroke-width="1.2"/>
-                        <circle cx="12.5" cy="5" r="1.2" fill="currentColor" opacity="0.5"/>
-                    </svg>
-                </button>
             </header>
 
             <!-- ═══ Split content area (chat + preview) ═══ -->
@@ -143,6 +155,30 @@
                                 <div id="backend-selector" class="backend-selector">
                                     <p class="backend-label">Select a backend</p>
                                     <div id="backend-list" class="backend-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ═══ New Chat Welcome ═══ -->
+                    <div id="chat-welcome-screen" class="welcome-screen" style="display:none;">
+                        <div class="welcome-content">
+                            <div class="welcome-brand">
+                                <span class="welcome-icon">┃</span>
+                                <h1>Resonant</h1>
+                            </div>
+                            <p class="welcome-subtitle">What can I help you with?</p>
+                            <div class="chat-welcome-input">
+                                <div class="chat-welcome-input-wrapper">
+                                    <textarea id="chat-welcome-textarea" placeholder="Start a conversation..." rows="2" autocomplete="off" spellcheck="false"></textarea>
+                                    <button id="chat-welcome-send" class="send-btn" title="Send">
+                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                            <path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                        </svg>
+                                    </button>
+                                </div>
+                                <div class="chat-welcome-footer">
+                                    <select id="chat-welcome-model" class="chat-welcome-model-select"></select>
                                 </div>
                             </div>
                         </div>
@@ -402,6 +438,6 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=20"></script>
+    <script src="/static/app.js?v=25"></script>
 </body>
 </html>

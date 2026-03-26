@@ -17,6 +17,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from pathlib import Path
 from typing import Iterator, Tuple, Optional
 
 import httpx
@@ -1681,6 +1683,7 @@ class CodexBackend:
             "--json",
             "--full-auto",
             "--ephemeral",
+            "--skip-git-repo-check",
             "-C", self.cwd,
             user_msg,
         ]
@@ -1792,12 +1795,260 @@ class CodexBackend:
 
 
 # ---------------------------------------------------------------------------
+# Local MLX backend
+# ---------------------------------------------------------------------------
+
+class MLXBackend:
+    """Local MLX backend backed by the LocalCodingModel repo."""
+
+    MODELS = ["adapter-router", "real-targeted20", "gapround2-10"]
+    BASE_MODEL = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
+
+    def __init__(self, local_root: str | None, model: str):
+        self.local_root = Path(
+            local_root
+            or os.environ.get("LOCAL_CODING_MODEL_ROOT", "/Users/richbellantoni/Repos/LocalCodingModel")
+        ).expanduser().resolve()
+        self.model = model or "adapter-router"
+        self.name = "mlx"
+        self.tool_mode = "text"
+
+    def _python(self) -> Path:
+        return self.local_root / ".venv" / "bin" / "python"
+
+    def _scripts_dir(self) -> Path:
+        return self.local_root / "scripts"
+
+    def _adapter_dir(self, key: str) -> Path | None:
+        mapping = {
+            "real-targeted20": self.local_root / "outputs" / "adapters" / "qwen3-coder-30b-a3b-real-targeted20",
+            "gapround2-10": self.local_root / "outputs" / "adapters" / "qwen3-coder-30b-a3b-real-targeted20-gapround2-10",
+        }
+        return mapping.get(key)
+
+    def _infer_task_type(self, prompt: str) -> str:
+        prompt_lower = prompt.lower()
+        if any(token in prompt_lower for token in ("summarize", "list the most likely files", "under 8 bullet", "under 7 bullets")):
+            return "summary"
+        return "coding"
+
+    def _resolve_adapter(self, prompt: str) -> tuple[Path | None, str]:
+        if self.model != "adapter-router":
+            adapter = self._adapter_dir(self.model)
+            if adapter:
+                return adapter, f"fixed mlx adapter '{self.model}' selected"
+            return None, "mlx base model selected"
+
+        scripts_dir = self._scripts_dir()
+        if str(scripts_dir) not in sys.path:
+            sys.path.insert(0, str(scripts_dir))
+        try:
+            from adapter_router import route_adapter  # type: ignore
+
+            adapter, reason = route_adapter(
+                prompt=prompt,
+                task_type=self._infer_task_type(prompt),
+            )
+            return Path(adapter), reason
+        except Exception as exc:
+            logger.warning("MLX adapter router fallback triggered: %s", exc)
+            return self._adapter_dir("real-targeted20"), "router unavailable, fell back to stable targeted20 adapter"
+
+    @staticmethod
+    def _render_content(content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            text_parts = []
+            image_count = 0
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") == "text":
+                    text = part.get("text", "")
+                    if isinstance(text, str) and text:
+                        text_parts.append(text)
+                elif part.get("type") == "image":
+                    image_count += 1
+            if image_count:
+                text_parts.append(f"[{image_count} image attachment(s) omitted for text-only MLX backend]")
+            return "\n".join(part for part in text_parts if part).strip()
+        return str(content)
+
+    def _build_prompt(
+        self,
+        *,
+        user_msg: str,
+        conversation_history: list,
+        instructions: str,
+        tools: list,
+    ) -> str:
+        sys_content = instructions
+        if tools:
+            sys_content += build_tool_system_prompt(tools)
+
+        lines = [f"System:\n{sys_content.strip()}\n", "Conversation:"]
+        for turn in conversation_history:
+            role = turn.get("role", "")
+            content = self._render_content(turn.get("content", ""))
+            if role == "tool_call":
+                args = turn.get("arguments", "{}")
+                if isinstance(args, dict):
+                    args = json.dumps(args)
+                content = f'<tool_call>\n{{"name": "{turn.get("name", "")}", "arguments": {args}}}\n</tool_call>'
+                lines.append(f"Assistant:\n{content}")
+            elif role == "tool_result":
+                prefix = turn.get("name", "tool")
+                lines.append(f"User:\n[{prefix} result]\n{content}")
+            elif role == "assistant":
+                lines.append(f"Assistant:\n{content}")
+            elif role == "user":
+                lines.append(f"User:\n{content}")
+
+        if not conversation_history or conversation_history[-1].get("role") != "user":
+            lines.append(f"User:\n{user_msg}")
+        lines.append("Assistant:")
+        return "\n\n".join(line for line in lines if line.strip())
+
+    def _run_generate(
+        self,
+        *,
+        prompt: str,
+        max_tokens: int,
+        adapter_dir: Path | None,
+        cancel_event=None,
+    ) -> str:
+        command = [
+            str(self._python()),
+            "-m",
+            "mlx_lm",
+            "generate",
+            "--model",
+            self.BASE_MODEL,
+            "--prompt",
+            prompt,
+            "--max-tokens",
+            str(max_tokens),
+            "--temp",
+            "0.0",
+            "--verbose",
+            "F",
+        ]
+        if adapter_dir:
+            command.extend(["--adapter-path", str(adapter_dir)])
+
+        proc = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        while proc.poll() is None:
+            if cancel_event is not None and cancel_event.is_set():
+                proc.kill()
+                return ""
+            time.sleep(0.1)
+
+        stdout, stderr = proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(stderr.strip() or f"mlx generate failed with exit code {proc.returncode}")
+        return stdout.strip()
+
+    def health(self) -> dict:
+        python_path = self._python()
+        adapter_root = self.local_root / "outputs" / "adapters"
+        ready = python_path.exists() and adapter_root.exists()
+        return {
+            "status": "ready" if ready else "error",
+            "backend": "mlx",
+            "model": self.model,
+            "local_root": str(self.local_root),
+            "available_models": self.MODELS,
+            "message": "" if ready else f"Missing LocalCodingModel assets under {self.local_root}",
+        }
+
+    def warm_up(self):
+        try:
+            self.classify("Reply with exactly one word: READY", max_tokens=4)
+        except Exception:
+            pass
+
+    def list_models(self) -> list:
+        return list(self.MODELS)
+
+    def classify(self, prompt: str, max_tokens: int = 50) -> str:
+        adapter_dir, _ = self._resolve_adapter(prompt)
+        return self._run_generate(
+            prompt=prompt,
+            max_tokens=max_tokens,
+            adapter_dir=adapter_dir,
+        ).strip()
+
+    def stream(
+        self,
+        user_msg: str,
+        conversation_history: list,
+        instructions: str,
+        tools: list,
+        max_tokens: int = 4096,
+        cancel_event=None,
+    ) -> Iterator[Tuple[str, dict]]:
+        try:
+            adapter_dir, reason = self._resolve_adapter(user_msg)
+            prompt = self._build_prompt(
+                user_msg=user_msg,
+                conversation_history=conversation_history,
+                instructions=instructions,
+                tools=tools,
+            )
+            full_text = self._run_generate(
+                prompt=prompt,
+                max_tokens=max_tokens,
+                adapter_dir=adapter_dir,
+                cancel_event=cancel_event,
+            )
+            clean_text = full_text.strip()
+            plain_text, xml_calls = parse_tool_calls(clean_text)
+            detected_calls = []
+            if xml_calls:
+                for tc in xml_calls:
+                    args = tc.get("arguments", "{}")
+                    args_str = json.dumps(args) if isinstance(args, dict) else str(args)
+                    call_id = f"call_{hash(tc.get('name', '') + args_str) & 0xFFFFFFFF:08x}"
+                    detected_calls.append({
+                        "name": tc.get("name", ""),
+                        "arguments": args_str,
+                        "call_id": call_id,
+                    })
+            if not detected_calls:
+                detected_calls = _detect_json_tool_calls(clean_text)
+            if not detected_calls:
+                detected_calls = _detect_text_tool_calls(clean_text)
+
+            if detected_calls:
+                if plain_text.strip():
+                    yield (EVENT_TEXT_DELTA, {"delta": plain_text.strip()})
+                for tc in detected_calls:
+                    yield (EVENT_TOOL_CALL, tc)
+            elif clean_text:
+                yield (EVENT_TEXT_DELTA, {"delta": clean_text})
+
+            yield (EVENT_DONE, {
+                "cognitive_state": None,
+                "stats": {"routing_reason": reason},
+                "model": self.model,
+            })
+        except Exception as e:
+            yield (EVENT_ERROR, {"message": str(e)})
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
 def create_backend(backend_type: str, url: str = None, model: str = None,
                    api_key: str = None, base_url: str = None, cwd: str = None,
-                   permission_mode: str = None):
+                   permission_mode: str = None, local_root: str = None):
     if backend_type == "ollama":
         if not model:
             raise ValueError("Model name required for Ollama backend")
@@ -1820,5 +2071,7 @@ def create_backend(backend_type: str, url: str = None, model: str = None,
         )
     elif backend_type == "codex":
         return CodexBackend(model=model, cwd=cwd)
+    elif backend_type == "mlx":
+        return MLXBackend(local_root=local_root, model=model or "adapter-router")
     else:
         raise ValueError(f"Unknown backend: {backend_type}")

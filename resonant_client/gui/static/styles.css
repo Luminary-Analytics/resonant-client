@@ -739,6 +739,11 @@ body {
     color: var(--brand2);
 }
 
+.harness-badge {
+    color: var(--tool);
+    border-color: rgba(175, 135, 255, 0.28);
+}
+
 .git-changes-count {
     background: var(--warn);
     color: #000;
@@ -768,6 +773,90 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+}
+
+.harness-popover {
+    position: absolute;
+    top: calc(var(--header-height) + 4px);
+    right: 220px;
+    width: 380px;
+    max-height: 440px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    z-index: 200;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.harness-popover-body {
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+}
+
+.harness-popover-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.harness-popover-block {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.harness-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.harness-text,
+.harness-list {
+    font-size: 12px;
+    color: var(--text);
+    line-height: 1.45;
+}
+
+.harness-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.harness-inline-meta {
+    color: var(--muted);
+    font-size: 11px;
+}
+
+.harness-popover-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+
+.harness-action-btn {
+    background: var(--bg-elem);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    padding: 7px 8px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.harness-action-btn:hover {
+    background: var(--bg-hover);
+    border-color: var(--dim);
 }
 
 .git-popover-header {

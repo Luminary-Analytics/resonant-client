@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -29,7 +30,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..events import EngineEvent, make_event
 from ..backends import (
     ClaudeBackend, OpenAIBackend,
-    ClaudeCodeBackend, CodexBackend, _find_cli,
+    ClaudeCodeBackend, CodexBackend, MLXBackend, _find_cli,
 )
 from ..engine import Session
 from .sessions import ProjectManager
@@ -39,6 +40,8 @@ from .project_instructions import load_project_instructions, get_instruction_inf
 from .task_runner import TaskRunner
 from .scheduler import Scheduler
 from .runtime import BackendSpec
+from .harness_state import HarnessWorkspace
+from .harness_orchestrator import HarnessOrchestrator
 from ..engine.hooks import HookRunner
 from ..engine.mcp import MCPManager
 from ..engine.memory import EngramIntegration
@@ -66,6 +69,12 @@ class AppState:
 
     SESSION_MAX_STEPS = 25
     SESSION_MAX_TOKENS = 4096
+    HARNESS_ROLE_MAX_TOKENS = {
+        "planner": 1024,
+        "generator": 1536,
+        "evaluator": 384,
+    }
+    CODE_SESSION_ROLES = {"planner", "generator", "evaluator"}
 
     def __init__(self):
         self.available_backends: dict = {}
@@ -104,8 +113,31 @@ class AppState:
         self.base_engram = EngramIntegration(self.settings)
         self.base_engram.set_mcp_manager(self.mcp_manager)
         self.engram = self.base_engram.clone(namespace=self._project_namespace(self.project.project_path))
+        self.harness = HarnessWorkspace(self.project.project_path)
         self.codebase_index: Optional[CodebaseIndex] = None
+        self.harness_orchestrator = HarnessOrchestrator(
+            summary_getter=lambda project_path: self.get_harness_summary(project_path),
+            prompt_builder=lambda session_role, project_path, objective="": self._build_harness_cycle_prompt(
+                session_role=session_role,
+                project_path=project_path,
+                objective=objective,
+            ),
+            backend_selector=lambda session_role, project_path=None: self.select_harness_backend(
+                session_role=session_role,
+                project_path=project_path,
+            ),
+            retry_backend_selector=lambda session_role, failed_backend="", project_path=None: self.select_harness_retry_backend(
+                session_role=session_role,
+                failed_backend=failed_backend,
+                project_path=project_path,
+            ),
+            role_timeout_getter=lambda session_role: self.get_harness_role_timeout_seconds(session_role),
+            retry_timeout_getter=lambda session_role: self.get_harness_role_retry_timeout_seconds(session_role),
+            role_runner=lambda **kwargs: self.run_harness_role_once(**kwargs),
+            teacher_escalator=lambda **kwargs: self.run_harness_teacher_escalation(**kwargs),
+        )
         self.scheduler.set_backend_factory(lambda _task: self.make_background_session)
+        self.scheduler.set_special_executor(self.run_scheduled_task)
         self.apply_project_context(self.project.project_path, refresh_index=True)
 
     @staticmethod
@@ -119,6 +151,1103 @@ class AppState:
 
     def _session_auto_approve(self, mode: Optional[str] = None) -> bool:
         return (mode or self.permission_mode) != "ask"
+
+    @staticmethod
+    def normalize_session_mode(value: str) -> str:
+        return "chat" if value == "chat" else "code"
+
+    @classmethod
+    def normalize_session_role(cls, session_mode: str, value: str) -> str:
+        session_mode = cls.normalize_session_mode(session_mode)
+        if session_mode == "chat":
+            return "chat"
+        return value if value in cls.CODE_SESSION_ROLES else "generator"
+
+    def build_harness_instructions(
+        self,
+        *,
+        project_path: str,
+        session_mode: str,
+        session_role: str,
+    ) -> str:
+        session_mode = self.normalize_session_mode(session_mode)
+        session_role = self.normalize_session_role(session_mode, session_role)
+        if session_mode == "chat":
+            return ""
+
+        harness = HarnessWorkspace(project_path)
+        role_block = {
+            "planner": (
+                "You are the planner session. Start by reading the harness files, then update "
+                "`spec.json`, `progress_state.json`, and `sprint_contract.json`. Define the next "
+                "sprint in concrete, testable terms before implementation starts."
+            ),
+            "generator": (
+                "You are the generator session. Read the current harness state first. Implement only "
+                "the active sprint, run the cheapest relevant validation, then update "
+                "`progress_state.json` and `handoff.md` before finishing. Do not start coding if the "
+                "sprint contract is not approved or marked for revision."
+            ),
+            "evaluator": (
+                "You are the evaluator session. Read the sprint contract and current progress first. "
+                "Verify the implementation against the stated acceptance checks, run focused tests or "
+                "tool-based checks, then write a concrete verdict to `evaluator_report.json`."
+            ),
+        }[session_role]
+
+        return (
+            "\n\n--- HARNESS INSTRUCTIONS (.resonant-harness) ---\n"
+            f"Session role: {session_role}\n"
+            f"Harness root: {harness.root}\n"
+            f"Read first:\n"
+            f"- {harness.spec_path}\n"
+            f"- {harness.progress_path}\n"
+            f"- {harness.sprint_contract_path}\n"
+            f"- {harness.evaluator_report_path}\n"
+            f"- {harness.handoff_path}\n\n"
+            f"{role_block}\n"
+            "If the harness files are mostly empty, initialize only the minimum state needed for the current request.\n"
+            f"{self.build_harness_output_contract(session_mode=session_mode, session_role=session_role)}\n"
+            "--- END HARNESS INSTRUCTIONS ---"
+        )
+
+    def build_harness_output_contract(
+        self,
+        *,
+        session_mode: str,
+        session_role: str,
+    ) -> str:
+        session_mode = self.normalize_session_mode(session_mode)
+        session_role = self.normalize_session_role(session_mode, session_role)
+        if session_mode == "chat":
+            return ""
+
+        templates = {
+            "planner": {
+                "action": "planner_update",
+                "spec": {
+                    "title": "",
+                    "summary": "",
+                    "user_stories": [],
+                    "sprint_order": [],
+                    "design_principles": [],
+                    "technical_notes": [],
+                },
+                "progress": {
+                    "product_goal": "",
+                    "summary": "",
+                    "blockers": [],
+                    "next_steps": [],
+                    "current_phase": "planning",
+                },
+                "sprint_contract": {
+                    "sprint_id": "",
+                    "feature_name": "",
+                    "objective": "",
+                    "deliverables": [],
+                    "acceptance_checks": [],
+                    "evaluator_focus": [],
+                    "status": "proposed",
+                },
+            },
+            "generator": {
+                "action": "generator_update",
+                "progress": {
+                    "summary": "",
+                    "blockers": [],
+                    "next_steps": [],
+                    "touched_files": [],
+                    "last_validation": "",
+                    "validation_checks": [],
+                    "current_phase": "implementation",
+                },
+                "sprint_status": "implemented",
+                "handoff_markdown": "# Summary\n\n# Next Action\n",
+            },
+            "evaluator": {
+                "action": "evaluator_verdict",
+                "sprint_id": "",
+                "verdict": "revise",
+                "score": 0.0,
+                "findings": [],
+                "required_revisions": [],
+                "passed_checks": [],
+                "failed_checks": [],
+            },
+        }
+        template_text = json.dumps(templates[session_role], indent=2, ensure_ascii=False)
+        return (
+            "End your final assistant response with a fenced code block named "
+            "`resonant-harness` containing valid JSON for your role. Always include the explicit "
+            "`action` field shown below. If the objective asks for bullets, a report, or an audit, "
+            "put that human-readable content in `handoff_markdown` or concise summary fields, then "
+            "still end with the full harness block. Use only concrete values, keep lists short, and "
+            "omit fields you cannot justify.\n"
+            f"```resonant-harness\n{template_text}\n```"
+        )
+
+    def get_harness_summary(self, project_path: Optional[str] = None) -> dict[str, Any]:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        harness = HarnessWorkspace(target_path)
+        harness.ensure_layout()
+        progress = harness.read_progress()
+        contract = harness.read_sprint_contract()
+        report = harness.read_evaluator_report()
+        recent_history = harness.read_run_history(limit=5)
+        recent_teacher_escalations = harness.read_teacher_escalations(limit=3)
+        return {
+            "root": str(harness.root),
+            "spec_path": str(harness.spec_path),
+            "progress_path": str(harness.progress_path),
+            "sprint_contract_path": str(harness.sprint_contract_path),
+            "evaluator_report_path": str(harness.evaluator_report_path),
+            "handoff_path": str(harness.handoff_path),
+            "run_history_path": str(harness.run_history_path),
+            "teacher_escalations_path": str(harness.teacher_escalations_path),
+            "current_phase": progress.current_phase,
+            "active_sprint_id": progress.active_sprint_id,
+            "active_role": progress.active_role,
+            "summary": progress.summary,
+            "blockers": list(progress.blockers),
+            "next_steps": list(progress.next_steps),
+            "touched_files": list(progress.touched_files),
+            "last_validation": progress.last_validation,
+            "validation_checks": list(progress.validation_checks),
+            "contract_status": contract.status,
+            "contract_feature_name": contract.feature_name,
+            "contract_objective": contract.objective,
+            "deliverables": list(contract.deliverables),
+            "acceptance_checks": list(contract.acceptance_checks),
+            "evaluator_focus": list(contract.evaluator_focus),
+            "evaluator_verdict": report.verdict,
+            "findings": list(report.findings),
+            "required_revisions": list(report.required_revisions),
+            "recent_run_events": recent_history,
+            "recent_teacher_escalations": recent_teacher_escalations,
+        }
+
+    @staticmethod
+    def _truncate_text(value: str, *, max_chars: int) -> str:
+        text = str(value or "").strip()
+        if len(text) <= max_chars:
+            return text
+        return text[: max(0, max_chars - 1)].rstrip() + "…"
+
+    def get_harness_evaluator_mode(self) -> str:
+        raw = str(os.environ.get("RESONANT_HARNESS_EVALUATOR_MODE", "hybrid") or "").strip().lower()
+        if raw in {"full", "artifacts", "structured", "hybrid"}:
+            return raw
+        return "hybrid"
+
+    def get_harness_evaluator_artifact_max_tokens(self) -> int:
+        raw = str(os.environ.get("RESONANT_HARNESS_EVALUATOR_ARTIFACT_MAX_TOKENS", "") or "").strip()
+        if raw:
+            try:
+                value = int(raw)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+        return 192
+
+    def get_harness_evaluator_structured_max_tokens(self) -> int:
+        raw = str(os.environ.get("RESONANT_HARNESS_EVALUATOR_STRUCTURED_MAX_TOKENS", "") or "").strip()
+        if raw:
+            try:
+                value = int(raw)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+        return 256
+
+    def should_use_harness_artifact_evaluator(self, project_path: Optional[str] = None) -> bool:
+        mode = self.get_harness_evaluator_mode()
+        if mode == "full":
+            return False
+        if mode == "artifacts":
+            return True
+
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        harness = HarnessWorkspace(target_path)
+        harness.ensure_layout()
+        contract = harness.read_sprint_contract()
+        progress = harness.read_progress()
+
+        objective_lower = str(contract.objective or "").strip().lower()
+        feature_lower = str(contract.feature_name or "").strip().lower()
+
+        explicit_read_only_tokens = (
+            "read-only",
+            "read files only",
+            "do not modify repository files",
+        )
+        if any(token in objective_lower for token in explicit_read_only_tokens):
+            return True
+
+        reporting_tokens = (
+            "summarize",
+            "summary",
+            "audit",
+            "compare",
+            "inventory",
+            "explain",
+            "record findings",
+            "capture findings",
+            "handoff artifact",
+            "table",
+            "bullet",
+            "bullets",
+        )
+        if objective_lower.startswith("read ") and any(token in objective_lower for token in reporting_tokens):
+            return True
+
+        if (
+            not list(progress.touched_files or [])
+            and any(token in feature_lower for token in ("audit", "summary", "inventory", "validation"))
+            and any(token in objective_lower for token in ("read ", "record findings", "capture findings", "handoff"))
+        ):
+            return True
+
+        return False
+
+    @staticmethod
+    def _resolve_harness_touched_path(project_path: str, raw_path: str) -> Path:
+        raw = str(raw_path or "").strip()
+        if not raw:
+            return Path(project_path)
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(project_path) / candidate
+        try:
+            return candidate.resolve()
+        except Exception:
+            return candidate
+
+    @staticmethod
+    def _format_numbered_excerpt(path: Path, *, max_lines: int = 80, max_chars: int = 2400) -> str:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return f"[unreadable: {exc}]"
+        if len(text) > max_chars:
+            text = text[:max_chars].rstrip() + "\n...[truncated]"
+        lines = text.splitlines()
+        if len(lines) > max_lines:
+            lines = lines[:max_lines] + ["...[truncated]"]
+        return "\n".join(f"{index:>4}: {line}" for index, line in enumerate(lines, start=1))
+
+    def build_harness_structured_evidence_bundle(self, project_path: Optional[str] = None) -> dict[str, Any]:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        harness = HarnessWorkspace(target_path)
+        harness.ensure_layout()
+        summary = self.get_harness_summary(target_path)
+        touched_files = self._normalize_string_list(summary.get("touched_files"))
+        handoff_text = self._truncate_text(harness.read_handoff(), max_chars=1600)
+
+        files: list[dict[str, Any]] = []
+        evidence_parts = [
+            summary.get("summary") or "",
+            summary.get("last_validation") or "",
+            "\n".join(self._normalize_string_list(summary.get("validation_checks"))),
+            handoff_text,
+        ]
+
+        for raw_path in touched_files[:4]:
+            resolved = self._resolve_harness_touched_path(target_path, raw_path)
+            file_record: dict[str, Any] = {
+                "path": raw_path,
+                "resolved_path": str(resolved),
+                "exists": resolved.exists(),
+            }
+            if resolved.exists() and resolved.is_file():
+                try:
+                    file_record["size_bytes"] = resolved.stat().st_size
+                except OSError:
+                    file_record["size_bytes"] = None
+                excerpt = self._format_numbered_excerpt(resolved)
+                file_record["excerpt"] = excerpt
+                evidence_parts.append(excerpt)
+            else:
+                file_record["excerpt"] = "[missing file]"
+                evidence_parts.append(f"{raw_path}: missing file")
+            files.append(file_record)
+
+        acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        combined_evidence = "\n".join(part for part in evidence_parts if part).lower()
+        coverage = []
+        for check in acceptance_checks[:8]:
+            phrase = re.sub(
+                r"^(mention|include|cover|state|validate|return|record|show|verify)\s+",
+                "",
+                str(check).strip().lower(),
+            )
+            phrase = re.sub(r"\s+", " ", phrase).strip(" .")
+            coverage.append(
+                {
+                    "check": check,
+                    "matched": bool(phrase and phrase in combined_evidence),
+                    "normalized_phrase": phrase,
+                }
+            )
+
+        return {
+            "summary": summary,
+            "handoff_excerpt": handoff_text,
+            "files": files,
+            "acceptance_check_coverage": coverage,
+        }
+
+    def can_use_harness_structured_evaluator(self, project_path: Optional[str] = None) -> bool:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        summary = self.get_harness_summary(target_path)
+        touched_files = self._normalize_string_list(summary.get("touched_files"))
+        if not touched_files:
+            return False
+        bundle = self.build_harness_structured_evidence_bundle(target_path)
+        return any(item.get("exists") for item in bundle["files"])
+
+    def get_harness_evaluator_strategy(self, project_path: Optional[str] = None) -> str:
+        mode = self.get_harness_evaluator_mode()
+        if mode == "full":
+            return "full"
+        if mode == "artifacts":
+            return "artifacts"
+        if mode == "structured":
+            return "structured" if self.can_use_harness_structured_evaluator(project_path) else "full"
+        if self.should_use_harness_artifact_evaluator(project_path):
+            return "artifacts"
+        if self.can_use_harness_structured_evaluator(project_path):
+            return "structured"
+        return "full"
+
+    def build_harness_evaluator_artifact_prompt(self, project_path: Optional[str] = None) -> str:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        harness = HarnessWorkspace(target_path)
+        harness.ensure_layout()
+        summary = self.get_harness_summary(target_path)
+        handoff_text = self._truncate_text(harness.read_handoff(), max_chars=1800)
+
+        lines = [
+            "Artifact-only evaluator mode.",
+            "Do not inspect repository files and do not use tools.",
+            "Judge the sprint only from the harness artifacts below.",
+            "Pass only if the existing evidence already satisfies the acceptance checks.",
+            "If the evidence is incomplete but recoverable, return revise with concrete required revisions.",
+            "Use blocked only for a hard blocker or missing evidence that prevents a meaningful verdict.",
+            "",
+            f"Active sprint: {summary['active_sprint_id'] or 'none'}",
+            f"Feature: {summary['contract_feature_name'] or 'unknown'}",
+            f"Objective: {summary['contract_objective'] or 'none'}",
+            f"Contract status: {summary['contract_status'] or 'unknown'}",
+            f"Last evaluator verdict: {summary['evaluator_verdict'] or 'unknown'}",
+            "",
+        ]
+
+        blockers = self._normalize_string_list(summary.get("blockers"))
+        next_steps = self._normalize_string_list(summary.get("next_steps"))
+        checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        revisions = self._normalize_string_list(summary.get("required_revisions"))
+        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+        touched_files = self._normalize_string_list(summary.get("touched_files"))
+        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+
+        if checks:
+            lines.append("Acceptance checks:")
+            lines.extend(f"- {item}" for item in checks[:8])
+        if blockers:
+            lines.append("Current blockers:")
+            lines.extend(f"- {item}" for item in blockers[:8])
+        if next_steps:
+            lines.append("Current next steps:")
+            lines.extend(f"- {item}" for item in next_steps[:8])
+        if revisions:
+            lines.append("Required revisions from prior evaluator:")
+            lines.extend(f"- {item}" for item in revisions[:8])
+        if touched_files:
+            lines.append("Touched files:")
+            lines.extend(f"- {item}" for item in touched_files[:12])
+        if validation_checks:
+            lines.append("Recorded validation checks:")
+            lines.extend(f"- {item}" for item in validation_checks[:12])
+
+        lines.extend(
+            [
+                "",
+                "Progress summary:",
+                summary.get("summary") or "(none)",
+                "",
+                "Last validation evidence:",
+                summary.get("last_validation") or "(none)",
+                "",
+                "Recorded validation checks:",
+                *[f"- {item}" for item in validation_checks[:12] or ["(none)"]],
+                "",
+                "Handoff artifact excerpt:",
+                handoff_text or "(none)",
+                "",
+                "Keep the prose to at most 4 short lines, then finish with a valid ```resonant-harness JSON block for evaluator_verdict.",
+            ]
+        )
+        return "\n".join(lines)
+
+    def build_harness_structured_evaluator_prompt(self, project_path: Optional[str] = None) -> str:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        bundle = self.build_harness_structured_evidence_bundle(target_path)
+        summary = bundle["summary"]
+
+        lines = [
+            "Structured evaluator mode.",
+            "Do not use tools and do not inspect any files beyond the evidence included below.",
+            "Judge the sprint only from the compact evidence bundle.",
+            "Prefer pass only when the evidence clearly satisfies the acceptance checks.",
+            "Return revise when the implementation might be correct but the evidence is incomplete or a check is unsupported.",
+            "Return blocked only for a hard blocker or clearly missing implementation evidence.",
+            "",
+            f"Active sprint: {summary['active_sprint_id'] or 'none'}",
+            f"Feature: {summary['contract_feature_name'] or 'unknown'}",
+            f"Objective: {summary['contract_objective'] or 'none'}",
+            f"Contract status: {summary['contract_status'] or 'unknown'}",
+            "",
+            "Acceptance checks:",
+        ]
+        checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+        lines.extend(f"- {item}" for item in checks[:8] or ["(none)"])
+
+        lines.extend(
+            [
+                "",
+                "Progress summary:",
+                summary.get("summary") or "(none)",
+                "",
+                "Last validation evidence:",
+                summary.get("last_validation") or "(none)",
+                "",
+                "Recorded validation checks:",
+                *[f"- {item}" for item in validation_checks[:12] or ["(none)"]],
+                "",
+                "Handoff artifact excerpt:",
+                bundle["handoff_excerpt"] or "(none)",
+                "",
+                "Acceptance-check coverage guess:",
+            ]
+        )
+        for item in bundle["acceptance_check_coverage"]:
+            marker = "matched" if item["matched"] else "unmatched"
+            lines.append(f"- {marker}: {item['check']}")
+
+        lines.append("")
+        lines.append("Touched file evidence:")
+        for file_item in bundle["files"]:
+            lines.append(
+                f"- {file_item['path']} ({'exists' if file_item['exists'] else 'missing'})"
+            )
+            excerpt = str(file_item.get("excerpt") or "").strip()
+            if excerpt:
+                lines.append(excerpt)
+                lines.append("")
+
+        lines.append("Keep the prose to at most 6 short lines, then finish with a valid ```resonant-harness JSON block for evaluator_verdict.")
+        return "\n".join(lines)
+
+    def infer_evidence_only_evaluator_payload(
+        self,
+        *,
+        project_path: Optional[str] = None,
+        text: str,
+    ) -> dict[str, Any] | None:
+        stripped = str(text or "").strip()
+        if not stripped:
+            return None
+
+        lowered = stripped.lower()
+        summary = self.get_harness_summary(project_path)
+        acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
+
+        normalized_check_phrases = []
+        for check in acceptance_checks:
+            phrase = re.sub(
+                r"^(mention|include|cover|state|validate|return|record|show|verify)\s+",
+                "",
+                str(check).strip().lower(),
+            )
+            phrase = re.sub(r"\s+", " ", phrase).strip(" .")
+            if phrase:
+                normalized_check_phrases.append(phrase)
+
+        verdict = ""
+        if any(token in lowered for token in (" blocked.", " blocked ", "hard blocker", "cannot proceed")):
+            verdict = "blocked"
+        elif any(
+            token in lowered
+            for token in (
+                "✗",
+                "not mentioned in evidence",
+                "not covered",
+                "not met",
+                "missing from evidence",
+                "needs revision",
+                "need revision",
+                "revise",
+                "i need to examine",
+                "i need to inspect",
+                "i need to verify",
+                "to properly evaluate",
+                "insufficient evidence",
+                "missing evidence",
+                "cannot verify",
+                "not enough evidence",
+            )
+        ):
+            verdict = "revise"
+        elif any(
+            token in lowered
+            for token in (
+                "pass.",
+                "pass ",
+                "passed ",
+                "no revisions are needed",
+                "no revision is needed",
+                "satisfies the acceptance checks",
+            )
+        ):
+            verdict = "pass"
+        elif normalized_check_phrases and all(phrase in lowered for phrase in normalized_check_phrases):
+            verdict = "pass"
+
+        if not verdict:
+            return None
+
+        sprint_id = str(summary.get("active_sprint_id") or "").strip()
+
+        candidate_lines = []
+        for raw_line in stripped.splitlines():
+            cleaned = raw_line.strip().lstrip("-* ").strip()
+            if not cleaned:
+                continue
+            if cleaned.startswith("```") or cleaned in {"{", "}"}:
+                continue
+            if cleaned.lower().startswith(("artifact-only evaluator mode", "finish with a short summary")):
+                continue
+            candidate_lines.append(self._truncate_text(cleaned, max_chars=220))
+
+        findings = []
+        for item in candidate_lines:
+            if item not in findings:
+                findings.append(item)
+            if len(findings) >= 3:
+                break
+        if not findings:
+            findings = [self._truncate_text(stripped, max_chars=220)]
+
+        payload: dict[str, Any] = {
+            "action": "evaluator_verdict",
+            "sprint_id": sprint_id,
+            "verdict": verdict,
+            "findings": findings,
+            "passed_checks": [],
+            "failed_checks": [],
+            "required_revisions": [],
+            "score": None,
+        }
+
+        if verdict == "pass":
+            payload["passed_checks"] = acceptance_checks[:8]
+            payload["score"] = 1.0
+        elif verdict == "revise":
+            revisions = acceptance_checks[:3] or ["Record more concrete validation evidence in progress.last_validation and handoff.md."]
+            payload["required_revisions"] = revisions
+            payload["failed_checks"] = revisions
+            payload["score"] = 0.5
+        else:
+            blockers = self._normalize_string_list(summary.get("blockers"))
+            payload["required_revisions"] = blockers[:3] or ["Clear the blocker or add enough evaluation evidence to support a verdict."]
+            payload["failed_checks"] = payload["required_revisions"]
+            payload["score"] = 0.0
+
+        return payload
+
+    @staticmethod
+    def resolve_local_coding_model_root() -> Path:
+        return Path(
+            os.environ.get("LOCAL_CODING_MODEL_ROOT", "/Users/richbellantoni/Repos/LocalCodingModel")
+        ).expanduser().resolve()
+
+    def resolve_local_coding_model_python(self) -> Path:
+        root = self.resolve_local_coding_model_root()
+        venv_python = root / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            return venv_python
+        return Path(sys.executable).resolve()
+
+    def select_harness_teacher(
+        self,
+        *,
+        session_role: str,
+        reason: str = "",
+    ) -> tuple[str, str]:
+        normalized_role = self.normalize_session_role("code", session_role)
+        lowered_reason = reason.lower()
+        codex_cli = _find_cli("codex")
+        claude_cli = _find_cli("claude")
+
+        prefer_claude = normalized_role == "evaluator" or "blocked" in lowered_reason or "verdict" in lowered_reason
+        providers: list[tuple[str, str]] = []
+        if prefer_claude:
+            providers.extend(
+                [
+                    ("claude", "claude-opus-4-6"),
+                    ("codex", "gpt-5.4"),
+                ]
+            )
+        else:
+            providers.extend(
+                [
+                    ("codex", "gpt-5.4"),
+                    ("claude", "claude-opus-4-6"),
+                ]
+            )
+
+        for provider, model in providers:
+            if provider == "codex" and codex_cli:
+                return provider, model
+            if provider == "claude" and claude_cli:
+                return provider, model
+
+        raise ValueError("No teacher CLI is available for harness escalation")
+
+    def wrap_user_message_for_harness(
+        self,
+        *,
+        user_msg: str,
+        session_mode: str,
+        session_role: str,
+    ) -> str:
+        session_mode = self.normalize_session_mode(session_mode)
+        session_role = self.normalize_session_role(session_mode, session_role)
+        if session_mode == "chat":
+            return user_msg
+
+        harness = HarnessWorkspace(self.project.project_path)
+        summary = self.get_harness_summary(self.project.project_path)
+        role_requirements = {
+            "planner": "Create or refine the spec and propose the next sprint contract. Keep implementation out unless the user explicitly asks for it.",
+            "generator": "Implement only the active sprint. Update progress and handoff artifacts before finishing.",
+            "evaluator": "Verify against the sprint contract. Write a clear pass, revise, or blocked verdict with concrete required revisions.",
+        }[session_role]
+        return (
+            f"HARNESS ROLE: {session_role}\n"
+            f"HARNESS ROOT: {summary['root']}\n"
+            "READ THESE FILES BEFORE ACTING:\n"
+            f"- {summary['spec_path']}\n"
+            f"- {summary['progress_path']}\n"
+            f"- {summary['sprint_contract_path']}\n"
+            f"- {summary['evaluator_report_path']}\n"
+            f"- {summary['handoff_path']}\n\n"
+            f"ROLE REQUIREMENTS: {role_requirements}\n\n"
+            f"FINAL OUTPUT CONTRACT:\n{self.build_harness_output_contract(session_mode=session_mode, session_role=session_role)}\n\n"
+            "USER REQUEST:\n"
+            f"{user_msg}"
+        )
+
+    @staticmethod
+    def _normalize_string_list(value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [line.strip() for line in value.splitlines() if line.strip()]
+        if isinstance(value, (list, tuple, set)):
+            result = []
+            for item in value:
+                text = str(item).strip()
+                if text:
+                    result.append(text)
+            return result
+        text = str(value).strip()
+        return [text] if text else []
+
+    @staticmethod
+    def normalize_harness_contract_status(status: str, *, session_role: str) -> str:
+        raw = str(status or "").strip().lower()
+        if not raw:
+            return ""
+        aliases = {
+            "propose": "proposed",
+            "proposed": "proposed",
+            "ready": "approved",
+            "ready_for_implementation": "approved",
+            "implementation_ready": "approved",
+            "ready_to_implement": "approved",
+            "ready_to_execute": "approved",
+            "ready_for_execution": "approved",
+            "execution_ready": "approved",
+            "ready_to_start": "approved",
+            "approve": "approved",
+            "approved": "approved",
+            "revise": "needs_revision",
+            "revision": "needs_revision",
+            "needs_revision": "needs_revision",
+            "implement": "implemented",
+            "implemented": "implemented",
+            "ready_for_evaluation": "implemented",
+            "evaluation_ready": "implemented",
+            "ready_to_evaluate": "implemented",
+            "ready_to_review": "implemented",
+            "review": "implemented",
+            "under_review": "implemented",
+            "fail": "failed",
+            "failed": "failed",
+            "block": "failed",
+            "blocked": "failed",
+            "pass": "passed",
+            "passed": "passed",
+        }
+        if raw in aliases:
+            return aliases[raw]
+        if raw in {"complete", "completed", "done"}:
+            if session_role == "planner":
+                return "approved"
+            if session_role == "generator":
+                return "implemented"
+            return "passed"
+        return raw
+
+    def extract_harness_update(
+        self,
+        *,
+        text: str,
+        session_mode: str,
+        session_role: str,
+    ) -> tuple[str, dict[str, Any] | None, str | None]:
+        session_mode = self.normalize_session_mode(session_mode)
+        session_role = self.normalize_session_role(session_mode, session_role)
+        if session_mode == "chat" or not text:
+            return text, None, None
+
+        matches = list(
+            re.finditer(r"```resonant-harness\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+        )
+        if not matches:
+            return text, None, None
+
+        match = matches[-1]
+        payload_text = match.group(1).strip()
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            return text, None, f"Invalid resonant-harness JSON for {session_role}: {exc.msg}"
+
+        cleaned = f"{text[:match.start()]}{text[match.end():]}".strip()
+        return cleaned, payload, None
+
+    @staticmethod
+    def rewrite_last_assistant_message(session: Session, original_text: str, cleaned_text: str) -> None:
+        if not original_text or original_text == cleaned_text:
+            return
+        for item in reversed(session.conversation_history):
+            if item.get("role") == "assistant" and item.get("content") == original_text:
+                item["content"] = cleaned_text
+                return
+
+    def apply_harness_update(
+        self,
+        *,
+        session_mode: str,
+        session_role: str,
+        payload: dict[str, Any],
+        project_path: Optional[str] = None,
+        assistant_text: str = "",
+        user_request: str = "",
+    ) -> str:
+        session_mode = self.normalize_session_mode(session_mode)
+        session_role = self.normalize_session_role(session_mode, session_role)
+        if session_mode == "chat":
+            return "Ignored harness update for chat session"
+
+        harness = HarnessWorkspace(project_path or self.project.project_path)
+        harness.ensure_layout()
+        action = str(payload.get("action") or "").strip()
+
+        if not action:
+            # A fenced `resonant-harness` block is already role-scoped by the
+            # active session. Default to that role's action so minor teacher or
+            # planner omissions do not discard otherwise usable harness state.
+            action = {
+                "planner": "planner_update",
+                "generator": "generator_update",
+                "evaluator": "evaluator_verdict",
+            }[session_role]
+
+        if action == "planner_update":
+            spec_data = payload.get("spec") or {}
+            if isinstance(spec_data, dict):
+                spec_updates: dict[str, Any] = {}
+                for key in ("title", "summary"):
+                    value = str(spec_data.get(key) or "").strip()
+                    if value:
+                        spec_updates[key] = value
+                for key in ("user_stories", "sprint_order", "design_principles", "technical_notes"):
+                    if key in spec_data:
+                        spec_updates[key] = self._normalize_string_list(spec_data.get(key))
+                if spec_updates:
+                    harness.update_spec(**spec_updates)
+
+            contract_data = payload.get("sprint_contract") or {}
+            if isinstance(contract_data, dict):
+                current_contract = harness.read_sprint_contract()
+                sprint_id = str(contract_data.get("sprint_id") or current_contract.sprint_id).strip()
+                objective = str(contract_data.get("objective") or current_contract.objective).strip()
+                feature_name = str(contract_data.get("feature_name") or current_contract.feature_name).strip()
+                if sprint_id and objective:
+                    harness.set_active_sprint(
+                        sprint_id=sprint_id,
+                        feature_name=feature_name,
+                        objective=objective,
+                        deliverables=self._normalize_string_list(
+                            contract_data.get("deliverables", current_contract.deliverables)
+                        ),
+                        acceptance_checks=self._normalize_string_list(
+                            contract_data.get("acceptance_checks", current_contract.acceptance_checks)
+                        ),
+                        evaluator_focus=self._normalize_string_list(
+                            contract_data.get("evaluator_focus", current_contract.evaluator_focus)
+                        ),
+                        status=self.normalize_harness_contract_status(
+                            str(contract_data.get("status") or current_contract.status or "proposed").strip(),
+                            session_role="planner",
+                        ) or "proposed",
+                        role="planner",
+                    )
+                elif contract_data:
+                    contract_updates: dict[str, Any] = {}
+                    for key in ("sprint_id", "feature_name", "objective", "status"):
+                        value = str(contract_data.get(key) or "").strip()
+                        if value:
+                            if key == "status":
+                                value = self.normalize_harness_contract_status(value, session_role="planner")
+                            contract_updates[key] = value
+                    for key in ("deliverables", "acceptance_checks", "evaluator_focus"):
+                        if key in contract_data:
+                            contract_updates[key] = self._normalize_string_list(contract_data.get(key))
+                    if contract_updates:
+                        harness.update_sprint_contract(**contract_updates)
+
+            progress_data = payload.get("progress") or {}
+            if isinstance(progress_data, dict):
+                progress_updates: dict[str, Any] = {"active_role": "planner"}
+                for key in ("product_goal", "summary", "last_validation"):
+                    value = str(progress_data.get(key) or "").strip()
+                    if value:
+                        progress_updates[key] = value
+                for key in ("blockers", "next_steps", "touched_files", "validation_checks"):
+                    if key in progress_data:
+                        progress_updates[key] = self._normalize_string_list(progress_data.get(key))
+                current_phase = str(progress_data.get("current_phase") or "planning").strip()
+                if current_phase:
+                    progress_updates["current_phase"] = current_phase
+                if progress_updates:
+                    harness.update_progress(**progress_updates)
+
+            handoff_markdown = str(payload.get("handoff_markdown") or "").strip()
+            if handoff_markdown:
+                harness.write_handoff(handoff_markdown)
+
+            sprint_id = harness.read_sprint_contract().sprint_id
+            harness.append_run_event(
+                "assistant_harness_update",
+                {
+                    "action": action,
+                    "session_role": session_role,
+                    "sprint_id": sprint_id,
+                    "user_request": user_request,
+                    "assistant_text": assistant_text,
+                },
+            )
+            return f"Applied planner harness update{f' for {sprint_id}' if sprint_id else ''}"
+
+        if action == "generator_update":
+            progress_data = payload.get("progress") or {}
+            progress_updates: dict[str, Any] = {"active_role": "generator"}
+            if isinstance(progress_data, dict):
+                for key in ("summary", "product_goal", "last_validation"):
+                    value = str(progress_data.get(key) or "").strip()
+                    if value:
+                        progress_updates[key] = value
+                for key in ("blockers", "next_steps", "touched_files", "validation_checks"):
+                    if key in progress_data:
+                        progress_updates[key] = self._normalize_string_list(progress_data.get(key))
+                current_phase = str(progress_data.get("current_phase") or "implementation").strip()
+                if current_phase:
+                    progress_updates["current_phase"] = current_phase
+            harness.update_progress(**progress_updates)
+
+            handoff_markdown = str(payload.get("handoff_markdown") or "").strip()
+            if handoff_markdown:
+                harness.write_handoff(handoff_markdown)
+
+            sprint_status = str(payload.get("sprint_status") or "").strip()
+            sprint_status = self.normalize_harness_contract_status(sprint_status, session_role="generator")
+            if sprint_status in {"proposed", "approved", "implemented", "needs_revision", "passed", "failed"}:
+                harness.set_contract_status(status=sprint_status, role="generator")
+
+            harness.append_run_event(
+                "assistant_harness_update",
+                {
+                    "action": action,
+                    "session_role": session_role,
+                    "sprint_id": harness.read_sprint_contract().sprint_id,
+                    "sprint_status": sprint_status or "",
+                    "user_request": user_request,
+                    "assistant_text": assistant_text,
+                },
+            )
+            return "Applied generator harness update"
+
+        if action == "evaluator_verdict":
+            sprint_id = str(payload.get("sprint_id") or harness.read_sprint_contract().sprint_id).strip()
+            verdict = str(payload.get("verdict") or "").strip()
+            if not sprint_id or verdict not in {"pass", "revise", "blocked"}:
+                raise ValueError("Evaluator verdict requires sprint_id and verdict")
+            harness.record_evaluator_verdict(
+                sprint_id=sprint_id,
+                verdict=verdict,
+                findings=self._normalize_string_list(payload.get("findings")),
+                required_revisions=self._normalize_string_list(payload.get("required_revisions")),
+                passed_checks=self._normalize_string_list(payload.get("passed_checks")),
+                failed_checks=self._normalize_string_list(payload.get("failed_checks")),
+                score=payload.get("score"),
+            )
+            harness.append_run_event(
+                "assistant_harness_update",
+                {
+                    "action": action,
+                    "session_role": session_role,
+                    "sprint_id": sprint_id,
+                    "verdict": verdict,
+                    "user_request": user_request,
+                    "assistant_text": assistant_text,
+                },
+            )
+            return f"Applied evaluator verdict {verdict} for {sprint_id}"
+
+        raise ValueError(f"Unknown harness action: {action}")
+
+    def build_harness_resume_prompt(
+        self,
+        *,
+        session_mode: str,
+        session_role: str,
+        project_path: Optional[str] = None,
+    ) -> str:
+        session_mode = self.normalize_session_mode(session_mode)
+        session_role = self.normalize_session_role(session_mode, session_role)
+        if session_mode == "chat":
+            return "Resume the chat conversation naturally from the existing context."
+
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        harness = HarnessWorkspace(target_path)
+        harness.ensure_layout()
+        summary = self.get_harness_summary(target_path)
+        spec = harness.read_spec()
+
+        read_order = {
+            "planner": [
+                summary["spec_path"],
+                summary["progress_path"],
+                summary["sprint_contract_path"],
+                summary["evaluator_report_path"],
+                summary["handoff_path"],
+            ],
+            "generator": [
+                summary["spec_path"],
+                summary["progress_path"],
+                summary["sprint_contract_path"],
+                summary["evaluator_report_path"],
+                summary["handoff_path"],
+            ],
+            "evaluator": [
+                summary["progress_path"],
+                summary["sprint_contract_path"],
+                summary["evaluator_report_path"],
+                summary["handoff_path"],
+            ],
+        }[session_role]
+
+        common_lines = [
+            f"Resume this project as the {session_role} session using the harness state, not long chat history.",
+            "Start by reading these files in order:",
+            *[f"{index}. {path}" for index, path in enumerate(read_order, start=1)],
+            "",
+        ]
+
+        if session_role != "evaluator":
+            common_lines.extend(
+                [
+                f"Product title: {spec.title or 'Unknown'}",
+                f"Product summary: {spec.summary or 'Not set'}",
+                f"Current phase: {summary['current_phase'] or 'unknown'}",
+                ]
+            )
+
+        common_lines.extend(
+            [
+                f"Active sprint: {summary['active_sprint_id'] or 'none'}",
+                f"Sprint objective: {summary['contract_objective'] or 'none'}",
+                f"Contract status: {summary['contract_status'] or 'unknown'}",
+                f"Last evaluator verdict: {summary['evaluator_verdict'] or 'unknown'}",
+            ]
+        )
+
+        blockers = self._normalize_string_list(summary.get("blockers"))
+        next_steps = self._normalize_string_list(summary.get("next_steps"))
+        checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        revisions = self._normalize_string_list(summary.get("required_revisions"))
+
+        if blockers:
+            common_lines.append("Current blockers:")
+            common_lines.extend(f"- {item}" for item in blockers[:5])
+        if next_steps:
+            common_lines.append("Current next steps:")
+            common_lines.extend(f"- {item}" for item in next_steps[:5])
+        if checks:
+            common_lines.append("Acceptance checks:")
+            common_lines.extend(f"- {item}" for item in checks[:5])
+        if validation_checks:
+            common_lines.append("Recorded validation checks:")
+            common_lines.extend(f"- {item}" for item in validation_checks[:5])
+        if revisions:
+            common_lines.append("Required revisions from evaluator:")
+            common_lines.extend(f"- {item}" for item in revisions[:5])
+
+        role_lines = {
+            "planner": [
+                "",
+                "Your task:",
+                "- refine or complete the spec only where needed",
+                "- define or revise the next sprint contract in concrete, testable terms",
+                "- do not execute the sprint itself; leave the audit, implementation, or verification work to later roles",
+                "- finish with a normal summary plus a valid ```resonant-harness JSON block for planner_update",
+            ],
+            "generator": [
+                "",
+                "Your task:",
+                "- implement only the active sprint",
+                "- if the contract is not approved or needs_revision, stop and say that first",
+                "- run the cheapest relevant validation before finishing",
+                "- record exact validation evidence in progress.last_validation and short check bullets in progress.validation_checks",
+                "- finish with a normal summary plus a valid ```resonant-harness JSON block for generator_update",
+            ],
+            "evaluator": [
+                "",
+                "Your task:",
+                "- verify the current implementation against the sprint contract",
+                "- state pass, revise, or blocked with concrete findings",
+                "- finish with a normal summary plus a valid ```resonant-harness JSON block for evaluator_verdict",
+            ],
+        }[session_role]
+
+        return "\n".join(common_lines + role_lines)
 
     def apply_permission_mode(self, mode: str, session: Optional[Session] = None) -> str:
         self.permission_mode = mode or "bypass"
@@ -152,6 +1281,8 @@ class AppState:
         self._project_instructions = load_project_instructions(project_path)
         self.engram = self.base_engram.clone(namespace=self._project_namespace(project_path))
         self.engram.set_mcp_manager(self.mcp_manager)
+        self.harness = HarnessWorkspace(project_path)
+        self.harness.ensure_layout()
 
         current_index_path = (
             self._normalize_path(str(self.codebase_index.project_path))
@@ -172,16 +1303,67 @@ class AppState:
 
         return project_path
 
+    def _build_harness_cycle_prompt(
+        self,
+        *,
+        session_role: str,
+        project_path: str | None = None,
+        objective: str = "",
+    ) -> str:
+        prompt = self.build_harness_resume_prompt(
+            session_mode="code",
+            session_role=session_role,
+            project_path=project_path,
+        )
+        objective = objective.strip()
+        if objective:
+            role_guidance = {
+                "planner": (
+                    "Convert the objective into harness artifacts, not a standalone answer. "
+                    "Your job is to define the sprint and leave execution to generator/evaluator; "
+                    "do not perform the audit, code change, or validation work yourself unless the "
+                    "objective explicitly says the planner must do it. "
+                    "If the objective is explicitly read-only, keep the sprint deliverables read-only "
+                    "and artifact-focused instead of inventing code changes. "
+                    "If the objective asks for bullets, findings, or an audit summary, place that "
+                    "content in handoff_markdown and concise progress/spec fields, then finish with "
+                    "a valid planner_update resonant-harness block."
+                ),
+                "generator": (
+                    "Treat the objective as implementation guidance for the active sprint. "
+                    "If the objective is explicitly read-only, do not modify repository files; only "
+                    "read, analyze, and update harness artifacts. "
+                    "Keep the final response brief, record validation in progress.last_validation, "
+                    "and finish with a valid generator_update resonant-harness block."
+                ),
+                "evaluator": (
+                    "Treat the objective as evaluation scope. Put human-readable findings in the "
+                    "normal response and required_revisions/failed_checks, then finish with a valid "
+                    "evaluator_verdict resonant-harness block."
+                ),
+            }[session_role]
+            prompt = (
+                f"TOP-LEVEL OBJECTIVE:\n{objective}\n\n"
+                f"OBJECTIVE HANDLING RULE:\n{role_guidance}\n\n"
+                f"{prompt}"
+            )
+        return prompt
+
     def _wire_session(
         self,
         session: Session,
         *,
         project_path: Optional[str] = None,
+        project_instructions: Optional[str] = None,
         engram: Optional[EngramIntegration] = None,
         codebase_index: Optional[CodebaseIndex] = None,
     ) -> Session:
         target_path = project_path or self.project.project_path
-        session.project_instructions = load_project_instructions(target_path)
+        session.project_instructions = (
+            project_instructions
+            if project_instructions is not None
+            else load_project_instructions(target_path)
+        )
         session.hook_runner = self.hook_runner
         session.mcp_tools = self.mcp_manager.get_all_tools()
         session._mcp_manager = self.mcp_manager
@@ -338,8 +1520,474 @@ class AppState:
             except Exception:
                 pass
 
+        # Local MLX stack from LocalCodingModel repo
+        mlx_root = os.environ.get("LOCAL_CODING_MODEL_ROOT", "/Users/richbellantoni/Repos/LocalCodingModel")
+        mlx_python = Path(mlx_root) / ".venv" / "bin" / "python"
+        mlx_adapter_root = Path(mlx_root) / "outputs" / "adapters"
+        if mlx_python.exists() and mlx_adapter_root.exists():
+            available["mlx"] = {
+                "models": list(MLXBackend.MODELS),
+                "local_root": mlx_root,
+            }
+
         self.available_backends = available
         return available
+
+    def select_harness_backend(
+        self,
+        *,
+        session_role: str,
+        project_path: Optional[str] = None,
+    ) -> tuple[str, str]:
+        if not self.available_backends:
+            self.detect_backends()
+
+        project_path = os.path.normpath(project_path or self.project.project_path)
+        preferences = {
+            "planner": ["claude-code", "codex", "openai", "claude", "mlx", "ollama", "lmstudio"],
+            "generator": ["mlx", "codex", "claude-code", "openai", "claude", "ollama", "lmstudio"],
+            "evaluator": ["claude-code", "codex", "claude", "openai", "mlx", "ollama", "lmstudio"],
+        }
+        preferred_mlx_model = "adapter-router"
+        role_env = session_role.upper()
+        forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_BACKEND", "") or "").strip()
+        forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_MODEL", "") or "").strip()
+
+        if forced_backend:
+            info = self.available_backends.get(forced_backend)
+            if not info:
+                raise ValueError(
+                    f"Forced harness backend '{forced_backend}' for role '{session_role}' is not available"
+                )
+            models = list(info.get("models") or [])
+            model = forced_model or (models[0] if models else "")
+            spec = self.build_backend_spec(forced_backend, model=model or None, project_path=project_path)
+            return spec.backend_type, spec.model
+
+        for backend_type in preferences.get(session_role, preferences["generator"]):
+            info = self.available_backends.get(backend_type)
+            if not info:
+                continue
+            models = list(info.get("models") or [])
+            if self.backend_spec and self.backend_spec.backend_type == backend_type and self.backend_spec.model:
+                model = self.backend_spec.model
+            elif backend_type == "mlx" and preferred_mlx_model in models:
+                model = preferred_mlx_model
+            else:
+                model = models[0] if models else ""
+            spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
+            return spec.backend_type, spec.model
+
+        raise ValueError(f"No available backend for harness role '{session_role}'")
+
+    def select_harness_retry_backend(
+        self,
+        *,
+        session_role: str,
+        failed_backend: str = "",
+        project_path: Optional[str] = None,
+    ) -> tuple[str, str]:
+        if not self.available_backends:
+            self.detect_backends()
+
+        project_path = os.path.normpath(project_path or self.project.project_path)
+        role_env = session_role.upper()
+        forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_BACKEND", "") or "").strip()
+        forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_MODEL", "") or "").strip()
+
+        if forced_backend:
+            info = self.available_backends.get(forced_backend)
+            if not info:
+                raise ValueError(
+                    f"Forced harness retry backend '{forced_backend}' for role '{session_role}' is not available"
+                )
+            models = list(info.get("models") or [])
+            model = forced_model or (models[0] if models else "")
+            spec = self.build_backend_spec(forced_backend, model=model or None, project_path=project_path)
+            return spec.backend_type, spec.model
+
+        retry_preferences = {
+            "planner": ["codex", "claude-code", "openai", "claude", "mlx", "ollama", "lmstudio"],
+            "generator": ["codex", "claude-code", "mlx", "openai", "claude", "ollama", "lmstudio"],
+            "evaluator": ["claude-code", "claude", "codex", "openai", "mlx", "ollama", "lmstudio"],
+        }
+
+        for backend_type in retry_preferences.get(session_role, retry_preferences["evaluator"]):
+            if backend_type == failed_backend:
+                continue
+            info = self.available_backends.get(backend_type)
+            if not info:
+                continue
+            models = list(info.get("models") or [])
+            model = models[0] if models else ""
+            spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
+            return spec.backend_type, spec.model
+
+        return "", ""
+
+    def get_harness_role_timeout_seconds(self, session_role: str) -> float | None:
+        role_env = session_role.upper()
+        raw = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_TIMEOUT_SECONDS", "") or "").strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        return value if value > 0 else None
+
+    def get_harness_role_retry_timeout_seconds(self, session_role: str) -> float | None:
+        role_env = session_role.upper()
+        raw = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_TIMEOUT_SECONDS", "") or "").strip()
+        if not raw:
+            return self.get_harness_role_timeout_seconds(session_role)
+        try:
+            value = float(raw)
+        except ValueError:
+            return self.get_harness_role_timeout_seconds(session_role)
+        return value if value > 0 else self.get_harness_role_timeout_seconds(session_role)
+
+    def get_harness_role_max_tokens(self, session_role: str) -> int:
+        role_env = session_role.upper()
+        raw = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_MAX_TOKENS", "") or "").strip()
+        if raw:
+            try:
+                value = int(raw)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+        return int(self.HARNESS_ROLE_MAX_TOKENS.get(session_role, self.SESSION_MAX_TOKENS))
+
+    def build_harness_role_session(
+        self,
+        *,
+        project_path: Optional[str] = None,
+        session_role: str,
+        backend_type: Optional[str] = None,
+        model: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+        allowed_tools: Optional[list[dict[str, Any]]] = None,
+        max_tokens_override: Optional[int] = None,
+    ) -> tuple[Session, BackendSpec]:
+        project_path = os.path.normpath(project_path or self.project.project_path)
+        normalized_role = self.normalize_session_role("code", session_role)
+        if not backend_type:
+            backend_type, selected_model = self.select_harness_backend(
+                session_role=normalized_role,
+                project_path=project_path,
+            )
+            model = model or selected_model
+        spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
+        max_tokens = max_tokens_override or self.get_harness_role_max_tokens(normalized_role)
+        backend = spec.create_backend(self.settings)
+        session = self.build_session(
+            backend=backend,
+            backend_spec=spec,
+            project_path=project_path,
+            cancel_event=cancel_event,
+            session_mode="code",
+            session_role=normalized_role,
+            max_tokens=max_tokens,
+            allowed_tools=allowed_tools,
+        )
+        return session, spec
+
+    def run_harness_role_once(
+        self,
+        *,
+        project_path: str,
+        session_role: str,
+        prompt: str,
+        backend_type: Optional[str] = None,
+        model: Optional[str] = None,
+        cancel_event: Optional[threading.Event] = None,
+        timeout_seconds: Optional[float] = None,
+    ) -> dict[str, Any]:
+        role_cancel_event = threading.Event()
+        timeout_stop = threading.Event()
+        timed_out = False
+
+        if cancel_event is not None:
+            def _watch_external_cancel() -> None:
+                cancel_event.wait()
+                role_cancel_event.set()
+
+            threading.Thread(target=_watch_external_cancel, daemon=True).start()
+
+        if timeout_seconds and timeout_seconds > 0:
+            def _watch_timeout() -> None:
+                nonlocal timed_out
+                if not timeout_stop.wait(timeout_seconds):
+                    timed_out = True
+                    role_cancel_event.set()
+
+            threading.Thread(target=_watch_timeout, daemon=True).start()
+
+        normalized_role = self.normalize_session_role("code", session_role)
+        evaluation_mode = "full"
+        if normalized_role == "evaluator":
+            evaluation_mode = self.get_harness_evaluator_strategy(project_path)
+
+        if evaluation_mode == "artifacts":
+            effective_prompt = self.build_harness_evaluator_artifact_prompt(project_path)
+            allowed_tools = []
+            max_tokens_override = self.get_harness_evaluator_artifact_max_tokens()
+        elif evaluation_mode == "structured":
+            effective_prompt = self.build_harness_structured_evaluator_prompt(project_path)
+            allowed_tools = []
+            max_tokens_override = self.get_harness_evaluator_structured_max_tokens()
+        else:
+            effective_prompt = prompt
+            allowed_tools = None
+            max_tokens_override = None
+
+        session, spec = self.build_harness_role_session(
+            project_path=project_path,
+            session_role=session_role,
+            backend_type=backend_type,
+            model=model,
+            cancel_event=role_cancel_event,
+            allowed_tools=allowed_tools,
+            max_tokens_override=max_tokens_override,
+        )
+        collected_text: list[str] = []
+        display_events: list[dict[str, Any]] = []
+        steps = 0
+        error = ""
+        deferred_parse_error = ""
+        pending_harness_payload: dict[str, Any] | None = None
+        pending_harness_text = ""
+
+        try:
+            for event in session.run(effective_prompt):
+                display_events.append(event)
+                event_type = event.get("event", "")
+                if event_type == EngineEvent.TEXT_DONE.value:
+                    text = str(event.get("text") or "").strip()
+                    cleaned_text, harness_payload, parse_error = self.extract_harness_update(
+                        text=text,
+                        session_mode="code",
+                        session_role=session_role,
+                    )
+                    if parse_error:
+                        if evaluation_mode in {"artifacts", "structured"}:
+                            deferred_parse_error = parse_error
+                        elif not error:
+                            error = parse_error
+                    if harness_payload is not None:
+                        pending_harness_payload = harness_payload
+                        pending_harness_text = cleaned_text
+                    if cleaned_text:
+                        collected_text.append(cleaned_text)
+                elif event_type == EngineEvent.STEP_END.value:
+                    steps += 1
+                elif event_type == EngineEvent.ERROR.value:
+                    message = str(event.get("message") or "Unknown error")
+                    if role_cancel_event.is_set() and message == "Interrupted":
+                        error = ""
+                    elif message != "Interrupted":
+                        error = message
+
+                if role_cancel_event.is_set():
+                    session.cancel()
+        finally:
+            timeout_stop.set()
+
+        if not error and pending_harness_payload is None and evaluation_mode in {"artifacts", "structured"}:
+            inferred_payload = self.infer_evidence_only_evaluator_payload(
+                project_path=project_path,
+                text="\n\n".join(collected_text).strip(),
+            )
+            if inferred_payload is not None:
+                pending_harness_payload = inferred_payload
+
+        if not error and pending_harness_payload is not None:
+            try:
+                self.apply_harness_update(
+                    session_mode="code",
+                    session_role=session_role,
+                    payload=pending_harness_payload,
+                    project_path=project_path,
+                    assistant_text=pending_harness_text,
+                    user_request=effective_prompt,
+                )
+            except Exception as exc:
+                error = f"Failed to apply harness update: {exc}"
+        elif not error and deferred_parse_error:
+            error = deferred_parse_error
+        elif not error:
+            error = "No resonant-harness update emitted by automated role run"
+
+        if timed_out:
+            error = f"Timed out after {float(timeout_seconds):.1f}s"
+
+        return {
+            "result": "\n\n".join(collected_text).strip(),
+            "error": error,
+            "steps": steps,
+            "display_events": display_events,
+            "backend_type": spec.backend_type,
+            "model": spec.model,
+            "timed_out": timed_out,
+            "artifact_only": evaluation_mode == "artifacts",
+            "evaluation_mode": evaluation_mode,
+        }
+
+    def run_harness_teacher_escalation(
+        self,
+        *,
+        project_path: str,
+        failed_role: str,
+        reason: str,
+        objective: str = "",
+    ) -> dict[str, Any]:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        normalized_role = self.normalize_session_role("code", failed_role or "generator")
+        provider, model = self.select_harness_teacher(
+            session_role=normalized_role,
+            reason=reason,
+        )
+        root = self.resolve_local_coding_model_root()
+        python = self.resolve_local_coding_model_python()
+        script_path = root / "scripts" / "collect_harness_teacher_response.py"
+        if not script_path.exists():
+            raise FileNotFoundError(f"Harness teacher collector not found: {script_path}")
+
+        command = [
+            str(python),
+            str(script_path),
+            "--provider",
+            provider,
+            "--model",
+            model,
+            "--project-path",
+            target_path,
+            "--reason",
+            reason,
+            "--failed-role",
+            normalized_role,
+        ]
+        if objective.strip():
+            command.extend(["--objective", objective.strip()])
+
+        harness = HarnessWorkspace(target_path)
+        harness.ensure_layout()
+
+        record: dict[str, Any] | None = None
+        try:
+            import subprocess as _sp
+
+            result = _sp.run(
+                command,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            stdout_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+            if not stdout_lines:
+                raise ValueError("Harness teacher collector returned no JSON output")
+            record = json.loads(stdout_lines[-1])
+            response = record.get("response") or {}
+            recommended_role = self.normalize_session_role(
+                "code",
+                str(response.get("recommended_role") or normalized_role),
+            )
+            assistant_markdown = str(response.get("assistant_response_markdown") or "").strip()
+            if not assistant_markdown:
+                raise ValueError("Harness teacher response is missing assistant_response_markdown")
+
+            cleaned_text, harness_payload, parse_error = self.extract_harness_update(
+                text=assistant_markdown,
+                session_mode="code",
+                session_role=recommended_role,
+            )
+            if parse_error:
+                raise ValueError(parse_error)
+            if harness_payload is None:
+                raise ValueError("Harness teacher response did not emit a resonant-harness block")
+
+            status_message = self.apply_harness_update(
+                session_mode="code",
+                session_role=recommended_role,
+                payload=harness_payload,
+                project_path=target_path,
+                assistant_text=cleaned_text,
+                user_request=str(record.get("recovery_request") or reason),
+            )
+
+            applied_record = {
+                **record,
+                "status": "applied",
+                "recommended_role": recommended_role,
+                "parsed_payload": harness_payload,
+                "cleaned_assistant_text": cleaned_text,
+                "status_message": status_message,
+                "applied_at": time.time(),
+            }
+            harness.append_teacher_escalation(applied_record)
+            harness.append_run_event(
+                "teacher_intervention",
+                {
+                    "teacher_provider": provider,
+                    "teacher_model": model,
+                    "failed_role": normalized_role,
+                    "reason": reason,
+                    "recommended_role": recommended_role,
+                    "status": "applied",
+                    "recovery_kind": response.get("recovery_kind", ""),
+                },
+            )
+            return {
+                "result": cleaned_text,
+                "error": "",
+                "teacher_provider": provider,
+                "teacher_model": model,
+                "recommended_role": recommended_role,
+                "status_message": status_message,
+                "record": applied_record,
+            }
+        except Exception as exc:
+            failure_record = {
+                "record_type": "harness_teacher_response",
+                "teacher_provider": provider,
+                "teacher_model": model,
+                "project_path": target_path,
+                "failed_role": normalized_role,
+                "reason": reason,
+                "objective": objective.strip(),
+                "status": "failed",
+                "error": str(exc),
+                "captured_record": record,
+                "captured_at": time.time(),
+            }
+            harness.append_teacher_escalation(failure_record)
+            harness.append_run_event(
+                "teacher_intervention",
+                {
+                    "teacher_provider": provider,
+                    "teacher_model": model,
+                    "failed_role": normalized_role,
+                    "reason": reason,
+                    "status": "failed",
+                    "error": str(exc),
+                },
+            )
+            raise
+
+    def run_scheduled_task(self, task) -> dict[str, Any]:
+        if getattr(task, "task_kind", "session") != "harness_cycle":
+            raise ValueError(f"Unsupported scheduled task kind: {getattr(task, 'task_kind', '')}")
+
+        project_path = os.path.normpath(getattr(task, "project_path", "") or self.project.project_path)
+        objective = str(getattr(task, "prompt", "") or "").strip()
+        run = self.harness_orchestrator.start_cycle(
+            project_path=project_path,
+            name=f"[scheduled] {task.name}",
+            objective=objective,
+            max_loops=max(1, int(getattr(task, "max_loops", 6) or 6)),
+        )
+        return run.to_dict()
 
     def build_backend_spec(
         self,
@@ -385,6 +2033,8 @@ class AppState:
             spec.base_url = info.get("url", "")
             spec.api_key = "lm-studio"
             spec.api_key_source = "literal"
+        elif backend_type == "mlx":
+            spec.local_root = info.get("local_root", "")
         elif backend_type == "claude-code":
             spec.cwd = project_path
             spec.permission_mode = info.get("permission_mode", "bypassPermissions")
@@ -401,8 +2051,14 @@ class AppState:
         project_path: Optional[str] = None,
         auto_approve: Optional[bool] = None,
         cancel_event: Optional[threading.Event] = None,
+        session_mode: str = "code",
+        session_role: str = "generator",
+        max_tokens: Optional[int] = None,
+        allowed_tools: Optional[list[dict[str, Any]]] = None,
     ) -> Session:
         project_path = os.path.normpath(project_path or self.project.project_path)
+        session_mode = self.normalize_session_mode(session_mode)
+        session_role = self.normalize_session_role(session_mode, session_role)
         spec = (
             backend_spec if isinstance(backend_spec, BackendSpec)
             else BackendSpec.from_dict(backend_spec)
@@ -422,22 +2078,44 @@ class AppState:
             engram.set_mcp_manager(self.mcp_manager)
             codebase_index = CodebaseIndex(project_path, engram=engram)
 
+        harness_instructions = self.build_harness_instructions(
+            project_path=project_path,
+            session_mode=session_mode,
+            session_role=session_role,
+        )
+        if harness_instructions:
+            project_instructions = (project_instructions or "").strip()
+            project_instructions = (
+                f"{project_instructions}\n{harness_instructions}".strip()
+                if project_instructions
+                else harness_instructions
+            )
+
         session = Session(
             backend=backend,
             max_steps=self.SESSION_MAX_STEPS,
-            max_tokens=self.SESSION_MAX_TOKENS,
+            max_tokens=max_tokens or self.SESSION_MAX_TOKENS,
             auto_approve=self._session_auto_approve() if auto_approve is None else auto_approve,
+            allowed_tools=allowed_tools,
             project_instructions=project_instructions,
             cancel_event=cancel_event,
         )
         return self._wire_session(
             session,
             project_path=project_path,
+            project_instructions=project_instructions,
             engram=engram,
             codebase_index=codebase_index,
         )
 
-    def create_backend(self, backend_type: str, model: str = None):
+    def create_backend(
+        self,
+        backend_type: str,
+        model: str = None,
+        *,
+        session_mode: str = "code",
+        session_role: str = "generator",
+    ):
         """Create a backend and session."""
         spec = self.build_backend_spec(backend_type, model=model, project_path=self.project.project_path)
         self.backend = spec.create_backend(self.settings)
@@ -447,6 +2125,8 @@ class AppState:
             backend=self.backend,
             backend_spec=spec,
             project_path=self.project.project_path,
+            session_mode=session_mode,
+            session_role=session_role,
         )
         self.apply_permission_mode(self.permission_mode, session=self.session)
         return self.backend
@@ -471,7 +2151,7 @@ class AppState:
 
         if (
             self.backend_spec and
-            self.backend_spec.backend_type in {"claude", "openai", "lmstudio"} and
+            self.backend_spec.backend_type in {"claude", "openai", "lmstudio", "mlx"} and
             section in {"api_keys", "engram", "general"}
         ):
             try:
@@ -517,6 +2197,11 @@ class AppState:
             backend_spec=spec,
             project_path=project_path,
             cancel_event=task.cancel_event,
+            session_mode=self.normalize_session_mode(getattr(task, "session_mode", "code")),
+            session_role=self.normalize_session_role(
+                getattr(task, "session_mode", "code"),
+                getattr(task, "session_role", "generator"),
+            ),
         )
 
     def get_init_data(self, refresh_only: bool = False) -> dict:
@@ -552,11 +2237,15 @@ class AppState:
             "sessions": self.project.list_sessions(),
             "all_sessions": self.project.list_all_sessions(),
             "current_session_id": self.project.current_session.id if self.project.current_session else "",
+            "current_session_mode": self.project.current_session.session_mode if self.project.current_session else "code",
+            "current_session_role": self.project.current_session.session_role if self.project.current_session else "generator",
             "recent_projects": self.project.get_recent_projects(),
             "settings": self.settings.get_masked(),
             "resonant_md": get_instruction_info(self.project.project_path),
             "rag": self.codebase_index.get_stats() if self.codebase_index else {"total_files": 0, "is_indexed": False},
             "chat_groups": self.project.list_chat_groups(),
+            "harness": self.get_harness_summary(self.project.project_path),
+            "harness_cycles": self.harness_orchestrator.list_runs(),
         }
 
 
@@ -604,19 +2293,157 @@ async def websocket_endpoint(ws: WebSocket):
             if command == "init":
                 await ws.send_json(state.get_init_data())
 
+            elif command == "get_harness_state":
+                await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+
+            elif command == "get_harness_resume_prompt":
+                session_mode = msg.get("session_mode", "code")
+                session_role = msg.get("session_role", "generator")
+                prompt = state.build_harness_resume_prompt(
+                    session_mode=session_mode,
+                    session_role=session_role,
+                    project_path=state.project.project_path,
+                )
+                await ws.send_json({
+                    "event": "resume_prompt",
+                    "session_mode": state.normalize_session_mode(session_mode),
+                    "session_role": state.normalize_session_role(session_mode, session_role),
+                    "prompt": prompt,
+                })
+
+            elif command == "harness_cycle_start":
+                max_loops = int(msg.get("max_loops") or 6)
+                name = (msg.get("name") or "").strip()
+                objective = (msg.get("objective") or "").strip()
+                run = state.harness_orchestrator.start_cycle(
+                    project_path=state.project.project_path,
+                    name=name or "Harness Cycle",
+                    objective=objective,
+                    max_loops=max_loops,
+                )
+                await ws.send_json({"event": "harness_cycle_started", "run": run.to_dict()})
+                await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
+
+            elif command == "harness_cycle_list":
+                await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
+
+            elif command == "harness_cycle_result":
+                run_id = (msg.get("run_id") or "").strip()
+                run = state.harness_orchestrator.get_run(run_id)
+                if run:
+                    await ws.send_json({"event": "harness_cycle_result", "run": run.to_full_dict()})
+                else:
+                    await ws.send_json({"event": "error", "message": f"Harness cycle {run_id} not found"})
+
+            elif command == "harness_cycle_cancel":
+                run_id = (msg.get("run_id") or "").strip()
+                cancelled = state.harness_orchestrator.cancel(run_id)
+                await ws.send_json({"event": "harness_cycle_cancelled", "run_id": run_id, "success": cancelled})
+                await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
+
+            elif command == "harness_teacher_recover":
+                reason = (msg.get("reason") or "").strip() or "manual_recovery"
+                failed_role = state.normalize_session_role(
+                    "code",
+                    (msg.get("failed_role") or state.get_harness_summary().get("active_role") or "generator"),
+                )
+                objective = (msg.get("objective") or "").strip()
+                try:
+                    result = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.run_harness_teacher_escalation(
+                            project_path=state.project.project_path,
+                            failed_role=failed_role,
+                            reason=reason,
+                            objective=objective,
+                        ),
+                    )
+                    await ws.send_json(
+                        {
+                            "event": "harness_teacher_recovered",
+                            "data": {
+                                "teacher_provider": result.get("teacher_provider", ""),
+                                "teacher_model": result.get("teacher_model", ""),
+                                "recommended_role": result.get("recommended_role", ""),
+                                "status_message": result.get("status_message", ""),
+                            },
+                        }
+                    )
+                    await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+                except Exception as exc:
+                    await ws.send_json({"event": "error", "message": f"Teacher recovery failed: {exc}"})
+
+            elif command == "set_harness_sprint":
+                sprint_id = (msg.get("sprint_id") or "").strip()
+                feature_name = (msg.get("feature_name") or "").strip()
+                objective = (msg.get("objective") or "").strip()
+                if not sprint_id or not objective:
+                    await ws.send_json({"event": "error", "message": "sprint_id and objective are required"})
+                    continue
+                state.harness.set_active_sprint(
+                    sprint_id=sprint_id,
+                    feature_name=feature_name,
+                    objective=objective,
+                    deliverables=list(msg.get("deliverables") or []),
+                    acceptance_checks=list(msg.get("acceptance_checks") or []),
+                    evaluator_focus=list(msg.get("evaluator_focus") or []),
+                    status=(msg.get("status") or "proposed"),
+                    role=state.normalize_session_role("code", msg.get("session_role", "planner")),
+                )
+                await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+                await ws.send_json({"event": "status_msg", "message": f"Updated sprint {sprint_id}"})
+
+            elif command == "set_harness_contract_status":
+                status_value = (msg.get("status") or "").strip()
+                if status_value not in {"proposed", "approved", "implemented", "needs_revision", "passed", "failed"}:
+                    await ws.send_json({"event": "error", "message": "valid contract status is required"})
+                    continue
+                state.harness.set_contract_status(
+                    status=status_value,
+                    role=state.normalize_session_role("code", msg.get("session_role", "planner")),
+                )
+                await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+                await ws.send_json({"event": "status_msg", "message": f"Set sprint contract to {status_value}"})
+
+            elif command == "set_evaluator_verdict":
+                sprint_id = (msg.get("sprint_id") or "").strip()
+                verdict = (msg.get("verdict") or "").strip()
+                if not sprint_id or verdict not in {"pass", "revise", "blocked"}:
+                    await ws.send_json({"event": "error", "message": "valid sprint_id and verdict are required"})
+                    continue
+                state.harness.record_evaluator_verdict(
+                    sprint_id=sprint_id,
+                    verdict=verdict,
+                    findings=list(msg.get("findings") or []),
+                    required_revisions=list(msg.get("required_revisions") or []),
+                    passed_checks=list(msg.get("passed_checks") or []),
+                    failed_checks=list(msg.get("failed_checks") or []),
+                    score=msg.get("score"),
+                )
+                await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+                await ws.send_json({"event": "status_msg", "message": f"Evaluator marked sprint {sprint_id} as {verdict}"})
+
             elif command == "select_backend":
                 backend_type = msg.get("backend", "")
                 model = msg.get("model", "")
                 session_mode = msg.get("session_mode", "code")
+                session_role = msg.get("session_role", "generator")
                 try:
                     await asyncio.get_event_loop().run_in_executor(
-                        None, state.create_backend, backend_type, model or None
+                        None,
+                        lambda: state.create_backend(
+                            backend_type,
+                            model or None,
+                            session_mode=session_mode,
+                            session_role=session_role,
+                        ),
                     )
                     # Auto-create a new session when backend is selected
                     state.project.create_session(
                         backend_type=backend_type,
                         model=model or getattr(state.backend, "model", ""),
                         session_mode=session_mode,
+                        session_role=session_role,
                     )
                     state._first_message_sent = False
                     await ws.send_json(state.get_init_data())
@@ -638,7 +2465,6 @@ async def websocket_endpoint(ws: WebSocket):
                 # Auto-title session from first message
                 if not state._first_message_sent:
                     state.project.update_session_title(text)
-                    state._first_message_sent = True
 
                 # Parse attached images (base64 from frontend paste/upload)
                 images = None
@@ -654,9 +2480,45 @@ async def websocket_endpoint(ws: WebSocket):
                         except Exception:
                             pass
 
+                session_mode = (
+                    state.project.current_session.session_mode
+                    if state.project.current_session else "code"
+                )
+                session_role = (
+                    state.project.current_session.session_role
+                    if state.project.current_session else "generator"
+                )
+                if session_mode == "code" and session_role == "generator" and not state._first_message_sent:
+                    harness_summary = state.get_harness_summary(state.project.project_path)
+                    if (
+                        not harness_summary.get("active_sprint_id")
+                        or harness_summary.get("contract_status") not in {"approved", "needs_revision"}
+                    ):
+                        await ws.send_json({
+                            "event": "error",
+                            "message": "Generator session requires an approved or needs_revision sprint contract",
+                        })
+                        continue
+                text_for_session = text
+                if not state._first_message_sent:
+                    text_for_session = state.wrap_user_message_for_harness(
+                        user_msg=text,
+                        session_mode=session_mode,
+                        session_role=session_role,
+                    )
+                    state._first_message_sent = True
+
                 state.cancel_requested.clear()
                 state.session.reset_cancel()
-                display_events = await _run_session_streaming(ws, state.session, text, images=images)
+                display_events = await _run_session_streaming(
+                    ws,
+                    state.session,
+                    text_for_session,
+                    images=images,
+                    display_user_msg=text,
+                    session_mode=session_mode,
+                    session_role=session_role,
+                )
 
                 # Save session after each message exchange (with display events for replay)
                 state.project.save_current_session(state.session, display_events=display_events)
@@ -676,6 +2538,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "clear":
                 # Create a new session (don't destroy old one)
                 session_mode = msg.get("session_mode", "code")
+                session_role = msg.get("session_role", "generator")
                 if state.backend:
                     backend_type = getattr(state.backend, "name", "")
                     model = getattr(state.backend, "model", "")
@@ -683,14 +2546,23 @@ async def websocket_endpoint(ws: WebSocket):
                         backend=state.backend,
                         backend_spec=state.backend_spec,
                         project_path=state.project.project_path,
+                        session_mode=session_mode,
+                        session_role=session_role,
                     )
-                    state.project.create_session(backend_type=backend_type, model=model, session_mode=session_mode)
+                    state.project.create_session(
+                        backend_type=backend_type,
+                        model=model,
+                        session_mode=session_mode,
+                        session_role=session_role,
+                    )
                     state._first_message_sent = False
                     state.costs.reset_session()
                 await ws.send_json({
                     "event": "session_cleared",
                     "sessions": state.project.list_sessions(),
                     "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                    "session_mode": session_mode,
+                    "session_role": session_role,
                 })
 
             elif command == "switch_model":
@@ -700,8 +2572,22 @@ async def websocket_endpoint(ws: WebSocket):
                     backend_type = getattr(state.backend, "name", "")
                 if backend_type:
                     try:
+                        session_mode = (
+                            state.project.current_session.session_mode
+                            if state.project.current_session else "code"
+                        )
+                        session_role = (
+                            state.project.current_session.session_role
+                            if state.project.current_session else "generator"
+                        )
                         await asyncio.get_event_loop().run_in_executor(
-                            None, state.create_backend, backend_type, model
+                            None,
+                            lambda: state.create_backend(
+                                backend_type,
+                                model,
+                                session_mode=session_mode,
+                                session_role=session_role,
+                            ),
                         )
                         await ws.send_json(state.get_init_data())
                     except Exception as e:
@@ -731,7 +2617,13 @@ async def websocket_endpoint(ws: WebSocket):
                         model = record.model
                         if backend_type:
                             await asyncio.get_event_loop().run_in_executor(
-                                None, state.create_backend, backend_type, model or None
+                                None,
+                                lambda: state.create_backend(
+                                    backend_type,
+                                    model or None,
+                                    session_mode=record.session_mode or "code",
+                                    session_role=record.session_role or "generator",
+                                ),
                             )
                         else:
                             state.backend = None
@@ -750,6 +2642,7 @@ async def websocket_endpoint(ws: WebSocket):
                             "model": record.model,
                             "message_count": record.message_count,
                             "session_mode": record.session_mode or "code",
+                            "session_role": record.session_role or "generator",
                             "display_events": record.display_events,
                             "sessions": state.project.list_sessions(),
                             "current_session_id": record.id,
@@ -939,6 +2832,8 @@ async def websocket_endpoint(ws: WebSocket):
                 name = msg.get("name", "").strip()
                 backend_type = msg.get("backend", getattr(state.backend, "name", ""))
                 model = msg.get("model", getattr(state.backend, "model", ""))
+                session_mode = msg.get("session_mode", "code")
+                session_role = msg.get("session_role", "generator")
                 if not prompt:
                     await ws.send_json({"event": "error", "message": "No prompt provided"})
                     continue
@@ -955,6 +2850,8 @@ async def websocket_endpoint(ws: WebSocket):
                         backend_type=backend_type,
                         model=spec.model,
                         project_path=state.project.project_path,
+                        session_mode=state.normalize_session_mode(session_mode),
+                        session_role=state.normalize_session_role(session_mode, session_role),
                         backend_spec=spec.to_dict(),
                     )
                     await ws.send_json({
@@ -989,24 +2886,34 @@ async def websocket_endpoint(ws: WebSocket):
                 name = msg.get("name", "").strip()
                 prompt = msg.get("prompt", "").strip()
                 schedule = msg.get("schedule", "").strip()
+                task_kind = (msg.get("task_kind") or "session").strip() or "session"
+                max_loops = max(1, int(msg.get("max_loops") or 6))
                 backend_type = msg.get("backend", getattr(state.backend, "name", ""))
                 model = msg.get("model", getattr(state.backend, "model", ""))
+                session_mode = msg.get("session_mode", "code")
+                session_role = msg.get("session_role", "generator")
                 if not prompt or not schedule:
                     await ws.send_json({"event": "error", "message": "Prompt and schedule are required"})
                     continue
                 try:
-                    spec = state.build_backend_spec(
-                        backend_type,
-                        model=model or None,
-                        project_path=state.project.project_path,
-                    )
+                    spec = None
+                    if task_kind != "harness_cycle":
+                        spec = state.build_backend_spec(
+                            backend_type,
+                            model=model or None,
+                            project_path=state.project.project_path,
+                        )
                     sched = state.scheduler.add(
                         name=name,
                         prompt=prompt,
                         schedule=schedule,
-                        backend_type=backend_type,
-                        model=spec.model,
-                        backend_spec=spec.to_dict(),
+                        backend_type="" if task_kind == "harness_cycle" else backend_type,
+                        model="" if task_kind == "harness_cycle" else spec.model,
+                        task_kind=task_kind,
+                        max_loops=max_loops,
+                        session_mode=state.normalize_session_mode(session_mode),
+                        session_role=state.normalize_session_role(session_mode, session_role),
+                        backend_spec={} if task_kind == "harness_cycle" else spec.to_dict(),
                         project_path=state.project.project_path,
                     )
                     await ws.send_json({"event": "schedule_created", "schedule": sched.to_dict()})
@@ -1020,12 +2927,28 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "schedule_update":
                 task_id = msg.get("task_id", "")
                 updates = {}
-                for key in ("name", "prompt", "schedule", "backend_type", "model", "enabled"):
+                for key in (
+                    "name",
+                    "prompt",
+                    "schedule",
+                    "backend_type",
+                    "model",
+                    "task_kind",
+                    "max_loops",
+                    "session_mode",
+                    "session_role",
+                    "enabled",
+                ):
                     if key in msg:
                         updates[key] = msg[key]
-                if "backend_type" in updates or "model" in updates:
-                    schedules = state.scheduler.list_schedules()
-                    existing = next((item for item in schedules if item["id"] == task_id), None)
+                schedules = state.scheduler.list_schedules()
+                existing = next((item for item in schedules if item["id"] == task_id), None)
+                effective_kind = updates.get("task_kind", (existing or {}).get("task_kind", "session"))
+                if effective_kind == "harness_cycle":
+                    updates["backend_spec"] = {}
+                    updates["backend_type"] = ""
+                    updates["model"] = ""
+                elif "backend_type" in updates or "model" in updates:
                     if existing:
                         spec = state.build_backend_spec(
                             updates.get("backend_type", existing.get("backend_type", "")),
@@ -1167,16 +3090,28 @@ async def websocket_endpoint(ws: WebSocket):
         logger.error(f"WebSocket error: {e}")
 
 
-async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str, images=None):
+async def _run_session_streaming(
+    ws: WebSocket,
+    session: Session,
+    user_msg: str,
+    images=None,
+    *,
+    display_user_msg: str | None = None,
+    session_mode: str = "code",
+    session_role: str = "generator",
+):
     """Run Session.run() in a thread, streaming events to WebSocket.
 
     Returns a list of display events for session persistence/replay.
     """
     event_queue: queue.Queue = queue.Queue()
     display_events: list = []
+    pending_harness_payload: dict[str, Any] | None = None
+    pending_harness_text: str = ""
+    harness_parse_error: str | None = None
 
     # Record the user message as a display event
-    display_events.append({"event": "user_message", "text": user_msg})
+    display_events.append({"event": "user_message", "text": display_user_msg or user_msg})
 
     def on_permission(tool_name, tool_args):
         """Push permission request to frontend with diff review data."""
@@ -1275,6 +3210,23 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
 
             # Track costs from status events
             event_type = event.get("event", "")
+            if event_type == EngineEvent.TEXT_DONE.value:
+                raw_text = str(event.get("text") or "")
+                cleaned_text, harness_payload, parse_error = state.extract_harness_update(
+                    text=raw_text,
+                    session_mode=session_mode,
+                    session_role=session_role,
+                )
+                if parse_error:
+                    harness_parse_error = parse_error
+                if harness_payload is not None:
+                    pending_harness_payload = harness_payload
+                    pending_harness_text = cleaned_text
+                if cleaned_text != raw_text:
+                    event = dict(event)
+                    event["text"] = cleaned_text
+                    state.rewrite_last_assistant_message(session, raw_text, cleaned_text)
+
             if event_type == "status":
                 stats = event.get("stats", {})
                 model = event.get("model", "")
@@ -1307,6 +3259,25 @@ async def _run_session_streaming(ws: WebSocket, session: Session, user_msg: str,
             except Exception:
                 session.cancel()
                 break
+
+        if harness_parse_error:
+            await ws.send_json({"event": "error", "message": harness_parse_error})
+
+        if pending_harness_payload is not None:
+            try:
+                status_message = state.apply_harness_update(
+                    session_mode=session_mode,
+                    session_role=session_role,
+                    payload=pending_harness_payload,
+                    project_path=state.project.project_path,
+                    assistant_text=pending_harness_text,
+                    user_request=display_user_msg or user_msg,
+                )
+                await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+                if status_message:
+                    await ws.send_json({"event": "status_msg", "message": status_message})
+            except Exception as exc:
+                await ws.send_json({"event": "error", "message": f"Failed to apply harness update: {exc}"})
     finally:
         state.active_thread = None
 

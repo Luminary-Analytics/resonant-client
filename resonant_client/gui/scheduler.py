@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from .task_runner import TaskRunner
 
@@ -47,6 +47,10 @@ class ScheduledTask:
     schedule: str
     backend_type: str
     model: str
+    task_kind: str = "session"
+    max_loops: int = 6
+    session_mode: str = "code"
+    session_role: str = "generator"
     backend_spec: dict = None
     project_path: str = ""
     enabled: bool = True
@@ -57,6 +61,8 @@ class ScheduledTask:
 
     def __post_init__(self):
         self.backend_spec = dict(self.backend_spec or {})
+        self.task_kind = self.task_kind or "session"
+        self.max_loops = max(1, int(self.max_loops or 6))
         if not self.created_at:
             self.created_at = datetime.now().isoformat()
         if not self.next_run and self.enabled:
@@ -89,6 +95,10 @@ class ScheduledTask:
             "schedule": self.schedule,
             "backend_type": self.backend_type,
             "model": self.model,
+            "task_kind": self.task_kind,
+            "max_loops": self.max_loops,
+            "session_mode": self.session_mode,
+            "session_role": self.session_role,
             "backend_spec": self.backend_spec,
             "project_path": self.project_path,
             "enabled": self.enabled,
@@ -112,6 +122,7 @@ class Scheduler:
     ):
         self._runner = task_runner
         self._backend_factory = backend_factory
+        self._special_executor: Optional[Callable[[ScheduledTask], Any]] = None
         self._schedules: dict[str, ScheduledTask] = {}
         self._lock = threading.Lock()
         self._persist_path = Path(persist_path) if persist_path else Path.home() / ".resonant" / "schedules.json"
@@ -123,6 +134,10 @@ class Scheduler:
     def set_backend_factory(self, factory: Callable[[ScheduledTask], Callable]):
         """Set the task session factory builder for scheduled runs."""
         self._backend_factory = factory
+
+    def set_special_executor(self, executor: Callable[[ScheduledTask], Any]):
+        """Set executor for non-session scheduled task kinds."""
+        self._special_executor = executor
 
     def set_on_trigger(self, callback: Callable):
         self._on_trigger = callback
@@ -153,25 +168,38 @@ class Scheduler:
             due_tasks = [task for task in self._schedules.values() if task.is_due()]
 
         for task in due_tasks:
-            if not self._backend_factory:
-                logger.warning(f"No backend factory for scheduled task {task.id}")
-                continue
+            try:
+                if task.task_kind == "harness_cycle":
+                    if not self._special_executor:
+                        logger.warning(f"No special executor for scheduled task {task.id}")
+                        continue
+                    logger.info(f"Triggering scheduled harness cycle: {task.name} ({task.id})")
+                    self._special_executor(task)
+                else:
+                    if not self._backend_factory:
+                        logger.warning(f"No backend factory for scheduled task {task.id}")
+                        continue
 
-            session_factory = self._backend_factory(task)
-            if not session_factory:
-                logger.warning(f"No session factory for scheduled task {task.id}")
-                continue
+                    session_factory = self._backend_factory(task)
+                    if not session_factory:
+                        logger.warning(f"No session factory for scheduled task {task.id}")
+                        continue
 
-            logger.info(f"Triggering scheduled task: {task.name} ({task.id})")
-            self._runner.submit(
-                name=f"[scheduled] {task.name}",
-                prompt=task.prompt,
-                session_factory=session_factory,
-                backend_type=task.backend_type,
-                model=task.model,
-                project_path=task.project_path,
-                backend_spec=task.backend_spec,
-            )
+                    logger.info(f"Triggering scheduled task: {task.name} ({task.id})")
+                    self._runner.submit(
+                        name=f"[scheduled] {task.name}",
+                        prompt=task.prompt,
+                        session_factory=session_factory,
+                        backend_type=task.backend_type,
+                        model=task.model,
+                        project_path=task.project_path,
+                        session_mode=task.session_mode,
+                        session_role=task.session_role,
+                        backend_spec=task.backend_spec,
+                    )
+            except Exception as exc:
+                logger.error(f"Failed to trigger scheduled task {task.id}: {exc}")
+                continue
 
             task.mark_run()
             self._save()
@@ -190,6 +218,10 @@ class Scheduler:
         backend_type: str,
         model: str,
         project_path: str = "",
+        task_kind: str = "session",
+        max_loops: int = 6,
+        session_mode: str = "code",
+        session_role: str = "generator",
         backend_spec: Optional[dict] = None,
     ) -> ScheduledTask:
         interval = _parse_interval(schedule)
@@ -203,6 +235,10 @@ class Scheduler:
             schedule=schedule,
             backend_type=backend_type,
             model=model,
+            task_kind=task_kind,
+            max_loops=max(1, int(max_loops)),
+            session_mode=session_mode,
+            session_role=session_role,
             backend_spec=backend_spec or {},
             project_path=project_path,
         )
@@ -244,9 +280,26 @@ class Scheduler:
             task = self._schedules.get(task_id)
             if not task:
                 return False
-            for key in ("name", "prompt", "schedule", "backend_type", "model", "enabled", "backend_spec"):
+            for key in (
+                "name",
+                "prompt",
+                "schedule",
+                "backend_type",
+                "model",
+                "task_kind",
+                "max_loops",
+                "session_mode",
+                "session_role",
+                "enabled",
+                "backend_spec",
+            ):
                 if key in kwargs:
-                    setattr(task, key, kwargs[key])
+                    value = kwargs[key]
+                    if key == "max_loops":
+                        value = max(1, int(value or 6))
+                    elif key == "task_kind":
+                        value = value or "session"
+                    setattr(task, key, value)
             if "schedule" in kwargs:
                 task._compute_next_run()
             self._save()
@@ -283,6 +336,10 @@ class Scheduler:
                     schedule=task_data.get("schedule", ""),
                     backend_type=task_data.get("backend_type", ""),
                     model=task_data.get("model", ""),
+                    task_kind=task_data.get("task_kind", "session"),
+                    max_loops=task_data.get("max_loops", 6),
+                    session_mode=task_data.get("session_mode", "code"),
+                    session_role=task_data.get("session_role", "generator"),
                     backend_spec=task_data.get("backend_spec", {}),
                     project_path=task_data.get("project_path", ""),
                     enabled=task_data.get("enabled", True),

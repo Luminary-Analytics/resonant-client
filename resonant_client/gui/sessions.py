@@ -56,7 +56,7 @@ def _read_session_summary(filepath: Path) -> Optional[dict]:
         # "created_at", "updated_at", "message_count"
         import re
         summary = {}
-        for key in ("id", "title", "backend_type", "model", "session_mode", "chat_group"):
+        for key in ("id", "title", "backend_type", "model", "session_mode", "session_role", "chat_group"):
             m = re.search(rf'"{key}"\s*:\s*"([^"]*)"', prefix)
             if m:
                 summary[key] = m.group(1)
@@ -102,6 +102,7 @@ class SessionRecord:
         display_events: list = None,
         message_count: int = 0,
         session_mode: str = "code",
+        session_role: str = "generator",
         chat_group: str = "",
     ):
         self.id = session_id or str(uuid.uuid4())[:8]
@@ -115,6 +116,7 @@ class SessionRecord:
         self.display_events = display_events or []
         self.message_count = message_count
         self.session_mode = session_mode or "code"
+        self.session_role = session_role or ("chat" if self.session_mode == "chat" else "generator")
         self.chat_group = chat_group
 
     def to_dict(self) -> dict:
@@ -130,6 +132,7 @@ class SessionRecord:
             "display_events": self.display_events,
             "message_count": self.message_count,
             "session_mode": self.session_mode,
+            "session_role": self.session_role,
             "chat_group": self.chat_group,
         }
 
@@ -144,6 +147,7 @@ class SessionRecord:
             "updated_at": self.updated_at,
             "message_count": self.message_count,
             "session_mode": self.session_mode,
+            "session_role": self.session_role,
             "chat_group": self.chat_group,
         }
 
@@ -161,6 +165,10 @@ class SessionRecord:
             display_events=data.get("display_events", []),
             message_count=data.get("message_count", 0),
             session_mode=data.get("session_mode", "code"),
+            session_role=data.get(
+                "session_role",
+                "chat" if data.get("session_mode", "code") == "chat" else "generator",
+            ),
             chat_group=data.get("chat_group", ""),
         )
 
@@ -297,7 +305,13 @@ class ProjectManager:
         all_sessions.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
         return all_sessions
 
-    def create_session(self, backend_type: str = "", model: str = "", session_mode: str = "code") -> SessionRecord:
+    def create_session(
+        self,
+        backend_type: str = "",
+        model: str = "",
+        session_mode: str = "code",
+        session_role: str = "generator",
+    ) -> SessionRecord:
         """Create a new session for the current project."""
         record = SessionRecord(
             project_path=self.project_path,
@@ -305,6 +319,7 @@ class ProjectManager:
             model=model,
             title="New session",
             session_mode=session_mode,
+            session_role=session_role,
         )
         record.save()
         self.current_session = record

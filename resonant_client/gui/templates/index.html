@@ -101,6 +101,13 @@
                 </div>
                 <div class="header-right">
                     <div class="header-indicators">
+                        <button class="header-badge harness-badge" id="harness-badge" title="Harness state" style="display:none">
+                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1"/>
+                                <path d="M3.5 4h5M3.5 6h5M3.5 8h3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+                            </svg>
+                            <span id="harness-badge-text">Harness</span>
+                        </button>
                         <button class="header-badge resonant-md-badge" id="resonant-md-badge" title="RESONANT.md" style="display:none">
                             <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 1h5l3 3v7a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1"/><path d="M7 1v3h3" stroke="currentColor" stroke-width="1"/></svg>
                             <span>RESONANT.md</span>
@@ -152,6 +159,13 @@
                             <!-- Step 2: Backend Selection (shown after folder picked) -->
                             <div id="backend-step" class="setup-step" style="display:none;">
                                 <div class="setup-project-badge" id="setup-project-badge"></div>
+                                <div class="chat-welcome-footer" style="margin-bottom:12px;">
+                                    <select id="setup-session-role" class="chat-welcome-model-select" title="Code session role">
+                                        <option value="generator">Generator</option>
+                                        <option value="planner">Planner</option>
+                                        <option value="evaluator">Evaluator</option>
+                                    </select>
+                                </div>
                                 <div id="backend-selector" class="backend-selector">
                                     <p class="backend-label">Select a backend</p>
                                     <div id="backend-list" class="backend-list"></div>

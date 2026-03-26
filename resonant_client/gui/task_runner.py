@@ -40,6 +40,8 @@ class BackgroundTask:
     backend_type: str
     model: str
     project_path: str
+    session_mode: str = "code"
+    session_role: str = "generator"
     backend_spec: dict[str, Any] = field(default_factory=dict)
     status: TaskStatus = TaskStatus.PENDING
     created_at: str = ""
@@ -66,6 +68,8 @@ class BackgroundTask:
             "backend_type": self.backend_type,
             "model": self.model,
             "project_path": self.project_path,
+            "session_mode": self.session_mode,
+            "session_role": self.session_role,
             "backend_spec": self.backend_spec,
             "status": self.status.value,
             "created_at": self.created_at,
@@ -107,6 +111,8 @@ class TaskRunner:
         backend_type: str = "",
         model: str = "",
         project_path: str = "",
+        session_mode: str = "code",
+        session_role: str = "generator",
         backend_spec: Optional[dict[str, Any]] = None,
     ) -> BackgroundTask:
         """Submit a new background task. Returns the task object."""
@@ -117,6 +123,8 @@ class TaskRunner:
             backend_type=backend_type,
             model=model,
             project_path=project_path,
+            session_mode=session_mode,
+            session_role=session_role,
             backend_spec=backend_spec or {},
             session_factory=session_factory,
         )
@@ -253,6 +261,8 @@ class TaskRunner:
                     backend_type=data.get("backend_type", ""),
                     model=data.get("model", ""),
                     project_path=data.get("project_path", ""),
+                    session_mode=data.get("session_mode", "code"),
+                    session_role=data.get("session_role", "generator"),
                     backend_spec=data.get("backend_spec", {}),
                     status=TaskStatus(data.get("status", "completed")),
                     created_at=data.get("created_at", ""),

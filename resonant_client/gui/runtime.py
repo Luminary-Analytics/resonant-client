@@ -23,6 +23,7 @@ class BackendSpec:
     model: str = ""
     url: str = ""
     base_url: str = ""
+    local_root: str = ""
     cwd: str = ""
     permission_mode: str = ""
     api_key_source: str = ""
@@ -36,6 +37,7 @@ class BackendSpec:
             "model": self.model,
             "url": self.url,
             "base_url": self.base_url,
+            "local_root": self.local_root,
             "cwd": self.cwd,
             "permission_mode": self.permission_mode,
             "api_key_source": self.api_key_source,
@@ -54,6 +56,7 @@ class BackendSpec:
             model=str(data.get("model", "")),
             url=str(data.get("url", "")),
             base_url=str(data.get("base_url", "")),
+            local_root=str(data.get("local_root", "")),
             cwd=str(data.get("cwd", "")),
             permission_mode=str(data.get("permission_mode", "")),
             api_key_source=_normalize_source(str(data.get("api_key_source", ""))),
@@ -79,6 +82,9 @@ class BackendSpec:
 
         if backend_type == "ollama":
             return create_backend("ollama", url=self.url, model=self.model)
+
+        if backend_type == "mlx":
+            return create_backend("mlx", model=self.model, local_root=self.local_root)
 
         if backend_type == "claude":
             return create_backend(

@@ -133,6 +133,8 @@ class ResonantApp {
         // Mode tabs — Chat vs Code
         this.sessionMode = 'code';          // active tab (affects new session creation)
         this.currentSessionMode = 'code';   // loaded session's mode (affects rendering)
+        this.sessionRole = 'generator';     // active code-session role for new sessions
+        this.currentSessionRole = 'generator'; // loaded session's role
         this.chatGroups = [];               // ordered list of group names
         this.expandedGroups = new Set();     // which groups are expanded in sidebar
 
@@ -158,6 +160,9 @@ class ResonantApp {
         this.currentSessionId = '';
         this.recentProjects = [];
         this.projectFilter = 'all'; // 'all' = all projects (default), null = current project, or a path
+        this.harnessState = null;
+        this.harnessCycles = [];
+        this.harnessCyclePoller = null;
 
         // View state
         this.currentView = 'chat';
@@ -166,6 +171,7 @@ class ResonantApp {
         // Git state
         this.gitData = null;
         this.gitPopoverOpen = false;
+        this.harnessPopoverOpen = false;
 
         // RESONANT.md state
         this.resonantMd = null;
@@ -214,6 +220,8 @@ class ResonantApp {
         this.gitBadge = document.getElementById('git-badge');
         this.gitBranchName = document.getElementById('git-branch-name');
         this.gitChangesCount = document.getElementById('git-changes-count');
+        this.harnessBadge = document.getElementById('harness-badge');
+        this.harnessBadgeText = document.getElementById('harness-badge-text');
         this.resonantMdBadge = document.getElementById('resonant-md-badge');
 
         // Configure marked
@@ -548,6 +556,9 @@ class ResonantApp {
         // Git badge click → popover
         this.gitBadge?.addEventListener('click', () => this.toggleGitPopover());
 
+        // Harness badge click → popover
+        this.harnessBadge?.addEventListener('click', () => this.toggleHarnessPopover());
+
         // RESONANT.md badge click → fetch and show content
         this.resonantMdBadge?.addEventListener('click', () => {
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -777,12 +788,367 @@ class ResonantApp {
             if (label) label.textContent = mode === 'chat' ? 'New Chat' : 'New Session';
         }
 
+        const roleSelect = document.getElementById('setup-session-role');
+        if (roleSelect) roleSelect.style.display = mode === 'chat' ? 'none' : '';
+
+        this.updateHarnessBadge();
         this.renderFilteredSessions();
     }
 
     applySessionModeUI(mode) {
         this.currentSessionMode = mode || 'code';
         document.body.classList.toggle('chat-mode', this.currentSessionMode === 'chat');
+        this.updateHarnessBadge();
+    }
+
+    applySessionRoleUI(role) {
+        this.currentSessionRole = role || 'generator';
+        document.body.dataset.sessionRole = this.currentSessionRole;
+        this.updateHarnessBadge();
+    }
+
+    formatSessionRole(role) {
+        const labels = { planner: 'Planner', generator: 'Generator', evaluator: 'Evaluator', chat: 'Chat' };
+        return labels[role] || 'Generator';
+    }
+
+    setHarnessSprint(payload) {
+        this.send({ command: 'set_harness_sprint', ...payload });
+    }
+
+    setHarnessContractStatus(status) {
+        this.send({
+            command: 'set_harness_contract_status',
+            status,
+            session_role: this.currentSessionRole || 'planner',
+        });
+    }
+
+    setEvaluatorVerdict(payload) {
+        this.send({ command: 'set_evaluator_verdict', ...payload });
+    }
+
+    requestHarnessCycleList() {
+        this.send({ command: 'harness_cycle_list' });
+    }
+
+    getActiveHarnessCycle() {
+        return (this.harnessCycles || []).find(run => run.status === 'running' || run.status === 'pending') || null;
+    }
+
+    updateHarnessCyclePolling() {
+        const active = this.getActiveHarnessCycle();
+        if (active && !this.harnessCyclePoller) {
+            this.harnessCyclePoller = setInterval(() => {
+                this.requestHarnessCycleList();
+                this.send({ command: 'get_harness_state' });
+            }, 3000);
+            return;
+        }
+        if (!active && this.harnessCyclePoller) {
+            clearInterval(this.harnessCyclePoller);
+            this.harnessCyclePoller = null;
+        }
+    }
+
+    rerenderHarnessPopoverIfOpen() {
+        if (!this.harnessPopoverOpen) return;
+        const existing = document.querySelector('.harness-popover');
+        if (!existing) return;
+        existing.remove();
+        this.harnessPopoverOpen = false;
+        this.toggleHarnessPopover();
+    }
+
+    startHarnessCycle(payload) {
+        this.send({ command: 'harness_cycle_start', ...payload });
+    }
+
+    requestHarnessTeacherRecovery(payload) {
+        this.send({ command: 'harness_teacher_recover', ...payload });
+    }
+
+    promptHarnessCycle(kind = 'cycle') {
+        const active = this.getActiveHarnessCycle();
+        if (active) {
+            this.showStatusMessage(`Harness cycle already ${active.status}`);
+            return;
+        }
+
+        const current = this.harnessState || {};
+        const defaultObjective = current.contract_objective || current.summary || '';
+        let objective = defaultObjective;
+        if (kind === 'cycle' || !current.active_sprint_id) {
+            objective = prompt('Top-level objective:', defaultObjective);
+            if (objective === null) return;
+        }
+
+        let maxLoops = kind === 'step' ? 1 : 6;
+        if (kind === 'cycle') {
+            const rawLoops = prompt('Max automated steps:', '6');
+            if (rawLoops === null) return;
+            const parsed = Number.parseInt(rawLoops, 10);
+            if (!Number.isNaN(parsed) && parsed > 0) {
+                maxLoops = parsed;
+            }
+        }
+
+        this.startHarnessCycle({
+            name: kind === 'step' ? 'Harness Step' : 'Harness Cycle',
+            objective: (objective || '').trim(),
+            max_loops: maxLoops,
+        });
+        this.requestHarnessCycleList();
+    }
+
+    cancelActiveHarnessCycle() {
+        const active = this.getActiveHarnessCycle();
+        if (!active) {
+            this.showStatusMessage('No active harness cycle');
+            return;
+        }
+        this.send({ command: 'harness_cycle_cancel', run_id: active.id });
+    }
+
+    promptHarnessTeacherRecovery() {
+        const current = this.harnessState || {};
+        const defaultReason = current.evaluator_verdict === 'blocked' ? 'manual_blocked_recovery' : 'manual_recovery';
+        const reason = prompt('Teacher recovery reason:', defaultReason);
+        if (reason === null) return;
+        const failedRole = prompt(
+            'Failed role:',
+            current.active_role || this.currentSessionRole || 'generator'
+        );
+        if (failedRole === null) return;
+        const objective = prompt(
+            'Objective override:',
+            current.contract_objective || current.summary || ''
+        );
+        if (objective === null) return;
+        this.requestHarnessTeacherRecovery({
+            reason: reason.trim() || defaultReason,
+            failed_role: (failedRole || '').trim() || 'generator',
+            objective: (objective || '').trim(),
+        });
+    }
+
+    requestHarnessResumePrompt() {
+        this.send({
+            command: 'get_harness_resume_prompt',
+            session_mode: this.currentSessionMode || 'code',
+            session_role: this.currentSessionRole || 'generator',
+        });
+    }
+
+    applyResumePrompt(prompt) {
+        if (!prompt) return;
+        this.userInput.value = prompt;
+        this.userInput.style.height = 'auto';
+        this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+        this.userInput.focus();
+        this.showStatusMessage('Loaded resume prompt from harness state');
+    }
+
+    updateHarnessBadge() {
+        if (!this.harnessBadge || !this.harnessBadgeText) return;
+        const show = this.currentSessionMode !== 'chat' && !!this.harnessState;
+        this.harnessBadge.style.display = show ? 'flex' : 'none';
+        if (!show) return;
+
+        const sprint = this.harnessState.active_sprint_id || 'no sprint';
+        const activeCycle = this.getActiveHarnessCycle();
+        if (activeCycle) {
+            const cycleRole = activeCycle.current_role || activeCycle.active_step?.role || activeCycle.status;
+            this.harnessBadgeText.textContent = `${sprint} · auto:${cycleRole}`;
+            return;
+        }
+        const verdict = this.harnessState.evaluator_verdict || 'unknown';
+        const status = this.harnessState.contract_status || 'idle';
+        this.harnessBadgeText.textContent = `${sprint} · ${verdict !== 'unknown' ? verdict : status}`;
+    }
+
+    toggleHarnessPopover() {
+        const existing = document.querySelector('.harness-popover');
+        if (existing) {
+            existing.remove();
+            this.harnessPopoverOpen = false;
+            return;
+        }
+        if (!this.harnessState) {
+            this.send({ command: 'get_harness_state' });
+            return;
+        }
+        this.requestHarnessCycleList();
+
+        this.harnessPopoverOpen = true;
+        const popover = document.createElement('div');
+        popover.className = 'harness-popover';
+
+        const sprint = this.harnessState.active_sprint_id || 'No active sprint';
+        const role = this.formatSessionRole(this.currentSessionRole || 'generator');
+        const objective = this.harnessState.contract_objective || this.harnessState.summary || 'No objective yet.';
+        const revisions = (this.harnessState.required_revisions || []).slice(0, 4);
+        const checks = (this.harnessState.acceptance_checks || []).slice(0, 4);
+        const teacherEscalations = (this.harnessState.recent_teacher_escalations || []).slice().reverse().slice(0, 2);
+        const activeCycle = this.getActiveHarnessCycle();
+        const cycleText = activeCycle
+            ? `${activeCycle.status} · ${activeCycle.current_role || activeCycle.active_step?.role || 'waiting'} · ${activeCycle.current_loop}/${activeCycle.max_loops}`
+            : 'idle';
+
+        popover.innerHTML = `
+            <div class="git-popover-header">
+                <span>Harness · ${this.escapeHtml(role)}</span>
+                <button class="icon-btn harness-popover-close">&times;</button>
+            </div>
+            <div class="harness-popover-body">
+                <div class="harness-popover-row"><span class="harness-label">Sprint</span><span>${this.escapeHtml(sprint)}</span></div>
+                <div class="harness-popover-row"><span class="harness-label">Contract</span><span>${this.escapeHtml(this.harnessState.contract_status || 'unknown')}</span></div>
+                <div class="harness-popover-row"><span class="harness-label">Verdict</span><span>${this.escapeHtml(this.harnessState.evaluator_verdict || 'unknown')}</span></div>
+                <div class="harness-popover-row"><span class="harness-label">Automation</span><span>${this.escapeHtml(cycleText)}</span></div>
+                <div class="harness-popover-block">
+                    <div class="harness-label">Objective</div>
+                    <div class="harness-text">${this.escapeHtml(objective)}</div>
+                </div>
+                <div class="harness-popover-block">
+                    <div class="harness-label">Checks</div>
+                    <div class="harness-list">${checks.length ? checks.map(c => `<div>• ${this.escapeHtml(c)}</div>`).join('') : '<div>• none</div>'}</div>
+                </div>
+                <div class="harness-popover-block">
+                    <div class="harness-label">Required Revisions</div>
+                    <div class="harness-list">${revisions.length ? revisions.map(c => `<div>• ${this.escapeHtml(c)}</div>`).join('') : '<div>• none</div>'}</div>
+                </div>
+                <div class="harness-popover-block">
+                    <div class="harness-label">Recent Teacher Recovery</div>
+                    <div class="harness-list">${
+                        teacherEscalations.length
+                            ? teacherEscalations.map(item => {
+                                const provider = item.teacher_provider || 'teacher';
+                                const model = item.teacher_model || '';
+                                const roleName = item.recommended_role || item.response?.recommended_role || 'unknown';
+                                const status = item.status || 'unknown';
+                                const kind = item.response?.recovery_kind || '';
+                                const label = `${provider}${model ? `/${model}` : ''} → ${roleName}`;
+                                const detail = [status, kind].filter(Boolean).join(' · ');
+                                return `<div>• <strong>${this.escapeHtml(label)}</strong>${detail ? ` <span class="harness-inline-meta">${this.escapeHtml(detail)}</span>` : ''}</div>`;
+                            }).join('')
+                            : '<div>• none</div>'
+                    }</div>
+                </div>
+                <div class="harness-popover-actions">
+                    <button class="harness-action-btn" data-action="refresh">Refresh</button>
+                    <button class="harness-action-btn" data-action="resume">Resume</button>
+                    <button class="harness-action-btn" data-action="teacher-recover">Teacher</button>
+                    <button class="harness-action-btn" data-action="run-step">Run Step</button>
+                    <button class="harness-action-btn" data-action="run-cycle">Auto Cycle</button>
+                    <button class="harness-action-btn" data-action="stop-cycle">Stop</button>
+                    <button class="harness-action-btn" data-action="approve-contract">Approve</button>
+                    <button class="harness-action-btn" data-action="set-sprint">Set Sprint</button>
+                    <button class="harness-action-btn" data-action="pass">Pass</button>
+                    <button class="harness-action-btn" data-action="revise">Revise</button>
+                    <button class="harness-action-btn" data-action="blocked">Blocked</button>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('main').appendChild(popover);
+        popover.querySelector('.harness-popover-close').addEventListener('click', () => this.toggleHarnessPopover());
+        popover.addEventListener('click', (e) => {
+            const btn = e.target.closest('.harness-action-btn');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            if (action === 'refresh') {
+                this.send({ command: 'get_harness_state' });
+                this.requestHarnessCycleList();
+                return;
+            }
+            if (action === 'resume') {
+                this.requestHarnessResumePrompt();
+                return;
+            }
+            if (action === 'teacher-recover') {
+                this.promptHarnessTeacherRecovery();
+                return;
+            }
+            if (action === 'run-step') {
+                this.promptHarnessCycle('step');
+                return;
+            }
+            if (action === 'run-cycle') {
+                this.promptHarnessCycle('cycle');
+                return;
+            }
+            if (action === 'stop-cycle') {
+                this.cancelActiveHarnessCycle();
+                return;
+            }
+            if (action === 'approve-contract') {
+                this.setHarnessContractStatus('approved');
+                return;
+            }
+            if (action === 'set-sprint') {
+                this.promptHarnessSprint();
+                return;
+            }
+            this.promptHarnessVerdict(action);
+        });
+
+        setTimeout(() => {
+            const handler = (e) => {
+                if (!popover.contains(e.target) && !this.harnessBadge.contains(e.target)) {
+                    this.toggleHarnessPopover();
+                    document.removeEventListener('click', handler);
+                }
+            };
+            document.addEventListener('click', handler);
+        }, 100);
+    }
+
+    promptHarnessSprint() {
+        const current = this.harnessState || {};
+        const sprintId = prompt('Sprint ID:', current.active_sprint_id || 'sprint-001');
+        if (!sprintId) return;
+        const featureName = prompt('Feature name:', current.contract_feature_name || '');
+        if (featureName === null) return;
+        const objective = prompt('Objective:', current.contract_objective || current.summary || '');
+        if (!objective) return;
+        const acceptance = prompt(
+            'Acceptance checks (separate with |):',
+            (current.acceptance_checks || []).join(' | ')
+        );
+        if (acceptance === null) return;
+        const evaluatorFocus = prompt(
+            'Evaluator focus (separate with |):',
+            (current.evaluator_focus || []).join(' | ')
+        );
+        if (evaluatorFocus === null) return;
+        this.setHarnessSprint({
+            sprint_id: sprintId.trim(),
+            feature_name: featureName.trim(),
+            objective: objective.trim(),
+            acceptance_checks: acceptance.split('|').map(s => s.trim()).filter(Boolean),
+            evaluator_focus: evaluatorFocus.split('|').map(s => s.trim()).filter(Boolean),
+            status: 'approved',
+            session_role: this.currentSessionRole || 'planner',
+        });
+    }
+
+    promptHarnessVerdict(action) {
+        const verdict = action;
+        const sprintId = this.harnessState?.active_sprint_id || prompt('Sprint ID:', '');
+        if (!sprintId) return;
+        const findings = prompt('Findings (separate with |):', (this.harnessState?.findings || []).join(' | '));
+        if (findings === null) return;
+        const revisionsDefault = verdict === 'revise'
+            ? (this.harnessState?.required_revisions || []).join(' | ')
+            : '';
+        const revisions = prompt('Required revisions (separate with |):', revisionsDefault);
+        if (revisions === null) return;
+        this.setEvaluatorVerdict({
+            sprint_id: sprintId.trim(),
+            verdict,
+            findings: findings.split('|').map(s => s.trim()).filter(Boolean),
+            required_revisions: revisions.split('|').map(s => s.trim()).filter(Boolean),
+        });
     }
 
     _populateChatWelcomeModels() {
@@ -811,7 +1177,7 @@ class ResonantApp {
 
         // Select backend (creates session), then send message once connected
         this._pendingChatMessage = text;
-        this.send({ command: 'select_backend', backend, model, session_mode: 'chat' });
+        this.send({ command: 'select_backend', backend, model, session_mode: 'chat', session_role: 'chat' });
 
         // Clear and hide welcome
         textarea.value = '';
@@ -876,6 +1242,9 @@ class ResonantApp {
             case 'status_msg':
                 this.showStatusMessage(event.message);
                 break;
+            case 'resume_prompt':
+                this.applyResumePrompt(event.prompt || '');
+                break;
             case 'sessions_updated':
                 this.sessions = event.sessions || [];
                 if (event.all_sessions) this.allSessions = event.all_sessions;
@@ -887,6 +1256,7 @@ class ResonantApp {
                 this.sessions = event.sessions || [];
                 this.currentSessionId = event.current_session_id || '';
                 this.applySessionModeUI(this.sessionMode);
+                this.applySessionRoleUI(event.session_role || this.sessionRole);
                 this.renderFilteredSessions();
                 this.showChatInterface();
                 break;
@@ -896,6 +1266,8 @@ class ResonantApp {
                 this.sessions = event.sessions || [];
                 // Apply saved session mode before replay
                 this.applySessionModeUI(event.session_mode || 'code');
+                this.applySessionRoleUI(event.session_role || 'generator');
+                this.sessionRole = event.session_role || this.sessionRole;
                 this.renderFilteredSessions();
                 this.showChatInterface();
                 // Clear preview panel for loaded session
@@ -908,6 +1280,37 @@ class ResonantApp {
             case 'chat_groups':
                 this.chatGroups = event.groups || [];
                 if (this.sessionMode === 'chat') this.renderFilteredSessions();
+                break;
+            case 'harness_state':
+                this.harnessState = event.data || null;
+                this.updateHarnessBadge();
+                this.rerenderHarnessPopoverIfOpen();
+                break;
+            case 'harness_cycle_started':
+                this.showStatusMessage(`Started ${event.run?.name || 'harness cycle'}`);
+                this.requestHarnessCycleList();
+                break;
+            case 'harness_cycle_list':
+                this.harnessCycles = event.runs || [];
+                this.updateHarnessBadge();
+                this.updateHarnessCyclePolling();
+                if (!this.getActiveHarnessCycle()) {
+                    this.send({ command: 'get_harness_state' });
+                }
+                this.rerenderHarnessPopoverIfOpen();
+                break;
+            case 'harness_cycle_result':
+                this.showStatusMessage(`Harness cycle ${event.run?.status || 'updated'}`);
+                break;
+            case 'harness_cycle_cancelled':
+                this.showStatusMessage(event.success ? 'Cancelled harness cycle' : 'No active harness cycle to cancel');
+                break;
+            case 'harness_teacher_recovered':
+                this.showStatusMessage(
+                    event.data?.status_message
+                        || `Teacher recovery applied via ${event.data?.teacher_provider || 'teacher'}`
+                );
+                this.send({ command: 'get_harness_state' });
                 break;
             case 'dir_list':
                 this.handleDirList(event);
@@ -1004,8 +1407,11 @@ class ResonantApp {
             sessions,
             all_sessions,
             current_session_id,
+            current_session_mode,
+            current_session_role,
             recent_projects,
             refresh_only,
+            harness_cycles,
         } = event;
 
         // Update project info
@@ -1027,6 +1433,15 @@ class ResonantApp {
         }
         if (event.chat_groups) {
             this.chatGroups = event.chat_groups;
+        }
+        if (event.harness) {
+            this.harnessState = event.harness;
+            this.updateHarnessBadge();
+        }
+        if (harness_cycles) {
+            this.harnessCycles = harness_cycles;
+            this.updateHarnessBadge();
+            this.updateHarnessCyclePolling();
         }
 
         // Store settings
@@ -1057,6 +1472,9 @@ class ResonantApp {
             this.sessions = sessions;
             this.allSessions = all_sessions || [];
             this.currentSessionId = current_session_id || '';
+            this.applySessionModeUI(current_session_mode || this.currentSessionMode || 'code');
+            this.applySessionRoleUI(current_session_role || this.currentSessionRole || 'generator');
+            this.sessionRole = current_session_role || this.sessionRole;
             this.buildProjectFilter();
             this.renderFilteredSessions();
         }
@@ -1115,6 +1533,7 @@ class ResonantApp {
 
         const backendLabels = {
             resonant: 'Resonant Engine',
+            mlx: 'MLX Local',
             ollama: 'Ollama',
             claude: 'Claude',
             openai: 'OpenAI',
@@ -1127,6 +1546,7 @@ class ResonantApp {
             'claude-code': '⌘',
             codex: '>_',
             resonant: '◈',
+            mlx: '◉',
             ollama: '🦙',
             claude: '◆',
             openai: '◎',
@@ -1137,6 +1557,7 @@ class ResonantApp {
             'claude-code': 'CLI agent',
             codex: 'CLI agent',
             resonant: 'Cognitive engine',
+            mlx: 'Routed local adapters',
             ollama: 'Local models',
             claude: 'Anthropic API',
             openai: 'OpenAI API',
@@ -1147,8 +1568,9 @@ class ResonantApp {
         const groups = [
             { label: 'Agents', keys: ['claude-code', 'codex', 'resonant'] },
             { label: 'Cloud APIs', keys: ['claude', 'openai'] },
-            { label: 'Local', keys: ['ollama', 'lmstudio'] },
+            { label: 'Local', keys: ['mlx', 'ollama', 'lmstudio'] },
         ];
+        const preferred = this._getPreferredBackendSelection(backends);
 
         for (const group of groups) {
             const available = group.keys.filter(k => backends[k]);
@@ -1175,12 +1597,16 @@ class ResonantApp {
                 const detail = info.patterns
                     ? info.patterns.toLocaleString() + ' patterns'
                     : modelCount + (modelCount === 1 ? ' model' : ' models');
+                const isPreferred = preferred && preferred.backend === key;
+                const detailText = isPreferred
+                    ? `${backendDescs[key] || detail} · Recommended`
+                    : (backendDescs[key] || detail);
 
                 card.innerHTML = `
                     <div class="backend-card-icon">${backendIcons[key] || '●'}</div>
                     <div class="backend-card-info">
                         <div class="backend-card-name">${backendLabels[key] || key}</div>
-                        <div class="backend-card-detail">${backendDescs[key] || detail}</div>
+                        <div class="backend-card-detail">${detailText}</div>
                     </div>
                     <div class="backend-card-dot"></div>
                 `;
@@ -1245,7 +1671,17 @@ class ResonantApp {
 
     selectBackend(backendType, model) {
         document.querySelector('.backend-label').textContent = 'Connecting...';
-        this.send({ command: 'select_backend', backend: backendType, model, session_mode: this.sessionMode });
+        const sessionRole = this.sessionMode === 'chat'
+            ? 'chat'
+            : (document.getElementById('setup-session-role')?.value || this.sessionRole || 'generator');
+        this.sessionRole = sessionRole;
+        this.send({
+            command: 'select_backend',
+            backend: backendType,
+            model,
+            session_mode: this.sessionMode,
+            session_role: sessionRole,
+        });
     }
 
     showChatInterface() {
@@ -1302,6 +1738,10 @@ class ResonantApp {
     _getModelGroups() {
         // Categorize backends into display groups
         return {
+            local: {
+                label: 'Local',
+                backends: ['mlx', 'ollama', 'lmstudio', 'resonant'],
+            },
             subscriptions: {
                 label: 'Subscriptions',
                 backends: ['claude-code', 'codex'],
@@ -1309,10 +1749,6 @@ class ResonantApp {
             apis: {
                 label: 'APIs',
                 backends: ['claude', 'openai'],
-            },
-            local: {
-                label: 'Local',
-                backends: ['ollama', 'lmstudio', 'resonant'],
             },
         };
     }
@@ -1322,6 +1758,7 @@ class ResonantApp {
             'claude-code': 'Claude Code',
             codex: 'Codex',
             resonant: 'Resonant',
+            mlx: 'MLX Local',
             ollama: 'Ollama',
             claude: 'Anthropic API',
             openai: 'OpenAI API',
@@ -1329,11 +1766,30 @@ class ResonantApp {
         };
     }
 
+    _getPreferredBackendSelection(backends) {
+        if (backends?.mlx?.models?.length > 0) {
+            const preferredModel = backends.mlx.models.includes('adapter-router')
+                ? 'adapter-router'
+                : backends.mlx.models[0];
+            return { backend: 'mlx', model: preferredModel };
+        }
+        if (backends?.ollama?.models?.length > 0) {
+            return { backend: 'ollama', model: backends.ollama.models[0] };
+        }
+        if (backends?.lmstudio?.models?.length > 0) {
+            return { backend: 'lmstudio', model: backends.lmstudio.models[0] };
+        }
+        return null;
+    }
+
     _populateSelectWithGroupedModels(selectEl, backends, currentBackend, currentModel) {
         selectEl.innerHTML = '';
         const groups = this._getModelGroups();
         const backendLabels = this._getBackendLabels();
         const placed = new Set();
+        const preferred = this._getPreferredBackendSelection(backends);
+        const effectiveBackend = currentBackend || preferred?.backend || '';
+        const effectiveModel = currentModel || preferred?.model || '';
 
         for (const group of Object.values(groups)) {
             // Collect all models in this category
@@ -1349,7 +1805,7 @@ class ResonantApp {
                         value: `${key}:${m}`,
                         text: `${labels[m] || m}`,
                         prefix: bLabel,
-                        isSelected: key === currentBackend && m === currentModel,
+                        isSelected: key === effectiveBackend && m === effectiveModel,
                     });
                 }
             }
@@ -1382,7 +1838,7 @@ class ResonantApp {
                 const opt = document.createElement('option');
                 opt.value = `${key}:${m}`;
                 opt.textContent = labels[m] || m;
-                if (key === currentBackend && m === currentModel) opt.selected = true;
+                if (key === effectiveBackend && m === effectiveModel) opt.selected = true;
                 optgroup.appendChild(opt);
             }
             selectEl.appendChild(optgroup);
@@ -1757,7 +2213,9 @@ class ResonantApp {
     handleTextDone(event) {
         if (this.isStreaming && this.currentMessageEl) {
             this.isStreaming = false;
-            this.renderMarkdown(this.currentMessageEl, this.streamBuffer);
+            const finalText = (event.text || this.streamBuffer || '').trim();
+            this.streamBuffer = finalText;
+            this.renderMarkdown(this.currentMessageEl, finalText);
             this.currentMessageEl.querySelector('.message-content')?.classList.remove('streaming-cursor');
         }
     }
@@ -3282,10 +3740,13 @@ class ResonantApp {
             const projectTag = showProject && session.project_name
                 ? `<span class="session-project-tag">${this.escapeHtml(session.project_name)}</span> · `
                 : '';
+            const roleTag = session.session_mode === 'chat'
+                ? ''
+                : `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role || 'generator'))}</span> · `;
 
             el.innerHTML = `
                 <div class="session-item-title">${this.escapeHtml(session.title || 'New session')}</div>
-                <div class="session-item-date">${projectTag}${session.model || ''} · ${timeStr}</div>
+                <div class="session-item-date">${projectTag}${roleTag}${session.model || ''} · ${timeStr}</div>
                 <div class="session-item-actions">
                     <button class="session-menu-btn" title="More actions">&#8943;</button>
                 </div>
@@ -3556,10 +4017,13 @@ class ResonantApp {
 
         const date = new Date(session.updated_at * 1000);
         const timeStr = this.formatRelativeTime(date);
+        const roleTag = session.session_mode === 'chat'
+            ? ''
+            : `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role || 'generator'))}</span> · `;
 
         el.innerHTML = `
             <div class="session-item-title">${this.escapeHtml(session.title || 'New session')}</div>
-            <div class="session-item-date">${session.model || ''} · ${timeStr}</div>
+            <div class="session-item-date">${roleTag}${session.model || ''} · ${timeStr}</div>
             <div class="session-item-actions">
                 <button class="session-menu-btn" title="More actions">&#8943;</button>
             </div>
@@ -3761,8 +4225,16 @@ class ResonantApp {
 
         const projectStep = document.getElementById('project-step');
         const backendStep = document.getElementById('backend-step');
+        const roleSelect = document.getElementById('setup-session-role');
         projectStep.style.display = 'block';
         backendStep.style.display = 'none';
+        if (roleSelect) {
+            roleSelect.value = this.sessionRole || 'generator';
+            roleSelect.style.display = this.sessionMode === 'chat' ? 'none' : '';
+            roleSelect.onchange = () => {
+                this.sessionRole = roleSelect.value || 'generator';
+            };
+        }
 
         const input = document.getElementById('welcome-folder-input');
         input.value = this.currentCwd || '';
@@ -4186,11 +4658,15 @@ class ResonantApp {
 
         body.innerHTML = schedules.map(s => {
             const statusDot = s.enabled ? '<span style="color:var(--ok)">●</span>' : '<span style="color:var(--muted)">○</span>';
+            const taskKind = s.task_kind === 'harness_cycle' ? 'harness cycle' : 'session';
+            const metaSuffix = s.task_kind === 'harness_cycle'
+                ? `${taskKind} · loops:${s.max_loops || 6}`
+                : `${taskKind}`;
             return `<div class="schedule-item" data-schedule-id="${s.id}">
                 <div class="dispatch-item-header">
                     ${statusDot}
                     <span class="dispatch-name">${s.name}</span>
-                    <span class="dispatch-meta">${s.schedule} · ${s.run_count} runs</span>
+                    <span class="dispatch-meta">${s.schedule} · ${s.run_count} runs · ${metaSuffix}</span>
                     <label class="toggle-switch">
                         <input type="checkbox" ${s.enabled ? 'checked' : ''} data-id="${s.id}" class="schedule-toggle" />
                         <span class="toggle-slider"></span>
@@ -4217,10 +4693,17 @@ class ResonantApp {
             <div class="dispatch-form">
                 <div class="settings-row"><label>Name</label>
                     <input type="text" class="settings-input" id="schedule-name" placeholder="Task name" /></div>
+                <div class="settings-row"><label>Type</label>
+                    <select class="settings-input" id="schedule-kind">
+                        <option value="session">Prompt Session</option>
+                        <option value="harness_cycle">Harness Cycle</option>
+                    </select></div>
                 <div class="settings-row"><label>Prompt</label>
-                    <textarea class="settings-input" id="schedule-prompt" rows="4" placeholder="What should the agent do?"></textarea></div>
+                    <textarea class="settings-input" id="schedule-prompt" rows="4" placeholder="Prompt or top-level objective"></textarea></div>
                 <div class="settings-row"><label>Schedule</label>
                     <input type="text" class="settings-input" id="schedule-interval" placeholder="every:5m, every:1h, every:30s" /></div>
+                <div class="settings-row" id="schedule-max-loops-row"><label>Max Loops</label>
+                    <input type="number" min="1" class="settings-input" id="schedule-max-loops" value="6" /></div>
                 <div style="display:flex;gap:8px;margin-top:12px">
                     <button class="btn-primary btn-sm" id="schedule-submit-btn">Create</button>
                     <button class="btn-sm" id="schedule-cancel-btn">Cancel</button>
@@ -4228,12 +4711,30 @@ class ResonantApp {
             </div>
         `;
 
+        const kindSelect = document.getElementById('schedule-kind');
+        const maxLoopsRow = document.getElementById('schedule-max-loops-row');
+        const updateVisibility = () => {
+            if (!maxLoopsRow || !kindSelect) return;
+            maxLoopsRow.style.display = kindSelect.value === 'harness_cycle' ? 'flex' : 'none';
+        };
+        kindSelect?.addEventListener('change', updateVisibility);
+        updateVisibility();
+
         document.getElementById('schedule-submit-btn')?.addEventListener('click', () => {
             const name = document.getElementById('schedule-name')?.value || '';
+            const taskKind = document.getElementById('schedule-kind')?.value || 'session';
             const prompt = document.getElementById('schedule-prompt')?.value || '';
             const schedule = document.getElementById('schedule-interval')?.value || '';
+            const maxLoops = Number.parseInt(document.getElementById('schedule-max-loops')?.value || '6', 10) || 6;
             if (prompt.trim() && schedule.trim()) {
-                this.ws.send(JSON.stringify({ command: 'schedule_create', name, prompt, schedule }));
+                this.ws.send(JSON.stringify({
+                    command: 'schedule_create',
+                    name,
+                    prompt,
+                    schedule,
+                    task_kind: taskKind,
+                    max_loops: maxLoops,
+                }));
             }
         });
         document.getElementById('schedule-cancel-btn')?.addEventListener('click', () => this.requestScheduleList());

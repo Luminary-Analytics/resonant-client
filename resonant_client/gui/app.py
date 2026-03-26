@@ -259,6 +259,10 @@ class AppState:
                     "touched_files": [],
                     "last_validation": "",
                     "validation_checks": [],
+                    "validation_artifacts": [],
+                    "acceptance_evidence": {
+                        "<acceptance check>": "Concrete evidence for this check",
+                    },
                     "current_phase": "implementation",
                 },
                 "sprint_status": "implemented",
@@ -313,6 +317,8 @@ class AppState:
             "touched_files": list(progress.touched_files),
             "last_validation": progress.last_validation,
             "validation_checks": list(progress.validation_checks),
+            "validation_artifacts": list(progress.validation_artifacts),
+            "acceptance_evidence": dict(progress.acceptance_evidence),
             "contract_status": contract.status,
             "contract_feature_name": contract.feature_name,
             "contract_objective": contract.objective,
@@ -472,12 +478,16 @@ class AppState:
         summary = self.get_harness_summary(target_path)
         touched_files = self._normalize_string_list(summary.get("touched_files"))
         handoff_text = self._truncate_text(harness.read_handoff(), max_chars=1600)
+        validation_artifacts = self._normalize_string_list(summary.get("validation_artifacts"))
+        acceptance_evidence = self._normalize_string_mapping(summary.get("acceptance_evidence"))
 
         files: list[dict[str, Any]] = []
         evidence_parts = [
             summary.get("summary") or "",
             summary.get("last_validation") or "",
             "\n".join(self._normalize_string_list(summary.get("validation_checks"))),
+            "\n".join(validation_artifacts),
+            "\n".join(f"{check}: {evidence}" for check, evidence in acceptance_evidence.items()),
             handoff_text,
         ]
 
@@ -509,6 +519,8 @@ class AppState:
             "summary": summary,
             "handoff_excerpt": handoff_text,
             "files": files,
+            "validation_artifacts": validation_artifacts,
+            "acceptance_evidence": acceptance_evidence,
             "acceptance_check_coverage": coverage,
         }
 
@@ -521,6 +533,32 @@ class AppState:
         bundle = self.build_harness_structured_evidence_bundle(target_path)
         return any(item.get("exists") for item in bundle["files"])
 
+    def can_use_harness_explicit_artifact_evaluator(self, project_path: Optional[str] = None) -> bool:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        summary = self.get_harness_summary(target_path)
+        acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        if not acceptance_checks:
+            return False
+        acceptance_evidence = self._normalize_string_mapping(summary.get("acceptance_evidence"))
+        if not acceptance_evidence:
+            return False
+        normalized_keys = {
+            self._normalize_acceptance_check_phrase(check)
+            for check in acceptance_evidence.keys()
+            if self._normalize_acceptance_check_phrase(check)
+        }
+        covered = [
+            check for check in acceptance_checks
+            if self._normalize_acceptance_check_phrase(check) in normalized_keys
+        ]
+        if len(covered) != len(acceptance_checks):
+            return False
+
+        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+        validation_artifacts = self._normalize_string_list(summary.get("validation_artifacts"))
+        last_validation = str(summary.get("last_validation") or "").strip()
+        return bool(last_validation or validation_checks or validation_artifacts)
+
     def get_harness_evaluator_strategy(self, project_path: Optional[str] = None) -> str:
         mode = self.get_harness_evaluator_mode()
         if mode == "full":
@@ -528,11 +566,17 @@ class AppState:
         if mode == "artifacts":
             return "artifacts"
         if mode == "structured":
-            return "structured" if self.can_use_harness_structured_evaluator(project_path) else "full"
+            if self.can_use_harness_structured_evaluator(project_path):
+                return "structured"
+            if self.can_use_harness_explicit_artifact_evaluator(project_path):
+                return "artifacts"
+            return "full"
         if self.should_use_harness_artifact_evaluator(project_path):
             return "artifacts"
         if self.can_use_harness_structured_evaluator(project_path):
             return "structured"
+        if self.can_use_harness_explicit_artifact_evaluator(project_path):
+            return "artifacts"
         return "full"
 
     def build_harness_evaluator_artifact_prompt(self, project_path: Optional[str] = None) -> str:
@@ -562,6 +606,8 @@ class AppState:
         next_steps = self._normalize_string_list(summary.get("next_steps"))
         checks = self._normalize_string_list(summary.get("acceptance_checks"))
         validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+        validation_artifacts = self._normalize_string_list(summary.get("validation_artifacts"))
+        acceptance_evidence = self._normalize_string_mapping(summary.get("acceptance_evidence"))
         revisions = self._normalize_string_list(summary.get("required_revisions"))
         touched_files = self._normalize_string_list(summary.get("touched_files"))
 
@@ -583,6 +629,22 @@ class AppState:
         if validation_checks:
             lines.append("Recorded validation checks:")
             lines.extend(f"- {item}" for item in validation_checks[:12])
+        if validation_artifacts:
+            lines.append("Validation artifacts:")
+            lines.extend(f"- {item}" for item in validation_artifacts[:12])
+        if acceptance_evidence:
+            lines.append("Explicit acceptance evidence:")
+            lines.extend(
+                f"- {check}: {self._truncate_text(evidence, max_chars=220)}"
+                for check, evidence in list(acceptance_evidence.items())[:8]
+            )
+
+        validation_check_lines = [f"- {item}" for item in validation_checks[:12]] or ["(none)"]
+        validation_artifact_lines = [f"- {item}" for item in validation_artifacts[:12]] or ["(none)"]
+        acceptance_evidence_lines = [
+            f"- {check}: {self._truncate_text(evidence, max_chars=220)}"
+            for check, evidence in list(acceptance_evidence.items())[:8]
+        ] or ["(none)"]
 
         lines.extend(
             [
@@ -594,7 +656,13 @@ class AppState:
                 summary.get("last_validation") or "(none)",
                 "",
                 "Recorded validation checks:",
-                *[f"- {item}" for item in validation_checks[:12] or ["(none)"]],
+                *validation_check_lines,
+                "",
+                "Validation artifacts:",
+                *validation_artifact_lines,
+                "",
+                "Explicit acceptance evidence:",
+                *acceptance_evidence_lines,
                 "",
                 "Handoff artifact excerpt:",
                 handoff_text or "(none)",
@@ -626,7 +694,16 @@ class AppState:
         ]
         checks = self._normalize_string_list(summary.get("acceptance_checks"))
         validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+        validation_artifacts = self._normalize_string_list(bundle.get("validation_artifacts"))
+        acceptance_evidence = self._normalize_string_mapping(bundle.get("acceptance_evidence"))
         lines.extend(f"- {item}" for item in checks[:8] or ["(none)"])
+
+        validation_check_lines = [f"- {item}" for item in validation_checks[:12]] or ["(none)"]
+        validation_artifact_lines = [f"- {item}" for item in validation_artifacts[:12]] or ["(none)"]
+        acceptance_evidence_lines = [
+            f"- {check}: {self._truncate_text(evidence, max_chars=220)}"
+            for check, evidence in list(acceptance_evidence.items())[:8]
+        ] or ["(none)"]
 
         lines.extend(
             [
@@ -638,7 +715,13 @@ class AppState:
                 summary.get("last_validation") or "(none)",
                 "",
                 "Recorded validation checks:",
-                *[f"- {item}" for item in validation_checks[:12] or ["(none)"]],
+                *validation_check_lines,
+                "",
+                "Validation artifacts:",
+                *validation_artifact_lines,
+                "",
+                "Explicit acceptance evidence:",
+                *acceptance_evidence_lines,
                 "",
                 "Handoff artifact excerpt:",
                 bundle["handoff_excerpt"] or "(none)",
@@ -685,10 +768,12 @@ class AppState:
         blockers = self._normalize_string_list(summary.get("blockers"))
         required_revisions = self._normalize_string_list(summary.get("required_revisions"))
         validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+        validation_artifacts = self._normalize_string_list(summary.get("validation_artifacts"))
+        acceptance_evidence = self._normalize_string_mapping(summary.get("acceptance_evidence"))
         touched_files = self._normalize_string_list(summary.get("touched_files"))
         last_validation = str(summary.get("last_validation") or "").strip()
         handoff_excerpt = self._truncate_text(harness.read_handoff(), max_chars=1200)
-        evidence_present = bool(last_validation or validation_checks or handoff_excerpt)
+        evidence_present = bool(last_validation or validation_checks or validation_artifacts or acceptance_evidence or handoff_excerpt)
 
         if blockers:
             findings = blockers[:3]
@@ -722,14 +807,34 @@ class AppState:
             coverage = self._build_acceptance_check_coverage(acceptance_checks, evidence_text)
             existing_file_count = 0
 
-        matched_checks = [item["check"] for item in coverage if item.get("matched")]
-        unmatched_checks = [item["check"] for item in coverage if not item.get("matched")]
+        normalized_evidence = {
+            self._normalize_acceptance_check_phrase(check): evidence
+            for check, evidence in acceptance_evidence.items()
+            if self._normalize_acceptance_check_phrase(check) and str(evidence).strip()
+        }
+        explicit_matches = []
+        for check in acceptance_checks:
+            normalized_check = self._normalize_acceptance_check_phrase(check)
+            if normalized_check and normalized_check in normalized_evidence:
+                explicit_matches.append(check)
+
+        matched_checks = []
+        for item in coverage:
+            check = str(item.get("check") or "")
+            if item.get("matched") or check in explicit_matches:
+                matched_checks.append(check)
+        unmatched_checks = [check for check in acceptance_checks if check not in matched_checks]
         has_complete_coverage = bool(coverage) and not unmatched_checks
 
         if has_complete_coverage and evidence_present and (
             evaluation_mode != "structured" or existing_file_count > 0
         ):
-            findings = validation_checks[:3] or [last_validation or "Acceptance checks are covered by the harness evidence bundle."]
+            findings = (
+                validation_checks[:3]
+                or validation_artifacts[:3]
+                or list(acceptance_evidence.values())[:3]
+                or [last_validation or "Acceptance checks are covered by the harness evidence bundle."]
+            )
             return {
                 "action": "evaluator_verdict",
                 "sprint_id": sprint_id,
@@ -745,7 +850,7 @@ class AppState:
         if not obvious_revisions:
             if evaluation_mode == "structured" and touched_files and existing_file_count == 0:
                 obvious_revisions = ["Touched files were recorded, but the compact file evidence is missing."]
-            elif unmatched_checks and not validation_checks and (
+            elif unmatched_checks and not validation_checks and not validation_artifacts and not acceptance_evidence and (
                 len(unmatched_checks) >= max(2, len(acceptance_checks) // 2)
             ):
                 obvious_revisions = unmatched_checks[:3]
@@ -977,6 +1082,29 @@ class AppState:
         return [text] if text else []
 
     @staticmethod
+    def _normalize_string_mapping(value: Any) -> dict[str, str]:
+        if value is None:
+            return {}
+        result: dict[str, str] = {}
+        if isinstance(value, dict):
+            for raw_key, raw_value in value.items():
+                key = str(raw_key).strip()
+                val = str(raw_value).strip()
+                if key and val:
+                    result[key] = val
+            return result
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("check") or item.get("key") or "").strip()
+                val = str(item.get("evidence") or item.get("value") or "").strip()
+                if key and val:
+                    result[key] = val
+            return result
+        return {}
+
+    @staticmethod
     def normalize_harness_contract_status(status: str, *, session_role: str) -> str:
         raw = str(status or "").strip().lower()
         if not raw:
@@ -1183,9 +1311,13 @@ class AppState:
                     value = str(progress_data.get(key) or "").strip()
                     if value:
                         progress_updates[key] = value
-                for key in ("blockers", "next_steps", "touched_files", "validation_checks"):
+                for key in ("blockers", "next_steps", "touched_files", "validation_checks", "validation_artifacts"):
                     if key in progress_data:
                         progress_updates[key] = self._normalize_string_list(progress_data.get(key))
+                if "acceptance_evidence" in progress_data:
+                    progress_updates["acceptance_evidence"] = self._normalize_string_mapping(
+                        progress_data.get("acceptance_evidence")
+                    )
                 current_phase = str(progress_data.get("current_phase") or "implementation").strip()
                 if current_phase:
                     progress_updates["current_phase"] = current_phase
@@ -1312,6 +1444,8 @@ class AppState:
         next_steps = self._normalize_string_list(summary.get("next_steps"))
         checks = self._normalize_string_list(summary.get("acceptance_checks"))
         validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+        validation_artifacts = self._normalize_string_list(summary.get("validation_artifacts"))
+        acceptance_evidence = self._normalize_string_mapping(summary.get("acceptance_evidence"))
         revisions = self._normalize_string_list(summary.get("required_revisions"))
 
         if blockers:
@@ -1326,6 +1460,15 @@ class AppState:
         if validation_checks:
             common_lines.append("Recorded validation checks:")
             common_lines.extend(f"- {item}" for item in validation_checks[:5])
+        if validation_artifacts:
+            common_lines.append("Validation artifacts:")
+            common_lines.extend(f"- {item}" for item in validation_artifacts[:5])
+        if acceptance_evidence:
+            common_lines.append("Explicit acceptance evidence:")
+            common_lines.extend(
+                f"- {check}: {self._truncate_text(evidence, max_chars=180)}"
+                for check, evidence in list(acceptance_evidence.items())[:5]
+            )
         if revisions:
             common_lines.append("Required revisions from evaluator:")
             common_lines.extend(f"- {item}" for item in revisions[:5])
@@ -1346,6 +1489,8 @@ class AppState:
                 "- if the contract is not approved or needs_revision, stop and say that first",
                 "- run the cheapest relevant validation before finishing",
                 "- record exact validation evidence in progress.last_validation and short check bullets in progress.validation_checks",
+                "- record compact validation artifacts in progress.validation_artifacts",
+                "- fill progress.acceptance_evidence with one concise evidence line per satisfied acceptance check",
                 "- finish with a normal summary plus a valid ```resonant-harness JSON block for generator_update",
             ],
             "evaluator": [
@@ -1444,6 +1589,8 @@ class AppState:
                     "If the objective is explicitly read-only, do not modify repository files; only "
                     "read, analyze, and update harness artifacts. "
                     "Keep the final response brief, record validation in progress.last_validation, "
+                    "store short artifacts in progress.validation_artifacts, map satisfied acceptance "
+                    "checks into progress.acceptance_evidence, "
                     "and finish with a valid generator_update resonant-harness block."
                 ),
                 "evaluator": (

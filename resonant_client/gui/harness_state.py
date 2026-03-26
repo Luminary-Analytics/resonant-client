@@ -30,6 +30,8 @@ class ProgressState:
     touched_files: list[str] = field(default_factory=list)
     last_validation: str = ""
     validation_checks: list[str] = field(default_factory=list)
+    validation_artifacts: list[str] = field(default_factory=list)
+    acceptance_evidence: dict[str, str] = field(default_factory=dict)
     last_updated: float = field(default_factory=time.time)
 
 
@@ -289,6 +291,8 @@ class HarnessWorkspace:
         progress.touched_files = []
         progress.last_validation = ""
         progress.validation_checks = []
+        progress.validation_artifacts = []
+        progress.acceptance_evidence = {}
         self.write_progress(progress)
         self.append_run_event(
             "set_active_sprint",

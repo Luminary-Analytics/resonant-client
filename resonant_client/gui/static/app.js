@@ -264,7 +264,12 @@ class ResonantApp {
         };
 
         this.ws.onclose = () => {
-            this.headerStatus.textContent = 'Disconnected';
+            // Show "Reconnecting..." during retry attempts to avoid flickering
+            if (this.reconnectAttempts < 10) {
+                this.headerStatus.textContent = 'Reconnecting...';
+            } else {
+                this.headerStatus.textContent = 'Disconnected';
+            }
             this.scheduleReconnect();
         };
 
@@ -278,6 +283,8 @@ class ResonantApp {
             const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 10000);
             this.reconnectAttempts++;
             setTimeout(() => this.connect(), delay);
+        } else {
+            this.headerStatus.textContent = 'Disconnected';
         }
     }
 
@@ -557,13 +564,19 @@ class ResonantApp {
         this.gitBadge?.addEventListener('click', () => this.toggleGitPopover());
 
         // Harness badge click → popover
-        this.harnessBadge?.addEventListener('click', () => this.toggleHarnessPopover());
+        this.harnessBadge?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleHarnessPopover();
+        });
 
-        // RESONANT.md badge click → fetch and show content
-        this.resonantMdBadge?.addEventListener('click', () => {
+        // RESONANT.md badge click → show popover
+        this.resonantMdBadge?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // Fetch latest content, then toggle popover
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                 this.ws.send(JSON.stringify({ command: 'get_resonant_md' }));
             }
+            this.toggleResonantMdPopover();
         });
     }
 
@@ -1115,14 +1128,25 @@ class ResonantApp {
             this.promptHarnessVerdict(action);
         });
 
+        // Close on click outside
         setTimeout(() => {
-            const handler = (e) => {
+            const clickHandler = (e) => {
                 if (!popover.contains(e.target) && !this.harnessBadge.contains(e.target)) {
                     this.toggleHarnessPopover();
-                    document.removeEventListener('click', handler);
+                    document.removeEventListener('click', clickHandler);
+                    document.removeEventListener('keydown', escHandler);
                 }
             };
-            document.addEventListener('click', handler);
+            // Close on Escape key
+            const escHandler = (e) => {
+                if (e.key === 'Escape') {
+                    this.toggleHarnessPopover();
+                    document.removeEventListener('click', clickHandler);
+                    document.removeEventListener('keydown', escHandler);
+                }
+            };
+            document.addEventListener('click', clickHandler);
+            document.addEventListener('keydown', escHandler);
         }, 100);
     }
 
@@ -1299,6 +1323,8 @@ class ResonantApp {
                 if (event.display_events && event.display_events.length > 0) {
                     this.replayDisplayEvents(event.display_events);
                 }
+                // Scroll to bottom after replay
+                this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
                 break;
             case 'chat_groups':
                 this.chatGroups = event.groups || [];
@@ -1367,7 +1393,9 @@ class ResonantApp {
                 break;
             case 'resonant_md':
                 this.resonantMd = event.info;
+                this.resonantMdContent = event.content || '';
                 this.updateResonantMdBadge();
+                this._updateResonantMdPopoverContent();
                 break;
             case 'context.compression':
                 this.handleCompression(event);
@@ -1712,7 +1740,7 @@ class ResonantApp {
         const chatWelcome = document.getElementById('chat-welcome-screen');
         if (chatWelcome) chatWelcome.style.display = 'none';
         this.chatContainer.style.display = 'flex';
-        this.inputBar.style.display = 'block';
+        this.inputBar.style.display = 'flex';
         // Hide other views if they were visible
         if (this.settingsView) this.settingsView.style.display = 'none';
         if (this.scheduleView) this.scheduleView.style.display = 'none';
@@ -2923,8 +2951,8 @@ class ResonantApp {
         // Show the requested view
         switch (viewName) {
             case 'chat':
-                // Restore chat or welcome based on whether a backend is connected
-                if (this.backends && Object.keys(this.backends).length > 0 && this.headerStatus.textContent) {
+                // Restore chat or welcome based on whether a session is active or backend is connected
+                if (this.currentSessionId || (this.backends && Object.keys(this.backends).length > 0)) {
                     this.chatContainer.style.display = 'flex';
                     this.inputBar.style.display = 'flex';
                 } else {
@@ -3097,9 +3125,16 @@ class ResonantApp {
                 <div class="settings-section-body">${bodyHtml}</div>
             `;
 
-            // Toggle open/close
-            el.querySelector('.settings-section-header').addEventListener('click', () => {
+            // Toggle open/close — click anywhere on header toggles the section
+            const header = el.querySelector('.settings-section-header');
+            header.addEventListener('click', (e) => {
+                // Don't toggle if clicking on an input/select inside the header
+                if (e.target.closest('input, select, textarea, button')) return;
                 el.classList.toggle('open');
+            });
+            // Also handle clicks on the arrow and title directly
+            header.addEventListener('mousedown', (e) => {
+                e.preventDefault(); // Prevent text selection on double-click
             });
 
             this.settingsBody.appendChild(el);
@@ -4549,6 +4584,78 @@ class ResonantApp {
             this.resonantMdBadge.style.display = 'flex';
         } else {
             this.resonantMdBadge.style.display = 'none';
+        }
+    }
+
+    toggleResonantMdPopover() {
+        const existing = document.querySelector('.resonant-md-popover');
+        if (existing) {
+            existing.remove();
+            this.resonantMdPopoverOpen = false;
+            return;
+        }
+
+        this.resonantMdPopoverOpen = true;
+        const popover = document.createElement('div');
+        popover.className = 'resonant-md-popover git-popover';
+
+        const content = this.resonantMdContent || '';
+        const exists = this.resonantMd?.exists;
+
+        popover.innerHTML = `
+            <div class="git-popover-header">
+                <span>RESONANT.md</span>
+                <button class="icon-btn resonant-md-popover-close">&times;</button>
+            </div>
+            <div class="resonant-md-popover-body" style="padding:12px;display:flex;flex-direction:column;gap:8px;">
+                <textarea class="settings-input" id="resonant-md-editor" rows="12"
+                    style="font-family:monospace;font-size:12px;resize:vertical;min-height:120px;"
+                    placeholder="Add project instructions for the AI assistant...">${this.escapeHtml(content)}</textarea>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button class="btn-primary btn-sm" id="resonant-md-save-btn">Save</button>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('main').appendChild(popover);
+
+        // Close button
+        popover.querySelector('.resonant-md-popover-close').addEventListener('click', () =>
+            this.toggleResonantMdPopover());
+
+        // Save button
+        popover.querySelector('#resonant-md-save-btn')?.addEventListener('click', () => {
+            const editor = document.getElementById('resonant-md-editor');
+            if (editor && this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ command: 'save_resonant_md', content: editor.value }));
+            }
+        });
+
+        // Close on click outside + Escape
+        setTimeout(() => {
+            const clickHandler = (e) => {
+                if (!popover.contains(e.target) && !this.resonantMdBadge.contains(e.target)) {
+                    this.toggleResonantMdPopover();
+                    document.removeEventListener('click', clickHandler);
+                    document.removeEventListener('keydown', escHandler);
+                }
+            };
+            const escHandler = (e) => {
+                if (e.key === 'Escape') {
+                    this.toggleResonantMdPopover();
+                    document.removeEventListener('click', clickHandler);
+                    document.removeEventListener('keydown', escHandler);
+                }
+            };
+            document.addEventListener('click', clickHandler);
+            document.addEventListener('keydown', escHandler);
+        }, 100);
+    }
+
+    _updateResonantMdPopoverContent() {
+        const editor = document.getElementById('resonant-md-editor');
+        if (editor && this.resonantMdContent !== undefined) {
+            editor.value = this.resonantMdContent;
         }
     }
 

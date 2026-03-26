@@ -168,6 +168,13 @@ class ResonantApp {
         this.currentView = 'chat';
         this.settings = {};
 
+        // Command center state
+        this.commandPanel = 'fleet';
+        this.commandAgents = [];
+        this.commandTasks = [];
+        this.commandFeed = [];
+        this.commandCenter = document.getElementById('command-center');
+
         // Git state
         this.gitData = null;
         this.gitPopoverOpen = false;
@@ -578,6 +585,12 @@ class ResonantApp {
             }
             this.toggleResonantMdPopover();
         });
+
+        // ── Command Center ──
+        document.querySelectorAll('.command-tab').forEach(tab => {
+            tab.addEventListener('click', () => this.switchCommandPanel(tab.dataset.panel));
+        });
+        document.getElementById('command-spawn-btn')?.addEventListener('click', () => this.showSpawnAgentDialog());
     }
 
     // ── Image Attachments ────────────────────────────────────────
@@ -789,6 +802,33 @@ class ResonantApp {
         this.sessionMode = mode;
         document.querySelectorAll('.mode-tab').forEach(tab =>
             tab.classList.toggle('active', tab.dataset.mode === mode));
+
+        // Command mode: show command center, hide everything else
+        if (this.commandCenter) {
+            this.commandCenter.style.display = mode === 'command' ? 'flex' : 'none';
+        }
+        if (mode === 'command') {
+            this.chatContainer.style.display = 'none';
+            this.inputBar.style.display = 'none';
+            this.welcomeScreen.style.display = 'none';
+            const chatWelcome = document.getElementById('chat-welcome-screen');
+            if (chatWelcome) chatWelcome.style.display = 'none';
+            if (this.settingsView) this.settingsView.style.display = 'none';
+            if (this.scheduleView) this.scheduleView.style.display = 'none';
+            if (this.dispatchView) this.dispatchView.style.display = 'none';
+            // Hide sidebar session list and search
+            const sessionList = document.getElementById('session-list');
+            if (sessionList) sessionList.style.display = 'none';
+            const search = document.querySelector('.sidebar-search');
+            if (search) search.style.display = 'none';
+            const pf = document.getElementById('sidebar-project-filter');
+            if (pf) pf.style.display = 'none';
+            this.currentView = 'command';
+            document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
+                el.classList.remove('active'));
+            this.requestCommandFleet();
+            return;
+        }
 
         // Toggle sidebar content — project filter vs chat groups
         const projectFilter = document.getElementById('sidebar-project-filter');
@@ -1415,6 +1455,16 @@ class ResonantApp {
                 break;
             case 'schedule_list':
                 this.renderScheduleList(event.schedules || []);
+                break;
+            // ── Command Center Events ──
+            case 'command_fleet':
+                this.commandAgents = event.agents || [];
+                if (this.sessionMode === 'command' && this.commandPanel === 'fleet') {
+                    this.renderCommandFleet();
+                }
+                break;
+            case 'command_spawn_ok':
+                this.requestCommandFleet();
                 break;
             case 'mcp_list':
                 // Refresh settings view if open
@@ -2924,10 +2974,18 @@ class ResonantApp {
     switchView(viewName) {
         this.currentView = viewName;
 
+        // If coming from command mode, switch mode tab back
+        if (this.sessionMode === 'command') {
+            this.sessionMode = 'code';
+            document.querySelectorAll('.mode-tab').forEach(tab =>
+                tab.classList.toggle('active', tab.dataset.mode === 'code'));
+        }
+
         // Hide all views
         this.welcomeScreen.style.display = 'none';
         this.chatContainer.style.display = 'none';
         this.inputBar.style.display = 'none';
+        if (this.commandCenter) this.commandCenter.style.display = 'none';
         if (this.settingsView) this.settingsView.style.display = 'none';
         if (this.scheduleView) this.scheduleView.style.display = 'none';
         if (this.dispatchView) this.dispatchView.style.display = 'none';
@@ -4657,6 +4715,125 @@ class ResonantApp {
         if (editor && this.resonantMdContent !== undefined) {
             editor.value = this.resonantMdContent;
         }
+    }
+
+    // ── Command Center ──────────────────────────────────────────
+
+    switchCommandPanel(panel) {
+        this.commandPanel = panel;
+        document.querySelectorAll('.command-tab').forEach(tab =>
+            tab.classList.toggle('active', tab.dataset.panel === panel));
+        document.querySelectorAll('.command-panel').forEach(p => p.style.display = 'none');
+        const target = document.getElementById(`command-${panel}`);
+        if (target) target.style.display = 'flex';
+
+        // Refresh data for the panel
+        if (panel === 'fleet') this.requestCommandFleet();
+    }
+
+    requestCommandFleet() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ command: 'command_fleet' }));
+        }
+    }
+
+    renderCommandFleet() {
+        const panel = document.getElementById('command-fleet');
+        if (!panel) return;
+
+        const agents = this.commandAgents;
+        if (!agents || agents.length === 0) {
+            panel.innerHTML = `
+                <div class="feature-empty">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="10" stroke="currentColor" stroke-width="1.5"/><path d="M16 11v6M13 20h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>No agents running. Click <strong>+ Spawn Agent</strong> to start one.</span>
+                </div>`;
+            return;
+        }
+
+        panel.innerHTML = `<div class="fleet-grid">${agents.map(a => this._renderAgentCard(a)).join('')}</div>`;
+
+        // Bind cancel buttons
+        panel.querySelectorAll('.agent-cancel-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const id = btn.dataset.id;
+                this.send({ command: 'dispatch_cancel', task_id: id });
+                setTimeout(() => this.requestCommandFleet(), 500);
+            });
+        });
+
+        // Bind card clicks → switch to monitor panel
+        panel.querySelectorAll('.agent-card').forEach(card => {
+            card.addEventListener('click', () => {
+                this.commandMonitorAgent = card.dataset.id;
+                this.switchCommandPanel('monitor');
+            });
+        });
+    }
+
+    _renderAgentCard(agent) {
+        const status = agent.status || 'pending';
+        const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
+        const name = agent.name || agent.prompt?.substring(0, 60) || 'Unnamed agent';
+        const model = agent.model || '';
+        const steps = agent.steps || 0;
+        const elapsed = agent.elapsed ? `${Math.round(agent.elapsed)}s` : '—';
+        const isRunning = status === 'running' || status === 'pending';
+
+        return `
+            <div class="agent-card" data-id="${agent.id}">
+                <div class="agent-card-header">
+                    <div class="agent-card-status">
+                        <span class="agent-status-dot ${status}"></span>
+                        ${statusLabel}
+                    </div>
+                    <span class="agent-card-id">${agent.id}</span>
+                </div>
+                <div class="agent-card-name">${this.escapeHtml(name)}</div>
+                <div class="agent-card-meta">
+                    <span>${this.escapeHtml(model)}</span>
+                    <span>${steps} steps</span>
+                    <span>${elapsed}</span>
+                </div>
+                ${isRunning ? `<div class="agent-card-actions"><button class="agent-cancel-btn cancel-btn" data-id="${agent.id}">Cancel</button></div>` : ''}
+            </div>`;
+    }
+
+    showSpawnAgentDialog() {
+        const panel = document.getElementById('command-fleet');
+        if (!panel) return;
+
+        panel.innerHTML = `
+            <div class="spawn-agent-form">
+                <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">Spawn New Agent</h3>
+                <div class="settings-row"><label>Name</label>
+                    <input type="text" class="settings-input" id="spawn-name" placeholder="Agent name (optional)" /></div>
+                <div class="settings-row"><label>Prompt</label>
+                    <textarea class="settings-input" id="spawn-prompt" rows="5" placeholder="What should this agent work on?"></textarea></div>
+                <div class="settings-row"><label>Role</label>
+                    <select class="settings-input" id="spawn-role">
+                        <option value="generator">Generator</option>
+                        <option value="evaluator">Evaluator</option>
+                        <option value="planner">Planner</option>
+                    </select></div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                    <button class="btn-primary btn-sm" id="spawn-submit-btn">Launch Agent</button>
+                    <button class="btn-sm" id="spawn-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('spawn-submit-btn')?.addEventListener('click', () => {
+            const name = document.getElementById('spawn-name')?.value || '';
+            const prompt = document.getElementById('spawn-prompt')?.value || '';
+            const role = document.getElementById('spawn-role')?.value || 'generator';
+            if (prompt.trim()) {
+                this.send({ command: 'command_spawn', name, prompt, session_role: role });
+                this.requestCommandFleet();
+            }
+        });
+        document.getElementById('spawn-cancel-btn')?.addEventListener('click', () => this.renderCommandFleet());
     }
 
     // ── Context Compression ─────────────────────────────────────

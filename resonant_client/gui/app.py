@@ -3039,6 +3039,77 @@ async def websocket_endpoint(ws: WebSocket):
                 tasks = state.task_runner.list_tasks()
                 await ws.send_json({"event": "dispatch_list", "tasks": tasks})
 
+            # ── Command Center ──────────────────────────────
+            elif command == "command_fleet":
+                tasks = state.task_runner.list_tasks(limit=100)
+                # Also include harness cycle runs if available
+                cycles = []
+                if hasattr(state, "harness_orchestrator") and state.harness_orchestrator:
+                    try:
+                        cycles = state.harness_orchestrator.list_runs()
+                    except Exception:
+                        pass
+                # Merge into a unified agent list
+                agents = []
+                for t in tasks:
+                    agents.append({
+                        "id": t.get("id", ""),
+                        "name": t.get("name", ""),
+                        "prompt": t.get("prompt", ""),
+                        "status": t.get("status", ""),
+                        "model": t.get("model", ""),
+                        "steps": t.get("steps", 0),
+                        "elapsed": t.get("elapsed", 0),
+                        "created_at": t.get("created_at", ""),
+                        "source": "dispatch",
+                    })
+                for c in cycles:
+                    agents.append({
+                        "id": c.get("id", ""),
+                        "name": c.get("name", "harness cycle"),
+                        "prompt": "",
+                        "status": c.get("status", ""),
+                        "model": "",
+                        "steps": len(c.get("steps", [])),
+                        "elapsed": 0,
+                        "created_at": c.get("started_at", ""),
+                        "source": "harness",
+                    })
+                # Sort: running first, then by created_at descending
+                status_order = {"running": 0, "pending": 1, "completed": 2, "failed": 3, "cancelled": 4}
+                agents.sort(key=lambda a: (status_order.get(a["status"], 9), a.get("created_at", "")), reverse=False)
+                await ws.send_json({"event": "command_fleet", "agents": agents})
+
+            elif command == "command_spawn":
+                prompt = msg.get("prompt", "").strip()
+                name = msg.get("name", "").strip()
+                session_role = msg.get("session_role", "generator")
+                if not prompt:
+                    await ws.send_json({"event": "error", "message": "No prompt provided"})
+                    continue
+                try:
+                    backend_type = getattr(state.backend, "name", "")
+                    model = getattr(state.backend, "model", "")
+                    spec = state.build_backend_spec(
+                        backend_type,
+                        model=model or None,
+                        project_path=state.project.project_path,
+                    )
+                    task = state.task_runner.submit(
+                        name=name or prompt[:50],
+                        prompt=prompt,
+                        session_factory=state.make_background_session,
+                        backend_type=backend_type,
+                        model=spec.model,
+                        project_path=state.project.project_path,
+                        session_mode="code",
+                        session_role=state.normalize_session_role("code", session_role),
+                        backend_spec=spec.to_dict(),
+                    )
+                    await ws.send_json({"event": "command_spawn_ok", "task": task.to_dict()})
+                except Exception as e:
+                    await ws.send_json({"event": "error", "message": f"Failed to spawn agent: {e}"})
+
             # ── Scheduled Tasks ──────────────────────────────
             elif command == "schedule_create":
                 name = msg.get("name", "").strip()

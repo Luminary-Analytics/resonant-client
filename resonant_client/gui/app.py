@@ -437,6 +437,34 @@ class AppState:
             lines = lines[:max_lines] + ["...[truncated]"]
         return "\n".join(f"{index:>4}: {line}" for index, line in enumerate(lines, start=1))
 
+    @staticmethod
+    def _normalize_acceptance_check_phrase(check: str) -> str:
+        phrase = re.sub(
+            r"^(mention|include|cover|state|validate|return|record|show|verify|use)\s+",
+            "",
+            str(check).strip().lower(),
+        )
+        phrase = re.sub(r"\s+", " ", phrase).strip(" .")
+        return phrase
+
+    def _build_acceptance_check_coverage(
+        self,
+        acceptance_checks: list[str],
+        evidence_text: str,
+    ) -> list[dict[str, Any]]:
+        lowered = str(evidence_text or "").lower()
+        coverage = []
+        for check in acceptance_checks[:8]:
+            phrase = self._normalize_acceptance_check_phrase(check)
+            coverage.append(
+                {
+                    "check": check,
+                    "matched": bool(phrase and phrase in lowered),
+                    "normalized_phrase": phrase,
+                }
+            )
+        return coverage
+
     def build_harness_structured_evidence_bundle(self, project_path: Optional[str] = None) -> dict[str, Any]:
         target_path = os.path.normpath(project_path or self.project.project_path)
         harness = HarnessWorkspace(target_path)
@@ -474,22 +502,8 @@ class AppState:
             files.append(file_record)
 
         acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
-        combined_evidence = "\n".join(part for part in evidence_parts if part).lower()
-        coverage = []
-        for check in acceptance_checks[:8]:
-            phrase = re.sub(
-                r"^(mention|include|cover|state|validate|return|record|show|verify)\s+",
-                "",
-                str(check).strip().lower(),
-            )
-            phrase = re.sub(r"\s+", " ", phrase).strip(" .")
-            coverage.append(
-                {
-                    "check": check,
-                    "matched": bool(phrase and phrase in combined_evidence),
-                    "normalized_phrase": phrase,
-                }
-            )
+        combined_evidence = "\n".join(part for part in evidence_parts if part)
+        coverage = self._build_acceptance_check_coverage(acceptance_checks, combined_evidence)
 
         return {
             "summary": summary,
@@ -650,6 +664,107 @@ class AppState:
         lines.append("Keep the prose to at most 6 short lines, then finish with a valid ```resonant-harness JSON block for evaluator_verdict.")
         return "\n".join(lines)
 
+    def precheck_harness_evaluator_payload(
+        self,
+        *,
+        project_path: Optional[str] = None,
+        evaluation_mode: str,
+    ) -> dict[str, Any] | None:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        harness = HarnessWorkspace(target_path)
+        harness.ensure_layout()
+        summary = self.get_harness_summary(target_path)
+        sprint_id = str(summary.get("active_sprint_id") or "").strip()
+        if not sprint_id:
+            return None
+
+        acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        if not acceptance_checks:
+            return None
+
+        blockers = self._normalize_string_list(summary.get("blockers"))
+        required_revisions = self._normalize_string_list(summary.get("required_revisions"))
+        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
+        touched_files = self._normalize_string_list(summary.get("touched_files"))
+        last_validation = str(summary.get("last_validation") or "").strip()
+        handoff_excerpt = self._truncate_text(harness.read_handoff(), max_chars=1200)
+        evidence_present = bool(last_validation or validation_checks or handoff_excerpt)
+
+        if blockers:
+            findings = blockers[:3]
+            return {
+                "action": "evaluator_verdict",
+                "sprint_id": sprint_id,
+                "verdict": "blocked",
+                "findings": findings,
+                "passed_checks": [],
+                "failed_checks": findings,
+                "required_revisions": findings,
+                "score": 0.0,
+            }
+
+        if evaluation_mode == "structured":
+            bundle = self.build_harness_structured_evidence_bundle(target_path)
+            coverage = bundle["acceptance_check_coverage"]
+            files = bundle["files"]
+            existing_file_count = sum(1 for item in files if item.get("exists"))
+        else:
+            evidence_text = "\n".join(
+                part
+                for part in (
+                    summary.get("summary") or "",
+                    last_validation,
+                    "\n".join(validation_checks),
+                    handoff_excerpt,
+                )
+                if part
+            )
+            coverage = self._build_acceptance_check_coverage(acceptance_checks, evidence_text)
+            existing_file_count = 0
+
+        matched_checks = [item["check"] for item in coverage if item.get("matched")]
+        unmatched_checks = [item["check"] for item in coverage if not item.get("matched")]
+        has_complete_coverage = bool(coverage) and not unmatched_checks
+
+        if has_complete_coverage and evidence_present and (
+            evaluation_mode != "structured" or existing_file_count > 0
+        ):
+            findings = validation_checks[:3] or [last_validation or "Acceptance checks are covered by the harness evidence bundle."]
+            return {
+                "action": "evaluator_verdict",
+                "sprint_id": sprint_id,
+                "verdict": "pass",
+                "findings": findings[:3],
+                "passed_checks": matched_checks[:8],
+                "failed_checks": [],
+                "required_revisions": [],
+                "score": 1.0,
+            }
+
+        obvious_revisions = required_revisions[:3]
+        if not obvious_revisions:
+            if evaluation_mode == "structured" and touched_files and existing_file_count == 0:
+                obvious_revisions = ["Touched files were recorded, but the compact file evidence is missing."]
+            elif unmatched_checks and not validation_checks and (
+                len(unmatched_checks) >= max(2, len(acceptance_checks) // 2)
+            ):
+                obvious_revisions = unmatched_checks[:3]
+
+        if obvious_revisions:
+            findings = obvious_revisions[:3]
+            return {
+                "action": "evaluator_verdict",
+                "sprint_id": sprint_id,
+                "verdict": "revise",
+                "findings": findings,
+                "passed_checks": matched_checks[:8],
+                "failed_checks": findings,
+                "required_revisions": findings,
+                "score": 0.5,
+            }
+
+        return None
+
     def infer_evidence_only_evaluator_payload(
         self,
         *,
@@ -666,12 +781,7 @@ class AppState:
 
         normalized_check_phrases = []
         for check in acceptance_checks:
-            phrase = re.sub(
-                r"^(mention|include|cover|state|validate|return|record|show|verify)\s+",
-                "",
-                str(check).strip().lower(),
-            )
-            phrase = re.sub(r"\s+", " ", phrase).strip(" .")
+            phrase = self._normalize_acceptance_check_phrase(check)
             if phrase:
                 normalized_check_phrases.append(phrase)
 
@@ -1749,6 +1859,33 @@ class AppState:
         if normalized_role == "evaluator":
             evaluation_mode = self.get_harness_evaluator_strategy(project_path)
 
+        if normalized_role == "evaluator" and evaluation_mode in {"artifacts", "structured"}:
+            prechecked_payload = self.precheck_harness_evaluator_payload(
+                project_path=project_path,
+                evaluation_mode=evaluation_mode,
+            )
+            if prechecked_payload is not None:
+                self.apply_harness_update(
+                    session_mode="code",
+                    session_role=session_role,
+                    payload=prechecked_payload,
+                    project_path=project_path,
+                    assistant_text="",
+                    user_request=prompt,
+                )
+                return {
+                    "result": "",
+                    "error": "",
+                    "steps": 0,
+                    "display_events": [],
+                    "backend_type": "precheck",
+                    "model": "deterministic",
+                    "timed_out": False,
+                    "artifact_only": evaluation_mode == "artifacts",
+                    "evaluation_mode": evaluation_mode,
+                    "prechecked": True,
+                }
+
         if evaluation_mode == "artifacts":
             effective_prompt = self.build_harness_evaluator_artifact_prompt(project_path)
             allowed_tools = []
@@ -1852,6 +1989,7 @@ class AppState:
             "timed_out": timed_out,
             "artifact_only": evaluation_mode == "artifacts",
             "evaluation_mode": evaluation_mode,
+            "prechecked": False,
         }
 
     def run_harness_teacher_escalation(

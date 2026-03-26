@@ -46,6 +46,8 @@ class HarnessCycleStep:
     summary_after: dict[str, Any] = field(default_factory=dict)
     auto_transition: str = ""
     steps: int = 0
+    evaluation_mode: str = ""
+    prechecked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -61,6 +63,8 @@ class HarnessCycleStep:
             "summary_after": self.summary_after,
             "auto_transition": self.auto_transition,
             "steps": self.steps,
+            "evaluation_mode": self.evaluation_mode,
+            "prechecked": self.prechecked,
         }
 
     def to_full_dict(self) -> dict[str, Any]:
@@ -250,6 +254,8 @@ class HarnessOrchestrator:
                     step.result = str(result.get("result") or "")
                     step.error = str(result.get("error") or "")
                     step.steps = int(result.get("steps") or 0)
+                    step.evaluation_mode = str(result.get("evaluation_mode") or "")
+                    step.prechecked = bool(result.get("prechecked"))
                     step.status = "failed" if step.error else "completed"
                 except Exception as exc:
                     step.error = str(exc)
@@ -295,6 +301,10 @@ class HarnessOrchestrator:
                         "error": step.error,
                         "loop_index": run.current_loop,
                         "auto_transition": step.auto_transition,
+                        "backend_type": step.backend_type,
+                        "model": step.model,
+                        "evaluation_mode": step.evaluation_mode,
+                        "prechecked": step.prechecked,
                         "contract_status": summary_after.get("contract_status", ""),
                         "evaluator_verdict": summary_after.get("evaluator_verdict", ""),
                     },

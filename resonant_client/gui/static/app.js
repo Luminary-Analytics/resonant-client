@@ -990,6 +990,11 @@ class ResonantApp {
         const revisions = (this.harnessState.required_revisions || []).slice(0, 4);
         const checks = (this.harnessState.acceptance_checks || []).slice(0, 4);
         const teacherEscalations = (this.harnessState.recent_teacher_escalations || []).slice().reverse().slice(0, 2);
+        const recentEvaluatorEvents = (this.harnessState.recent_run_events || [])
+            .slice()
+            .reverse()
+            .filter(item => item?.event === 'cycle_step_completed' && item?.payload?.role === 'evaluator')
+            .slice(0, 3);
         const activeCycle = this.getActiveHarnessCycle();
         const cycleText = activeCycle
             ? `${activeCycle.status} · ${activeCycle.current_role || activeCycle.active_step?.role || 'waiting'} · ${activeCycle.current_loop}/${activeCycle.max_loops}`
@@ -1029,6 +1034,24 @@ class ResonantApp {
                                 const kind = item.response?.recovery_kind || '';
                                 const label = `${provider}${model ? `/${model}` : ''} → ${roleName}`;
                                 const detail = [status, kind].filter(Boolean).join(' · ');
+                                return `<div>• <strong>${this.escapeHtml(label)}</strong>${detail ? ` <span class="harness-inline-meta">${this.escapeHtml(detail)}</span>` : ''}</div>`;
+                            }).join('')
+                            : '<div>• none</div>'
+                    }</div>
+                </div>
+                <div class="harness-popover-block">
+                    <div class="harness-label">Recent Evaluator Path</div>
+                    <div class="harness-list">${
+                        recentEvaluatorEvents.length
+                            ? recentEvaluatorEvents.map(item => {
+                                const payload = item.payload || {};
+                                const backend = payload.backend_type || 'unknown';
+                                const model = payload.model || '';
+                                const verdict = payload.evaluator_verdict || 'unknown';
+                                const mode = payload.evaluation_mode || '';
+                                const route = payload.prechecked ? 'precheck' : 'model';
+                                const label = `${backend}${model ? `/${model}` : ''} → ${verdict}`;
+                                const detail = [mode, route].filter(Boolean).join(' · ');
                                 return `<div>• <strong>${this.escapeHtml(label)}</strong>${detail ? ` <span class="harness-inline-meta">${this.escapeHtml(detail)}</span>` : ''}</div>`;
                             }).join('')
                             : '<div>• none</div>'

@@ -367,6 +367,23 @@ class AppState:
                 pass
         return 256
 
+    def get_harness_generator_mode(self) -> str:
+        raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_MODE", "hybrid") or "").strip().lower()
+        if raw in {"full", "artifacts", "hybrid"}:
+            return raw
+        return "hybrid"
+
+    def get_harness_generator_artifact_max_tokens(self) -> int:
+        raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_ARTIFACT_MAX_TOKENS", "") or "").strip()
+        if raw:
+            try:
+                value = int(raw)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+        return 448
+
     def should_use_harness_artifact_evaluator(self, project_path: Optional[str] = None) -> bool:
         mode = self.get_harness_evaluator_mode()
         if mode == "full":
@@ -442,6 +459,61 @@ class AppState:
         if len(lines) > max_lines:
             lines = lines[:max_lines] + ["...[truncated]"]
         return "\n".join(f"{index:>4}: {line}" for index, line in enumerate(lines, start=1))
+
+    def extract_harness_referenced_files(
+        self,
+        project_path: Optional[str] = None,
+        *texts: Any,
+        limit: int = 4,
+    ) -> list[str]:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        project_root = Path(target_path).resolve()
+        candidates: list[str] = []
+        seen_raw: set[str] = set()
+        fenced_pattern = re.compile(r"`([^`\n]+)`")
+        path_patterns = (
+            re.compile(r"(?<![\w./-])([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+\.[A-Za-z0-9_.-]+)"),
+            re.compile(r"(?<![\w./-])([A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+)"),
+        )
+
+        for raw_text in texts:
+            text = str(raw_text or "")
+            if not text.strip():
+                continue
+            for match in fenced_pattern.finditer(text):
+                candidate = match.group(1).strip()
+                if candidate and candidate not in seen_raw:
+                    seen_raw.add(candidate)
+                    candidates.append(candidate)
+            for pattern in path_patterns:
+                for match in pattern.finditer(text):
+                    candidate = match.group(1).strip()
+                    if candidate and candidate not in seen_raw:
+                        seen_raw.add(candidate)
+                        candidates.append(candidate)
+
+        referenced: list[str] = []
+        seen_display: set[str] = set()
+        for raw in candidates:
+            cleaned = raw.strip().strip("`'\"()[]{}<>.,;:")
+            if cleaned.startswith("./"):
+                cleaned = cleaned[2:]
+            if not cleaned:
+                continue
+            resolved = self._resolve_harness_touched_path(target_path, cleaned)
+            try:
+                resolved.relative_to(project_root)
+            except ValueError:
+                continue
+            if not resolved.exists() or not resolved.is_file():
+                continue
+            display_path = os.path.relpath(str(resolved), target_path).replace(os.sep, "/")
+            if display_path not in seen_display:
+                seen_display.add(display_path)
+                referenced.append(display_path)
+            if len(referenced) >= limit:
+                break
+        return referenced
 
     @staticmethod
     def _normalize_acceptance_check_phrase(check: str) -> str:
@@ -522,6 +594,364 @@ class AppState:
             "validation_artifacts": validation_artifacts,
             "acceptance_evidence": acceptance_evidence,
             "acceptance_check_coverage": coverage,
+        }
+
+    def should_use_harness_generator_artifact_mode(
+        self,
+        project_path: Optional[str] = None,
+        prompt: str = "",
+    ) -> bool:
+        mode = self.get_harness_generator_mode()
+        if mode == "full":
+            return False
+
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        summary = self.get_harness_summary(target_path)
+        read_only = self._is_read_only_harness_request(
+            prompt,
+            summary.get("contract_objective", ""),
+            summary.get("contract_feature_name", ""),
+            "\n".join(self._normalize_string_list(summary.get("deliverables"))),
+            "\n".join(self._normalize_string_list(summary.get("acceptance_checks"))),
+        )
+        if not read_only:
+            return False
+
+        referenced_files = self.extract_harness_referenced_files(
+            target_path,
+            prompt,
+            summary.get("contract_objective", ""),
+            "\n".join(self._normalize_string_list(summary.get("deliverables"))),
+        )
+        if mode == "artifacts":
+            return bool(referenced_files)
+        return bool(referenced_files)
+
+    def get_harness_generator_strategy(
+        self,
+        project_path: Optional[str] = None,
+        prompt: str = "",
+    ) -> str:
+        if self.should_use_harness_generator_artifact_mode(project_path, prompt):
+            return "artifacts"
+        return "full"
+
+    def build_harness_generator_artifact_bundle(
+        self,
+        project_path: Optional[str] = None,
+        prompt: str = "",
+    ) -> dict[str, Any]:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        harness = HarnessWorkspace(target_path)
+        harness.ensure_layout()
+        summary = self.get_harness_summary(target_path)
+        handoff_text = self._truncate_text(harness.read_handoff(), max_chars=1400)
+        referenced_paths = self.extract_harness_referenced_files(
+            target_path,
+            prompt,
+            summary.get("contract_objective", ""),
+            "\n".join(self._normalize_string_list(summary.get("deliverables"))),
+        )
+        files: list[dict[str, Any]] = []
+        evidence_parts = [
+            summary.get("summary") or "",
+            summary.get("last_validation") or "",
+            "\n".join(self._normalize_string_list(summary.get("validation_checks"))),
+            handoff_text,
+        ]
+
+        for raw_path in referenced_paths[:4]:
+            resolved = self._resolve_harness_touched_path(target_path, raw_path)
+            file_record: dict[str, Any] = {
+                "path": raw_path,
+                "resolved_path": str(resolved),
+                "exists": resolved.exists(),
+            }
+            if resolved.exists() and resolved.is_file():
+                excerpt = self._format_numbered_excerpt(resolved, max_lines=100, max_chars=3200)
+                file_record["excerpt"] = excerpt
+                evidence_parts.append(excerpt)
+            else:
+                file_record["excerpt"] = "[missing file]"
+                evidence_parts.append(f"{raw_path}: missing file")
+            files.append(file_record)
+
+        acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        combined_evidence = "\n".join(part for part in evidence_parts if part)
+        coverage = self._build_acceptance_check_coverage(acceptance_checks, combined_evidence)
+
+        return {
+            "summary": summary,
+            "handoff_excerpt": handoff_text,
+            "files": files,
+            "acceptance_check_coverage": coverage,
+        }
+
+    def build_harness_generator_artifact_prompt(
+        self,
+        project_path: Optional[str] = None,
+        prompt: str = "",
+    ) -> str:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        bundle = self.build_harness_generator_artifact_bundle(target_path, prompt)
+        summary = bundle["summary"]
+        checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        deliverables = self._normalize_string_list(summary.get("deliverables"))
+        revisions = self._normalize_string_list(summary.get("required_revisions"))
+        blockers = self._normalize_string_list(summary.get("blockers"))
+
+        lines = [
+            "Artifact-only generator mode for a read-only sprint.",
+            "Do not use tools and do not modify repository files.",
+            "Use only the harness context and file excerpts below.",
+            "Capture concise, grounded findings in handoff/progress artifacts.",
+            "If a check is not supported by the provided evidence, do not invent it; note the gap honestly.",
+            "Set sprint_status to implemented once the read-only findings are recorded.",
+            "",
+            f"Active sprint: {summary['active_sprint_id'] or 'none'}",
+            f"Feature: {summary['contract_feature_name'] or 'unknown'}",
+            f"Objective: {summary['contract_objective'] or 'none'}",
+            f"Contract status: {summary['contract_status'] or 'unknown'}",
+            "",
+            "Deliverables:",
+        ]
+        lines.extend(f"- {item}" for item in deliverables[:6] or ["(none)"])
+        lines.append("")
+        lines.append("Acceptance checks:")
+        lines.extend(f"- {item}" for item in checks[:8] or ["(none)"])
+
+        if blockers:
+            lines.append("")
+            lines.append("Current blockers:")
+            lines.extend(f"- {item}" for item in blockers[:6])
+        if revisions:
+            lines.append("")
+            lines.append("Required revisions from evaluator:")
+            lines.extend(f"- {item}" for item in revisions[:6])
+
+        lines.extend(
+            [
+                "",
+                "Current harness summary:",
+                summary.get("summary") or "(none)",
+                "",
+                "Last validation evidence:",
+                summary.get("last_validation") or "(none)",
+                "",
+                "Existing handoff excerpt:",
+                bundle["handoff_excerpt"] or "(none)",
+                "",
+                "Acceptance-check coverage guess from the included evidence:",
+            ]
+        )
+        for item in bundle["acceptance_check_coverage"]:
+            marker = "matched" if item.get("matched") else "unmatched"
+            lines.append(f"- {marker}: {item.get('check') or '(unknown)'}")
+
+        lines.append("")
+        lines.append("Referenced file excerpts:")
+        for file_item in bundle["files"]:
+            lines.append(f"- {file_item['path']} ({'exists' if file_item['exists'] else 'missing'})")
+            excerpt = str(file_item.get("excerpt") or "").strip()
+            if excerpt:
+                lines.append(excerpt)
+                lines.append("")
+
+        lines.extend(
+            [
+                "Keep the prose to at most 6 short lines.",
+                "Then finish with a valid ```resonant-harness JSON block for generator_update that includes:",
+                "- progress.summary",
+                "- progress.last_validation",
+                "- progress.validation_checks",
+                "- progress.validation_artifacts",
+                "- progress.acceptance_evidence",
+                "- handoff_markdown with concise findings and file references",
+                "- sprint_status set to implemented",
+            ]
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _strip_list_marker(value: str) -> str:
+        return re.sub(r"^\s*(?:[-*+•]|\d+[.)])\s*", "", str(value or "").strip())
+
+    def _choose_supporting_line_for_check(self, check: str, lines: list[str]) -> str:
+        check_tokens = {
+            token
+            for token in re.findall(r"[a-z0-9]+", str(check or "").lower())
+            if len(token) > 2 and token not in {
+                "the", "and", "with", "that", "this", "from", "into", "then", "what",
+                "when", "where", "which", "does", "have", "names", "includes", "include",
+                "explains", "primary", "concrete", "visible", "code", "main",
+            }
+        }
+        if not check_tokens:
+            return ""
+
+        best_line = ""
+        best_score = 0
+        for raw_line in lines:
+            line = self._strip_list_marker(raw_line)
+            if not line:
+                continue
+            line_tokens = set(re.findall(r"[a-z0-9]+", line.lower()))
+            score = len(check_tokens & line_tokens)
+            if score > best_score:
+                best_score = score
+                best_line = line
+
+        minimum = max(2, min(len(check_tokens), 3))
+        return best_line if best_score >= minimum else ""
+
+    def align_acceptance_evidence_to_contract(
+        self,
+        *,
+        acceptance_checks: list[str],
+        evidence: dict[str, str],
+        objective: str = "",
+        user_request: str = "",
+    ) -> dict[str, str]:
+        if not acceptance_checks or not evidence:
+            return {}
+
+        normalized_exact = {
+            self._normalize_acceptance_check_phrase(key): str(value).strip()
+            for key, value in evidence.items()
+            if self._normalize_acceptance_check_phrase(key) and str(value).strip()
+        }
+        raw_entries = [
+            (str(key).strip(), str(value).strip())
+            for key, value in evidence.items()
+            if str(key).strip() and str(value).strip()
+        ]
+        aligned: dict[str, str] = {}
+
+        for check in acceptance_checks:
+            phrase = self._normalize_acceptance_check_phrase(check)
+            if phrase and phrase in normalized_exact:
+                aligned[check] = self._truncate_text(normalized_exact[phrase], max_chars=220)
+                continue
+
+            best_value = ""
+            best_score = 0
+            check_tokens = set(re.findall(r"[a-z0-9]+", phrase.replace("_", " ")))
+            for raw_key, raw_value in raw_entries:
+                key_tokens = set(re.findall(r"[a-z0-9]+", raw_key.lower().replace("_", " ")))
+                score = len(check_tokens & key_tokens)
+                if score > best_score:
+                    best_score = score
+                    best_value = raw_value
+            if best_value and best_score >= 2:
+                aligned[check] = self._truncate_text(best_value, max_chars=220)
+
+        if self._is_read_only_harness_request(objective, user_request):
+            for check in acceptance_checks:
+                lowered = check.lower()
+                if (
+                    check not in aligned
+                    and "no repository files" in lowered
+                    and ("read-only" in lowered or "repository files" in lowered or "modified" in lowered)
+                ):
+                    aligned[check] = "Artifact-only read-only sprint; no repository files were modified."
+
+        return aligned
+
+    def infer_generator_artifact_payload(
+        self,
+        *,
+        project_path: Optional[str] = None,
+        text: str,
+        prompt: str = "",
+    ) -> dict[str, Any] | None:
+        stripped = str(text or "").strip()
+        if not stripped:
+            return None
+
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        summary = self.get_harness_summary(target_path)
+        sprint_id = str(summary.get("active_sprint_id") or "").strip()
+        if not sprint_id:
+            return None
+        if not self.should_use_harness_generator_artifact_mode(target_path, prompt):
+            return None
+
+        lines = [
+            self._strip_list_marker(line)
+            for line in stripped.splitlines()
+            if self._strip_list_marker(line)
+        ]
+        if not lines:
+            return None
+
+        findings: list[str] = []
+        seen_findings: set[str] = set()
+        for line in lines:
+            normalized = line.strip()
+            if not normalized:
+                continue
+            lowered = normalized.lower()
+            if lowered in seen_findings:
+                continue
+            seen_findings.add(lowered)
+            findings.append(self._truncate_text(normalized, max_chars=260))
+            if len(findings) >= 6:
+                break
+        if not findings:
+            return None
+
+        referenced_files = self.extract_harness_referenced_files(
+            target_path,
+            prompt,
+            summary.get("contract_objective", ""),
+            "\n".join(self._normalize_string_list(summary.get("deliverables"))),
+        )
+        acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        acceptance_evidence: dict[str, str] = {}
+        for check in acceptance_checks[:8]:
+            supporting = self._choose_supporting_line_for_check(check, findings)
+            if supporting:
+                acceptance_evidence[check] = self._truncate_text(supporting, max_chars=220)
+
+        validation_checks = []
+        if referenced_files:
+            validation_checks.append(f"Reviewed read-only evidence in: {', '.join(referenced_files[:4])}")
+        validation_checks.extend(findings[:3])
+        validation_artifacts = []
+        if referenced_files:
+            validation_artifacts.append(
+                f"Artifact-only read-only audit captured findings from {', '.join(referenced_files[:4])}."
+            )
+        validation_artifacts.append("Findings were recorded in handoff_markdown and harness progress fields.")
+
+        summary_text = self._truncate_text(" | ".join(findings[:2]), max_chars=220)
+        handoff_lines = [
+            "# Read-only audit handoff",
+            "",
+            "## Summary",
+            summary_text or "Completed a read-only artifact audit.",
+            "",
+        ]
+        if referenced_files:
+            handoff_lines.append("## Referenced files")
+            handoff_lines.extend(f"- `{path}`" for path in referenced_files[:6])
+            handoff_lines.append("")
+        handoff_lines.append("## Findings")
+        handoff_lines.extend(f"- {item}" for item in findings)
+
+        return {
+            "action": "generator_update",
+            "progress": {
+                "summary": summary_text or "Completed the read-only sprint with grounded audit findings.",
+                "last_validation": "Completed an artifact-only read-only audit over the referenced file excerpts.",
+                "validation_checks": validation_checks[:6],
+                "validation_artifacts": validation_artifacts[:4],
+                "acceptance_evidence": acceptance_evidence,
+                "touched_files": referenced_files[:6],
+                "current_phase": "implementation",
+            },
+            "handoff_markdown": "\n".join(handoff_lines),
+            "sprint_status": "implemented",
         }
 
     def can_use_harness_structured_evaluator(self, project_path: Optional[str] = None) -> bool:
@@ -1081,6 +1511,122 @@ class AppState:
         text = str(value).strip()
         return [text] if text else []
 
+    @classmethod
+    def _normalize_contract_list(cls, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return cls._normalize_string_list(value)
+        if isinstance(value, (list, tuple, set)):
+            result: list[str] = []
+            for item in value:
+                if isinstance(item, dict):
+                    title = str(item.get("title") or item.get("id") or "").strip()
+                    description = str(item.get("description") or item.get("objective") or "").strip()
+                    acceptance = str(item.get("acceptance") or "").strip()
+                    parts = [part for part in (title, description) if part]
+                    text = ": ".join(parts) if parts else ""
+                    if acceptance:
+                        text = f"{text} Acceptance: {acceptance}" if text else f"Acceptance: {acceptance}"
+                    text = cls._truncate_text(text, max_chars=320)
+                    if text:
+                        result.append(text)
+                    continue
+                text = cls._truncate_text(str(item).strip(), max_chars=320)
+                if text:
+                    result.append(text)
+            return result
+        text = cls._truncate_text(str(value).strip(), max_chars=320)
+        return [text] if text else []
+
+    @staticmethod
+    def _is_read_only_harness_request(*texts: str) -> bool:
+        combined = " ".join(str(text or "").strip().lower() for text in texts if str(text or "").strip())
+        if not combined:
+            return False
+        tokens = (
+            "read-only",
+            "read files only",
+            "do not modify repository files",
+            "do not modify files",
+            "capture findings through harness summary and handoff artifacts only",
+            "read-only objective",
+        )
+        return any(token in combined for token in tokens)
+
+    @classmethod
+    def _sanitize_read_only_contract(
+        cls,
+        *,
+        user_request: str,
+        objective: str,
+        feature_name: str,
+        deliverables: list[str],
+        acceptance_checks: list[str],
+        evaluator_focus: list[str],
+    ) -> tuple[str, list[str], list[str], list[str], bool]:
+        if not cls._is_read_only_harness_request(user_request, objective, feature_name):
+            return objective, deliverables, acceptance_checks, evaluator_focus, False
+
+        write_tokens = (
+            "create ",
+            "write ",
+            "modify ",
+            "update ",
+            "edit ",
+            "patch ",
+            "implement ",
+            "test file",
+            "test files",
+            "unit test",
+            "pytest",
+            "script/",
+            "scripts/",
+            "production code",
+            "code change",
+        )
+
+        def keep_item(text: str) -> bool:
+            lowered = text.lower()
+            return not any(token in lowered for token in write_tokens)
+
+        sanitized_deliverables = [item for item in deliverables if keep_item(item)][:4]
+        sanitized_acceptance = [item for item in acceptance_checks if keep_item(item)][:6]
+        sanitized_focus = [item for item in evaluator_focus if keep_item(item)][:5]
+
+        sanitized_objective = objective.strip()
+        if sanitized_objective and "read-only" not in sanitized_objective.lower():
+            sanitized_objective = f"Read-only audit. {sanitized_objective}"
+
+        if not sanitized_deliverables:
+            sanitized_deliverables = [
+                "Inspect only the referenced files and capture grounded findings in harness handoff or progress artifacts.",
+                "Record concise file evidence and line references for the accepted findings.",
+            ]
+
+        if not sanitized_acceptance:
+            sanitized_acceptance = [
+                "Handoff or progress artifacts reference the audited files by name.",
+                "Findings distinguish the requested behaviors with concrete code evidence.",
+                "No repository files are modified; the sprint stays read-only.",
+            ]
+        elif not any("read-only" in item.lower() or "no repository files" in item.lower() for item in sanitized_acceptance):
+            sanitized_acceptance.append("No repository files are modified; the sprint stays read-only.")
+
+        if not sanitized_focus:
+            sanitized_focus = [
+                "Verify the findings are grounded in the audited files with direct evidence.",
+                "Reject the sprint if it introduced file modifications or test-writing work.",
+            ]
+
+        changed = (
+            sanitized_objective != objective
+            or sanitized_deliverables != deliverables
+            or sanitized_acceptance != acceptance_checks
+            or sanitized_focus != evaluator_focus
+        )
+        return sanitized_objective, sanitized_deliverables, sanitized_acceptance, sanitized_focus, changed
+
     @staticmethod
     def _normalize_string_mapping(value: Any) -> dict[str, str]:
         if value is None:
@@ -1236,26 +1782,51 @@ class AppState:
                 sprint_id = str(contract_data.get("sprint_id") or current_contract.sprint_id).strip()
                 objective = str(contract_data.get("objective") or current_contract.objective).strip()
                 feature_name = str(contract_data.get("feature_name") or current_contract.feature_name).strip()
+                deliverables = self._normalize_contract_list(
+                    contract_data.get("deliverables", current_contract.deliverables)
+                )
+                acceptance_checks = self._normalize_contract_list(
+                    contract_data.get("acceptance_checks", current_contract.acceptance_checks)
+                )
+                evaluator_focus = self._normalize_contract_list(
+                    contract_data.get("evaluator_focus", current_contract.evaluator_focus)
+                )
+                objective, deliverables, acceptance_checks, evaluator_focus, contract_sanitized = (
+                    self._sanitize_read_only_contract(
+                        user_request=user_request,
+                        objective=objective,
+                        feature_name=feature_name,
+                        deliverables=deliverables,
+                        acceptance_checks=acceptance_checks,
+                        evaluator_focus=evaluator_focus,
+                    )
+                )
                 if sprint_id and objective:
                     harness.set_active_sprint(
                         sprint_id=sprint_id,
                         feature_name=feature_name,
                         objective=objective,
-                        deliverables=self._normalize_string_list(
-                            contract_data.get("deliverables", current_contract.deliverables)
-                        ),
-                        acceptance_checks=self._normalize_string_list(
-                            contract_data.get("acceptance_checks", current_contract.acceptance_checks)
-                        ),
-                        evaluator_focus=self._normalize_string_list(
-                            contract_data.get("evaluator_focus", current_contract.evaluator_focus)
-                        ),
+                        deliverables=deliverables,
+                        acceptance_checks=acceptance_checks,
+                        evaluator_focus=evaluator_focus,
                         status=self.normalize_harness_contract_status(
                             str(contract_data.get("status") or current_contract.status or "proposed").strip(),
                             session_role="planner",
                         ) or "proposed",
                         role="planner",
                     )
+                    if contract_sanitized:
+                        harness.append_run_event(
+                            "planner_contract_sanitized",
+                            {
+                                "sprint_id": sprint_id,
+                                "feature_name": feature_name,
+                                "objective": objective,
+                                "deliverables": deliverables,
+                                "acceptance_checks": acceptance_checks,
+                                "evaluator_focus": evaluator_focus,
+                            },
+                        )
                 elif contract_data:
                     contract_updates: dict[str, Any] = {}
                     for key in ("sprint_id", "feature_name", "objective", "status"):
@@ -1264,9 +1835,12 @@ class AppState:
                             if key == "status":
                                 value = self.normalize_harness_contract_status(value, session_role="planner")
                             contract_updates[key] = value
-                    for key in ("deliverables", "acceptance_checks", "evaluator_focus"):
-                        if key in contract_data:
-                            contract_updates[key] = self._normalize_string_list(contract_data.get(key))
+                    if "deliverables" in contract_data:
+                        contract_updates["deliverables"] = deliverables
+                    if "acceptance_checks" in contract_data:
+                        contract_updates["acceptance_checks"] = acceptance_checks
+                    if "evaluator_focus" in contract_data:
+                        contract_updates["evaluator_focus"] = evaluator_focus
                     if contract_updates:
                         harness.update_sprint_contract(**contract_updates)
 
@@ -1307,6 +1881,7 @@ class AppState:
         if action == "generator_update":
             progress_data = payload.get("progress") or {}
             progress_updates: dict[str, Any] = {"active_role": "generator"}
+            current_contract = harness.read_sprint_contract()
             if isinstance(progress_data, dict):
                 for key in ("summary", "product_goal", "last_validation"):
                     value = str(progress_data.get(key) or "").strip()
@@ -1316,8 +1891,12 @@ class AppState:
                     if key in progress_data:
                         progress_updates[key] = self._normalize_string_list(progress_data.get(key))
                 if "acceptance_evidence" in progress_data:
-                    progress_updates["acceptance_evidence"] = self._normalize_string_mapping(
-                        progress_data.get("acceptance_evidence")
+                    normalized_evidence = self._normalize_string_mapping(progress_data.get("acceptance_evidence"))
+                    progress_updates["acceptance_evidence"] = self.align_acceptance_evidence_to_contract(
+                        acceptance_checks=self._normalize_string_list(current_contract.acceptance_checks),
+                        evidence=normalized_evidence,
+                        objective=str(current_contract.objective or ""),
+                        user_request=user_request,
                     )
                 current_phase = str(progress_data.get("current_phase") or "implementation").strip()
                 if current_phase:
@@ -2006,8 +2585,11 @@ class AppState:
 
         normalized_role = self.normalize_session_role("code", session_role)
         evaluation_mode = "full"
+        generator_mode = "full"
         if normalized_role == "evaluator":
             evaluation_mode = self.get_harness_evaluator_strategy(project_path)
+        elif normalized_role == "generator":
+            generator_mode = self.get_harness_generator_strategy(project_path, prompt)
 
         if normalized_role == "evaluator" and evaluation_mode in {"artifacts", "structured"}:
             prechecked_payload = self.precheck_harness_evaluator_payload(
@@ -2036,7 +2618,11 @@ class AppState:
                     "prechecked": True,
                 }
 
-        if evaluation_mode == "artifacts":
+        if normalized_role == "generator" and generator_mode == "artifacts":
+            effective_prompt = self.build_harness_generator_artifact_prompt(project_path, prompt)
+            allowed_tools = []
+            max_tokens_override = self.get_harness_generator_artifact_max_tokens()
+        elif evaluation_mode == "artifacts":
             effective_prompt = self.build_harness_evaluator_artifact_prompt(project_path)
             allowed_tools = []
             max_tokens_override = self.get_harness_evaluator_artifact_max_tokens()
@@ -2078,7 +2664,7 @@ class AppState:
                         session_role=session_role,
                     )
                     if parse_error:
-                        if evaluation_mode in {"artifacts", "structured"}:
+                        if evaluation_mode in {"artifacts", "structured"} or generator_mode == "artifacts":
                             deferred_parse_error = parse_error
                         elif not error:
                             error = parse_error
@@ -2100,6 +2686,15 @@ class AppState:
                     session.cancel()
         finally:
             timeout_stop.set()
+
+        if not error and pending_harness_payload is None and normalized_role == "generator" and generator_mode == "artifacts":
+            inferred_payload = self.infer_generator_artifact_payload(
+                project_path=project_path,
+                text="\n\n".join(collected_text).strip(),
+                prompt=effective_prompt,
+            )
+            if inferred_payload is not None:
+                pending_harness_payload = inferred_payload
 
         if not error and pending_harness_payload is None and evaluation_mode in {"artifacts", "structured"}:
             inferred_payload = self.infer_evidence_only_evaluator_payload(
@@ -2137,8 +2732,9 @@ class AppState:
             "backend_type": spec.backend_type,
             "model": spec.model,
             "timed_out": timed_out,
-            "artifact_only": evaluation_mode == "artifacts",
+            "artifact_only": evaluation_mode == "artifacts" or generator_mode == "artifacts",
             "evaluation_mode": evaluation_mode,
+            "role_mode": generator_mode if normalized_role == "generator" else evaluation_mode,
             "prechecked": False,
         }
 

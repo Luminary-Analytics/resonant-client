@@ -47,6 +47,7 @@ class HarnessCycleStep:
     auto_transition: str = ""
     steps: int = 0
     evaluation_mode: str = ""
+    role_mode: str = ""
     prechecked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +65,7 @@ class HarnessCycleStep:
             "auto_transition": self.auto_transition,
             "steps": self.steps,
             "evaluation_mode": self.evaluation_mode,
+            "role_mode": self.role_mode,
             "prechecked": self.prechecked,
         }
 
@@ -255,6 +257,7 @@ class HarnessOrchestrator:
                     step.error = str(result.get("error") or "")
                     step.steps = int(result.get("steps") or 0)
                     step.evaluation_mode = str(result.get("evaluation_mode") or "")
+                    step.role_mode = str(result.get("role_mode") or "")
                     step.prechecked = bool(result.get("prechecked"))
                     step.status = "failed" if step.error else "completed"
                 except Exception as exc:
@@ -304,6 +307,7 @@ class HarnessOrchestrator:
                         "backend_type": step.backend_type,
                         "model": step.model,
                         "evaluation_mode": step.evaluation_mode,
+                        "role_mode": step.role_mode,
                         "prechecked": step.prechecked,
                         "contract_status": summary_after.get("contract_status", ""),
                         "evaluator_verdict": summary_after.get("evaluator_verdict", ""),
@@ -529,6 +533,9 @@ class HarnessOrchestrator:
             retry_step.result = str(result.get("result") or "")
             retry_step.error = str(result.get("error") or "")
             retry_step.steps = int(result.get("steps") or 0)
+            retry_step.evaluation_mode = str(result.get("evaluation_mode") or "")
+            retry_step.role_mode = str(result.get("role_mode") or "")
+            retry_step.prechecked = bool(result.get("prechecked"))
             retry_step.status = "failed" if retry_step.error else "completed"
         except Exception as exc:
             retry_step.error = str(exc)
@@ -548,6 +555,9 @@ class HarnessOrchestrator:
                 "retry_model": retry_model,
                 "status": retry_step.status,
                 "error": retry_step.error,
+                "evaluation_mode": retry_step.evaluation_mode,
+                "role_mode": retry_step.role_mode,
+                "prechecked": retry_step.prechecked,
                 "contract_status": summary_retry.get("contract_status", ""),
                 "evaluator_verdict": summary_retry.get("evaluator_verdict", ""),
             },
@@ -559,19 +569,20 @@ class HarnessOrchestrator:
 
     @staticmethod
     def _is_retryable_failure(*, role: str, error: str) -> bool:
-        if role != "evaluator":
-            return False
         lowered = str(error or "").lower()
-        return any(
-            token in lowered
-            for token in (
-                "timed out",
-                "timeout",
-                "interrupted",
-                "cli error",
-                "no resonant-harness update",
-            )
+        common_retry_tokens = (
+            "timed out",
+            "timeout",
+            "interrupted",
+            "cli error",
+            "no resonant-harness update",
+            "doom loop",
         )
+        if role == "evaluator":
+            return any(token in lowered for token in common_retry_tokens)
+        if role == "generator":
+            return any(token in lowered for token in common_retry_tokens)
+        return False
 
     @staticmethod
     def _summary_signature(summary: dict[str, Any]) -> str:

@@ -369,7 +369,7 @@ class AppState:
 
     def get_harness_generator_mode(self) -> str:
         raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_MODE", "hybrid") or "").strip().lower()
-        if raw in {"full", "artifacts", "structured", "hybrid"}:
+        if raw in {"full", "artifacts", "patch", "structured", "hybrid"}:
             return raw
         return "hybrid"
 
@@ -394,6 +394,17 @@ class AppState:
             except ValueError:
                 pass
         return 1024
+
+    def get_harness_generator_patch_max_tokens(self) -> int:
+        raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_PATCH_MAX_TOKENS", "") or "").strip()
+        if raw:
+            try:
+                value = int(raw)
+                if value > 0:
+                    return value
+            except ValueError:
+                pass
+        return 768
 
     def should_use_harness_artifact_evaluator(self, project_path: Optional[str] = None) -> bool:
         mode = self.get_harness_evaluator_mode()
@@ -700,6 +711,8 @@ class AppState:
         mode = self.get_harness_generator_mode()
         if self.should_use_harness_generator_artifact_mode(project_path, prompt):
             return "artifacts"
+        if mode in {"patch", "structured", "hybrid"} and self.can_use_harness_generator_patch_mode(project_path, prompt):
+            return "patch"
         if mode in {"structured", "hybrid"} and self.should_use_harness_generator_structured_mode(project_path, prompt):
             return "structured"
         return "full"
@@ -815,6 +828,73 @@ class AppState:
             "acceptance_evidence": acceptance_evidence,
             "acceptance_check_coverage": coverage,
         }
+
+    def can_use_harness_generator_patch_mode(
+        self,
+        project_path: Optional[str] = None,
+        prompt: str = "",
+    ) -> bool:
+        if not self.should_use_harness_generator_structured_mode(project_path, prompt):
+            return False
+        bundle = self.build_harness_generator_structured_bundle(project_path, prompt)
+        files = bundle.get("files") or []
+        if len(files) != 1:
+            return False
+        file_item = files[0]
+        if not bool(file_item.get("exists")):
+            return False
+        resolved_path = Path(str(file_item.get("resolved_path") or ""))
+        try:
+            return resolved_path.stat().st_size <= 9000
+        except OSError:
+            return False
+
+    def build_harness_generator_patch_prompt(
+        self,
+        project_path: Optional[str] = None,
+        prompt: str = "",
+    ) -> str:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        bundle = self.build_harness_generator_structured_bundle(target_path, prompt)
+        summary = bundle["summary"]
+        file_item = (bundle.get("files") or [{}])[0]
+        resolved_path = Path(str(file_item.get("resolved_path") or ""))
+        file_context = self._format_numbered_excerpt(resolved_path, max_lines=180, max_chars=7000)
+        checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        deliverables = self._normalize_string_list(summary.get("deliverables"))
+
+        lines = [
+            "Single-file patch generator mode.",
+            "Make the smallest patch that satisfies the sprint.",
+            "Edit only the target file shown below.",
+            "Do not explore the repo or open unrelated files.",
+            "Use file_edit for the patch and at most one cheap bash validation command if it is obvious.",
+            "If the file context below is insufficient or the change needs another file, stop and record a blocker instead.",
+            "",
+            f"Target file: {file_item.get('path') or '(unknown)'}",
+            f"Active sprint: {summary['active_sprint_id'] or 'none'}",
+            f"Objective: {summary['contract_objective'] or 'none'}",
+            "",
+            "Deliverables:",
+        ]
+        lines.extend(f"- {item}" for item in deliverables[:4] or ["(none)"])
+        lines.extend(["", "Acceptance checks:"])
+        lines.extend(f"- {item}" for item in checks[:6] or ["(none)"])
+        lines.extend(
+            [
+                "",
+                "Required output behavior:",
+                "- apply the patch directly",
+                "- record the exact touched file",
+                "- record one concise validation summary",
+                "- map satisfied checks into acceptance_evidence",
+                "- finish with a valid ```resonant-harness JSON block for generator_update",
+                "",
+                "Target file contents:",
+                file_context or "[missing file excerpt]",
+            ]
+        )
+        return "\n".join(lines)
 
     def build_harness_generator_structured_prompt(
         self,
@@ -3072,6 +3152,10 @@ class AppState:
             effective_prompt = self.build_harness_generator_artifact_prompt(project_path, prompt)
             allowed_tools = []
             max_tokens_override = self.get_harness_generator_artifact_max_tokens()
+        elif normalized_role == "generator" and generator_mode == "patch":
+            effective_prompt = self.build_harness_generator_patch_prompt(project_path, prompt)
+            allowed_tools = self._filter_tool_definitions(["file_edit", "bash"])
+            max_tokens_override = self.get_harness_generator_patch_max_tokens()
         elif normalized_role == "generator" and generator_mode == "structured":
             effective_prompt = self.build_harness_generator_structured_prompt(project_path, prompt)
             allowed_tools = self._filter_tool_definitions(["file_read", "file_edit", "bash"])
@@ -3118,7 +3202,7 @@ class AppState:
                         session_role=session_role,
                     )
                     if parse_error:
-                        if evaluation_mode in {"artifacts", "structured"} or generator_mode in {"artifacts", "structured"}:
+                        if evaluation_mode in {"artifacts", "structured"} or generator_mode in {"artifacts", "patch", "structured"}:
                             deferred_parse_error = parse_error
                         elif not error:
                             error = parse_error
@@ -3149,7 +3233,7 @@ class AppState:
             )
             if inferred_payload is not None:
                 pending_harness_payload = inferred_payload
-        if not error and pending_harness_payload is None and normalized_role == "generator" and generator_mode == "structured":
+        if not error and pending_harness_payload is None and normalized_role == "generator" and generator_mode in {"patch", "structured"}:
             inferred_payload = self.infer_generator_structured_payload(
                 project_path=project_path,
                 text="\n\n".join(collected_text).strip(),

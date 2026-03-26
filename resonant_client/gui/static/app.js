@@ -816,19 +816,32 @@ class ResonantApp {
             if (this.settingsView) this.settingsView.style.display = 'none';
             if (this.scheduleView) this.scheduleView.style.display = 'none';
             if (this.dispatchView) this.dispatchView.style.display = 'none';
-            // Hide sidebar session list and search
+            // Hide sidebar elements that don't apply in command mode
             const sessionList = document.getElementById('session-list');
             if (sessionList) sessionList.style.display = 'none';
             const search = document.querySelector('.sidebar-search');
             if (search) search.style.display = 'none';
             const pf = document.getElementById('sidebar-project-filter');
             if (pf) pf.style.display = 'none';
+            const newBtn = document.getElementById('new-session-btn');
+            if (newBtn) newBtn.style.display = 'none';
+            // Hide sidebar nav items to prevent accidental view switching
+            document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el => {
+                el.style.display = 'none';
+            });
             this.currentView = 'command';
-            document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
-                el.classList.remove('active'));
             this.requestCommandFleet();
             return;
         }
+
+        // Restore sidebar elements when leaving command mode
+        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el => {
+            el.style.display = '';
+        });
+        const sessionList = document.getElementById('session-list');
+        if (sessionList) sessionList.style.display = '';
+        const search = document.querySelector('.sidebar-search');
+        if (search) search.style.display = '';
 
         // Toggle sidebar content — project filter vs chat groups
         const projectFilter = document.getElementById('sidebar-project-filter');
@@ -837,6 +850,7 @@ class ResonantApp {
         // Update "New Session" / "New Chat" label
         const newBtn = document.getElementById('new-session-btn');
         if (newBtn) {
+            newBtn.style.display = '';
             const label = newBtn.querySelector('span');
             if (label) label.textContent = mode === 'chat' ? 'New Chat' : 'New Session';
         }
@@ -1465,6 +1479,33 @@ class ResonantApp {
                 break;
             case 'command_spawn_ok':
                 this.requestCommandFleet();
+                break;
+            case 'command_task_list':
+                this.commandTasks = event.tasks || [];
+                if (this.sessionMode === 'command' && this.commandPanel === 'tasks') {
+                    this.renderCommandTasks();
+                }
+                break;
+            case 'command_task_created':
+                this.requestCommandFleet(); // refresh fleet too
+                break;
+            case 'command_agent_event':
+                this.handleCommandAgentEvent(event);
+                break;
+            case 'command_agent_history':
+                this.handleCommandAgentHistory(event);
+                break;
+            case 'command_feed_list':
+                this.commandFeed = event.messages || [];
+                if (this.sessionMode === 'command' && this.commandPanel === 'comms') {
+                    this.renderCommandComms();
+                }
+                break;
+            case 'command_feed_posted':
+                this.commandFeed.push(event.message);
+                if (this.sessionMode === 'command' && this.commandPanel === 'comms') {
+                    this.renderCommandComms();
+                }
                 break;
             case 'mcp_list':
                 // Refresh settings view if open
@@ -4728,7 +4769,12 @@ class ResonantApp {
         if (target) target.style.display = 'flex';
 
         // Refresh data for the panel
-        if (panel === 'fleet') this.requestCommandFleet();
+        switch (panel) {
+            case 'fleet': this.requestCommandFleet(); break;
+            case 'tasks': this.send({ command: 'command_task_list' }); break;
+            case 'monitor': this.renderCommandMonitor(); break;
+            case 'comms': this.send({ command: 'command_feed_list' }); break;
+        }
     }
 
     requestCommandFleet() {
@@ -4834,6 +4880,287 @@ class ResonantApp {
             }
         });
         document.getElementById('spawn-cancel-btn')?.addEventListener('click', () => this.renderCommandFleet());
+    }
+
+    // ── Command Center: Task Board ────────────────────────────────
+
+    renderCommandTasks() {
+        const panel = document.getElementById('command-tasks');
+        if (!panel) return;
+
+        const tasks = this.commandTasks;
+        if (!tasks || tasks.length === 0) {
+            panel.innerHTML = `
+                <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+                    <button class="btn-primary btn-sm" id="task-create-btn">+ New Task</button>
+                </div>
+                <div class="feature-empty">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="8" y="6" width="16" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M12 12h8M12 16h8M12 20h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>No tasks yet. Create tasks and assign them to agents.</span>
+                </div>`;
+            panel.querySelector('#task-create-btn')?.addEventListener('click', () => this.showCommandTaskDialog());
+            return;
+        }
+
+        const priorityIcon = { high: '🔴', medium: '🟡', low: '🟢' };
+        const statusBadge = (s) => `<span class="task-status-badge task-status-${s}">${s}</span>`;
+
+        panel.innerHTML = `
+            <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
+                <button class="btn-primary btn-sm" id="task-create-btn">+ New Task</button>
+            </div>
+            <div class="task-list">
+                ${tasks.map(t => `
+                    <div class="task-item" data-id="${t.id}">
+                        <span class="task-priority">${priorityIcon[t.priority] || '⚪'}</span>
+                        <div class="task-info">
+                            <div class="task-title">${this.escapeHtml(t.title)}</div>
+                            ${t.description ? `<div class="task-desc">${this.escapeHtml(t.description).substring(0, 80)}${t.description.length > 80 ? '...' : ''}</div>` : ''}
+                        </div>
+                        ${statusBadge(t.status)}
+                        <div class="task-actions">
+                            ${t.status === 'todo' ? `<button class="btn-sm task-assign-btn" data-id="${t.id}">Assign</button>` : ''}
+                            ${t.assigned_agent_id ? `<span class="task-agent-id">${t.assigned_agent_id}</span>` : ''}
+                            <button class="btn-sm task-delete-btn" data-id="${t.id}" title="Delete">&times;</button>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>`;
+
+        panel.querySelector('#task-create-btn')?.addEventListener('click', () => this.showCommandTaskDialog());
+        panel.querySelectorAll('.task-assign-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.send({ command: 'command_task_assign', task_id: btn.dataset.id });
+            });
+        });
+        panel.querySelectorAll('.task-delete-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.send({ command: 'command_task_delete', id: btn.dataset.id });
+            });
+        });
+    }
+
+    showCommandTaskDialog() {
+        const panel = document.getElementById('command-tasks');
+        if (!panel) return;
+
+        panel.innerHTML = `
+            <div class="spawn-agent-form">
+                <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">Create Task</h3>
+                <div class="settings-row"><label>Title</label>
+                    <input type="text" class="settings-input" id="task-title" placeholder="Task title" /></div>
+                <div class="settings-row"><label>Description</label>
+                    <textarea class="settings-input" id="task-desc" rows="4" placeholder="Detailed instructions for the agent"></textarea></div>
+                <div class="settings-row"><label>Priority</label>
+                    <select class="settings-input" id="task-priority">
+                        <option value="high">High</option>
+                        <option value="medium" selected>Medium</option>
+                        <option value="low">Low</option>
+                    </select></div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                    <button class="btn-primary btn-sm" id="task-submit-btn">Create Task</button>
+                    <button class="btn-sm" id="task-cancel-btn">Cancel</button>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('task-submit-btn')?.addEventListener('click', () => {
+            const title = document.getElementById('task-title')?.value?.trim();
+            if (title) {
+                this.send({
+                    command: 'command_task_create',
+                    title,
+                    description: document.getElementById('task-desc')?.value || '',
+                    priority: document.getElementById('task-priority')?.value || 'medium',
+                });
+            }
+        });
+        document.getElementById('task-cancel-btn')?.addEventListener('click', () => {
+            this.send({ command: 'command_task_list' });
+        });
+    }
+
+    // ── Command Center: Live Monitor ────────────────────────────
+
+    renderCommandMonitor() {
+        const panel = document.getElementById('command-monitor');
+        if (!panel) return;
+
+        const agents = this.commandAgents.filter(a => a.status === 'running' || a.status === 'pending');
+        const allAgents = this.commandAgents;
+
+        if (allAgents.length === 0) {
+            panel.innerHTML = `
+                <div class="feature-empty">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="4" y="6" width="24" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M10 26h12M16 22v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 14l4-3 4 5 4-4 4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span>No agents to monitor. Spawn agents from the Fleet panel first.</span>
+                </div>`;
+            return;
+        }
+
+        const selected = this.commandMonitorAgent || (agents[0] || allAgents[0])?.id || '';
+
+        panel.innerHTML = `
+            <div class="monitor-layout">
+                <div class="monitor-sidebar">
+                    <div class="monitor-sidebar-title">Agents</div>
+                    ${allAgents.map(a => `
+                        <div class="monitor-agent-item ${a.id === selected ? 'active' : ''}" data-id="${a.id}">
+                            <span class="agent-status-dot ${a.status}"></span>
+                            <span class="monitor-agent-name">${this.escapeHtml(a.name || a.id)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="monitor-feed" id="monitor-feed">
+                    <div class="monitor-stats" id="monitor-stats"></div>
+                    <div class="monitor-events" id="monitor-events">
+                        <div style="color:var(--dim);padding:20px;text-align:center">
+                            ${selected ? 'Loading events...' : 'Select an agent to monitor'}
+                        </div>
+                    </div>
+                </div>
+            </div>`;
+
+        // Bind agent selection
+        panel.querySelectorAll('.monitor-agent-item').forEach(item => {
+            item.addEventListener('click', () => {
+                // Unsubscribe from previous
+                if (this.commandMonitorAgent) {
+                    this.send({ command: 'command_monitor_unsubscribe', task_id: this.commandMonitorAgent });
+                }
+                this.commandMonitorAgent = item.dataset.id;
+                this.renderCommandMonitor();
+                // Subscribe to new
+                this.send({ command: 'command_monitor_subscribe', task_id: item.dataset.id });
+            });
+        });
+
+        // Auto-subscribe if selected
+        if (selected) {
+            this.commandMonitorAgent = selected;
+            this.send({ command: 'command_monitor_subscribe', task_id: selected });
+        }
+    }
+
+    handleCommandAgentEvent(event) {
+        const eventsEl = document.getElementById('monitor-events');
+        if (!eventsEl || event.task_id !== this.commandMonitorAgent) return;
+
+        // Clear "Loading events..." placeholder
+        if (eventsEl.querySelector('[style*="text-align:center"]')) {
+            eventsEl.innerHTML = '';
+        }
+
+        const eventType = event.event || '';
+        let html = '';
+
+        if (eventType === 'tool_call') {
+            const name = event.name || 'tool';
+            const args = event.args ? JSON.stringify(event.args).substring(0, 120) : '';
+            html = `<div class="monitor-event tool-call"><span class="me-label">⚡ ${this.escapeHtml(name)}</span><span class="me-detail">${this.escapeHtml(args)}</span></div>`;
+        } else if (eventType === 'tool_result') {
+            const result = (event.result || '').substring(0, 150);
+            html = `<div class="monitor-event tool-result"><span class="me-label">↩ result</span><span class="me-detail">${this.escapeHtml(result)}</span></div>`;
+        } else if (eventType === 'text.done') {
+            const text = (event.text || '').substring(0, 200);
+            html = `<div class="monitor-event text-done"><span class="me-label">💬</span><span class="me-detail">${this.escapeHtml(text)}</span></div>`;
+        } else if (eventType === 'step.start') {
+            html = `<div class="monitor-event step-marker">── Step ${event.step || ''} ──</div>`;
+        } else if (eventType === 'step.end') {
+            html = `<div class="monitor-event step-marker">── Step complete ──</div>`;
+        } else if (eventType === 'error') {
+            html = `<div class="monitor-event error-event">✗ ${this.escapeHtml(event.message || 'Error')}</div>`;
+        }
+
+        if (html) {
+            eventsEl.insertAdjacentHTML('beforeend', html);
+            eventsEl.scrollTop = eventsEl.scrollHeight;
+        }
+    }
+
+    handleCommandAgentHistory(event) {
+        const eventsEl = document.getElementById('monitor-events');
+        const statsEl = document.getElementById('monitor-stats');
+        if (!eventsEl || event.task_id !== this.commandMonitorAgent) return;
+
+        // Update stats
+        if (statsEl) {
+            statsEl.innerHTML = `
+                <span>Status: <strong>${event.status || 'unknown'}</strong></span>
+                <span>Steps: <strong>${event.steps || 0}</strong></span>
+                <span>Elapsed: <strong>${event.elapsed || 0}s</strong></span>
+            `;
+        }
+
+        // Replay recent events
+        eventsEl.innerHTML = '';
+        const events = event.events || [];
+        // Only show last 50 events for performance
+        const recent = events.slice(-50);
+        for (const evt of recent) {
+            this.handleCommandAgentEvent({ ...evt, task_id: event.task_id });
+        }
+    }
+
+    // ── Command Center: Comms Feed ──────────────────────────────
+
+    renderCommandComms() {
+        const panel = document.getElementById('command-comms');
+        if (!panel) return;
+
+        const messages = this.commandFeed;
+
+        const senderIcon = (type) => {
+            if (type === 'user') return '👤';
+            if (type === 'agent') return '🤖';
+            return 'ℹ️';
+        };
+
+        panel.innerHTML = `
+            <div class="comms-feed" id="comms-feed">
+                ${messages.length === 0 ? '<div style="color:var(--dim);text-align:center;padding:40px">No messages yet. Send a broadcast to your agents.</div>' : ''}
+                ${messages.map(m => `
+                    <div class="comms-message comms-${m.sender_type}">
+                        <span class="comms-icon">${senderIcon(m.sender_type)}</span>
+                        <div class="comms-body">
+                            <div class="comms-header">
+                                <span class="comms-sender">${this.escapeHtml(m.sender_name || m.sender_id)}</span>
+                                <span class="comms-time">${new Date(m.timestamp).toLocaleTimeString()}</span>
+                                ${m.target !== 'all' ? `<span class="comms-target">→ ${m.target}</span>` : ''}
+                            </div>
+                            <div class="comms-content">${this.escapeHtml(m.content)}</div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+            <div class="comms-input-bar">
+                <textarea class="settings-input" id="comms-input" rows="2" placeholder="Broadcast a message to all agents..."></textarea>
+                <button class="btn-primary btn-sm" id="comms-send-btn">Send</button>
+            </div>`;
+
+        // Scroll feed to bottom
+        const feed = document.getElementById('comms-feed');
+        if (feed) feed.scrollTop = feed.scrollHeight;
+
+        // Send button
+        document.getElementById('comms-send-btn')?.addEventListener('click', () => {
+            const input = document.getElementById('comms-input');
+            const content = input?.value?.trim();
+            if (content) {
+                this.send({ command: 'command_feed_post', content, target: 'all' });
+                input.value = '';
+            }
+        });
+
+        // Enter to send (Shift+Enter for newline)
+        document.getElementById('comms-input')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                document.getElementById('comms-send-btn')?.click();
+            }
+        });
     }
 
     // ── Context Compression ─────────────────────────────────────

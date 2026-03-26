@@ -55,6 +55,7 @@ class BackgroundTask:
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False, compare=False)
     session_factory: Optional[Callable[["BackgroundTask"], Any]] = field(default=None, repr=False, compare=False)
     session: Any = field(default=None, repr=False, compare=False)
+    on_event: Optional[Callable] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if not self.created_at:
@@ -114,6 +115,7 @@ class TaskRunner:
         session_mode: str = "code",
         session_role: str = "generator",
         backend_spec: Optional[dict[str, Any]] = None,
+        on_event: Optional[Callable] = None,
     ) -> BackgroundTask:
         """Submit a new background task. Returns the task object."""
         task = BackgroundTask(
@@ -127,6 +129,7 @@ class TaskRunner:
             session_role=session_role,
             backend_spec=backend_spec or {},
             session_factory=session_factory,
+            on_event=on_event,
         )
 
         with self._lock:
@@ -159,6 +162,13 @@ class TaskRunner:
             for event in session.run(task.prompt):
                 event_type = event.get("event", "")
                 task.display_events.append(event)
+
+                # Stream event to live monitor if callback is set
+                if task.on_event:
+                    try:
+                        task.on_event(task.id, event)
+                    except Exception:
+                        pass
 
                 if event_type == "text.done":
                     text = event.get("text", "")

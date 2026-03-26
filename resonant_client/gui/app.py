@@ -18,7 +18,8 @@ import threading
 import time
 import difflib
 from pathlib import Path
-from datetime import date
+import uuid
+from datetime import date, datetime
 from typing import Any, Optional
 
 from starlette.applications import Starlette
@@ -37,6 +38,7 @@ from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
 from .project_instructions import load_project_instructions, get_instruction_info
+from .command_tasks import CommandTaskStore
 from .task_runner import TaskRunner
 from .scheduler import Scheduler
 from .runtime import BackendSpec
@@ -106,6 +108,12 @@ class AppState:
         # Background tasks & scheduler
         self.task_runner = TaskRunner()
         self.scheduler = Scheduler(self.task_runner)
+        # Command center
+        self.command_task_store = CommandTaskStore()
+        self.command_feed: list[dict] = []
+        self._ws_ref = None
+        self._ws_loop = None
+        self._monitored_task_ids: set[str] = set()
         self._scheduler_started = False
         # Extension systems
         self.hook_runner = HookRunner(self.settings)
@@ -139,6 +147,18 @@ class AppState:
         self.scheduler.set_backend_factory(lambda _task: self.make_background_session)
         self.scheduler.set_special_executor(self.run_scheduled_task)
         self.apply_project_context(self.project.project_path, refresh_index=True)
+
+    def _push_agent_event(self, task_id: str, event: dict):
+        """Push a live agent event to the frontend via WebSocket (called from worker thread)."""
+        ws = self._ws_ref
+        loop = self._ws_loop
+        if not ws or not loop or task_id not in self._monitored_task_ids:
+            return
+        try:
+            payload = {"event": "command_agent_event", "task_id": task_id, **event}
+            asyncio.run_coroutine_threadsafe(ws.send_json(payload), loop)
+        except Exception:
+            pass
 
     @staticmethod
     def _normalize_path(project_path: str) -> str:
@@ -2416,6 +2436,10 @@ async def websocket_endpoint(ws: WebSocket):
     """Main WebSocket handler — bidirectional communication with frontend."""
     await ws.accept()
 
+    # Store WebSocket ref for live agent event streaming
+    state._ws_ref = ws
+    state._ws_loop = asyncio.get_event_loop()
+
     # Initialize if needed
     if not state.available_backends:
         state.api_url = os.environ.get("RESONANT_API", "http://localhost:8000").rstrip("/")
@@ -3105,10 +3129,114 @@ async def websocket_endpoint(ws: WebSocket):
                         session_mode="code",
                         session_role=state.normalize_session_role("code", session_role),
                         backend_spec=spec.to_dict(),
+                        on_event=state._push_agent_event,
                     )
                     await ws.send_json({"event": "command_spawn_ok", "task": task.to_dict()})
                 except Exception as e:
                     await ws.send_json({"event": "error", "message": f"Failed to spawn agent: {e}"})
+
+            # ── Command Center: Task Board ──────────────────
+            elif command == "command_task_list":
+                tasks = state.command_task_store.list_tasks()
+                await ws.send_json({"event": "command_task_list", "tasks": tasks})
+
+            elif command == "command_task_create":
+                title = msg.get("title", "").strip()
+                if not title:
+                    await ws.send_json({"event": "error", "message": "Task title required"})
+                    continue
+                task = state.command_task_store.create_task(
+                    title=title,
+                    description=msg.get("description", ""),
+                    priority=msg.get("priority", "medium"),
+                    tags=msg.get("tags", []),
+                )
+                await ws.send_json({"event": "command_task_created", "task": task.to_dict()})
+                await ws.send_json({"event": "command_task_list", "tasks": state.command_task_store.list_tasks()})
+
+            elif command == "command_task_update":
+                task_id = msg.get("id", "")
+                updates = {k: v for k, v in msg.items() if k not in ("command", "id")}
+                task = state.command_task_store.update_task(task_id, **updates)
+                if task:
+                    await ws.send_json({"event": "command_task_list", "tasks": state.command_task_store.list_tasks()})
+                else:
+                    await ws.send_json({"event": "error", "message": f"Task {task_id} not found"})
+
+            elif command == "command_task_delete":
+                task_id = msg.get("id", "")
+                state.command_task_store.delete_task(task_id)
+                await ws.send_json({"event": "command_task_list", "tasks": state.command_task_store.list_tasks()})
+
+            elif command == "command_task_assign":
+                task_id = msg.get("task_id", "")
+                ct = state.command_task_store.get_task(task_id)
+                if not ct:
+                    await ws.send_json({"event": "error", "message": f"Task {task_id} not found"})
+                    continue
+                try:
+                    backend_type = getattr(state.backend, "name", "")
+                    model = getattr(state.backend, "model", "")
+                    spec = state.build_backend_spec(backend_type, model=model or None, project_path=state.project.project_path)
+                    bg_task = state.task_runner.submit(
+                        name=ct.title,
+                        prompt=ct.description or ct.title,
+                        session_factory=state.make_background_session,
+                        backend_type=backend_type,
+                        model=spec.model,
+                        project_path=state.project.project_path,
+                        session_mode="code",
+                        session_role="generator",
+                        backend_spec=spec.to_dict(),
+                        on_event=state._push_agent_event,
+                    )
+                    state.command_task_store.update_task(task_id, status="running", assigned_agent_id=bg_task.id)
+                    await ws.send_json({"event": "command_task_list", "tasks": state.command_task_store.list_tasks()})
+                    await ws.send_json({"event": "command_spawn_ok", "task": bg_task.to_dict()})
+                except Exception as e:
+                    await ws.send_json({"event": "error", "message": f"Failed to assign task: {e}"})
+
+            # ── Command Center: Monitor ──────────────────────
+            elif command == "command_monitor_subscribe":
+                task_id = msg.get("task_id", "")
+                state._monitored_task_ids.add(task_id)
+                # Send existing events for catch-up
+                bg_task = state.task_runner.get_task(task_id)
+                if bg_task:
+                    await ws.send_json({
+                        "event": "command_agent_history",
+                        "task_id": task_id,
+                        "events": bg_task.display_events[-200:],  # last 200 events
+                        "status": bg_task.status.value,
+                        "steps": bg_task.steps,
+                        "elapsed": round(bg_task.elapsed, 2),
+                    })
+
+            elif command == "command_monitor_unsubscribe":
+                task_id = msg.get("task_id", "")
+                state._monitored_task_ids.discard(task_id)
+
+            # ── Command Center: Comms Feed ───────────────────
+            elif command == "command_feed_list":
+                limit = msg.get("limit", 100)
+                await ws.send_json({"event": "command_feed_list", "messages": state.command_feed[-limit:]})
+
+            elif command == "command_feed_post":
+                content = msg.get("content", "").strip()
+                target = msg.get("target", "all")
+                if content:
+                    feed_msg = {
+                        "id": uuid.uuid4().hex[:12],
+                        "timestamp": datetime.now().isoformat(),
+                        "sender_type": "user",
+                        "sender_id": "user",
+                        "sender_name": "You",
+                        "target": target,
+                        "content": content,
+                        "message_type": "broadcast" if target == "all" else "instruction",
+                    }
+                    state.command_feed.append(feed_msg)
+                    await ws.send_json({"event": "command_feed_posted", "message": feed_msg})
 
             # ── Scheduled Tasks ──────────────────────────────
             elif command == "schedule_create":

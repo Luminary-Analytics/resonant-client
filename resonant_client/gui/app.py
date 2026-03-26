@@ -547,10 +547,9 @@ class AppState:
         blockers = self._normalize_string_list(summary.get("blockers"))
         next_steps = self._normalize_string_list(summary.get("next_steps"))
         checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
         revisions = self._normalize_string_list(summary.get("required_revisions"))
-        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
         touched_files = self._normalize_string_list(summary.get("touched_files"))
-        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
 
         if checks:
             lines.append("Acceptance checks:")
@@ -1202,6 +1201,7 @@ class AppState:
         blockers = self._normalize_string_list(summary.get("blockers"))
         next_steps = self._normalize_string_list(summary.get("next_steps"))
         checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
         revisions = self._normalize_string_list(summary.get("required_revisions"))
 
         if blockers:
@@ -1548,7 +1548,11 @@ class AppState:
             "generator": ["mlx", "codex", "claude-code", "openai", "claude", "ollama", "lmstudio"],
             "evaluator": ["claude-code", "codex", "claude", "openai", "mlx", "ollama", "lmstudio"],
         }
-        preferred_mlx_model = "adapter-router"
+        preferred_mlx_model_by_role = {
+            "planner": "fast-14b",
+            "generator": "adapter-router",
+            "evaluator": "fast-14b",
+        }
         role_env = session_role.upper()
         forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_BACKEND", "") or "").strip()
         forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_MODEL", "") or "").strip()
@@ -1560,7 +1564,13 @@ class AppState:
                     f"Forced harness backend '{forced_backend}' for role '{session_role}' is not available"
                 )
             models = list(info.get("models") or [])
-            model = forced_model or (models[0] if models else "")
+            preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
+            if forced_model:
+                model = forced_model
+            elif forced_backend == "mlx" and preferred_mlx_model in models:
+                model = preferred_mlx_model
+            else:
+                model = models[0] if models else ""
             spec = self.build_backend_spec(forced_backend, model=model or None, project_path=project_path)
             return spec.backend_type, spec.model
 
@@ -1569,6 +1579,7 @@ class AppState:
             if not info:
                 continue
             models = list(info.get("models") or [])
+            preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
             if self.backend_spec and self.backend_spec.backend_type == backend_type and self.backend_spec.model:
                 model = self.backend_spec.model
             elif backend_type == "mlx" and preferred_mlx_model in models:
@@ -1611,6 +1622,11 @@ class AppState:
             "generator": ["codex", "claude-code", "mlx", "openai", "claude", "ollama", "lmstudio"],
             "evaluator": ["claude-code", "claude", "codex", "openai", "mlx", "ollama", "lmstudio"],
         }
+        preferred_mlx_model_by_role = {
+            "planner": "fast-14b",
+            "generator": "adapter-router",
+            "evaluator": "fast-14b",
+        }
 
         for backend_type in retry_preferences.get(session_role, retry_preferences["evaluator"]):
             if backend_type == failed_backend:
@@ -1619,7 +1635,11 @@ class AppState:
             if not info:
                 continue
             models = list(info.get("models") or [])
-            model = models[0] if models else ""
+            preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
+            if backend_type == "mlx" and preferred_mlx_model in models:
+                model = preferred_mlx_model
+            else:
+                model = models[0] if models else ""
             spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
             return spec.backend_type, spec.model
 

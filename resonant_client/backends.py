@@ -1801,8 +1801,14 @@ class CodexBackend:
 class MLXBackend:
     """Local MLX backend backed by the LocalCodingModel repo."""
 
-    MODELS = ["adapter-router", "real-targeted20", "gapround2-10"]
-    BASE_MODEL = "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit"
+    MODELS = ["adapter-router", "real-targeted20", "gapround2-10", "fast-14b", "fast-7b"]
+    MODEL_BASES = {
+        "adapter-router": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+        "real-targeted20": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+        "gapround2-10": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-8bit",
+        "fast-14b": "mlx-community/Qwen2.5-Coder-14B-Instruct-8bit",
+        "fast-7b": "mlx-community/Qwen2.5-Coder-7B-Instruct-4bit",
+    }
 
     def __init__(self, local_root: str | None, model: str):
         self.local_root = Path(
@@ -1826,6 +1832,9 @@ class MLXBackend:
         }
         return mapping.get(key)
 
+    def _base_model(self) -> str:
+        return self.MODEL_BASES.get(self.model, self.MODEL_BASES["adapter-router"])
+
     def _infer_task_type(self, prompt: str) -> str:
         prompt_lower = prompt.lower()
         if any(token in prompt_lower for token in ("summarize", "list the most likely files", "under 8 bullet", "under 7 bullets")):
@@ -1833,6 +1842,8 @@ class MLXBackend:
         return "coding"
 
     def _resolve_adapter(self, prompt: str) -> tuple[Path | None, str]:
+        if self.model in {"fast-14b", "fast-7b"}:
+            return None, f"fixed mlx base model '{self.model}' selected"
         if self.model != "adapter-router":
             adapter = self._adapter_dir(self.model)
             if adapter:
@@ -1924,7 +1935,7 @@ class MLXBackend:
             "mlx_lm",
             "generate",
             "--model",
-            self.BASE_MODEL,
+            self._base_model(),
             "--prompt",
             prompt,
             "--max-tokens",
@@ -1957,7 +1968,8 @@ class MLXBackend:
     def health(self) -> dict:
         python_path = self._python()
         adapter_root = self.local_root / "outputs" / "adapters"
-        ready = python_path.exists() and adapter_root.exists()
+        requires_adapters = self.model in {"adapter-router", "real-targeted20", "gapround2-10"}
+        ready = python_path.exists() and (adapter_root.exists() if requires_adapters else True)
         return {
             "status": "ready" if ready else "error",
             "backend": "mlx",

@@ -43,6 +43,10 @@ class SprintContract:
     deliverables: list[str] = field(default_factory=list)
     acceptance_checks: list[str] = field(default_factory=list)
     evaluator_focus: list[str] = field(default_factory=list)
+    target_files: list[str] = field(default_factory=list)
+    target_line_hints: list[str] = field(default_factory=list)
+    validation_commands: list[str] = field(default_factory=list)
+    edit_strategy: str = ""
     status: str = "proposed"
     last_updated: float = field(default_factory=time.time)
 
@@ -255,6 +259,10 @@ class HarnessWorkspace:
         deliverables: list[str] | None = None,
         acceptance_checks: list[str] | None = None,
         evaluator_focus: list[str] | None = None,
+        target_files: list[str] | None = None,
+        target_line_hints: list[str] | None = None,
+        validation_commands: list[str] | None = None,
+        edit_strategy: str = "",
         status: str = "proposed",
         role: str = "planner",
     ) -> tuple[ProgressState, SprintContract]:
@@ -265,6 +273,10 @@ class HarnessWorkspace:
             deliverables=deliverables or [],
             acceptance_checks=acceptance_checks or [],
             evaluator_focus=evaluator_focus or [],
+            target_files=target_files or [],
+            target_line_hints=target_line_hints or [],
+            validation_commands=validation_commands or [],
+            edit_strategy=edit_strategy or "",
             status=status,
         )
         self.write_sprint_contract(contract)
@@ -303,6 +315,10 @@ class HarnessWorkspace:
                 "deliverables": list(deliverables or []),
                 "acceptance_checks": list(acceptance_checks or []),
                 "evaluator_focus": list(evaluator_focus or []),
+                "target_files": list(target_files or []),
+                "target_line_hints": list(target_line_hints or []),
+                "validation_commands": list(validation_commands or []),
+                "edit_strategy": edit_strategy or "",
                 "status": status,
                 "role": role,
             },

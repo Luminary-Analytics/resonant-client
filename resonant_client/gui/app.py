@@ -7,12 +7,14 @@ events are pushed through a queue to the async WebSocket handler.
 """
 
 import asyncio
+import ast
 import hashlib
 import json
 import logging
 import os
 import queue
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -247,6 +249,10 @@ class AppState:
                     "deliverables": [],
                     "acceptance_checks": [],
                     "evaluator_focus": [],
+                    "target_files": [],
+                    "target_line_hints": [],
+                    "validation_commands": [],
+                    "edit_strategy": "",
                     "status": "proposed",
                 },
             },
@@ -325,6 +331,10 @@ class AppState:
             "deliverables": list(contract.deliverables),
             "acceptance_checks": list(contract.acceptance_checks),
             "evaluator_focus": list(contract.evaluator_focus),
+            "target_files": list(contract.target_files),
+            "target_line_hints": list(contract.target_line_hints),
+            "validation_commands": list(contract.validation_commands),
+            "edit_strategy": contract.edit_strategy,
             "evaluator_verdict": report.verdict,
             "findings": list(report.findings),
             "required_revisions": list(report.required_revisions),
@@ -481,6 +491,197 @@ class AppState:
         if len(lines) > max_lines:
             lines = lines[:max_lines] + ["...[truncated]"]
         return "\n".join(f"{index:>4}: {line}" for index, line in enumerate(lines, start=1))
+
+    @staticmethod
+    def _format_numbered_window(
+        path: Path,
+        *,
+        start_line: int,
+        end_line: int,
+        padding: int = 12,
+        max_lines: int = 96,
+        max_chars: int = 3400,
+    ) -> str:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return f"[unreadable: {exc}]"
+        lines = text.splitlines()
+        if not lines:
+            return ""
+        lo = max(1, int(start_line) - padding)
+        hi = min(len(lines), int(end_line) + padding)
+        selected = lines[lo - 1 : hi]
+        if len(selected) > max_lines:
+            hi = lo + max_lines - 1
+            selected = lines[lo - 1 : hi]
+        output = "\n".join(f"{line_no:>4}: {line}" for line_no, line in enumerate(selected, start=lo))
+        if len(output) > max_chars:
+            output = output[:max_chars].rstrip() + "\n...[truncated]"
+        return output
+
+    @staticmethod
+    def _extract_line_hint_window(file_path: str, hints: list[str]) -> tuple[int, int, str] | None:
+        normalized_path = file_path.replace("\\", "/").strip()
+        normalized_name = Path(normalized_path).name
+        for raw_hint in hints:
+            hint = str(raw_hint or "").strip()
+            if not hint:
+                continue
+            match = re.search(
+                r"(?:(?P<path>`?[^`\s:]+(?:/[^`\s:]+)*`?)\s*:\s*)?"
+                r"(?:(?:after|around)\s+line\s+|line\s+)?"
+                r"(?P<start>\d+)(?:\s*-\s*(?P<end>\d+))?",
+                hint,
+                flags=re.IGNORECASE,
+            )
+            if not match:
+                continue
+            hint_path = str(match.group("path") or "").replace("\\", "/").strip("` ").strip()
+            if hint_path and hint_path not in {normalized_path, normalized_name}:
+                continue
+            start_line = int(match.group("start"))
+            end_line = int(match.group("end") or match.group("start"))
+            return start_line, end_line, hint
+        return None
+
+    @staticmethod
+    def _requests_broad_repo_scope(text: str) -> bool:
+        lowered = " ".join(str(text or "").lower().split())
+        if not lowered:
+            return False
+
+        negative_phrases = (
+            "no repo-wide",
+            "without repo-wide",
+            "avoid repo-wide",
+            "not repo-wide",
+            "no whole repo",
+            "without whole repo",
+            "avoid whole repo",
+            "no full codebase",
+            "without full codebase",
+            "avoid full codebase",
+            "no entire repository",
+            "without entire repository",
+            "avoid entire repository",
+            "no across the repo",
+            "without across the repo",
+            "avoid across the repo",
+        )
+        for phrase in negative_phrases:
+            lowered = lowered.replace(phrase, "")
+
+        return any(
+            token in lowered
+            for token in (
+                "entire repository",
+                "whole repo",
+                "full codebase",
+                "across the repo",
+                "repo-wide",
+            )
+        )
+
+    @staticmethod
+    def _extract_patch_scaffold(file_path: str, hints: list[str]) -> list[str]:
+        normalized_path = file_path.replace("\\", "/").strip()
+        normalized_name = Path(normalized_path).name
+        notes: list[str] = []
+        seen: set[str] = set()
+
+        def add_note(value: Any) -> None:
+            text = str(value or "").strip()
+            if not text or text in seen:
+                return
+            seen.add(text)
+            notes.append(text)
+
+        for raw_hint in hints:
+            hint = str(raw_hint or "").strip()
+            if not hint:
+                continue
+            parsed: Any = None
+            if hint.startswith("{") and hint.endswith("}"):
+                try:
+                    parsed = ast.literal_eval(hint)
+                except Exception:
+                    parsed = None
+            if isinstance(parsed, dict):
+                scoped = parsed.get(normalized_path) or parsed.get(normalized_name) or parsed
+                if isinstance(scoped, dict):
+                    for value in scoped.values():
+                        add_note(value)
+                else:
+                    add_note(scoped)
+                continue
+            if re.search(r"\bline\s+\d+", hint, flags=re.IGNORECASE):
+                continue
+            add_note(hint)
+        return notes[:4]
+
+    @staticmethod
+    def _format_anchor_windows(
+        path: Path,
+        anchors: list[str],
+        *,
+        padding: int = 10,
+        max_windows: int = 3,
+        max_chars: int = 3400,
+    ) -> str:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return f"[unreadable: {exc}]"
+        lines = text.splitlines()
+        if not lines:
+            return ""
+
+        anchor_names: list[str] = []
+        for item in anchors:
+            for name in re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\(\)", str(item or "")):
+                if name not in anchor_names:
+                    anchor_names.append(name)
+
+        windows: list[tuple[int, int, str]] = []
+        for name in anchor_names:
+            def_pattern = re.compile(rf"^\s*def\s+{re.escape(name)}\s*\(")
+            call_pattern = re.compile(rf"\b{re.escape(name)}\s*\(")
+            target_line = 0
+            for line_no, line in enumerate(lines, start=1):
+                if def_pattern.search(line):
+                    target_line = line_no
+                    break
+            if not target_line:
+                for line_no, line in enumerate(lines, start=1):
+                    if call_pattern.search(line):
+                        target_line = line_no
+                        break
+            if target_line:
+                windows.append(
+                    (
+                        max(1, target_line - padding),
+                        min(len(lines), target_line + padding),
+                        name,
+                    )
+                )
+            if len(windows) >= max_windows:
+                break
+
+        if not windows:
+            return ""
+
+        rendered: list[str] = []
+        for start_line, end_line, name in windows:
+            rendered.append(f"--- context around {name}() ---")
+            rendered.extend(
+                f"{line_no:>4}: {line}"
+                for line_no, line in enumerate(lines[start_line - 1 : end_line], start=start_line)
+            )
+        output = "\n".join(rendered)
+        if len(output) > max_chars:
+            output = output[:max_chars].rstrip() + "\n...[truncated]"
+        return output
 
     @staticmethod
     def _filter_tool_definitions(allowed_names: list[str]) -> list[dict[str, Any]]:
@@ -669,6 +870,7 @@ class AppState:
 
         target_path = os.path.normpath(project_path or self.project.project_path)
         summary = self.get_harness_summary(target_path)
+        scaffold_target_files = self._normalize_string_list(summary.get("target_files"))
         if self._is_read_only_harness_request(
             prompt,
             summary.get("contract_objective", ""),
@@ -678,7 +880,7 @@ class AppState:
         ):
             return False
 
-        referenced_files = self.extract_harness_referenced_files(
+        referenced_files = scaffold_target_files or self.extract_harness_referenced_files(
             target_path,
             prompt,
             summary.get("contract_objective", ""),
@@ -699,7 +901,7 @@ class AppState:
                 "\n".join(self._normalize_string_list(summary.get("acceptance_checks"))),
             ]
         ).lower()
-        if any(token in combined for token in ("entire repository", "whole repo", "repo-wide", "across the repo")):
+        if self._requests_broad_repo_scope(combined):
             return False
         return True
 
@@ -778,7 +980,8 @@ class AppState:
         harness.ensure_layout()
         summary = self.get_harness_summary(target_path)
         handoff_text = self._truncate_text(harness.read_handoff(), max_chars=1400)
-        referenced_paths = self.extract_harness_referenced_files(
+        scaffold_target_files = self._normalize_string_list(summary.get("target_files"))
+        referenced_paths = scaffold_target_files or self.extract_harness_referenced_files(
             target_path,
             prompt,
             summary.get("contract_objective", ""),
@@ -843,6 +1046,10 @@ class AppState:
         file_item = files[0]
         if not bool(file_item.get("exists")):
             return False
+        summary = bundle.get("summary") or {}
+        line_hints = self._normalize_string_list(summary.get("target_line_hints"))
+        if self._extract_line_hint_window(str(file_item.get("path") or ""), line_hints):
+            return True
         resolved_path = Path(str(file_item.get("resolved_path") or ""))
         try:
             return resolved_path.stat().st_size <= 9000
@@ -859,7 +1066,33 @@ class AppState:
         summary = bundle["summary"]
         file_item = (bundle.get("files") or [{}])[0]
         resolved_path = Path(str(file_item.get("resolved_path") or ""))
-        file_context = self._format_numbered_excerpt(resolved_path, max_lines=180, max_chars=7000)
+        line_hints = self._normalize_string_list(summary.get("target_line_hints"))
+        validation_commands = self._normalize_string_list(summary.get("validation_commands"))
+        edit_strategy = str(summary.get("edit_strategy") or "").strip()
+        scaffold_notes = self._extract_patch_scaffold(str(file_item.get("path") or ""), line_hints)
+        hint_window = self._extract_line_hint_window(str(file_item.get("path") or ""), line_hints)
+        if hint_window:
+            start_line, end_line, raw_hint = hint_window
+            file_context = self._format_numbered_window(
+                resolved_path,
+                start_line=start_line,
+                end_line=end_line,
+                padding=12,
+                max_lines=96,
+                max_chars=3400,
+            )
+        elif scaffold_notes:
+            raw_hint = ""
+            file_context = self._format_anchor_windows(
+                resolved_path,
+                scaffold_notes,
+                padding=10,
+                max_windows=3,
+                max_chars=3400,
+            ) or self._format_numbered_excerpt(resolved_path, max_lines=80, max_chars=3000)
+        else:
+            raw_hint = ""
+            file_context = self._format_numbered_excerpt(resolved_path, max_lines=100, max_chars=3800)
         checks = self._normalize_string_list(summary.get("acceptance_checks"))
         deliverables = self._normalize_string_list(summary.get("deliverables"))
 
@@ -874,12 +1107,18 @@ class AppState:
             f"Target file: {file_item.get('path') or '(unknown)'}",
             f"Active sprint: {summary['active_sprint_id'] or 'none'}",
             f"Objective: {summary['contract_objective'] or 'none'}",
+            *( [f"Line hint: {raw_hint}"] if raw_hint else [] ),
+            *( [f"Edit strategy: {edit_strategy}"] if edit_strategy else [] ),
+            *(["Patch scaffold:"] + [f"- {item}" for item in scaffold_notes] if scaffold_notes else []),
             "",
             "Deliverables:",
         ]
         lines.extend(f"- {item}" for item in deliverables[:4] or ["(none)"])
         lines.extend(["", "Acceptance checks:"])
-        lines.extend(f"- {item}" for item in checks[:6] or ["(none)"])
+        lines.extend(f"- {item}" for item in checks[:4] or ["(none)"])
+        if validation_commands:
+            lines.extend(["", "Suggested validation commands:"])
+            lines.extend(f"- {item}" for item in validation_commands[:1])
         lines.extend(
             [
                 "",
@@ -1331,6 +1570,129 @@ class AppState:
 
         return touched_files[:6], validation_artifacts[:6]
 
+    @staticmethod
+    def _sanitize_harness_validation_command(command: str) -> str:
+        cleaned = re.sub(r"\s+#.*$", "", str(command or "").strip()).strip()
+        if cleaned.startswith("python "):
+            cleaned = f"python3 {cleaned[len('python '):]}"
+        return cleaned
+
+    @staticmethod
+    def _extract_validation_artifact_candidates(command: str) -> list[str]:
+        candidates = re.findall(r"--(?:summary-output|summary|output)\s+([^\s|]+)", command)
+        if "validation_summary.json" in command and "validation_summary.json" not in candidates:
+            candidates.append("validation_summary.json")
+        return candidates[:3]
+
+    def run_harness_generator_validation_probes(
+        self,
+        *,
+        project_path: Optional[str] = None,
+        summary: dict[str, Any],
+    ) -> tuple[list[str], list[str], dict[str, str]]:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        commands = self._normalize_string_list(summary.get("validation_commands"))
+        if not commands:
+            return [], [], {}
+
+        preferred: list[str] = []
+        summary_command = next(
+            (
+                item for item in commands
+                if any(token in item for token in ("--summary-output", "--summary", "validation_summary.json"))
+            ),
+            "",
+        )
+        if summary_command:
+            preferred.append(summary_command)
+        baseline_command = next((item for item in commands if item != summary_command), "")
+        if baseline_command:
+            preferred.append(baseline_command)
+
+        validation_checks: list[str] = []
+        validation_artifacts: list[str] = []
+        acceptance_evidence: dict[str, str] = {}
+
+        for raw_command in preferred[:2]:
+            command = self._sanitize_harness_validation_command(raw_command)
+            if not command:
+                continue
+            try:
+                completed = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=target_path,
+                    text=True,
+                    capture_output=True,
+                    timeout=25,
+                )
+            except Exception as exc:
+                validation_artifacts.append(self._truncate_text(f"Auto validation failed to start: {exc}", max_chars=220))
+                continue
+
+            output = "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part).strip()
+            validation_artifacts.append(self._truncate_text(f"Auto validation command: {command}", max_chars=220))
+            validation_artifacts.append(
+                self._truncate_text(
+                    f"Auto validation exit={completed.returncode}: {output or '[no output]'}",
+                    max_chars=260,
+                )
+            )
+
+            if completed.returncode == 0:
+                validation_checks.append(self._truncate_text(f"Validation succeeded: {command}", max_chars=160))
+                for check in acceptance_checks:
+                    lowered = check.lower()
+                    if any(token in lowered for token in ("validates successfully", "exit code 0", "no change in behavior")):
+                        acceptance_evidence.setdefault(
+                            check,
+                            self._truncate_text(f"`{command}` exited 0.", max_chars=140),
+                        )
+            else:
+                validation_checks.append(
+                    self._truncate_text(f"Validation failed with exit {completed.returncode}: {command}", max_chars=180)
+                )
+                for check in acceptance_checks:
+                    lowered = check.lower()
+                    if any(token in lowered for token in ("non-zero exit code", "exit with error", "exit code is non-zero")):
+                        acceptance_evidence.setdefault(
+                            check,
+                            self._truncate_text(f"`{command}` exited {completed.returncode}.", max_chars=140),
+                        )
+
+            for raw_candidate in self._extract_validation_artifact_candidates(command):
+                resolved = self._resolve_harness_touched_path(target_path, raw_candidate)
+                if not resolved.exists() or not resolved.is_file():
+                    continue
+                rel_path = os.path.relpath(str(resolved), target_path).replace(os.sep, "/")
+                validation_artifacts.append(f"Validation artifact created: {rel_path}")
+                try:
+                    payload = json.loads(resolved.read_text(encoding="utf-8"))
+                except Exception:
+                    payload = None
+                if isinstance(payload, dict):
+                    keys = sorted(str(key) for key in payload.keys())
+                    validation_checks.append(self._truncate_text(f"{rel_path} keys: {', '.join(keys)}", max_chars=180))
+                    for check in acceptance_checks:
+                        lowered = check.lower()
+                        if any(token in lowered for token in ("json file is created", "summary json", "artifact is written", "artifact is produced")):
+                            acceptance_evidence.setdefault(
+                                check,
+                                self._truncate_text(f"`{rel_path}` was created and parsed as JSON.", max_chars=160),
+                            )
+                        if "counts are accurate" in lowered:
+                            total = payload.get("total_files_checked") or payload.get("total_files")
+                            passed = payload.get("passed_files")
+                            failed = payload.get("failed_files")
+                            if all(isinstance(item, int) for item in (total, passed, failed)) and passed + failed == total:
+                                acceptance_evidence.setdefault(
+                                    check,
+                                    f"`{rel_path}` reports total={total}, passed={passed}, failed={failed}.",
+                                )
+
+        return validation_checks[:6], validation_artifacts[:6], acceptance_evidence
+
     def infer_generator_structured_payload(
         self,
         *,
@@ -1391,6 +1753,28 @@ class AppState:
             validation_artifacts.append(
                 f"Compact structured generator updated {', '.join(touched_files[:4])}."
             )
+        if not event_artifacts:
+            probe_checks, probe_artifacts, probe_evidence = self.run_harness_generator_validation_probes(
+                project_path=target_path,
+                summary=summary,
+            )
+            validation_checks.extend(item for item in probe_checks if item not in validation_checks)
+            validation_artifacts.extend(item for item in probe_artifacts if item not in validation_artifacts)
+            for check, evidence in probe_evidence.items():
+                acceptance_evidence.setdefault(check, evidence)
+
+        filtered_findings = [
+            item
+            for item in findings
+            if item
+            and item not in {"```json", "```", "{", "}"}
+            and not item.startswith("\"name\":")
+            and not item.startswith("\"arguments\":")
+            and not item.startswith("\"path\":")
+            and not item.startswith("\"old_text\":")
+            and not item.startswith("\"new_text\":")
+        ]
+        findings = filtered_findings or [f"Implemented the requested narrow change in {', '.join(touched_files[:3])}."]
 
         summary_text = self._truncate_text(" | ".join(findings[:2]), max_chars=220)
         handoff_lines = [
@@ -2154,6 +2538,7 @@ class AppState:
             "ready_to_implement": "approved",
             "ready_to_execute": "approved",
             "ready_for_execution": "approved",
+            "ready_for_generator": "approved",
             "execution_ready": "approved",
             "ready_to_start": "approved",
             "approve": "approved",
@@ -2293,7 +2678,11 @@ class AppState:
             }[session_role]
 
         if action == "planner_update":
-            spec_data = payload.get("spec") or {}
+            planner_payload = payload.get("planner_update") if isinstance(payload.get("planner_update"), dict) else {}
+            if not isinstance(planner_payload, dict):
+                planner_payload = {}
+
+            spec_data = payload.get("spec") or planner_payload.get("spec") or {}
             if isinstance(spec_data, dict):
                 spec_updates: dict[str, Any] = {}
                 for key in ("title", "summary"):
@@ -2306,7 +2695,13 @@ class AppState:
                 if spec_updates:
                     harness.update_spec(**spec_updates)
 
-            contract_data = payload.get("sprint_contract") or payload.get("sprint") or {}
+            contract_data = (
+                payload.get("sprint_contract")
+                or payload.get("sprint")
+                or planner_payload.get("sprint_contract")
+                or planner_payload.get("sprint")
+                or {}
+            )
             if isinstance(contract_data, dict):
                 current_contract = harness.read_sprint_contract()
                 sprint_id = str(contract_data.get("sprint_id") or current_contract.sprint_id).strip()
@@ -2321,6 +2716,16 @@ class AppState:
                 evaluator_focus = self._normalize_contract_list(
                     contract_data.get("evaluator_focus", current_contract.evaluator_focus)
                 )
+                target_files = self._normalize_string_list(
+                    contract_data.get("target_files", current_contract.target_files)
+                )
+                target_line_hints = self._normalize_string_list(
+                    contract_data.get("target_line_hints", current_contract.target_line_hints)
+                )
+                validation_commands = self._normalize_string_list(
+                    contract_data.get("validation_commands", current_contract.validation_commands)
+                )
+                edit_strategy = str(contract_data.get("edit_strategy") or current_contract.edit_strategy).strip()
                 objective, deliverables, acceptance_checks, evaluator_focus, contract_sanitized = (
                     self._sanitize_read_only_contract(
                         user_request=user_request,
@@ -2339,6 +2744,10 @@ class AppState:
                         deliverables=deliverables,
                         acceptance_checks=acceptance_checks,
                         evaluator_focus=evaluator_focus,
+                        target_files=target_files,
+                        target_line_hints=target_line_hints,
+                        validation_commands=validation_commands,
+                        edit_strategy=edit_strategy,
                         status=self.normalize_harness_contract_status(
                             str(contract_data.get("status") or current_contract.status or "proposed").strip(),
                             session_role="planner",
@@ -2355,6 +2764,10 @@ class AppState:
                                 "deliverables": deliverables,
                                 "acceptance_checks": acceptance_checks,
                                 "evaluator_focus": evaluator_focus,
+                                "target_files": target_files,
+                                "target_line_hints": target_line_hints,
+                                "validation_commands": validation_commands,
+                                "edit_strategy": edit_strategy,
                             },
                         )
                 elif contract_data:
@@ -2371,10 +2784,24 @@ class AppState:
                         contract_updates["acceptance_checks"] = acceptance_checks
                     if "evaluator_focus" in contract_data:
                         contract_updates["evaluator_focus"] = evaluator_focus
+                    if "target_files" in contract_data:
+                        contract_updates["target_files"] = target_files
+                    if "target_line_hints" in contract_data:
+                        contract_updates["target_line_hints"] = target_line_hints
+                    if "validation_commands" in contract_data:
+                        contract_updates["validation_commands"] = validation_commands
+                    if "edit_strategy" in contract_data:
+                        contract_updates["edit_strategy"] = edit_strategy
                     if contract_updates:
                         harness.update_sprint_contract(**contract_updates)
 
-            progress_data = payload.get("progress") or {}
+            progress_data = (
+                payload.get("progress")
+                or payload.get("progress_state")
+                or planner_payload.get("progress")
+                or planner_payload.get("progress_state")
+                or {}
+            )
             if isinstance(progress_data, dict):
                 progress_updates: dict[str, Any] = {"active_role": "planner"}
                 for key in ("product_goal", "summary", "last_validation"):
@@ -2390,7 +2817,7 @@ class AppState:
                 if progress_updates:
                     harness.update_progress(**progress_updates)
 
-            handoff_markdown = str(payload.get("handoff_markdown") or "").strip()
+            handoff_markdown = str(payload.get("handoff_markdown") or planner_payload.get("handoff_markdown") or "").strip()
             if handoff_markdown:
                 harness.write_handoff(handoff_markdown)
 
@@ -2692,6 +3119,8 @@ class AppState:
                     "objective explicitly says the planner must do it. "
                     "If the objective is explicitly read-only, keep the sprint deliverables read-only "
                     "and artifact-focused instead of inventing code changes. "
+                    "For one-file coding tasks, include a compact patch scaffold in sprint_contract: "
+                    "target_files, target_line_hints, validation_commands, and edit_strategy. "
                     "If the objective asks for bullets, findings, or an audit summary, place that "
                     "content in handoff_markdown and concise progress/spec fields, then finish with "
                     "a valid planner_update resonant-harness block."
@@ -3268,7 +3697,7 @@ class AppState:
         elif not error:
             error = "No resonant-harness update emitted by automated role run"
 
-        if timed_out:
+        if timed_out and pending_harness_payload is None:
             error = f"Timed out after {float(timeout_seconds):.1f}s"
 
         return {

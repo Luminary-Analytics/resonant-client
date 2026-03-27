@@ -1841,6 +1841,11 @@ class AppState:
             candidates.append("validation_summary.json")
         return candidates[:3]
 
+    @staticmethod
+    def _validation_command_has_placeholder(command: str) -> bool:
+        text = str(command or "")
+        return bool(re.search(r"<[^>\n]+>", text))
+
     def run_harness_generator_validation_probes(
         self,
         *,
@@ -1853,27 +1858,53 @@ class AppState:
         if not commands:
             return [], [], {}
 
+        revision_focus = " ".join(
+            self._normalize_string_list(summary.get("required_revisions"))
+            + self._normalize_string_list(summary.get("next_steps"))
+            + acceptance_checks
+        ).lower()
+
+        ranked_commands: list[tuple[int, str]] = []
+        for index, raw_command in enumerate(commands):
+            command = self._sanitize_harness_validation_command(raw_command, project_path=target_path)
+            if not command:
+                continue
+            lowered = command.lower()
+            score = 0
+            if any(token in lowered for token in ("whitespace", "missing", "empty", "grep", "/tmp/test_", "echo '{")):
+                score += 3
+            if any(token in lowered for token in ("--summary-output", "--summary", "validation_summary.json")):
+                score += 2
+            if "whitespace" in revision_focus and "whitespace" in lowered:
+                score += 3
+            if "missing" in revision_focus and "missing" in lowered:
+                score += 2
+            if any(token in revision_focus for token in ("valid", "pass validation", "without errors")) and any(
+                token in lowered for token in ("/tmp/test_valid", "valid")
+            ):
+                score += 2
+            if any(token in lowered for token in ("python", "pytest", "uv", "bash")):
+                score += 1
+            score += max(0, 2 - index)
+            ranked_commands.append((score, command))
+
         preferred: list[str] = []
-        summary_command = next(
-            (
-                item for item in commands
-                if any(token in item for token in ("--summary-output", "--summary", "validation_summary.json"))
-            ),
-            "",
-        )
-        if summary_command:
-            preferred.append(summary_command)
-        baseline_command = next((item for item in commands if item != summary_command), "")
-        if baseline_command:
-            preferred.append(baseline_command)
+        for _, command in sorted(ranked_commands, key=lambda item: (-item[0], item[1])):
+            if command not in preferred:
+                preferred.append(command)
 
         validation_checks: list[str] = []
         validation_artifacts: list[str] = []
         acceptance_evidence: dict[str, str] = {}
 
-        for raw_command in preferred[:2]:
-            command = self._sanitize_harness_validation_command(raw_command, project_path=target_path)
-            if not command:
+        for command in preferred[:3]:
+            if self._validation_command_has_placeholder(command):
+                validation_artifacts.append(
+                    self._truncate_text(
+                        f"Skipped placeholder validation command: {command}",
+                        max_chars=220,
+                    )
+                )
                 continue
             try:
                 completed = subprocess.run(
@@ -1889,6 +1920,15 @@ class AppState:
                 continue
 
             output = "\n".join(part for part in (completed.stdout.strip(), completed.stderr.strip()) if part).strip()
+            output_lower = output.lower()
+            unusable_failure = completed.returncode != 0 and any(
+                token in output_lower
+                for token in (
+                    "syntax error near unexpected token",
+                    "command not found",
+                    "no such file or directory",
+                )
+            )
             validation_artifacts.append(self._truncate_text(f"Auto validation command: {command}", max_chars=220))
             validation_artifacts.append(
                 self._truncate_text(
@@ -1906,16 +1946,42 @@ class AppState:
                             check,
                             self._truncate_text(f"`{command}` exited 0.", max_chars=140),
                         )
+                    if any(token in lowered for token in ("valid training", "pass validation", "without errors")) and any(
+                        token in command.lower() for token in ("test_valid", "valid")
+                    ):
+                        acceptance_evidence.setdefault(
+                            check,
+                            self._truncate_text(f"`{command}` exited 0 for the valid fixture.", max_chars=160),
+                        )
             else:
                 validation_checks.append(
                     self._truncate_text(f"Validation failed with exit {completed.returncode}: {command}", max_chars=180)
                 )
+                if unusable_failure:
+                    continue
                 for check in acceptance_checks:
                     lowered = check.lower()
                     if any(token in lowered for token in ("non-zero exit code", "exit with error", "exit code is non-zero")):
                         acceptance_evidence.setdefault(
                             check,
                             self._truncate_text(f"`{command}` exited {completed.returncode}.", max_chars=140),
+                        )
+                    if "whitespace" in lowered and "whitespace" in output_lower:
+                        acceptance_evidence.setdefault(
+                            check,
+                            self._truncate_text(f"`{command}` reported whitespace-only content.", max_chars=160),
+                        )
+                    if any(token in lowered for token in ("missing", "empty content", "empty strings", "empty")) and any(
+                        token in output_lower for token in ("missing", "empty")
+                    ):
+                        acceptance_evidence.setdefault(
+                            check,
+                            self._truncate_text(f"`{command}` reported missing or empty content.", max_chars=160),
+                        )
+                    if "line number" in lowered and re.search(r":\d+:", output):
+                        acceptance_evidence.setdefault(
+                            check,
+                            self._truncate_text(f"`{command}` reported a file:line diagnostic.", max_chars=160),
                         )
 
             for raw_candidate in self._extract_validation_artifact_candidates(command):
@@ -2010,7 +2076,16 @@ class AppState:
             validation_artifacts.append(
                 f"Compact structured generator updated {', '.join(touched_files[:4])}."
             )
-        if not event_artifacts:
+        combined_probe_seed = "\n".join(
+            [
+                "\n".join(findings),
+                "\n".join(event_artifacts),
+                "\n".join(f"{check}: {evidence}" for check, evidence in acceptance_evidence.items()),
+            ]
+        )
+        existing_coverage = self._build_acceptance_check_coverage(acceptance_checks, combined_probe_seed)
+        should_probe = not event_artifacts or any(not item.get("matched") for item in existing_coverage)
+        if should_probe:
             probe_checks, probe_artifacts, probe_evidence = self.run_harness_generator_validation_probes(
                 project_path=target_path,
                 summary=summary,
@@ -2518,6 +2593,130 @@ class AppState:
             payload["score"] = 0.0
 
         return payload
+
+    def _coerce_evaluator_verdict_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        harness: HarnessWorkspace,
+        assistant_text: str = "",
+    ) -> dict[str, Any]:
+        current_contract = harness.read_sprint_contract()
+        sprint_id = str(payload.get("sprint_id") or current_contract.sprint_id).strip()
+        verdict = str(
+            payload.get("verdict")
+            or payload.get("evaluator_verdict")
+            or payload.get("evaluation_verdict")
+            or payload.get("status")
+            or payload.get("result")
+            or ""
+        ).strip().lower()
+        required_revisions = self._normalize_string_list(
+            payload.get("required_revisions") or payload.get("required_actions")
+        )
+        findings = self._normalize_string_list(payload.get("findings"))
+        passed_checks = self._normalize_string_list(payload.get("passed_checks"))
+        failed_checks = self._normalize_string_list(payload.get("failed_checks"))
+
+        rationale = str(
+            payload.get("rationale")
+            or payload.get("reason")
+            or payload.get("explanation")
+            or payload.get("notes")
+            or payload.get("summary")
+            or ""
+        ).strip()
+        combined = "\n".join(
+            part
+            for part in (
+                verdict,
+                rationale,
+                assistant_text,
+                "\n".join(required_revisions),
+                "\n".join(findings),
+            )
+            if str(part or "").strip()
+        ).lower()
+
+        if verdict not in {"pass", "revise", "blocked"}:
+            if any(
+                token in combined
+                for token in (
+                    "blocked",
+                    "hard blocker",
+                    "cannot proceed",
+                    "does not run",
+                    "fails immediately",
+                    "syntaxerror",
+                    "indentationerror",
+                    "unexpected indent",
+                )
+            ):
+                verdict = "blocked"
+            elif required_revisions or any(
+                token in combined
+                for token in (
+                    "revise",
+                    "revising",
+                    "needs revision",
+                    "required action",
+                    "cannot verify",
+                    "missing evidence",
+                    "insufficient evidence",
+                    "not enough evidence",
+                    "not pass",
+                    "not passable",
+                    "does not pass",
+                    "not supported from the evidence",
+                    "not supported by the evidence",
+                )
+            ):
+                verdict = "revise"
+            elif re.search(r"\bpassed\b", combined) or re.search(r"\bpass\b", combined) or any(
+                token in combined
+                for token in (
+                    "all acceptance checks are satisfied",
+                    "satisfies the acceptance checks",
+                    "passes evaluator checks",
+                    "no revisions are needed",
+                    "no revision is needed",
+                )
+            ):
+                verdict = "pass"
+
+        if not findings and rationale:
+            findings = [self._truncate_text(rationale, max_chars=220)]
+        if not findings and assistant_text:
+            findings = [
+                self._truncate_text(line, max_chars=220)
+                for line in self._normalize_string_list(assistant_text)[:3]
+            ]
+        if verdict == "pass" and not passed_checks:
+            passed_checks = self._normalize_string_list(current_contract.acceptance_checks)[:8]
+        if verdict in {"revise", "blocked"} and not failed_checks:
+            failed_checks = required_revisions[:8]
+        if verdict == "blocked" and not required_revisions:
+            required_revisions = failed_checks[:8] or [
+                "Clear the blocker or add enough evaluation evidence to support a verdict."
+            ]
+        if verdict == "revise" and not required_revisions:
+            required_revisions = failed_checks[:8] or [
+                "Add clearer evidence or validation output for the unmet acceptance checks."
+            ]
+
+        score = payload.get("score")
+        if score is None and verdict in {"pass", "revise", "blocked"}:
+            score = {"pass": 1.0, "revise": 0.5, "blocked": 0.0}[verdict]
+
+        return {
+            "sprint_id": sprint_id,
+            "verdict": verdict,
+            "findings": findings[:8],
+            "required_revisions": required_revisions[:8],
+            "passed_checks": passed_checks[:8],
+            "failed_checks": failed_checks[:8],
+            "score": score,
+        }
 
     @staticmethod
     def resolve_local_coding_model_root() -> Path:
@@ -3369,18 +3568,23 @@ class AppState:
             return "Applied generator harness update"
 
         if action == "evaluator_verdict":
-            sprint_id = str(payload.get("sprint_id") or harness.read_sprint_contract().sprint_id).strip()
-            verdict = str(payload.get("verdict") or "").strip()
+            evaluator_payload = self._coerce_evaluator_verdict_payload(
+                payload=payload,
+                harness=harness,
+                assistant_text=assistant_text,
+            )
+            sprint_id = str(evaluator_payload.get("sprint_id") or "").strip()
+            verdict = str(evaluator_payload.get("verdict") or "").strip()
             if not sprint_id or verdict not in {"pass", "revise", "blocked"}:
                 raise ValueError("Evaluator verdict requires sprint_id and verdict")
             harness.record_evaluator_verdict(
                 sprint_id=sprint_id,
                 verdict=verdict,
-                findings=self._normalize_string_list(payload.get("findings")),
-                required_revisions=self._normalize_string_list(payload.get("required_revisions")),
-                passed_checks=self._normalize_string_list(payload.get("passed_checks")),
-                failed_checks=self._normalize_string_list(payload.get("failed_checks")),
-                score=payload.get("score"),
+                findings=self._normalize_string_list(evaluator_payload.get("findings")),
+                required_revisions=self._normalize_string_list(evaluator_payload.get("required_revisions")),
+                passed_checks=self._normalize_string_list(evaluator_payload.get("passed_checks")),
+                failed_checks=self._normalize_string_list(evaluator_payload.get("failed_checks")),
+                score=evaluator_payload.get("score"),
             )
             harness.append_run_event(
                 "assistant_harness_update",
@@ -3506,6 +3710,7 @@ class AppState:
                 "- do not execute the sprint itself; leave the audit, implementation, or verification work to later roles",
                 "- put contract fields under `sprint_contract`; do not invent wrapper keys like `next_sprint_contract` or `scope` without also filling `sprint_contract`",
                 "- for code-changing tasks, include `target_files`, `target_line_hints`, `validation_commands`, and `edit_strategy` in `sprint_contract`",
+                "- every `validation_commands` entry must be executable as written from the project root; do not use placeholders like `<path>` or pseudo-commands",
                 "- finish with a normal summary plus a valid ```resonant-harness JSON block for planner_update",
             ],
             "generator": [
@@ -3878,6 +4083,8 @@ class AppState:
             preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
             if self.backend_spec and self.backend_spec.backend_type == backend_type and self.backend_spec.model:
                 model = self.backend_spec.model
+            elif session_role == "generator" and backend_type == "codex" and self._harness_generator_needs_frontier_repair(project_path):
+                model = "gpt-5.4" if "gpt-5.4" in models else (models[0] if models else "")
             elif backend_type == "mlx" and preferred_mlx_model in models:
                 model = preferred_mlx_model
             else:
@@ -3904,7 +4111,7 @@ class AppState:
                 str(summary.get("last_validation") or ""),
             ]
         ).lower()
-        return any(
+        if any(
             token in combined
             for token in (
                 "syntaxerror",
@@ -3926,7 +4133,15 @@ class AppState:
                 "runtimeerror",
                 "runtime error",
             )
-        )
+        ):
+            return True
+
+        bundle = self.build_harness_generator_structured_bundle(project_path)
+        files = bundle.get("files") or []
+        if len(files) != 1 or not bool(files[0].get("exists")):
+            return False
+        traceback_data = self._extract_harness_repair_traceback(project_path, files[0], summary)
+        return bool(traceback_data.get("line_number") or traceback_data.get("error_line"))
 
     def select_harness_retry_backend(
         self,
@@ -3964,6 +4179,7 @@ class AppState:
             "generator": "adapter-router",
             "evaluator": "fast-14b",
         }
+        repair_needed = session_role == "generator" and self._harness_generator_needs_frontier_repair(project_path)
 
         for backend_type in retry_preferences.get(session_role, retry_preferences["evaluator"]):
             if backend_type == failed_backend:
@@ -3973,7 +4189,9 @@ class AppState:
                 continue
             models = list(info.get("models") or [])
             preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
-            if backend_type == "mlx" and preferred_mlx_model in models:
+            if backend_type == "codex" and repair_needed and "gpt-5.4" in models:
+                model = "gpt-5.4"
+            elif backend_type == "mlx" and preferred_mlx_model in models:
                 model = preferred_mlx_model
             else:
                 model = models[0] if models else ""

@@ -35,6 +35,7 @@ from ..backends import (
     ClaudeCodeBackend, CodexBackend, MLXBackend, _find_cli,
 )
 from ..engine import Session, AGENT_TOOLS
+from ..network_defaults import resolve_resonant_api_url
 from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
@@ -140,6 +141,7 @@ class AppState:
         )
         self.scheduler.set_backend_factory(lambda _task: self.make_background_session)
         self.scheduler.set_special_executor(self.run_scheduled_task)
+        self.refresh_network_defaults()
         self.apply_project_context(self.project.project_path, refresh_index=True)
 
     @staticmethod
@@ -3868,6 +3870,7 @@ class AppState:
         import httpx
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
+        self.refresh_network_defaults()
         api_url = self.api_url
         ollama_url = self.ollama_url
         available = {}
@@ -4780,6 +4783,7 @@ class AppState:
         self.base_engram.reload()
         self.base_engram.set_mcp_manager(self.mcp_manager)
         self.apply_project_context(self.project.project_path, refresh_index=True)
+        self.refresh_network_defaults()
         self.detect_backends()
 
         if section == "general" and key == "default_permission_mode":
@@ -4792,8 +4796,8 @@ class AppState:
 
         if (
             self.backend_spec and
-            self.backend_spec.backend_type in {"claude", "openai", "lmstudio", "mlx"} and
-            section in {"api_keys", "engram", "general"}
+            self.backend_spec.backend_type in {"resonant", "ollama", "claude", "openai", "lmstudio", "mlx"} and
+            section in {"api_keys", "engram", "general", "network"}
         ):
             try:
                 self.backend = self.backend_spec.create_backend(self.settings)
@@ -4803,6 +4807,20 @@ class AppState:
                 logger.warning("Failed to refresh current backend after settings update", exc_info=True)
 
         return self.settings.get_masked()
+
+    def refresh_network_defaults(self):
+        settings_data = self.settings.get_all()
+        self.api_url = resolve_resonant_api_url(settings_data=settings_data)
+        self.ollama_url = (
+            str(
+                os.environ.get(
+                    "OLLAMA_URL",
+                    os.environ.get("OLLAMA_HOST", "http://10.0.0.133:11434"),
+                )
+                or ""
+            ).rstrip("/")
+        )
+        self.lmstudio_url = str(os.environ.get("LMSTUDIO_URL", "") or "").rstrip("/")
 
     def update_setting_value(
         self,
@@ -4901,12 +4919,7 @@ async def websocket_endpoint(ws: WebSocket):
 
     # Initialize if needed
     if not state.available_backends:
-        state.api_url = os.environ.get("RESONANT_API", "http://localhost:8000").rstrip("/")
-        state.ollama_url = os.environ.get(
-            "OLLAMA_URL",
-            os.environ.get("OLLAMA_HOST", "http://10.0.0.133:11434"),
-        ).rstrip("/")
-        state.lmstudio_url = os.environ.get("LMSTUDIO_URL", "").rstrip("/")
+        state.refresh_network_defaults()
         state.project._save_recent_project()
         # Send sessions immediately so sidebar populates while backends are detected
         await ws.send_json({

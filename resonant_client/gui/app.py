@@ -305,6 +305,13 @@ class AppState:
         report = harness.read_evaluator_report()
         recent_history = harness.read_run_history(limit=5)
         recent_teacher_escalations = harness.read_teacher_escalations(limit=3)
+        normalized_contract_status = (
+            self.normalize_harness_contract_status(
+                contract.status,
+                session_role=str(progress.active_role or "planner").strip() or "planner",
+            )
+            or str(contract.status or "").strip()
+        )
         return {
             "root": str(harness.root),
             "spec_path": str(harness.spec_path),
@@ -325,7 +332,8 @@ class AppState:
             "validation_checks": list(progress.validation_checks),
             "validation_artifacts": list(progress.validation_artifacts),
             "acceptance_evidence": dict(progress.acceptance_evidence),
-            "contract_status": contract.status,
+            "contract_status": normalized_contract_status,
+            "contract_status_raw": contract.status,
             "contract_feature_name": contract.feature_name,
             "contract_objective": contract.objective,
             "deliverables": list(contract.deliverables),
@@ -556,18 +564,29 @@ class AppState:
             "without repo-wide",
             "avoid repo-wide",
             "not repo-wide",
+            "does not require repo-wide",
+            "doesn't require repo-wide",
+            "without requiring repo-wide",
             "no whole repo",
             "without whole repo",
             "avoid whole repo",
+            "does not require whole repo",
+            "doesn't require whole repo",
             "no full codebase",
             "without full codebase",
             "avoid full codebase",
+            "does not require full codebase",
+            "doesn't require full codebase",
             "no entire repository",
             "without entire repository",
             "avoid entire repository",
+            "does not require entire repository",
+            "doesn't require entire repository",
             "no across the repo",
             "without across the repo",
             "avoid across the repo",
+            "does not require across the repo",
+            "doesn't require across the repo",
         )
         for phrase in negative_phrases:
             lowered = lowered.replace(phrase, "")
@@ -2351,6 +2370,16 @@ class AppState:
             return []
         if isinstance(value, str):
             return [line.strip() for line in value.splitlines() if line.strip()]
+        if isinstance(value, dict):
+            result = []
+            for raw_key, raw_value in value.items():
+                key = str(raw_key).strip()
+                val = str(raw_value).strip()
+                text = f"{key}: {val}" if key and val else key or val
+                text = text.strip()
+                if text:
+                    result.append(text)
+            return result
         if isinstance(value, (list, tuple, set)):
             result = []
             for item in value:
@@ -2539,6 +2568,8 @@ class AppState:
             "ready_to_execute": "approved",
             "ready_for_execution": "approved",
             "ready_for_generator": "approved",
+            "contract_ready": "approved",
+            "generator_ready": "approved",
             "execution_ready": "approved",
             "ready_to_start": "approved",
             "approve": "approved",
@@ -2611,6 +2642,129 @@ class AppState:
             return "evaluator_verdict"
         return raw
 
+    def _normalize_harness_validation_commands(self, value: Any) -> list[str]:
+        commands: list[str] = []
+        for item in self._normalize_string_list(value):
+            cleaned = self._sanitize_harness_validation_command(item)
+            if cleaned and self._looks_like_shell_command(cleaned) and cleaned not in commands:
+                commands.append(cleaned)
+        return commands[:6]
+
+    @staticmethod
+    def _looks_like_shell_command(value: str) -> bool:
+        text = str(value or "").strip()
+        if not text:
+            return False
+        shell_starts = (
+            "python",
+            "python3",
+            "pytest",
+            "node",
+            "npm",
+            "npx",
+            "uv",
+            "bash",
+            "sh ",
+            "./",
+            "cat ",
+            "grep ",
+            "rg ",
+            "ls ",
+        )
+        if text.startswith(shell_starts):
+            return True
+        return any(token in text for token in (" --", " | ", " && ", " > ", "2>&1", "echo $?"))
+
+    def _extract_planner_contract_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        planner_payload: dict[str, Any],
+        current_contract: Any,
+    ) -> dict[str, Any]:
+        candidate_contracts = [
+            payload.get("sprint_contract"),
+            payload.get("sprint"),
+            payload.get("next_sprint_contract"),
+            payload.get("contract"),
+            planner_payload.get("sprint_contract"),
+            planner_payload.get("sprint"),
+            planner_payload.get("next_sprint_contract"),
+            planner_payload.get("next_contract"),
+            planner_payload.get("contract"),
+        ]
+        contract_data = next((item for item in candidate_contracts if isinstance(item, dict)), {})
+        contract = dict(contract_data) if isinstance(contract_data, dict) else {}
+
+        direct_fields = (
+            "sprint_id",
+            "feature_name",
+            "objective",
+            "deliverables",
+            "acceptance_checks",
+            "acceptance_focus",
+            "evaluator_focus",
+            "target_files",
+            "target_line_hints",
+            "validation_commands",
+            "edit_strategy",
+            "status",
+        )
+        for source in (planner_payload, payload):
+            if not isinstance(source, dict):
+                continue
+            for key in direct_fields:
+                if key not in contract and source.get(key) not in (None, "", [], {}):
+                    contract[key] = source.get(key)
+
+        scope = contract.get("scope")
+        if not isinstance(scope, dict):
+            scope = planner_payload.get("scope") if isinstance(planner_payload.get("scope"), dict) else {}
+        if scope:
+            if "target_files" not in contract and scope.get("target_files") not in (None, "", [], {}):
+                contract["target_files"] = scope.get("target_files")
+            if "target_line_hints" not in contract:
+                for key in ("target_line_hints", "line_hints", "line_targets"):
+                    if scope.get(key) not in (None, "", [], {}):
+                        contract["target_line_hints"] = scope.get(key)
+                        break
+            if "edit_strategy" not in contract:
+                for key in ("edit_strategy", "change_type", "approach"):
+                    value = str(scope.get(key) or "").strip()
+                    if value:
+                        contract["edit_strategy"] = value
+                        break
+
+        if "acceptance_checks" not in contract and contract.get("acceptance_focus") not in (None, "", [], {}):
+            contract["acceptance_checks"] = contract.get("acceptance_focus")
+        if "evaluator_focus" not in contract and planner_payload.get("evaluator_checks") not in (None, "", [], {}):
+            contract["evaluator_focus"] = planner_payload.get("evaluator_checks")
+        if "deliverables" not in contract and planner_payload.get("key_constraints") not in (None, "", [], {}):
+            contract["deliverables"] = planner_payload.get("key_constraints")
+        if "validation_commands" not in contract:
+            for key in ("validation_plan", "validation_steps", "validation_approach"):
+                if planner_payload.get(key) not in (None, "", [], {}):
+                    contract["validation_commands"] = planner_payload.get(key)
+                    break
+        if "feature_name" not in contract:
+            title = str(planner_payload.get("title") or payload.get("title") or "").strip()
+            if title:
+                contract["feature_name"] = title
+        if "status" not in contract:
+            for key in ("contract_status", "status", "phase"):
+                value = str(planner_payload.get(key) or payload.get(key) or "").strip()
+                if value:
+                    contract["status"] = value
+                    break
+
+        if "sprint_id" not in contract and current_contract.sprint_id:
+            contract["sprint_id"] = current_contract.sprint_id
+        if "feature_name" not in contract and current_contract.feature_name:
+            contract["feature_name"] = current_contract.feature_name
+        if "objective" not in contract and current_contract.objective:
+            contract["objective"] = current_contract.objective
+        return contract
+
     def extract_harness_update(
         self,
         *,
@@ -2682,7 +2836,12 @@ class AppState:
             if not isinstance(planner_payload, dict):
                 planner_payload = {}
 
-            spec_data = payload.get("spec") or planner_payload.get("spec") or {}
+            spec_data = (
+                payload.get("spec")
+                or planner_payload.get("spec")
+                or planner_payload.get("spec_updates")
+                or {}
+            )
             if isinstance(spec_data, dict):
                 spec_updates: dict[str, Any] = {}
                 for key in ("title", "summary"):
@@ -2695,15 +2854,13 @@ class AppState:
                 if spec_updates:
                     harness.update_spec(**spec_updates)
 
-            contract_data = (
-                payload.get("sprint_contract")
-                or payload.get("sprint")
-                or planner_payload.get("sprint_contract")
-                or planner_payload.get("sprint")
-                or {}
+            current_contract = harness.read_sprint_contract()
+            contract_data = self._extract_planner_contract_payload(
+                payload=payload,
+                planner_payload=planner_payload,
+                current_contract=current_contract,
             )
             if isinstance(contract_data, dict):
-                current_contract = harness.read_sprint_contract()
                 sprint_id = str(contract_data.get("sprint_id") or current_contract.sprint_id).strip()
                 objective = str(contract_data.get("objective") or current_contract.objective).strip()
                 feature_name = str(contract_data.get("feature_name") or current_contract.feature_name).strip()
@@ -2711,7 +2868,10 @@ class AppState:
                     contract_data.get("deliverables", current_contract.deliverables)
                 )
                 acceptance_checks = self._normalize_contract_list(
-                    contract_data.get("acceptance_checks", current_contract.acceptance_checks)
+                    contract_data.get(
+                        "acceptance_checks",
+                        contract_data.get("acceptance_focus", current_contract.acceptance_checks),
+                    )
                 )
                 evaluator_focus = self._normalize_contract_list(
                     contract_data.get("evaluator_focus", current_contract.evaluator_focus)
@@ -2722,7 +2882,7 @@ class AppState:
                 target_line_hints = self._normalize_string_list(
                     contract_data.get("target_line_hints", current_contract.target_line_hints)
                 )
-                validation_commands = self._normalize_string_list(
+                validation_commands = self._normalize_harness_validation_commands(
                     contract_data.get("validation_commands", current_contract.validation_commands)
                 )
                 edit_strategy = str(contract_data.get("edit_strategy") or current_contract.edit_strategy).strip()
@@ -2802,6 +2962,22 @@ class AppState:
                 or planner_payload.get("progress_state")
                 or {}
             )
+            if not isinstance(progress_data, dict):
+                progress_data = {}
+            if not progress_data:
+                for key in ("summary", "revision_reason"):
+                    value = str(planner_payload.get(key) or "").strip()
+                    if value:
+                        progress_data["summary"] = value
+                        break
+                for key in ("next_steps", "blockers", "touched_files", "validation_checks"):
+                    if planner_payload.get(key) not in (None, "", [], {}):
+                        progress_data[key] = planner_payload.get(key)
+                phase_value = str(planner_payload.get("phase") or "").strip()
+                if phase_value:
+                    progress_data["current_phase"] = (
+                        "implementation" if "generator" in phase_value or "ready" in phase_value else "planning"
+                    )
             if isinstance(progress_data, dict):
                 progress_updates: dict[str, Any] = {"active_role": "planner"}
                 for key in ("product_goal", "summary", "last_validation"):
@@ -3019,6 +3195,8 @@ class AppState:
                 "- refine or complete the spec only where needed",
                 "- define or revise the next sprint contract in concrete, testable terms",
                 "- do not execute the sprint itself; leave the audit, implementation, or verification work to later roles",
+                "- put contract fields under `sprint_contract`; do not invent wrapper keys like `next_sprint_contract` or `scope` without also filling `sprint_contract`",
+                "- for code-changing tasks, include `target_files`, `target_line_hints`, `validation_commands`, and `edit_strategy` in `sprint_contract`",
                 "- finish with a normal summary plus a valid ```resonant-harness JSON block for planner_update",
             ],
             "generator": [
@@ -3123,7 +3301,8 @@ class AppState:
                     "target_files, target_line_hints, validation_commands, and edit_strategy. "
                     "If the objective asks for bullets, findings, or an audit summary, place that "
                     "content in handoff_markdown and concise progress/spec fields, then finish with "
-                    "a valid planner_update resonant-harness block."
+                    "a valid planner_update resonant-harness block. Put the concrete handoff under "
+                    "`sprint_contract` itself; do not replace it with alternate wrapper keys."
                 ),
                 "generator": (
                     "Treat the objective as implementation guidance for the active sprint. "
@@ -3372,6 +3551,12 @@ class AppState:
             spec = self.build_backend_spec(forced_backend, model=model or None, project_path=project_path)
             return spec.backend_type, spec.model
 
+        if session_role == "generator" and self._harness_generator_needs_frontier_repair(project_path):
+            preferences = {
+                **preferences,
+                "generator": ["codex", "claude-code", "mlx", "openai", "claude", "ollama", "lmstudio"],
+            }
+
         for backend_type in preferences.get(session_role, preferences["generator"]):
             info = self.available_backends.get(backend_type)
             if not info:
@@ -3388,6 +3573,47 @@ class AppState:
             return spec.backend_type, spec.model
 
         raise ValueError(f"No available backend for harness role '{session_role}'")
+
+    def _harness_generator_needs_frontier_repair(self, project_path: Optional[str] = None) -> bool:
+        project_path = os.path.normpath(project_path or self.project.project_path)
+        summary = self.get_harness_summary(project_path)
+        contract_status = str(summary.get("contract_status") or "").strip()
+        evaluator_verdict = str(summary.get("evaluator_verdict") or "").strip()
+        if contract_status not in {"needs_revision", "failed"}:
+            return False
+        if evaluator_verdict not in {"revise", "blocked"}:
+            return False
+        combined = "\n".join(
+            [
+                "\n".join(self._normalize_string_list(summary.get("findings"))),
+                "\n".join(self._normalize_string_list(summary.get("required_revisions"))),
+                "\n".join(self._normalize_string_list(summary.get("validation_artifacts"))),
+                str(summary.get("last_validation") or ""),
+            ]
+        ).lower()
+        return any(
+            token in combined
+            for token in (
+                "syntaxerror",
+                "syntax error",
+                "indentationerror",
+                "indentation error",
+                "expected an indented block",
+                "unexpected indent",
+                "invalid syntax",
+                "parse error",
+                "traceback (most recent call last)",
+                "modulenotfounderror",
+                "module not found",
+                "importerror",
+                "import error",
+                "nameerror",
+                "typeerror",
+                "attributeerror",
+                "runtimeerror",
+                "runtime error",
+            )
+        )
 
     def select_harness_retry_backend(
         self,

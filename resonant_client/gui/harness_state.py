@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +85,11 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _coerce_dataclass_payload(dataclass_type: type, payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {item.name for item in fields(dataclass_type)}
+    return {key: value for key, value in payload.items() if key in allowed}
+
+
 class HarnessWorkspace:
     """Structured artifact directory inside the user's project workspace."""
 
@@ -141,14 +146,14 @@ class HarnessWorkspace:
             self.teacher_escalations_path.write_text("", encoding="utf-8")
 
     def read_progress(self) -> ProgressState:
-        return ProgressState(**_read_json(self.progress_path))
+        return ProgressState(**_coerce_dataclass_payload(ProgressState, _read_json(self.progress_path)))
 
     def write_progress(self, progress: ProgressState) -> None:
         progress.last_updated = time.time()
         _write_json(self.progress_path, asdict(progress))
 
     def read_spec(self) -> ProductSpec:
-        return ProductSpec(**_read_json(self.spec_path))
+        return ProductSpec(**_coerce_dataclass_payload(ProductSpec, _read_json(self.spec_path)))
 
     def write_spec(self, spec: ProductSpec) -> None:
         spec.last_updated = time.time()
@@ -163,14 +168,18 @@ class HarnessWorkspace:
         return spec
 
     def read_sprint_contract(self) -> SprintContract:
-        return SprintContract(**_read_json(self.sprint_contract_path))
+        return SprintContract(
+            **_coerce_dataclass_payload(SprintContract, _read_json(self.sprint_contract_path))
+        )
 
     def write_sprint_contract(self, contract: SprintContract) -> None:
         contract.last_updated = time.time()
         _write_json(self.sprint_contract_path, asdict(contract))
 
     def read_evaluator_report(self) -> EvaluatorReport:
-        return EvaluatorReport(**_read_json(self.evaluator_report_path))
+        return EvaluatorReport(
+            **_coerce_dataclass_payload(EvaluatorReport, _read_json(self.evaluator_report_path))
+        )
 
     def write_evaluator_report(self, report: EvaluatorReport) -> None:
         report.last_updated = time.time()

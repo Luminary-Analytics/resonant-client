@@ -38,6 +38,7 @@ from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
 from .project_instructions import load_project_instructions, get_instruction_info
+from .command_projects import CommandProjectStore
 from .command_tasks import CommandTaskStore
 from .task_runner import TaskRunner
 from .scheduler import Scheduler
@@ -110,6 +111,7 @@ class AppState:
         self.scheduler = Scheduler(self.task_runner)
         # Command center
         self.command_task_store = CommandTaskStore()
+        self.command_project_store = CommandProjectStore()
         self.command_feed: list[dict] = []
         self._ws_ref = None
         self._ws_loop = None
@@ -3063,7 +3065,116 @@ async def websocket_endpoint(ws: WebSocket):
                 tasks = state.task_runner.list_tasks()
                 await ws.send_json({"event": "dispatch_list", "tasks": tasks})
 
-            # ── Command Center ──────────────────────────────
+            # ── Command Center: Projects ────────────────────
+            elif command == "command_project_list":
+                projects = state.command_project_store.list_projects()
+                await ws.send_json({"event": "command_project_list", "projects": projects})
+
+            elif command == "command_project_create":
+                name = msg.get("name", "").strip()
+                path = msg.get("path", "").strip() or state.project.project_path
+                strategy = msg.get("strategy", "").strip()
+                if not strategy:
+                    await ws.send_json({"event": "error", "message": "Strategy is required"})
+                    continue
+                proj = state.command_project_store.create_project(
+                    name=name or path.replace("\\", "/").split("/")[-1],
+                    path=path,
+                    strategy=strategy,
+                )
+                proj.status = "planning"
+                proj.add_activity("system", "System", f"Project created. Strategy: {strategy[:100]}...")
+                state.command_project_store._persist(proj)
+
+                # Spawn coordinator agent
+                try:
+                    coordinator_prompt = (
+                        f"You are a project coordinator for the project at: {path}\n\n"
+                        f"## Strategy\n{strategy}\n\n"
+                        f"## Your Job\n"
+                        f"1. Analyze the codebase at the project path\n"
+                        f"2. Break the strategy into concrete, ordered tasks\n"
+                        f"3. For each task, describe what needs to be done clearly\n"
+                        f"4. Execute each task yourself, one at a time\n"
+                        f"5. After completing each task, summarize what was done\n\n"
+                        f"Work through all tasks methodically. Be thorough but efficient."
+                    )
+                    backend_type = getattr(state.backend, "name", "")
+                    model = getattr(state.backend, "model", "")
+                    spec = state.build_backend_spec(backend_type, model=model or None, project_path=path)
+
+                    def _make_coordinator_event_handler(pid):
+                        def handler(task_id, event):
+                            state._push_agent_event(task_id, event)
+                            # Also post text completions to project activity
+                            if event.get("event") == "text.done":
+                                text = event.get("text", "")[:200]
+                                if text.strip():
+                                    state.command_project_store.add_activity(
+                                        pid, "agent", "Coordinator", text
+                                    )
+                        return handler
+
+                    bg_task = state.task_runner.submit(
+                        name=f"Coordinator: {name}",
+                        prompt=coordinator_prompt,
+                        session_factory=state.make_background_session,
+                        backend_type=backend_type,
+                        model=spec.model,
+                        project_path=path,
+                        session_mode="code",
+                        session_role="generator",
+                        backend_spec=spec.to_dict(),
+                        on_event=_make_coordinator_event_handler(proj.id),
+                    )
+                    state.command_project_store.update_project(
+                        proj.id,
+                        coordinator_task_id=bg_task.id,
+                        status="running",
+                        agents=[{
+                            "id": bg_task.id, "name": f"Coordinator: {name}",
+                            "role": "coordinator", "status": "running",
+                            "model": spec.model, "steps": 0, "elapsed": 0,
+                        }],
+                    )
+                    proj = state.command_project_store.get_project(proj.id)
+                except Exception as e:
+                    state.command_project_store.update_project(proj.id, status="failed")
+                    proj = state.command_project_store.get_project(proj.id)
+                    proj.add_activity("system", "System", f"Failed to launch coordinator: {e}")
+                    state.command_project_store._persist(proj)
+
+                await ws.send_json({
+                    "event": "command_project_created",
+                    "project": proj.to_dict(),
+                    "projects": state.command_project_store.list_projects(),
+                })
+
+            elif command == "command_project_status":
+                project_id = msg.get("project_id", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    # Refresh agent status from task runner
+                    for agent in proj.agents:
+                        bg = state.task_runner.get_task(agent.get("id", ""))
+                        if bg:
+                            agent["status"] = bg.status.value
+                            agent["steps"] = bg.steps
+                            agent["elapsed"] = round(bg.elapsed, 2)
+                    # Check if coordinator finished
+                    if proj.coordinator_task_id:
+                        coord = state.task_runner.get_task(proj.coordinator_task_id)
+                        if coord and coord.status.value in ("completed", "failed", "cancelled"):
+                            if proj.status == "running":
+                                new_status = "completed" if coord.status.value == "completed" else "failed"
+                                state.command_project_store.update_project(proj.id, status=new_status)
+                                proj.status = new_status
+                    state.command_project_store._persist(proj)
+                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
+                else:
+                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
+
+            # ── Command Center: Fleet ───────────────────────
             elif command == "command_fleet":
                 tasks = state.task_runner.list_tasks(limit=100)
                 # Also include harness cycle runs if available

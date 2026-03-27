@@ -173,6 +173,9 @@ class ResonantApp {
         this.commandAgents = [];
         this.commandTasks = [];
         this.commandFeed = [];
+        this.commandProjects = [];
+        this.cmdSelectedProject = null;
+        this.cmdDashTab = 'plan';
         this.commandCenter = document.getElementById('command-center');
 
         // Git state
@@ -587,10 +590,11 @@ class ResonantApp {
         });
 
         // ── Command Center ──
-        document.querySelectorAll('.command-tab').forEach(tab => {
-            tab.addEventListener('click', () => this.switchCommandPanel(tab.dataset.panel));
+        document.getElementById('cmd-new-project')?.addEventListener('click', () => {
+            this.cmdSelectedProject = null;
+            this.renderCommandSidebar();
+            this.renderNewProjectScreen();
         });
-        document.getElementById('command-spawn-btn')?.addEventListener('click', () => this.showSpawnAgentDialog());
     }
 
     // ── Image Attachments ────────────────────────────────────────
@@ -830,7 +834,7 @@ class ResonantApp {
                 el.style.display = 'none';
             });
             this.currentView = 'command';
-            this.requestCommandFleet();
+            this.initCommandCenter();
             return;
         }
 
@@ -1471,41 +1475,40 @@ class ResonantApp {
                 this.renderScheduleList(event.schedules || []);
                 break;
             // ── Command Center Events ──
-            case 'command_fleet':
-                this.commandAgents = event.agents || [];
-                if (this.sessionMode === 'command' && this.commandPanel === 'fleet') {
-                    this.renderCommandFleet();
+            case 'command_project_list':
+                this.commandProjects = event.projects || [];
+                if (this.sessionMode === 'command') {
+                    this.renderCommandSidebar();
                 }
                 break;
-            case 'command_spawn_ok':
-                this.requestCommandFleet();
-                break;
-            case 'command_task_list':
-                this.commandTasks = event.tasks || [];
-                if (this.sessionMode === 'command' && this.commandPanel === 'tasks') {
-                    this.renderCommandTasks();
+            case 'command_project_created':
+                this.commandProjects = event.projects || this.commandProjects;
+                this.cmdSelectedProject = event.project?.id || this.cmdSelectedProject;
+                if (this.sessionMode === 'command') {
+                    this.renderCommandSidebar();
+                    if (event.project) this.renderProjectDashboard(event.project);
                 }
                 break;
-            case 'command_task_created':
-                this.requestCommandFleet(); // refresh fleet too
-                break;
-            case 'command_agent_event':
-                this.handleCommandAgentEvent(event);
-                break;
-            case 'command_agent_history':
-                this.handleCommandAgentHistory(event);
-                break;
-            case 'command_feed_list':
-                this.commandFeed = event.messages || [];
-                if (this.sessionMode === 'command' && this.commandPanel === 'comms') {
-                    this.renderCommandComms();
+            case 'command_project_status':
+                // Update project in list and render dashboard
+                if (event.project) {
+                    const idx = this.commandProjects.findIndex(p => p.id === event.project.id);
+                    if (idx >= 0) this.commandProjects[idx] = event.project;
+                    if (this.sessionMode === 'command') {
+                        this.renderCommandSidebar();
+                        if (this.cmdSelectedProject === event.project.id) {
+                            this.renderProjectDashboard(event.project);
+                        }
+                    }
                 }
                 break;
             case 'command_feed_posted':
                 this.commandFeed.push(event.message);
-                if (this.sessionMode === 'command' && this.commandPanel === 'comms') {
-                    this.renderCommandComms();
-                }
+                break;
+            case 'command_fleet':
+                this.commandAgents = event.agents || [];
+                break;
+            case 'command_spawn_ok':
                 break;
             case 'mcp_list':
                 // Refresh settings view if open
@@ -4758,7 +4761,259 @@ class ResonantApp {
         }
     }
 
-    // ── Command Center ──────────────────────────────────────────
+    // ── Command Center v2 — Project-Centric ────────────────────
+
+    initCommandCenter() {
+        // Called when entering command mode
+        this.send({ command: 'command_project_list' });
+        this.renderCommandSidebar();
+        if (!this.cmdSelectedProject) {
+            this.renderNewProjectScreen();
+        }
+    }
+
+    renderCommandSidebar() {
+        const list = document.getElementById('cmd-project-list');
+        if (!list) return;
+
+        const projects = this.commandProjects || [];
+        if (projects.length === 0) {
+            list.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:12px;text-align:center">No projects yet</div>';
+            return;
+        }
+
+        list.innerHTML = projects.map(p => `
+            <div class="cmd-project-item ${p.id === this.cmdSelectedProject ? 'active' : ''}" data-id="${p.id}">
+                <span class="cmd-project-dot ${p.status || 'idle'}"></span>
+                <div class="cmd-project-info">
+                    <div class="cmd-project-name">${this.escapeHtml(p.name)}</div>
+                    <div class="cmd-project-status">${p.status || 'idle'}</div>
+                </div>
+            </div>
+        `).join('');
+
+        list.querySelectorAll('.cmd-project-item').forEach(item => {
+            item.addEventListener('click', () => {
+                this.cmdSelectedProject = item.dataset.id;
+                this.renderCommandSidebar();
+                this.send({ command: 'command_project_status', project_id: item.dataset.id });
+            });
+        });
+    }
+
+    renderNewProjectScreen() {
+        const main = document.getElementById('cmd-main');
+        if (!main) return;
+
+        // Pre-fill with current project path
+        const currentPath = this.currentCwd || '';
+
+        main.innerHTML = `
+            <div class="cmd-new-project">
+                <h2>New Project</h2>
+                <div class="cmd-subtitle">Set a high-level strategy and launch an AI coordinator to orchestrate the work.</div>
+
+                <div class="cmd-form-group">
+                    <label>Project Path</label>
+                    <input type="text" class="settings-input" id="cmd-project-path" value="${this.escapeHtml(currentPath)}" placeholder="/path/to/your/project" />
+                </div>
+
+                <div class="cmd-form-group">
+                    <label>Project Name</label>
+                    <input type="text" class="settings-input" id="cmd-project-name" placeholder="e.g., Auth System Refactor" />
+                </div>
+
+                <div class="cmd-form-group">
+                    <label>Strategy</label>
+                    <textarea class="settings-input" id="cmd-project-strategy" rows="6"
+                        placeholder="Describe the high-level objective. The AI coordinator will break this into tasks, spawn worker agents, and manage the execution.&#10;&#10;Example: Build a complete user authentication system with JWT tokens. Implement signup, login, password reset endpoints. Add auth middleware. Write tests for all endpoints."></textarea>
+                </div>
+
+                <div style="display:flex;gap:10px;margin-top:8px">
+                    <button class="btn-primary" id="cmd-launch-btn" style="padding:10px 24px;font-size:14px">
+                        Launch Coordinator
+                    </button>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('cmd-launch-btn')?.addEventListener('click', () => {
+            const path = document.getElementById('cmd-project-path')?.value?.trim();
+            const name = document.getElementById('cmd-project-name')?.value?.trim();
+            const strategy = document.getElementById('cmd-project-strategy')?.value?.trim();
+            if (!strategy) return;
+            this.send({
+                command: 'command_project_create',
+                path: path || this.currentCwd,
+                name: name || (path || 'Project').split(/[/\\]/).pop(),
+                strategy,
+            });
+        });
+    }
+
+    renderProjectDashboard(project) {
+        const main = document.getElementById('cmd-main');
+        if (!main) return;
+
+        const tasks = project.tasks || [];
+        const completedTasks = tasks.filter(t => t.status === 'completed').length;
+        const totalTasks = tasks.length;
+        const activeAgents = (project.agents || []).filter(a => a.status === 'running').length;
+        const progressPct = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
+        const statusLabel = {
+            idle: 'Idle', planning: 'Planning...', running: 'Running',
+            completed: 'Completed', failed: 'Failed'
+        }[project.status] || project.status;
+
+        const dashTab = this.cmdDashTab || 'plan';
+
+        main.innerHTML = `
+            <div class="project-dashboard">
+                <div class="project-dash-header">
+                    <div class="project-dash-title">${this.escapeHtml(project.name)}</div>
+                    <div class="project-dash-strategy">${this.escapeHtml(project.strategy)}</div>
+                    <div class="project-dash-stats">
+                        <span>Status: <span class="stat-value">${statusLabel}</span></span>
+                        <span>Tasks: <span class="stat-value">${completedTasks}/${totalTasks}</span></span>
+                        <span>Agents: <span class="stat-value">${activeAgents} active</span></span>
+                    </div>
+                    <div class="project-dash-progress">
+                        <div class="project-dash-progress-bar" style="width:${progressPct}%"></div>
+                    </div>
+                </div>
+                <div class="project-dash-tabs">
+                    <button class="project-dash-tab ${dashTab === 'plan' ? 'active' : ''}" data-tab="plan">Plan</button>
+                    <button class="project-dash-tab ${dashTab === 'agents' ? 'active' : ''}" data-tab="agents">Agents</button>
+                    <button class="project-dash-tab ${dashTab === 'activity' ? 'active' : ''}" data-tab="activity">Activity</button>
+                </div>
+                <div class="project-dash-content" id="project-dash-content"></div>
+            </div>
+        `;
+
+        // Tab switching
+        main.querySelectorAll('.project-dash-tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                this.cmdDashTab = tab.dataset.tab;
+                this.renderProjectDashboard(project);
+            });
+        });
+
+        // Render active tab content
+        const content = document.getElementById('project-dash-content');
+        if (!content) return;
+
+        switch (dashTab) {
+            case 'plan': this._renderDashPlan(content, project); break;
+            case 'agents': this._renderDashAgents(content, project); break;
+            case 'activity': this._renderDashActivity(content, project); break;
+        }
+    }
+
+    _renderDashPlan(el, project) {
+        const tasks = project.tasks || [];
+        if (tasks.length === 0) {
+            const isPlanning = project.status === 'planning';
+            el.innerHTML = `<div class="feature-empty" style="padding:40px">
+                <span>${isPlanning ? 'Coordinator is analyzing the project and creating a plan...' : 'No tasks yet. Launch the coordinator to generate a plan.'}</span>
+            </div>`;
+            return;
+        }
+
+        const statusIcon = { todo: '○', running: '◉', completed: '✓', failed: '✗', assigned: '◎' };
+        const statusClass = { todo: 'task-status-todo', running: 'task-status-running', completed: 'task-status-completed', failed: 'task-status-failed', assigned: 'task-status-assigned' };
+
+        el.innerHTML = `<div class="task-list">${tasks.map((t, i) => `
+            <div class="task-item">
+                <span class="task-priority" style="font-size:16px;min-width:20px;text-align:center">${statusIcon[t.status] || '○'}</span>
+                <div class="task-info">
+                    <div class="task-title">${this.escapeHtml(t.title || t.name || `Task ${i + 1}`)}</div>
+                    ${t.description ? `<div class="task-desc">${this.escapeHtml(t.description).substring(0, 120)}</div>` : ''}
+                </div>
+                <span class="task-status-badge ${statusClass[t.status] || ''}">${t.status || 'todo'}</span>
+                ${t.agent_id ? `<span class="task-agent-id">${t.agent_id}</span>` : ''}
+            </div>
+        `).join('')}</div>`;
+    }
+
+    _renderDashAgents(el, project) {
+        const agents = project.agents || [];
+        if (agents.length === 0) {
+            el.innerHTML = `<div class="feature-empty" style="padding:40px"><span>No agents spawned yet.</span></div>`;
+            return;
+        }
+
+        // Group: coordinator first, then workers
+        const coordinator = agents.find(a => a.role === 'coordinator');
+        const workers = agents.filter(a => a.role !== 'coordinator');
+
+        el.innerHTML = `
+            <div style="display:flex;flex-direction:column;gap:8px">
+                ${coordinator ? `
+                    <div class="agent-card" style="border-left:3px solid var(--brand)">
+                        <div class="agent-card-header">
+                            <div class="agent-card-status">
+                                <span class="agent-status-dot ${coordinator.status}"></span>
+                                Coordinator
+                            </div>
+                            <span class="agent-card-id">${coordinator.id || ''}</span>
+                        </div>
+                        <div class="agent-card-name">${this.escapeHtml(coordinator.name || 'Project Coordinator')}</div>
+                        <div class="agent-card-meta">
+                            <span>${coordinator.model || ''}</span>
+                            <span>${coordinator.steps || 0} steps</span>
+                        </div>
+                    </div>
+                    ${workers.length > 0 ? '<div style="margin-left:24px;border-left:2px solid var(--border);padding-left:16px;display:flex;flex-direction:column;gap:8px">' : ''}
+                ` : ''}
+                ${workers.map(a => `
+                    <div class="agent-card">
+                        <div class="agent-card-header">
+                            <div class="agent-card-status">
+                                <span class="agent-status-dot ${a.status}"></span>
+                                Worker
+                            </div>
+                            <span class="agent-card-id">${a.id || ''}</span>
+                        </div>
+                        <div class="agent-card-name">${this.escapeHtml(a.name || 'Worker')}</div>
+                        <div class="agent-card-meta">
+                            <span>${a.model || ''}</span>
+                            <span>${a.steps || 0} steps</span>
+                            <span>${a.elapsed ? Math.round(a.elapsed) + 's' : ''}</span>
+                        </div>
+                    </div>
+                `).join('')}
+                ${coordinator && workers.length > 0 ? '</div>' : ''}
+            </div>
+        `;
+    }
+
+    _renderDashActivity(el, project) {
+        const activity = project.activity || this.commandFeed || [];
+        if (activity.length === 0) {
+            el.innerHTML = `<div class="feature-empty" style="padding:40px"><span>No activity yet.</span></div>`;
+            return;
+        }
+
+        const senderIcon = (type) => type === 'user' ? '👤' : type === 'agent' ? '🤖' : 'ℹ️';
+
+        el.innerHTML = `
+            <div class="comms-feed" style="padding:0">
+                ${activity.map(m => `
+                    <div class="comms-message">
+                        <span class="comms-icon">${senderIcon(m.sender_type)}</span>
+                        <div class="comms-body">
+                            <div class="comms-header">
+                                <span class="comms-sender">${this.escapeHtml(m.sender_name || m.sender_id || '')}</span>
+                                <span class="comms-time">${m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : ''}</span>
+                            </div>
+                            <div class="comms-content">${this.escapeHtml(m.content || '')}</div>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+        el.scrollTop = el.scrollHeight;
+    }
 
     switchCommandPanel(panel) {
         this.commandPanel = panel;

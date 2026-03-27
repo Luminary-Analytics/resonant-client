@@ -354,40 +354,19 @@
 
                     <!-- ═══ Command Center ═══ -->
                     <div id="command-center" class="command-center" style="display:none">
-                        <div class="command-header">
-                            <div class="command-tabs">
-                                <button class="command-tab active" data-panel="fleet">Fleet</button>
-                                <button class="command-tab" data-panel="tasks">Tasks</button>
-                                <button class="command-tab" data-panel="monitor">Monitor</button>
-                                <button class="command-tab" data-panel="comms">Comms</button>
+                        <div class="cmd-sidebar">
+                            <div class="cmd-sidebar-header">
+                                <span class="cmd-sidebar-title">Projects</span>
+                                <button class="icon-btn" id="cmd-new-project" title="New project">
+                                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                                </button>
                             </div>
-                            <div class="command-actions">
-                                <button class="btn-primary btn-sm" id="command-spawn-btn">+ Spawn Agent</button>
-                            </div>
-                        </div>
-                        <div class="command-panel" id="command-fleet">
-                            <div class="feature-empty">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="10" stroke="currentColor" stroke-width="1.5"/><path d="M16 11v6M13 20h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                                <span>No agents running. Click <strong>+ Spawn Agent</strong> to start one.</span>
+                            <div class="cmd-project-list" id="cmd-project-list">
+                                <!-- Rendered by JS -->
                             </div>
                         </div>
-                        <div class="command-panel" id="command-tasks" style="display:none">
-                            <div class="feature-empty">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="8" y="6" width="16" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M12 12h8M12 16h8M12 20h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                                <span>No tasks yet. Create tasks and assign them to agents.</span>
-                            </div>
-                        </div>
-                        <div class="command-panel" id="command-monitor" style="display:none">
-                            <div class="feature-empty">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="4" y="6" width="24" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M10 26h12M16 22v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 14l4-3 4 5 4-4 4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                <span>Select a running agent to monitor its live activity.</span>
-                            </div>
-                        </div>
-                        <div class="command-panel" id="command-comms" style="display:none">
-                            <div class="feature-empty">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M6 8h20v14H18l-4 4v-4H6z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M11 14h10M11 18h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                                <span>Agent communication feed. Broadcast instructions or view agent findings.</span>
-                            </div>
+                        <div class="cmd-main" id="cmd-main">
+                            <!-- New project form or project dashboard rendered by JS -->
                         </div>
                     </div>
 

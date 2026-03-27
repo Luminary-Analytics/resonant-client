@@ -3099,8 +3099,23 @@ async def websocket_endpoint(ws: WebSocket):
                         f"5. After completing each task, summarize what was done\n\n"
                         f"Work through all tasks methodically. Be thorough but efficient."
                     )
-                    backend_type = getattr(state.backend, "name", "")
-                    model = getattr(state.backend, "model", "")
+                    backend_type = msg.get("backend", "") or getattr(state.backend, "name", "")
+                    model = msg.get("model", "") or getattr(state.backend, "model", "")
+                    if not backend_type:
+                        # Try to pick the first available backend
+                        for bname in ("codex", "claude-code", "openai", "resonant"):
+                            if bname in state.available_backends:
+                                backend_type = bname
+                                binfo = state.available_backends[bname]
+                                if isinstance(binfo, dict) and binfo.get("models"):
+                                    models_list = binfo["models"]
+                                    if isinstance(models_list, list) and models_list:
+                                        model = models_list[0] if isinstance(models_list[0], str) else models_list[0].get("id", "")
+                                    elif isinstance(models_list, dict):
+                                        model = next(iter(models_list.values()), {}).get("id", "")
+                                break
+                    if not backend_type:
+                        raise ValueError("No AI backend available. Please select a backend first.")
                     spec = state.build_backend_spec(backend_type, model=model or None, project_path=path)
 
                     def _make_coordinator_event_handler(pid):

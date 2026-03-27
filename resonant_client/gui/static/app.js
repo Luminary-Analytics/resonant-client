@@ -812,6 +812,7 @@ class ResonantApp {
             this.commandCenter.style.display = mode === 'command' ? 'flex' : 'none';
         }
         if (mode === 'command') {
+            // Hide all chat/feature views
             this.chatContainer.style.display = 'none';
             this.inputBar.style.display = 'none';
             this.welcomeScreen.style.display = 'none';
@@ -820,32 +821,17 @@ class ResonantApp {
             if (this.settingsView) this.settingsView.style.display = 'none';
             if (this.scheduleView) this.scheduleView.style.display = 'none';
             if (this.dispatchView) this.dispatchView.style.display = 'none';
-            // Hide sidebar elements that don't apply in command mode
-            const sessionList = document.getElementById('session-list');
-            if (sessionList) sessionList.style.display = 'none';
-            const search = document.querySelector('.sidebar-search');
-            if (search) search.style.display = 'none';
-            const pf = document.getElementById('sidebar-project-filter');
-            if (pf) pf.style.display = 'none';
-            const newBtn = document.getElementById('new-session-btn');
-            if (newBtn) newBtn.style.display = 'none';
-            // Hide sidebar nav items to prevent accidental view switching
-            document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el => {
-                el.style.display = 'none';
-            });
+            // Hide the entire main sidebar — Command Center has its own project sidebar
+            const sidebar = document.getElementById('sidebar');
+            if (sidebar) sidebar.style.display = 'none';
             this.currentView = 'command';
             this.initCommandCenter();
             return;
         }
 
-        // Restore sidebar elements when leaving command mode
-        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el => {
-            el.style.display = '';
-        });
-        const sessionList = document.getElementById('session-list');
-        if (sessionList) sessionList.style.display = '';
-        const search = document.querySelector('.sidebar-search');
-        if (search) search.style.display = '';
+        // Restore the main sidebar when leaving command mode
+        const sidebar = document.getElementById('sidebar');
+        if (sidebar) sidebar.style.display = '';
 
         // Toggle sidebar content — project filter vs chat groups
         const projectFilter = document.getElementById('sidebar-project-filter');
@@ -4842,11 +4828,28 @@ class ResonantApp {
             const name = document.getElementById('cmd-project-name')?.value?.trim();
             const strategy = document.getElementById('cmd-project-strategy')?.value?.trim();
             if (!strategy) return;
+            // Find best available backend for coordinator
+            const preferredBackends = ['codex', 'claude-code', 'openai'];
+            let backendType = '';
+            let backendModel = '';
+            for (const bname of preferredBackends) {
+                const binfo = this.backends?.[bname];
+                if (binfo) {
+                    backendType = bname;
+                    const models = binfo.models;
+                    if (Array.isArray(models) && models.length > 0) {
+                        backendModel = typeof models[0] === 'string' ? models[0] : models[0]?.id || '';
+                    }
+                    break;
+                }
+            }
             this.send({
                 command: 'command_project_create',
                 path: path || this.currentCwd,
                 name: name || (path || 'Project').split(/[/\\]/).pop(),
                 strategy,
+                backend: backendType,
+                model: backendModel,
             });
         });
     }

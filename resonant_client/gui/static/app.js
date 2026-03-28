@@ -4852,6 +4852,11 @@ class ResonantApp {
                         placeholder="Describe the high-level objective. The AI coordinator will break this into tasks, spawn worker agents, and manage the execution.&#10;&#10;Example: Build a complete user authentication system with JWT tokens. Implement signup, login, password reset endpoints. Add auth middleware. Write tests for all endpoints."></textarea>
                 </div>
 
+                <div class="cmd-form-group">
+                    <label>Coordinator Model</label>
+                    <select class="settings-input" id="cmd-coordinator-model"></select>
+                </div>
+
                 <div style="display:flex;gap:10px;margin-top:8px">
                     <button class="btn-primary" id="cmd-launch-btn" style="padding:10px 24px;font-size:14px">
                         Launch Coordinator
@@ -4860,26 +4865,20 @@ class ResonantApp {
             </div>
         `;
 
+        // Populate model selector dropdown
+        const modelSelect = document.getElementById('cmd-coordinator-model');
+        if (modelSelect) {
+            this._populateCommandModelSelector(modelSelect);
+        }
+
         document.getElementById('cmd-launch-btn')?.addEventListener('click', () => {
             const path = document.getElementById('cmd-project-path')?.value?.trim();
             const name = document.getElementById('cmd-project-name')?.value?.trim();
             const strategy = document.getElementById('cmd-project-strategy')?.value?.trim();
             if (!strategy) return;
-            // Find best available backend for coordinator
-            const preferredBackends = ['codex', 'claude-code', 'openai'];
-            let backendType = '';
-            let backendModel = '';
-            for (const bname of preferredBackends) {
-                const binfo = this.backends?.[bname];
-                if (binfo) {
-                    backendType = bname;
-                    const models = binfo.models;
-                    if (Array.isArray(models) && models.length > 0) {
-                        backendModel = typeof models[0] === 'string' ? models[0] : models[0]?.id || '';
-                    }
-                    break;
-                }
-            }
+            // Use the selected model from dropdown
+            const selectedValue = document.getElementById('cmd-coordinator-model')?.value || '';
+            const [backendType, backendModel] = selectedValue.includes(':') ? selectedValue.split(':') : ['', ''];
             this.send({
                 command: 'command_project_create',
                 path: path || this.currentCwd,
@@ -4889,6 +4888,36 @@ class ResonantApp {
                 model: backendModel,
             });
         });
+    }
+
+    _populateCommandModelSelector(selectEl, selectedValue) {
+        selectEl.innerHTML = '';
+        const backendLabels = this._getBackendLabels ? this._getBackendLabels() : {};
+        for (const [key, info] of Object.entries(this.backends || {})) {
+            if (!info || !info.models || info.models.length === 0) continue;
+            const labels = info.model_labels || {};
+            const bLabel = backendLabels[key] || key;
+            const optgroup = document.createElement('optgroup');
+            optgroup.label = bLabel;
+            for (const m of info.models) {
+                const opt = document.createElement('option');
+                opt.value = `${key}:${m}`;
+                opt.textContent = labels[m] || m;
+                if (selectedValue && opt.value === selectedValue) opt.selected = true;
+                optgroup.appendChild(opt);
+            }
+            selectEl.appendChild(optgroup);
+        }
+        // If nothing selected, try to pick a sensible default
+        if (!selectedValue && selectEl.options.length > 0) {
+            // Prefer codex or claude-code
+            for (const opt of selectEl.options) {
+                if (opt.value.startsWith('codex:') || opt.value.startsWith('claude-code:')) {
+                    opt.selected = true;
+                    break;
+                }
+            }
+        }
     }
 
     renderProjectDashboard(project) {

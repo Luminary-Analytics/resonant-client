@@ -591,6 +591,8 @@ class HarnessOrchestrator:
             "cli error",
             "no resonant-harness update",
             "doom loop",
+            "syntax gate failed",
+            "syntax/runtime failure",
         )
         if role == "evaluator":
             return any(token in lowered for token in common_retry_tokens)

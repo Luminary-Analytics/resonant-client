@@ -1195,21 +1195,22 @@ class AppState:
                 resolved_path,
                 start_line=line_number,
                 end_line=line_number,
-                padding=18,
-                max_lines=80,
-                max_chars=2600,
+                padding=8,
+                max_lines=48,
+                max_chars=1800,
             )
         else:
             file_context = self._format_numbered_excerpt(
                 resolved_path,
-                max_lines=72,
-                max_chars=2600,
+                max_lines=48,
+                max_chars=1800,
             )
         return {
             "line_number": line_number,
             "error_line": str(traceback_data.get("error_line") or "").strip(),
             "combined": str(traceback_data.get("combined") or "").strip(),
             "file_context": file_context,
+            "edit_snippets": self._extract_edit_snippet_artifacts(summary),
         }
 
     def build_harness_generator_repair_prompt(
@@ -1236,6 +1237,8 @@ class AppState:
             "Fix only the concrete failure shown below.",
             "Edit only the target file and keep the original sprint scope.",
             "Do not re-plan, do not explore the repo, and do not rewrite unrelated parts of the file.",
+            "Repair only the failed edit window or its immediate surroundings.",
+            "Do not touch the shebang, __future__ import, or unrelated imports unless the failure is on that exact line.",
             "Use file_edit for the patch and at most one cheap bash validation command.",
             "Use the suggested validation command exactly as written after the repair.",
             "",
@@ -1270,6 +1273,10 @@ class AppState:
         if validation_commands:
             lines.extend(["", "Suggested validation command (use exactly this command):"])
             lines.append(f"- {validation_commands[0]}")
+        edit_snippets = repair.get("edit_snippets") or []
+        if edit_snippets:
+            lines.extend(["", "Last attempted edit snippets:"])
+            lines.extend(edit_snippets[:4])
         lines.extend(
             [
                 "",
@@ -1337,6 +1344,8 @@ class AppState:
             "Make the smallest patch that satisfies the sprint.",
             "Edit only the target file shown below.",
             "Do not explore the repo or open unrelated files.",
+            "Do not rewrite the file prologue, shebang, __future__ imports, or unrelated import blocks unless the acceptance checks require it.",
+            "Prefer the smallest local replacement over generating new scaffolding or broad rewrites.",
             "Use file_edit for the patch and at most one cheap bash validation command if it is obvious.",
             "If the file context below is insufficient or the change needs another file, stop and record a blocker instead.",
             "",
@@ -1806,6 +1815,44 @@ class AppState:
 
         return touched_files[:6], validation_artifacts[:6]
 
+    def extract_generator_edit_snippets(
+        self,
+        *,
+        project_path: Optional[str] = None,
+        display_events: list[dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        snippets: list[dict[str, str]] = []
+        seen_files: set[str] = set()
+
+        for event in display_events:
+            if event.get("event") != EngineEvent.TOOL_CALL.value:
+                continue
+            if str(event.get("name") or "").strip() != "file_edit":
+                continue
+            arguments = self._extract_tool_arguments_from_event(event)
+            raw_path = str(arguments.get("path") or "").strip()
+            if not raw_path:
+                continue
+            display_path = os.path.relpath(
+                str(self._resolve_harness_touched_path(target_path, raw_path)),
+                target_path,
+            ).replace(os.sep, "/")
+            if display_path in seen_files:
+                continue
+            seen_files.add(display_path)
+            snippets.append(
+                {
+                    "path": display_path,
+                    "old_text": self._truncate_text(str(arguments.get("old_text") or "").strip(), max_chars=500),
+                    "new_text": self._truncate_text(str(arguments.get("new_text") or "").strip(), max_chars=500),
+                }
+            )
+            if len(snippets) >= 2:
+                break
+
+        return snippets
+
     def _preferred_harness_python(self, project_path: Optional[str] = None) -> str:
         target_path = os.path.normpath(project_path or self.project.project_path or os.getcwd())
         candidates = [
@@ -1847,6 +1894,148 @@ class AppState:
     def _validation_command_has_placeholder(command: str) -> bool:
         text = str(command or "")
         return bool(re.search(r"<[^>\n]+>", text))
+
+    def apply_generator_post_patch_safety_gate(
+        self,
+        *,
+        project_path: Optional[str] = None,
+        payload: dict[str, Any],
+        generator_mode: str,
+        display_events: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], str]:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        if generator_mode not in {"patch", "repair", "structured"}:
+            return payload, ""
+        if not isinstance(payload, dict):
+            return payload, ""
+
+        generator_payload = payload.get("generator_update") if isinstance(payload.get("generator_update"), dict) else {}
+        progress = payload.get("progress") if isinstance(payload.get("progress"), dict) else {}
+        if not progress and isinstance(generator_payload.get("progress"), dict):
+            progress = dict(generator_payload.get("progress") or {})
+        else:
+            progress = dict(progress or {})
+
+        summary = self.get_harness_summary(target_path)
+        raw_touched = self._normalize_string_list(progress.get("touched_files")) or self._normalize_string_list(
+            summary.get("target_files")
+        )
+        python_targets: list[tuple[str, Path]] = []
+        seen_targets: set[str] = set()
+        for raw_path in raw_touched:
+            resolved = self._resolve_harness_touched_path(target_path, raw_path)
+            if resolved.suffix != ".py" or not resolved.exists() or not resolved.is_file():
+                continue
+            display_path = os.path.relpath(str(resolved), target_path).replace(os.sep, "/")
+            if display_path in seen_targets:
+                continue
+            seen_targets.add(display_path)
+            python_targets.append((display_path, resolved))
+        if not python_targets:
+            return payload, ""
+
+        python_bin = self._preferred_harness_python(target_path)
+        command = [python_bin, "-m", "py_compile", *[str(path) for _, path in python_targets[:2]]]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=target_path,
+                text=True,
+                capture_output=True,
+                timeout=20,
+            )
+            output = "\n".join(
+                part for part in (str(completed.stdout or "").strip(), str(completed.stderr or "").strip()) if part
+            ).strip()
+        except Exception as exc:
+            completed = None
+            output = f"Failed to start syntax gate: {exc}"
+
+        if completed is not None and completed.returncode == 0:
+            return payload, ""
+
+        edit_snippets = self.extract_generator_edit_snippets(project_path=target_path, display_events=display_events)
+        validation_checks = self._normalize_string_list(progress.get("validation_checks"))
+        validation_artifacts = self._normalize_string_list(progress.get("validation_artifacts"))
+        blockers = self._normalize_string_list(progress.get("blockers"))
+        gate_output = self._truncate_text(output or "py_compile failed without output", max_chars=260)
+        gate_command = " ".join(command)
+        gate_message = self._truncate_text(f"Post-patch syntax gate failed: {gate_output}", max_chars=220)
+
+        if gate_message not in validation_checks:
+            validation_checks.append(gate_message)
+        gate_artifacts = [
+            self._truncate_text(f"Post-patch syntax gate command: {gate_command}", max_chars=220),
+            gate_message,
+        ]
+        for snippet in edit_snippets:
+            path = snippet.get("path") or "(unknown)"
+            old_text = str(snippet.get("old_text") or "").strip()
+            new_text = str(snippet.get("new_text") or "").strip()
+            if old_text:
+                gate_artifacts.append(f"Edited snippet before ({path}):\n{old_text}")
+            if new_text:
+                gate_artifacts.append(f"Edited snippet after ({path}):\n{new_text}")
+
+        merged_artifacts: list[str] = []
+        for artifact in [*gate_artifacts, *validation_artifacts]:
+            if artifact and artifact not in merged_artifacts:
+                merged_artifacts.append(artifact)
+
+        blocker = "Fix the syntax/runtime failure before claiming implementation."
+        if blocker not in blockers:
+            blockers.append(blocker)
+
+        summary_text = self._truncate_text(
+            f"Patch introduced a blocking syntax/runtime failure in {python_targets[0][0]}. Repair is required.",
+            max_chars=220,
+        )
+        progress.update(
+            {
+                "summary": summary_text,
+                "last_validation": gate_message,
+                "validation_checks": validation_checks[:8],
+                "validation_artifacts": merged_artifacts[:8],
+                "acceptance_evidence": {},
+                "blockers": blockers[:4],
+                "next_steps": [
+                    "Repair the broken patch in the target file only.",
+                    "Rerun the validation command after the repair.",
+                ],
+                "current_phase": "blocked",
+            }
+        )
+        payload["progress"] = progress
+        payload["sprint_status"] = "failed"
+        payload["handoff_markdown"] = "\n".join(
+            [
+                "# Repair required",
+                "",
+                f"## Summary\n{summary_text}",
+                "",
+                "## Blocking validation",
+                f"- {gate_message}",
+                "",
+                "## Target files",
+                *[f"- `{path}`" for path, _ in python_targets[:4]],
+            ]
+        )
+        if isinstance(generator_payload, dict):
+            generator_payload["progress"] = progress
+            generator_payload["sprint_status"] = "failed"
+            generator_payload["handoff_markdown"] = payload.get("handoff_markdown", "")
+            payload["generator_update"] = generator_payload
+
+        return payload, gate_message
+
+    @staticmethod
+    def _extract_edit_snippet_artifacts(summary: dict[str, Any]) -> list[str]:
+        snippets: list[str] = []
+        for item in summary.get("validation_artifacts") or []:
+            text = str(item or "").strip()
+            if text.startswith("Edited snippet before") or text.startswith("Edited snippet after"):
+                snippets.append(text)
+        return snippets[:4]
 
     def run_harness_generator_validation_probes(
         self,
@@ -3020,6 +3209,9 @@ class AppState:
             "needs_revision": "needs_revision",
             "implement": "implemented",
             "implemented": "implemented",
+            "repair": "implemented",
+            "repaired": "implemented",
+            "fixed": "implemented",
             "ready_for_evaluation": "implemented",
             "evaluation_ready": "implemented",
             "ready_to_evaluate": "implemented",
@@ -3060,6 +3252,9 @@ class AppState:
             "implementation_update": "generator_update",
             "implementation_complete": "generator_update",
             "code_update": "generator_update",
+            "repair_update": "generator_update",
+            "repair_complete": "generator_update",
+            "repair_result": "generator_update",
             "evaluator_verdict": "evaluator_verdict",
             "evaluation_verdict": "evaluator_verdict",
             "evaluation_complete": "evaluator_verdict",
@@ -3475,6 +3670,7 @@ class AppState:
                         continue
                     for key, target_key in (
                         ("summary", "summary"),
+                        ("repair_summary", "summary"),
                         ("validation_summary", "last_validation"),
                         ("last_validation", "last_validation"),
                         ("product_goal", "product_goal"),
@@ -3494,6 +3690,24 @@ class AppState:
                             progress_data[key] = source.get(key)
                     if source.get("acceptance_evidence") not in (None, "", [], {}):
                         progress_data["acceptance_evidence"] = source.get("acceptance_evidence")
+                    if source.get("validation_command") not in (None, ""):
+                        progress_data.setdefault(
+                            "last_validation",
+                            f"Ran validation command: {str(source.get('validation_command') or '').strip()}",
+                        )
+                        progress_data.setdefault("validation_artifacts", [])
+                        progress_data["validation_artifacts"] = list(progress_data["validation_artifacts"]) + [
+                            f"Validation command: {str(source.get('validation_command') or '').strip()}"
+                        ]
+                    if source.get("validation_output") not in (None, ""):
+                        progress_data.setdefault("validation_artifacts", [])
+                        exit_code = source.get("exit_code")
+                        exit_suffix = ""
+                        if isinstance(exit_code, (int, float)) and not isinstance(exit_code, bool):
+                            exit_suffix = f" exit={int(exit_code)}"
+                        progress_data["validation_artifacts"] = list(progress_data["validation_artifacts"]) + [
+                            f"Validation output{exit_suffix}: {str(source.get('validation_output') or '').strip()}"
+                        ]
                     if source.get("current_phase") not in (None, ""):
                         progress_data["current_phase"] = source.get("current_phase")
             if progress_data.get("last_validation") and "validation_artifacts" not in progress_data:
@@ -3536,7 +3750,13 @@ class AppState:
             if handoff_markdown:
                 harness.write_handoff(handoff_markdown)
 
-            sprint_status = str(payload.get("sprint_status") or generator_payload.get("sprint_status") or "").strip()
+            sprint_status = str(
+                payload.get("sprint_status")
+                or generator_payload.get("sprint_status")
+                or payload.get("status")
+                or generator_payload.get("status")
+                or ""
+            ).strip()
             sprint_status = self.normalize_harness_contract_status(sprint_status, session_role="generator")
             if sprint_status in {"proposed", "approved", "implemented", "needs_revision", "passed", "failed"}:
                 harness.set_contract_status(status=sprint_status, role="generator")
@@ -4075,7 +4295,7 @@ class AppState:
         if session_role == "generator" and self._harness_generator_needs_frontier_repair(project_path):
             preferences = {
                 **preferences,
-                "generator": ["codex", "claude-code", "mlx", "openai", "claude", "ollama", "lmstudio"],
+                "generator": ["claude-code", "codex", "mlx", "openai", "claude", "ollama", "lmstudio"],
             }
 
         for backend_type in preferences.get(session_role, preferences["generator"]):
@@ -4086,6 +4306,8 @@ class AppState:
             preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
             if self.backend_spec and self.backend_spec.backend_type == backend_type and self.backend_spec.model:
                 model = self.backend_spec.model
+            elif session_role == "generator" and backend_type == "claude-code" and self._harness_generator_needs_frontier_repair(project_path):
+                model = "sonnet" if "sonnet" in models else (models[0] if models else "")
             elif session_role == "generator" and backend_type == "codex" and self._harness_generator_needs_frontier_repair(project_path):
                 model = "gpt-5.4" if "gpt-5.4" in models else (models[0] if models else "")
             elif backend_type == "mlx" and preferred_mlx_model in models:
@@ -4160,8 +4382,9 @@ class AppState:
         role_env = session_role.upper()
         forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_BACKEND", "") or "").strip()
         forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_MODEL", "") or "").strip()
+        repair_needed = session_role == "generator" and self._harness_generator_needs_frontier_repair(project_path)
 
-        if forced_backend:
+        if forced_backend and not repair_needed:
             info = self.available_backends.get(forced_backend)
             if not info:
                 raise ValueError(
@@ -4182,7 +4405,11 @@ class AppState:
             "generator": "adapter-router",
             "evaluator": "fast-14b",
         }
-        repair_needed = session_role == "generator" and self._harness_generator_needs_frontier_repair(project_path)
+        if repair_needed:
+            retry_preferences = {
+                **retry_preferences,
+                "generator": ["claude-code", "codex", "mlx", "openai", "claude", "ollama", "lmstudio"],
+            }
 
         for backend_type in retry_preferences.get(session_role, retry_preferences["evaluator"]):
             if backend_type == failed_backend:
@@ -4192,7 +4419,9 @@ class AppState:
                 continue
             models = list(info.get("models") or [])
             preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
-            if backend_type == "codex" and repair_needed and "gpt-5.4" in models:
+            if backend_type == "claude-code" and repair_needed:
+                model = "sonnet" if "sonnet" in models else (models[0] if models else "")
+            elif backend_type == "codex" and repair_needed and "gpt-5.4" in models:
                 model = "gpt-5.4"
             elif backend_type == "mlx" and preferred_mlx_model in models:
                 model = preferred_mlx_model
@@ -4380,6 +4609,7 @@ class AppState:
         steps = 0
         error = ""
         deferred_parse_error = ""
+        post_apply_error = ""
         pending_harness_payload: dict[str, Any] | None = None
         pending_harness_text = ""
 
@@ -4444,6 +4674,14 @@ class AppState:
             if inferred_payload is not None:
                 pending_harness_payload = inferred_payload
 
+        if not error and pending_harness_payload is not None and normalized_role == "generator":
+            pending_harness_payload, post_apply_error = self.apply_generator_post_patch_safety_gate(
+                project_path=project_path,
+                payload=pending_harness_payload,
+                generator_mode=generator_mode,
+                display_events=display_events,
+            )
+
         if not error and pending_harness_payload is not None:
             try:
                 self.apply_harness_update(
@@ -4454,6 +4692,8 @@ class AppState:
                     assistant_text=pending_harness_text,
                     user_request=effective_prompt,
                 )
+                if post_apply_error and not error:
+                    error = post_apply_error
             except Exception as exc:
                 error = f"Failed to apply harness update: {exc}"
         elif not error and deferred_parse_error:

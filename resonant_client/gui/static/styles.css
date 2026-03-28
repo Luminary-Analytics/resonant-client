@@ -3855,6 +3855,22 @@ body.chat-mode #preview-resize {
     transition: width 0.5s ease;
 }
 
+.project-initiative-bar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 28px;
+    border-bottom: 1px solid var(--border);
+}
+
+.project-initiative-bar input {
+    font-size: 13px;
+}
+
+.project-initiative-bar select {
+    font-size: 12px;
+}
+
 .project-dash-tabs {
     display: flex;
     gap: 0;

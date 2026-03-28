@@ -5688,6 +5688,78 @@ async def websocket_endpoint(ws: WebSocket):
                 else:
                     await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
 
+            # ── Command Center: Initiative ────────────────────
+            elif command == "command_project_initiative":
+                project_id = msg.get("project_id", "")
+                prompt = msg.get("prompt", "").strip()
+                proj = state.command_project_store.get_project(project_id)
+                if not proj:
+                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
+                    continue
+                if not prompt:
+                    await ws.send_json({"event": "error", "message": "Initiative prompt is required"})
+                    continue
+                try:
+                    backend_type = msg.get("backend", "") or getattr(state.backend, "name", "")
+                    model = msg.get("model", "") or getattr(state.backend, "model", "")
+                    if not backend_type:
+                        for bname in ("codex", "claude-code", "openai", "resonant"):
+                            if bname in state.available_backends:
+                                backend_type = bname
+                                binfo = state.available_backends[bname]
+                                if isinstance(binfo, dict) and binfo.get("models"):
+                                    models_list = binfo["models"]
+                                    if isinstance(models_list, list) and models_list:
+                                        model = models_list[0] if isinstance(models_list[0], str) else models_list[0].get("id", "")
+                                break
+                    if not backend_type:
+                        raise ValueError("No AI backend available")
+                    spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
+                    initiative_prompt = (
+                        f"You are working on the project at: {proj.path}\n\n"
+                        f"## Project Context\n{proj.strategy}\n\n"
+                        f"## Your Task\n{prompt}\n\n"
+                        f"## Instructions\n"
+                        f"Execute this task completely. Write all necessary code files, run commands as needed. "
+                        f"Be thorough and create production-quality code."
+                    )
+
+                    def _make_init_event_handler(pid):
+                        def handler(task_id, event):
+                            state._push_agent_event(task_id, event)
+                            if event.get("event") == "text.done":
+                                text = event.get("text", "")[:200]
+                                if text.strip():
+                                    state.command_project_store.add_activity(pid, "agent", "Worker", text)
+                        return handler
+
+                    bg_task = state.task_runner.submit(
+                        name=prompt[:60],
+                        prompt=initiative_prompt,
+                        session_factory=state.make_background_session,
+                        backend_type=backend_type,
+                        model=spec.model,
+                        project_path=proj.path,
+                        session_mode="code",
+                        session_role="generator",
+                        backend_spec=spec.to_dict(),
+                        on_event=_make_init_event_handler(proj.id),
+                    )
+                    # Add agent to project
+                    agents = proj.agents.copy() if hasattr(proj, 'agents') and proj.agents else []
+                    agents.append({
+                        "id": bg_task.id, "name": prompt[:60],
+                        "role": "worker", "status": "running",
+                        "model": spec.model, "steps": 0, "elapsed": 0,
+                    })
+                    state.command_project_store.update_project(proj.id, agents=agents, status="running")
+                    proj.add_activity("system", "System", f"Initiative launched: {prompt[:80]}")
+                    state.command_project_store._persist(proj)
+                    proj = state.command_project_store.get_project(proj.id)
+                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
+                except Exception as e:
+                    await ws.send_json({"event": "error", "message": f"Failed to launch initiative: {e}"})
+
             # ── Command Center: Fleet ───────────────────────
             elif command == "command_fleet":
                 tasks = state.task_runner.list_tasks(limit=100)

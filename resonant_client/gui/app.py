@@ -5756,18 +5756,16 @@ async def websocket_endpoint(ws: WebSocket):
                 proj = state.command_project_store.get_project(project_id)
                 if proj:
                     project_path = os.path.normpath(proj.path)
-                    # Look for index.html
+                    # Look for index.html or any HTML file
                     index_path = os.path.join(project_path, "index.html")
                     if os.path.exists(index_path):
-                        # Serve via file:// URL
-                        file_url = "file:///" + index_path.replace("\\", "/")
-                        await ws.send_json({"event": "command_project_preview", "url": file_url})
+                        preview_url = f"/preview/{project_id}/index.html"
+                        await ws.send_json({"event": "command_project_preview", "url": preview_url})
                     else:
-                        # Look for any HTML file
                         html_files = [f for f in os.listdir(project_path) if f.endswith('.html')]
                         if html_files:
-                            file_url = "file:///" + os.path.join(project_path, html_files[0]).replace("\\", "/")
-                            await ws.send_json({"event": "command_project_preview", "url": file_url})
+                            preview_url = f"/preview/{project_id}/{html_files[0]}"
+                            await ws.send_json({"event": "command_project_preview", "url": preview_url})
                         else:
                             await ws.send_json({"event": "command_project_preview", "error": "No HTML files found in project. The project may still be building."})
                 else:
@@ -6531,11 +6529,29 @@ async def homepage(request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+async def preview_file(request):
+    """Serve project files for preview. URL: /preview/{project_id}/{path:path}"""
+    from starlette.responses import FileResponse, JSONResponse
+    project_id = request.path_params.get("project_id", "")
+    file_path = request.path_params.get("path", "index.html")
+    proj = state.command_project_store.get_project(project_id) if hasattr(state, "command_project_store") else None
+    if not proj:
+        return JSONResponse({"error": "Project not found"}, status_code=404)
+    full_path = os.path.normpath(os.path.join(proj.path, file_path))
+    # Security: ensure the file is within the project directory
+    if not full_path.startswith(os.path.normpath(proj.path)):
+        return JSONResponse({"error": "Access denied"}, status_code=403)
+    if not os.path.isfile(full_path):
+        return JSONResponse({"error": f"File not found: {file_path}"}, status_code=404)
+    return FileResponse(full_path)
+
+
 # ── Starlette App ─────────────────────────────────────────────────────
 
 app = Starlette(
     routes=[
         Route("/", homepage),
+        Route("/preview/{project_id}/{path:path}", preview_file),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

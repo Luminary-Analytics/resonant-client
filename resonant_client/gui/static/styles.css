@@ -4410,9 +4410,23 @@ body.chat-mode #preview-resize {
 }
 
 .project-chat-input-bar {
-    padding: 12px 0 0;
+    padding: 8px 0 0;
     border-top: 1px solid var(--border);
     flex-shrink: 0;
+}
+
+.project-chat-model-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 0 6px;
+}
+
+.project-chat-model-label {
+    font-size: 11px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .project-chat-input-row {

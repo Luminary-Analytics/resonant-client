@@ -5000,12 +5000,6 @@ class ResonantApp {
                         <div class="project-dash-progress-bar" style="width:${progressPct}%"></div>
                     </div>
                 </div>
-                <div class="project-initiative-bar">
-                    <input type="text" class="settings-input" id="initiative-input"
-                        placeholder="Launch new initiative... e.g. 'Add password reset endpoint'" style="flex:1" />
-                    <select class="settings-input" id="initiative-model" style="width:180px"></select>
-                    <button class="btn-primary btn-sm" id="initiative-launch-btn">Launch</button>
-                </div>
                 <div class="project-dash-tabs">
                     <button class="project-dash-tab ${dashTab === 'chat' ? 'active' : ''}" data-tab="chat">Chat</button>
                     <button class="project-dash-tab ${dashTab === 'plan' ? 'active' : ''}" data-tab="plan">Plan</button>
@@ -5016,34 +5010,6 @@ class ResonantApp {
                 <div class="project-dash-content" id="project-dash-content"></div>
             </div>
         `;
-
-        // Populate initiative model selector
-        const initModelSelect = document.getElementById('initiative-model');
-        if (initModelSelect) this._populateCommandModelSelector(initModelSelect);
-
-        // Initiative launch
-        document.getElementById('initiative-launch-btn')?.addEventListener('click', () => {
-            const prompt = document.getElementById('initiative-input')?.value?.trim();
-            if (!prompt) return;
-            const selectedValue = document.getElementById('initiative-model')?.value || '';
-            const [backend, model] = selectedValue.includes(':') ? selectedValue.split(':') : ['', ''];
-            this.send({
-                command: 'command_project_initiative',
-                project_id: project.id,
-                prompt,
-                backend,
-                model,
-            });
-            document.getElementById('initiative-input').value = '';
-        });
-
-        // Enter to launch initiative
-        document.getElementById('initiative-input')?.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                document.getElementById('initiative-launch-btn')?.click();
-            }
-        });
 
         // Preview button — open project's index.html or serve files
         document.getElementById('dash-preview-btn')?.addEventListener('click', () => {
@@ -5111,6 +5077,10 @@ class ResonantApp {
                     `).join('')}
                 </div>
                 <div class="project-chat-input-bar">
+                    <div class="project-chat-model-row">
+                        <span class="project-chat-model-label">Model:</span>
+                        <select class="settings-input" id="project-chat-model" style="width:200px;font-size:12px"></select>
+                    </div>
                     <div class="project-chat-input-row">
                         <textarea class="settings-input" id="project-chat-input" rows="2"
                             placeholder="Tell the coordinator what to do..."></textarea>
@@ -5123,6 +5093,10 @@ class ResonantApp {
         // Scroll to bottom
         const messagesEl = document.getElementById('project-chat-messages');
         if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+
+        // Populate model selector
+        const chatModelSelect = document.getElementById('project-chat-model');
+        if (chatModelSelect) this._populateCommandModelSelector(chatModelSelect);
 
         // Send handler
         const sendMessage = () => {

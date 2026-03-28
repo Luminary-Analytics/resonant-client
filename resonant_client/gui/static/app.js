@@ -4950,6 +4950,19 @@ class ResonantApp {
         const main = document.getElementById('cmd-main');
         if (!main) return;
 
+        // Auto-refresh: poll every 5s while project has active agents
+        if (this._cmdRefreshTimer) clearInterval(this._cmdRefreshTimer);
+        const hasActive = (project.agents || []).some(a => a.status === 'running');
+        if (hasActive && this.sessionMode === 'command') {
+            this._cmdRefreshTimer = setInterval(() => {
+                if (this.sessionMode !== 'command' || this.cmdSelectedProject !== project.id) {
+                    clearInterval(this._cmdRefreshTimer);
+                    return;
+                }
+                this.send({ command: 'command_project_status', project_id: project.id });
+            }, 5000);
+        }
+
         const tasks = project.tasks || [];
         const completedTasks = tasks.filter(t => t.status === 'completed').length;
         const totalTasks = tasks.length;

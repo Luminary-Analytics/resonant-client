@@ -5826,24 +5826,40 @@ async def websocket_endpoint(ws: WebSocket):
 
                     # Run the coordinator session in a background thread and stream results
                     async def _run_coordinator_chat(session, prompt, pid):
-                        collected_text = []
                         try:
+                            _ws = ws  # capture ws reference
+                            _loop = asyncio.get_event_loop()
+                            _texts = []
+
                             def _run():
-                                texts = []
                                 for event in session.run(prompt):
                                     event_type = event.get("event", "")
                                     if event_type == "text.delta":
                                         delta = event.get("text", "")
                                         if delta:
-                                            texts.append(delta)
+                                            _texts.append(delta)
+                                            # Stream delta to frontend
+                                            try:
+                                                asyncio.run_coroutine_threadsafe(
+                                                    _ws.send_json({
+                                                        "event": "command_project_chat_delta",
+                                                        "project_id": pid,
+                                                        "text": delta,
+                                                    }),
+                                                    _loop,
+                                                )
+                                            except Exception:
+                                                pass
                                     elif event_type == "text.done":
                                         text = event.get("text", "")
                                         if text:
-                                            texts.append(text)
-                                return "".join(texts) if texts else "(no response)"
+                                            _texts.append(text)
+                                return "".join(_texts) if _texts else "(no response)"
 
-                            loop = asyncio.get_event_loop()
-                            result = await loop.run_in_executor(None, _run)
+                            result = await asyncio.wait_for(
+                                _loop.run_in_executor(None, _run),
+                                timeout=180,  # 3 minute timeout
+                            )
 
                             await ws.send_json({
                                 "event": "command_project_chat_response",
@@ -5854,6 +5870,13 @@ async def websocket_endpoint(ws: WebSocket):
                             # Also add to project activity
                             state.command_project_store.add_activity(pid, "agent", "Coordinator", result[:200])
 
+                        except asyncio.TimeoutError:
+                            partial = "".join(_texts) if _texts else ""
+                            await ws.send_json({
+                                "event": "command_project_chat_response",
+                                "project_id": pid,
+                                "response": (partial + "\n\n⚠️ Response timed out after 3 minutes.") if partial else "⚠️ Response timed out after 3 minutes. The AI backend may be slow or unreachable.",
+                            })
                         except Exception as e:
                             await ws.send_json({
                                 "event": "command_project_chat_response",

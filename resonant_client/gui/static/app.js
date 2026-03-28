@@ -1638,6 +1638,13 @@ class ResonantApp {
             return;
         }
 
+        const preferred = this._getPreferredBackendSelection(backends);
+        const configuredBackend = this.settings?.general?.default_backend || '';
+        if (configuredBackend && preferred?.backend === configuredBackend) {
+            this.selectBackend(preferred.backend, preferred.model);
+            return;
+        }
+
         // If we're on the backend step (project already selected), refresh backend cards
         const backendStep = document.getElementById('backend-step');
         if (backendStep && backendStep.style.display !== 'none') {
@@ -1898,6 +1905,15 @@ class ResonantApp {
     }
 
     _getPreferredBackendSelection(backends) {
+        const configuredBackend = this.settings?.general?.default_backend || '';
+        const configuredModel = this.settings?.general?.default_model || '';
+        if (configuredBackend && backends?.[configuredBackend]?.models?.length > 0) {
+            const models = backends[configuredBackend].models;
+            const preferredModel = configuredModel && models.includes(configuredModel)
+                ? configuredModel
+                : models[0];
+            return { backend: configuredBackend, model: preferredModel };
+        }
         if (backends?.mlx?.models?.length > 0) {
             const preferredModel = backends.mlx.models.includes('adapter-router')
                 ? 'adapter-router'
@@ -3075,6 +3091,20 @@ class ResonantApp {
             {
                 id: 'general', title: 'General', open: true,
                 fields: [
+                    { key: 'default_backend', label: 'Default backend', type: 'select',
+                      options: [
+                          { value: '', label: 'Auto' },
+                          { value: 'resonant', label: 'Resonant Engine' },
+                          { value: 'mlx', label: 'MLX Local' },
+                          { value: 'ollama', label: 'Ollama' },
+                          { value: 'lmstudio', label: 'LM Studio' },
+                          { value: 'claude-code', label: 'Claude Code' },
+                          { value: 'codex', label: 'Codex' },
+                          { value: 'claude', label: 'Anthropic API' },
+                          { value: 'openai', label: 'OpenAI API' },
+                      ]
+                    },
+                    { key: 'default_model', label: 'Default model', type: 'text' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Bypass permissions' },
@@ -3086,6 +3116,13 @@ class ResonantApp {
                     { key: 'theme', label: 'Theme', type: 'select',
                       options: [{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light (coming soon)' }]
                     },
+                ]
+            },
+            {
+                id: 'network', title: 'Network',
+                fields: [
+                    { key: 'resonant_api_url', label: 'Resonant API URL', type: 'text' },
+                    { key: 'remote_engine_ws_url', label: 'Remote engine WebSocket URL', type: 'text' },
                 ]
             },
             {

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,8 @@ class ProgressState:
     touched_files: list[str] = field(default_factory=list)
     last_validation: str = ""
     validation_checks: list[str] = field(default_factory=list)
+    validation_artifacts: list[str] = field(default_factory=list)
+    acceptance_evidence: dict[str, str] = field(default_factory=dict)
     last_updated: float = field(default_factory=time.time)
 
 
@@ -41,6 +43,10 @@ class SprintContract:
     deliverables: list[str] = field(default_factory=list)
     acceptance_checks: list[str] = field(default_factory=list)
     evaluator_focus: list[str] = field(default_factory=list)
+    target_files: list[str] = field(default_factory=list)
+    target_line_hints: list[str] = field(default_factory=list)
+    validation_commands: list[str] = field(default_factory=list)
+    edit_strategy: str = ""
     status: str = "proposed"
     last_updated: float = field(default_factory=time.time)
 
@@ -77,6 +83,11 @@ def _read_json(path: Path) -> dict[str, Any]:
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def _coerce_dataclass_payload(dataclass_type: type, payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {item.name for item in fields(dataclass_type)}
+    return {key: value for key, value in payload.items() if key in allowed}
 
 
 class HarnessWorkspace:
@@ -135,14 +146,14 @@ class HarnessWorkspace:
             self.teacher_escalations_path.write_text("", encoding="utf-8")
 
     def read_progress(self) -> ProgressState:
-        return ProgressState(**_read_json(self.progress_path))
+        return ProgressState(**_coerce_dataclass_payload(ProgressState, _read_json(self.progress_path)))
 
     def write_progress(self, progress: ProgressState) -> None:
         progress.last_updated = time.time()
         _write_json(self.progress_path, asdict(progress))
 
     def read_spec(self) -> ProductSpec:
-        return ProductSpec(**_read_json(self.spec_path))
+        return ProductSpec(**_coerce_dataclass_payload(ProductSpec, _read_json(self.spec_path)))
 
     def write_spec(self, spec: ProductSpec) -> None:
         spec.last_updated = time.time()
@@ -157,14 +168,18 @@ class HarnessWorkspace:
         return spec
 
     def read_sprint_contract(self) -> SprintContract:
-        return SprintContract(**_read_json(self.sprint_contract_path))
+        return SprintContract(
+            **_coerce_dataclass_payload(SprintContract, _read_json(self.sprint_contract_path))
+        )
 
     def write_sprint_contract(self, contract: SprintContract) -> None:
         contract.last_updated = time.time()
         _write_json(self.sprint_contract_path, asdict(contract))
 
     def read_evaluator_report(self) -> EvaluatorReport:
-        return EvaluatorReport(**_read_json(self.evaluator_report_path))
+        return EvaluatorReport(
+            **_coerce_dataclass_payload(EvaluatorReport, _read_json(self.evaluator_report_path))
+        )
 
     def write_evaluator_report(self, report: EvaluatorReport) -> None:
         report.last_updated = time.time()
@@ -253,6 +268,10 @@ class HarnessWorkspace:
         deliverables: list[str] | None = None,
         acceptance_checks: list[str] | None = None,
         evaluator_focus: list[str] | None = None,
+        target_files: list[str] | None = None,
+        target_line_hints: list[str] | None = None,
+        validation_commands: list[str] | None = None,
+        edit_strategy: str = "",
         status: str = "proposed",
         role: str = "planner",
     ) -> tuple[ProgressState, SprintContract]:
@@ -263,6 +282,10 @@ class HarnessWorkspace:
             deliverables=deliverables or [],
             acceptance_checks=acceptance_checks or [],
             evaluator_focus=evaluator_focus or [],
+            target_files=target_files or [],
+            target_line_hints=target_line_hints or [],
+            validation_commands=validation_commands or [],
+            edit_strategy=edit_strategy or "",
             status=status,
         )
         self.write_sprint_contract(contract)
@@ -289,6 +312,8 @@ class HarnessWorkspace:
         progress.touched_files = []
         progress.last_validation = ""
         progress.validation_checks = []
+        progress.validation_artifacts = []
+        progress.acceptance_evidence = {}
         self.write_progress(progress)
         self.append_run_event(
             "set_active_sprint",
@@ -299,6 +324,10 @@ class HarnessWorkspace:
                 "deliverables": list(deliverables or []),
                 "acceptance_checks": list(acceptance_checks or []),
                 "evaluator_focus": list(evaluator_focus or []),
+                "target_files": list(target_files or []),
+                "target_line_hints": list(target_line_hints or []),
+                "validation_commands": list(validation_commands or []),
+                "edit_strategy": edit_strategy or "",
                 "status": status,
                 "role": role,
             },

@@ -18,6 +18,10 @@ DEFAULTS = {
         "default_permission_mode": "bypass",
         "theme": "dark",
     },
+    "network": {
+        "resonant_api_url": "",
+        "remote_engine_ws_url": "",
+    },
     "api_keys": {
         "anthropic": "",
         "openai": "",

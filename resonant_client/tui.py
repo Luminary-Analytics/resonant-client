@@ -36,6 +36,12 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
 from .events import EngineEvent, make_event
+from .network_defaults import (
+    get_default_backend,
+    get_default_model,
+    resolve_remote_engine_ws_url,
+    resolve_resonant_api_url,
+)
 from .backends import (
     create_backend,
     OllamaBackend,
@@ -1301,7 +1307,12 @@ Examples:
 
     # Connect mode
     connect_parser = subparsers.add_parser("connect", help="Connect to remote engine")
-    connect_parser.add_argument("url", type=str, help="WebSocket URL (ws://host:port)")
+    connect_parser.add_argument(
+        "url",
+        nargs="?",
+        type=str,
+        help="WebSocket URL (ws://host:port). Defaults to saved network.remote_engine_ws_url or RESONANT_ENGINE_WS_URL.",
+    )
 
     # Common args (for embedded and serve modes)
     parser.add_argument("--backend", type=str, choices=["ollama", "resonant", "claude", "openai", "lmstudio", "auto"], default="auto")
@@ -1326,11 +1337,11 @@ Examples:
 
     # ── Connect mode ──
     if args.mode == "connect":
-        run_remote(args.url)
+        run_remote(resolve_remote_engine_ws_url(args.url))
         return
 
     # ── Resolve URLs and detect backends ──
-    api_url = (args.api or os.environ.get("RESONANT_API", "http://localhost:8000")).rstrip("/")
+    api_url = resolve_resonant_api_url(args.api)
     ollama_url = (args.ollama_url or os.environ.get("OLLAMA_URL", os.environ.get("OLLAMA_HOST", "http://10.0.0.133:11434"))).rstrip("/")
     lmstudio_url = (args.lmstudio_url or os.environ.get("LMSTUDIO_URL"))
 
@@ -1359,7 +1370,12 @@ Examples:
     health_info = None
 
     if args.backend == "auto":
-        if len(available) > 1:
+        preferred_backend = get_default_backend()
+        preferred_model = get_default_model()
+        if preferred_backend and preferred_backend in available:
+            chosen = preferred_backend
+            args.model = args.model or preferred_model or args.model
+        elif len(available) > 1:
             console.print()
             console.print(f"  [{C_BRAND} bold]Backends[/{C_BRAND} bold]")
             console.print(f"  [{C_BORDER}]{G_DASH * 40}[/{C_BORDER}]")

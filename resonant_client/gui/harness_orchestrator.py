@@ -47,6 +47,7 @@ class HarnessCycleStep:
     auto_transition: str = ""
     steps: int = 0
     evaluation_mode: str = ""
+    role_mode: str = ""
     prechecked: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +65,7 @@ class HarnessCycleStep:
             "auto_transition": self.auto_transition,
             "steps": self.steps,
             "evaluation_mode": self.evaluation_mode,
+            "role_mode": self.role_mode,
             "prechecked": self.prechecked,
         }
 
@@ -255,6 +257,7 @@ class HarnessOrchestrator:
                     step.error = str(result.get("error") or "")
                     step.steps = int(result.get("steps") or 0)
                     step.evaluation_mode = str(result.get("evaluation_mode") or "")
+                    step.role_mode = str(result.get("role_mode") or "")
                     step.prechecked = bool(result.get("prechecked"))
                     step.status = "failed" if step.error else "completed"
                 except Exception as exc:
@@ -265,6 +268,16 @@ class HarnessOrchestrator:
                 summary_after = self._get_summary(run.project_path)
                 step.summary_after = summary_after
                 step.completed_at = datetime.now().isoformat()
+
+                if (
+                    next_role == "planner"
+                    and step.status == "failed"
+                    and "no resonant-harness update emitted" in step.error.lower()
+                    and self._summary_signature(summary_before) != self._summary_signature(summary_after)
+                ):
+                    step.status = "completed"
+                    step.error = ""
+                    step.result = step.result or "Planner updated harness artifacts directly"
 
                 if next_role == "planner" and self._should_auto_approve(summary_after):
                     harness.set_contract_status(status="approved", role="planner")
@@ -304,6 +317,7 @@ class HarnessOrchestrator:
                         "backend_type": step.backend_type,
                         "model": step.model,
                         "evaluation_mode": step.evaluation_mode,
+                        "role_mode": step.role_mode,
                         "prechecked": step.prechecked,
                         "contract_status": summary_after.get("contract_status", ""),
                         "evaluator_verdict": summary_after.get("evaluator_verdict", ""),
@@ -449,6 +463,10 @@ class HarnessOrchestrator:
             logger.exception("Harness teacher recovery failed")
 
         summary_recovered = self._get_summary(run.project_path)
+        if step.status == "completed" and self._should_auto_approve(summary_recovered):
+            harness.set_contract_status(status="approved", role="planner")
+            summary_recovered = self._get_summary(run.project_path)
+            step.auto_transition = "approved"
         step.summary_after = summary_recovered
         step.completed_at = datetime.now().isoformat()
         if step.status == "completed" and self._summary_signature(summary_after) == self._summary_signature(summary_recovered):
@@ -529,6 +547,9 @@ class HarnessOrchestrator:
             retry_step.result = str(result.get("result") or "")
             retry_step.error = str(result.get("error") or "")
             retry_step.steps = int(result.get("steps") or 0)
+            retry_step.evaluation_mode = str(result.get("evaluation_mode") or "")
+            retry_step.role_mode = str(result.get("role_mode") or "")
+            retry_step.prechecked = bool(result.get("prechecked"))
             retry_step.status = "failed" if retry_step.error else "completed"
         except Exception as exc:
             retry_step.error = str(exc)
@@ -548,6 +569,9 @@ class HarnessOrchestrator:
                 "retry_model": retry_model,
                 "status": retry_step.status,
                 "error": retry_step.error,
+                "evaluation_mode": retry_step.evaluation_mode,
+                "role_mode": retry_step.role_mode,
+                "prechecked": retry_step.prechecked,
                 "contract_status": summary_retry.get("contract_status", ""),
                 "evaluator_verdict": summary_retry.get("evaluator_verdict", ""),
             },
@@ -559,19 +583,20 @@ class HarnessOrchestrator:
 
     @staticmethod
     def _is_retryable_failure(*, role: str, error: str) -> bool:
-        if role != "evaluator":
-            return False
         lowered = str(error or "").lower()
-        return any(
-            token in lowered
-            for token in (
-                "timed out",
-                "timeout",
-                "interrupted",
-                "cli error",
-                "no resonant-harness update",
-            )
+        common_retry_tokens = (
+            "timed out",
+            "timeout",
+            "interrupted",
+            "cli error",
+            "no resonant-harness update",
+            "doom loop",
         )
+        if role == "evaluator":
+            return any(token in lowered for token in common_retry_tokens)
+        if role == "generator":
+            return any(token in lowered for token in common_retry_tokens)
+        return False
 
     @staticmethod
     def _summary_signature(summary: dict[str, Any]) -> str:
@@ -580,6 +605,12 @@ class HarnessOrchestrator:
             "current_phase": summary.get("current_phase", ""),
             "contract_status": summary.get("contract_status", ""),
             "contract_objective": summary.get("contract_objective", ""),
+            "deliverables": list(summary.get("deliverables") or []),
+            "acceptance_checks": list(summary.get("acceptance_checks") or []),
+            "target_files": list(summary.get("target_files") or []),
+            "target_line_hints": list(summary.get("target_line_hints") or []),
+            "validation_commands": list(summary.get("validation_commands") or []),
+            "edit_strategy": summary.get("edit_strategy", ""),
             "evaluator_verdict": summary.get("evaluator_verdict", ""),
             "summary": summary.get("summary", ""),
             "next_steps": list(summary.get("next_steps") or []),
@@ -588,12 +619,70 @@ class HarnessOrchestrator:
         return json.dumps(stable, sort_keys=True, ensure_ascii=False)
 
     @staticmethod
+    def _is_generator_ready_contract(summary: dict[str, Any]) -> bool:
+        active_sprint_id = str(summary.get("active_sprint_id") or "").strip()
+        objective = str(summary.get("contract_objective") or "").strip()
+        acceptance_checks = list(summary.get("acceptance_checks") or [])
+        if not (active_sprint_id and objective and acceptance_checks):
+            return False
+
+        objective_lower = objective.lower()
+        read_only_tokens = (
+            "read-only",
+            "read only",
+            "do not modify repository files",
+            "no repository files are modified",
+            "audit only",
+            "inspect only",
+        )
+        if any(token in objective_lower for token in read_only_tokens):
+            return True
+
+        target_files = list(summary.get("target_files") or [])
+        target_line_hints = list(summary.get("target_line_hints") or [])
+        validation_commands = list(summary.get("validation_commands") or [])
+        edit_strategy = str(summary.get("edit_strategy") or "").strip()
+        return bool(target_files and (target_line_hints or validation_commands or edit_strategy))
+
+    @staticmethod
+    def _repairable_generator_failure(summary: dict[str, Any]) -> bool:
+        combined = "\n".join(
+            [
+                "\n".join(str(item) for item in (summary.get("findings") or [])),
+                "\n".join(str(item) for item in (summary.get("required_revisions") or [])),
+                str(summary.get("summary") or ""),
+                str(summary.get("last_validation") or ""),
+                "\n".join(str(item) for item in (summary.get("validation_artifacts") or [])),
+            ]
+        ).lower()
+        return any(
+            token in combined
+            for token in (
+                "syntaxerror",
+                "syntax error",
+                "indentationerror",
+                "indentation error",
+                "expected an indented block",
+                "unexpected indent",
+                "invalid syntax",
+                "traceback (most recent call last)",
+                "modulenotfounderror",
+                "module not found",
+                "importerror",
+                "import error",
+                "nameerror",
+                "typeerror",
+                "attributeerror",
+                "runtimeerror",
+                "runtime error",
+            )
+        )
+
+    @staticmethod
     def _should_auto_approve(summary: dict[str, Any]) -> bool:
         return bool(
-            summary.get("active_sprint_id")
-            and summary.get("contract_objective")
-            and summary.get("contract_status") == "proposed"
-            and list(summary.get("acceptance_checks") or [])
+            summary.get("contract_status") == "proposed"
+            and HarnessOrchestrator._is_generator_ready_contract(summary)
         )
 
     @staticmethod
@@ -609,14 +698,19 @@ class HarnessOrchestrator:
         contract_status = str(summary.get("contract_status") or "").strip()
         evaluator_verdict = str(summary.get("evaluator_verdict") or "").strip()
         active_sprint_id = str(summary.get("active_sprint_id") or "").strip()
+        repairable_generator_failure = HarnessOrchestrator._repairable_generator_failure(summary)
 
         if contract_status == "passed":
             return None
         if not active_sprint_id:
             return "planner"
+        if contract_status == "failed" and evaluator_verdict == "blocked" and repairable_generator_failure:
+            return "generator"
         if contract_status in {"", "proposed", "failed"}:
             return "planner"
         if evaluator_verdict == "blocked":
+            if repairable_generator_failure:
+                return "generator"
             return "planner"
         if contract_status in {"approved", "needs_revision"}:
             return "generator"

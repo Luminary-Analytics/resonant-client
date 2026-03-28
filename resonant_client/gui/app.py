@@ -14,6 +14,7 @@ import logging
 import os
 import queue
 import re
+import shlex
 import subprocess
 import sys
 import threading
@@ -43,8 +44,7 @@ from .project_instructions import load_project_instructions, get_instruction_inf
 from .task_runner import TaskRunner
 from .scheduler import Scheduler
 from .runtime import BackendSpec
-from .harness_state import EvaluatorReport, HarnessWorkspace
-from .harness_orchestrator import HarnessOrchestrator
+from ..harness import EvaluatorReport, HarnessWorkspace, HarnessOrchestrator, HarnessService
 from ..engine.hooks import HookRunner
 from ..engine.mcp import MCPManager
 from ..engine.memory import EngramIntegration
@@ -116,6 +116,10 @@ class AppState:
         self.base_engram = EngramIntegration(self.settings)
         self.base_engram.set_mcp_manager(self.mcp_manager)
         self.engram = self.base_engram.clone(namespace=self._project_namespace(self.project.project_path))
+        self.harness_service = HarnessService(
+            normalize_session_mode=self.normalize_session_mode,
+            normalize_session_role=self.normalize_session_role,
+        )
         self.harness = HarnessWorkspace(self.project.project_path)
         self.codebase_index: Optional[CodebaseIndex] = None
         self.harness_orchestrator = HarnessOrchestrator(
@@ -174,45 +178,10 @@ class AppState:
         session_mode: str,
         session_role: str,
     ) -> str:
-        session_mode = self.normalize_session_mode(session_mode)
-        session_role = self.normalize_session_role(session_mode, session_role)
-        if session_mode == "chat":
-            return ""
-
-        harness = HarnessWorkspace(project_path)
-        role_block = {
-            "planner": (
-                "You are the planner session. Start by reading the harness files, then update "
-                "`spec.json`, `progress_state.json`, and `sprint_contract.json`. Define the next "
-                "sprint in concrete, testable terms before implementation starts."
-            ),
-            "generator": (
-                "You are the generator session. Read the current harness state first. Implement only "
-                "the active sprint, run the cheapest relevant validation, then update "
-                "`progress_state.json` and `handoff.md` before finishing. Do not start coding if the "
-                "sprint contract is not approved or marked for revision."
-            ),
-            "evaluator": (
-                "You are the evaluator session. Read the sprint contract and current progress first. "
-                "Verify the implementation against the stated acceptance checks, run focused tests or "
-                "tool-based checks, then write a concrete verdict to `evaluator_report.json`."
-            ),
-        }[session_role]
-
-        return (
-            "\n\n--- HARNESS INSTRUCTIONS (.resonant-harness) ---\n"
-            f"Session role: {session_role}\n"
-            f"Harness root: {harness.root}\n"
-            f"Read first:\n"
-            f"- {harness.spec_path}\n"
-            f"- {harness.progress_path}\n"
-            f"- {harness.sprint_contract_path}\n"
-            f"- {harness.evaluator_report_path}\n"
-            f"- {harness.handoff_path}\n\n"
-            f"{role_block}\n"
-            "If the harness files are mostly empty, initialize only the minimum state needed for the current request.\n"
-            f"{self.build_harness_output_contract(session_mode=session_mode, session_role=session_role)}\n"
-            "--- END HARNESS INSTRUCTIONS ---"
+        return self.harness_service.build_instructions(
+            project_path=project_path,
+            session_mode=session_mode,
+            session_role=session_role,
         )
 
     def build_harness_output_contract(
@@ -221,136 +190,14 @@ class AppState:
         session_mode: str,
         session_role: str,
     ) -> str:
-        session_mode = self.normalize_session_mode(session_mode)
-        session_role = self.normalize_session_role(session_mode, session_role)
-        if session_mode == "chat":
-            return ""
-
-        templates = {
-            "planner": {
-                "action": "planner_update",
-                "spec": {
-                    "title": "",
-                    "summary": "",
-                    "user_stories": [],
-                    "sprint_order": [],
-                    "design_principles": [],
-                    "technical_notes": [],
-                },
-                "progress": {
-                    "product_goal": "",
-                    "summary": "",
-                    "blockers": [],
-                    "next_steps": [],
-                    "current_phase": "planning",
-                },
-                "sprint_contract": {
-                    "sprint_id": "",
-                    "feature_name": "",
-                    "objective": "",
-                    "deliverables": [],
-                    "acceptance_checks": [],
-                    "evaluator_focus": [],
-                    "target_files": [],
-                    "target_line_hints": [],
-                    "validation_commands": [],
-                    "edit_strategy": "",
-                    "status": "proposed",
-                },
-            },
-            "generator": {
-                "action": "generator_update",
-                "progress": {
-                    "summary": "",
-                    "blockers": [],
-                    "next_steps": [],
-                    "touched_files": [],
-                    "last_validation": "",
-                    "validation_checks": [],
-                    "validation_artifacts": [],
-                    "acceptance_evidence": {
-                        "<acceptance check>": "Concrete evidence for this check",
-                    },
-                    "current_phase": "implementation",
-                },
-                "sprint_status": "implemented",
-                "handoff_markdown": "# Summary\n\n# Next Action\n",
-            },
-            "evaluator": {
-                "action": "evaluator_verdict",
-                "sprint_id": "",
-                "verdict": "revise",
-                "score": 0.0,
-                "findings": [],
-                "required_revisions": [],
-                "passed_checks": [],
-                "failed_checks": [],
-            },
-        }
-        template_text = json.dumps(templates[session_role], indent=2, ensure_ascii=False)
-        return (
-            "End your final assistant response with a fenced code block named "
-            "`resonant-harness` containing valid JSON for your role. Always include the explicit "
-            "`action` field shown below. If the objective asks for bullets, a report, or an audit, "
-            "put that human-readable content in `handoff_markdown` or concise summary fields, then "
-            "still end with the full harness block. Use only concrete values, keep lists short, and "
-            "omit fields you cannot justify.\n"
-            f"```resonant-harness\n{template_text}\n```"
+        return self.harness_service.build_output_contract(
+            session_mode=session_mode,
+            session_role=session_role,
         )
 
     def get_harness_summary(self, project_path: Optional[str] = None) -> dict[str, Any]:
         target_path = os.path.normpath(project_path or self.project.project_path)
-        harness = HarnessWorkspace(target_path)
-        harness.ensure_layout()
-        progress = harness.read_progress()
-        contract = harness.read_sprint_contract()
-        report = harness.read_evaluator_report()
-        recent_history = harness.read_run_history(limit=5)
-        recent_teacher_escalations = harness.read_teacher_escalations(limit=3)
-        normalized_contract_status = (
-            self.normalize_harness_contract_status(
-                contract.status,
-                session_role=str(progress.active_role or "planner").strip() or "planner",
-            )
-            or str(contract.status or "").strip()
-        )
-        return {
-            "root": str(harness.root),
-            "spec_path": str(harness.spec_path),
-            "progress_path": str(harness.progress_path),
-            "sprint_contract_path": str(harness.sprint_contract_path),
-            "evaluator_report_path": str(harness.evaluator_report_path),
-            "handoff_path": str(harness.handoff_path),
-            "run_history_path": str(harness.run_history_path),
-            "teacher_escalations_path": str(harness.teacher_escalations_path),
-            "current_phase": progress.current_phase,
-            "active_sprint_id": progress.active_sprint_id,
-            "active_role": progress.active_role,
-            "summary": progress.summary,
-            "blockers": list(progress.blockers),
-            "next_steps": list(progress.next_steps),
-            "touched_files": list(progress.touched_files),
-            "last_validation": progress.last_validation,
-            "validation_checks": list(progress.validation_checks),
-            "validation_artifacts": list(progress.validation_artifacts),
-            "acceptance_evidence": dict(progress.acceptance_evidence),
-            "contract_status": normalized_contract_status,
-            "contract_status_raw": contract.status,
-            "contract_feature_name": contract.feature_name,
-            "contract_objective": contract.objective,
-            "deliverables": list(contract.deliverables),
-            "acceptance_checks": list(contract.acceptance_checks),
-            "evaluator_focus": list(contract.evaluator_focus),
-            "target_files": list(contract.target_files),
-            "target_line_hints": list(contract.target_line_hints),
-            "validation_commands": list(contract.validation_commands),
-            "edit_strategy": contract.edit_strategy,
-            "evaluator_verdict": report.verdict,
-            "findings": list(report.findings),
-            "required_revisions": list(report.required_revisions),
-            "recent_run_events": recent_history,
-            "recent_teacher_escalations": recent_teacher_escalations,
-        }
+        return self.harness_service.get_summary(target_path)
 
     @staticmethod
     def _truncate_text(value: str, *, max_chars: int) -> str:
@@ -891,6 +738,8 @@ class AppState:
             "\n".join(self._normalize_string_list(summary.get("deliverables"))),
             "\n".join(self._normalize_string_list(summary.get("acceptance_checks"))),
         )
+        if not read_only and self._harness_generator_needs_evidence_followup(target_path):
+            return True
         if not read_only:
             return False
 
@@ -903,6 +752,42 @@ class AppState:
         if mode == "artifacts":
             return bool(referenced_files)
         return bool(referenced_files)
+
+    def _harness_generator_needs_evidence_followup(self, project_path: Optional[str] = None) -> bool:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        summary = self.get_harness_summary(target_path)
+        contract_status = str(summary.get("contract_status") or "").strip()
+        evaluator_verdict = str(summary.get("evaluator_verdict") or "").strip()
+        if contract_status != "needs_revision" or evaluator_verdict != "revise":
+            return False
+        if self._harness_generator_needs_frontier_repair(target_path):
+            return False
+        if self._normalize_string_list(summary.get("blockers")):
+            return False
+        if not self._normalize_string_list(summary.get("touched_files")):
+            return False
+
+        combined = "\n".join(
+            [
+                "\n".join(self._normalize_string_list(summary.get("required_revisions"))),
+                "\n".join(self._normalize_string_list(summary.get("findings"))),
+                str(summary.get("last_validation") or ""),
+            ]
+        ).lower()
+        evidence_tokens = (
+            "missing evidence",
+            "insufficient evidence",
+            "not enough evidence",
+            "cannot verify",
+            "record",
+            "validation",
+            "confirm",
+            "show",
+            "callable",
+            "empty dict",
+            "no other files are modified",
+        )
+        return bool(combined and any(token in combined for token in evidence_tokens))
 
     def should_use_harness_generator_structured_mode(
         self,
@@ -1503,12 +1388,14 @@ class AppState:
         blockers = self._normalize_string_list(summary.get("blockers"))
 
         lines = [
-            "Artifact-only generator mode for a read-only sprint.",
-            "Do not use tools and do not modify repository files.",
+            "Artifact-only generator mode.",
+            "Do not modify repository files.",
+            "Use this mode to capture grounded findings or missing evidence without reopening edits.",
+            "Do not use tools unless the runtime already supplied enough artifacts to answer honestly.",
             "Use only the harness context and file excerpts below.",
             "Capture concise, grounded findings in handoff/progress artifacts.",
             "If a check is not supported by the provided evidence, do not invent it; note the gap honestly.",
-            "Set sprint_status to implemented once the read-only findings are recorded.",
+            "Set sprint_status to implemented once the artifact update is recorded.",
             "",
             f"Active sprint: {summary['active_sprint_id'] or 'none'}",
             f"Feature: {summary['contract_feature_name'] or 'unknown'}",
@@ -1891,6 +1778,131 @@ class AppState:
         return candidates[:3]
 
     @staticmethod
+    def _module_name_from_target_file(raw_path: str) -> str:
+        path = str(raw_path or "").strip().replace("\\", "/")
+        if not path.endswith(".py"):
+            return ""
+        module = path[:-3].strip("/").replace("/", ".")
+        if module.endswith(".__init__"):
+            module = module[: -len(".__init__")]
+        return module
+
+    def _extract_harness_target_function_name(self, summary: dict[str, Any]) -> str:
+        candidates = [
+            *self._normalize_string_list(summary.get("acceptance_checks")),
+            *self._normalize_string_list(summary.get("deliverables")),
+            str(summary.get("contract_objective") or ""),
+        ]
+        patterns = (
+            r"\bfunction\s+`?([A-Za-z_][A-Za-z0-9_]*)`?\b",
+            r"`([A-Za-z_][A-Za-z0-9_]*)\([^`]*\)`",
+            r"\b([A-Za-z_][A-Za-z0-9_]*)\([^)]*\)\s+function\b",
+        )
+        for text in candidates:
+            stripped = str(text or "").strip()
+            if not stripped:
+                continue
+            for pattern in patterns:
+                match = re.search(pattern, stripped, re.IGNORECASE)
+                if match:
+                    return str(match.group(1) or "").strip()
+        return ""
+
+    def _infer_static_acceptance_evidence(
+        self,
+        *,
+        acceptance_checks: list[str],
+        summary: dict[str, Any],
+    ) -> dict[str, str]:
+        target_files = {
+            item.replace("\\", "/")
+            for item in self._normalize_string_list(summary.get("target_files"))
+        }
+        touched_files = {
+            item.replace("\\", "/")
+            for item in self._normalize_string_list(summary.get("touched_files"))
+        }
+        aligned: dict[str, str] = {}
+        for check in acceptance_checks:
+            lowered = check.lower()
+            if (
+                "no other files" in lowered
+                and "modified" in lowered
+                and touched_files
+                and (not target_files or touched_files.issubset(target_files))
+            ):
+                aligned[check] = self._truncate_text(
+                    "Only recorded touched files: " + ", ".join(sorted(touched_files)),
+                    max_chars=220,
+                )
+        return aligned
+
+    def _acceptance_evidence_covers_contract(
+        self,
+        *,
+        acceptance_checks: list[str],
+        evidence: dict[str, str],
+    ) -> bool:
+        if not acceptance_checks:
+            return False
+        normalized = {
+            self._normalize_acceptance_check_phrase(key)
+            for key, value in evidence.items()
+            if self._normalize_acceptance_check_phrase(key) and str(value or "").strip()
+        }
+        return all(
+            self._normalize_acceptance_check_phrase(check) in normalized
+            for check in acceptance_checks
+        )
+
+    def _build_derived_harness_validation_commands(
+        self,
+        *,
+        project_path: Optional[str] = None,
+        summary: dict[str, Any],
+    ) -> list[str]:
+        target_files = self._normalize_string_list(summary.get("target_files")) or self._normalize_string_list(
+            summary.get("touched_files")
+        )
+        if len(target_files) != 1:
+            return []
+        target_file = target_files[0]
+        module_basename = Path(target_file).stem
+        module_dir = Path(target_file).parent.as_posix() or "."
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", module_basename):
+            return []
+        function_name = self._extract_harness_target_function_name(summary)
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", function_name):
+            return []
+
+        python_bin = shlex.quote(self._preferred_harness_python(project_path))
+        acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
+        derived: list[str] = []
+        for check in acceptance_checks:
+            lowered = check.lower()
+            if "callable" in lowered:
+                code = (
+                    f"import pathlib, sys; sys.path.insert(0, str(pathlib.Path({module_dir!r}).resolve())); "
+                    f"from {module_basename} import {function_name}; "
+                    f"print('CALLABLE_OK' if callable({function_name}) else 'CALLABLE_FAIL')"
+                )
+                derived.append(f"{python_bin} -c {shlex.quote(code)}")
+            if "empty dict" in lowered and "no duplicates" in lowered:
+                code = (
+                    f"import pathlib, sys; sys.path.insert(0, str(pathlib.Path({module_dir!r}).resolve())); "
+                    f"from {module_basename} import {function_name}; "
+                    f"result = {function_name}([{{'id': 'alpha'}}, {{'id': 'beta'}}]); "
+                    "print('EMPTY_OK' if result == {} else repr(result))"
+                )
+                derived.append(f"{python_bin} -c {shlex.quote(code)}")
+
+        deduped: list[str] = []
+        for command in derived:
+            if command not in deduped:
+                deduped.append(command)
+        return deduped[:2]
+
+    @staticmethod
     def _validation_command_has_placeholder(command: str) -> bool:
         text = str(command or "")
         return bool(re.search(r"<[^>\n]+>", text))
@@ -2046,8 +2058,14 @@ class AppState:
         target_path = os.path.normpath(project_path or self.project.project_path)
         acceptance_checks = self._normalize_string_list(summary.get("acceptance_checks"))
         commands = self._normalize_string_list(summary.get("validation_commands"))
+        for command in self._build_derived_harness_validation_commands(project_path=target_path, summary=summary):
+            if command not in commands:
+                commands.append(command)
         if not commands:
-            return [], [], {}
+            return [], [], self._infer_static_acceptance_evidence(
+                acceptance_checks=acceptance_checks,
+                summary=summary,
+            )
 
         revision_focus = " ".join(
             self._normalize_string_list(summary.get("required_revisions"))
@@ -2086,7 +2104,10 @@ class AppState:
 
         validation_checks: list[str] = []
         validation_artifacts: list[str] = []
-        acceptance_evidence: dict[str, str] = {}
+        acceptance_evidence: dict[str, str] = self._infer_static_acceptance_evidence(
+            acceptance_checks=acceptance_checks,
+            summary=summary,
+        )
 
         for command in preferred[:3]:
             if self._validation_command_has_placeholder(command):
@@ -2130,8 +2151,41 @@ class AppState:
 
             if completed.returncode == 0:
                 validation_checks.append(self._truncate_text(f"Validation succeeded: {command}", max_chars=160))
+                if "CALLABLE_OK" in output:
+                    for check in acceptance_checks:
+                        if "callable" in check.lower():
+                            acceptance_evidence.setdefault(
+                                check,
+                                self._truncate_text(f"`{command}` confirmed the function is callable.", max_chars=180),
+                            )
+                if "EMPTY_OK" in output:
+                    for check in acceptance_checks:
+                        lowered = check.lower()
+                        if "empty dict" in lowered and "no duplicates" in lowered:
+                            acceptance_evidence.setdefault(
+                                check,
+                                self._truncate_text(f"`{command}` returned {{}} for non-duplicate input.", max_chars=180),
+                            )
+                if re.search(r"\b[a-z0-9._-]+\s*:\s*\d+\b", output, re.IGNORECASE):
+                    for check in acceptance_checks:
+                        lowered = check.lower()
+                        if "occurrence count" in lowered or "count for each duplicated id" in lowered:
+                            acceptance_evidence.setdefault(
+                                check,
+                                self._truncate_text(f"`{command}` printed duplicate ids with counts.", max_chars=180),
+                            )
+                        if "duplicate id" in lowered or "duplicate ids" in lowered:
+                            acceptance_evidence.setdefault(
+                                check,
+                                self._truncate_text(f"`{command}` printed duplicate ids in the validation output.", max_chars=180),
+                            )
                 for check in acceptance_checks:
                     lowered = check.lower()
+                    if any(token in lowered for token in ("exits without error", "without error", "exit without error")):
+                        acceptance_evidence.setdefault(
+                            check,
+                            self._truncate_text(f"`{command}` exited 0.", max_chars=140),
+                        )
                     if any(token in lowered for token in ("validates successfully", "exit code 0", "no change in behavior")):
                         acceptance_evidence.setdefault(
                             check,
@@ -3165,7 +3219,10 @@ class AppState:
         if isinstance(value, dict):
             for raw_key, raw_value in value.items():
                 key = str(raw_key).strip()
-                val = str(raw_value).strip()
+                if isinstance(raw_value, bool):
+                    val = "PASS" if raw_value else ""
+                else:
+                    val = str(raw_value).strip()
                 if key and val:
                     result[key] = val
             return result
@@ -3184,56 +3241,7 @@ class AppState:
 
     @staticmethod
     def normalize_harness_contract_status(status: str, *, session_role: str) -> str:
-        raw = str(status or "").strip().lower()
-        if not raw:
-            return ""
-        aliases = {
-            "propose": "proposed",
-            "proposed": "proposed",
-            "active": "approved",
-            "ready": "approved",
-            "ready_for_implementation": "approved",
-            "implementation_ready": "approved",
-            "ready_to_implement": "approved",
-            "ready_to_execute": "approved",
-            "ready_for_execution": "approved",
-            "ready_for_generator": "approved",
-            "contract_ready": "approved",
-            "generator_ready": "approved",
-            "execution_ready": "approved",
-            "ready_to_start": "approved",
-            "approve": "approved",
-            "approved": "approved",
-            "revise": "needs_revision",
-            "revision": "needs_revision",
-            "needs_revision": "needs_revision",
-            "implement": "implemented",
-            "implemented": "implemented",
-            "repair": "implemented",
-            "repaired": "implemented",
-            "fixed": "implemented",
-            "ready_for_evaluation": "implemented",
-            "evaluation_ready": "implemented",
-            "ready_to_evaluate": "implemented",
-            "ready_to_review": "implemented",
-            "review": "implemented",
-            "under_review": "implemented",
-            "fail": "failed",
-            "failed": "failed",
-            "block": "failed",
-            "blocked": "failed",
-            "pass": "passed",
-            "passed": "passed",
-        }
-        if raw in aliases:
-            return aliases[raw]
-        if raw in {"complete", "completed", "done"}:
-            if session_role == "planner":
-                return "approved"
-            if session_role == "generator":
-                return "implemented"
-            return "passed"
-        return raw
+        return HarnessService.normalize_contract_status(status, session_role=session_role)
 
     @staticmethod
     def normalize_harness_action(action: str, *, session_role: str) -> str:
@@ -3460,7 +3468,10 @@ class AppState:
 
         harness = HarnessWorkspace(project_path or self.project.project_path)
         harness.ensure_layout()
-        action = self.normalize_harness_action(payload.get("action") or "", session_role=session_role)
+        action = self.normalize_harness_action(
+            payload.get("action") or payload.get("event") or "",
+            session_role=session_role,
+        )
 
         if not action:
             # A fenced `resonant-harness` block is already role-scoped by the
@@ -3740,16 +3751,6 @@ class AppState:
                 progress_updates["blockers"] = []
             if progress_updates.get("last_validation") and "next_steps" not in progress_updates:
                 progress_updates["next_steps"] = []
-            harness.update_progress(**progress_updates)
-
-            handoff_markdown = str(
-                payload.get("handoff_markdown")
-                or generator_payload.get("handoff_markdown")
-                or ""
-            ).strip()
-            if handoff_markdown:
-                harness.write_handoff(handoff_markdown)
-
             sprint_status = str(
                 payload.get("sprint_status")
                 or generator_payload.get("sprint_status")
@@ -3758,6 +3759,114 @@ class AppState:
                 or ""
             ).strip()
             sprint_status = self.normalize_harness_contract_status(sprint_status, session_role="generator")
+            if not sprint_status:
+                inferred_evidence = self._normalize_string_mapping(progress_data.get("acceptance_evidence"))
+                touched_files = self._normalize_string_list(progress_data.get("touched_files"))
+                blockers = self._normalize_string_list(progress_data.get("blockers"))
+                last_validation = str(progress_data.get("last_validation") or "").strip()
+                if touched_files and not blockers and (last_validation or inferred_evidence):
+                    sprint_status = "implemented"
+            successful_generator_update = sprint_status in {"approved", "implemented", "passed"}
+            if successful_generator_update:
+                target_files = self._normalize_string_list(current_contract.target_files)
+                merged_evidence = self._normalize_string_mapping(progress_updates.get("acceptance_evidence"))
+                for check, evidence in self._infer_static_acceptance_evidence(
+                    acceptance_checks=self._normalize_string_list(current_contract.acceptance_checks),
+                    summary={
+                        "target_files": target_files,
+                        "touched_files": self._normalize_string_list(progress_updates.get("touched_files")),
+                    },
+                ).items():
+                    merged_evidence.setdefault(check, evidence)
+
+                if not self._acceptance_evidence_covers_contract(
+                    acceptance_checks=self._normalize_string_list(current_contract.acceptance_checks),
+                    evidence=merged_evidence,
+                ):
+                    probe_checks, probe_artifacts, probe_evidence = self.run_harness_generator_validation_probes(
+                        project_path=project_path or self.project.project_path,
+                        summary={
+                            "acceptance_checks": self._normalize_string_list(current_contract.acceptance_checks),
+                            "validation_commands": self._normalize_string_list(current_contract.validation_commands),
+                            "required_revisions": self._normalize_string_list(
+                                harness.read_evaluator_report().required_revisions
+                            ),
+                            "next_steps": self._normalize_string_list(progress_updates.get("next_steps")),
+                            "summary": str(progress_updates.get("summary") or ""),
+                            "last_validation": str(progress_updates.get("last_validation") or ""),
+                            "validation_checks": self._normalize_string_list(progress_updates.get("validation_checks")),
+                            "validation_artifacts": self._normalize_string_list(progress_updates.get("validation_artifacts")),
+                            "acceptance_evidence": merged_evidence,
+                            "target_files": target_files,
+                            "touched_files": self._normalize_string_list(progress_updates.get("touched_files")),
+                            "deliverables": self._normalize_string_list(current_contract.deliverables),
+                            "contract_objective": str(current_contract.objective or ""),
+                        },
+                    )
+                    if probe_checks:
+                        merged_checks = self._normalize_string_list(progress_updates.get("validation_checks"))
+                        for item in probe_checks:
+                            if item not in merged_checks:
+                                merged_checks.append(item)
+                        progress_updates["validation_checks"] = merged_checks[:8]
+                    if probe_artifacts:
+                        merged_artifacts = self._normalize_string_list(progress_updates.get("validation_artifacts"))
+                        for item in probe_artifacts:
+                            if item not in merged_artifacts:
+                                merged_artifacts.append(item)
+                        progress_updates["validation_artifacts"] = merged_artifacts[:8]
+                    for check, evidence in probe_evidence.items():
+                        merged_evidence.setdefault(check, evidence)
+
+                progress_updates["acceptance_evidence"] = self.align_acceptance_evidence_to_contract(
+                    acceptance_checks=self._normalize_string_list(current_contract.acceptance_checks),
+                    evidence=merged_evidence,
+                    objective=str(current_contract.objective or ""),
+                    user_request=user_request,
+                )
+                repair_summary = str(
+                    generator_payload.get("repair_summary")
+                    or payload.get("repair_summary")
+                    or progress_updates.get("summary")
+                    or ""
+                ).strip()
+                if repair_summary and not progress_updates.get("last_validation"):
+                    progress_updates["last_validation"] = repair_summary
+                if progress_updates.get("last_validation") and "validation_artifacts" not in progress_updates:
+                    touched_files = self._normalize_string_list(progress_updates.get("touched_files"))
+                    success_artifacts = [str(progress_updates.get("last_validation") or "").strip()]
+                    if touched_files:
+                        success_artifacts.append(
+                            "Touched files: " + ", ".join(touched_files[:3])
+                        )
+                    progress_updates["validation_artifacts"] = [item for item in success_artifacts if item][:6]
+                progress_updates["blockers"] = []
+                progress_updates["next_steps"] = []
+                progress_updates["current_phase"] = "evaluation"
+            harness.update_progress(**progress_updates)
+
+            handoff_markdown = str(
+                payload.get("handoff_markdown")
+                or generator_payload.get("handoff_markdown")
+                or ""
+            ).strip()
+            if not handoff_markdown and successful_generator_update:
+                touched_files = self._normalize_string_list(progress_updates.get("touched_files"))
+                validation_summary = str(progress_updates.get("last_validation") or progress_updates.get("summary") or "").strip()
+                handoff_lines = [
+                    "# Generator Handoff",
+                    "",
+                    "## Summary",
+                    str(progress_updates.get("summary") or "Implemented the requested sprint update."),
+                ]
+                if validation_summary:
+                    handoff_lines.extend(["", "## Validation", f"- {validation_summary}"])
+                if touched_files:
+                    handoff_lines.extend(["", "## Touched Files", *[f"- `{path}`" for path in touched_files[:6]]])
+                handoff_markdown = "\n".join(handoff_lines)
+            if handoff_markdown:
+                harness.write_handoff(handoff_markdown)
+
             if sprint_status in {"proposed", "approved", "implemented", "needs_revision", "passed", "failed"}:
                 harness.set_contract_status(status=sprint_status, role="generator")
             if sprint_status in {"approved", "implemented", "passed"}:
@@ -3831,131 +3940,12 @@ class AppState:
         session_role: str,
         project_path: Optional[str] = None,
     ) -> str:
-        session_mode = self.normalize_session_mode(session_mode)
-        session_role = self.normalize_session_role(session_mode, session_role)
-        if session_mode == "chat":
-            return "Resume the chat conversation naturally from the existing context."
-
         target_path = os.path.normpath(project_path or self.project.project_path)
-        harness = HarnessWorkspace(target_path)
-        harness.ensure_layout()
-        summary = self.get_harness_summary(target_path)
-        spec = harness.read_spec()
-
-        read_order = {
-            "planner": [
-                summary["spec_path"],
-                summary["progress_path"],
-                summary["sprint_contract_path"],
-                summary["evaluator_report_path"],
-                summary["handoff_path"],
-            ],
-            "generator": [
-                summary["spec_path"],
-                summary["progress_path"],
-                summary["sprint_contract_path"],
-                summary["evaluator_report_path"],
-                summary["handoff_path"],
-            ],
-            "evaluator": [
-                summary["progress_path"],
-                summary["sprint_contract_path"],
-                summary["evaluator_report_path"],
-                summary["handoff_path"],
-            ],
-        }[session_role]
-
-        common_lines = [
-            f"Resume this project as the {session_role} session using the harness state, not long chat history.",
-            "Start by reading these files in order:",
-            *[f"{index}. {path}" for index, path in enumerate(read_order, start=1)],
-            "",
-        ]
-
-        if session_role != "evaluator":
-            common_lines.extend(
-                [
-                f"Product title: {spec.title or 'Unknown'}",
-                f"Product summary: {spec.summary or 'Not set'}",
-                f"Current phase: {summary['current_phase'] or 'unknown'}",
-                ]
-            )
-
-        common_lines.extend(
-            [
-                f"Active sprint: {summary['active_sprint_id'] or 'none'}",
-                f"Sprint objective: {summary['contract_objective'] or 'none'}",
-                f"Contract status: {summary['contract_status'] or 'unknown'}",
-                f"Last evaluator verdict: {summary['evaluator_verdict'] or 'unknown'}",
-            ]
+        return self.harness_service.build_resume_prompt(
+            project_path=target_path,
+            session_mode=session_mode,
+            session_role=session_role,
         )
-
-        blockers = self._normalize_string_list(summary.get("blockers"))
-        next_steps = self._normalize_string_list(summary.get("next_steps"))
-        checks = self._normalize_string_list(summary.get("acceptance_checks"))
-        validation_checks = self._normalize_string_list(summary.get("validation_checks"))
-        validation_artifacts = self._normalize_string_list(summary.get("validation_artifacts"))
-        acceptance_evidence = self._normalize_string_mapping(summary.get("acceptance_evidence"))
-        revisions = self._normalize_string_list(summary.get("required_revisions"))
-
-        if blockers:
-            common_lines.append("Current blockers:")
-            common_lines.extend(f"- {item}" for item in blockers[:5])
-        if next_steps:
-            common_lines.append("Current next steps:")
-            common_lines.extend(f"- {item}" for item in next_steps[:5])
-        if checks:
-            common_lines.append("Acceptance checks:")
-            common_lines.extend(f"- {item}" for item in checks[:5])
-        if validation_checks:
-            common_lines.append("Recorded validation checks:")
-            common_lines.extend(f"- {item}" for item in validation_checks[:5])
-        if validation_artifacts:
-            common_lines.append("Validation artifacts:")
-            common_lines.extend(f"- {item}" for item in validation_artifacts[:5])
-        if acceptance_evidence:
-            common_lines.append("Explicit acceptance evidence:")
-            common_lines.extend(
-                f"- {check}: {self._truncate_text(evidence, max_chars=180)}"
-                for check, evidence in list(acceptance_evidence.items())[:5]
-            )
-        if revisions:
-            common_lines.append("Required revisions from evaluator:")
-            common_lines.extend(f"- {item}" for item in revisions[:5])
-
-        role_lines = {
-            "planner": [
-                "",
-                "Your task:",
-                "- refine or complete the spec only where needed",
-                "- define or revise the next sprint contract in concrete, testable terms",
-                "- do not execute the sprint itself; leave the audit, implementation, or verification work to later roles",
-                "- put contract fields under `sprint_contract`; do not invent wrapper keys like `next_sprint_contract` or `scope` without also filling `sprint_contract`",
-                "- for code-changing tasks, include `target_files`, `target_line_hints`, `validation_commands`, and `edit_strategy` in `sprint_contract`",
-                "- every `validation_commands` entry must be executable as written from the project root; do not use placeholders like `<path>` or pseudo-commands",
-                "- finish with a normal summary plus a valid ```resonant-harness JSON block for planner_update",
-            ],
-            "generator": [
-                "",
-                "Your task:",
-                "- implement only the active sprint",
-                "- if the contract is not approved or needs_revision, stop and say that first",
-                "- run the cheapest relevant validation before finishing",
-                "- record exact validation evidence in progress.last_validation and short check bullets in progress.validation_checks",
-                "- record compact validation artifacts in progress.validation_artifacts",
-                "- fill progress.acceptance_evidence with one concise evidence line per satisfied acceptance check",
-                "- finish with a normal summary plus a valid ```resonant-harness JSON block for generator_update",
-            ],
-            "evaluator": [
-                "",
-                "Your task:",
-                "- verify the current implementation against the sprint contract",
-                "- state pass, revise, or blocked with concrete findings",
-                "- finish with a normal summary plus a valid ```resonant-harness JSON block for evaluator_verdict",
-            ],
-        }[session_role]
-
-        return "\n".join(common_lines + role_lines)
 
     def apply_permission_mode(self, mode: str, session: Optional[Session] = None) -> str:
         self.permission_mode = mode or "bypass"
@@ -4326,8 +4316,6 @@ class AppState:
         evaluator_verdict = str(summary.get("evaluator_verdict") or "").strip()
         if contract_status not in {"implemented", "needs_revision", "failed"}:
             return False
-        if evaluator_verdict not in {"revise", "blocked"}:
-            return False
         combined = "\n".join(
             [
                 "\n".join(self._normalize_string_list(summary.get("findings"))),
@@ -4360,6 +4348,8 @@ class AppState:
             )
         ):
             return True
+        if evaluator_verdict not in {"revise", "blocked"}:
+            return False
 
         bundle = self.build_harness_generator_structured_bundle(project_path)
         files = bundle.get("files") or []

@@ -1488,6 +1488,13 @@ class ResonantApp {
                     }
                 }
                 break;
+            case 'command_project_chat_response':
+                this._handleProjectChatResponse(event);
+                break;
+            case 'command_project_chat_delta':
+                // Streaming text delta — update the thinking indicator with partial text
+                this._handleProjectChatDelta(event);
+                break;
             case 'command_feed_posted':
                 this.commandFeed.push(event.message);
                 break;
@@ -4973,7 +4980,7 @@ class ResonantApp {
             completed: 'Completed', failed: 'Failed'
         }[project.status] || project.status;
 
-        const dashTab = this.cmdDashTab || 'plan';
+        const dashTab = this.cmdDashTab || 'chat';
 
         main.innerHTML = `
             <div class="project-dashboard">
@@ -5000,6 +5007,7 @@ class ResonantApp {
                     <button class="btn-primary btn-sm" id="initiative-launch-btn">Launch</button>
                 </div>
                 <div class="project-dash-tabs">
+                    <button class="project-dash-tab ${dashTab === 'chat' ? 'active' : ''}" data-tab="chat">Chat</button>
                     <button class="project-dash-tab ${dashTab === 'plan' ? 'active' : ''}" data-tab="plan">Plan</button>
                     <button class="project-dash-tab ${dashTab === 'agents' ? 'active' : ''}" data-tab="agents">Agents</button>
                     <button class="project-dash-tab ${dashTab === 'activity' ? 'active' : ''}" data-tab="activity">Activity</button>
@@ -5064,10 +5072,175 @@ class ResonantApp {
         if (!content) return;
 
         switch (dashTab) {
+            case 'chat': this._renderDashChat(content, project); break;
             case 'plan': this._renderDashPlan(content, project); break;
             case 'agents': this._renderDashAgents(content, project); break;
             case 'activity': this._renderDashActivity(content, project); break;
             case 'results': this._renderDashResults(content, project); break;
+        }
+    }
+
+    _renderDashChat(el, project) {
+        // Initialize chat history for this project if not exists
+        if (!this._projectChatHistory) this._projectChatHistory = {};
+        const history = this._projectChatHistory[project.id] || [];
+
+        el.innerHTML = `
+            <div class="project-chat">
+                <div class="project-chat-messages" id="project-chat-messages">
+                    ${history.length === 0 ? `
+                        <div class="project-chat-welcome">
+                            <div class="project-chat-welcome-icon">🤖</div>
+                            <h3>Project Coordinator</h3>
+                            <p>Chat with the AI coordinator for this project. You can ask it to:</p>
+                            <ul>
+                                <li>Break down the strategy into tasks</li>
+                                <li>Spawn worker agents for specific tasks</li>
+                                <li>Check on agent progress</li>
+                                <li>Modify the plan or priorities</li>
+                                <li>Get status updates</li>
+                            </ul>
+                        </div>
+                    ` : history.map(m => `
+                        <div class="project-chat-msg project-chat-${m.role}">
+                            <div class="project-chat-msg-avatar">${m.role === 'user' ? '👤' : '🤖'}</div>
+                            <div class="project-chat-msg-body">
+                                <div class="project-chat-msg-content">${this.escapeHtml(m.content)}</div>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="project-chat-input-bar">
+                    <div class="project-chat-input-row">
+                        <textarea class="settings-input" id="project-chat-input" rows="2"
+                            placeholder="Tell the coordinator what to do..."></textarea>
+                        <button class="btn-primary btn-sm" id="project-chat-send">Send</button>
+                    </div>
+                </div>
+            </div>
+        `;
+
+        // Scroll to bottom
+        const messagesEl = document.getElementById('project-chat-messages');
+        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+
+        // Send handler
+        const sendMessage = () => {
+            const input = document.getElementById('project-chat-input');
+            const content = input?.value?.trim();
+            if (!content) return;
+
+            // Add user message to history
+            history.push({ role: 'user', content });
+            this._projectChatHistory[project.id] = history;
+
+            // Add user message to UI immediately
+            const msgEl = document.createElement('div');
+            msgEl.className = 'project-chat-msg project-chat-user';
+            msgEl.innerHTML = `
+                <div class="project-chat-msg-avatar">👤</div>
+                <div class="project-chat-msg-body">
+                    <div class="project-chat-msg-content">${this.escapeHtml(content)}</div>
+                </div>
+            `;
+
+            // Remove welcome screen if present
+            const welcome = messagesEl?.querySelector('.project-chat-welcome');
+            if (welcome) welcome.remove();
+
+            messagesEl?.appendChild(msgEl);
+
+            // Add "thinking" indicator
+            const thinkingEl = document.createElement('div');
+            thinkingEl.className = 'project-chat-msg project-chat-assistant';
+            thinkingEl.id = 'project-chat-thinking';
+            thinkingEl.innerHTML = `
+                <div class="project-chat-msg-avatar">🤖</div>
+                <div class="project-chat-msg-body">
+                    <div class="project-chat-msg-content project-chat-thinking">Thinking...</div>
+                </div>
+            `;
+            messagesEl?.appendChild(thinkingEl);
+            if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+
+            // Send to backend
+            this.send({
+                command: 'command_project_chat',
+                project_id: project.id,
+                message: content,
+            });
+
+            input.value = '';
+        };
+
+        document.getElementById('project-chat-send')?.addEventListener('click', sendMessage);
+        document.getElementById('project-chat-input')?.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage();
+            }
+        });
+
+        // Focus input
+        document.getElementById('project-chat-input')?.focus();
+    }
+
+    _handleProjectChatResponse(event) {
+        const messagesEl = document.getElementById('project-chat-messages');
+        if (!messagesEl) return;
+
+        // Remove thinking indicator
+        const thinking = document.getElementById('project-chat-thinking');
+        if (thinking) thinking.remove();
+
+        const content = event.response || event.text || '(no response)';
+
+        // Add to history
+        if (!this._projectChatHistory) this._projectChatHistory = {};
+        const history = this._projectChatHistory[event.project_id] || [];
+        history.push({ role: 'assistant', content });
+        this._projectChatHistory[event.project_id] = history;
+
+        // Add assistant message to UI
+        const msgEl = document.createElement('div');
+        msgEl.className = 'project-chat-msg project-chat-assistant';
+        msgEl.innerHTML = `
+            <div class="project-chat-msg-avatar">🤖</div>
+            <div class="project-chat-msg-body">
+                <div class="project-chat-msg-content">${this.escapeHtml(content)}</div>
+            </div>
+        `;
+        messagesEl.appendChild(msgEl);
+        messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+
+    _handleProjectChatDelta(event) {
+        const messagesEl = document.getElementById('project-chat-messages');
+        if (!messagesEl) return;
+
+        // Find or create streaming message element
+        let streamEl = document.getElementById('project-chat-streaming');
+        if (!streamEl) {
+            // Remove thinking indicator
+            const thinking = document.getElementById('project-chat-thinking');
+            if (thinking) thinking.remove();
+
+            streamEl = document.createElement('div');
+            streamEl.className = 'project-chat-msg project-chat-assistant';
+            streamEl.id = 'project-chat-streaming';
+            streamEl.innerHTML = `
+                <div class="project-chat-msg-avatar">🤖</div>
+                <div class="project-chat-msg-body">
+                    <div class="project-chat-msg-content" id="project-chat-stream-text"></div>
+                </div>
+            `;
+            messagesEl.appendChild(streamEl);
+        }
+
+        const textEl = document.getElementById('project-chat-stream-text');
+        if (textEl) {
+            textEl.textContent += event.text || '';
+            messagesEl.scrollTop = messagesEl.scrollHeight;
         }
     }
 

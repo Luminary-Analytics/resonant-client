@@ -5771,6 +5771,105 @@ async def websocket_endpoint(ws: WebSocket):
                 else:
                     await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
 
+            # ── Command Center: Chat with Coordinator ─────────
+            elif command == "command_project_chat":
+                project_id = msg.get("project_id", "")
+                message = msg.get("message", "").strip()
+                proj = state.command_project_store.get_project(project_id)
+                if not proj:
+                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
+                    continue
+                if not message:
+                    await ws.send_json({"event": "error", "message": "Message is required"})
+                    continue
+
+                try:
+                    # Build or reuse coordinator session for this project
+                    session_key = f"_coordinator_session_{project_id}"
+                    coordinator_session = getattr(state, session_key, None)
+
+                    if coordinator_session is None:
+                        # Create a new coordinator session
+                        backend_type = getattr(state.backend, "name", "")
+                        model = getattr(state.backend, "model", "")
+                        if not backend_type:
+                            for bname in ("codex", "claude-code", "openai", "resonant"):
+                                if bname in state.available_backends:
+                                    backend_type = bname
+                                    binfo = state.available_backends[bname]
+                                    if isinstance(binfo, dict) and binfo.get("models"):
+                                        models_list = binfo["models"]
+                                        if isinstance(models_list, list) and models_list:
+                                            model = models_list[0] if isinstance(models_list[0], str) else models_list[0].get("id", "")
+                                    break
+                        if not backend_type:
+                            raise ValueError("No AI backend available")
+
+                        spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
+                        coordinator_session = state.build_session(
+                            backend=spec.create_backend(state.settings),
+                            backend_spec=spec,
+                            project_path=proj.path,
+                            session_mode="code",
+                            session_role="generator",
+                        )
+                        # Add project context to the first message
+                        context_prefix = (
+                            f"You are the project coordinator for: {proj.name}\n"
+                            f"Project path: {proj.path}\n"
+                            f"Strategy: {proj.strategy}\n\n"
+                            f"You can use your tools (shell, read, write, etc.) to work on this project. "
+                            f"When asked to do something, actually do it using your tools — don't just describe what you would do.\n\n"
+                        )
+                        message = context_prefix + "User says: " + message
+                        setattr(state, session_key, coordinator_session)
+
+                    # Run the coordinator session in a background thread and stream results
+                    async def _run_coordinator_chat(session, prompt, pid):
+                        collected_text = []
+                        try:
+                            def _run():
+                                texts = []
+                                for event in session.run(prompt):
+                                    event_type = event.get("event", "")
+                                    if event_type == "text.delta":
+                                        delta = event.get("text", "")
+                                        if delta:
+                                            texts.append(delta)
+                                    elif event_type == "text.done":
+                                        text = event.get("text", "")
+                                        if text:
+                                            texts.append(text)
+                                return "".join(texts) if texts else "(no response)"
+
+                            loop = asyncio.get_event_loop()
+                            result = await loop.run_in_executor(None, _run)
+
+                            await ws.send_json({
+                                "event": "command_project_chat_response",
+                                "project_id": pid,
+                                "response": result,
+                            })
+
+                            # Also add to project activity
+                            state.command_project_store.add_activity(pid, "agent", "Coordinator", result[:200])
+
+                        except Exception as e:
+                            await ws.send_json({
+                                "event": "command_project_chat_response",
+                                "project_id": pid,
+                                "response": f"Error: {e}",
+                            })
+
+                    asyncio.create_task(_run_coordinator_chat(coordinator_session, message, project_id))
+
+                except Exception as e:
+                    await ws.send_json({
+                        "event": "command_project_chat_response",
+                        "project_id": project_id,
+                        "response": f"Failed to start coordinator: {e}",
+                    })
+
             # ── Command Center: Initiative ────────────────────
             elif command == "command_project_initiative":
                 project_id = msg.get("project_id", "")

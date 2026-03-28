@@ -5585,15 +5585,18 @@ async def websocket_endpoint(ws: WebSocket):
                 # Spawn coordinator agent
                 try:
                     coordinator_prompt = (
-                        f"You are a project coordinator for the project at: {path}\n\n"
+                        f"You are a project coordinator working in: {path}\n\n"
                         f"## Strategy\n{strategy}\n\n"
-                        f"## Your Job\n"
-                        f"1. Analyze the codebase at the project path\n"
-                        f"2. Break the strategy into concrete, ordered tasks\n"
-                        f"3. For each task, describe what needs to be done clearly\n"
-                        f"4. Execute each task yourself, one at a time\n"
-                        f"5. After completing each task, summarize what was done\n\n"
-                        f"Work through all tasks methodically. Be thorough but efficient."
+                        f"## Instructions\n"
+                        f"You MUST complete ALL of the following:\n"
+                        f"1. First, list the files in the project directory to understand the current state\n"
+                        f"2. Create a clear task plan and explain what you will build\n"
+                        f"3. Execute EVERY task — write all the code files, create directories, install dependencies\n"
+                        f"4. After each file is created, briefly confirm what was done\n"
+                        f"5. When ALL tasks are complete, give a final summary\n\n"
+                        f"IMPORTANT: Do not just plan — actually CREATE all the files and write all the code. "
+                        f"Use the Write tool to create files, Bash to run commands (npm init, npm install, etc). "
+                        f"Be thorough and complete every task in the strategy."
                     )
                     backend_type = msg.get("backend", "") or getattr(state.backend, "name", "")
                     model = msg.get("model", "") or getattr(state.backend, "model", "")

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "resonant-gui",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "resonant_client", "gui", "--browser", "--port", "8901"],
+      "port": 8901
+    }
+  ]
+}

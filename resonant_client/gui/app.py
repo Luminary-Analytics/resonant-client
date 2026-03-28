@@ -5688,6 +5688,91 @@ async def websocket_endpoint(ws: WebSocket):
                 else:
                     await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
 
+            # ── Command Center: Files & Preview ──────────────
+            elif command == "command_project_files":
+                project_id = msg.get("project_id", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    import glob as _glob
+                    project_path = os.path.normpath(proj.path)
+                    files = []
+                    for entry in sorted(os.scandir(project_path), key=lambda e: (not e.is_dir(), e.name.lower())):
+                        if entry.name.startswith('.'):
+                            continue
+                        try:
+                            stat = entry.stat()
+                            files.append({
+                                "name": entry.name,
+                                "path": os.path.join(project_path, entry.name),
+                                "is_dir": entry.is_dir(),
+                                "size": stat.st_size if not entry.is_dir() else 0,
+                                "modified": stat.st_mtime,
+                            })
+                            # Also list files inside directories (1 level deep)
+                            if entry.is_dir():
+                                for sub in sorted(os.scandir(entry.path), key=lambda e: e.name.lower()):
+                                    if sub.name.startswith('.'):
+                                        continue
+                                    sub_stat = sub.stat()
+                                    files.append({
+                                        "name": f"  {entry.name}/{sub.name}",
+                                        "path": os.path.join(entry.path, sub.name),
+                                        "is_dir": sub.is_dir(),
+                                        "size": sub_stat.st_size if not sub.is_dir() else 0,
+                                        "modified": sub_stat.st_mtime,
+                                    })
+                        except Exception:
+                            pass
+                    await ws.send_json({"event": "command_project_files", "project_id": project_id, "files": files})
+                else:
+                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
+
+            elif command == "command_project_read_file":
+                project_id = msg.get("project_id", "")
+                file_path = msg.get("path", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj and file_path:
+                    try:
+                        # Security: ensure path is under project directory
+                        norm_path = os.path.normpath(file_path)
+                        norm_proj = os.path.normpath(proj.path)
+                        if not norm_path.startswith(norm_proj):
+                            raise ValueError("Path outside project directory")
+                        with open(norm_path, "r", encoding="utf-8", errors="replace") as f:
+                            content = f.read(100_000)  # max 100KB
+                        await ws.send_json({
+                            "event": "command_project_file_content",
+                            "project_id": project_id,
+                            "path": file_path,
+                            "content": content,
+                        })
+                    except Exception as e:
+                        await ws.send_json({"event": "error", "message": f"Cannot read file: {e}"})
+                else:
+                    await ws.send_json({"event": "error", "message": "Project or file not found"})
+
+            elif command == "command_project_preview":
+                project_id = msg.get("project_id", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    project_path = os.path.normpath(proj.path)
+                    # Look for index.html
+                    index_path = os.path.join(project_path, "index.html")
+                    if os.path.exists(index_path):
+                        # Serve via file:// URL
+                        file_url = "file:///" + index_path.replace("\\", "/")
+                        await ws.send_json({"event": "command_project_preview", "url": file_url})
+                    else:
+                        # Look for any HTML file
+                        html_files = [f for f in os.listdir(project_path) if f.endswith('.html')]
+                        if html_files:
+                            file_url = "file:///" + os.path.join(project_path, html_files[0]).replace("\\", "/")
+                            await ws.send_json({"event": "command_project_preview", "url": file_url})
+                        else:
+                            await ws.send_json({"event": "command_project_preview", "error": "No HTML files found in project. The project may still be building."})
+                else:
+                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
+
             # ── Command Center: Initiative ────────────────────
             elif command == "command_project_initiative":
                 project_id = msg.get("project_id", "")

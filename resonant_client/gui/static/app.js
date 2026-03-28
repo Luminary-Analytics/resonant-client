@@ -1491,6 +1491,32 @@ class ResonantApp {
             case 'command_feed_posted':
                 this.commandFeed.push(event.message);
                 break;
+            case 'command_project_files':
+                this.cmdProjectFiles = event.files || [];
+                if (this.sessionMode === 'command' && this.cmdDashTab === 'results') {
+                    const proj = this.commandProjects.find(p => p.id === event.project_id);
+                    if (proj) this.renderProjectDashboard(proj);
+                }
+                break;
+            case 'command_project_preview':
+                if (event.url) {
+                    window.open(event.url, '_blank');
+                } else if (event.error) {
+                    alert(event.error);
+                }
+                break;
+            case 'command_project_file_content':
+                {
+                    const codeEl = document.getElementById('results-code');
+                    const viewEl = document.getElementById('results-file-content');
+                    const nameEl = document.getElementById('results-viewing-file');
+                    if (codeEl && viewEl) {
+                        codeEl.textContent = event.content || '(empty file)';
+                        if (nameEl) nameEl.textContent = event.path || '';
+                        viewEl.style.display = 'block';
+                    }
+                }
+                break;
             case 'command_fleet':
                 this.commandAgents = event.agents || [];
                 break;
@@ -4945,6 +4971,10 @@ class ResonantApp {
                         <span>Status: <span class="stat-value">${statusLabel}</span></span>
                         <span>Tasks: <span class="stat-value">${completedTasks}/${totalTasks}</span></span>
                         <span>Agents: <span class="stat-value">${activeAgents} active</span></span>
+                        <span class="project-dash-actions">
+                            <button class="btn-sm" id="dash-preview-btn" title="Preview in browser">▶ Preview</button>
+                            <button class="btn-sm" id="dash-files-btn" title="View generated files">📁 Files</button>
+                        </span>
                     </div>
                     <div class="project-dash-progress">
                         <div class="project-dash-progress-bar" style="width:${progressPct}%"></div>
@@ -4960,6 +4990,7 @@ class ResonantApp {
                     <button class="project-dash-tab ${dashTab === 'plan' ? 'active' : ''}" data-tab="plan">Plan</button>
                     <button class="project-dash-tab ${dashTab === 'agents' ? 'active' : ''}" data-tab="agents">Agents</button>
                     <button class="project-dash-tab ${dashTab === 'activity' ? 'active' : ''}" data-tab="activity">Activity</button>
+                    <button class="project-dash-tab ${dashTab === 'results' ? 'active' : ''}" data-tab="results">Results</button>
                 </div>
                 <div class="project-dash-content" id="project-dash-content"></div>
             </div>
@@ -4993,10 +5024,24 @@ class ResonantApp {
             }
         });
 
+        // Preview button — open project's index.html or serve files
+        document.getElementById('dash-preview-btn')?.addEventListener('click', () => {
+            this.send({ command: 'command_project_preview', project_id: project.id });
+        });
+
+        // Files button — request file listing
+        document.getElementById('dash-files-btn')?.addEventListener('click', () => {
+            this.cmdDashTab = 'results';
+            this.send({ command: 'command_project_files', project_id: project.id });
+        });
+
         // Tab switching
         main.querySelectorAll('.project-dash-tab').forEach(tab => {
             tab.addEventListener('click', () => {
                 this.cmdDashTab = tab.dataset.tab;
+                if (tab.dataset.tab === 'results') {
+                    this.send({ command: 'command_project_files', project_id: project.id });
+                }
                 this.renderProjectDashboard(project);
             });
         });
@@ -5009,6 +5054,7 @@ class ResonantApp {
             case 'plan': this._renderDashPlan(content, project); break;
             case 'agents': this._renderDashAgents(content, project); break;
             case 'activity': this._renderDashActivity(content, project); break;
+            case 'results': this._renderDashResults(content, project); break;
         }
     }
 
@@ -5116,6 +5162,84 @@ class ResonantApp {
             </div>
         `;
         el.scrollTop = el.scrollHeight;
+    }
+
+    _renderDashResults(el, project) {
+        const files = this.cmdProjectFiles || [];
+        const projectPath = project.path || '';
+
+        el.innerHTML = `
+            <div class="results-panel">
+                <div class="results-header">
+                    <h3 style="margin:0;font-size:15px;color:var(--text)">Generated Files</h3>
+                    <div class="results-actions">
+                        <button class="btn-primary btn-sm" id="results-preview-btn">▶ Preview in Browser</button>
+                        <button class="btn-sm" id="results-refresh-btn">↻ Refresh</button>
+                    </div>
+                </div>
+                <div class="results-path" style="font-size:12px;color:var(--dim);margin:8px 0">${this.escapeHtml(projectPath)}</div>
+                ${files.length === 0 ? `
+                    <div class="feature-empty" style="padding:30px">
+                        <span>No files generated yet. Launch an initiative to start building.</span>
+                    </div>
+                ` : `
+                    <div class="results-file-list">
+                        ${files.map(f => `
+                            <div class="results-file-item" data-path="${this.escapeHtml(f.path)}">
+                                <span class="results-file-icon">${f.is_dir ? '📁' : this._fileIcon(f.name)}</span>
+                                <span class="results-file-name">${this.escapeHtml(f.name)}</span>
+                                <span class="results-file-size">${f.is_dir ? '' : this._formatSize(f.size)}</span>
+                                <span class="results-file-time">${f.modified ? new Date(f.modified * 1000).toLocaleTimeString() : ''}</span>
+                                ${!f.is_dir ? `<button class="btn-sm results-view-btn" data-path="${this.escapeHtml(f.path)}">View</button>` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                `}
+                <div class="results-file-content" id="results-file-content" style="display:none">
+                    <div class="results-file-content-header">
+                        <span id="results-viewing-file"></span>
+                        <button class="btn-sm" id="results-close-file">Close</button>
+                    </div>
+                    <pre class="results-code" id="results-code"></pre>
+                </div>
+            </div>
+        `;
+
+        // Preview button
+        el.querySelector('#results-preview-btn')?.addEventListener('click', () => {
+            this.send({ command: 'command_project_preview', project_id: project.id });
+        });
+
+        // Refresh
+        el.querySelector('#results-refresh-btn')?.addEventListener('click', () => {
+            this.send({ command: 'command_project_files', project_id: project.id });
+        });
+
+        // View file content
+        el.querySelectorAll('.results-view-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.send({ command: 'command_project_read_file', project_id: project.id, path: btn.dataset.path });
+            });
+        });
+
+        // Close file view
+        el.querySelector('#results-close-file')?.addEventListener('click', () => {
+            document.getElementById('results-file-content').style.display = 'none';
+        });
+    }
+
+    _fileIcon(name) {
+        const ext = (name || '').split('.').pop()?.toLowerCase();
+        const icons = { html: '🌐', css: '🎨', js: '⚡', json: '📋', md: '📝', py: '🐍', ts: '💠' };
+        return icons[ext] || '📄';
+    }
+
+    _formatSize(bytes) {
+        if (!bytes) return '';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     }
 
     switchCommandPanel(panel) {

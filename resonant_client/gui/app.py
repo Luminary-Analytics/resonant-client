@@ -5716,12 +5716,15 @@ async def websocket_endpoint(ws: WebSocket):
                         raise ValueError("No AI backend available")
                     spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
                     initiative_prompt = (
-                        f"You are working on the project at: {proj.path}\n\n"
+                        f"You are an autonomous coding agent working on the project at: {proj.path}\n\n"
                         f"## Project Context\n{proj.strategy}\n\n"
                         f"## Your Task\n{prompt}\n\n"
-                        f"## Instructions\n"
-                        f"Execute this task completely. Write all necessary code files, run commands as needed. "
-                        f"Be thorough and create production-quality code."
+                        f"## CRITICAL INSTRUCTIONS\n"
+                        f"You MUST act autonomously. Do NOT ask questions or wait for input. "
+                        f"Start immediately by creating files using your write/shell tools. "
+                        f"Write complete, production-quality code. Do not describe what you would do — actually do it. "
+                        f"Create all necessary files, write all the code, and verify it works. "
+                        f"When done, summarize what you created."
                     )
 
                     def _make_init_event_handler(pid):

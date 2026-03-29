@@ -40,3 +40,7 @@ Intended next extraction steps:
 2. define a smaller interface for backend execution and teacher escalation
 3. let the GUI call a harness service/controller instead of constructing the
    orchestration pieces directly
+
+Follow-on architecture plan:
+
+- [engine-harness-unification-plan.md](./engine-harness-unification-plan.md)

@@ -1,0 +1,279 @@
+# Resonant Engine — Tool Use Requirements for Command Center
+
+## Overview
+
+The Resonant GUI Command Center needs the engine at `/v1/responses` to support **tool calling** — where the engine returns `function_call` output items that the client executes locally, then sends results back in a follow-up request. This is the same pattern used by OpenAI's Responses API.
+
+Currently the engine returns `output_text` with cognitive state metadata even when tools are provided. To work with the Command Center (project creation, file writing, coordinator chat), the engine must actually invoke the tools.
+
+## Current Behavior (Broken)
+
+**Request:**
+```json
+POST /v1/responses
+{
+  "model": "resonant-engine",
+  "input": [
+    {"role": "user", "content": [{"type": "input_text", "text": "Create a file called hello.py that prints hello world"}]}
+  ],
+  "instructions": "You are a coding assistant. Use your tools to create files.",
+  "tools": [
+    {
+      "type": "function",
+      "function": {
+        "name": "file_write",
+        "description": "Write content to a file",
+        "parameters": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string", "description": "File path to write to"},
+            "content": {"type": "string", "description": "Content to write"}
+          },
+          "required": ["path", "content"]
+        }
+      }
+    }
+  ],
+  "stream": false,
+  "max_output_tokens": 2048
+}
+```
+
+**Current Response (wrong):**
+```json
+{
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "[Cognitive State: mode=analytical, coherence=0.83...]\n\nRetrieved Knowledge:\n  ..."
+        }
+      ]
+    }
+  ]
+}
+```
+
+The engine returns text analysis instead of calling the `file_write` tool.
+
+## Required Behavior
+
+### Non-Streaming Response
+
+When the engine decides to use a tool, return a `function_call` item in the output:
+
+```json
+{
+  "output": [
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "I'll create the hello.py file for you."
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "id": "call_abc123",
+      "call_id": "call_abc123",
+      "name": "file_write",
+      "arguments": "{\"path\": \"hello.py\", \"content\": \"print('Hello, World!')\\n\"}"
+    }
+  ]
+}
+```
+
+The client will then:
+1. Parse the `function_call` item
+2. Execute the tool locally (write the file)
+3. Send a follow-up request with the tool result
+
+### Follow-Up Request with Tool Result
+
+```json
+POST /v1/responses
+{
+  "model": "resonant-engine",
+  "input": [
+    {"role": "user", "content": [{"type": "input_text", "text": "Create a file called hello.py..."}]},
+    {
+      "type": "function_call",
+      "name": "file_write",
+      "arguments": "{\"path\": \"hello.py\", \"content\": \"print('Hello, World!')\\n\"}",
+      "call_id": "call_abc123"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_abc123",
+      "output": "File written successfully: hello.py (26 bytes)"
+    }
+  ],
+  "instructions": "...",
+  "tools": [...],
+  "stream": false,
+  "max_output_tokens": 2048
+}
+```
+
+The engine should then continue the conversation, potentially calling more tools or providing a final text summary.
+
+### Streaming Response (SSE)
+
+For streaming mode (`"stream": true`), the engine should emit these SSE events:
+
+```
+event: response.output_text.delta
+data: {"delta": "I'll create the file..."}
+
+event: response.output_item.done
+data: {"item": {"type": "function_call", "name": "file_write", "arguments": "{\"path\": \"hello.py\", \"content\": \"print('Hello, World!')\\n\"}", "call_id": "call_abc123"}}
+
+event: response.completed
+data: {"response": {"cognitive_state": {...}, "status": "requires_action"}}
+```
+
+**Key SSE event types the client expects:**
+
+| Event | Purpose | Data Format |
+|-------|---------|-------------|
+| `response.output_text.delta` | Streaming text chunks | `{"delta": "text..."}` |
+| `response.output_item.done` | Completed tool call | `{"item": {"type": "function_call", "name": "...", "arguments": "...", "call_id": "..."}}` |
+| `response.completed` | End of response | `{"response": {"cognitive_state": {...}, "status": "completed"}}` |
+
+## Tools the Client Sends
+
+The client sends these tools in every request (from `AGENT_TOOLS` in the Session):
+
+### 1. `bash` — Execute shell commands
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "bash",
+    "description": "Execute a bash/shell command and return the output",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {"type": "string", "description": "The command to execute"}
+      },
+      "required": ["command"]
+    }
+  }
+}
+```
+
+### 2. `file_read` — Read file contents
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "file_read",
+    "description": "Read the contents of a file",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "Path to the file to read"}
+      },
+      "required": ["path"]
+    }
+  }
+}
+```
+
+### 3. `file_write` — Write/create files
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "file_write",
+    "description": "Write content to a file (creates it if it doesn't exist)",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "Path to the file to write"},
+        "content": {"type": "string", "description": "Content to write to the file"}
+      },
+      "required": ["path", "content"]
+    }
+  }
+}
+```
+
+### 4. `file_edit` — Edit specific lines in a file
+```json
+{
+  "type": "function",
+  "function": {
+    "name": "file_edit",
+    "description": "Replace text in a file",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "description": "Path to the file"},
+        "old_text": {"type": "string", "description": "Text to find and replace"},
+        "new_text": {"type": "string", "description": "Replacement text"}
+      },
+      "required": ["path", "old_text", "new_text"]
+    }
+  }
+}
+```
+
+## Multi-Turn Tool Loop
+
+The client runs an **agentic loop** — it keeps calling `/v1/responses` until the engine stops returning tool calls:
+
+```
+1. Client sends: user message + tools
+2. Engine returns: text + function_call(s)
+3. Client executes: tool(s) locally
+4. Client sends: original messages + function_call + function_call_output
+5. Engine returns: more text + maybe more function_call(s)
+6. Repeat until engine returns only text (no function_calls)
+7. Done — final text is the response
+```
+
+The engine should return `function_call` items when it wants to:
+- Read a file to understand the codebase
+- Write a new file
+- Run a shell command (npm install, python script, etc.)
+- Edit an existing file
+
+And return only `output_text` (no function_calls) when the work is done.
+
+## What Needs to Change in the Engine
+
+1. **When `tools` array is non-empty in the request**: The engine should treat this as an agentic coding request, not a pure analysis/retrieval request.
+
+2. **Decision making**: When the user asks to create files, modify code, or run commands, the engine should return `function_call` items instead of (or in addition to) `output_text`.
+
+3. **Tool result handling**: When the input contains `function_call_output` items, the engine should incorporate those results into its next response (continuing the conversation with knowledge of what the tools did).
+
+4. **Cognitive state is fine**: The engine can still include cognitive state in responses — the client ignores it for tool execution purposes. Just make sure `function_call` items are also present when tools should be used.
+
+## Testing
+
+Once the engine supports tool calling, test with:
+
+```bash
+curl -X POST http://10.0.0.133:8000/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "resonant-engine",
+    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Create a file called test.py with print(hello)"}]}],
+    "instructions": "You are a coding assistant. When asked to create or modify files, use the provided tools.",
+    "tools": [{"type": "function", "function": {"name": "file_write", "description": "Write content to a file", "parameters": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}}}],
+    "stream": false,
+    "max_output_tokens": 2048
+  }'
+```
+
+**Expected**: Response contains a `function_call` item with `name: "file_write"` and valid arguments.
+
+**Currently**: Response contains only `output_text` with cognitive state metadata.

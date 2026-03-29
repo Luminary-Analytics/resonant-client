@@ -111,6 +111,7 @@ class AppState:
         self._project_instructions: str | None = None
         # Background tasks & scheduler
         self.task_runner = TaskRunner()
+        self.task_runner.set_on_complete(self._on_task_complete)
         self.scheduler = Scheduler(self.task_runner)
         # Command center
         self.command_task_store = CommandTaskStore()
@@ -157,6 +158,51 @@ class AppState:
         self.scheduler.set_special_executor(self.run_scheduled_task)
         self.refresh_network_defaults()
         self.apply_project_context(self.project.project_path, refresh_index=True)
+
+    def _on_task_complete(self, task):
+        """Called when a background task completes. Updates project agent status."""
+        try:
+            # Find which project this agent belongs to
+            for proj in self.command_project_store._projects.values():
+                for agent in (proj.agents or []):
+                    if agent.get("id") == task.id:
+                        agent["status"] = task.status.value
+                        agent["steps"] = task.steps
+                        agent["elapsed"] = round(task.elapsed, 1)
+                        self.command_project_store._persist(proj)
+
+                        # Add completion activity
+                        status_emoji = "✅" if task.status.value == "completed" else "❌"
+                        result_summary = (task.result or "")[:150]
+                        self.command_project_store.add_activity(
+                            proj.id, "agent", agent.get("name", "Worker"),
+                            f"{status_emoji} {task.status.value}: {result_summary}"
+                        )
+
+                        # Check if all agents are done → update project status
+                        all_done = all(
+                            a.get("status") in ("completed", "failed", "cancelled")
+                            for a in proj.agents if a.get("role") != "coordinator"
+                        )
+                        running_workers = [a for a in proj.agents if a.get("status") == "running" and a.get("role") != "coordinator"]
+                        if all_done and not running_workers and proj.agents:
+                            proj.status = "completed"
+                            self.command_project_store._persist(proj)
+
+                        # Push update to WebSocket if connected
+                        ws = self._ws_ref
+                        loop = self._ws_loop
+                        if ws and loop:
+                            try:
+                                asyncio.run_coroutine_threadsafe(
+                                    ws.send_json({"event": "command_project_status", "project": proj.to_dict()}),
+                                    loop,
+                                )
+                            except Exception:
+                                pass
+                        return
+        except Exception as e:
+            logger.error("Error in task completion handler: %s", e)
 
     def _push_agent_event(self, task_id: str, event: dict):
         """Push a live agent event to the frontend via WebSocket (called from worker thread)."""
@@ -5178,6 +5224,142 @@ class AppState:
 state = AppState()
 
 
+import re as _re
+
+
+async def _execute_coordinator_commands(state, ws, project_id: str, response_text: str):
+    """Parse and execute resonant-command JSON blocks from coordinator responses."""
+    pattern = r'```resonant-command\s*\n(.*?)\n```'
+    matches = _re.findall(pattern, response_text, _re.DOTALL)
+
+    for match in matches:
+        try:
+            cmd = json.loads(match.strip())
+            action = cmd.get("action", "")
+
+            if action == "spawn_worker":
+                name = cmd.get("name", "Worker")
+                prompt = cmd.get("prompt", "")
+                if not prompt:
+                    continue
+
+                proj = state.command_project_store.get_project(project_id)
+                if not proj:
+                    continue
+
+                try:
+                    backend_type = getattr(state.backend, "name", "")
+                    model = getattr(state.backend, "model", "")
+                    if not backend_type:
+                        for bname in ("codex", "claude-code", "openai"):
+                            if bname in state.available_backends:
+                                backend_type = bname
+                                binfo = state.available_backends[bname]
+                                if isinstance(binfo, dict) and binfo.get("models"):
+                                    models_list = binfo["models"]
+                                    if isinstance(models_list, list) and models_list:
+                                        model = models_list[0] if isinstance(models_list[0], str) else models_list[0].get("id", "")
+                                break
+
+                    spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
+
+                    worker_prompt = (
+                        f"You are a worker agent for the project at: {proj.path}\n\n"
+                        f"## Project: {proj.name}\n"
+                        f"Strategy: {proj.strategy}\n\n"
+                        f"## Your Task\n{prompt}\n\n"
+                        f"## Instructions\n"
+                        f"Execute this task autonomously. Use your tools to read, write, and modify files. "
+                        f"Do not ask questions — just complete the work. When done, summarize what you did."
+                    )
+
+                    def _make_worker_event_handler(pid, worker_name):
+                        def handler(task_id, event):
+                            state._push_agent_event(task_id, event)
+                            if event.get("event") == "text.done":
+                                text = event.get("text", "")[:200]
+                                if text.strip():
+                                    state.command_project_store.add_activity(
+                                        pid, "agent", worker_name, text
+                                    )
+                        return handler
+
+                    bg_task = state.task_runner.submit(
+                        name=name,
+                        prompt=worker_prompt,
+                        session_factory=state.make_background_session,
+                        backend_type=backend_type,
+                        model=spec.model,
+                        project_path=proj.path,
+                        session_mode="code",
+                        session_role="generator",
+                        backend_spec=spec.to_dict(),
+                        on_event=_make_worker_event_handler(project_id, name),
+                    )
+
+                    # Add to project agents
+                    agents = proj.agents.copy() if proj.agents else []
+                    agents.append({
+                        "id": bg_task.id, "name": name,
+                        "role": "worker", "status": "running",
+                        "model": spec.model, "steps": 0, "elapsed": 0,
+                    })
+                    state.command_project_store.update_project(project_id, agents=agents, status="running")
+                    state.command_project_store.add_activity(
+                        project_id, "system", "System",
+                        f"Worker spawned: {name} ({bg_task.id})"
+                    )
+
+                    # Notify frontend
+                    proj = state.command_project_store.get_project(project_id)
+                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
+
+                except Exception as e:
+                    logger.error("Failed to spawn worker: %s", e)
+                    state.command_project_store.add_activity(
+                        project_id, "system", "System", f"Failed to spawn worker '{name}': {e}"
+                    )
+
+            elif action == "update_plan":
+                tasks = cmd.get("tasks", [])
+                if isinstance(tasks, list):
+                    normalized = []
+                    for i, t in enumerate(tasks):
+                        if isinstance(t, str):
+                            t = {"title": t}
+                        normalized.append({
+                            "title": t.get("title", f"Task {i+1}"),
+                            "description": t.get("description", ""),
+                            "priority": t.get("priority", "medium"),
+                            "status": t.get("status", "todo"),
+                        })
+                    state.command_project_store.update_project(project_id, tasks=normalized)
+                    proj = state.command_project_store.get_project(project_id)
+                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
+
+            elif action == "post_update":
+                message = cmd.get("message", "")
+                if message:
+                    state.command_project_store.add_activity(
+                        project_id, "coordinator", "Coordinator", message
+                    )
+                    proj = state.command_project_store.get_project(project_id)
+                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
+
+            elif action == "complete_project":
+                summary = cmd.get("summary", "Project completed.")
+                state.command_project_store.update_project(project_id, status="completed")
+                state.command_project_store.add_activity(
+                    project_id, "coordinator", "Coordinator", f"Project completed: {summary}"
+                )
+                proj = state.command_project_store.get_project(project_id)
+                await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
+
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logger.debug("Failed to parse coordinator command: %s — %s", match[:100], e)
+            continue
+
+
 # ── WebSocket Handler ─────────────────────────────────────────────────
 
 async def websocket_endpoint(ws: WebSocket):
@@ -6058,13 +6240,37 @@ async def websocket_endpoint(ws: WebSocket):
                             session_mode="code",
                             session_role="generator",
                         )
-                        # Add project context to the first message
+                        # Add project context + coordinator tools to the first message
                         context_prefix = (
                             f"You are the project coordinator for: {proj.name}\n"
                             f"Project path: {proj.path}\n"
                             f"Strategy: {proj.strategy}\n\n"
-                            f"You can use your tools (shell, read, write, etc.) to work on this project. "
-                            f"When asked to do something, actually do it using your tools — don't just describe what you would do.\n\n"
+                            f"## Your Role\n"
+                            f"You are the Product Owner / Project Manager for this project. You can:\n"
+                            f"1. Use your tools (shell, read, write) to directly work on files\n"
+                            f"2. Break the strategy into tasks and track progress\n"
+                            f"3. Spawn worker agents to handle tasks in parallel\n"
+                            f"4. Monitor worker progress and report back\n\n"
+                            f"## Spawning Workers\n"
+                            f"To spawn a worker agent, include a JSON block in your response like this:\n"
+                            f'```resonant-command\n'
+                            f'{{"action": "spawn_worker", "name": "Worker name", "prompt": "Detailed instructions for the worker"}}\n'
+                            f"```\n"
+                            f"You can spawn multiple workers in one response. Each worker runs autonomously in parallel.\n\n"
+                            f"## Updating the Plan\n"
+                            f"To update the task plan visible on the dashboard, include:\n"
+                            f'```resonant-command\n'
+                            f'{{"action": "update_plan", "tasks": [{{"title": "Task 1", "description": "...", "status": "todo"}}, ...]}}\n'
+                            f"```\n\n"
+                            f"## Posting Status Updates\n"
+                            f"To post a status update to the Activity feed:\n"
+                            f'```resonant-command\n'
+                            f'{{"action": "post_update", "message": "Status update text"}}\n'
+                            f"```\n\n"
+                            f"## Important\n"
+                            f"- When asked to do something, actually do it using your tools — don't just describe what you would do.\n"
+                            f"- Use workers for parallelizable tasks. Do simple tasks yourself directly.\n"
+                            f"- Always keep the user informed of progress.\n\n"
                         )
                         message = context_prefix + "User says: " + message
                         setattr(state, session_key, coordinator_session)
@@ -6148,6 +6354,9 @@ async def websocket_endpoint(ws: WebSocket):
 
                             # Also add to project activity
                             state.command_project_store.add_activity(pid, "agent", "Coordinator", result[:200])
+
+                            # Parse and execute any resonant-command blocks
+                            await _execute_coordinator_commands(state, ws, pid, result)
 
                         except asyncio.TimeoutError:
                             partial = "".join(_texts) if _texts else ""

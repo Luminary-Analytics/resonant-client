@@ -33,6 +33,10 @@ class HarnessService:
         aliases = {
             "propose": "proposed",
             "proposed": "proposed",
+            "contract_proposed": "proposed",
+            "contract_draft": "proposed",
+            "contract_defined": "approved",
+            "contract_complete": "approved",
             "planning": "proposed",
             "planning_started": "proposed",
             "planning_in_progress": "proposed",

@@ -33,6 +33,11 @@ class HarnessService:
         aliases = {
             "propose": "proposed",
             "proposed": "proposed",
+            "planning": "proposed",
+            "planning_started": "proposed",
+            "planning_in_progress": "proposed",
+            "drafting": "proposed",
+            "contract_drafting": "proposed",
             "active": "approved",
             "ready": "approved",
             "ready_for_implementation": "approved",
@@ -42,10 +47,19 @@ class HarnessService:
             "ready_for_execution": "approved",
             "ready_for_generator": "approved",
             "ready_for_generation": "approved",
+            "ready_for_generator_handoff": "approved",
+            "ready_for_generator_execution": "approved",
             "contract_ready": "approved",
+            "contract_finalized": "approved",
+            "contract_locked": "approved",
+            "contract_finalized_ready_for_generator": "approved",
             "generator_ready": "approved",
+            "generator_handoff_ready": "approved",
             "execution_ready": "approved",
             "ready_to_start": "approved",
+            "planning_complete": "approved",
+            "planning_completed": "approved",
+            "plan_complete": "approved",
             "approve": "approved",
             "approved": "approved",
             "revise": "needs_revision",
@@ -71,6 +85,13 @@ class HarnessService:
         }
         if raw in aliases:
             return aliases[raw]
+        if session_role == "planner":
+            if "generator" in raw and "ready" in raw:
+                return "approved"
+            if "planning" in raw and any(token in raw for token in ("complete", "completed", "final", "locked")):
+                return "approved"
+            if raw.startswith("planning"):
+                return "proposed"
         if raw in {"complete", "completed", "done"}:
             if session_role == "planner":
                 return "approved"

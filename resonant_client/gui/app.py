@@ -636,6 +636,60 @@ class AppState:
         phrase = re.sub(r"\s+", " ", phrase).strip(" .")
         return phrase
 
+    @staticmethod
+    def _acceptance_check_tokens(check: str) -> list[str]:
+        stopwords = {
+            "the",
+            "and",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "then",
+            "when",
+            "where",
+            "which",
+            "does",
+            "have",
+            "should",
+            "while",
+            "within",
+            "without",
+            "used",
+            "using",
+            "output",
+            "includes",
+            "include",
+            "prints",
+            "print",
+            "counts",
+            "count",
+            "flag",
+            "default",
+            "existing",
+            "current",
+            "behavior",
+            "remain",
+            "remains",
+            "unchanged",
+            "change",
+            "stays",
+            "stay",
+            "file",
+            "files",
+            "script",
+        }
+        tokens: list[str] = []
+        for token in re.findall(r"[a-z0-9_:+-]+", str(check or "").lower()):
+            cleaned = token.strip("_:+-")
+            if not cleaned or len(cleaned) <= 1:
+                continue
+            if cleaned in stopwords or cleaned in {"n", "m"}:
+                continue
+            tokens.append(cleaned)
+        return tokens
+
     def _build_acceptance_check_coverage(
         self,
         acceptance_checks: list[str],
@@ -645,11 +699,22 @@ class AppState:
         coverage = []
         for check in acceptance_checks[:8]:
             phrase = self._normalize_acceptance_check_phrase(check)
+            tokens = self._acceptance_check_tokens(check)
+            overlap = [token for token in tokens if token in lowered]
+            required_overlap = 0
+            if tokens:
+                required_overlap = max(2, min(len(tokens), 3))
+                if len(tokens) <= 2:
+                    required_overlap = len(tokens)
+            matched = bool(phrase and phrase in lowered)
+            if not matched and tokens:
+                matched = len(overlap) >= required_overlap
             coverage.append(
                 {
                     "check": check,
-                    "matched": bool(phrase and phrase in lowered),
+                    "matched": matched,
                     "normalized_phrase": phrase,
+                    "matched_tokens": overlap[:6],
                 }
             )
         return coverage
@@ -861,6 +926,8 @@ class AppState:
         harness.ensure_layout()
         summary = self.get_harness_summary(target_path)
         handoff_text = self._truncate_text(harness.read_handoff(), max_chars=1400)
+        validation_artifacts = self._normalize_string_list(summary.get("validation_artifacts"))
+        acceptance_evidence = self._normalize_string_mapping(summary.get("acceptance_evidence"))
         referenced_paths = self.extract_harness_referenced_files(
             target_path,
             prompt,
@@ -872,6 +939,8 @@ class AppState:
             summary.get("summary") or "",
             summary.get("last_validation") or "",
             "\n".join(self._normalize_string_list(summary.get("validation_checks"))),
+            "\n".join(validation_artifacts),
+            "\n".join(f"{check}: {evidence}" for check, evidence in acceptance_evidence.items()),
             handoff_text,
         ]
 
@@ -899,6 +968,8 @@ class AppState:
             "summary": summary,
             "handoff_excerpt": handoff_text,
             "files": files,
+            "validation_artifacts": validation_artifacts,
+            "acceptance_evidence": acceptance_evidence,
             "acceptance_check_coverage": coverage,
         }
 
@@ -1277,6 +1348,8 @@ class AppState:
         deliverables = self._normalize_string_list(summary.get("deliverables"))
         revisions = self._normalize_string_list(summary.get("required_revisions"))
         blockers = self._normalize_string_list(summary.get("blockers"))
+        validation_artifacts = self._normalize_string_list(bundle.get("validation_artifacts"))
+        acceptance_evidence = self._normalize_string_mapping(bundle.get("acceptance_evidence"))
         next_steps = self._normalize_string_list(summary.get("next_steps"))
         validation_artifacts = self._normalize_string_list(bundle.get("validation_artifacts"))
         acceptance_evidence = self._normalize_string_mapping(bundle.get("acceptance_evidence"))
@@ -1426,6 +1499,21 @@ class AppState:
                 "",
                 "Last validation evidence:",
                 summary.get("last_validation") or "(none)",
+            ]
+        )
+        if validation_artifacts:
+            lines.append("")
+            lines.append("Existing validation artifacts:")
+            lines.extend(f"- {item}" for item in validation_artifacts[:8])
+        if acceptance_evidence:
+            lines.append("")
+            lines.append("Existing acceptance evidence:")
+            lines.extend(
+                f"- {check}: {self._truncate_text(evidence, max_chars=220)}"
+                for check, evidence in list(acceptance_evidence.items())[:8]
+            )
+        lines.extend(
+            [
                 "",
                 "Existing handoff excerpt:",
                 bundle["handoff_excerpt"] or "(none)",
@@ -2657,6 +2745,8 @@ class AppState:
                     summary.get("summary") or "",
                     last_validation,
                     "\n".join(validation_checks),
+                    "\n".join(validation_artifacts),
+                    "\n".join(f"{check}: {evidence}" for check, evidence in acceptance_evidence.items()),
                     handoff_excerpt,
                 )
                 if part

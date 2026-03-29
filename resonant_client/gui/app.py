@@ -239,13 +239,50 @@ class AppState:
             return "chat"
         return value if value in cls.CODE_SESSION_ROLES else "generator"
 
+    def _get_remote_harness_step_payload(
+        self,
+        *,
+        project_path: str,
+        session_mode: str,
+        session_role: str,
+        objective: str = "",
+        backend=None,
+    ) -> dict[str, Any] | None:
+        target_backend = backend or self.backend
+        backend_name = str(getattr(target_backend, "name", "") or "").strip().lower()
+        if backend_name != "resonant" or not hasattr(target_backend, "prepare_harness_step"):
+            return None
+        try:
+            payload = target_backend.prepare_harness_step(
+                project_path=project_path,
+                session_mode=session_mode,
+                session_role=session_role,
+                objective=objective,
+                execute=False,
+            )
+        except Exception as exc:
+            logger.warning("Falling back to local harness step prep for %s: %s", project_path, exc)
+            return None
+        return payload if isinstance(payload, dict) else None
+
     def build_harness_instructions(
         self,
         *,
         project_path: str,
         session_mode: str,
         session_role: str,
+        backend=None,
+        objective: str = "",
     ) -> str:
+        payload = self._get_remote_harness_step_payload(
+            project_path=project_path,
+            session_mode=session_mode,
+            session_role=session_role,
+            objective=objective,
+            backend=backend,
+        )
+        if payload and payload.get("instructions"):
+            return str(payload["instructions"])
         return self.harness_service.build_instructions(
             project_path=project_path,
             session_mode=session_mode,
@@ -257,7 +294,20 @@ class AppState:
         *,
         session_mode: str,
         session_role: str,
+        project_path: Optional[str] = None,
+        backend=None,
+        objective: str = "",
     ) -> str:
+        target_path = os.path.normpath(project_path or self.project.project_path)
+        payload = self._get_remote_harness_step_payload(
+            project_path=target_path,
+            session_mode=session_mode,
+            session_role=session_role,
+            objective=objective,
+            backend=backend,
+        )
+        if payload and payload.get("output_contract"):
+            return str(payload["output_contract"])
         return self.harness_service.build_output_contract(
             session_mode=session_mode,
             session_role=session_role,
@@ -3206,13 +3256,29 @@ class AppState:
         if session_mode == "chat":
             return user_msg
 
-        harness = HarnessWorkspace(self.project.project_path)
-        summary = self.get_harness_summary(self.project.project_path)
+        payload = self._get_remote_harness_step_payload(
+            project_path=self.project.project_path,
+            session_mode=session_mode,
+            session_role=session_role,
+            objective=user_msg,
+        )
+        summary = payload.get("summary_before") if payload else None
+        if not isinstance(summary, dict) or not summary:
+            summary = self.get_harness_summary(self.project.project_path)
         role_requirements = {
             "planner": "Create or refine the spec and propose the next sprint contract. Keep implementation out unless the user explicitly asks for it.",
             "generator": "Implement only the active sprint. Update progress and handoff artifacts before finishing.",
             "evaluator": "Verify against the sprint contract. Write a clear pass, revise, or blocked verdict with concrete required revisions.",
         }[session_role]
+        output_contract = (
+            str(payload.get("output_contract") or "")
+            if payload else
+            self.build_harness_output_contract(
+                session_mode=session_mode,
+                session_role=session_role,
+                project_path=self.project.project_path,
+            )
+        )
         return (
             f"HARNESS ROLE: {session_role}\n"
             f"HARNESS ROOT: {summary['root']}\n"
@@ -3223,7 +3289,7 @@ class AppState:
             f"- {summary['evaluator_report_path']}\n"
             f"- {summary['handoff_path']}\n\n"
             f"ROLE REQUIREMENTS: {role_requirements}\n\n"
-            f"FINAL OUTPUT CONTRACT:\n{self.build_harness_output_contract(session_mode=session_mode, session_role=session_role)}\n\n"
+            f"FINAL OUTPUT CONTRACT:\n{output_contract}\n\n"
             "USER REQUEST:\n"
             f"{user_msg}"
         )
@@ -4125,8 +4191,19 @@ class AppState:
         session_mode: str,
         session_role: str,
         project_path: Optional[str] = None,
+        backend=None,
+        objective: str = "",
     ) -> str:
         target_path = os.path.normpath(project_path or self.project.project_path)
+        payload = self._get_remote_harness_step_payload(
+            project_path=target_path,
+            session_mode=session_mode,
+            session_role=session_role,
+            objective=objective,
+            backend=backend,
+        )
+        if payload and payload.get("resume_prompt"):
+            return str(payload["resume_prompt"])
         return self.harness_service.build_resume_prompt(
             project_path=target_path,
             session_mode=session_mode,
@@ -5144,6 +5221,7 @@ class AppState:
             project_path=project_path,
             session_mode=session_mode,
             session_role=session_role,
+            backend=backend,
         )
         if harness_instructions:
             project_instructions = (project_instructions or "").strip()

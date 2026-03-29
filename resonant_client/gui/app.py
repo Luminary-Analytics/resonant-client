@@ -1459,6 +1459,8 @@ class AppState:
         deliverables = self._normalize_string_list(summary.get("deliverables"))
         revisions = self._normalize_string_list(summary.get("required_revisions"))
         blockers = self._normalize_string_list(summary.get("blockers"))
+        validation_artifacts = self._normalize_string_list(bundle.get("validation_artifacts"))
+        acceptance_evidence = self._normalize_string_mapping(bundle.get("acceptance_evidence"))
 
         lines = [
             "Artifact-only generator mode.",

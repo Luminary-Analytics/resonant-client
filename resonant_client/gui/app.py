@@ -3420,6 +3420,8 @@ class AppState:
                     break
         if bool(planner_payload.get("ready_for_generator")):
             contract["status"] = "approved"
+        if bool(planner_payload.get("handoff_ready")) and str(planner_payload.get("next_role") or "").strip() == "generator":
+            contract["status"] = "approved"
 
         if "sprint_id" not in contract and current_contract.sprint_id:
             contract["sprint_id"] = current_contract.sprint_id

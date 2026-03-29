@@ -6137,7 +6137,7 @@ async def websocket_endpoint(ws: WebSocket):
 
                             result = await asyncio.wait_for(
                                 _loop.run_in_executor(None, _run),
-                                timeout=180,  # 3 minute timeout
+                                timeout=600,  # 10 minute timeout for complex operations
                             )
 
                             await ws.send_json({
@@ -6154,7 +6154,7 @@ async def websocket_endpoint(ws: WebSocket):
                             await ws.send_json({
                                 "event": "command_project_chat_response",
                                 "project_id": pid,
-                                "response": (partial + "\n\n⚠️ Response timed out after 3 minutes.") if partial else "⚠️ Response timed out after 3 minutes. The AI backend may be slow or unreachable.",
+                                "response": (partial + "\n\n⚠️ Response timed out after 10 minutes.") if partial else "⚠️ Response timed out after 10 minutes. The AI backend may be slow or unreachable.",
                             })
                         except Exception as e:
                             await ws.send_json({

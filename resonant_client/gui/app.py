@@ -265,6 +265,15 @@ class AppState:
 
     def get_harness_summary(self, project_path: Optional[str] = None) -> dict[str, Any]:
         target_path = os.path.normpath(project_path or self.project.project_path)
+        backend_name = str(getattr(self.backend, "name", "") or "").strip().lower()
+        if backend_name == "resonant" and hasattr(self.backend, "get_harness_state"):
+            try:
+                payload = self.backend.get_harness_state(target_path)
+                summary = payload.get("summary")
+                if isinstance(summary, dict) and summary:
+                    return summary
+            except Exception as exc:
+                logger.warning("Falling back to local harness summary for %s: %s", target_path, exc)
         return self.harness_service.get_summary(target_path)
 
     @staticmethod

@@ -679,6 +679,40 @@ class ResonantBackend:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    def get_harness_state(self, project_path: str) -> dict:
+        """Fetch canonical harness state from the engine."""
+        resp = httpx.get(
+            f"{self.base_url}/v1/harness/state",
+            params={"project_path": project_path},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def prepare_harness_step(
+        self,
+        *,
+        project_path: str,
+        session_mode: str = "code",
+        session_role: str = "",
+        objective: str = "",
+        execute: bool = False,
+    ) -> dict:
+        """Prepare or execute a harness step through the engine-owned API."""
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/step",
+            json={
+                "project_path": project_path,
+                "session_mode": session_mode,
+                "session_role": session_role,
+                "objective": objective,
+                "execute": execute,
+            },
+            timeout=180,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def list_models(self) -> list:
         """Resonant engine is a single model."""
         return ["resonant-engine"]

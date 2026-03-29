@@ -697,6 +697,7 @@ class ResonantBackend:
         session_role: str = "",
         objective: str = "",
         execute: bool = False,
+        prompt_override: str = "",
     ) -> dict:
         """Prepare or execute a harness step through the engine-owned API."""
         resp = httpx.post(
@@ -707,6 +708,7 @@ class ResonantBackend:
                 "session_role": session_role,
                 "objective": objective,
                 "execute": execute,
+                "prompt_override": prompt_override,
             },
             timeout=180,
         )

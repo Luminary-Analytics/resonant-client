@@ -4850,6 +4850,44 @@ class AppState:
             allowed_tools = None
             max_tokens_override = None
 
+        if backend_type == "resonant":
+            spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
+            backend = spec.create_backend(self.settings)
+            if hasattr(backend, "prepare_harness_step"):
+                payload = backend.prepare_harness_step(
+                    project_path=project_path,
+                    session_mode="code",
+                    session_role=session_role,
+                    objective="",
+                    execute=True,
+                    prompt_override=effective_prompt,
+                )
+                execution_result = dict(payload.get("execution_result") or {})
+                return {
+                    "result": str(
+                        execution_result.get("result")
+                        or execution_result.get("assistant_text")
+                        or ""
+                    ),
+                    "assistant_text": str(
+                        execution_result.get("assistant_text")
+                        or execution_result.get("result")
+                        or ""
+                    ),
+                    "error": str(execution_result.get("error") or payload.get("error") or ""),
+                    "steps": int(execution_result.get("steps") or 0),
+                    "display_events": list(execution_result.get("display_events") or []),
+                    "backend_type": str(execution_result.get("backend_type") or backend_type),
+                    "model": str(execution_result.get("model") or getattr(backend, "model", model or "")),
+                    "timed_out": bool(execution_result.get("timed_out")),
+                    "artifact_only": bool(execution_result.get("artifact_only")),
+                    "evaluation_mode": str(execution_result.get("evaluation_mode") or ""),
+                    "role_mode": str(execution_result.get("role_mode") or ""),
+                    "prechecked": bool(execution_result.get("prechecked")),
+                    "summary_after": execution_result.get("summary_after"),
+                    "remote": True,
+                }
+
         session, spec = self.build_harness_role_session(
             project_path=project_path,
             session_role=session_role,

@@ -6077,6 +6077,9 @@ async def websocket_endpoint(ws: WebSocket):
                             _texts = []
 
                             def _run():
+                                # CRITICAL: Reset cancel state before reusing session
+                                session.reset_cancel()
+
                                 for event in session.run(prompt):
                                     event_type = event.get("event", "")
                                     if event_type == "text.delta":
@@ -6099,6 +6102,37 @@ async def websocket_endpoint(ws: WebSocket):
                                         text = event.get("text", "")
                                         if text:
                                             _texts.append(text)
+                                    elif event_type == "tool_call":
+                                        # Stream tool call info so UI shows activity
+                                        tool_name = event.get("name", "tool")
+                                        try:
+                                            asyncio.run_coroutine_threadsafe(
+                                                _ws.send_json({
+                                                    "event": "command_project_chat_delta",
+                                                    "project_id": pid,
+                                                    "text": f"\n🔧 Using tool: {tool_name}...\n",
+                                                    "is_tool": True,
+                                                }),
+                                                _loop,
+                                            )
+                                        except Exception:
+                                            pass
+                                    elif event_type == "tool_result":
+                                        # Show brief tool result
+                                        result_text = str(event.get("result", ""))[:100]
+                                        try:
+                                            asyncio.run_coroutine_threadsafe(
+                                                _ws.send_json({
+                                                    "event": "command_project_chat_delta",
+                                                    "project_id": pid,
+                                                    "text": f"✓ Done\n",
+                                                    "is_tool": True,
+                                                }),
+                                                _loop,
+                                            )
+                                        except Exception:
+                                            pass
+                                    # All other events (step.start, step.end, etc.) are silently processed
                                 return "".join(_texts) if _texts else "(no response)"
 
                             result = await asyncio.wait_for(

@@ -1543,6 +1543,7 @@ class ClaudeCodeBackend:
         env = _clean_env_for_cli(["CLAUDECODE", "CLAUDE_CODE", "CLAUDE_AGENT"])
 
         got_result = False
+        self._streamed_text = False  # Track if we've streamed any text deltas
         try:
             for line in _stream_subprocess(cmd, cwd=self.cwd, env=env, cancel_event=cancel_event):
                 try:
@@ -1599,10 +1600,12 @@ class ClaudeCodeBackend:
 
         # --- Content block delta (incremental streaming with --verbose) ---
         elif event_type == "content_block_delta":
-            # Skip incremental text — we use result.result for the final
-            # response instead, which avoids showing intermediate "thinking"
-            # text from the CLI's multi-turn loop.
-            pass
+            delta = event.get("delta", {})
+            if delta.get("type") == "text_delta":
+                text = delta.get("text", "")
+                if text:
+                    self._streamed_text = True
+                    yield (EVENT_TEXT_DELTA, {"delta": text})
 
         # --- Tool result from CLI's internal tool execution ---
         elif event_type == "tool_result":
@@ -1622,8 +1625,9 @@ class ClaudeCodeBackend:
                 return
 
             # The result event contains the final text response
+            # Only emit if we haven't already streamed deltas (avoid duplication)
             result_text = event.get("result", "")
-            if result_text:
+            if result_text and not getattr(self, '_streamed_text', False):
                 yield (EVENT_TEXT_DELTA, {"delta": result_text})
 
             cost = event.get("total_cost_usd", 0)

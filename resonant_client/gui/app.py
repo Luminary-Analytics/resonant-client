@@ -6274,6 +6274,14 @@ async def websocket_endpoint(ws: WebSocket):
                         )
                         message = context_prefix + "User says: " + message
                         setattr(state, session_key, coordinator_session)
+                    else:
+                        # For follow-up messages, add a brief reminder about spawning workers
+                        if any(kw in message.lower() for kw in ("spawn", "worker", "parallel", "tasks", "plan", "break down", "delegate")):
+                            message += (
+                                "\n\n[Reminder: To spawn workers, include ```resonant-command blocks with "
+                                '{"action": "spawn_worker", "name": "...", "prompt": "..."} in your response. '
+                                'To update the plan, use {"action": "update_plan", "tasks": [...]}]'
+                            )
 
                     # Run the coordinator session in a background thread and stream results
                     async def _run_coordinator_chat(session, prompt, pid):

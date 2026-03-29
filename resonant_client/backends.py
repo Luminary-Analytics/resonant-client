@@ -1504,15 +1504,34 @@ class ClaudeCodeBackend:
             yield (EVENT_ERROR, {"message": "claude CLI not found. Install: npm install -g @anthropic-ai/claude-code"})
             return
 
-        logger.info("ClaudeCodeBackend.stream: model=%s cwd=%s prompt=%s...", self.model, self.cwd, user_msg[:80])
+        logger.info("ClaudeCodeBackend.stream: model=%s cwd=%s prompt_len=%d prompt=%s...",
+                     self.model, self.cwd, len(user_msg), user_msg[:80])
 
-        cmd = [
-            self._cli, "-p", user_msg,
-            "--output-format", "stream-json",
-            "--verbose",  # Required for stream-json output
-            "--model", self.model,
-            "--max-turns", "25",
-        ]
+        # For long messages, write to temp file to avoid Windows cmd line length limits
+        prompt_file = None
+        if len(user_msg) > 2000 or '\n' in user_msg:
+            import tempfile
+            prompt_file = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.txt', prefix='resonant_prompt_',
+                delete=False, encoding='utf-8',
+            )
+            prompt_file.write(user_msg)
+            prompt_file.close()
+            cmd = [
+                self._cli, "-p", f"Follow the instructions in this file exactly: {prompt_file.name}",
+                "--output-format", "stream-json",
+                "--verbose",
+                "--model", self.model,
+                "--max-turns", "25",
+            ]
+        else:
+            cmd = [
+                self._cli, "-p", user_msg,
+                "--output-format", "stream-json",
+                "--verbose",  # Required for stream-json output
+                "--model", self.model,
+                "--max-turns", "25",
+            ]
 
         if self.permission_mode:
             cmd.extend(["--permission-mode", self.permission_mode])
@@ -1545,6 +1564,14 @@ class ClaudeCodeBackend:
 
         except Exception as e:
             yield (EVENT_ERROR, {"message": f"Claude Code CLI error: {e}"})
+        finally:
+            # Clean up temp prompt file
+            if prompt_file:
+                try:
+                    import os
+                    os.unlink(prompt_file.name)
+                except Exception:
+                    pass
 
     def _parse_claude_event(self, event: dict) -> Iterator[Tuple[str, dict]]:
         """Parse a Claude Code stream-json event into backend events."""
@@ -1680,6 +1707,19 @@ class CodexBackend:
             yield (EVENT_ERROR, {"message": "codex CLI not found. Install: npm install -g @openai/codex"})
             return
 
+        # For long messages, write to temp file to avoid Windows cmd line length limits
+        prompt_file = None
+        actual_msg = user_msg
+        if len(user_msg) > 2000 or '\n' in user_msg:
+            import tempfile
+            prompt_file = tempfile.NamedTemporaryFile(
+                mode='w', suffix='.txt', prefix='resonant_codex_prompt_',
+                delete=False, encoding='utf-8',
+            )
+            prompt_file.write(user_msg)
+            prompt_file.close()
+            actual_msg = f"Follow the instructions in this file exactly: {prompt_file.name}"
+
         cmd = [
             self._cli, "exec",
             "--json",
@@ -1687,7 +1727,7 @@ class CodexBackend:
             "--ephemeral",
             "--skip-git-repo-check",
             "-C", self.cwd,
-            user_msg,
+            actual_msg,
         ]
 
         if self.model:
@@ -1738,6 +1778,13 @@ class CodexBackend:
 
         except Exception as e:
             yield (EVENT_ERROR, {"message": f"Codex CLI error: {e}"})
+        finally:
+            if prompt_file:
+                try:
+                    import os
+                    os.unlink(prompt_file.name)
+                except Exception:
+                    pass
 
     def _parse_codex_event(self, event: dict) -> Iterator[Tuple[str, dict]]:
         """Parse a Codex JSONL event into backend events."""

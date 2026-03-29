@@ -1504,6 +1504,8 @@ class ClaudeCodeBackend:
             yield (EVENT_ERROR, {"message": "claude CLI not found. Install: npm install -g @anthropic-ai/claude-code"})
             return
 
+        logger.info("ClaudeCodeBackend.stream: model=%s cwd=%s prompt=%s...", self.model, self.cwd, user_msg[:80])
+
         cmd = [
             self._cli, "-p", user_msg,
             "--output-format", "stream-json",

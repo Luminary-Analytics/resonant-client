@@ -158,9 +158,11 @@ class TaskRunner:
 
             collected_text = []
             steps = 0
+            logger.info("Task %s: starting session.run() with prompt: %s...", task.id, task.prompt[:80])
 
             for event in session.run(task.prompt):
                 event_type = event.get("event", "")
+                logger.debug("Task %s: event=%s", task.id, event_type)
                 task.display_events.append(event)
 
                 # Stream event to live monitor if callback is set
@@ -189,6 +191,8 @@ class TaskRunner:
             task.result = "\n\n".join(collected_text) if collected_text else "(no output)"
             task.steps = steps
             task.elapsed = time.time() - start
+            logger.info("Task %s: completed. steps=%d elapsed=%.1fs result_len=%d events=%d",
+                        task.id, steps, task.elapsed, len(task.result), len(task.display_events))
 
             if task.cancel_event.is_set():
                 task.status = TaskStatus.CANCELLED

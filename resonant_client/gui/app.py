@@ -2984,8 +2984,19 @@ class AppState:
     ) -> tuple[str, str]:
         normalized_role = self.normalize_session_role("code", session_role)
         lowered_reason = reason.lower()
+        if not self.available_backends:
+            self.detect_backends()
         codex_cli = _find_cli("codex")
         claude_cli = _find_cli("claude")
+        forced_provider = str(os.environ.get("RESONANT_HARNESS_TEACHER_PROVIDER", "") or "").strip()
+        forced_model = str(os.environ.get("RESONANT_HARNESS_TEACHER_MODEL", "") or "").strip()
+
+        if forced_provider:
+            if forced_provider == "codex" and codex_cli:
+                return forced_provider, forced_model or "gpt-5.4"
+            if forced_provider == "claude" and claude_cli:
+                return forced_provider, forced_model or "claude-opus-4-6"
+            raise ValueError(f"Forced harness teacher provider '{forced_provider}' is not available")
 
         prefer_claude = normalized_role == "evaluator" or "blocked" in lowered_reason or "verdict" in lowered_reason
         providers: list[tuple[str, str]] = []
@@ -2993,12 +3004,14 @@ class AppState:
             providers.extend(
                 [
                     ("claude", "claude-opus-4-6"),
+                    ("codex", "gpt-5.4-mini"),
                     ("codex", "gpt-5.4"),
                 ]
             )
         else:
             providers.extend(
                 [
+                    ("codex", "gpt-5.4-mini"),
                     ("codex", "gpt-5.4"),
                     ("claude", "claude-opus-4-6"),
                 ]
@@ -4372,6 +4385,8 @@ class AppState:
         role_env = session_role.upper()
         forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_BACKEND", "") or "").strip()
         forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_MODEL", "") or "").strip()
+        if forced_backend.lower() in {"disabled", "none", "off", "false", "no"}:
+            return "", ""
         repair_needed = session_role == "generator" and self._harness_generator_needs_frontier_repair(project_path)
 
         if forced_backend and not repair_needed:

@@ -15,8 +15,9 @@ Current verified behavior:
 - `resonant-client`'s `ResonantBackend` now parses these responses correctly
 - a full client `Session` can execute a simple `file_write` loop end-to-end against `resonant-engine`
 - project-creation prompts can now return multiple `file_write` calls for small starter scaffolds
+- project-creation followups can now continue into cheap validation `bash` calls before summarizing
 - coordinator chat followups can now infer a likely source file, call `file_read`, then continue to `file_edit`
-- coordinator/project-management toolsets can now chain `update_plan`, `spawn_worker`, and `post_update`
+- coordinator/project-management toolsets can now chain `update_plan`, `spawn_worker`, `check_workers`, `post_update`, and `complete_project`
 
 The main remaining limitation is capability, not protocol:
 

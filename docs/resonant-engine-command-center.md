@@ -11,7 +11,7 @@ Verified coverage today:
 - coordinator followups can turn project listings into `file_read` and then `file_edit`
 - coordinator/project-management toolsets can chain `update_plan`, `spawn_worker`, `check_workers`, `post_update`, and `complete_project`
 - direct coordinator status prompts with explicit worker ids can now infer `check_workers`
-- malformed near-miss local tool calls are normalized more safely on the engine side for coordinator flows
+- malformed near-miss local tool calls are normalized more safely on the engine side for coordinator flows and generic file-tool flows
 
 The remaining gap is no longer tool-call protocol. It is broader autonomous project quality for harder multi-file builds.
 

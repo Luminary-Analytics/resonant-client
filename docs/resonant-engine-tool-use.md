@@ -18,6 +18,9 @@ Current verified behavior:
 - project-creation followups can now continue into cheap validation `bash` calls before summarizing
 - coordinator chat followups can now infer a likely source file, call `file_read`, then continue to `file_edit`
 - coordinator/project-management toolsets can now chain `update_plan`, `spawn_worker`, `check_workers`, `post_update`, and `complete_project`
+- engine-side normalization now also repairs common raw local-model file-tool drift such as
+  `create_file` -> `file_write`, `read_file` -> `file_read`, `edit_file` -> `file_edit`,
+  and `file_path` -> `path`
 
 Important edge case to preserve:
 

@@ -218,6 +218,35 @@ During this phase:
 Acceptance:
 
 - engine can instantiate the harness runtime without importing GUI modules
+
+Status:
+
+- done for the initial core slice
+- `resonant-engine` now owns canonical harness state and single-step execution
+- live endpoints now include:
+  - `GET /v1/harness/state`
+  - `POST /v1/harness/step`
+  - `GET /v1/harness/cycles`
+  - `POST /v1/harness/cycles/start`
+  - `GET /v1/harness/cycles/{run_id}`
+  - `POST /v1/harness/cycles/{run_id}/cancel`
+- `resonant-client` now prefers those engine APIs when the active backend is `resonant`
+
+### Phase 2: Move cycle ownership to the engine
+
+This phase is now also in place for the `resonant` backend.
+
+What changed:
+
+- the planner / generator / evaluator cycle registry is server-owned
+- cycle start / list / inspect / cancel operations are exposed by `resonant-engine`
+- the client no longer has to be the cycle system of record when using the engine backend
+
+What still remains:
+
+- move teacher recovery / policy decisions fully server-side
+- expose streamed cycle progress over a dedicated API event channel instead of polling result/list endpoints
+- retire the remaining local harness orchestrator path once non-`resonant` fallbacks are intentionally handled
 - client no longer needs direct harness internals for basic status rendering
 
 ### Phase 2: Add engine-side role router and local adapter catalog

@@ -5643,31 +5643,77 @@ async def websocket_endpoint(ws: WebSocket):
                 max_loops = int(msg.get("max_loops") or 6)
                 name = (msg.get("name") or "").strip()
                 objective = (msg.get("objective") or "").strip()
-                run = state.harness_orchestrator.start_cycle(
-                    project_path=state.project.project_path,
-                    name=name or "Harness Cycle",
-                    objective=objective,
-                    max_loops=max_loops,
-                )
-                await ws.send_json({"event": "harness_cycle_started", "run": run.to_dict()})
-                await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "start_harness_cycle"):
+                    payload = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.start_harness_cycle(
+                            project_path=state.project.project_path,
+                            name=name or "Harness Cycle",
+                            objective=objective,
+                            max_loops=max_loops,
+                        ),
+                    )
+                    await ws.send_json({"event": "harness_cycle_started", "run": payload.get("run")})
+                    listing = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.list_harness_cycles(),
+                    )
+                    await ws.send_json({"event": "harness_cycle_list", "runs": listing.get("runs", [])})
+                else:
+                    run = state.harness_orchestrator.start_cycle(
+                        project_path=state.project.project_path,
+                        name=name or "Harness Cycle",
+                        objective=objective,
+                        max_loops=max_loops,
+                    )
+                    await ws.send_json({"event": "harness_cycle_started", "run": run.to_dict()})
+                    await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
 
             elif command == "harness_cycle_list":
-                await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_cycles"):
+                    payload = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.list_harness_cycles(),
+                    )
+                    await ws.send_json({"event": "harness_cycle_list", "runs": payload.get("runs", [])})
+                else:
+                    await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
 
             elif command == "harness_cycle_result":
                 run_id = (msg.get("run_id") or "").strip()
-                run = state.harness_orchestrator.get_run(run_id)
-                if run:
-                    await ws.send_json({"event": "harness_cycle_result", "run": run.to_full_dict()})
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "get_harness_cycle"):
+                    try:
+                        payload = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.backend.get_harness_cycle(run_id),
+                        )
+                        await ws.send_json({"event": "harness_cycle_result", "run": payload.get("run")})
+                    except Exception:
+                        await ws.send_json({"event": "error", "message": f"Harness cycle {run_id} not found"})
                 else:
-                    await ws.send_json({"event": "error", "message": f"Harness cycle {run_id} not found"})
+                    run = state.harness_orchestrator.get_run(run_id)
+                    if run:
+                        await ws.send_json({"event": "harness_cycle_result", "run": run.to_full_dict()})
+                    else:
+                        await ws.send_json({"event": "error", "message": f"Harness cycle {run_id} not found"})
 
             elif command == "harness_cycle_cancel":
                 run_id = (msg.get("run_id") or "").strip()
-                cancelled = state.harness_orchestrator.cancel(run_id)
-                await ws.send_json({"event": "harness_cycle_cancelled", "run_id": run_id, "success": cancelled})
-                await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "cancel_harness_cycle"):
+                    payload = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.cancel_harness_cycle(run_id),
+                    )
+                    await ws.send_json({"event": "harness_cycle_cancelled", "run_id": run_id, "success": bool(payload.get("success"))})
+                    listing = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.list_harness_cycles(),
+                    )
+                    await ws.send_json({"event": "harness_cycle_list", "runs": listing.get("runs", [])})
+                else:
+                    cancelled = state.harness_orchestrator.cancel(run_id)
+                    await ws.send_json({"event": "harness_cycle_cancelled", "run_id": run_id, "success": cancelled})
+                    await ws.send_json({"event": "harness_cycle_list", "runs": state.harness_orchestrator.list_runs()})
 
             elif command == "harness_teacher_recover":
                 reason = (msg.get("reason") or "").strip() or "manual_recovery"

@@ -715,6 +715,52 @@ class ResonantBackend:
         resp.raise_for_status()
         return resp.json()
 
+    def start_harness_cycle(
+        self,
+        *,
+        project_path: str,
+        name: str = "",
+        objective: str = "",
+        max_loops: int = 6,
+    ) -> dict:
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/cycles/start",
+            json={
+                "project_path": project_path,
+                "name": name,
+                "objective": objective,
+                "max_loops": max_loops,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_harness_cycles(self, *, limit: int = 20) -> dict:
+        resp = httpx.get(
+            f"{self.base_url}/v1/harness/cycles",
+            params={"limit": limit},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def get_harness_cycle(self, run_id: str) -> dict:
+        resp = httpx.get(
+            f"{self.base_url}/v1/harness/cycles/{run_id}",
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def cancel_harness_cycle(self, run_id: str) -> dict:
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/cycles/{run_id}/cancel",
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def list_models(self) -> list:
         """Resonant engine is a single model."""
         return ["resonant-engine"]

@@ -1,9 +1,10 @@
 # Harness Core Boundary
 
-`resonant-client` currently hosts both a user-facing client and the model
-orchestration harness used for planner/generator/evaluator loops. To keep
-iterating on the harness independently from GUI concerns, the core harness
-implementation now lives under `resonant_client/harness/`.
+`resonant-client` originally hosted both a user-facing client and the model
+orchestration harness used for planner/generator/evaluator loops. That local
+split still exists for compatibility, but the canonical direction has changed:
+`resonant-engine` is now the system of record for harness state and remote step
+/ cycle execution when the active backend is `resonant`.
 
 Current split:
 
@@ -34,12 +35,18 @@ Compatibility:
 remain as thin import shims so existing imports do not break while the package
 boundary settles.
 
-Intended next extraction steps:
+Current remote ownership:
 
-1. move prompt/evidence bundle builders into `resonant_client/harness/`
-2. define a smaller interface for backend execution and teacher escalation
-3. let the GUI call a harness service/controller instead of constructing the
-   orchestration pieces directly
+- canonical harness state: `resonant-engine`
+- remote step execution: `resonant-engine`
+- remote cycle registry and lifecycle: `resonant-engine`
+- GUI/TUI rendering and controls: `resonant-client`
+
+Remaining local responsibilities inside `resonant-client` are now transitional:
+
+1. local compatibility for non-`resonant` backends
+2. UI event handling and session/project views
+3. fallback local harness control when the engine backend is not active
 
 Follow-on architecture plan:
 

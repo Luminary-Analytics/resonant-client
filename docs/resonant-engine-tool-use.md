@@ -14,12 +14,15 @@ Current verified behavior:
   - `response.completed` with `status: "requires_action"` when tool calls are present
 - `resonant-client`'s `ResonantBackend` now parses these responses correctly
 - a full client `Session` can execute a simple `file_write` loop end-to-end against `resonant-engine`
+- project-creation prompts can now return multiple `file_write` calls for small starter scaffolds
+- coordinator chat followups can now infer a likely source file, call `file_read`, then continue to `file_edit`
+- coordinator/project-management toolsets can now chain `update_plan`, `spawn_worker`, and `post_update`
 
 The main remaining limitation is capability, not protocol:
 
 - simple file/tool requests now work
-- project-style inspection and planning calls can work
-- broad autonomous project generation is still limited by the current `resonant-engine` tool policy and generation quality
+- small deterministic project scaffolds and coordinator followups now work
+- broad autonomous multi-file project generation is still limited by the current `resonant-engine` tool policy and generation quality
 
 ## Overview
 

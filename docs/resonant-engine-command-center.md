@@ -1,5 +1,17 @@
 # Resonant Engine — Command Center & Coordinator Chat Requirements
 
+## Current implementation status
+
+The protocol requirement in this document is now implemented on the engine side.
+
+Verified coverage today:
+- `/v1/responses` returns real `function_call` items and accepts `function_call_output`
+- small project creation prompts can emit multiple `file_write` calls for starter scaffolds
+- coordinator followups can turn project listings into `file_read` and then `file_edit`
+- coordinator/project-management toolsets can chain `update_plan`, `spawn_worker`, and `post_update`
+
+The remaining gap is no longer tool-call protocol. It is broader autonomous project quality for harder multi-file builds.
+
 ## What Needs to Work
 
 The Resonant GUI Command Center allows users to:

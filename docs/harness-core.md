@@ -44,6 +44,13 @@ Current remote ownership:
 - remote recurring harness-cycle schedules: `resonant-engine`
 - GUI/TUI rendering and controls: `resonant-client`
 
+Current remote role runtime for the `resonant` backend:
+
+- planner: engine-hosted `localcodingmodel-planner-clean`
+- generator: engine-hosted `localcodingmodel-router`
+- generator retry / repair: engine-hosted `localcodingmodel-generator-repair`
+- evaluator: engine-hosted `resonant-engine`
+
 Remaining local responsibilities inside `resonant-client` are now transitional:
 
 1. local compatibility for non-`resonant` backends

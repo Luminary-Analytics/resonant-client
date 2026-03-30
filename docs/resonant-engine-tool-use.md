@@ -1,12 +1,33 @@
 # Resonant Engine — Tool Use Requirements for Command Center
 
+## Current Status
+
+This protocol work is now implemented on the engine side for `/v1/responses`.
+
+Current verified behavior:
+
+- non-streaming responses return real `function_call` output items
+- follow-up requests with `function_call_output` continue the loop correctly
+- streaming responses emit:
+  - `response.output_text.delta`
+  - `response.output_item.done` for `function_call`
+  - `response.completed` with `status: "requires_action"` when tool calls are present
+- `resonant-client`'s `ResonantBackend` now parses these responses correctly
+- a full client `Session` can execute a simple `file_write` loop end-to-end against `resonant-engine`
+
+The main remaining limitation is capability, not protocol:
+
+- simple file/tool requests now work
+- project-style inspection and planning calls can work
+- broad autonomous project generation is still limited by the current `resonant-engine` tool policy and generation quality
+
 ## Overview
 
 The Resonant GUI Command Center needs the engine at `/v1/responses` to support **tool calling** — where the engine returns `function_call` output items that the client executes locally, then sends results back in a follow-up request. This is the same pattern used by OpenAI's Responses API.
 
 Currently the engine returns `output_text` with cognitive state metadata even when tools are provided. To work with the Command Center (project creation, file writing, coordinator chat), the engine must actually invoke the tools.
 
-## Current Behavior (Broken)
+## Previous Broken Behavior
 
 **Request:**
 ```json

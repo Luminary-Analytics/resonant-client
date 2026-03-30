@@ -689,6 +689,139 @@ class ResonantBackend:
         resp.raise_for_status()
         return resp.json()
 
+    def apply_harness_update(
+        self,
+        *,
+        project_path: str,
+        session_mode: str = "code",
+        session_role: str = "",
+        payload: dict | None = None,
+        assistant_text: str = "",
+        user_request: str = "",
+    ) -> dict:
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/update",
+            json={
+                "project_path": project_path,
+                "session_mode": session_mode,
+                "session_role": session_role,
+                "payload": dict(payload or {}),
+                "assistant_text": assistant_text,
+                "user_request": user_request,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def recover_harness(
+        self,
+        *,
+        project_path: str,
+        failed_role: str,
+        reason: str,
+        objective: str = "",
+    ) -> dict:
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/teacher-recover",
+            json={
+                "project_path": project_path,
+                "failed_role": failed_role,
+                "reason": reason,
+                "objective": objective,
+            },
+            timeout=300,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def set_harness_sprint(
+        self,
+        *,
+        project_path: str,
+        sprint_id: str,
+        feature_name: str = "",
+        objective: str,
+        deliverables: list[str] | None = None,
+        acceptance_checks: list[str] | None = None,
+        evaluator_focus: list[str] | None = None,
+        target_files: list[str] | None = None,
+        target_line_hints: list[str] | None = None,
+        validation_commands: list[str] | None = None,
+        edit_strategy: str = "",
+        status: str = "proposed",
+        session_role: str = "planner",
+    ) -> dict:
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/sprint",
+            json={
+                "project_path": project_path,
+                "sprint_id": sprint_id,
+                "feature_name": feature_name,
+                "objective": objective,
+                "deliverables": list(deliverables or []),
+                "acceptance_checks": list(acceptance_checks or []),
+                "evaluator_focus": list(evaluator_focus or []),
+                "target_files": list(target_files or []),
+                "target_line_hints": list(target_line_hints or []),
+                "validation_commands": list(validation_commands or []),
+                "edit_strategy": edit_strategy,
+                "status": status,
+                "session_role": session_role,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def set_harness_contract_status(
+        self,
+        *,
+        project_path: str,
+        status: str,
+        session_role: str = "",
+    ) -> dict:
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/contract-status",
+            json={
+                "project_path": project_path,
+                "status": status,
+                "session_role": session_role,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def set_evaluator_verdict(
+        self,
+        *,
+        project_path: str,
+        sprint_id: str,
+        verdict: str,
+        findings: list[str] | None = None,
+        required_revisions: list[str] | None = None,
+        passed_checks: list[str] | None = None,
+        failed_checks: list[str] | None = None,
+        score: float | None = None,
+    ) -> dict:
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/evaluator-verdict",
+            json={
+                "project_path": project_path,
+                "sprint_id": sprint_id,
+                "verdict": verdict,
+                "findings": list(findings or []),
+                "required_revisions": list(required_revisions or []),
+                "passed_checks": list(passed_checks or []),
+                "failed_checks": list(failed_checks or []),
+                "score": score,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def prepare_harness_step(
         self,
         *,
@@ -756,6 +889,54 @@ class ResonantBackend:
     def cancel_harness_cycle(self, run_id: str) -> dict:
         resp = httpx.post(
             f"{self.base_url}/v1/harness/cycles/{run_id}/cancel",
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def create_harness_schedule(
+        self,
+        *,
+        project_path: str,
+        name: str,
+        prompt: str,
+        schedule: str,
+        max_loops: int = 6,
+    ) -> dict:
+        resp = httpx.post(
+            f"{self.base_url}/v1/harness/schedules",
+            json={
+                "project_path": project_path,
+                "name": name,
+                "prompt": prompt,
+                "schedule": schedule,
+                "max_loops": max_loops,
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def list_harness_schedules(self) -> dict:
+        resp = httpx.get(
+            f"{self.base_url}/v1/harness/schedules",
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def update_harness_schedule(self, task_id: str, **updates) -> dict:
+        resp = httpx.patch(
+            f"{self.base_url}/v1/harness/schedules/{task_id}",
+            json=updates,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def delete_harness_schedule(self, task_id: str) -> dict:
+        resp = httpx.delete(
+            f"{self.base_url}/v1/harness/schedules/{task_id}",
             timeout=30,
         )
         resp.raise_for_status()

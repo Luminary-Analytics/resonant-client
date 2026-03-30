@@ -138,20 +138,39 @@ itself.
 
 ### Harness API surface
 
-Add engine endpoints for harness lifecycle operations, for example:
+The engine now owns the live harness control plane for the `resonant` backend.
+Current endpoints:
 
 - `GET /v1/harness/state`
   - returns canonical harness state for a project/workspace
 - `POST /v1/harness/step`
-  - runs exactly one planner/generator/evaluator step
-- `POST /v1/harness/cycle`
-  - runs an automated cycle with limits
-- `POST /v1/harness/control`
-  - approve contract, stop cycle, mark blocked, etc.
-- `GET /v1/harness/history`
-  - returns recent run history / recovery events
-- `GET /v1/harness/export`
-  - returns or prepares exportable artifacts for distillation/training
+  - prepares or executes exactly one planner/generator/evaluator step
+- `POST /v1/harness/update`
+  - applies a parsed `resonant-harness` payload server-side
+- `POST /v1/harness/teacher-recover`
+  - runs manual teacher recovery server-side when configured
+- `POST /v1/harness/sprint`
+  - updates the active sprint contract server-side
+- `POST /v1/harness/contract-status`
+  - mutates contract status server-side
+- `POST /v1/harness/evaluator-verdict`
+  - records evaluator verdicts server-side
+- `GET /v1/harness/cycles`
+  - lists engine-owned cycle runs
+- `POST /v1/harness/cycles/start`
+  - starts an engine-owned automated cycle
+- `GET /v1/harness/cycles/{run_id}`
+  - returns a full cycle run
+- `POST /v1/harness/cycles/{run_id}/cancel`
+  - cancels a running cycle
+- `GET /v1/harness/schedules`
+  - lists engine-owned recurring harness-cycle schedules
+- `POST /v1/harness/schedules`
+  - creates an engine-owned recurring harness-cycle schedule
+- `PATCH /v1/harness/schedules/{task_id}`
+  - updates an engine-owned recurring harness-cycle schedule
+- `DELETE /v1/harness/schedules/{task_id}`
+  - deletes an engine-owned recurring harness-cycle schedule
 
 Streaming:
 
@@ -172,6 +191,7 @@ It should stop owning:
 
 - canonical `.resonant-harness` mutations
 - orchestration loops
+- recurring harness-cycle schedules
 - role routing logic
 - teacher recovery decisions
 

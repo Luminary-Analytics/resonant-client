@@ -5723,15 +5723,26 @@ async def websocket_endpoint(ws: WebSocket):
                 )
                 objective = (msg.get("objective") or "").strip()
                 try:
-                    result = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: state.run_harness_teacher_escalation(
-                            project_path=state.project.project_path,
-                            failed_role=failed_role,
-                            reason=reason,
-                            objective=objective,
-                        ),
-                    )
+                    if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "recover_harness"):
+                        result = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.backend.recover_harness(
+                                project_path=state.project.project_path,
+                                failed_role=failed_role,
+                                reason=reason,
+                                objective=objective,
+                            ),
+                        )
+                    else:
+                        result = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.run_harness_teacher_escalation(
+                                project_path=state.project.project_path,
+                                failed_role=failed_role,
+                                reason=reason,
+                                objective=objective,
+                            ),
+                        )
                     await ws.send_json(
                         {
                             "event": "harness_teacher_recovered",
@@ -5754,30 +5765,64 @@ async def websocket_endpoint(ws: WebSocket):
                 if not sprint_id or not objective:
                     await ws.send_json({"event": "error", "message": "sprint_id and objective are required"})
                     continue
-                state.harness.set_active_sprint(
-                    sprint_id=sprint_id,
-                    feature_name=feature_name,
-                    objective=objective,
-                    deliverables=list(msg.get("deliverables") or []),
-                    acceptance_checks=list(msg.get("acceptance_checks") or []),
-                    evaluator_focus=list(msg.get("evaluator_focus") or []),
-                    status=(msg.get("status") or "proposed"),
-                    role=state.normalize_session_role("code", msg.get("session_role", "planner")),
-                )
-                await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
-                await ws.send_json({"event": "status_msg", "message": f"Updated sprint {sprint_id}"})
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "set_harness_sprint"):
+                    payload = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.set_harness_sprint(
+                            project_path=state.project.project_path,
+                            sprint_id=sprint_id,
+                            feature_name=feature_name,
+                            objective=objective,
+                            deliverables=list(msg.get("deliverables") or []),
+                            acceptance_checks=list(msg.get("acceptance_checks") or []),
+                            evaluator_focus=list(msg.get("evaluator_focus") or []),
+                            target_files=list(msg.get("target_files") or []),
+                            target_line_hints=list(msg.get("target_line_hints") or []),
+                            validation_commands=list(msg.get("validation_commands") or []),
+                            edit_strategy=(msg.get("edit_strategy") or "").strip(),
+                            status=(msg.get("status") or "proposed"),
+                            session_role=state.normalize_session_role("code", msg.get("session_role", "planner")),
+                        ),
+                    )
+                    await ws.send_json({"event": "harness_state", "data": payload.get("summary", state.get_harness_summary())})
+                    await ws.send_json({"event": "status_msg", "message": payload.get("status_message", f"Updated sprint {sprint_id}")})
+                else:
+                    state.harness.set_active_sprint(
+                        sprint_id=sprint_id,
+                        feature_name=feature_name,
+                        objective=objective,
+                        deliverables=list(msg.get("deliverables") or []),
+                        acceptance_checks=list(msg.get("acceptance_checks") or []),
+                        evaluator_focus=list(msg.get("evaluator_focus") or []),
+                        status=(msg.get("status") or "proposed"),
+                        role=state.normalize_session_role("code", msg.get("session_role", "planner")),
+                    )
+                    await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+                    await ws.send_json({"event": "status_msg", "message": f"Updated sprint {sprint_id}"})
 
             elif command == "set_harness_contract_status":
                 status_value = (msg.get("status") or "").strip()
                 if status_value not in {"proposed", "approved", "implemented", "needs_revision", "passed", "failed"}:
                     await ws.send_json({"event": "error", "message": "valid contract status is required"})
                     continue
-                state.harness.set_contract_status(
-                    status=status_value,
-                    role=state.normalize_session_role("code", msg.get("session_role", "planner")),
-                )
-                await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
-                await ws.send_json({"event": "status_msg", "message": f"Set sprint contract to {status_value}"})
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "set_harness_contract_status"):
+                    payload = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.set_harness_contract_status(
+                            project_path=state.project.project_path,
+                            status=status_value,
+                            session_role=state.normalize_session_role("code", msg.get("session_role", "planner")),
+                        ),
+                    )
+                    await ws.send_json({"event": "harness_state", "data": payload.get("summary", state.get_harness_summary())})
+                    await ws.send_json({"event": "status_msg", "message": payload.get("status_message", f"Set sprint contract to {status_value}")})
+                else:
+                    state.harness.set_contract_status(
+                        status=status_value,
+                        role=state.normalize_session_role("code", msg.get("session_role", "planner")),
+                    )
+                    await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+                    await ws.send_json({"event": "status_msg", "message": f"Set sprint contract to {status_value}"})
 
             elif command == "set_evaluator_verdict":
                 sprint_id = (msg.get("sprint_id") or "").strip()
@@ -5785,17 +5830,34 @@ async def websocket_endpoint(ws: WebSocket):
                 if not sprint_id or verdict not in {"pass", "revise", "blocked"}:
                     await ws.send_json({"event": "error", "message": "valid sprint_id and verdict are required"})
                     continue
-                state.harness.record_evaluator_verdict(
-                    sprint_id=sprint_id,
-                    verdict=verdict,
-                    findings=list(msg.get("findings") or []),
-                    required_revisions=list(msg.get("required_revisions") or []),
-                    passed_checks=list(msg.get("passed_checks") or []),
-                    failed_checks=list(msg.get("failed_checks") or []),
-                    score=msg.get("score"),
-                )
-                await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
-                await ws.send_json({"event": "status_msg", "message": f"Evaluator marked sprint {sprint_id} as {verdict}"})
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "set_evaluator_verdict"):
+                    payload = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.set_evaluator_verdict(
+                            project_path=state.project.project_path,
+                            sprint_id=sprint_id,
+                            verdict=verdict,
+                            findings=list(msg.get("findings") or []),
+                            required_revisions=list(msg.get("required_revisions") or []),
+                            passed_checks=list(msg.get("passed_checks") or []),
+                            failed_checks=list(msg.get("failed_checks") or []),
+                            score=msg.get("score"),
+                        ),
+                    )
+                    await ws.send_json({"event": "harness_state", "data": payload.get("summary", state.get_harness_summary())})
+                    await ws.send_json({"event": "status_msg", "message": payload.get("status_message", f"Evaluator marked sprint {sprint_id} as {verdict}")})
+                else:
+                    state.harness.record_evaluator_verdict(
+                        sprint_id=sprint_id,
+                        verdict=verdict,
+                        findings=list(msg.get("findings") or []),
+                        required_revisions=list(msg.get("required_revisions") or []),
+                        passed_checks=list(msg.get("passed_checks") or []),
+                        failed_checks=list(msg.get("failed_checks") or []),
+                        score=msg.get("score"),
+                    )
+                    await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
+                    await ws.send_json({"event": "status_msg", "message": f"Evaluator marked sprint {sprint_id} as {verdict}"})
 
             elif command == "select_backend":
                 backend_type = msg.get("backend", "")
@@ -6736,7 +6798,13 @@ async def websocket_endpoint(ws: WebSocket):
                 tasks = state.task_runner.list_tasks(limit=100)
                 # Also include harness cycle runs if available
                 cycles = []
-                if hasattr(state, "harness_orchestrator") and state.harness_orchestrator:
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_cycles"):
+                    try:
+                        payload = state.backend.list_harness_cycles(limit=100)
+                        cycles = payload.get("runs", [])
+                    except Exception:
+                        pass
+                elif hasattr(state, "harness_orchestrator") and state.harness_orchestrator:
                     try:
                         cycles = state.harness_orchestrator.list_runs()
                     except Exception:
@@ -6762,7 +6830,7 @@ async def websocket_endpoint(ws: WebSocket):
                         "prompt": "",
                         "status": c.get("status", ""),
                         "model": "",
-                        "steps": len(c.get("steps", [])),
+                        "steps": c.get("step_count", len(c.get("steps", []))),
                         "elapsed": 0,
                         "created_at": c.get("started_at", ""),
                         "source": "harness",
@@ -6921,6 +6989,11 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "message": "Prompt and schedule are required"})
                     continue
                 try:
+                    is_remote_harness_schedule = (
+                        task_kind == "harness_cycle"
+                        and getattr(state.backend, "name", "") == "resonant"
+                        and hasattr(state.backend, "create_harness_schedule")
+                    )
                     spec = None
                     if task_kind != "harness_cycle":
                         spec = state.build_backend_spec(
@@ -6928,25 +7001,49 @@ async def websocket_endpoint(ws: WebSocket):
                             model=model or None,
                             project_path=state.project.project_path,
                         )
-                    sched = state.scheduler.add(
-                        name=name,
-                        prompt=prompt,
-                        schedule=schedule,
-                        backend_type="" if task_kind == "harness_cycle" else backend_type,
-                        model="" if task_kind == "harness_cycle" else spec.model,
-                        task_kind=task_kind,
-                        max_loops=max_loops,
-                        session_mode=state.normalize_session_mode(session_mode),
-                        session_role=state.normalize_session_role(session_mode, session_role),
-                        backend_spec={} if task_kind == "harness_cycle" else spec.to_dict(),
-                        project_path=state.project.project_path,
-                    )
-                    await ws.send_json({"event": "schedule_created", "schedule": sched.to_dict()})
+                    if is_remote_harness_schedule:
+                        payload = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.backend.create_harness_schedule(
+                                project_path=state.project.project_path,
+                                name=name,
+                                prompt=prompt,
+                                schedule=schedule,
+                                max_loops=max_loops,
+                            ),
+                        )
+                        await ws.send_json({"event": "schedule_created", "schedule": payload.get("schedule")})
+                    else:
+                        sched = state.scheduler.add(
+                            name=name,
+                            prompt=prompt,
+                            schedule=schedule,
+                            backend_type="" if task_kind == "harness_cycle" else backend_type,
+                            model="" if task_kind == "harness_cycle" else spec.model,
+                            task_kind=task_kind,
+                            max_loops=max_loops,
+                            session_mode=state.normalize_session_mode(session_mode),
+                            session_role=state.normalize_session_role(session_mode, session_role),
+                            backend_spec={} if task_kind == "harness_cycle" else spec.to_dict(),
+                            project_path=state.project.project_path,
+                        )
+                        await ws.send_json({"event": "schedule_created", "schedule": sched.to_dict()})
                 except ValueError as e:
                     await ws.send_json({"event": "error", "message": str(e)})
 
             elif command == "schedule_list":
                 schedules = state.scheduler.list_schedules()
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_schedules"):
+                    try:
+                        payload = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.backend.list_harness_schedules(),
+                        )
+                        schedules = [
+                            item for item in schedules if item.get("task_kind") != "harness_cycle"
+                        ] + list(payload.get("schedules", []))
+                    except Exception:
+                        pass
                 await ws.send_json({"event": "schedule_list", "schedules": schedules})
 
             elif command == "schedule_update":
@@ -6967,12 +7064,44 @@ async def websocket_endpoint(ws: WebSocket):
                     if key in msg:
                         updates[key] = msg[key]
                 schedules = state.scheduler.list_schedules()
+                remote_schedules = []
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_schedules"):
+                    try:
+                        payload = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.backend.list_harness_schedules(),
+                        )
+                        remote_schedules = list(payload.get("schedules", []))
+                    except Exception:
+                        remote_schedules = []
                 existing = next((item for item in schedules if item["id"] == task_id), None)
+                existing_remote = next((item for item in remote_schedules if item["id"] == task_id), None)
                 effective_kind = updates.get("task_kind", (existing or {}).get("task_kind", "session"))
-                if effective_kind == "harness_cycle":
+                if existing_remote is not None:
+                    remote_updates = {
+                        key: value
+                        for key, value in updates.items()
+                        if key in {"name", "prompt", "schedule", "max_loops", "enabled"}
+                    }
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.update_harness_schedule(task_id, **remote_updates),
+                    )
+                    payload = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.list_harness_schedules(),
+                    )
+                    merged = [
+                        item for item in schedules if item.get("task_kind") != "harness_cycle"
+                    ] + list(payload.get("schedules", []))
+                    await ws.send_json({"event": "schedule_list", "schedules": merged})
+                elif effective_kind == "harness_cycle":
                     updates["backend_spec"] = {}
                     updates["backend_type"] = ""
                     updates["model"] = ""
+                    state.scheduler.update(task_id, **updates)
+                    schedules = state.scheduler.list_schedules()
+                    await ws.send_json({"event": "schedule_list", "schedules": schedules})
                 elif "backend_type" in updates or "model" in updates:
                     if existing:
                         spec = state.build_backend_spec(
@@ -6982,14 +7111,46 @@ async def websocket_endpoint(ws: WebSocket):
                         )
                         updates["backend_spec"] = spec.to_dict()
                         updates["model"] = spec.model
-                state.scheduler.update(task_id, **updates)
-                schedules = state.scheduler.list_schedules()
-                await ws.send_json({"event": "schedule_list", "schedules": schedules})
+                    state.scheduler.update(task_id, **updates)
+                    schedules = state.scheduler.list_schedules()
+                    await ws.send_json({"event": "schedule_list", "schedules": schedules})
+                else:
+                    state.scheduler.update(task_id, **updates)
+                    schedules = state.scheduler.list_schedules()
+                    await ws.send_json({"event": "schedule_list", "schedules": schedules})
 
             elif command == "schedule_delete":
                 task_id = msg.get("task_id", "")
-                state.scheduler.remove(task_id)
+                remote_deleted = False
                 schedules = state.scheduler.list_schedules()
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_schedules"):
+                    try:
+                        payload = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.backend.list_harness_schedules(),
+                        )
+                        if any(item["id"] == task_id for item in payload.get("schedules", [])):
+                            remote_deleted = True
+                            await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: state.backend.delete_harness_schedule(task_id),
+                            )
+                    except Exception:
+                        remote_deleted = False
+                if not remote_deleted:
+                    state.scheduler.remove(task_id)
+                schedules = state.scheduler.list_schedules()
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_schedules"):
+                    try:
+                        payload = await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.backend.list_harness_schedules(),
+                        )
+                        schedules = [
+                            item for item in schedules if item.get("task_kind") != "harness_cycle"
+                        ] + list(payload.get("schedules", []))
+                    except Exception:
+                        pass
                 await ws.send_json({"event": "schedule_list", "schedules": schedules})
 
             # ── Git Integration ─────────────────────────────
@@ -7290,14 +7451,28 @@ async def _run_session_streaming(
 
         if pending_harness_payload is not None:
             try:
-                status_message = state.apply_harness_update(
-                    session_mode=session_mode,
-                    session_role=session_role,
-                    payload=pending_harness_payload,
-                    project_path=state.project.project_path,
-                    assistant_text=pending_harness_text,
-                    user_request=display_user_msg or user_msg,
-                )
+                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "apply_harness_update"):
+                    payload = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.apply_harness_update(
+                            project_path=state.project.project_path,
+                            session_mode=session_mode,
+                            session_role=session_role,
+                            payload=pending_harness_payload,
+                            assistant_text=pending_harness_text,
+                            user_request=display_user_msg or user_msg,
+                        ),
+                    )
+                    status_message = payload.get("status_message", "")
+                else:
+                    status_message = state.apply_harness_update(
+                        session_mode=session_mode,
+                        session_role=session_role,
+                        payload=pending_harness_payload,
+                        project_path=state.project.project_path,
+                        assistant_text=pending_harness_text,
+                        user_request=display_user_msg or user_msg,
+                    )
                 await ws.send_json({"event": "harness_state", "data": state.get_harness_summary()})
                 if status_message:
                     await ws.send_json({"event": "status_msg", "message": status_message})

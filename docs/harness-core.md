@@ -40,6 +40,8 @@ Current remote ownership:
 - canonical harness state: `resonant-engine`
 - remote step execution: `resonant-engine`
 - remote cycle registry and lifecycle: `resonant-engine`
+- remote harness mutations and teacher recovery: `resonant-engine`
+- remote recurring harness-cycle schedules: `resonant-engine`
 - GUI/TUI rendering and controls: `resonant-client`
 
 Remaining local responsibilities inside `resonant-client` are now transitional:
@@ -47,6 +49,7 @@ Remaining local responsibilities inside `resonant-client` are now transitional:
 1. local compatibility for non-`resonant` backends
 2. UI event handling and session/project views
 3. fallback local harness control when the engine backend is not active
+4. local non-harness scheduling for non-`resonant` session tasks
 
 Follow-on architecture plan:
 

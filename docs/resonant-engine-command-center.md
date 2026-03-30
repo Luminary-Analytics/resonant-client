@@ -28,6 +28,13 @@ When asked "Create a Python script called calculator.py with add, subtract, mult
 
 Note: The client-side path resolution is now correct — relative paths in tool arguments are resolved against the project directory (e.g., `calculator.py` → `D:\Repos\test-resonant\calculator.py`). This was fixed in commit 3e70fdf.
 
+Important tool-loop requirement:
+
+- if the engine chooses `file_read` for a target path and the client reports that the file does not exist yet,
+  the engine should not stop if the user intent is clearly create/bootstrap/initialize
+- in that case it should pivot to `file_write` (or another create-path tool) and continue the loop
+- a failed `file_read` on a non-existent path is not a terminal result for create-intent flows
+
 ## What Needs to Work
 
 The Resonant GUI Command Center allows users to:
@@ -326,6 +333,22 @@ The engine should call tools when:
 | "What does this code do?" (analysis only) | No tools needed — just `output_text` |
 
 **Rule of thumb**: If the user asks to CREATE, MODIFY, DELETE, or INSPECT files/commands, return `function_call` items. If they're asking for explanations or analysis that doesn't need file access, just return `output_text`.
+
+### Missing-file recovery rule
+
+For create/bootstrap flows:
+
+- if the engine first tries `file_read` and the tool result says the file does not exist
+- and the user intent is to create, scaffold, initialize, or start that file/project
+- the next response should pivot to `file_write` instead of stopping with a summary of the missing file
+
+Example:
+
+- user: "Create `app.py` for a new Flask API"
+- engine: `file_read("app.py")`
+- tool result: `File not found: app.py`
+- correct next step: `file_write("app.py", "...")`
+- incorrect next step: stop and merely report that `app.py` does not exist
 
 ---
 

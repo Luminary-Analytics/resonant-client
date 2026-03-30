@@ -19,6 +19,12 @@ Current verified behavior:
 - coordinator chat followups can now infer a likely source file, call `file_read`, then continue to `file_edit`
 - coordinator/project-management toolsets can now chain `update_plan`, `spawn_worker`, `check_workers`, `post_update`, and `complete_project`
 
+Important edge case to preserve:
+
+- if the engine probes a target file with `file_read` and the tool result says the file does not exist,
+  create-intent requests should pivot into `file_write` instead of stopping
+- missing-file `file_read` is only terminal for inspection-only requests, not for create/bootstrap flows
+
 The main remaining limitation is capability, not protocol:
 
 - simple file/tool requests now work
@@ -118,6 +124,17 @@ The client will then:
 1. Parse the `function_call` item
 2. Execute the tool locally (write the file)
 3. Send a follow-up request with the tool result
+
+### Missing-file follow-up behavior
+
+Another required loop behavior for Command Center:
+
+- if the engine starts with `file_read` on a path that is supposed to be created
+- and the client sends back `function_call_output` indicating the file is missing
+- the engine should continue with `file_write`, not terminate the loop
+
+This matters for project creation and bootstrap requests where the model may first inspect the target
+path before writing it.
 
 ### Follow-Up Request with Tool Result
 

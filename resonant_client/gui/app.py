@@ -5278,6 +5278,7 @@ class AppState:
             project_instructions=project_instructions,
             cancel_event=cancel_event,
         )
+        session.project_path = project_path  # For relative path resolution in tools
         return self._wire_session(
             session,
             project_path=project_path,

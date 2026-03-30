@@ -783,6 +783,7 @@ def _run_subprocess_with_cancel(
 def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
     cmd = args.get("command", "")
     timeout = args.get("timeout", 30)
+    cwd = args.get("cwd", os.getcwd())
 
     try:
         returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
@@ -790,7 +791,7 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
             shell=True,
             text=True,
             timeout=timeout,
-            cwd=os.getcwd(),
+            cwd=cwd,
             stdin=subprocess.DEVNULL,
             cancel_event=cancel_event,
         )

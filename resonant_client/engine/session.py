@@ -191,6 +191,7 @@ class Session:
         self._engram = None  # EngramIntegration, set externally
         self._codebase_index = None  # CodebaseIndex, set externally
         self._cancel_event = cancel_event or threading.Event()
+        self.project_path: Optional[str] = None  # Set externally for path resolution
 
     @property
     def is_subagent(self) -> bool:
@@ -579,6 +580,16 @@ class Session:
                         "content": result.output,
                     })
                 else:
+                    # Resolve relative file paths against project directory
+                    if self.project_path:
+                        if fn_name in ("file_write", "file_read", "file_edit", "glob", "grep"):
+                            for key in ("path", "pattern"):
+                                if key in fn_args and fn_args[key]:
+                                    p = fn_args[key]
+                                    if not os.path.isabs(p):
+                                        fn_args[key] = os.path.join(self.project_path, p)
+                        if fn_name == "bash" and "cwd" not in fn_args:
+                            fn_args["cwd"] = self.project_path
                     result = execute_tool(fn_name, fn_args, cancel_event=self._cancel_event)
 
                     yield make_event(EngineEvent.TOOL_RESULT,

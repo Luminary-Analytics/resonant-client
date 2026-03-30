@@ -4,6 +4,17 @@ Agentic coding client for the [Resonant Cognitive Engine](https://github.com/Lum
 
 Supports multiple backends (Resonant Engine, Ollama, Claude, OpenAI, LM Studio) with both a terminal TUI and a web-based GUI. The client is lightweight (no torch/transformers) and connects over HTTP, so you can run it anywhere on your network.
 
+For the `resonant` backend, harness ownership is now engine-side:
+
+- `resonant-engine` is the system of record for `.resonant-harness`
+- step execution, cycles, harness mutations, teacher recovery, and recurring harness-cycle schedules live in the engine
+- `resonant-client` acts as the viewer/control layer over those engine APIs
+
+Related docs:
+
+- [docs/harness-core.md](./docs/harness-core.md)
+- [docs/engine-harness-unification-plan.md](./docs/engine-harness-unification-plan.md)
+
 ```
 ┌───────────────────────┐                ┌─────────────────────────┐
 │  resonant-client      │                │  Backend (any of):      │

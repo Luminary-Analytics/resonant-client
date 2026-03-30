@@ -15,6 +15,19 @@ Verified coverage today:
 
 The remaining gap is no longer tool-call protocol. It is broader autonomous project quality for harder multi-file builds.
 
+### Observed behavior gap (client-side test, 2026-03-30)
+
+When asked "Create a Python script called calculator.py with add, subtract, multiply, divide functions":
+
+1. Engine called `file_read("calculator.py")` → client returned "Error: File not found: D:\Repos\test-resonant\calculator.py"
+2. Engine **stopped** instead of following up with `file_write("calculator.py", "...")` to create the file
+
+**Expected behavior**: When `file_read` returns "not found" and the user's request is to CREATE the file, the engine should follow up with a `file_write` call. The "file not found" result is information (the file doesn't exist yet), not a terminal error.
+
+**Alternative**: For "create file X" requests, the engine could skip the `file_read` entirely and go straight to `file_write`. Reading first only makes sense for "modify" or "update" requests where the current content is needed.
+
+Note: The client-side path resolution is now correct — relative paths in tool arguments are resolved against the project directory (e.g., `calculator.py` → `D:\Repos\test-resonant\calculator.py`). This was fixed in commit 3e70fdf.
+
 ## What Needs to Work
 
 The Resonant GUI Command Center allows users to:

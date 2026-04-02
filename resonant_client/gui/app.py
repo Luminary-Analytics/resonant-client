@@ -5303,6 +5303,21 @@ class AppState:
         except Exception:
             pass
 
+        # Attach execution policy (tier-based defaults + project overrides)
+        try:
+            from ..engine.policies import policy_for_tier, ExecutionPolicy
+            base_policy = policy_for_tier(session.autonomy_tier)
+            # Check for project-level policy file
+            project_policy = ExecutionPolicy.from_file(
+                os.path.join(project_path, "resonant-policy.json")
+            )
+            if project_policy:
+                session.execution_policy = base_policy.merge(project_policy)
+            else:
+                session.execution_policy = base_policy
+        except Exception:
+            pass
+
         return self._wire_session(
             session,
             project_path=project_path,

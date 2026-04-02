@@ -196,6 +196,7 @@ class Session:
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
         self.sandbox = None  # PathSandbox, set externally
         self.event_logger = None  # EventLogger, set externally for JSONL logging
+        self.execution_policy = None  # ExecutionPolicy, set externally
 
     @property
     def is_subagent(self) -> bool:
@@ -565,9 +566,32 @@ class Session:
                         })
                         continue
 
+                # Execution policy check (declarative rules, evaluated first)
+                if self.execution_policy:
+                    from .policies import PolicyAction
+                    policy_action = self.execution_policy.evaluate(fn_name, fn_args)
+                    if policy_action == PolicyAction.DENY:
+                        reason = self.execution_policy.get_reason(fn_name, fn_args)
+                        result_output = f"Blocked by policy: {reason or 'denied'}"
+                        yield make_event(EngineEvent.TOOL_RESULT,
+                                        name=fn_name, call_id=call_id,
+                                        output=result_output, is_error=True,
+                                        denied=True, elapsed=0.0)
+                        self.conversation_history.append({
+                            "role": "tool_call", "name": fn_name,
+                            "arguments": fn_args_str, "call_id": call_id,
+                            "content": f"Called {fn_name}",
+                        })
+                        self.conversation_history.append({
+                            "role": "tool_result", "call_id": call_id,
+                            "content": result_output,
+                        })
+                        continue
+
                 # Permission check (three-tier autonomy model)
                 approved = self._should_auto_approve(fn_name)
                 if not approved:
+                    # Policy says PROMPT — defer to permission callback
                     if on_permission:
                         approved = on_permission(fn_name, fn_args)
                     else:

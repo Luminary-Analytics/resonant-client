@@ -171,13 +171,42 @@ class AppState:
                         agent["elapsed"] = round(task.elapsed, 1)
                         self.command_project_store._persist(proj)
 
-                        # Add completion activity
+                        # Add completion activity with direction metadata
                         status_emoji = "✅" if task.status.value == "completed" else "❌"
                         result_summary = (task.result or "")[:150]
+                        agent_name = agent.get("name", "Worker")
                         self.command_project_store.add_activity(
-                            proj.id, "agent", agent.get("name", "Worker"),
+                            proj.id, "agent", agent_name,
                             f"{status_emoji} {task.status.value}: {result_summary}"
                         )
+
+                        # Deliver result to parent's inbox via org chart
+                        org_node_id = agent.get("org_node_id", "")
+                        if org_node_id:
+                            from .org_chart import OrgChart
+                            chart = OrgChart.from_dict(proj.org_chart or [])
+                            node = chart.get_node(org_node_id)
+                            if node and node.parent_id:
+                                parent = chart.get_node(node.parent_id)
+                                parent_name = parent.role if parent else "Coordinator"
+                                proj.send_message(
+                                    sender_id=org_node_id,
+                                    sender_name=agent_name,
+                                    recipient_id=node.parent_id,
+                                    recipient_name=parent_name,
+                                    content=(task.result or "")[:2000],
+                                    direction="up",
+                                    msg_type="result",
+                                )
+                                # Add directed activity
+                                proj.add_activity(
+                                    "agent", agent_name,
+                                    f"↑ Result delivered to {parent_name}",
+                                    sender_id=org_node_id,
+                                    recipient_id=node.parent_id,
+                                    recipient_name=parent_name,
+                                    direction="up",
+                                )
 
                         # Check if all agents are done → update project status
                         all_done = all(
@@ -198,6 +227,17 @@ class AppState:
                                     ws.send_json({"event": "command_project_status", "project": proj.to_dict()}),
                                     loop,
                                 )
+                                # Notify frontend when all workers are done
+                                if all_done and not running_workers:
+                                    worker_count = len([a for a in proj.agents if a.get("role") != "coordinator"])
+                                    asyncio.run_coroutine_threadsafe(
+                                        ws.send_json({
+                                            "event": "command_workers_all_done",
+                                            "project_id": proj.id,
+                                            "worker_count": worker_count,
+                                        }),
+                                        loop,
+                                    )
                             except Exception:
                                 pass
                         return
@@ -5607,6 +5647,79 @@ async def _execute_coordinator_commands(state, ws, project_id: str, response_tex
                     proj = state.command_project_store.get_project(project_id)
                     await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
 
+            elif action == "check_workers":
+                # Return status of all workers in the project
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    workers = []
+                    for agent in (proj.agents or []):
+                        if agent.get("role") == "worker":
+                            bg = state.task_runner.get_task(agent.get("id", ""))
+                            workers.append({
+                                "name": agent.get("name", "Worker"),
+                                "status": bg.status.value if bg else agent.get("status", "unknown"),
+                                "steps": bg.steps if bg else agent.get("steps", 0),
+                                "elapsed": round(bg.elapsed, 1) if bg else 0,
+                                "result_preview": (bg.result or "")[:200] if bg and bg.status.value == "completed" else "",
+                            })
+                    summary = f"{sum(1 for w in workers if w['status'] == 'completed')}/{len(workers)} workers completed."
+                    # Post status to activity
+                    state.command_project_store.add_activity(
+                        project_id, "system", "System",
+                        f"Worker status check: {summary}",
+                    )
+
+            elif action == "get_worker_results":
+                # Retrieve unread results from coordinator's inbox
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    # Find coordinator's org node
+                    from .org_chart import OrgChart
+                    chart = OrgChart.from_dict(proj.org_chart or [])
+                    roots = chart.get_roots()
+                    coord_node_id = roots[0].id if roots else None
+                    if coord_node_id:
+                        unread = proj.get_inbox(coord_node_id, unread_only=True)
+                        results = [m for m in unread if m.get("type") == "result"]
+                        proj.mark_read(coord_node_id, [m["id"] for m in results])
+                        state.command_project_store._persist(proj)
+
+            elif action == "send_instruction":
+                # Send instruction down to a child agent
+                target_name = cmd.get("target", "")
+                instruction = cmd.get("instruction", "")
+                if target_name and instruction:
+                    proj = state.command_project_store.get_project(project_id)
+                    if proj:
+                        from .org_chart import OrgChart
+                        chart = OrgChart.from_dict(proj.org_chart or [])
+                        # Find target node by role name
+                        target_node = None
+                        for node in chart.get_all_nodes():
+                            if node.role.lower() == target_name.lower():
+                                target_node = node
+                                break
+                        if target_node:
+                            roots = chart.get_roots()
+                            coord_name = roots[0].role if roots else "Coordinator"
+                            proj.send_message(
+                                sender_id=roots[0].id if roots else "coordinator",
+                                sender_name=coord_name,
+                                recipient_id=target_node.id,
+                                recipient_name=target_node.role,
+                                content=instruction,
+                                direction="down",
+                                msg_type="instruction",
+                            )
+                            proj.add_activity(
+                                "coordinator", coord_name,
+                                f"↓ Instruction to {target_node.role}: {instruction[:80]}",
+                                recipient_id=target_node.id,
+                                recipient_name=target_node.role,
+                                direction="down",
+                            )
+                            state.command_project_store._persist(proj)
+
             elif action == "complete_project":
                 summary = cmd.get("summary", "Project completed.")
                 state.command_project_store.update_project(project_id, status="completed")
@@ -6636,6 +6749,22 @@ async def websocket_endpoint(ws: WebSocket):
                             f'```resonant-command\n'
                             f'{{"action": "post_update", "message": "Status update text"}}\n'
                             f"```\n\n"
+                            f"## Checking Worker Status\n"
+                            f"To check the status of all your workers:\n"
+                            f'```resonant-command\n'
+                            f'{{"action": "check_workers"}}\n'
+                            f"```\n\n"
+                            f"## Getting Worker Results\n"
+                            f"Worker results are automatically included at the top of your next prompt.\n"
+                            f"You can also explicitly request them:\n"
+                            f'```resonant-command\n'
+                            f'{{"action": "get_worker_results"}}\n'
+                            f"```\n\n"
+                            f"## Sending Instructions to Workers\n"
+                            f"To send instructions to a specific worker:\n"
+                            f'```resonant-command\n'
+                            f'{{"action": "send_instruction", "target": "Worker Role Name", "instruction": "What to do next"}}\n'
+                            f"```\n\n"
                             f"## Important\n"
                             f"- When asked to do something, actually do it using your tools — don't just describe what you would do.\n"
                             f"- Use workers for parallelizable tasks. Do simple tasks yourself directly.\n"
@@ -6644,12 +6773,31 @@ async def websocket_endpoint(ws: WebSocket):
                         message = context_prefix + "User says: " + message
                         setattr(state, session_key, coordinator_session)
                     else:
-                        # For follow-up messages, add a brief reminder about spawning workers
+                        # Inject unread inbox messages (worker results) into the prompt
+                        from .org_chart import OrgChart
+                        chart = OrgChart.from_dict(proj.org_chart or [])
+                        roots = chart.get_roots()
+                        coord_node_id = roots[0].id if roots else None
+                        if coord_node_id:
+                            unread = proj.get_inbox(coord_node_id, unread_only=True)
+                            if unread:
+                                inbox_lines = ["## Worker Reports (new since your last response)"]
+                                for m in unread:
+                                    inbox_lines.append(f"### From: {m['sender_name']} ({m['type']})")
+                                    inbox_lines.append(m['content'][:500])
+                                    inbox_lines.append("")
+                                proj.mark_read(coord_node_id, [m["id"] for m in unread])
+                                state.command_project_store._persist(proj)
+                                message = "\n".join(inbox_lines) + f"\n## User Message\n{message}"
+
+                        # Add a brief reminder about spawning workers
                         if any(kw in message.lower() for kw in ("spawn", "worker", "parallel", "tasks", "plan", "break down", "delegate")):
                             message += (
                                 "\n\n[Reminder: To spawn workers, include ```resonant-command blocks with "
                                 '{"action": "spawn_worker", "name": "...", "prompt": "..."} in your response. '
-                                'To update the plan, use {"action": "update_plan", "tasks": [...]}]'
+                                'To update the plan, use {"action": "update_plan", "tasks": [...]}. '
+                                'To check worker status, use {"action": "check_workers"}. '
+                                'To get worker results, use {"action": "get_worker_results"}.]'
                             )
 
                     # Run the coordinator session in a background thread and stream results

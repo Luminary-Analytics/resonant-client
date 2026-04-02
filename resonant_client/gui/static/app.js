@@ -1512,6 +1512,19 @@ class ResonantApp {
                     alert(event.error);
                 }
                 break;
+            case 'command_workers_all_done':
+                // Show notification that all workers completed
+                if (this.sessionMode === 'command' && this.cmdDashTab === 'chat') {
+                    const chatMessages = document.getElementById('project-chat-messages');
+                    if (chatMessages) {
+                        const banner = document.createElement('div');
+                        banner.className = 'workers-done-banner';
+                        banner.innerHTML = `✅ All ${event.worker_count || ''} workers completed. Their results will be included in your next message to the coordinator.`;
+                        chatMessages.appendChild(banner);
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+                }
+                break;
             case 'command_org_chart':
                 this._orgChartData = event;
                 if (this.sessionMode === 'command' && this.cmdDashTab === 'org_chart') {
@@ -5319,18 +5332,25 @@ class ResonantApp {
 
         el.innerHTML = `
             <div class="comms-feed" style="padding:0">
-                ${activity.map(m => `
-                    <div class="comms-message">
+                ${activity.map(m => {
+                    const dirBadge = m.direction === 'up'
+                        ? `<span class="msg-direction msg-up">↑ ${this.escapeHtml(m.sender_name || '')} → ${this.escapeHtml(m.recipient_name || '')}</span>`
+                        : m.direction === 'down'
+                        ? `<span class="msg-direction msg-down">↓ ${this.escapeHtml(m.sender_name || '')} → ${this.escapeHtml(m.recipient_name || '')}</span>`
+                        : '';
+                    return `
+                    <div class="comms-message ${m.direction || ''}">
                         <span class="comms-icon">${senderIcon(m.sender_type)}</span>
                         <div class="comms-body">
                             <div class="comms-header">
                                 <span class="comms-sender">${this.escapeHtml(m.sender_name || m.sender_id || '')}</span>
+                                ${dirBadge}
                                 <span class="comms-time">${m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : ''}</span>
                             </div>
                             <div class="comms-content">${this.escapeHtml(m.content || '')}</div>
                         </div>
-                    </div>
-                `).join('')}
+                    </div>`;
+                }).join('')}
             </div>
         `;
         el.scrollTop = el.scrollHeight;

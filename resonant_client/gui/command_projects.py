@@ -30,6 +30,7 @@ class CommandProject:
     agents: list = field(default_factory=list)  # {id, name, role, status, ...}
     activity: list = field(default_factory=list)  # feed messages
     org_chart: list = field(default_factory=list)  # OrgNode dicts for hierarchy
+    messages: dict = field(default_factory=dict)  # {org_node_id: [Message, ...]} inbox per node
     created_at: str = ""
     updated_at: str = ""
 
@@ -44,7 +45,9 @@ class CommandProject:
     def to_dict(self) -> dict:
         return asdict(self)
 
-    def add_activity(self, sender_type: str, sender_name: str, content: str, sender_id: str = ""):
+    def add_activity(self, sender_type: str, sender_name: str, content: str,
+                     sender_id: str = "", recipient_id: str = "",
+                     recipient_name: str = "", direction: str = "broadcast"):
         """Add an activity message to the project feed."""
         self.activity.append({
             "id": uuid.uuid4().hex[:8],
@@ -53,11 +56,52 @@ class CommandProject:
             "sender_id": sender_id or sender_type,
             "sender_name": sender_name,
             "content": content,
+            "recipient_id": recipient_id,
+            "recipient_name": recipient_name,
+            "direction": direction,
         })
         # Keep last 200 messages
         if len(self.activity) > 200:
             self.activity = self.activity[-200:]
         self.updated_at = datetime.now().isoformat()
+
+    def send_message(self, sender_id: str, sender_name: str,
+                     recipient_id: str, recipient_name: str,
+                     content: str, direction: str = "up",
+                     msg_type: str = "result"):
+        """Send a directed message to an agent's inbox."""
+        inbox = self.messages.setdefault(recipient_id, [])
+        inbox.append({
+            "id": uuid.uuid4().hex[:8],
+            "timestamp": datetime.now().isoformat(),
+            "sender_id": sender_id,
+            "sender_name": sender_name,
+            "recipient_id": recipient_id,
+            "recipient_name": recipient_name,
+            "direction": direction,
+            "content": content,
+            "read": False,
+            "type": msg_type,
+        })
+        # Cap inbox at 50 messages (evict read messages first)
+        if len(inbox) > 50:
+            read_msgs = [m for m in inbox if m["read"]]
+            unread_msgs = [m for m in inbox if not m["read"]]
+            self.messages[recipient_id] = (unread_msgs + read_msgs)[-50:]
+        self.updated_at = datetime.now().isoformat()
+
+    def get_inbox(self, node_id: str, unread_only: bool = False) -> list[dict]:
+        """Get messages for a specific agent."""
+        msgs = self.messages.get(node_id, [])
+        if unread_only:
+            return [m for m in msgs if not m["read"]]
+        return msgs
+
+    def mark_read(self, node_id: str, message_ids: list[str] | None = None):
+        """Mark messages as read in an agent's inbox."""
+        for msg in self.messages.get(node_id, []):
+            if message_ids is None or msg["id"] in message_ids:
+                msg["read"] = True
 
 
 class CommandProjectStore:

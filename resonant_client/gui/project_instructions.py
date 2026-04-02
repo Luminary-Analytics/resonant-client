@@ -73,27 +73,107 @@ def get_instruction_sections(text: str) -> dict[str, str]:
     return sections
 
 
-def format_for_system_prompt(project_path: str) -> str | None:
-    """Load RESONANT.md and format it for injection into the system prompt."""
-    text = load_project_instructions(project_path)
+def find_all_instruction_files(project_path: str, cwd: str | None = None) -> list[tuple[str, Path]]:
+    """
+    Find all RESONANT.md files in the hierarchy (Codex AGENTS.md pattern).
+
+    Returns list of (scope_label, path) in resolution order:
+    1. Global: ~/.resonant/RESONANT.md
+    2. Project root: <project>/RESONANT.md
+    3. Directory walk: from cwd up to project root
+
+    Later entries take precedence for same-named headings.
+    """
+    found: list[tuple[str, Path]] = []
+    root = Path(project_path).resolve()
+
+    # 1. Global instructions
+    global_path = Path.home() / ".resonant" / "RESONANT.md"
+    if global_path.is_file():
+        found.append(("global", global_path))
+
+    # 2. Project root instructions
+    for rel in INSTRUCTION_FILES:
+        candidate = root / rel
+        if candidate.is_file():
+            found.append(("project", candidate))
+            break
+
+    # 3. Directory-scoped instructions (walk from project root toward cwd)
+    if cwd:
+        cwd_path = Path(cwd).resolve()
+        # Collect directories between project root and cwd
+        try:
+            relative = cwd_path.relative_to(root)
+            parts = relative.parts
+            current = root
+            for part in parts:
+                current = current / part
+                for rel in INSTRUCTION_FILES:
+                    candidate = current / rel
+                    if candidate.is_file() and candidate.resolve() != root.resolve() / rel:
+                        scope_label = f"directory:{'/'.join(current.relative_to(root).parts)}"
+                        found.append((scope_label, candidate))
+                        break
+        except ValueError:
+            pass  # cwd not under project root
+
+    return found
+
+
+def load_hierarchical_instructions(project_path: str, cwd: str | None = None) -> str | None:
+    """
+    Load and merge RESONANT.md files from all hierarchy levels.
+
+    Global → project → directory-scoped, concatenated with section headers.
+    """
+    files = find_all_instruction_files(project_path, cwd)
+    if not files:
+        return None
+
+    parts: list[str] = []
+    for scope_label, path in files:
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+            if text:
+                label_map = {
+                    "global": f"GLOBAL INSTRUCTIONS (~/.resonant/RESONANT.md)",
+                    "project": f"PROJECT INSTRUCTIONS ({path.name})",
+                }
+                label = label_map.get(scope_label, f"DIRECTORY INSTRUCTIONS ({scope_label})")
+                parts.append(f"--- {label} ---\n{text}\n--- END {label.split('(')[0].strip()} ---")
+                logger.info(f"Loaded {scope_label} instructions from {path}")
+        except OSError as e:
+            logger.warning(f"Failed to read {path}: {e}")
+
+    return "\n\n".join(parts) if parts else None
+
+
+def format_for_system_prompt(project_path: str, cwd: str | None = None) -> str | None:
+    """Load RESONANT.md hierarchy and format for injection into the system prompt."""
+    text = load_hierarchical_instructions(project_path, cwd)
     if not text:
         return None
-    return f"\n\n--- PROJECT INSTRUCTIONS (RESONANT.md) ---\n{text}\n--- END PROJECT INSTRUCTIONS ---"
+    return f"\n\n{text}"
 
 
 def get_instruction_info(project_path: str) -> dict:
-    """Return metadata about the instruction file for frontend display."""
+    """Return metadata about instruction files for frontend display."""
     path = find_instruction_file(project_path)
-    if not path:
+    files = find_all_instruction_files(project_path)
+    if not path and not files:
         return {"exists": False}
     try:
-        text = path.read_text(encoding="utf-8").strip()
-        sections = get_instruction_sections(text)
+        text = load_project_instructions(project_path) or ""
+        sections = get_instruction_sections(text) if text else {}
         return {
-            "exists": True,
-            "path": str(path),
+            "exists": bool(path or files),
+            "path": str(path) if path else "",
             "sections": list(sections.keys()),
             "size": len(text),
+            "active_files": [
+                {"scope": scope, "path": str(p)} for scope, p in files
+            ],
         }
     except OSError:
         return {"exists": False}

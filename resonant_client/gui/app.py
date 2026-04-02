@@ -5279,6 +5279,18 @@ class AppState:
             cancel_event=cancel_event,
         )
         session.project_path = project_path  # For relative path resolution in tools
+
+        # Attach sandbox for path safety (always on for sessions with a project)
+        from ..engine.sandbox import PathSandbox
+        session.sandbox = PathSandbox(project_path, enabled=True)
+
+        # Set autonomy tier based on permission mode
+        if self.permission_mode == "ask":
+            session.autonomy_tier = "suggest"
+        elif self.permission_mode == "bypass":
+            session.autonomy_tier = "full-auto"
+        else:
+            session.autonomy_tier = "auto-edit"
         return self._wire_session(
             session,
             project_path=project_path,

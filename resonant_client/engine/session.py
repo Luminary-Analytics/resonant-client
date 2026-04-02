@@ -192,6 +192,9 @@ class Session:
         self._codebase_index = None  # CodebaseIndex, set externally
         self._cancel_event = cancel_event or threading.Event()
         self.project_path: Optional[str] = None  # Set externally for path resolution
+        # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed)
+        self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
+        self.sandbox = None  # PathSandbox, set externally
 
     @property
     def is_subagent(self) -> bool:
@@ -237,6 +240,25 @@ class Session:
     def reset_cancel(self):
         """Clear any pending cancellation request before starting a new run."""
         self._cancel_event.clear()
+
+    def _should_auto_approve(self, tool_name: str) -> bool:
+        """
+        Determine if a tool should be auto-approved based on the autonomy tier.
+
+        Three-tier model (inspired by Codex CLI):
+        - suggest: only read-only tools (file_read, glob, grep) are auto-approved
+        - auto-edit: file tools auto-approved, bash/exec tools prompt user
+        - full-auto: everything auto-approved (sandbox enforces safety)
+        """
+        from .sandbox import PathSandbox
+
+        if self.autonomy_tier == "suggest":
+            return PathSandbox.is_read_only_tool(tool_name)
+        elif self.autonomy_tier == "auto-edit":
+            # File tools are OK, exec tools need approval
+            return not PathSandbox.is_exec_tool(tool_name)
+        else:  # full-auto
+            return True
 
     def _cancelled_events(self, total_start: float, total_steps: int) -> Iterator[dict]:
         yield make_event(EngineEvent.ERROR, message="Interrupted")
@@ -523,13 +545,13 @@ class Session:
                         })
                         continue
 
-                # Permission check
-                approved = self.auto_approve
-                if not self.auto_approve:
+                # Permission check (three-tier autonomy model)
+                approved = self._should_auto_approve(fn_name)
+                if not approved:
                     if on_permission:
                         approved = on_permission(fn_name, fn_args)
                     else:
-                        approved = True  # Default to approve if no callback
+                        approved = self.auto_approve  # Fallback to legacy flag
 
                 if not approved:
                     result_output = "Tool execution denied by user."
@@ -590,6 +612,33 @@ class Session:
                                         fn_args[key] = os.path.join(self.project_path, p)
                         if fn_name == "bash" and "cwd" not in fn_args:
                             fn_args["cwd"] = self.project_path
+
+                    # Sandbox validation — block paths outside project directory
+                    if self.sandbox:
+                        from .sandbox import SandboxViolation
+                        try:
+                            if fn_name in ("file_write", "file_read", "file_edit"):
+                                if "path" in fn_args and fn_args["path"]:
+                                    fn_args["path"] = self.sandbox.validate_path(fn_args["path"])
+                            elif fn_name == "bash" and "cwd" in fn_args:
+                                fn_args["cwd"] = self.sandbox.validate_bash_cwd(fn_args["cwd"])
+                        except SandboxViolation as sv:
+                            result_output = f"Blocked by sandbox: {sv}"
+                            yield make_event(EngineEvent.TOOL_RESULT,
+                                            name=fn_name, call_id=call_id,
+                                            output=result_output, is_error=True,
+                                            denied=True, elapsed=0.0)
+                            self.conversation_history.append({
+                                "role": "tool_call", "name": fn_name,
+                                "arguments": fn_args_str, "call_id": call_id,
+                                "content": f"Called {fn_name}",
+                            })
+                            self.conversation_history.append({
+                                "role": "tool_result", "call_id": call_id,
+                                "content": result_output,
+                            })
+                            continue
+
                     result = execute_tool(fn_name, fn_args, cancel_event=self._cancel_event)
 
                     yield make_event(EngineEvent.TOOL_RESULT,

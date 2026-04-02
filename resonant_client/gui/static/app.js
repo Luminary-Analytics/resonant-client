@@ -1876,7 +1876,7 @@ class ResonantApp {
         this.permissionMode = mode;
 
         const icons = { ask: '⚙', 'auto-edit': '</>', plan: '☰', bypass: '△' };
-        const labels = { ask: 'Ask permissions', 'auto-edit': 'Auto accept edits', plan: 'Plan mode', bypass: 'Bypass permissions' };
+        const labels = { ask: 'Suggest (read-only)', 'auto-edit': 'Auto-edit (files OK, shell asks)', plan: 'Plan mode', bypass: 'Full-auto (sandboxed)' };
 
         document.getElementById('perm-icon').textContent = icons[mode] || '△';
         document.getElementById('perm-label').textContent = labels[mode] || mode;
@@ -3140,9 +3140,9 @@ class ResonantApp {
                     { key: 'default_model', label: 'Default model', type: 'text' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
-                          { value: 'bypass', label: 'Bypass permissions' },
-                          { value: 'ask', label: 'Always ask' },
-                          { value: 'auto-edit', label: 'Auto accept edits' },
+                          { value: 'bypass', label: 'Full-auto (sandboxed)' },
+                          { value: 'ask', label: 'Suggest (read-only)' },
+                          { value: 'auto-edit', label: 'Auto-edit (files OK, shell asks)' },
                           { value: 'plan', label: 'Plan mode' },
                       ]
                     },

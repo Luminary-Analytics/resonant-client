@@ -56,6 +56,10 @@ class BackgroundTask:
     session_factory: Optional[Callable[["BackgroundTask"], Any]] = field(default=None, repr=False, compare=False)
     session: Any = field(default=None, repr=False, compare=False)
     on_event: Optional[Callable] = field(default=None, repr=False, compare=False)
+    # Error handling policy: fail | ignore-and-continue | retry
+    error_policy: str = "fail"
+    max_retries: int = 1
+    retry_count: int = 0
 
     def __post_init__(self):
         if not self.created_at:
@@ -116,6 +120,8 @@ class TaskRunner:
         session_role: str = "generator",
         backend_spec: Optional[dict[str, Any]] = None,
         on_event: Optional[Callable] = None,
+        error_policy: str = "fail",
+        max_retries: int = 1,
     ) -> BackgroundTask:
         """Submit a new background task. Returns the task object."""
         task = BackgroundTask(
@@ -130,6 +136,8 @@ class TaskRunner:
             backend_spec=backend_spec or {},
             session_factory=session_factory,
             on_event=on_event,
+            error_policy=error_policy,
+            max_retries=max_retries,
         )
 
         with self._lock:
@@ -207,6 +215,19 @@ class TaskRunner:
             if task.cancel_event.is_set():
                 task.status = TaskStatus.CANCELLED
                 task.error = ""
+            elif task.error_policy == "ignore-and-continue":
+                # Log error but mark as completed with partial results
+                task.error = str(exc)
+                task.status = TaskStatus.COMPLETED
+                logger.warning(f"Task {task.id} error (ignored per policy): {exc}")
+            elif task.error_policy == "retry" and task.retry_count < task.max_retries:
+                # Retry the task
+                task.retry_count += 1
+                task.error = ""
+                task.session = None
+                logger.info(f"Task {task.id}: retrying (attempt {task.retry_count}/{task.max_retries})")
+                self._pool.submit(self._run_task, task)
+                return  # Don't finalize yet — retry will handle it
             else:
                 task.status = TaskStatus.FAILED
                 task.error = str(exc)

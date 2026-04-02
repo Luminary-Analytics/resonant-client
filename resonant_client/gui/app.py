@@ -5291,6 +5291,18 @@ class AppState:
             session.autonomy_tier = "full-auto"
         else:
             session.autonomy_tier = "auto-edit"
+
+        # Attach JSONL event logger
+        try:
+            from ..engine.event_log import EventLogger
+            import uuid as _uuid
+            session.event_logger = EventLogger(
+                session_id=_uuid.uuid4().hex[:12],
+                enabled=bool(self.settings.get("event_logging", "enabled", True)),
+            )
+        except Exception:
+            pass
+
         return self._wire_session(
             session,
             project_path=project_path,

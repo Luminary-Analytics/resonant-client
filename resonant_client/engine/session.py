@@ -195,6 +195,7 @@ class Session:
         # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed)
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
         self.sandbox = None  # PathSandbox, set externally
+        self.event_logger = None  # EventLogger, set externally for JSONL logging
 
     @property
     def is_subagent(self) -> bool:
@@ -240,6 +241,14 @@ class Session:
     def reset_cancel(self):
         """Clear any pending cancellation request before starting a new run."""
         self._cancel_event.clear()
+
+    def _log_event(self, event: dict) -> None:
+        """Log an event to the JSONL logger if configured."""
+        if self.event_logger:
+            try:
+                self.event_logger.log(event)
+            except Exception:
+                pass
 
     def _should_auto_approve(self, tool_name: str) -> bool:
         """
@@ -316,11 +325,22 @@ class Session:
             return
 
         tool_mode = getattr(self.backend, 'tool_mode', 'native')
-        yield make_event(EngineEvent.SESSION_START,
+        _start_event = make_event(EngineEvent.SESSION_START,
                         plan_mode=self.plan_mode,
                         backend=self.backend.name,
                         model=self.backend.model,
                         tool_mode=tool_mode)
+        self._log_event(_start_event)
+        yield _start_event
+
+        # Log session metadata for JSONL replay
+        self._log_event({
+            "event": "session.meta",
+            "session_id": id(self),
+            "project_path": self.project_path,
+            "autonomy_tier": self.autonomy_tier,
+            "sandbox_enabled": bool(self.sandbox),
+        })
 
         # ── Context compression ──
         if should_compress(self.conversation_history):

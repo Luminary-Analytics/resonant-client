@@ -29,6 +29,7 @@ class CommandProject:
     tasks: list = field(default_factory=list)  # coordinator-generated task breakdown
     agents: list = field(default_factory=list)  # {id, name, role, status, ...}
     activity: list = field(default_factory=list)  # feed messages
+    org_chart: list = field(default_factory=list)  # OrgNode dicts for hierarchy
     created_at: str = ""
     updated_at: str = ""
 

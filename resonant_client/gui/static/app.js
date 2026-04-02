@@ -1512,6 +1512,16 @@ class ResonantApp {
                     alert(event.error);
                 }
                 break;
+            case 'command_org_chart':
+                this._orgChartData = event;
+                if (this.sessionMode === 'command' && this.cmdDashTab === 'org_chart') {
+                    const proj = this.commandProjects.find(p => p.id === event.project_id);
+                    if (proj) {
+                        proj.org_chart = event.nodes;
+                        this._renderDashOrgChart(document.getElementById('project-dash-content'), proj);
+                    }
+                }
+                break;
             case 'command_project_file_content':
                 {
                     const codeEl = document.getElementById('results-code');
@@ -5006,6 +5016,7 @@ class ResonantApp {
                     <button class="project-dash-tab ${dashTab === 'agents' ? 'active' : ''}" data-tab="agents">Agents</button>
                     <button class="project-dash-tab ${dashTab === 'activity' ? 'active' : ''}" data-tab="activity">Activity</button>
                     <button class="project-dash-tab ${dashTab === 'results' ? 'active' : ''}" data-tab="results">Results</button>
+                    <button class="project-dash-tab ${dashTab === 'org_chart' ? 'active' : ''}" data-tab="org_chart">Org Chart</button>
                 </div>
                 <div class="project-dash-content" id="project-dash-content"></div>
             </div>
@@ -5043,6 +5054,7 @@ class ResonantApp {
             case 'agents': this._renderDashAgents(content, project); break;
             case 'activity': this._renderDashActivity(content, project); break;
             case 'results': this._renderDashResults(content, project); break;
+            case 'org_chart': this._renderDashOrgChart(content, project); break;
         }
     }
 
@@ -5322,6 +5334,206 @@ class ResonantApp {
             </div>
         `;
         el.scrollTop = el.scrollHeight;
+    }
+
+    _renderDashOrgChart(el, project) {
+        const nodes = project.org_chart || [];
+
+        // Request latest org chart from server
+        this.send({ command: 'command_org_chart_get', project_id: project.id });
+
+        const _renderTree = (nodeList, depth = 0) => {
+            return nodeList.map(node => {
+                const statusDot = { idle: '⚪', running: '🟢', completed: '🔵', failed: '🔴' }[node.status] || '⚪';
+                const modelLabel = node.model ? node.model.split(':').pop() : 'no model';
+                const indent = depth * 28;
+                const childrenHtml = (node.children && node.children.length > 0)
+                    ? _renderTree(node.children, depth + 1)
+                    : '';
+                return `
+                    <div class="org-node" style="margin-left:${indent}px" data-id="${node.id}">
+                        <div class="org-node-content">
+                            <span class="org-node-connector">${depth > 0 ? '└── ' : ''}</span>
+                            <span class="org-node-status">${statusDot}</span>
+                            <span class="org-node-role">${this.escapeHtml(node.role)}</span>
+                            <span class="org-node-model">${this.escapeHtml(modelLabel)}</span>
+                            <button class="org-node-edit" data-id="${node.id}" title="Edit">&#9998;</button>
+                            <button class="org-node-delete" data-id="${node.id}" title="Delete">&times;</button>
+                        </div>
+                        ${node.description ? `<div class="org-node-desc" style="margin-left:${indent + 48}px">${this.escapeHtml(node.description)}</div>` : ''}
+                        ${childrenHtml}
+                    </div>`;
+            }).join('');
+        };
+
+        // Build tree from flat nodes
+        const tree = this._orgChartData?.tree || this._buildOrgTree(nodes);
+        const hasNodes = nodes.length > 0;
+
+        el.innerHTML = `
+            <div class="org-chart-header">
+                <button class="btn-primary btn-sm" id="org-add-role-btn">+ Add Role</button>
+                ${hasNodes ? `<button class="btn-sm" id="org-activate-btn" style="background:var(--ok);color:#000;border-color:var(--ok)">&#9654; Activate All</button>` : ''}
+            </div>
+            <div class="org-tree">
+                <div class="org-node org-user-node">
+                    <div class="org-node-content">
+                        <span class="org-node-status">👤</span>
+                        <span class="org-node-role" style="font-weight:700">You</span>
+                    </div>
+                </div>
+                ${hasNodes ? _renderTree(tree, 1) : `
+                    <div class="feature-empty" style="padding:30px">
+                        <span>No roles defined yet. Click <strong>+ Add Role</strong> to build your agent hierarchy.</span>
+                    </div>
+                `}
+            </div>
+        `;
+
+        // Bind buttons
+        document.getElementById('org-add-role-btn')?.addEventListener('click', () => this._showOrgAddForm(el, project));
+        document.getElementById('org-activate-btn')?.addEventListener('click', () => {
+            this.send({ command: 'command_org_chart_activate', project_id: project.id });
+        });
+        el.querySelectorAll('.org-node-edit').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._showOrgEditForm(el, project, btn.dataset.id);
+            });
+        });
+        el.querySelectorAll('.org-node-delete').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.send({ command: 'command_org_chart_remove_node', project_id: project.id, node_id: btn.dataset.id });
+            });
+        });
+    }
+
+    _buildOrgTree(nodes) {
+        // Convert flat node list to nested tree
+        const map = {};
+        const roots = [];
+        for (const n of nodes) { map[n.id] = { ...n, children: [] }; }
+        for (const n of nodes) {
+            if (n.parent_id && map[n.parent_id]) {
+                map[n.parent_id].children.push(map[n.id]);
+            } else {
+                roots.push(map[n.id]);
+            }
+        }
+        return roots;
+    }
+
+    _showOrgAddForm(el, project) {
+        const nodes = project.org_chart || [];
+        const parentOptions = nodes.map(n =>
+            `<option value="${n.id}">${this.escapeHtml(n.role)}</option>`
+        ).join('');
+
+        const content = document.getElementById('project-dash-content');
+        if (!content) return;
+
+        content.innerHTML = `
+            <div class="spawn-agent-form">
+                <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">Add Role to Org Chart</h3>
+                <div class="settings-row"><label>Role</label>
+                    <input type="text" class="settings-input" id="org-role-name" placeholder="e.g., Backend Developer" /></div>
+                <div class="settings-row"><label>Description</label>
+                    <textarea class="settings-input" id="org-role-desc" rows="2" placeholder="What does this agent do?"></textarea></div>
+                <div class="settings-row"><label>Model</label>
+                    <select class="settings-input" id="org-role-model"></select></div>
+                <div class="settings-row"><label>Reports to</label>
+                    <select class="settings-input" id="org-role-parent">
+                        <option value="">You (top level)</option>
+                        ${parentOptions}
+                    </select></div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                    <button class="btn-primary btn-sm" id="org-add-submit">Add Role</button>
+                    <button class="btn-sm" id="org-add-cancel">Cancel</button>
+                </div>
+            </div>
+        `;
+
+        const modelSelect = document.getElementById('org-role-model');
+        if (modelSelect) this._populateCommandModelSelector(modelSelect);
+
+        document.getElementById('org-add-submit')?.addEventListener('click', () => {
+            const role = document.getElementById('org-role-name')?.value?.trim();
+            if (!role) return;
+            this.send({
+                command: 'command_org_chart_add_node',
+                project_id: project.id,
+                role,
+                description: document.getElementById('org-role-desc')?.value || '',
+                model: document.getElementById('org-role-model')?.value || '',
+                parent_id: document.getElementById('org-role-parent')?.value || null,
+            });
+            // Switch back to org chart view
+            this.cmdDashTab = 'org_chart';
+            this.renderProjectDashboard(project);
+        });
+        document.getElementById('org-add-cancel')?.addEventListener('click', () => {
+            this.cmdDashTab = 'org_chart';
+            this.renderProjectDashboard(project);
+        });
+    }
+
+    _showOrgEditForm(el, project, nodeId) {
+        const nodes = project.org_chart || [];
+        const node = nodes.find(n => n.id === nodeId);
+        if (!node) return;
+
+        const parentOptions = nodes
+            .filter(n => n.id !== nodeId)
+            .map(n => `<option value="${n.id}" ${n.id === node.parent_id ? 'selected' : ''}>${this.escapeHtml(n.role)}</option>`)
+            .join('');
+
+        const content = document.getElementById('project-dash-content');
+        if (!content) return;
+
+        content.innerHTML = `
+            <div class="spawn-agent-form">
+                <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">Edit Role: ${this.escapeHtml(node.role)}</h3>
+                <div class="settings-row"><label>Role</label>
+                    <input type="text" class="settings-input" id="org-edit-name" value="${this.escapeHtml(node.role)}" /></div>
+                <div class="settings-row"><label>Description</label>
+                    <textarea class="settings-input" id="org-edit-desc" rows="2">${this.escapeHtml(node.description || '')}</textarea></div>
+                <div class="settings-row"><label>Model</label>
+                    <select class="settings-input" id="org-edit-model"></select></div>
+                <div class="settings-row"><label>Reports to</label>
+                    <select class="settings-input" id="org-edit-parent">
+                        <option value="">You (top level)</option>
+                        ${parentOptions}
+                    </select></div>
+                <div style="display:flex;gap:8px;margin-top:12px">
+                    <button class="btn-primary btn-sm" id="org-edit-submit">Save</button>
+                    <button class="btn-sm" id="org-edit-cancel">Cancel</button>
+                </div>
+            </div>
+        `;
+
+        const modelSelect = document.getElementById('org-edit-model');
+        if (modelSelect) {
+            this._populateCommandModelSelector(modelSelect, node.model);
+        }
+
+        document.getElementById('org-edit-submit')?.addEventListener('click', () => {
+            this.send({
+                command: 'command_org_chart_update_node',
+                project_id: project.id,
+                node_id: nodeId,
+                role: document.getElementById('org-edit-name')?.value?.trim() || node.role,
+                description: document.getElementById('org-edit-desc')?.value || '',
+                model: document.getElementById('org-edit-model')?.value || '',
+                parent_id: document.getElementById('org-edit-parent')?.value || null,
+            });
+            this.cmdDashTab = 'org_chart';
+            this.renderProjectDashboard(project);
+        });
+        document.getElementById('org-edit-cancel')?.addEventListener('click', () => {
+            this.cmdDashTab = 'org_chart';
+            this.renderProjectDashboard(project);
+        });
     }
 
     _renderDashResults(el, project) {

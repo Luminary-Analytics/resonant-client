@@ -4546,3 +4546,96 @@ body.chat-mode #preview-resize {
     gap: 6px;
     margin-left: 16px;
 }
+
+/* ── Org Chart ── */
+
+.org-chart-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 16px;
+}
+
+.org-tree {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.org-node {
+    display: flex;
+    flex-direction: column;
+}
+
+.org-node-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    transition: background 0.1s;
+}
+
+.org-node-content:hover {
+    background: var(--bg-elem);
+}
+
+.org-user-node .org-node-content {
+    background: rgba(59, 130, 246, 0.08);
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: 8px;
+}
+
+.org-node-connector {
+    font-family: var(--mono);
+    color: var(--dim);
+    font-size: 13px;
+    flex-shrink: 0;
+    min-width: 32px;
+}
+
+.org-node-status {
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.org-node-role {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.org-node-model {
+    font-size: 12px;
+    color: var(--dim);
+    padding: 1px 8px;
+    background: var(--bg-elem);
+    border-radius: 4px;
+}
+
+.org-node-desc {
+    font-size: 12px;
+    color: var(--dim);
+    padding: 2px 0 4px;
+}
+
+.org-node-edit,
+.org-node-delete {
+    opacity: 0;
+    background: none;
+    border: none;
+    color: var(--dim);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    transition: opacity 0.15s, color 0.15s;
+}
+
+.org-node-content:hover .org-node-edit,
+.org-node-content:hover .org-node-delete {
+    opacity: 1;
+}
+
+.org-node-edit:hover { color: var(--brand); }
+.org-node-delete:hover { color: var(--err); }

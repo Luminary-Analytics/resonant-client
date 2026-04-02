@@ -6758,6 +6758,165 @@ async def websocket_endpoint(ws: WebSocket):
                         "response": f"Failed to start coordinator: {e}",
                     })
 
+            # ── Command Center: Org Chart ─────────────────────
+            elif command == "command_org_chart_get":
+                project_id = msg.get("project_id", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    from .org_chart import OrgChart
+                    chart = OrgChart.from_dict(proj.org_chart or [])
+                    await ws.send_json({
+                        "event": "command_org_chart",
+                        "project_id": project_id,
+                        "nodes": chart.to_dict(),
+                        "tree": chart.get_tree(),
+                    })
+
+            elif command == "command_org_chart_add_node":
+                project_id = msg.get("project_id", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    from .org_chart import OrgChart
+                    chart = OrgChart.from_dict(proj.org_chart or [])
+                    node = chart.add_node(
+                        role=msg.get("role", "Agent"),
+                        description=msg.get("description", ""),
+                        model=msg.get("model", ""),
+                        parent_id=msg.get("parent_id"),
+                    )
+                    state.command_project_store.update_project(project_id, org_chart=chart.to_dict())
+                    await ws.send_json({
+                        "event": "command_org_chart",
+                        "project_id": project_id,
+                        "nodes": chart.to_dict(),
+                        "tree": chart.get_tree(),
+                    })
+
+            elif command == "command_org_chart_remove_node":
+                project_id = msg.get("project_id", "")
+                node_id = msg.get("node_id", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    from .org_chart import OrgChart
+                    chart = OrgChart.from_dict(proj.org_chart or [])
+                    chart.remove_node(node_id)
+                    state.command_project_store.update_project(project_id, org_chart=chart.to_dict())
+                    await ws.send_json({
+                        "event": "command_org_chart",
+                        "project_id": project_id,
+                        "nodes": chart.to_dict(),
+                        "tree": chart.get_tree(),
+                    })
+
+            elif command == "command_org_chart_update_node":
+                project_id = msg.get("project_id", "")
+                node_id = msg.get("node_id", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    from .org_chart import OrgChart
+                    chart = OrgChart.from_dict(proj.org_chart or [])
+                    updates = {k: v for k, v in msg.items() if k not in ("command", "project_id", "node_id")}
+                    chart.update_node(node_id, **updates)
+                    state.command_project_store.update_project(project_id, org_chart=chart.to_dict())
+                    await ws.send_json({
+                        "event": "command_org_chart",
+                        "project_id": project_id,
+                        "nodes": chart.to_dict(),
+                        "tree": chart.get_tree(),
+                    })
+
+            elif command == "command_org_chart_activate":
+                project_id = msg.get("project_id", "")
+                proj = state.command_project_store.get_project(project_id)
+                if proj:
+                    from .org_chart import OrgChart
+                    chart = OrgChart.from_dict(proj.org_chart or [])
+                    roots = chart.get_roots()
+                    if not roots:
+                        await ws.send_json({"event": "error", "message": "No agents in org chart"})
+                        continue
+
+                    # Spawn all agents in the hierarchy
+                    new_agents = []
+                    for node in chart.get_all_nodes():
+                        try:
+                            backend_type, model = "", ""
+                            if ":" in (node.model or ""):
+                                backend_type, model = node.model.split(":", 1)
+                            elif node.model:
+                                backend_type = node.model
+
+                            if not backend_type:
+                                for bname in ("codex", "claude-code", "openai", "resonant"):
+                                    if bname in state.available_backends:
+                                        backend_type = bname
+                                        break
+
+                            spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
+                            hierarchy_context = chart.get_node_context(node.id, proj.name)
+
+                            agent_prompt = (
+                                f"You are working on the project: {proj.name}\n"
+                                f"Project path: {proj.path}\n"
+                                f"Strategy: {proj.strategy}\n\n"
+                                f"{hierarchy_context}\n\n"
+                                f"Execute your role autonomously. Use your tools to read, write, and modify files. "
+                                f"Report progress clearly."
+                            )
+
+                            def _make_org_event_handler(pid, role_name):
+                                def handler(task_id, event):
+                                    state._push_agent_event(task_id, event)
+                                    if event.get("event") == "text.done":
+                                        text = event.get("text", "")[:200]
+                                        if text.strip():
+                                            state.command_project_store.add_activity(pid, "agent", role_name, text)
+                                return handler
+
+                            bg_task = state.task_runner.submit(
+                                name=node.role,
+                                prompt=agent_prompt,
+                                session_factory=state.make_background_session,
+                                backend_type=backend_type,
+                                model=spec.model,
+                                project_path=proj.path,
+                                session_mode="code",
+                                session_role="generator",
+                                backend_spec=spec.to_dict(),
+                                on_event=_make_org_event_handler(project_id, node.role),
+                            )
+
+                            node.status = "running"
+                            node.agent_task_id = bg_task.id
+                            new_agents.append({
+                                "id": bg_task.id, "name": node.role,
+                                "role": "coordinator" if not node.parent_id else "worker",
+                                "status": "running", "model": spec.model,
+                                "steps": 0, "elapsed": 0,
+                                "org_node_id": node.id,
+                            })
+
+                        except Exception as e:
+                            node.status = "failed"
+                            state.command_project_store.add_activity(
+                                project_id, "system", "System", f"Failed to spawn {node.role}: {e}"
+                            )
+
+                    state.command_project_store.update_project(
+                        project_id,
+                        org_chart=chart.to_dict(),
+                        agents=new_agents,
+                        status="running",
+                    )
+                    proj = state.command_project_store.get_project(project_id)
+                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
+                    await ws.send_json({
+                        "event": "command_org_chart",
+                        "project_id": project_id,
+                        "nodes": chart.to_dict(),
+                        "tree": chart.get_tree(),
+                    })
+
             # ── Command Center: Initiative ────────────────────
             elif command == "command_project_initiative":
                 project_id = msg.get("project_id", "")

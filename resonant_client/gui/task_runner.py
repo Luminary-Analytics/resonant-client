@@ -196,7 +196,12 @@ class TaskRunner:
                 if task.cancel_event.is_set():
                     session.cancel()
 
-            task.result = "\n\n".join(collected_text) if collected_text else "(no output)"
+            if collected_text:
+                task.result = "\n\n".join(collected_text)
+            elif task.error:
+                task.result = f"Error: {task.error}"
+            else:
+                task.result = "(no output)"
             task.steps = steps
             task.elapsed = time.time() - start
             logger.info("Task %s: completed. steps=%d elapsed=%.1fs result_len=%d events=%d",

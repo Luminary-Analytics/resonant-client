@@ -3459,12 +3459,31 @@ class ResonantApp {
         // Window controls (pywebview frameless mode)
         const hasNativeAPI = () => typeof pywebview !== 'undefined' && pywebview.api;
         const controls = document.getElementById('window-controls');
+        const maxBtn = document.getElementById('win-maximize');
+
+        const maximizeIconSvg = '<svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>';
+        const restoreIconSvg = '<svg width="10" height="10" viewBox="0 0 10 10"><rect x="3" y="1" width="6" height="6" stroke="currentColor" stroke-width="1.1" fill="none"/><rect x="1" y="3" width="6" height="6" stroke="currentColor" stroke-width="1.1" fill="none"/></svg>';
+
+        const updateMaxIcon = (isMaximized) => {
+            if (maxBtn) maxBtn.innerHTML = isMaximized ? restoreIconSvg : maximizeIconSvg;
+        };
+
+        const doToggleMaximize = async () => {
+            if (!hasNativeAPI()) return;
+            const result = await pywebview.api.toggle_maximize();
+            updateMaxIcon(result);
+        };
 
         const wireControls = () => {
             if (hasNativeAPI()) {
                 document.getElementById('win-minimize')?.addEventListener('click', () => pywebview.api.minimize());
-                document.getElementById('win-maximize')?.addEventListener('click', () => pywebview.api.maximize());
+                maxBtn?.addEventListener('click', doToggleMaximize);
                 document.getElementById('win-close')?.addEventListener('click', () => pywebview.api.close());
+                // Double-click title bar to toggle maximize
+                document.getElementById('app-menubar')?.addEventListener('dblclick', (e) => {
+                    if (e.target.closest('.menubar-menus') || e.target.closest('.menubar-window-controls')) return;
+                    doToggleMaximize();
+                });
             } else if (controls) {
                 controls.style.display = 'none';
             }

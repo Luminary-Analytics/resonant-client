@@ -101,17 +101,25 @@ def launch_gui(
             class _WindowAPI:
                 def __init__(self, win_ref):
                     self._win = win_ref
+                    self._maximized = False
 
                 def minimize(self):
                     if self._win[0]:
                         self._win[0].minimize()
 
-                def maximize(self):
-                    if self._win[0]:
-                        try:
-                            self._win[0].toggle_fullscreen()
-                        except Exception:
-                            self._win[0].restore()
+                def toggle_maximize(self):
+                    if not self._win[0]:
+                        return False
+                    if self._maximized:
+                        self._win[0].restore()
+                        self._maximized = False
+                    else:
+                        self._win[0].maximize()
+                        self._maximized = True
+                    return self._maximized
+
+                def is_maximized(self):
+                    return self._maximized
 
                 def close(self):
                     if self._win[0]:
@@ -119,9 +127,18 @@ def launch_gui(
 
             win_ref = [None]
             api = _WindowAPI(win_ref)
-            window = webview.create_window(
-                "Resonant",
-                url,
+
+            # Resolve icon path
+            icon_dir = os.path.join(os.path.dirname(__file__), "static")
+            ico_path = os.path.join(icon_dir, "resonant.ico")
+            png_path = os.path.join(icon_dir, "resonant.png")
+            icon_path = ico_path if os.path.exists(ico_path) else (
+                png_path if os.path.exists(png_path) else None
+            )
+
+            wv_kwargs = dict(
+                title="Resonant",
+                url=url,
                 width=1200,
                 height=800,
                 min_size=(800, 600),
@@ -130,10 +147,66 @@ def launch_gui(
                 easy_drag=True,
                 js_api=api,
             )
+
+            # Set Windows taskbar icon BEFORE creating the window
+            if sys.platform == "win32" and ico_path and os.path.exists(ico_path):
+                try:
+                    import ctypes
+                    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                        "resonant.client.app"
+                    )
+                except Exception:
+                    pass
+
+            window = webview.create_window(**wv_kwargs)
             win_ref[0] = window
             from .app import _webview_window as _
             import resonant_client.gui.app as _gui_app
             _gui_app._webview_window = window
+
+            def _set_icon_on_shown():
+                """Set the window icon after the HWND exists."""
+                if sys.platform != "win32":
+                    return
+                try:
+                    import ctypes
+                    from ctypes import wintypes
+
+                    WM_SETICON = 0x0080
+                    ICON_SMALL = 0
+                    ICON_BIG = 1
+                    IMAGE_ICON = 1
+                    LR_LOADFROMFILE = 0x0010
+                    LR_DEFAULTSIZE = 0x0040
+
+                    user32 = ctypes.windll.user32
+                    LoadImageW = user32.LoadImageW
+                    LoadImageW.restype = wintypes.HANDLE
+
+                    # Find our window by title
+                    hwnd = user32.FindWindowW(None, "Resonant")
+                    if not hwnd:
+                        hwnd = user32.GetForegroundWindow()
+
+                    ico = str(ico_path).replace("/", "\\")
+
+                    h_big = LoadImageW(0, ico, IMAGE_ICON, 48, 48,
+                                       LR_LOADFROMFILE | LR_DEFAULTSIZE)
+                    h_small = LoadImageW(0, ico, IMAGE_ICON, 16, 16,
+                                         LR_LOADFROMFILE)
+
+                    if h_big:
+                        user32.SendMessageW(hwnd, WM_SETICON, ICON_BIG, h_big)
+                    if h_small:
+                        user32.SendMessageW(hwnd, WM_SETICON, ICON_SMALL, h_small)
+                except Exception as e:
+                    logger.debug("Could not set window icon: %s", e)
+
+            try:
+                window.events.shown += _set_icon_on_shown
+            except Exception:
+                pass
+
             webview.start(debug=debug)
         except (ImportError, Exception) as exc:
             logger.debug("pywebview not available: %s", exc)

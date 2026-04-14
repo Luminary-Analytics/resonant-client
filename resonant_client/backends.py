@@ -166,28 +166,55 @@ class OllamaBackend:
         self.model = model
         self.name = "ollama"
         self._use_native_tools: bool | None = None  # None = not yet detected
-
-    # CRITICAL: Options must be IDENTICAL across ALL requests (warm_up, stream, etc.)
-    # If any option differs, Ollama UNLOADS and RELOADS the entire model from disk,
-    # adding 30-120s of overhead per request. Never override these per-request.
-    _OPTIONS = {
-        "num_gpu": 99,
-        "num_batch": 512,
-        "num_ctx": 4096,
-    }
+        # CRITICAL: Options must be IDENTICAL across ALL requests (warm_up, stream, etc.)
+        # for this backend instance. If any option differs between requests, Ollama may
+        # UNLOAD and RELOAD the model. Tune via env once per process, not per call.
+        self._ollama_options = {
+            "num_gpu": int(os.environ.get("RESONANT_OLLAMA_NUM_GPU", "99")),
+            "num_batch": int(os.environ.get("RESONANT_OLLAMA_NUM_BATCH", "512")),
+            "num_ctx": int(os.environ.get("RESONANT_OLLAMA_NUM_CTX", "4096")),
+        }
+        self._ollama_keep_alive = (os.environ.get("RESONANT_OLLAMA_KEEP_ALIVE", "60m").strip() or "60m")
+        self._ollama_http_timeout = float(os.environ.get("RESONANT_OLLAMA_HTTP_TIMEOUT_SEC", "180"))
+        self._ollama_http_read_timeout = float(
+            os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "120")
+        )
 
     # Models known to support/not support native tool calling
     # (avoids the probe request for common models)
     _KNOWN_TOOL_SUPPORT = {
         # Supports native tools
         "llama3.1", "llama3.2", "llama3.3", "llama4",
-        "qwen2.5", "qwen2.5-coder", "qwen3",
+        "qwen2.5", "qwen2.5-coder", "qwen3", "qwen3.5", "qwen3-coder-next", "qwen3-next",
         "mistral", "mistral-nemo", "mistral-small", "mistral-large",
         "command-r", "command-r-plus",
-        "gemma2", "gemma3",
+        "gemma2", "gemma3", "gemma4",
         "phi4", "phi4-mini",
-        "deepseek-r1",
+        "deepseek-r1", "deepseek-v3.2",
+        # Ollama cloud models (routed, tool-capable)
+        "minimax-m2", "minimax-m2.5", "minimax-m2.7",
+        "nemotron-3-super", "nemotron-3-nano",
+        "kimi-k2.5",
+        "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1",
+        "devstral-2", "devstral-small-2",
+        "cogito-2.1",
+        "gemini-3-flash-preview",
+        "ministral-3",
+        "rnj-1",
     }
+
+    # Cloud models to offer even if not yet pulled locally
+    CLOUD_MODELS = [
+        "minimax-m2.7:cloud",
+        "minimax-m2.5:cloud",
+        "nemotron-3-super:cloud",
+        "kimi-k2.5:cloud",
+        "glm-5.1:cloud",
+        "glm-4.7-flash:cloud",
+        "deepseek-v3.2:cloud",
+        "qwen3.5:cloud",
+        "gemma4:cloud",
+    ]
     _KNOWN_NO_TOOL_SUPPORT = {
         # Text-only, no native tool calling
         "llama2", "llama3",  # Pre-3.1
@@ -249,7 +276,7 @@ class OllamaBackend:
 
         # Probe: send a minimal request with a simple tool and check response format
         try:
-            opts = dict(self._OPTIONS)
+            opts = dict(self._ollama_options)
             opts["num_predict"] = 50
             probe_tool = [{
                 "type": "function",
@@ -270,7 +297,7 @@ class OllamaBackend:
                     "messages": [{"role": "user", "content": "Call test_tool with value 'hello'"}],
                     "tools": probe_tool,
                     "stream": False,
-                    "keep_alive": "60m",
+                    "keep_alive": self._ollama_keep_alive,
                     "options": opts,
                 },
                 timeout=30,
@@ -301,7 +328,7 @@ class OllamaBackend:
         """Pre-load the model into Ollama's memory so the first request is fast."""
         try:
             # Use EXACT same options as stream() to prevent Ollama from reloading
-            opts = dict(self._OPTIONS)
+            opts = dict(self._ollama_options)
             opts["num_predict"] = 1
             httpx.post(
                 f"{self.base_url}/api/chat",
@@ -309,10 +336,10 @@ class OllamaBackend:
                     "model": self.model,
                     "messages": [{"role": "user", "content": "hi"}],
                     "stream": False,
-                    "keep_alive": "60m",
+                    "keep_alive": self._ollama_keep_alive,
                     "options": opts,
                 },
-                timeout=120,
+                timeout=max(120.0, self._ollama_http_timeout),
             )
             logger.info("Model %s warmed up", self.model)
         except Exception:
@@ -335,18 +362,24 @@ class OllamaBackend:
             return {"status": "error", "message": str(e)}
 
     def list_models(self) -> list:
-        """Return list of available model names."""
+        """Return list of available model names, including cloud models."""
+        local: list[str] = []
         try:
             resp = httpx.get(f"{self.base_url}/api/tags", timeout=5)
             resp.raise_for_status()
-            return [m["name"] for m in resp.json().get("models", [])
-                    if not any(kw in m["name"].lower() for kw in ("embed", "bert", "bge", "nomic"))]
+            local = [m["name"] for m in resp.json().get("models", [])
+                     if not any(kw in m["name"].lower() for kw in ("embed", "bert", "bge", "nomic"))]
         except Exception:
-            return []
+            pass
+        local_set = {m.lower() for m in local}
+        for cloud in self.CLOUD_MODELS:
+            if cloud.lower() not in local_set:
+                local.append(cloud)
+        return local
 
     def classify(self, prompt: str, max_tokens: int = 50) -> str:
         """Quick non-streaming LLM call for classification. Returns plain text."""
-        opts = dict(self._OPTIONS)
+        opts = dict(self._ollama_options)
         opts["num_predict"] = max_tokens
         resp = httpx.post(
             f"{self.base_url}/api/chat",
@@ -354,7 +387,7 @@ class OllamaBackend:
                 "model": self.model,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False,
-                "keep_alive": "60m",
+                "keep_alive": self._ollama_keep_alive,
                 "options": opts,
             },
             timeout=30,
@@ -488,14 +521,14 @@ class OllamaBackend:
 
         # Use fixed options — NEVER change num_ctx or other params between requests,
         # or Ollama will reload the entire model from disk (30-120s penalty)
-        opts = dict(self._OPTIONS)
+        opts = dict(self._ollama_options)
         opts["num_predict"] = max_tokens
 
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": True,
-            "keep_alive": "60m",
+            "keep_alive": self._ollama_keep_alive,
             "options": opts,
         }
 
@@ -522,7 +555,12 @@ class OllamaBackend:
         known_tool_names = {"bash", "file_write", "file_read", "file_edit", "glob", "grep"}
 
         try:
-            with httpx.Client(timeout=httpx.Timeout(180.0, connect=10.0, read=120.0)) as client:
+            stream_timeout = httpx.Timeout(
+                self._ollama_http_timeout,
+                connect=10.0,
+                read=self._ollama_http_read_timeout,
+            )
+            with httpx.Client(timeout=stream_timeout) as client:
                 with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
                     resp.raise_for_status()
                     buf = b""
@@ -1377,9 +1415,13 @@ class OpenAIBackend:
                     "openai package required for OpenAI backend. "
                     "Install with: pip install resonant-client[openai]"
                 )
+            if self.base_url:
+                read_timeout = float(os.environ.get("RESONANT_LMSTUDIO_READ_TIMEOUT_SEC", "600"))
+            else:
+                read_timeout = float(os.environ.get("RESONANT_OPENAI_READ_TIMEOUT_SEC", "120"))
             kwargs = {
                 "api_key": self.api_key,
-                "timeout": openai.Timeout(180.0, connect=10.0, read=120.0),
+                "timeout": openai.Timeout(180.0, connect=10.0, read=read_timeout),
             }
             if self.base_url:
                 kwargs["base_url"] = self.base_url

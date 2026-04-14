@@ -60,6 +60,9 @@ class EngineEvent(str, Enum):
     # Choices (model asks user to pick)
     CHOICES = "choices"                       # Model presented options
 
+    # Task list progress (markdown `- [ ]` / `- [x]` in assistant text)
+    TODOS_UPDATED = "todos.updated"
+
 
 # ── Client → Engine commands ───────────────────────────────────────────
 

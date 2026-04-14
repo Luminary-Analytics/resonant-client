@@ -81,19 +81,44 @@ def launch_gui(
 
     print(f"  Resonant GUI running at {url}")
 
-    if browser:
-        # Open in default browser
-        import webbrowser
-        webbrowser.open(url)
-        print("  Opened in browser. Press Ctrl+C to stop.")
+    def _run_in_browser():
+        print(f"  Open in browser: {url}")
+        print("  Press Ctrl+C to stop.")
         try:
             server_thread.join()
         except KeyboardInterrupt:
             print("\n  Stopped")
+
+    if browser:
+        _run_in_browser()
     else:
-        # Try pywebview for native window
+        # Try pywebview for native frameless window
         try:
             import webview
+            if not hasattr(webview, 'create_window'):
+                raise ImportError("webview module is not pywebview")
+
+            class _WindowAPI:
+                def __init__(self, win_ref):
+                    self._win = win_ref
+
+                def minimize(self):
+                    if self._win[0]:
+                        self._win[0].minimize()
+
+                def maximize(self):
+                    if self._win[0]:
+                        try:
+                            self._win[0].toggle_fullscreen()
+                        except Exception:
+                            self._win[0].restore()
+
+                def close(self):
+                    if self._win[0]:
+                        self._win[0].destroy()
+
+            win_ref = [None]
+            api = _WindowAPI(win_ref)
             window = webview.create_window(
                 "Resonant",
                 url,
@@ -101,22 +126,18 @@ def launch_gui(
                 height=800,
                 min_size=(800, 600),
                 text_select=True,
+                frameless=True,
+                easy_drag=True,
+                js_api=api,
             )
-            # Share window reference with app.py for native folder dialogs
+            win_ref[0] = window
             from .app import _webview_window as _
             import resonant_client.gui.app as _gui_app
             _gui_app._webview_window = window
             webview.start(debug=debug)
-        except ImportError:
-            # Fallback to browser
-            print("  pywebview not installed -- opening in browser")
-            print("  For native window: pip install pywebview")
-            import webbrowser
-            webbrowser.open(url)
-            try:
-                server_thread.join()
-            except KeyboardInterrupt:
-                print("\n  Stopped")
+        except (ImportError, Exception) as exc:
+            logger.debug("pywebview not available: %s", exc)
+            _run_in_browser()
 
 
 def main():

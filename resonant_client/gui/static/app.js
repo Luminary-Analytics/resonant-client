@@ -165,7 +165,7 @@ class ResonantApp {
         this.harnessCyclePoller = null;
 
         // View state
-        this.currentView = 'chat';
+        this.currentView = 'agents';
         this.settings = {};
 
         // Command center state
@@ -177,6 +177,10 @@ class ResonantApp {
         this.cmdSelectedProject = null;
         this.cmdDashTab = 'plan';
         this.commandCenter = document.getElementById('command-center');
+
+        // Per-turn agent run summary (Cursor-style card on session.end)
+        this._agentRunSummary = { title: '', fileChanges: [], todos: null };
+        this._liveAgentTodoEl = null;
 
         // Git state
         this.gitData = null;
@@ -199,7 +203,9 @@ class ResonantApp {
         this.headerProject = document.getElementById('header-project');
         this.sidebarCwd = document.getElementById('sidebar-cwd');
         this.sidebarProjectName = document.getElementById('sidebar-project-name');
-        this.sessionList = document.getElementById('session-list');
+        this.sessionList = document.getElementById('agent-list');
+        this.agentPanel = document.getElementById('agent-panel');
+        this.chatScrollEndBtn = document.getElementById('chat-scroll-end');
         this.tokenInfo = document.getElementById('token-info');
 
         // Terminal bar DOM refs
@@ -249,6 +255,8 @@ class ResonantApp {
         }
 
         this.bindEvents();
+        this._restoreAppearance();
+        this._bindMenuBar();
         this.showSessionSkeletons();
         this.connect();
     }
@@ -326,6 +334,11 @@ class ResonantApp {
             this.userInput.style.height = 'auto';
             this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
         });
+
+        if (this.chatContainer && this.chatScrollEndBtn) {
+            this.chatContainer.addEventListener('scroll', () => this._syncChatScrollEndBtn(), { passive: true });
+            this.chatScrollEndBtn.addEventListener('click', () => this.scrollToBottom());
+        }
 
         // Stop button
         this.stopBtn.addEventListener('click', () => {
@@ -405,7 +418,7 @@ class ResonantApp {
         });
 
         // New session — show project picker / welcome screen
-        document.getElementById('new-session-btn').addEventListener('click', () => {
+        document.getElementById('new-agent-btn').addEventListener('click', () => {
             this.showNewSessionSetup();
         });
 
@@ -526,6 +539,9 @@ class ResonantApp {
                 document.body.style.userSelect = '';
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
+                if (this.previewPanel.style.width) {
+                    localStorage.setItem('resonant:preview-width', this.previewPanel.style.width);
+                }
             };
 
             document.addEventListener('mousemove', onMove);
@@ -546,11 +562,11 @@ class ResonantApp {
 
         // Close context menu on click anywhere
         document.addEventListener('click', () => {
-            document.querySelector('.session-context-menu')?.remove();
+            document.querySelector('.agent-context-menu')?.remove();
         });
 
         // ── Sidebar Navigation ──
-        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(item => {
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(item => {
             item.addEventListener('click', () => {
                 this.switchView(item.dataset.view);
             });
@@ -564,6 +580,11 @@ class ResonantApp {
         // Shortcuts overlay close
         document.getElementById('shortcuts-close')?.addEventListener('click', () => {
             document.getElementById('shortcuts-overlay').style.display = 'none';
+        });
+
+        // Sidebar search → live filter
+        document.getElementById('search-input')?.addEventListener('input', () => {
+            this.renderFilteredSessions();
         });
 
         // Dispatch + Schedule "New" buttons
@@ -654,6 +675,8 @@ class ResonantApp {
         // Add user message to chat (with image thumbnails if attached)
         this.addUserMessage(text, this.attachedImages);
 
+        this._resetAgentRunSummary(text);
+
         // Reset streaming state
         this.streamBuffer = '';
         this.isStreaming = false;
@@ -667,6 +690,7 @@ class ResonantApp {
         this.subagentDepth = 0;
         this.subagentContainer = null;
         this.clearTerminals();
+        this._removeLiveAgentTodoStrip();
 
         // Send to server (include images if attached)
         const msg = { command: 'message', text };
@@ -813,7 +837,8 @@ class ResonantApp {
         }
         if (mode === 'command') {
             // Hide all chat/feature views
-            this.chatContainer.style.display = 'none';
+            if (this.agentPanel) this.agentPanel.style.display = 'none';
+            else this.chatContainer.style.display = 'none';
             this.inputBar.style.display = 'none';
             this.welcomeScreen.style.display = 'none';
             const chatWelcome = document.getElementById('chat-welcome-screen');
@@ -837,12 +862,10 @@ class ResonantApp {
         const projectFilter = document.getElementById('sidebar-project-filter');
         if (projectFilter) projectFilter.style.display = mode === 'code' ? '' : 'none';
 
-        // Update "New Session" / "New Chat" label
-        const newBtn = document.getElementById('new-session-btn');
+        const newBtn = document.getElementById('new-agent-btn');
         if (newBtn) {
             newBtn.style.display = '';
-            const label = newBtn.querySelector('span');
-            if (label) label.textContent = mode === 'chat' ? 'New Chat' : 'New Session';
+            newBtn.title = mode === 'chat' ? 'New ask (Ctrl+N)' : 'New agent (Ctrl+N)';
         }
 
         const roleSelect = document.getElementById('setup-session-role');
@@ -865,7 +888,7 @@ class ResonantApp {
     }
 
     formatSessionRole(role) {
-        const labels = { planner: 'Planner', generator: 'Generator', evaluator: 'Evaluator', chat: 'Chat' };
+        const labels = { planner: 'Planner', generator: 'Generator', evaluator: 'Evaluator', chat: 'Ask' };
         return labels[role] || 'Generator';
     }
 
@@ -1274,7 +1297,8 @@ class ResonantApp {
         textarea.value = '';
         const chatWelcome = document.getElementById('chat-welcome-screen');
         if (chatWelcome) chatWelcome.style.display = 'none';
-        this.chatContainer.style.display = 'flex';
+        if (this.agentPanel) this.agentPanel.style.display = 'flex';
+        else this.chatContainer.style.display = 'flex';
         this.inputBar.style.display = 'flex';
         this.applySessionModeUI('chat');
     }
@@ -1299,6 +1323,9 @@ class ResonantApp {
                 break;
             case 'text.done':
                 this.handleTextDone(event);
+                break;
+            case 'todos.updated':
+                this.handleTodosUpdated(event);
                 break;
             case 'tool.call':
                 this.handleToolCall(event);
@@ -1882,16 +1909,17 @@ class ResonantApp {
         this.welcomeScreen.style.display = 'none';
         const chatWelcome = document.getElementById('chat-welcome-screen');
         if (chatWelcome) chatWelcome.style.display = 'none';
-        this.chatContainer.style.display = 'flex';
+        if (this.agentPanel) this.agentPanel.style.display = 'flex';
+        else this.chatContainer.style.display = 'flex';
         this.inputBar.style.display = 'flex';
         // Hide other views if they were visible
         if (this.settingsView) this.settingsView.style.display = 'none';
         if (this.scheduleView) this.scheduleView.style.display = 'none';
         if (this.dispatchView) this.dispatchView.style.display = 'none';
         // Update nav
-        this.currentView = 'chat';
-        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
-            el.classList.toggle('active', el.dataset.view === 'chat'));
+        this.currentView = 'agents';
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(el =>
+            el.classList.toggle('active', el.dataset.view === 'agents'));
         this.userInput.focus();
     }
 
@@ -1899,7 +1927,7 @@ class ResonantApp {
         this.permissionMode = mode;
 
         const icons = { ask: '⚙', 'auto-edit': '</>', plan: '☰', bypass: '△' };
-        const labels = { ask: 'Suggest (read-only)', 'auto-edit': 'Auto-edit (files OK, shell asks)', plan: 'Plan mode', bypass: 'Full-auto (sandboxed)' };
+        const labels = { ask: 'Ask', 'auto-edit': 'Auto-edit', plan: 'Plan', bypass: 'Full-auto' };
 
         document.getElementById('perm-icon').textContent = icons[mode] || '△';
         document.getElementById('perm-label').textContent = labels[mode] || mode;
@@ -2489,6 +2517,10 @@ class ResonantApp {
             this.trackTerminalStart(callId, name, event.arguments || {});
         }
 
+        if (this.currentSessionMode !== 'chat' && (name === 'file_edit' || name === 'file_write')) {
+            this._recordAgentFileChange(name, event.arguments || {}, event);
+        }
+
         if (this.currentSessionMode === 'chat') return;
 
         // CLI backends: group ALL tool calls into a collapsible activity panel
@@ -2901,15 +2933,25 @@ class ResonantApp {
         this.previewResize.style.display = 'block';
         this.previewToggle.classList.add('active');
         this.previewToggle.classList.remove('has-update');
+        const savedW = localStorage.getItem('resonant:preview-width');
+        if (savedW) {
+            this.previewPanel.style.width = savedW;
+            this.previewPanel.style.minWidth = '320px';
+        }
+        localStorage.setItem('resonant:preview-open', '1');
     }
 
     closePreviewPanel() {
         this.previewOpen = false;
+        if (this.previewPanel.style.width) {
+            localStorage.setItem('resonant:preview-width', this.previewPanel.style.width);
+        }
         this.previewPanel.classList.remove('open');
         this.previewPanel.style.width = '';
         this.previewPanel.style.minWidth = '';
         this.previewResize.style.display = 'none';
         this.previewToggle.classList.remove('active');
+        localStorage.setItem('resonant:preview-open', '0');
     }
 
     /** Update the preview URL bar when a browser_navigate tool is called */
@@ -3085,35 +3127,32 @@ class ResonantApp {
 
         // Hide all views
         this.welcomeScreen.style.display = 'none';
-        this.chatContainer.style.display = 'none';
+        if (this.agentPanel) this.agentPanel.style.display = 'none';
+        else this.chatContainer.style.display = 'none';
         this.inputBar.style.display = 'none';
         if (this.commandCenter) this.commandCenter.style.display = 'none';
         if (this.settingsView) this.settingsView.style.display = 'none';
         if (this.scheduleView) this.scheduleView.style.display = 'none';
         if (this.dispatchView) this.dispatchView.style.display = 'none';
 
-        // Show session list only in chat view
-        const sessionList = document.getElementById('session-list');
-        if (sessionList) sessionList.style.display = viewName === 'chat' ? '' : 'none';
+        // Agent list only in Agents window view
+        const sessionList = document.getElementById('agent-list');
+        if (sessionList) sessionList.style.display = viewName === 'agents' ? '' : 'none';
 
         // Show project filter only in chat view + code mode
         const pf = document.getElementById('sidebar-project-filter');
-        if (pf) pf.style.display = (viewName === 'chat' && this.sessionMode === 'code') ? '' : 'none';
-
-        // Show search only in chat view
-        const search = document.querySelector('.sidebar-search');
-        if (search) search.style.display = viewName === 'chat' ? '' : 'none';
+        if (pf) pf.style.display = (viewName === 'agents' && this.sessionMode === 'code') ? '' : 'none';
 
         // Update nav active state
-        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === viewName));
 
         // Show the requested view
         switch (viewName) {
-            case 'chat':
-                // Restore chat or welcome based on whether a session is active or backend is connected
+            case 'agents':
                 if (this.currentSessionId || (this.backends && Object.keys(this.backends).length > 0)) {
-                    this.chatContainer.style.display = 'flex';
+                    if (this.agentPanel) this.agentPanel.style.display = 'flex';
+                    else this.chatContainer.style.display = 'flex';
                     this.inputBar.style.display = 'flex';
                 } else {
                     this.welcomeScreen.style.display = 'flex';
@@ -3169,9 +3208,35 @@ class ResonantApp {
                           { value: 'plan', label: 'Plan mode' },
                       ]
                     },
+                ]
+            },
+            {
+                id: 'appearance', title: 'Appearance', open: false,
+                fields: [
                     { key: 'theme', label: 'Theme', type: 'select',
-                      options: [{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light (coming soon)' }]
+                      options: [{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]
                     },
+                    { key: 'density', label: 'Density', type: 'select',
+                      options: [{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]
+                    },
+                    { key: 'font_size', label: 'Base font size', type: 'select',
+                      options: [
+                          { value: '12', label: '12px' },
+                          { value: '13', label: '13px' },
+                          { value: '13.5', label: '13.5px (default)' },
+                          { value: '14', label: '14px' },
+                          { value: '15', label: '15px' },
+                      ]
+                    },
+                ]
+            },
+            {
+                id: 'local_backends', title: 'Local Backends (Ollama / LM Studio)', open: false,
+                fields: [
+                    { key: 'ollama_host', label: 'Ollama host (OLLAMA_HOST)', type: 'text' },
+                    { key: 'lmstudio_url', label: 'LM Studio URL (LMSTUDIO_URL)', type: 'text' },
+                    { key: 'ollama_num_ctx', label: 'Ollama context window (num_ctx)', type: 'number' },
+                    { key: 'ollama_keep_alive', label: 'Ollama keep-alive duration', type: 'text' },
                 ]
             },
             {
@@ -3342,6 +3407,8 @@ class ResonantApp {
                     value = input.value;
                 }
                 this.send({ command: 'update_settings', section, key, value });
+
+                if (section === 'appearance') this._applyAppearance(key, value);
             });
         });
 
@@ -3386,12 +3453,86 @@ class ResonantApp {
         }
     }
 
+    // ── Menu Bar ──────────────────────────────────────────────
+
+    _bindMenuBar() {
+        // Window controls (pywebview frameless mode)
+        const hasNativeAPI = () => typeof pywebview !== 'undefined' && pywebview.api;
+        const controls = document.getElementById('window-controls');
+
+        const wireControls = () => {
+            if (hasNativeAPI()) {
+                document.getElementById('win-minimize')?.addEventListener('click', () => pywebview.api.minimize());
+                document.getElementById('win-maximize')?.addEventListener('click', () => pywebview.api.maximize());
+                document.getElementById('win-close')?.addEventListener('click', () => pywebview.api.close());
+            } else if (controls) {
+                controls.style.display = 'none';
+            }
+        };
+
+        if (hasNativeAPI()) wireControls();
+        else setTimeout(wireControls, 1000);
+
+        document.querySelectorAll('.menubar-action[data-action]').forEach(el => {
+            el.addEventListener('click', () => {
+                const action = el.dataset.action;
+                switch (action) {
+                    case 'new-agent': document.getElementById('new-agent-btn')?.click(); break;
+                    case 'open-folder': document.getElementById('project-selector')?.click(); break;
+                    case 'settings': this.switchView('settings'); break;
+                    case 'cmd-palette': this.openCommandPalette(); break;
+                    case 'toggle-sidebar': document.getElementById('sidebar-toggle')?.click(); break;
+                    case 'toggle-preview': document.getElementById('preview-toggle')?.click(); break;
+                    case 'mode-agent': document.querySelector('.mode-tab[data-mode="code"]')?.click(); break;
+                    case 'mode-ask': document.querySelector('.mode-tab[data-mode="chat"]')?.click(); break;
+                    case 'mode-workspaces': document.querySelector('.mode-tab[data-mode="command"]')?.click(); break;
+                    case 'shortcuts': this.toggleShortcutsOverlay(); break;
+                    case 'about': this.showStatusMessage('Resonant Client — Build software with agents'); break;
+                }
+            });
+        });
+    }
+
+    // ── Appearance ─────────────────────────────────────────────
+
+    _applyAppearance(key, value) {
+        if (key === 'theme') {
+            document.documentElement.setAttribute('data-theme', value === 'light' ? 'light' : '');
+            localStorage.setItem('resonant:theme', value);
+        } else if (key === 'density') {
+            document.documentElement.setAttribute('data-density', value === 'compact' ? 'compact' : '');
+            localStorage.setItem('resonant:density', value);
+        } else if (key === 'font_size') {
+            const px = parseFloat(value) || 13.5;
+            document.documentElement.style.setProperty('--text-base', px + 'px');
+            localStorage.setItem('resonant:font-size', String(px));
+        }
+    }
+
+    _restoreAppearance() {
+        const theme = localStorage.getItem('resonant:theme');
+        if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+        const density = localStorage.getItem('resonant:density');
+        if (density === 'compact') document.documentElement.setAttribute('data-density', 'compact');
+        const fontSize = localStorage.getItem('resonant:font-size');
+        if (fontSize) document.documentElement.style.setProperty('--text-base', fontSize + 'px');
+    }
+
     // ── Keyboard Shortcuts ──────────────────────────────────────
 
     _handleKeyboardShortcut(e) {
         // Don't intercept when typing in inputs (except specific combos)
         const tag = e.target.tagName.toLowerCase();
         const inInput = tag === 'input' || tag === 'textarea' || tag === 'select';
+
+        // Ctrl/Cmd+K → command palette
+        if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+            e.preventDefault();
+            const overlay = document.getElementById('command-palette');
+            if (overlay && overlay.style.display !== 'none') this.closeCommandPalette();
+            else this.openCommandPalette();
+            return;
+        }
 
         // Ctrl+/ or Ctrl+? → shortcuts help
         if ((e.ctrlKey || e.metaKey) && (e.key === '/' || e.key === '?')) {
@@ -3402,6 +3543,12 @@ class ResonantApp {
 
         // Escape → close overlays (already handled elsewhere, but also close shortcuts)
         if (e.key === 'Escape') {
+            const cp = document.getElementById('command-palette');
+            if (cp && cp.style.display !== 'none') {
+                this.closeCommandPalette();
+                e.preventDefault();
+                return;
+            }
             const so = document.getElementById('shortcuts-overlay');
             if (so && so.style.display !== 'none') {
                 so.style.display = 'none';
@@ -3416,7 +3563,7 @@ class ResonantApp {
         // Ctrl+N → new session
         if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
             e.preventDefault();
-            document.getElementById('new-session-btn')?.click();
+            document.getElementById('new-agent-btn')?.click();
             return;
         }
 
@@ -3437,7 +3584,7 @@ class ResonantApp {
         // 1-4 keys → switch views (when not in input)
         if (e.altKey && e.key >= '1' && e.key <= '4') {
             e.preventDefault();
-            const views = ['chat', 'schedule', 'dispatch', 'settings'];
+            const views = ['agents', 'schedule', 'dispatch', 'settings'];
             this.switchView(views[parseInt(e.key) - 1]);
             return;
         }
@@ -3455,13 +3602,14 @@ class ResonantApp {
             const body = document.getElementById('shortcuts-body');
             if (!body) return;
             const shortcuts = [
-                { label: 'New session', keys: ['Ctrl', 'N'] },
+                { label: 'Command palette', keys: ['Ctrl', 'K'] },
+                { label: 'New agent', keys: ['Ctrl', 'N'] },
                 { label: 'Settings', keys: ['Ctrl', ','] },
                 { label: 'Shortcuts help', keys: ['Ctrl', '/'] },
                 { label: 'Toggle sidebar', keys: ['Ctrl', 'Shift', 'D'] },
-                { label: 'Switch to Chat', keys: ['Alt', '1'] },
-                { label: 'Switch to Scheduled', keys: ['Alt', '2'] },
-                { label: 'Switch to Dispatch', keys: ['Alt', '3'] },
+                { label: 'Switch to Agent', keys: ['Alt', '1'] },
+                { label: 'Switch to Automations', keys: ['Alt', '2'] },
+                { label: 'Switch to Background', keys: ['Alt', '3'] },
                 { label: 'Switch to Settings', keys: ['Alt', '4'] },
                 { label: 'Close overlay', keys: ['Escape'] },
                 { label: 'Send message', keys: ['Enter'] },
@@ -3476,32 +3624,304 @@ class ResonantApp {
         }
     }
 
+    // ── Command Palette ─────────────────────────────────────────
+
+    _cmdPaletteCommands() {
+        return [
+            { id: 'new-agent',  icon: '+', label: 'New agent',          hint: 'Ctrl+N',       action: () => document.getElementById('new-agent-btn')?.click() },
+            { id: 'mode-agent', icon: '\u25C6', label: 'Switch to Agent mode',  hint: '',    action: () => { const t = document.querySelector('.mode-tab[data-mode="code"]'); if (t) t.click(); } },
+            { id: 'mode-ask',   icon: '?', label: 'Switch to Ask mode',        hint: '',    action: () => { const t = document.querySelector('.mode-tab[data-mode="chat"]'); if (t) t.click(); } },
+            { id: 'mode-ws',    icon: '\u2302', label: 'Switch to Workspaces',    hint: '',    action: () => { const t = document.querySelector('.mode-tab[data-mode="command"]'); if (t) t.click(); } },
+            { id: 'settings',   icon: '\u2699', label: 'Open Settings',            hint: 'Ctrl+,', action: () => this.switchView('settings') },
+            { id: 'automations',icon: '\u23F0', label: 'Automations',              hint: 'Alt+2',  action: () => this.switchView('schedule') },
+            { id: 'background', icon: '\u2193', label: 'Background agents',        hint: 'Alt+3',  action: () => this.switchView('dispatch') },
+            { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
+            { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
+            { id: 'shortcuts',  icon: '\u2328', label: 'Keyboard shortcuts',       hint: 'Ctrl+/', action: () => this.toggleShortcutsOverlay() },
+        ];
+    }
+
+    openCommandPalette() {
+        const overlay = document.getElementById('command-palette');
+        if (!overlay) return;
+        overlay.style.display = 'flex';
+        const input = document.getElementById('cmd-palette-input');
+        if (input) { input.value = ''; input.focus(); }
+        this._cmdPaletteIdx = 0;
+        this._renderCommandPaletteResults('');
+
+        const onKey = (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                this.closeCommandPalette();
+                document.removeEventListener('keydown', onKey, true);
+                return;
+            }
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                const items = overlay.querySelectorAll('.cmd-palette-item');
+                if (!items.length) return;
+                items[this._cmdPaletteIdx]?.classList.remove('active');
+                if (e.key === 'ArrowDown') this._cmdPaletteIdx = (this._cmdPaletteIdx + 1) % items.length;
+                else this._cmdPaletteIdx = (this._cmdPaletteIdx - 1 + items.length) % items.length;
+                items[this._cmdPaletteIdx]?.classList.add('active');
+                items[this._cmdPaletteIdx]?.scrollIntoView({ block: 'nearest' });
+                return;
+            }
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const items = overlay.querySelectorAll('.cmd-palette-item');
+                if (items[this._cmdPaletteIdx]) items[this._cmdPaletteIdx].click();
+                return;
+            }
+        };
+        this._cmdPaletteKeyHandler = onKey;
+        document.addEventListener('keydown', onKey, true);
+
+        if (input) {
+            input.addEventListener('input', () => {
+                this._cmdPaletteIdx = 0;
+                this._renderCommandPaletteResults(input.value);
+            });
+        }
+
+        overlay.addEventListener('click', (e) => {
+            if (e.target === overlay) this.closeCommandPalette();
+        }, { once: true });
+    }
+
+    closeCommandPalette() {
+        const overlay = document.getElementById('command-palette');
+        if (overlay) overlay.style.display = 'none';
+        if (this._cmdPaletteKeyHandler) {
+            document.removeEventListener('keydown', this._cmdPaletteKeyHandler, true);
+            this._cmdPaletteKeyHandler = null;
+        }
+    }
+
+    _renderCommandPaletteResults(query) {
+        const container = document.getElementById('cmd-palette-results');
+        if (!container) return;
+        const q = (query || '').toLowerCase().trim();
+        let cmds = this._cmdPaletteCommands();
+        if (q) cmds = cmds.filter(c => c.label.toLowerCase().includes(q));
+
+        if (!cmds.length) {
+            container.innerHTML = '<div class="cmd-palette-empty">No matching commands</div>';
+            return;
+        }
+        container.innerHTML = cmds.map((c, i) => `
+            <div class="cmd-palette-item${i === 0 ? ' active' : ''}" data-cmd-id="${c.id}">
+                <span class="cmd-palette-item-icon">${this.escapeHtml(c.icon)}</span>
+                <span class="cmd-palette-item-label">${this.escapeHtml(c.label)}</span>
+                ${c.hint ? `<span class="cmd-palette-item-hint">${this.escapeHtml(c.hint)}</span>` : ''}
+            </div>
+        `).join('');
+
+        container.querySelectorAll('.cmd-palette-item').forEach(el => {
+            el.addEventListener('click', () => {
+                const cmd = cmds.find(c => c.id === el.dataset.cmdId);
+                if (cmd) { this.closeCommandPalette(); cmd.action(); }
+            });
+        });
+    }
+
     // ── Status ──────────────────────────────────────────────────
 
     handleStatus(event) {
         this.lastModel = event.model || this.lastModel;
         this.lastStats = event.stats || this.lastStats;
 
-        // Update header
+        // Update header subtitle with model context
         if (this.lastModel) {
             const parts = [this.lastModel];
             if (this.lastStats) {
                 const inp = this.lastStats.input_tokens;
                 const out = this.lastStats.output_tokens;
-                if (inp && out) parts.push(`${inp}→${out} tok`);
+                if (inp && out) parts.push(`${inp}\u2192${out} tok`);
                 const sessionCost = this.lastStats.session_cost_usd;
                 if (sessionCost) {
                     parts.push(`$${Number(sessionCost).toFixed(4)}`);
                 }
             }
-            this.tokenInfo.textContent = parts.join(' · ');
+            this.tokenInfo.textContent = parts.join(' \u00B7 ');
+        }
+
+        // Enrich header status line
+        if (this.headerStatus && this.lastModel) {
+            this.headerStatus.textContent = this.lastModel;
         }
     }
 
     // ── Session End ─────────────────────────────────────────────
 
+    _resetAgentRunSummary(userText) {
+        this._agentRunSummary = {
+            title: this._truncateAgentRunTitle(userText || ''),
+            fileChanges: [],
+            todos: null,
+        };
+    }
+
+    _removeLiveAgentTodoStrip() {
+        if (this._liveAgentTodoEl && this._liveAgentTodoEl.parentNode) {
+            this._liveAgentTodoEl.parentNode.removeChild(this._liveAgentTodoEl);
+        }
+        this._liveAgentTodoEl = null;
+    }
+
+    handleTodosUpdated(event) {
+        const raw = event.todos || [];
+        const done = typeof event.done === 'number'
+            ? event.done
+            : raw.filter((t) => t && t.done).length;
+        const total = typeof event.total === 'number' ? event.total : raw.length;
+        if (!this._agentRunSummary) {
+            this._agentRunSummary = { title: '', fileChanges: [], todos: null };
+        }
+        this._agentRunSummary.todos = {
+            items: raw,
+            done,
+            total,
+        };
+        if (this.currentSessionMode !== 'chat') {
+            this._syncLiveAgentTodoStrip(done, total, raw);
+        }
+    }
+
+    _syncLiveAgentTodoStrip(done, total, items) {
+        if (this.isReplaying || total <= 0) return;
+        const target = this.getRenderTarget();
+        if (!target) return;
+
+        const pct = Math.min(100, Math.round((done / total) * 100));
+        const preview = (items || []).slice(0, 4).map((t) => {
+            const mark = t.done ? '\u2713' : '\u25CB';
+            const label = this.escapeHtml((t.text || '').slice(0, 64));
+            return `<span class="agent-live-todo-item">${mark} ${label || '…'}</span>`;
+        }).join('');
+
+        if (!this._liveAgentTodoEl) {
+            const el = document.createElement('div');
+            el.className = 'agent-live-todo-strip';
+            el.setAttribute('role', 'status');
+            target.appendChild(el);
+            this._liveAgentTodoEl = el;
+        }
+        this._liveAgentTodoEl.innerHTML = `
+            <div class="agent-live-todo-bar" style="--agent-todo-pct:${pct}%"></div>
+            <div class="agent-live-todo-row">
+                <span class="agent-live-todo-count">${done} of ${total} to-dos</span>
+                <span class="agent-live-todo-preview">${preview}</span>
+            </div>
+        `;
+        this.scrollToBottom();
+    }
+
+    _truncateAgentRunTitle(text) {
+        const t = String(text).replace(/\s+/g, ' ').trim();
+        if (!t) return '';
+        if (t.length <= 72) return t;
+        return t.slice(0, 69) + '…';
+    }
+
+    _recordAgentFileChange(name, args, event) {
+        if (!this._agentRunSummary) {
+            this._agentRunSummary = { title: '', fileChanges: [], todos: null };
+        }
+        const path = String(args.path || '').replace(/\\/g, '/').trim();
+        if (!path) return;
+
+        let detail = '';
+        if (name === 'file_write') {
+            const lines = String(args.content || '').split('\n').length;
+            detail = lines ? `Wrote ${lines} line${lines === 1 ? '' : 's'}` : 'Wrote file';
+        } else if (name === 'file_edit') {
+            const dl = event.diff_lines || [];
+            let add = 0;
+            let del = 0;
+            for (const line of dl) {
+                if (line.startsWith('+') && !line.startsWith('+++')) add++;
+                if (line.startsWith('-') && !line.startsWith('---')) del++;
+            }
+            detail = add || del ? `Diff +${add} −${del}` : 'Edited';
+        }
+
+        const list = this._agentRunSummary.fileChanges;
+        const idx = list.findIndex(c => c.path === path);
+        const entry = { path, tool: name, detail };
+        if (idx >= 0) list[idx] = entry;
+        else list.push(entry);
+    }
+
+    _formatRunDuration(seconds) {
+        const s = Math.max(0, Math.floor(seconds || 0));
+        if (s < 60) return `${s}s`;
+        const m = Math.floor(s / 60);
+        const r = s % 60;
+        return r ? `${m}m ${r}s` : `${m}m`;
+    }
+
+    _renderAgentRunCompleteCard(totalElapsed, totalSteps) {
+        const summary = this._agentRunSummary || { title: '', fileChanges: [], todos: null };
+        const title = summary.title || 'Agent task';
+        const n = Math.max(0, Math.floor(totalSteps || 0));
+        const files = summary.fileChanges || [];
+        const td = summary.todos;
+        let progressLabel;
+        if (td && td.total > 0) {
+            progressLabel = `${td.done} of ${td.total} to-dos completed`;
+        } else if (n > 0) {
+            progressLabel = `${n} agent step${n === 1 ? '' : 's'}`;
+        } else {
+            progressLabel = 'Completed';
+        }
+
+        const el = document.createElement('div');
+        el.className = 'agent-run-card';
+
+        const changesHtml = files.length
+            ? `<ol class="agent-changes-list">${files.map((c) => `
+                <li class="agent-change-item">
+                    <code class="agent-file-path" title="${this.escapeHtml(c.path)}">${this.escapeHtml(this.shortenPath(c.path))}</code>
+                    <span class="agent-change-detail">${this.escapeHtml(c.detail || '')}</span>
+                </li>`).join('')}
+            </ol>`
+            : '';
+
+        el.innerHTML = `
+            <div class="agent-run-card-inner">
+                <div class="agent-run-kicker">Build</div>
+                <div class="agent-run-title">${this.escapeHtml(title)}</div>
+                <div class="agent-todo-strip">
+                    <span class="agent-todo-check" aria-hidden="true">✓</span>
+                    <span class="agent-todo-text">${this.escapeHtml(progressLabel)}</span>
+                </div>
+                <p class="agent-run-blurb">Worked for ${this._formatRunDuration(totalElapsed)}.${files.length ? ' Edits below.' : ''}</p>
+                ${files.length ? `<div class="agent-changes-heading">Summary of changes</div>${changesHtml}` : ''}
+                <div class="agent-run-actions">
+                    <button type="button" class="agent-run-btn agent-run-btn-primary" data-agent-run-action="review">Review</button>
+                    <button type="button" class="agent-run-btn" data-agent-run-action="commit" disabled title="Not wired yet">Create branch &amp; commit</button>
+                </div>
+            </div>
+        `;
+
+        const reviewBtn = el.querySelector('[data-agent-run-action="review"]');
+        if (reviewBtn) {
+            reviewBtn.addEventListener('click', () => {
+                const gitBadge = document.getElementById('git-badge');
+                if (gitBadge && gitBadge.style.display !== 'none') gitBadge.click();
+                else this.showStatusMessage('Use the git status control in the header when available.');
+            });
+        }
+
+        this.chatMessages.appendChild(el);
+        this._removeLiveAgentTodoStrip();
+    }
+
     handleSessionEnd(event) {
         this.removeThinking();
+        this._removeLiveAgentTodoStrip();
 
         // Clear terminal bar
         this.clearTerminals();
@@ -3515,7 +3935,20 @@ class ResonantApp {
         const totalElapsed = event.total_elapsed || 0;
         const totalSteps = event.total_steps || 0;
 
-        if (totalSteps > 1) {
+        const fileCount = (this._agentRunSummary && this._agentRunSummary.fileChanges)
+            ? this._agentRunSummary.fileChanges.length
+            : 0;
+        const todoTotal = (this._agentRunSummary && this._agentRunSummary.todos)
+            ? (this._agentRunSummary.todos.total || 0)
+            : 0;
+        const showRunCard = this.currentSessionMode !== 'chat' && (
+            totalSteps >= 1 || fileCount > 0 || todoTotal > 0
+        );
+
+        if (showRunCard) {
+            const stepsForCard = totalSteps > 0 ? totalSteps : (fileCount > 0 ? 1 : 0);
+            this._renderAgentRunCompleteCard(totalElapsed, stepsForCard);
+        } else if (totalSteps > 1) {
             const el = document.createElement('div');
             el.className = 'session-end';
             el.innerHTML = `<span class="check">✓</span> Done · ${totalSteps} steps · ${totalElapsed.toFixed(1)}s`;
@@ -3523,12 +3956,43 @@ class ResonantApp {
         }
 
         this.setRunning(false);
+
+        // Follow-up chips (Agent mode only, not during replay)
+        if (!this.isReplaying && this.currentSessionMode !== 'chat') {
+            this._renderFollowUpChips();
+        }
+
         this.scrollToBottom();
 
         // Refresh git status after session (files may have changed)
         if (!this.isReplaying) {
             this.requestGitStatus();
         }
+    }
+
+    _renderFollowUpChips() {
+        const suggestions = [];
+        const fc = (this._agentRunSummary && this._agentRunSummary.fileChanges) || [];
+        if (fc.length > 0) {
+            suggestions.push('Run tests');
+            suggestions.push('Explain the changes');
+        }
+        suggestions.push('Continue');
+        if (!suggestions.length) return;
+
+        const el = document.createElement('div');
+        el.className = 'follow-up-chips';
+        el.innerHTML = suggestions.map(s =>
+            `<button class="follow-up-chip">${this.escapeHtml(s)}</button>`
+        ).join('');
+        el.querySelectorAll('.follow-up-chip').forEach(btn => {
+            btn.addEventListener('click', () => {
+                el.remove();
+                this.userInput.value = btn.textContent;
+                this.sendMessage();
+            });
+        });
+        this.chatMessages.appendChild(el);
     }
 
     // ── Subagents ───────────────────────────────────────────────
@@ -3760,7 +4224,21 @@ class ResonantApp {
     addAssistantMessage() {
         const el = document.createElement('div');
         el.className = 'msg-assistant';
-        el.innerHTML = `<div class="message-content streaming-cursor"></div>`;
+        el.innerHTML = `
+            <div class="message-content streaming-cursor"></div>
+            <div class="msg-actions">
+                <button class="msg-action-btn" data-action="copy" title="Copy to clipboard">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4" y="4" width="8" height="8" rx="1.2" stroke="currentColor" stroke-width="1.1"/><path d="M10 4V2.8A.8.8 0 009.2 2H2.8a.8.8 0 00-.8.8v6.4a.8.8 0 00.8.8H4" stroke="currentColor" stroke-width="1.1"/></svg>
+                </button>
+            </div>
+        `;
+        el.querySelector('[data-action="copy"]').addEventListener('click', () => {
+            const text = el.querySelector('.message-content')?.textContent || '';
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = el.querySelector('[data-action="copy"]');
+                if (btn) { btn.innerHTML = '\u2713'; setTimeout(() => { btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4" y="4" width="8" height="8" rx="1.2" stroke="currentColor" stroke-width="1.1"/><path d="M10 4V2.8A.8.8 0 009.2 2H2.8a.8.8 0 00-.8.8v6.4a.8.8 0 00.8.8H4" stroke="currentColor" stroke-width="1.1"/></svg>'; }, 1500); }
+            });
+        });
         this.getRenderTarget().appendChild(el);
         return el;
     }
@@ -3799,7 +4277,15 @@ class ResonantApp {
     scrollToBottom() {
         requestAnimationFrame(() => {
             this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+            this._syncChatScrollEndBtn();
         });
+    }
+
+    _syncChatScrollEndBtn() {
+        if (!this.chatScrollEndBtn || !this.chatContainer) return;
+        const el = this.chatContainer;
+        const room = el.scrollHeight - el.scrollTop - el.clientHeight;
+        this.chatScrollEndBtn.style.display = room < 120 ? 'none' : 'flex';
     }
 
     // ── Session Replay ──────────────────────────────────────────
@@ -3834,6 +4320,7 @@ class ResonantApp {
         ]);
 
         this.isReplaying = true;
+        this._agentRunSummary = { title: '', fileChanges: [], todos: null };
         try {
             for (const event of events) {
                 const type = event.event;
@@ -3842,6 +4329,7 @@ class ResonantApp {
             if (SKIP_REPLAY.has(type)) continue;
 
             if (type === 'user_message') {
+                this._resetAgentRunSummary(event.text || '');
                 // Replay user message bubble
                 this.addUserMessage(event.text);
                 continue;
@@ -3864,6 +4352,8 @@ class ResonantApp {
                 this.handleStepEnd(event);
             } else if (type === 'session.end') {
                 this.handleSessionEnd(event);
+            } else if (type === 'todos.updated') {
+                this.handleTodosUpdated(event);
             } else if (type === 'subagent.start') {
                 this.handleSubagentStart(event);
             } else if (type === 'subagent.end') {
@@ -3953,7 +4443,7 @@ class ResonantApp {
         if (!this.sessionList) return;
         let html = '';
         for (let i = 0; i < 5; i++) {
-            html += '<div class="session-skeleton"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>';
+            html += '<div class="agent-skeleton"><div class="skeleton-line"></div><div class="skeleton-line"></div></div>';
         }
         this.sessionList.innerHTML = html;
     }
@@ -3963,46 +4453,52 @@ class ResonantApp {
         this.sessionList.innerHTML = '';
 
         if (this.sessions.length === 0) {
-            this.sessionList.innerHTML = '<div class="session-empty">No previous sessions</div>';
+            this.sessionList.innerHTML = '<div class="agent-empty">No agents yet</div>';
             return;
         }
 
         for (const session of this.sessions) {
             const el = document.createElement('div');
-            el.className = 'session-item' + (session.id === this.currentSessionId ? ' active' : '');
+            el.className = 'agent-row' + (session.id === this.currentSessionId ? ' active' : '');
+            el.setAttribute('role', 'button');
+            el.setAttribute('tabindex', '0');
+            el.dataset.sessionId = session.id;
 
             const date = new Date(session.updated_at * 1000);
             const timeStr = this.formatRelativeTime(date);
 
-            // Show project name when viewing all projects or a different project
             const showProject = this.projectFilter === 'all' || (this.projectFilter && this.projectFilter !== this.currentCwd);
             const projectTag = showProject && session.project_name
-                ? `<span class="session-project-tag">${this.escapeHtml(session.project_name)}</span> · `
+                ? `<span class="session-project-tag">${this.escapeHtml(session.project_name)}</span> \u00B7 `
                 : '';
             const roleTag = session.session_mode === 'chat'
                 ? ''
-                : `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role || 'generator'))}</span> · `;
+                : `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role || 'generator'))}</span> \u00B7 `;
 
             el.innerHTML = `
-                <div class="session-item-title">${this.escapeHtml(session.title || 'New session')}</div>
-                <div class="session-item-date">${projectTag}${roleTag}${session.model || ''} · ${timeStr}</div>
-                <div class="session-item-actions">
-                    <button class="session-menu-btn" title="More actions">&#8943;</button>
+                <div class="agent-row-title">${this.escapeHtml(session.title || 'New agent')}</div>
+                <div class="agent-row-date">${projectTag}${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
+                <div class="agent-row-actions">
+                    <button class="agent-menu-btn" title="More actions">&#8943;</button>
                 </div>
             `;
 
-            // Click to switch session (include project_path for cross-project sessions)
-            el.addEventListener('click', (e) => {
-                if (e.target.closest('.session-menu-btn')) return; // handled below
+            const switchToSession = (e) => {
+                if (e && e.target && e.target.closest('.agent-menu-btn')) return;
                 if (session.id !== this.currentSessionId) {
+                    el.style.opacity = '0.6';
                     const msg = { command: 'switch_session', session_id: session.id };
                     if (session.project_path) msg.project_path = session.project_path;
                     this.send(msg);
                 }
+            };
+            el.addEventListener('click', switchToSession);
+            el.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchToSession(); }
             });
 
             // Context menu button (three dots)
-            el.querySelector('.session-menu-btn').addEventListener('click', (e) => {
+            el.querySelector('.agent-menu-btn').addEventListener('click', (e) => {
                 e.stopPropagation();
                 this.showSessionContextMenu(e, session);
             });
@@ -4075,12 +4571,12 @@ class ResonantApp {
         const nameEl = document.getElementById('pf-selected-name');
         if (!nameEl) return;
         if (this.projectFilter === 'all') {
-            nameEl.textContent = 'All Projects';
+            nameEl.textContent = 'All workspaces';
         } else if (this.projectFilter) {
             const name = this.projectFilter.replace(/\\/g, '/').split('/').pop();
             nameEl.textContent = name;
         } else {
-            const name = (this.currentCwd || '').split('/').pop() || 'Current Project';
+            const name = (this.currentCwd || '').split('/').pop() || 'Current workspace';
             nameEl.textContent = name;
         }
     }
@@ -4093,10 +4589,10 @@ class ResonantApp {
         const currentPath = (this.currentCwd || '').replace(/\\/g, '/');
 
         // "All Projects" option (always first)
-        if (!filter || 'all projects'.includes(filter)) {
+        if (!filter || 'all workspaces'.includes(filter)) {
             const opt = document.createElement('div');
             opt.className = 'pf-option' + (this.projectFilter === 'all' ? ' active' : '');
-            opt.innerHTML = `<span class="pf-opt-name">All Projects</span><span class="pf-opt-count">${this.allSessions.length}</span>`;
+            opt.innerHTML = `<span class="pf-opt-name">All workspaces</span><span class="pf-opt-count">${this.allSessions.length}</span>`;
             opt.addEventListener('click', () => this._selectProjectFilter('all'));
             container.appendChild(opt);
         }
@@ -4136,36 +4632,137 @@ class ResonantApp {
     }
 
     renderFilteredSessions() {
-        let sessionsToShow;
-        if (this.projectFilter === 'all') {
-            sessionsToShow = this.allSessions;
-        } else if (this.projectFilter) {
-            // Specific project path
-            const norm = this.projectFilter.replace(/\\/g, '/').toLowerCase();
-            sessionsToShow = this.allSessions.filter(s =>
-                (s.project_path || '').replace(/\\/g, '/').toLowerCase() === norm
-            );
-        } else {
-            // Current project (default)
-            sessionsToShow = this.sessions;
-        }
+        const allSessions = this.allSessions && this.allSessions.length
+            ? this.allSessions
+            : this.sessions;
 
-        // Filter by session mode (Chat vs Code tab)
-        sessionsToShow = sessionsToShow.filter(s =>
-            (s.session_mode || 'code') === this.sessionMode
+        const modeFilter = this.sessionMode || 'code';
+        const sessionsToShow = allSessions.filter(s =>
+            (s.session_mode || 'code') === modeFilter
         );
 
-        // Chat mode: render grouped sidebar
+        // Chat mode: render grouped sidebar (existing)
         if (this.sessionMode === 'chat') {
             this.renderChatSidebar(sessionsToShow);
             return;
         }
 
-        // Code mode: flat list
-        const saved = this.sessions;
-        this.sessions = sessionsToShow;
-        this.renderSessionList();
-        this.sessions = saved;
+        // Apply search filter
+        const searchVal = (document.getElementById('search-input')?.value || '').toLowerCase().trim();
+        const filtered = searchVal
+            ? sessionsToShow.filter(s => (s.title || '').toLowerCase().includes(searchVal))
+            : sessionsToShow;
+
+        // Code mode: project tree
+        this._renderProjectTree(filtered);
+    }
+
+    _renderProjectTree(sessions) {
+        if (!this.sessionList) return;
+        this.sessionList.innerHTML = '';
+
+        if (!sessions.length) {
+            this.sessionList.innerHTML = '<div class="agent-empty">No agents yet</div>';
+            return;
+        }
+
+        // Group by project
+        const projectMap = new Map();
+        for (const s of sessions) {
+            const path = (s.project_path || this.currentCwd || '').replace(/\\/g, '/');
+            const name = s.project_name || path.split('/').pop() || 'Unknown';
+            if (!projectMap.has(path)) {
+                projectMap.set(path, { name, path, sessions: [] });
+            }
+            projectMap.get(path).sessions.push(s);
+        }
+
+        // Track expanded state (default: current project expanded, others collapsed)
+        if (!this._expandedProjects) this._expandedProjects = new Set();
+        const curPath = (this.currentCwd || '').replace(/\\/g, '/');
+        if (!this._expandedProjectsInited) {
+            this._expandedProjects.add(curPath);
+            this._expandedProjectsInited = true;
+        }
+
+        for (const [path, proj] of projectMap) {
+            const isExpanded = this._expandedProjects.has(path);
+            const isCurrent = path === curPath;
+
+            const header = document.createElement('div');
+            header.className = 'proj-tree-header' + (isCurrent ? ' current' : '');
+            header.innerHTML = `
+                <span class="proj-tree-chevron">${isExpanded ? '\u25BE' : '\u25B8'}</span>
+                <span class="proj-tree-name">${this.escapeHtml(proj.name)}</span>
+                <span class="proj-tree-count">${proj.sessions.length}</span>
+            `;
+            header.addEventListener('click', () => {
+                if (this._expandedProjects.has(path)) {
+                    this._expandedProjects.delete(path);
+                } else {
+                    this._expandedProjects.add(path);
+                }
+                this.renderFilteredSessions();
+            });
+            this.sessionList.appendChild(header);
+
+            if (isExpanded) {
+                const container = document.createElement('div');
+                container.className = 'proj-tree-sessions';
+                for (const session of proj.sessions) {
+                    container.appendChild(this._createTreeSessionRow(session));
+                }
+                this.sessionList.appendChild(container);
+            }
+        }
+    }
+
+    _createTreeSessionRow(session) {
+        const el = document.createElement('div');
+        el.className = 'agent-row' + (session.id === this.currentSessionId ? ' active' : '');
+        el.setAttribute('role', 'button');
+        el.setAttribute('tabindex', '0');
+        el.dataset.sessionId = session.id;
+
+        const date = new Date(session.updated_at * 1000);
+        const timeStr = this.formatRelativeTime(date);
+        const roleTag = session.session_role && session.session_role !== 'generator'
+            ? `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role))}</span> \u00B7 `
+            : '';
+
+        el.innerHTML = `
+            <div class="agent-row-title">${this.escapeHtml(session.title || 'New session')}</div>
+            <div class="agent-row-date">${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
+            <div class="agent-row-actions">
+                <button class="agent-menu-btn" title="More actions">&#8943;</button>
+            </div>
+        `;
+
+        const switchToSession = (e) => {
+            if (e && e.target && e.target.closest('.agent-menu-btn')) return;
+            if (session.id !== this.currentSessionId) {
+                el.style.opacity = '0.6';
+                const msg = { command: 'switch_session', session_id: session.id };
+                if (session.project_path) msg.project_path = session.project_path;
+                this.send(msg);
+            }
+        };
+        el.addEventListener('click', switchToSession);
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchToSession(); }
+        });
+
+        el.querySelector('.agent-menu-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.showSessionContextMenu(e, session);
+        });
+
+        el.addEventListener('contextmenu', (e) => {
+            e.preventDefault();
+            this.showSessionContextMenu(e, session);
+        });
+
+        return el;
     }
 
     // ── Chat Sidebar (grouped sessions) ────────────────────────
@@ -4175,7 +4772,7 @@ class ResonantApp {
         this.sessionList.innerHTML = '';
 
         if (sessions.length === 0 && this.chatGroups.length === 0) {
-            this.sessionList.innerHTML = '<div class="session-empty">No chat sessions</div>';
+            this.sessionList.innerHTML = '<div class="agent-empty">No ask-mode agents</div>';
             return;
         }
 
@@ -4252,32 +4849,40 @@ class ResonantApp {
 
     _createChatSessionItem(session) {
         const el = document.createElement('div');
-        el.className = 'session-item' + (session.id === this.currentSessionId ? ' active' : '');
+        el.className = 'agent-row' + (session.id === this.currentSessionId ? ' active' : '');
+        el.setAttribute('role', 'button');
+        el.setAttribute('tabindex', '0');
+        el.dataset.sessionId = session.id;
 
         const date = new Date(session.updated_at * 1000);
         const timeStr = this.formatRelativeTime(date);
         const roleTag = session.session_mode === 'chat'
             ? ''
-            : `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role || 'generator'))}</span> · `;
+            : `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role || 'generator'))}</span> \u00B7 `;
 
         el.innerHTML = `
-            <div class="session-item-title">${this.escapeHtml(session.title || 'New session')}</div>
-            <div class="session-item-date">${roleTag}${session.model || ''} · ${timeStr}</div>
-            <div class="session-item-actions">
-                <button class="session-menu-btn" title="More actions">&#8943;</button>
+            <div class="agent-row-title">${this.escapeHtml(session.title || 'New agent')}</div>
+            <div class="agent-row-date">${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
+            <div class="agent-row-actions">
+                <button class="agent-menu-btn" title="More actions">&#8943;</button>
             </div>
         `;
 
-        el.addEventListener('click', (e) => {
-            if (e.target.closest('.session-menu-btn')) return;
+        const switchToSession = (e) => {
+            if (e && e.target && e.target.closest('.agent-menu-btn')) return;
             if (session.id !== this.currentSessionId) {
+                el.style.opacity = '0.6';
                 const msg = { command: 'switch_session', session_id: session.id };
                 if (session.project_path) msg.project_path = session.project_path;
                 this.send(msg);
             }
+        };
+        el.addEventListener('click', switchToSession);
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchToSession(); }
         });
 
-        el.querySelector('.session-menu-btn').addEventListener('click', (e) => {
+        el.querySelector('.agent-menu-btn').addEventListener('click', (e) => {
             e.stopPropagation();
             this.showChatSessionContextMenu(e, session);
         });
@@ -4286,10 +4891,10 @@ class ResonantApp {
     }
 
     showGroupContextMenu(e, groupName) {
-        document.querySelector('.session-context-menu')?.remove();
+        document.querySelector('.agent-context-menu')?.remove();
 
         const menu = document.createElement('div');
-        menu.className = 'session-context-menu';
+        menu.className = 'agent-context-menu';
         menu.innerHTML = `
             <div class="ctx-item" data-action="rename">&#9998; Rename</div>
             <div class="ctx-separator"></div>
@@ -4319,10 +4924,10 @@ class ResonantApp {
     }
 
     showChatSessionContextMenu(e, session) {
-        document.querySelector('.session-context-menu')?.remove();
+        document.querySelector('.agent-context-menu')?.remove();
 
         const menu = document.createElement('div');
-        menu.className = 'session-context-menu';
+        menu.className = 'agent-context-menu';
 
         // Build group submenu items
         const groupItems = this.chatGroups.map(g =>
@@ -4348,7 +4953,7 @@ class ResonantApp {
             if (!item) return;
             const action = item.dataset.action;
             if (action === 'rename') {
-                const newTitle = prompt('Rename session:', session.title);
+                const newTitle = prompt('Rename agent:', session.title);
                 if (newTitle && newTitle.trim()) {
                     this.send({ command: 'rename_session', session_id: session.id, title: newTitle.trim() });
                 }
@@ -4371,10 +4976,10 @@ class ResonantApp {
 
     showSessionContextMenu(e, session) {
         // Remove any existing menu
-        document.querySelector('.session-context-menu')?.remove();
+        document.querySelector('.agent-context-menu')?.remove();
 
         const menu = document.createElement('div');
-        menu.className = 'session-context-menu';
+        menu.className = 'agent-context-menu';
 
         menu.innerHTML = `
             <div class="ctx-item" data-action="rename">&#9998; Rename</div>
@@ -4392,7 +4997,7 @@ class ResonantApp {
             if (action === 'delete') {
                 this.send({ command: 'delete_session', session_id: session.id });
             } else if (action === 'rename') {
-                const newTitle = prompt('Rename session:', session.title);
+                const newTitle = prompt('Rename agent:', session.title);
                 if (newTitle && newTitle.trim()) {
                     this.send({ command: 'rename_session', session_id: session.id, title: newTitle.trim() });
                 }
@@ -4430,7 +5035,8 @@ class ResonantApp {
     showNewSessionSetup() {
         // Hide all main views
         this.welcomeScreen.style.display = 'none';
-        this.chatContainer.style.display = 'none';
+        if (this.agentPanel) this.agentPanel.style.display = 'none';
+        else this.chatContainer.style.display = 'none';
         this.inputBar.style.display = 'none';
         const chatWelcome = document.getElementById('chat-welcome-screen');
         if (chatWelcome) chatWelcome.style.display = 'none';
@@ -4445,18 +5051,18 @@ class ResonantApp {
                 this._populateChatWelcomeModels();
                 document.getElementById('chat-welcome-textarea')?.focus();
             }
-            this.currentView = 'chat';
-            document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
-                el.classList.toggle('active', el.dataset.view === 'chat'));
+            this.currentView = 'agents';
+            document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(el =>
+                el.classList.toggle('active', el.dataset.view === 'agents'));
             return;
         }
 
         // Code mode: show project picker
         this.welcomeScreen.style.display = 'flex';
         // Update nav
-        this.currentView = 'chat';
-        document.querySelectorAll('.sidebar-nav-item[data-view]').forEach(el =>
-            el.classList.toggle('active', el.dataset.view === 'chat'));
+        this.currentView = 'agents';
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(el =>
+            el.classList.toggle('active', el.dataset.view === 'agents'));
 
         // Clear and close preview panel for new session
         this.clearPreviewPanel();
@@ -4889,17 +5495,17 @@ class ResonantApp {
 
         main.innerHTML = `
             <div class="cmd-new-project">
-                <h2>New Project</h2>
-                <div class="cmd-subtitle">Set a high-level strategy and launch an AI coordinator to orchestrate the work.</div>
+                <h2>New workspace</h2>
+                <div class="cmd-subtitle">Define a goal and launch a coordinator to run agents across this workspace.</div>
 
                 <div class="cmd-form-group">
-                    <label>Project Path</label>
-                    <input type="text" class="settings-input" id="cmd-project-path" value="${this.escapeHtml(currentPath)}" placeholder="/path/to/your/project" />
+                    <label>Workspace path</label>
+                    <input type="text" class="settings-input" id="cmd-project-path" value="${this.escapeHtml(currentPath)}" placeholder="/path/to/repo" />
                 </div>
 
                 <div class="cmd-form-group">
-                    <label>Project Name</label>
-                    <input type="text" class="settings-input" id="cmd-project-name" placeholder="e.g., Auth System Refactor" />
+                    <label>Workspace name</label>
+                    <input type="text" class="settings-input" id="cmd-project-name" placeholder="e.g. Auth refactor" />
                 </div>
 
                 <div class="cmd-form-group">
@@ -5024,7 +5630,7 @@ class ResonantApp {
                     </div>
                 </div>
                 <div class="project-dash-tabs">
-                    <button class="project-dash-tab ${dashTab === 'chat' ? 'active' : ''}" data-tab="chat">Chat</button>
+                    <button class="project-dash-tab ${dashTab === 'chat' ? 'active' : ''}" data-tab="chat">Coordinator</button>
                     <button class="project-dash-tab ${dashTab === 'plan' ? 'active' : ''}" data-tab="plan">Plan</button>
                     <button class="project-dash-tab ${dashTab === 'agents' ? 'active' : ''}" data-tab="agents">Agents</button>
                     <button class="project-dash-tab ${dashTab === 'activity' ? 'active' : ''}" data-tab="activity">Activity</button>
@@ -5082,8 +5688,8 @@ class ResonantApp {
                     ${history.length === 0 ? `
                         <div class="project-chat-welcome">
                             <div class="project-chat-welcome-icon">🤖</div>
-                            <h3>Project Coordinator</h3>
-                            <p>Chat with the AI coordinator for this project. You can ask it to:</p>
+                            <h3>Coordinator</h3>
+                            <p>Message the workspace coordinator. You can ask it to:</p>
                             <ul>
                                 <li>Break down the strategy into tasks</li>
                                 <li>Spawn worker agents for specific tasks</li>
@@ -5455,7 +6061,7 @@ class ResonantApp {
 
         content.innerHTML = `
             <div class="spawn-agent-form">
-                <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">Add Role to Org Chart</h3>
+                <h3 class="cmd-dialog-title">Add Role to Org Chart</h3>
                 <div class="settings-row"><label>Role</label>
                     <input type="text" class="settings-input" id="org-role-name" placeholder="e.g., Backend Developer" /></div>
                 <div class="settings-row"><label>Description</label>
@@ -5513,7 +6119,7 @@ class ResonantApp {
 
         content.innerHTML = `
             <div class="spawn-agent-form">
-                <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">Edit Role: ${this.escapeHtml(node.role)}</h3>
+                <h3 class="cmd-dialog-title">Edit Role: ${this.escapeHtml(node.role)}</h3>
                 <div class="settings-row"><label>Role</label>
                     <input type="text" class="settings-input" id="org-edit-name" value="${this.escapeHtml(node.role)}" /></div>
                 <div class="settings-row"><label>Description</label>
@@ -5563,7 +6169,7 @@ class ResonantApp {
         el.innerHTML = `
             <div class="results-panel">
                 <div class="results-header">
-                    <h3 style="margin:0;font-size:15px;color:var(--text)">Generated Files</h3>
+                    <h3 class="cmd-dialog-title" style="margin-bottom:0">Generated Files</h3>
                     <div class="results-actions">
                         <button class="btn-primary btn-sm" id="results-preview-btn">▶ Preview in Browser</button>
                         <button class="btn-sm" id="results-refresh-btn">↻ Refresh</button>
@@ -5726,7 +6332,7 @@ class ResonantApp {
 
         panel.innerHTML = `
             <div class="spawn-agent-form">
-                <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">Spawn New Agent</h3>
+                <h3 class="cmd-dialog-title">Spawn New Agent</h3>
                 <div class="settings-row"><label>Name</label>
                     <input type="text" class="settings-input" id="spawn-name" placeholder="Agent name (optional)" /></div>
                 <div class="settings-row"><label>Prompt</label>
@@ -5822,7 +6428,7 @@ class ResonantApp {
 
         panel.innerHTML = `
             <div class="spawn-agent-form">
-                <h3 style="margin:0 0 16px;font-size:16px;color:var(--text)">Create Task</h3>
+                <h3 class="cmd-dialog-title">Create Task</h3>
                 <div class="settings-row"><label>Title</label>
                     <input type="text" class="settings-input" id="task-title" placeholder="Task title" /></div>
                 <div class="settings-row"><label>Description</label>
@@ -6072,7 +6678,7 @@ class ResonantApp {
             body.innerHTML = `
                 <div class="feature-empty">
                     <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M16 4v16M10 14l6 6 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 22v4h24v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    <span>No dispatched tasks yet.</span>
+                    <span>No background agents yet.</span>
                 </div>`;
             return;
         }
@@ -6125,7 +6731,7 @@ class ResonantApp {
                     <input type="text" class="settings-input" id="dispatch-name" placeholder="Task name (optional)" /></div>
                 <div class="settings-row"><label>Prompt</label>
                     <textarea class="settings-input" id="dispatch-prompt" rows="4" placeholder="What should the agent do?"></textarea></div>
-                <div style="display:flex;gap:8px;margin-top:12px">
+                <div class="dispatch-form-actions">
                     <button class="btn-primary btn-sm" id="dispatch-submit-btn">Submit</button>
                     <button class="btn-sm" id="dispatch-cancel-btn">Cancel</button>
                 </div>
@@ -6159,13 +6765,13 @@ class ResonantApp {
             body.innerHTML = `
                 <div class="feature-empty">
                     <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="1.5"/><path d="M16 8v9l6 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>No scheduled tasks yet.</span>
+                    <span>No automations yet.</span>
                 </div>`;
             return;
         }
 
         body.innerHTML = schedules.map(s => {
-            const statusDot = s.enabled ? '<span style="color:var(--ok)">●</span>' : '<span style="color:var(--muted)">○</span>';
+            const statusDot = s.enabled ? '<span class="schedule-dot-on">\u25CF</span>' : '<span class="schedule-dot-off">\u25CB</span>';
             const taskKind = s.task_kind === 'harness_cycle' ? 'harness cycle' : 'session';
             const metaSuffix = s.task_kind === 'harness_cycle'
                 ? `${taskKind} · loops:${s.max_loops || 6}`
@@ -6212,7 +6818,7 @@ class ResonantApp {
                     <input type="text" class="settings-input" id="schedule-interval" placeholder="every:5m, every:1h, every:30s" /></div>
                 <div class="settings-row" id="schedule-max-loops-row"><label>Max Loops</label>
                     <input type="number" min="1" class="settings-input" id="schedule-max-loops" value="6" /></div>
-                <div style="display:flex;gap:8px;margin-top:12px">
+                <div class="dispatch-form-actions">
                     <button class="btn-primary btn-sm" id="schedule-submit-btn">Create</button>
                     <button class="btn-sm" id="schedule-cancel-btn">Cancel</button>
                 </div>

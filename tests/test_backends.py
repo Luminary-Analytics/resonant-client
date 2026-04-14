@@ -704,6 +704,20 @@ class TestOllamaBackendInit:
     def test_cache_is_class_level_dict(self):
         assert isinstance(OllamaBackend._tool_support_cache, dict)
 
+    @pytest.mark.unit
+    def test_ollama_options_from_env(self, monkeypatch):
+        monkeypatch.setenv("RESONANT_OLLAMA_NUM_CTX", "131072")
+        monkeypatch.setenv("RESONANT_OLLAMA_NUM_BATCH", "1024")
+        monkeypatch.setenv("RESONANT_OLLAMA_NUM_GPU", "1")
+        monkeypatch.setenv("RESONANT_OLLAMA_KEEP_ALIVE", "24h")
+        monkeypatch.setenv("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
+        b = OllamaBackend("http://127.0.0.1:11434", "qwen2.5-coder")
+        assert b._ollama_options["num_ctx"] == 131072
+        assert b._ollama_options["num_batch"] == 1024
+        assert b._ollama_options["num_gpu"] == 1
+        assert b._ollama_keep_alive == "24h"
+        assert b._ollama_http_read_timeout == 300.0
+
 
 # ---------------------------------------------------------------------------
 # Edge cases / adversarial

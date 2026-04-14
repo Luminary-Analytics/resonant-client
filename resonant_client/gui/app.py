@@ -4411,6 +4411,12 @@ class AppState:
                 models = [m["name"] for m in data.get("models", [])
                           if not any(kw in m["name"].lower()
                                      for kw in ("embed", "bert", "bge", "nomic"))]
+                # Append cloud models that aren't already pulled locally
+                from ..backends import OllamaBackend
+                local_set = {m.lower() for m in models}
+                for cloud in OllamaBackend.CLOUD_MODELS:
+                    if cloud.lower() not in local_set:
+                        models.append(cloud)
                 if models:
                     return "ollama", {"url": ollama_url, "models": models}
             except Exception:
@@ -4536,6 +4542,14 @@ class AppState:
                 "models": list(MLXBackend.MODELS),
                 "local_root": mlx_root,
             }
+
+        # Append Ollama cloud models that aren't already in the local list
+        if "ollama" in available:
+            from ..backends import OllamaBackend
+            existing = {m.lower() for m in available["ollama"].get("models", [])}
+            for cloud_model in OllamaBackend.CLOUD_MODELS:
+                if cloud_model.lower() not in existing:
+                    available["ollama"]["models"].append(cloud_model)
 
         self.available_backends = available
         return available

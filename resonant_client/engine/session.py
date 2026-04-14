@@ -103,7 +103,8 @@ RULES:
 4. After gathering info, provide a clear summary of what you found.
 5. bash is non-interactive (no stdin, no servers, no REPLs, no interactive games). Commands have a timeout.
 6. Prefer file_edit over file_write for existing files.
-7. When asked to evaluate/review code, READ the actual files first.{project_block}"""
+7. When asked to evaluate/review code, READ the actual files first.
+8. For multi-step work, track progress with a markdown task list the UI can parse, e.g. `- [ ] First step` then `- [x] First step` when done.{project_block}"""
 
 
 # ── Choices Parser ─────────────────────────────────────────────────────
@@ -133,6 +134,27 @@ def parse_choices(text: str) -> tuple:
         return (text, None, None)
 
     return (before, options, after)
+
+
+# Markdown task list lines: `- [ ] Todo` / `- [x] Done` (also `*` bullets)
+_MARKDOWN_TODO_LINE = re.compile(r"^\s*[-*]\s*\[([ xX])\]\s*(.+?)\s*$")
+
+
+def parse_markdown_todos(text: str) -> list[dict] | None:
+    """Extract GitHub-style checkbox lines from model text.
+
+    Returns a list of {"text": str, "done": bool} or None if no task lines found.
+    """
+    items: list[dict] = []
+    for line in text.splitlines():
+        m = _MARKDOWN_TODO_LINE.match(line)
+        if not m:
+            continue
+        items.append({
+            "text": m.group(2).strip(),
+            "done": m.group(1).lower() == "x",
+        })
+    return items if items else None
 
 
 def strip_tool_call_tags(text: str) -> str:
@@ -478,6 +500,16 @@ class Session:
 
             if full_text:
                 yield make_event(EngineEvent.TEXT_DONE, text=full_text)
+
+                todo_items = parse_markdown_todos(full_text)
+                if todo_items:
+                    done_ct = sum(1 for t in todo_items if t.get("done"))
+                    yield make_event(
+                        EngineEvent.TODOS_UPDATED,
+                        todos=todo_items,
+                        done=done_ct,
+                        total=len(todo_items),
+                    )
 
                 # Check for choices
                 before, choices, after = parse_choices(full_text)
@@ -865,6 +897,7 @@ class Session:
                 EngineEvent.TOOL_RESULT.value,
                 EngineEvent.STEP_START.value,
                 EngineEvent.STEP_END.value,
+                EngineEvent.TODOS_UPDATED.value,
                 EngineEvent.ERROR.value,
             ):
                 yield event

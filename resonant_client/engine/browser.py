@@ -183,8 +183,23 @@ def exec_browser_click(args: dict, start: float) -> ToolResult:
 
     try:
         if text:
-            # Click by visible text (most natural for LLMs)
-            mgr.page.get_by_text(text, exact=False).first.click(timeout=5000)
+            clicked = False
+            for locator_fn in [
+                lambda: mgr.page.get_by_text(text, exact=False).first,
+                lambda: mgr.page.get_by_role("link", name=text).first,
+                lambda: mgr.page.get_by_role("button", name=text).first,
+                lambda: mgr.page.locator(f"a:has-text('{text}')").first,
+            ]:
+                try:
+                    loc = locator_fn()
+                    loc.click(timeout=3000)
+                    clicked = True
+                    break
+                except Exception:
+                    continue
+            if not clicked:
+                return ToolResult(f"Could not find clickable element with text: '{text}'",
+                                is_error=True, elapsed=time.time() - start)
             action = f"Clicked element with text: '{text}'"
         elif selector:
             mgr.page.click(selector, timeout=5000)
@@ -265,8 +280,12 @@ def exec_browser_read(args: dict, start: float) -> ToolResult:
             if len(content) > 15000:
                 content = content[:15000] + "\n... (truncated)"
         elif mode == "accessibility":
-            snapshot = mgr.page.accessibility.snapshot()
-            content = _format_accessibility_tree(snapshot) if snapshot else "(empty page)"
+            try:
+                snapshot = mgr.page.accessibility.snapshot()
+                content = _format_accessibility_tree(snapshot) if snapshot else "(empty page)"
+            except AttributeError:
+                content = mgr.page.inner_text("body", timeout=5000)
+                content = f"(accessibility API unavailable, falling back to text)\n{content}"
             if len(content) > 15000:
                 content = content[:15000] + "\n... (truncated)"
         else:

@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 READ_ONLY_TOOLS = frozenset({
     "file_read", "glob", "grep",
     "browser_read", "browser_screenshot", "browser_js",
+    "browser_scroll", "browser_hover", "browser_wait", "browser_back", "browser_tabs",
     "computer_screenshot",
 })
 

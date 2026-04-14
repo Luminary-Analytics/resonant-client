@@ -300,6 +300,136 @@ AGENT_TOOLS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_scroll",
+            "description": "Scroll the browser page up or down, or scroll a specific element into view.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down"],
+                        "description": "Scroll direction (default: down)"
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "description": "Pixels to scroll (default: 500)"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector of element to scroll into view (overrides direction/amount)"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_hover",
+            "description": "Hover over an element to reveal tooltips, dropdowns, or hidden content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Visible text of the element to hover"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector of the element to hover"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_select",
+            "description": "Select an option from a dropdown/select element.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector of the <select> element"
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Option value to select"
+                    },
+                    "label": {
+                        "type": "string",
+                        "description": "Visible label of the option to select (alternative to value)"
+                    }
+                },
+                "required": ["selector"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_wait",
+            "description": "Wait for a condition: a selector to appear, page navigation, or a fixed delay.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {
+                        "type": "string",
+                        "description": "CSS selector to wait for (waits until visible)"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Max wait time in milliseconds (default: 10000)"
+                    },
+                    "delay": {
+                        "type": "integer",
+                        "description": "Fixed delay in milliseconds (use when no selector — just pause)"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_back",
+            "description": "Navigate back in browser history.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_tabs",
+            "description": "List open browser tabs or switch to a specific tab.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "switch", "new", "close"],
+                        "description": "Action: list tabs, switch to tab by index, open new tab, or close current tab"
+                    },
+                    "index": {
+                        "type": "integer",
+                        "description": "Tab index to switch to (for 'switch' action)"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "URL to open in new tab (for 'new' action)"
+                    }
+                }
+            }
+        }
+    },
     # ── Desktop / Computer Use tools ─────────────────────────────────
     {
         "type": "function",
@@ -601,6 +731,12 @@ TOOL_ICONS = {
     "browser_read":       "◫",
     "browser_screenshot": "◰",
     "browser_js":         "⟐",
+    "browser_scroll":     "↕",
+    "browser_hover":      "◌",
+    "browser_select":     "☰",
+    "browser_wait":       "⏳",
+    "browser_back":       "◁",
+    "browser_tabs":       "⊞",
     # Desktop / Computer Use tools
     "computer_screenshot": "▣",
     "computer_click":      "◎",
@@ -693,6 +829,24 @@ def execute_tool(name: str, arguments: dict, cancel_event: Optional[threading.Ev
         elif name == "browser_js":
             from .browser import exec_browser_js
             return exec_browser_js(arguments, start)
+        elif name == "browser_scroll":
+            from .browser import exec_browser_scroll
+            return exec_browser_scroll(arguments, start)
+        elif name == "browser_hover":
+            from .browser import exec_browser_hover
+            return exec_browser_hover(arguments, start)
+        elif name == "browser_select":
+            from .browser import exec_browser_select
+            return exec_browser_select(arguments, start)
+        elif name == "browser_wait":
+            from .browser import exec_browser_wait
+            return exec_browser_wait(arguments, start)
+        elif name == "browser_back":
+            from .browser import exec_browser_back
+            return exec_browser_back(arguments, start)
+        elif name == "browser_tabs":
+            from .browser import exec_browser_tabs
+            return exec_browser_tabs(arguments, start)
         # Desktop / Computer Use tools
         elif name == "computer_screenshot":
             from .computer import exec_computer_screenshot

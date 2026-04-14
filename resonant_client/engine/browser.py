@@ -353,6 +353,200 @@ def exec_browser_js(args: dict, start: float) -> ToolResult:
         return ToolResult(f"JS error: {e}", is_error=True, elapsed=time.time() - start)
 
 
+def exec_browser_scroll(args: dict, start: float) -> ToolResult:
+    """Scroll the page or scroll an element into view."""
+    mgr = get_browser()
+    err = mgr.ensure_page()
+    if err:
+        return ToolResult(err, is_error=True, elapsed=time.time() - start)
+
+    selector = args.get("selector", "")
+    direction = args.get("direction", "down")
+    amount = args.get("amount", 500)
+
+    try:
+        if selector:
+            mgr.page.locator(selector).first.scroll_into_view_if_needed(timeout=5000)
+            action = f"Scrolled '{selector}' into view"
+        else:
+            delta = -amount if direction == "up" else amount
+            mgr.page.mouse.wheel(0, delta)
+            action = f"Scrolled {direction} {amount}px"
+
+        elapsed = time.time() - start
+        return ToolResult(action, elapsed=elapsed, metadata={"action": "scroll"})
+    except Exception as e:
+        return ToolResult(f"Scroll error: {e}", is_error=True, elapsed=time.time() - start)
+
+
+def exec_browser_hover(args: dict, start: float) -> ToolResult:
+    """Hover over an element to reveal tooltips or dropdowns."""
+    mgr = get_browser()
+    err = mgr.ensure_page()
+    if err:
+        return ToolResult(err, is_error=True, elapsed=time.time() - start)
+
+    text = args.get("text", "")
+    selector = args.get("selector", "")
+
+    try:
+        if text:
+            mgr.page.get_by_text(text, exact=False).first.hover(timeout=5000)
+            action = f"Hovered over element with text: '{text}'"
+        elif selector:
+            mgr.page.hover(selector, timeout=5000)
+            action = f"Hovered over: {selector}"
+        else:
+            return ToolResult("Error: provide 'text' or 'selector'",
+                            is_error=True, elapsed=time.time() - start)
+
+        elapsed = time.time() - start
+        return ToolResult(action, elapsed=elapsed, metadata={"action": "hover"})
+    except Exception as e:
+        return ToolResult(f"Hover error: {e}", is_error=True, elapsed=time.time() - start)
+
+
+def exec_browser_select(args: dict, start: float) -> ToolResult:
+    """Select an option from a dropdown."""
+    mgr = get_browser()
+    err = mgr.ensure_page()
+    if err:
+        return ToolResult(err, is_error=True, elapsed=time.time() - start)
+
+    selector = args.get("selector", "")
+    value = args.get("value", "")
+    label = args.get("label", "")
+
+    if not selector:
+        return ToolResult("Error: 'selector' is required", is_error=True, elapsed=time.time() - start)
+
+    try:
+        if label:
+            mgr.page.select_option(selector, label=label, timeout=5000)
+            action = f"Selected option with label '{label}' in {selector}"
+        elif value:
+            mgr.page.select_option(selector, value=value, timeout=5000)
+            action = f"Selected option with value '{value}' in {selector}"
+        else:
+            return ToolResult("Error: provide 'value' or 'label'",
+                            is_error=True, elapsed=time.time() - start)
+
+        elapsed = time.time() - start
+        return ToolResult(action, elapsed=elapsed, metadata={"action": "select"})
+    except Exception as e:
+        return ToolResult(f"Select error: {e}", is_error=True, elapsed=time.time() - start)
+
+
+def exec_browser_wait(args: dict, start: float) -> ToolResult:
+    """Wait for a selector to appear or a fixed delay."""
+    mgr = get_browser()
+    err = mgr.ensure_page()
+    if err:
+        return ToolResult(err, is_error=True, elapsed=time.time() - start)
+
+    selector = args.get("selector", "")
+    timeout = args.get("timeout", 10000)
+    delay = args.get("delay", 0)
+
+    try:
+        if selector:
+            mgr.page.wait_for_selector(selector, state="visible", timeout=timeout)
+            action = f"Element '{selector}' is now visible"
+        elif delay:
+            mgr.page.wait_for_timeout(min(delay, 30000))
+            action = f"Waited {delay}ms"
+        else:
+            mgr.page.wait_for_load_state("networkidle", timeout=timeout)
+            action = "Page reached network idle"
+
+        elapsed = time.time() - start
+        return ToolResult(action, elapsed=elapsed, metadata={"action": "wait"})
+    except Exception as e:
+        return ToolResult(f"Wait error: {e}", is_error=True, elapsed=time.time() - start)
+
+
+def exec_browser_back(args: dict, start: float) -> ToolResult:
+    """Navigate back in browser history."""
+    mgr = get_browser()
+    err = mgr.ensure_page()
+    if err:
+        return ToolResult(err, is_error=True, elapsed=time.time() - start)
+
+    try:
+        mgr.page.go_back(wait_until="domcontentloaded", timeout=10000)
+        url = mgr.page.url
+        title = mgr.page.title()
+        elapsed = time.time() - start
+        return ToolResult(
+            f"Navigated back to: {url}\nTitle: {title}",
+            elapsed=elapsed,
+            metadata={"url": url, "title": title},
+        )
+    except Exception as e:
+        return ToolResult(f"Back navigation error: {e}", is_error=True, elapsed=time.time() - start)
+
+
+def exec_browser_tabs(args: dict, start: float) -> ToolResult:
+    """List, switch, create, or close browser tabs."""
+    mgr = get_browser()
+    err = mgr.ensure_page()
+    if err and args.get("action") != "list":
+        return ToolResult(err, is_error=True, elapsed=time.time() - start)
+
+    action = args.get("action", "list")
+
+    try:
+        if not mgr._context:
+            return ToolResult("No browser context", is_error=True, elapsed=time.time() - start)
+
+        pages = mgr._context.pages
+
+        if action == "list":
+            lines = []
+            for i, p in enumerate(pages):
+                current = " (active)" if p == mgr._page else ""
+                lines.append(f"  [{i}] {p.url} — {p.title()}{current}")
+            elapsed = time.time() - start
+            return ToolResult(
+                f"{len(pages)} tab(s):\n" + "\n".join(lines),
+                elapsed=elapsed,
+                metadata={"tab_count": len(pages)},
+            )
+
+        elif action == "switch":
+            idx = args.get("index", 0)
+            if 0 <= idx < len(pages):
+                mgr._page = pages[idx]
+                mgr._page.bring_to_front()
+                url = mgr._page.url
+                elapsed = time.time() - start
+                return ToolResult(f"Switched to tab [{idx}]: {url}", elapsed=elapsed)
+            return ToolResult(f"Invalid tab index {idx} (have {len(pages)} tabs)",
+                            is_error=True, elapsed=time.time() - start)
+
+        elif action == "new":
+            url = args.get("url", "about:blank")
+            new_page = mgr._context.new_page()
+            if url != "about:blank":
+                new_page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            mgr._page = new_page
+            elapsed = time.time() - start
+            return ToolResult(f"Opened new tab: {new_page.url}", elapsed=elapsed)
+
+        elif action == "close":
+            if len(pages) <= 1:
+                return ToolResult("Cannot close the last tab", is_error=True,
+                                elapsed=time.time() - start)
+            mgr._page.close()
+            mgr._page = mgr._context.pages[-1]
+            elapsed = time.time() - start
+            return ToolResult(f"Closed tab. Active: {mgr._page.url}", elapsed=elapsed)
+
+        return ToolResult(f"Unknown action: {action}", is_error=True, elapsed=time.time() - start)
+    except Exception as e:
+        return ToolResult(f"Tabs error: {e}", is_error=True, elapsed=time.time() - start)
+
+
 # ── Accessibility tree formatter ─────────────────────────────────────
 
 def _format_accessibility_tree(node: dict, indent: int = 0) -> str:

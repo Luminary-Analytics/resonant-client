@@ -66,19 +66,27 @@ Related docs:
 - **Vision loop** — auto-screenshots after every action with coordinate scaling
 - **Window management** — list, focus, resize, minimize windows
 - **OCR** — text extraction from screen regions for context
-- **Browser automation** — Playwright-based navigation, clicking, JS execution, screenshots
+- **Browser automation** — 12 Playwright tools: navigate, click, type, read, screenshot, JS, scroll, hover, select, wait, back, tabs
 
-### GUI (Web Interface)
-- **Browser-based UI** with real-time WebSocket streaming
-- **Terminal status bar** — Codex-style running terminal indicator with per-terminal stop buttons
-- **Project management** — switch projects, manage settings, session history
+### GUI (Cursor 3-style Desktop App)
+- **Frameless native window** via pywebview with custom title bar (File/Edit/View/Help menus)
+- **Custom window controls** — minimize, maximize/restore (icon swaps), close; double-click title bar to toggle maximize
+- **Resonant brand icon** in Windows taskbar/macOS dock (purple waveform mark)
+- **Design system** — Inter + Geist Mono fonts, semantic surface tokens, light/dark themes, comfortable/compact density
+- **Command palette** — Ctrl/Cmd+K with fuzzy search and keyboard navigation
+- **Collapsible project tree** — sessions grouped by project, expand/collapse, live search filter
+- **Icon strip nav** — Agent, Automations, Background, Settings as compact icon buttons
+- **Full-width input bar** — textarea with send button, `+` context, permission pill, model selector below (Cursor 3 layout)
+- **Agent run cards** — todo progress from markdown checklists, file change summaries, follow-up chips
+- **Message actions** — copy button on assistant messages
+- **Real-time WebSocket streaming** with markdown rendering, syntax highlighting
+- **Terminal status bar** — running terminal indicator with per-terminal stop buttons
+- **Preview panel** — side-by-side screenshot viewer with persistent split width
 - **Tool permission dialogs** with diff preview and risk badges
-- **Preview panel** — side-by-side screenshot viewer for computer/browser use
 - **Dispatch system** — background task execution with status tracking
 - **Scheduler** — cron-based recurring tasks
-- **RAG controls** — index, search, view stats
-- **Engram memory panel** — recall, remember, status
-- **Settings management** — API keys, backend config, permissions
+- **Settings** — Appearance (theme, density, font size), Local Backends (Ollama/LM Studio config), API keys, cost tracking
+- **Keyboard shortcuts** — Ctrl+N (new agent), Ctrl+, (settings), Ctrl+K (palette), Alt+1-4 (views)
 
 ### Hooks & Extensions
 - **Pre/post tool hooks** — custom shell commands triggered before or after tool execution
@@ -127,6 +135,14 @@ pip install -e ".[dev]"        # Testing (pytest, ruff)
 | `LMSTUDIO_URL` | — | LM Studio server URL (OpenAI-compatible) |
 | `ANTHROPIC_API_KEY` | — | Claude API key |
 | `OPENAI_API_KEY` | — | OpenAI API key |
+| `RESONANT_OLLAMA_NUM_CTX` | `4096` | Ollama context window size (raise for large models) |
+| `RESONANT_OLLAMA_NUM_BATCH` | `512` | Ollama batch size |
+| `RESONANT_OLLAMA_NUM_GPU` | `99` | Ollama GPU layers |
+| `RESONANT_OLLAMA_KEEP_ALIVE` | `60m` | How long Ollama keeps model loaded |
+| `RESONANT_OLLAMA_HTTP_TIMEOUT_SEC` | `180` | Ollama HTTP timeout (streaming) |
+| `RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `120` | Ollama read timeout |
+| `RESONANT_LMSTUDIO_READ_TIMEOUT_SEC` | `600` | LM Studio read timeout (long generations) |
+| `RESONANT_OPENAI_READ_TIMEOUT_SEC` | `120` | OpenAI read timeout |
 
 ## Usage
 
@@ -169,7 +185,7 @@ resonant-gui
 
 ## Testing
 
-The project has a comprehensive automated test suite with 512 tests covering all features.
+The project has a comprehensive automated test suite with 516+ tests covering all features.
 
 ```bash
 # Run all tests
@@ -208,48 +224,51 @@ pytest -k "test_crlf"              # name filter
 | `tests/test_diff_review.py` | 113 | diff_review.py (98%) — file diffs, risk detection, sensitive paths |
 | `tests/test_rag.py` | 161 | rag.py (91%) — indexing, search, symbol extraction, caching |
 | `tests/test_backends.py` | 129 | backends.py — tool conversion, model detection, adaptive calling |
-| **Total** | **512** | All passing |
+| `tests/test_session_todos.py` | 3 | session.py — markdown task list parsing |
+| `tests/test_gui_hardening.py` | 11 | GUI hardening checks |
+| **Total** | **516+** | All passing |
 
 ## Architecture
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for a comprehensive guide to every module, data flow, and extension point.
+
 ```
 resonant_client/
-├── __init__.py              # Package version
-├── __main__.py              # CLI entry point
-├── backends.py              # Backend abstraction (Ollama, Engine, Claude, OpenAI, LM Studio)
-├── protocol.py              # Tool prompt building, JSON parsing
-├── events.py                # Event type definitions
+├── backends.py              # Backend abstraction (Ollama, Engine, Claude, OpenAI, LM Studio, cloud models)
+├── events.py                # EngineEvent/ClientCommand enums, todos.updated event
+├── protocol.py              # Tool prompt building, JSON/XML parsing
 ├── tui.py                   # Terminal UI (Rich + prompt-toolkit)
 ├── engine/
-│   ├── session.py           # Agentic loop orchestration
-│   ├── tools.py             # Tool execution (bash, file ops, browser, desktop)
+│   ├── session.py           # Agentic loop, markdown todo parsing
+│   ├── tools.py             # Tool definitions + execution routing
+│   ├── browser.py           # 12 Playwright browser tools
+│   ├── computer.py          # Desktop automation (pyautogui + mss)
+│   ├── computer_use.py      # Vision loop, OCR, auto-screenshot
 │   ├── diff_review.py       # Diff generation and risk analysis
 │   ├── rag.py               # Codebase indexing and search
-│   ├── memory.py            # Engram memory integration
-│   ├── agents.py            # Sub-agent support
-│   ├── mcp.py               # MCP server management
+│   ├── sandbox.py           # Permission levels and tool allowlists
+│   ├── agents.py            # Sub-agent type definitions
 │   ├── hooks.py             # Pre/post tool hooks
-│   ├── compression.py       # Context compression
-│   ├── browser.py           # Browser automation (Playwright)
-│   ├── computer.py          # Desktop automation (pyautogui + mss)
-│   ├── computer_use.py      # Vision loop coordination, OCR
-│   ├── clipboard.py         # Clipboard access
-│   └── worktree.py          # Git worktree isolation
-└── gui/
-    ├── app.py               # Starlette web application
-    ├── server.py             # Uvicorn launcher
-    ├── runtime.py            # Shared backend/session construction
-    ├── sessions.py           # Session management
-    ├── settings.py           # Settings persistence
-    ├── costs.py              # Token cost tracking
-    ├── scheduler.py          # Task scheduling
-    ├── task_runner.py        # Background task execution
-    ├── project_instructions.py
-    ├── templates/
-    │   └── index.html        # Main GUI template
-    └── static/
-        ├── app.js            # Frontend application
-        └── styles.css         # UI styles
+│   ├── mcp.py               # MCP server management
+│   ├── memory.py            # Engram memory integration
+│   └── ...                  # compression, clipboard, event_log, policies, worktree
+├── gui/
+│   ├── app.py               # Starlette web app + WebSocket handler (~8000 lines)
+│   ├── server.py            # Uvicorn launcher, pywebview frameless window, taskbar icon
+│   ├── sessions.py          # Project/session persistence
+│   ├── settings.py          # ~/.resonant/settings.json
+│   ├── costs.py             # Token cost tracking
+│   ├── scheduler.py         # Cron-based recurring tasks
+│   ├── command_projects.py  # Multi-project workspaces
+│   ├── org_chart.py         # Agent hierarchy management
+│   ├── templates/index.html # Menu bar, sidebar, chat, input bar, preview, dialogs
+│   └── static/
+│       ├── app.js           # Frontend (~6800 lines)
+│       ├── styles.css       # Design system (~5300 lines)
+│       ├── favicon.svg      # Browser tab icon
+│       ├── resonant.ico     # Windows taskbar icon
+│       └── resonant.png     # macOS dock icon
+└── harness/                 # Harness orchestration (engine-side ownership)
 ```
 
 ## Dependencies

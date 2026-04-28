@@ -8,6 +8,34 @@
         <description>Auto-update channel for Resonant Client</description>
         <language>en</language>
 
+        <!-- TEST ENTRY — TEMPORARY -->
+        <!-- This v0.2.1 entry exists only to verify the WinSparkle auto-update
+             pipeline end-to-end. The enclosure URL points at a placeholder
+             release that doesn't exist yet. The signature is a stub; WinSparkle
+             will reject the download but the user-visible prompt ("update
+             available") fires before the signature check, which is what we
+             want to verify here. Revert this file to declare 0.2.0 as
+             current once Phase 3 ships a real v0.2.1 installer. -->
+        <item>
+            <title>Version 0.2.1 (test)</title>
+            <pubDate>Tue, 28 Apr 2026 04:00:00 +0000</pubDate>
+            <sparkle:version>0.2.1</sparkle:version>
+            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+            <description><![CDATA[
+                <h2>Resonant Client 0.2.1 (E2E test entry)</h2>
+                <p>This is a synthetic appcast entry used to verify the
+                auto-update channel works. Real release notes will replace
+                this once Phase 3 ships.</p>
+            ]]></description>
+            <enclosure
+                url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.1/resonant-setup-0.2.1.exe"
+                sparkle:version="0.2.1"
+                sparkle:shortVersionString="0.2.1"
+                length="0"
+                type="application/octet-stream"
+                sparkle:edSignature="" />
+        </item>
+
         <item>
             <title>Version 0.2.0</title>
             <pubDate>Tue, 28 Apr 2026 00:00:00 +0000</pubDate>

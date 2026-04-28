@@ -26,9 +26,9 @@
                 url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.0/resonant-setup-0.2.0.exe"
                 sparkle:version="0.2.0"
                 sparkle:shortVersionString="0.2.0"
-                length="0"
+                length="27281447"
                 type="application/octet-stream"
-                sparkle:edSignature="" />
+                sparkle:edSignature="iWM2C3x4BUu/TUvfDSOWkP642wlltjMtYHe+598lpPG1vMAFp5/jXBufm6rC3+0j5wfUo3grxYucJ/m7zfjrDw==" />
         </item>
     </channel>
 </rss>

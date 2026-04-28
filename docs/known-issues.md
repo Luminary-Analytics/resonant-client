@@ -20,6 +20,9 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 | 12 | PR-time PyInstaller smoke build missing | Medium | ✅ Shipped fix (v0.2.1) | Phase 3 release CI |
 | 13 | Appcast updater duplicate-version refusal too strict | Low | ✅ Shipped fix (v0.2.1) | Phase 3 release CI |
 | 14 | Local PyInstaller bundle 2.6× bigger than CI build | Low | Open | Phase 3 release |
+| 15 | Release CI re-runs invalidate prior signatures (PyInstaller builds aren't byte-deterministic) | **High** | Workaround documented; preventative fix open | v0.2.1 release |
+| 16 | Bundled exe console window visible in production | Low | Open (v0.2.2) | v0.2.1 install |
+| 17 | Browser doesn't always auto-open after install | Low | Open (v0.2.2) | v0.2.1 install |
 
 ---
 
@@ -292,6 +295,69 @@ Add a `--strict` flag to preserve the old refuse-behavior for paranoid releases 
 **Why it matters:** developers might worry their local builds are ballooning and don't realize CI is fine.
 
 **Fix proposal:** add a `--exclude-module` / `--debug=imports` audit step to the spec that prints which transitively-pulled modules the excludes ARE catching vs missing. Useful for cleaning up the local dev experience.
+
+---
+
+## #15 — Release CI re-runs invalidate prior signatures ⚠️ HIGH
+
+**Severity:** **High** — silently breaks the auto-update channel. Users see "Update is improperly signed" with no further explanation; auto-update appears compromised.
+
+**Surfaced in:** v0.2.1 release.
+
+**What happened:**
+1. CI run #1 built + signed `resonant-setup-0.2.1.exe` → published to GitHub Release → my appcast got that signature.
+2. The CI run failed at the very last step (gh-pages push, due to bug "user.email missing" in the workflow), so I **re-ran the failed jobs** (`gh run rerun --failed`).
+3. The re-run rebuilt the installer from scratch — PyInstaller embeds build timestamps in the PE header, plus ZIP file timestamps inside the bundle, so the resulting bytes differed from run #1.
+4. The re-run uploaded the new bytes to the SAME release tag, **silently overwriting** run #1's installer.
+5. WinSparkle on a v0.2.0 client downloaded the NEW bytes, but my appcast still had the OLD signature → verification failed → "Update is improperly signed" dialog.
+
+**Diagnostic:** `md5sum` the previously-downloaded installer and a fresh re-download. If they differ, this bug fired.
+
+```bash
+md5sum resonant-setup-0.2.1.exe                                                        # what I signed
+curl -sL -o fresh.exe https://github.com/.../releases/download/v0.2.1/resonant-setup-0.2.1.exe
+md5sum fresh.exe                                                                        # what users actually get
+# If hashes differ, the asset was rebuilt and re-uploaded
+```
+
+**Workaround (used for v0.2.1):** re-download the current GH release asset, re-sign with the EdDSA private key, regenerate the appcast entry with the new signature + new file size, push gh-pages.
+
+**Fix proposal — preventative:**
+1. **Don't `gh run rerun` after asset upload.** If a release CI fails AT or AFTER the "Create GitHub Release" step, do NOT re-run — instead, manually re-sign whatever's currently in the release and push the appcast directly. The current release page is the source of truth once an asset is uploaded.
+2. **Make builds reproducible.** PyInstaller has `--no-cipher` and `pythonOptimize` settings; combined with `SOURCE_DATE_EPOCH` env var (set to the commit time) for deterministic timestamps, the build CAN be made byte-reproducible. Pin this for v1.0.
+3. **Compute + upload the signature alongside the binary.** Store `sparkle:edSignature` in a sidecar `.exe.sig` file next to the installer in the GH release. The appcast can then reference it. Then a re-build + re-sign in the same CI job ensures both bytes and signature are consistent. If they diverge, the appcast updater fails loudly instead of producing a mismatch.
+
+For v0.2.x: add a CI step `Verify signature is consistent with uploaded asset` that downloads its own just-uploaded artifact and re-verifies. Cheap, catches this exact failure.
+
+---
+
+## #16 — Bundled exe console window visible in production
+
+**Severity:** Low (cosmetic; doesn't affect functionality)
+
+**Surfaced in:** v0.2.1 install (visible to user as a black-on-yellow PowerShell console showing the URL).
+
+**Cause:** `packaging/resonant.spec` has `console=True`. Was kept on for v0.x debugging — first-install Ollama-connection / port-bind issues are easier to triage when stderr is visible.
+
+**Fix proposal:**
+1. **Add proper logging-to-file.** Currently errors go to stderr (which the console swallows when `console=False`). Need a `~/.resonant/logs/resonant-YYYYMMDD.log` rotation.
+2. **Flip `console=False`** in the spec for v0.2.2+.
+3. Optionally add `--debug` flag that re-enables console for power users.
+
+---
+
+## #17 — Browser doesn't always auto-open after install
+
+**Severity:** Low (user can copy-paste the URL)
+
+**Surfaced in:** v0.2.1 install. User saw a console with `Open in browser: http://127.0.0.1:53992` but no browser tab opened automatically.
+
+**Cause:** Mixed launch paths. `installer.iss [Icons]` puts `Parameters: "gui --browser"` on the Start Menu shortcut, which DOES auto-open. But the `[Run]` post-install line uses `Flags: nowait postinstall skipifsilent` which can lose argument context in some user flows.
+
+**Fix proposal:**
+- Make `--browser` the **default** behavior in `gui/server.py`. Add a `--no-browser` opt-out for headless server scenarios.
+- Update `installer.iss` to drop the `--browser` arg (since it'd be default).
+- Update Start Menu + Desktop shortcuts likewise.
 
 ---
 

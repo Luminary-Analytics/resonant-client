@@ -22,10 +22,13 @@ Bundled deps:
   type work out of the box.
 - Backend SDKs (anthropic, openai) — bundled. Cheap (pure Python) and
   removes a "go install this" UX wart.
+- pywebview          — bundled (v0.2.2+). Provides the native desktop
+                       frame so users see "the app", not a console + a
+                       browser tab. Requires Microsoft Edge WebView2
+                       runtime on Windows, which is pre-installed on
+                       Windows 11 and Win10 1809+ (the vast majority).
 
 NOT bundled (deferred):
-- pywebview          — v0.x ships browser-only mode. WebView2 runtime
-                       dependency is too painful for first install.
 - playwright         — adds 150+ MB and a Chromium download. Will be a
                        one-click "Install browser tools" button in
                        Settings → Tools that runs `playwright install`
@@ -117,6 +120,16 @@ hiddenimports = [
     "PIL",
     "PIL.Image",
     "PIL.ImageGrab",
+
+    # pywebview (bundled v0.2.2+) — native desktop frame.
+    # webview is the import name; the package is "pywebview" on PyPI.
+    "webview",
+    "webview.platforms.edgechromium",
+    "webview.platforms.winforms",
+    # Windows-specific: pywebview uses pythonnet to host Edge/WinForms.
+    "clr",
+    "clr_loader",
+    "pythonnet",
 ]
 
 # Pull in all submodules of resonant_client itself so dynamic imports inside
@@ -134,7 +147,6 @@ excludes = [
     "scipy",
     "pandas",
     "playwright",       # explicitly deferred (see header)
-    "pywebview",        # explicitly deferred (see header)
     "cv2",              # runtime-optional, not bundled
     "uiautomation",     # runtime-optional, not bundled
 ]
@@ -182,7 +194,8 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,                   # UPX compression often triggers AV; skip for now
-    console=True,                # See header — keep terminal visible for v0.x
+    console=False,               # v0.2.2+: native desktop app, no cmd window
+    # console=True,              # uncomment when debugging startup hangs (stderr to console)
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

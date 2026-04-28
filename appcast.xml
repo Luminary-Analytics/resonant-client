@@ -7,11 +7,11 @@
         <language>en</language>
         <item>
             <title>Version 0.2.1</title>
-            <pubDate>Tue, 28 Apr 2026 16:24:22 +0000</pubDate>
+            <pubDate>Tue, 28 Apr 2026 17:12:02 +0000</pubDate>
             <sparkle:version>0.2.1</sparkle:version>
             <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
             <description>&lt;p&gt;Resonant Client 0.2.1 — backend swap context loss fix (#9, #10), project-switch UI race fix (#7, #8), appcast updater idempotency fix (#13). See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.1"&gt;release page&lt;/a&gt; for details.&lt;/p&gt;</description>
-            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.1/resonant-setup-0.2.1.exe" sparkle:version="0.2.1" sparkle:shortVersionString="0.2.1" length="27362264" type="application/octet-stream" sparkle:edSignature="pQWkhebG29Qx1h9/g082CbYtD7NUHRJMUvDoy0MYia//e+MG16CRJjjvkqB0iXZnAO46SWw5z+oORtxMQhtRCA==" />
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.1/resonant-setup-0.2.1.exe" sparkle:version="0.2.1" sparkle:shortVersionString="0.2.1" length="27365568" type="application/octet-stream" sparkle:edSignature="FdP+tw76blwOEMDiQ/dE3SWv4GijS3vo8hu1WSYvf+ohqKCzWol4FIfJUh+1foHoDzr8IegcVGarKrQ4JYNBDA==" />
         </item>
         <item>
             <title>Version 0.2.0</title>

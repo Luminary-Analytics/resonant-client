@@ -30,6 +30,12 @@ gui = [
     "uvicorn>=0.30.0",
     "jinja2>=3.1.0",
     "pywebview>=5.0",
+    # WebSocket server is core to the GUI's agent-loop streaming. Was
+    # previously only in the `[server]` extras group, which meant CI
+    # builds installed `[gui,desktop,...]` but NOT websockets, so the
+    # bundled exe couldn't upgrade WebSocket connections — every page
+    # reload sat on "Reconnecting..." forever. Bug #24, fixed v0.2.7.
+    "websockets>=12.0",
 ]
 all = [
     "anthropic>=0.40.0",

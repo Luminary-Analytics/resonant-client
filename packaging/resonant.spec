@@ -105,10 +105,21 @@ hiddenimports = [
     "uvicorn.lifespan",
     "uvicorn.lifespan.on",
 
-    # websockets internals occasionally missed
+    # websockets — bug #24 fix (v0.2.7+). Must be force-imported via
+    # hidden imports because uvicorn's WebSocket protocol auto-discovery
+    # uses runtime importlib lookups that PyInstaller's static analysis
+    # misses. Without these, every WebSocket upgrade request fails with
+    # "No supported WebSocket library detected" and the GUI hangs at
+    # "Reconnecting...".
+    "websockets",
     "websockets.legacy",
     "websockets.legacy.server",
     "websockets.legacy.client",
+    "websockets.asyncio",
+    "websockets.asyncio.server",
+    "websockets.asyncio.client",
+    "uvicorn.protocols.websockets.websockets_impl",
+    "uvicorn.protocols.websockets.wsproto_impl",
 
     # Backend SDKs imported lazily by engine/backends.py
     "anthropic",

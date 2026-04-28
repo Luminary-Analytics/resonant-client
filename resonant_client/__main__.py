@@ -2,30 +2,42 @@
 import os
 import sys
 
-# Bug #19 fix — frozen-no-console sys.std* shim.
+# Bug #19 + #20 fix — frozen-no-console std-stream redirect to log file.
 #
 # When PyInstaller's `console=False` bundles run, the OS doesn't attach a
 # console to the process, so sys.stdout / sys.stderr / sys.stdin are None.
-# Many libraries assume those are real file objects and crash early. The
-# notable culprit is uvicorn's ColourizedFormatter calling sys.stderr.isatty()
-# at logging-config time, which raises AttributeError before main() even runs.
+# Many libraries crash early: uvicorn's ColourizedFormatter calls
+# sys.stderr.isatty() at logging-config time → AttributeError before main()
+# even runs.
 #
-# Replace any None std streams with /dev/null (NUL on Windows). This is a
-# real file object that supports .isatty() (returns False), .write() (no-op
-# from the app's perspective — writes to NUL), and .flush(). Unblocks
-# uvicorn, click, prompt_toolkit, rich, and anything else that probes
-# stdout/stderr at import time.
+# Originally (v0.2.4) we redirected to /dev/null. That fixed the crash but
+# made every runtime error invisible — bug #20 ("Internal Server Error" with
+# no traceback to debug). v0.2.5+ redirects to a real log file at
+#     ~/.resonant/logs/resonant-startup.log
+# so uvicorn errors / startup tracebacks / unhandled exceptions land
+# somewhere readable. Rotated only by hand for now (single file appends).
 #
 # Only fires when frozen + at least one stream is None — leaves dev runs
 # (`python -m resonant_client`) untouched so output still hits the terminal.
 if getattr(sys, "frozen", False) and (
     sys.stdout is None or sys.stderr is None or sys.stdin is None
 ):
-    _devnull = open(os.devnull, "w", encoding="utf-8")
+    _log_dir = os.path.join(os.path.expanduser("~"), ".resonant", "logs")
+    try:
+        os.makedirs(_log_dir, exist_ok=True)
+        _log_path = os.path.join(_log_dir, "resonant-startup.log")
+        _log_file = open(_log_path, "a", encoding="utf-8", buffering=1)
+        # Marker so we can find the start of each session in the log.
+        _log_file.write(f"\n{'=' * 60}\n=== resonant {sys.argv} pid={os.getpid()}\n")
+        _log_file.flush()
+    except OSError:
+        # If we can't open the log file (read-only home, weird perms),
+        # fall back to NUL — better silently-broken than crashing on stderr.
+        _log_file = open(os.devnull, "w", encoding="utf-8")
     if sys.stdout is None:
-        sys.stdout = _devnull
+        sys.stdout = _log_file
     if sys.stderr is None:
-        sys.stderr = _devnull
+        sys.stderr = _log_file
     if sys.stdin is None:
         sys.stdin = open(os.devnull, "r", encoding="utf-8")
 

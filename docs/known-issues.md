@@ -25,6 +25,9 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 | 17 | Browser doesn't always auto-open after install | Low | ✅ Shipped fix (v0.2.2) | v0.2.1 install |
 | 18 | Per-user install invisible to Windows Search | High (UX-blocking on Win11) | ✅ Shipped fix (v0.2.3) | v0.2.2 install |
 | 19 | console=False crashes uvicorn ColourizedFormatter at startup | **Critical** (app won't launch) | ✅ Shipped fix (v0.2.4) | v0.2.3 install |
+| 20 | Frozen `Path(__file__).parent` breaks Jinja2 template lookup | **Critical** (500 on every page) | ✅ Shipped fix (v0.2.5) | v0.2.4 install |
+| 21 | Stderr redirect to /dev/null hid all runtime errors | High (debugging blind) | ✅ Shipped fix (v0.2.5) — now logs to ~/.resonant/logs/resonant-startup.log | v0.2.4 install |
+| 22 | Pre-tag smoke test only used dev Python, not bundled exe | High (process gap, not code) | Open — fix in build-check.yml workflow + RELEASING.md update | This session |
 
 ---
 

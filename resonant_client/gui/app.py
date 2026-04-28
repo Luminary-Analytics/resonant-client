@@ -61,8 +61,27 @@ _webview_window = None
 logger = logging.getLogger(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────
+#
+# Bug #20 fix — frozen-bundle template/static path resolution.
+#
+# In a PyInstaller frozen exe, modules are loaded from a PYZ archive (a
+# zip embedded in the exe). `Path(__file__).parent` for gui/app.py
+# resolves to a *virtual* path that doesn't exist on disk, so Jinja2
+# fails to find templates/index.html → request returns 500 with
+# "Internal Server Error".
+#
+# When frozen, PyInstaller exposes `sys._MEIPASS` pointing at the
+# unpacked bundle root. Our datas= list in packaging/resonant.spec
+# places templates + static at `resonant_client/gui/templates/` and
+# `resonant_client/gui/static/` relative to that root. Use those real
+# paths for Jinja2 + StaticFiles when frozen; fall back to the dev
+# `Path(__file__).parent` layout otherwise.
 
-_GUI_DIR = Path(__file__).parent
+if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+    _GUI_DIR = Path(sys._MEIPASS) / "resonant_client" / "gui"
+else:
+    _GUI_DIR = Path(__file__).parent
+
 _TEMPLATES_DIR = _GUI_DIR / "templates"
 _STATIC_DIR = _GUI_DIR / "static"
 

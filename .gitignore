@@ -33,3 +33,7 @@ Thumbs.db
 # Temp files
 %TEMP%*
 ~/
+
+# Packaging build artifacts and downloaded source archive
+# (We vendor the extracted WinSparkle binaries but skip the .zip itself.)
+packaging/winsparkle/WinSparkle.zip

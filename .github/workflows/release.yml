@@ -1,7 +1,7 @@
 name: Release
 
 # Triggered by pushing a tag like v0.2.0 / v0.2.1 / v1.0.0.
-# Tag-only â never on plain commits to main, never on branches.
+# Tag-only — never on plain commits to main, never on branches.
 #
 # What this workflow does end-to-end:
 #   1. Builds the PyInstaller bundle for the tagged version
@@ -9,7 +9,7 @@ name: Release
 #   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
 #   4. Creates a GitHub Release, uploads the signed installer
 #   5. Updates appcast.xml on the gh-pages branch with the new entry
-#   6. Pushes gh-pages â WinSparkle in deployed v0.2.X exes will pick up the
+#   6. Pushes gh-pages — WinSparkle in deployed v0.2.X exes will pick up the
 #      new release within 24h (or on next launch if the cached check is stale)
 
 on:
@@ -35,12 +35,12 @@ jobs:
         id: version
         shell: bash
         run: |
-          # GITHUB_REF is refs/tags/v0.2.0 â strip the prefix.
+          # GITHUB_REF is refs/tags/v0.2.0 — strip the prefix.
           VERSION="${GITHUB_REF#refs/tags/v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Building release $VERSION"
 
-      - name: Sanity check â tag matches __version__
+      - name: Sanity check — tag matches __version__
         shell: bash
         run: |
           PKG_VERSION=$(python -c "import re,pathlib;m=re.search(r'__version__\\s*=\\s*\"([^\"]+)\"',pathlib.Path('resonant_client/__init__.py').read_text());print(m.group(1))")
@@ -77,7 +77,7 @@ jobs:
       - name: Smoke-test bundled exe
         shell: pwsh
         run: |
-          # Just confirm --version works â quick sanity that the bundle is
+          # Just confirm --version works — quick sanity that the bundle is
           # not totally broken before we spend time wrapping it.
           $output = & "dist/resonant/resonant.exe" --version
           if ($output -notmatch "resonant-client ${{ steps.version.outputs.version }}") {
@@ -89,7 +89,7 @@ jobs:
         shell: pwsh
         run: |
           # GitHub-hosted windows-latest runners don't ship Inno Setup. Install
-          # via Chocolatey â this typically takes ~30 sec.
+          # via Chocolatey — this typically takes ~30 sec.
           choco install innosetup --version=6.4.3 --no-progress -y
 
       - name: Build installer with Inno Setup

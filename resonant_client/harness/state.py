@@ -1,21 +1,39 @@
 """
-Workspace-local harness artifacts for long-running agentic development.
+Out-of-repo harness artifacts for long-running agentic development.
 
-The harness keeps structured state in the project itself so generator,
-evaluator, and planner sessions can hand work off without relying on
-conversation history alone.
+State lives at `~/.resonant/projects/<sha1(project_path)[:12]>/harness/` so the
+user's source repo stays clean. Mirrors Claude Code's `~/.claude/projects/`
+layout. Until 2026-04 the harness wrote into `.resonant-harness/` inside the
+user's project; legacy folders are migrated transparently on first load (see
+`maybe_migrate_legacy_layout` below).
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import os
+import shutil
 import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
 
-HARNESS_DIRNAME = ".resonant-harness"
+# Retained as a constant for the legacy-migration helper below. New writes go
+# to `~/.resonant/projects/<hash>/harness/` (see HarnessWorkspace.__init__).
+LEGACY_HARNESS_DIRNAME = ".resonant-harness"
+HARNESS_DIRNAME = LEGACY_HARNESS_DIRNAME  # kept as alias for any external readers
+
+logger = logging.getLogger(__name__)
+
+
+def _project_state_root(project_path: Path) -> Path:
+    """Return `~/.resonant/projects/<sha1[:12]>/` for the given project path."""
+    digest = hashlib.sha1(str(project_path).encode("utf-8", errors="replace")).hexdigest()[:12]
+    base = Path(os.environ.get("RESONANT_STATE_HOME") or (Path.home() / ".resonant"))
+    return base / "projects" / digest
 
 
 @dataclass
@@ -91,11 +109,28 @@ def _coerce_dataclass_payload(dataclass_type: type, payload: dict[str, Any]) -> 
 
 
 class HarnessWorkspace:
-    """Structured artifact directory inside the user's project workspace."""
+    """Structured artifact directory for one project's harness state.
+
+    Storage layout:
+        ~/.resonant/projects/<sha1(project_path)[:12]>/harness/
+            spec.json
+            progress_state.json
+            sprint_contract.json
+            evaluator_report.json
+            handoff.md
+            run_history.jsonl
+            teacher_escalations.jsonl
+
+    The `project_path` field stays for back-references and to feed the legacy
+    migration helper. Override the parent dir with `RESONANT_STATE_HOME` (used
+    by tests).
+    """
 
     def __init__(self, project_path: str | Path):
         self.project_path = Path(project_path).expanduser().resolve()
-        self.root = self.project_path / HARNESS_DIRNAME
+        self.root = _project_state_root(self.project_path) / "harness"
+        # Path of the legacy in-repo location, used by the one-shot migration.
+        self.legacy_root = self.project_path / LEGACY_HARNESS_DIRNAME
 
     @property
     def spec_path(self) -> Path:
@@ -127,6 +162,10 @@ class HarnessWorkspace:
 
     def ensure_layout(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
+        # One-time migration from the legacy in-repo layout. Copies (does not
+        # move) so the user can verify the new state, then run `git rm -r
+        # .resonant-harness/` themselves when ready.
+        self.maybe_migrate_legacy_layout()
         if not self.progress_path.exists():
             self.write_progress(ProgressState())
         if not self.spec_path.exists():
@@ -144,6 +183,36 @@ class HarnessWorkspace:
             self.run_history_path.write_text("", encoding="utf-8")
         if not self.teacher_escalations_path.exists():
             self.teacher_escalations_path.write_text("", encoding="utf-8")
+
+    def maybe_migrate_legacy_layout(self) -> int:
+        """Copy any legacy `.resonant-harness/` content into the new root.
+
+        Returns the number of files copied. Safe to call repeatedly: only copies
+        files that don't already exist at the new location, so re-runs are
+        no-ops once migration is done.
+        """
+        if not self.legacy_root.exists() or not self.legacy_root.is_dir():
+            return 0
+        # Make sure the destination exists even when called outside ensure_layout().
+        self.root.mkdir(parents=True, exist_ok=True)
+        copied = 0
+        for src in self.legacy_root.iterdir():
+            if not src.is_file():
+                continue
+            dest = self.root / src.name
+            if dest.exists():
+                continue
+            try:
+                shutil.copy2(src, dest)
+                copied += 1
+            except OSError as exc:
+                logger.warning("Failed to migrate %s -> %s: %s", src, dest, exc)
+        if copied:
+            logger.info(
+                "Migrated %d harness file(s) from %s to %s",
+                copied, self.legacy_root, self.root,
+            )
+        return copied
 
     def read_progress(self) -> ProgressState:
         return ProgressState(**_coerce_dataclass_payload(ProgressState, _read_json(self.progress_path)))

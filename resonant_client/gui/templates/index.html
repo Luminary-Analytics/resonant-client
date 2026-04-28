@@ -10,7 +10,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-mono/style.min.css">
-    <link rel="stylesheet" href="/static/styles.css?v=34">
+    <link rel="stylesheet" href="/static/styles.css?v=65">
     <!-- Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <!-- Syntax highlighting -->
@@ -20,10 +20,10 @@
     <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
 </head>
 <body>
-    <!-- ═══ App Menu Bar (native-style) ═══ -->
-    <div id="app-menubar" class="app-menubar">
-        <div class="menubar-left">
-            <div class="menubar-logo" title="Resonant">
+    <!-- ═══ Single titlebar — brand + menus + project context + window controls ═══ -->
+    <div id="app-titlebar" class="app-titlebar pywebview-drag-region">
+        <div class="titlebar-left">
+            <div class="titlebar-logo" title="Resonant">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
                     <path d="M6 4v16" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
                     <path d="M12 7v10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" opacity="0.7"/>
@@ -31,7 +31,8 @@
                     <path d="M3 12c3-4 6-4 9 0s6 4 9 0" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
                 </svg>
             </div>
-            <div class="menubar-menus">
+            <span class="titlebar-brand-text">Resonant</span>
+            <nav class="titlebar-menus">
                 <div class="menubar-item" data-menu="file">
                     <span>File</span>
                     <div class="menubar-dropdown">
@@ -58,10 +59,6 @@
                         <div class="menubar-sep"></div>
                         <div class="menubar-action" data-action="toggle-sidebar">Toggle Sidebar <span class="menubar-shortcut">Ctrl+Shift+D</span></div>
                         <div class="menubar-action" data-action="toggle-preview">Toggle Preview</div>
-                        <div class="menubar-sep"></div>
-                        <div class="menubar-action" data-action="mode-agent">Agent Mode</div>
-                        <div class="menubar-action" data-action="mode-ask">Ask Mode</div>
-                        <div class="menubar-action" data-action="mode-workspaces">Workspaces</div>
                     </div>
                 </div>
                 <div class="menubar-item" data-menu="help">
@@ -71,11 +68,27 @@
                         <div class="menubar-action" data-action="about">About Resonant</div>
                     </div>
                 </div>
-            </div>
+            </nav>
         </div>
-        <div class="menubar-title" id="menubar-title">Resonant</div>
-        <div class="menubar-right">
-            <div class="menubar-window-controls" id="window-controls">
+        <div class="titlebar-center">
+            <span id="header-project" class="titlebar-project" title="Current project" aria-label="Current project"></span>
+        </div>
+        <div class="titlebar-right">
+            <span class="header-status" id="header-status"></span>
+            <button id="sidebar-toggle" class="titlebar-icon-btn" title="Toggle sidebar (Ctrl+Shift+D)" aria-label="Toggle sidebar">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <rect x="1" y="1" width="5" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                    <rect x="8" y="1" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                </svg>
+            </button>
+            <button id="preview-toggle" class="titlebar-icon-btn" title="Browser &amp; design preview" aria-label="Toggle preview panel">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <rect x="1" y="1" width="14" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+                    <line x1="9" y1="1" x2="9" y2="15" stroke="currentColor" stroke-width="1.2"/>
+                    <circle cx="12.5" cy="5" r="1.2" fill="currentColor" opacity="0.5"/>
+                </svg>
+            </button>
+            <div class="titlebar-window-controls" id="window-controls">
                 <button class="win-ctrl win-minimize" id="win-minimize" title="Minimize">
                     <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.2"/></svg>
                 </button>
@@ -90,118 +103,46 @@
     </div>
 
     <div id="app">
-        <!-- ═══ Sidebar ═══ -->
+        <!-- ═══ Sidebar — project switcher + search + sessions + footer nav ═══ -->
         <aside id="sidebar" role="navigation" aria-label="Agent navigation">
-            <div class="sidebar-header">
-                <div class="sidebar-brand">
-                    <span class="brand-icon">&#9612;</span>
-                    <span class="brand-text">Resonant</span>
-                </div>
-                <button class="sidebar-new-btn" id="new-agent-btn" title="New agent (Ctrl+N)">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
-                </button>
+            <button id="sidebar-project-switch" class="sidebar-project-switch" title="Switch project / filter sessions" aria-haspopup="menu" aria-expanded="false">
+                <svg class="spsw-icon" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M1 4a1 1 0 011-1h3l1.2 1.2H12a1 1 0 011 1v6.3a1 1 0 01-1 1H2a1 1 0 01-1-1V4z" stroke="currentColor" stroke-width="1.2"/></svg>
+                <span class="spsw-label" id="sidebar-project-switch-label">All projects</span>
+                <span class="spsw-chevron" aria-hidden="true">&#9662;</span>
+            </button>
+            <div class="sidebar-search">
+                <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.2"/><path d="M9 9l3.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                <input type="text" placeholder="Search agents..." id="search-input" />
             </div>
-            <!-- ═══ Icon strip nav ═══ -->
-            <div class="sidebar-icon-nav" id="sidebar-nav">
-                <button class="sidebar-icon-btn active" data-view="agents" id="nav-agents" title="Agent">
-                    <svg width="15" height="15" viewBox="0 0 14 14" fill="none"><path d="M2 3a1 1 0 011-1h8a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 2V10H3a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.2"/></svg>
-                </button>
-                <button class="sidebar-icon-btn" data-view="schedule" id="nav-schedule" title="Automations">
-                    <svg width="15" height="15" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.2"/><path d="M7 4v3.5l2.5 1.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-                </button>
-                <button class="sidebar-icon-btn" data-view="dispatch" id="nav-dispatch" title="Background">
-                    <svg width="15" height="15" viewBox="0 0 14 14" fill="none"><path d="M7 1v8M4 6l3 3 3-3" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 10v2h10v-2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                </button>
-                <button class="sidebar-icon-btn" data-view="settings" id="nav-settings" title="Settings">
-                    <svg width="15" height="15" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.2"/><path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M11.2 2.8l-1.1 1.1M3.9 10.1l-1.1 1.1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round"/></svg>
-                </button>
-                <div class="sidebar-icon-spacer"></div>
-                <div class="sidebar-search-inline">
-                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.2"/><path d="M9 9l3.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-                    <input type="text" placeholder="Search..." id="search-input" />
-                </div>
-            </div>
-            <!-- ═══ Session tree ═══ -->
             <div id="agent-list" class="agent-list">
                 <div class="agent-empty">No agents yet</div>
             </div>
-            <!-- Hidden but kept for JS compatibility -->
-            <div class="sidebar-project-filter" id="sidebar-project-filter" style="display:none">
-                <div class="project-filter-row">
-                    <div class="project-filter-selected" id="project-filter-selected">
-                        <span class="pf-icon">&#128193;</span>
-                        <span class="pf-name" id="pf-selected-name">All workspaces</span>
-                        <span class="pf-arrow">&#9662;</span>
-                    </div>
-                    <button class="pf-add-btn" id="pf-add-project" title="Add project">
-                        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2v8M2 6h8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
-                    </button>
-                </div>
-                <div class="project-filter-dropdown" id="project-filter-dropdown" style="display:none">
-                    <input type="text" class="pf-search" id="pf-search" placeholder="Filter workspaces…" autocomplete="off" />
-                    <div class="pf-options" id="pf-options"></div>
-                </div>
-            </div>
             <div class="sidebar-footer">
-                <div class="sidebar-project" id="project-selector" title="Current workspace folder">
-                    <span class="sidebar-project-icon">&#128193;</span>
-                    <div class="sidebar-project-info">
-                        <div class="sidebar-project-name" id="sidebar-project-name"></div>
-                        <div class="sidebar-cwd" id="sidebar-cwd"></div>
-                    </div>
+                <!-- Hidden DOM nodes preserved so existing JS that reads sidebar-project-name / sidebar-cwd
+                     (e.g. for tooltip text or empty-state placeholder) keeps working. -->
+                <div id="project-selector" hidden>
+                    <span id="sidebar-project-name"></span>
+                    <span id="sidebar-cwd"></span>
+                </div>
+                <div class="sidebar-actions">
+                    <button class="sidebar-action active" data-view="agents" id="nav-agents" title="Agent sessions" aria-label="Agent sessions">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3a1 1 0 011-1h8a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 2V10H3a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3"/></svg>
+                        <span>Agents</span>
+                    </button>
+                    <button class="sidebar-action" data-view="settings" id="nav-settings" title="Settings &mdash; Ctrl+," aria-label="Settings">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M11.2 2.8l-1.1 1.1M3.9 10.1l-1.1 1.1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                        <span>Settings</span>
+                    </button>
+                    <button class="sidebar-action sidebar-action-primary" id="new-agent-btn" title="New agent &mdash; Ctrl+N" aria-label="New agent">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+                        <span>New</span>
+                    </button>
                 </div>
             </div>
         </aside>
 
-        <!-- ═══ Main Content ═══ -->
+        <!-- ═══ Main Content — chat takes the full main area, no inner header ═══ -->
         <main id="main">
-            <!-- Header bar -->
-            <header id="header">
-                <div class="header-left">
-                    <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                            <rect x="1" y="1" width="5" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
-                            <rect x="8" y="1" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
-                        </svg>
-                    </button>
-                    <div class="header-title">
-                        <span id="header-project"></span>
-                    </div>
-                </div>
-                <div class="mode-tabs" id="mode-tabs" role="tablist" aria-label="Mode selector">
-                    <button class="mode-tab active" data-mode="code" role="tab" aria-selected="true" title="Agent mode — tools and edits">Agent</button>
-                    <button class="mode-tab" data-mode="chat" role="tab" aria-selected="false" title="Ask mode — quick Q&amp;A">Ask</button>
-                    <button class="mode-tab" data-mode="command" role="tab" aria-selected="false" title="Workspaces — multi-repo orchestration">Workspaces</button>
-                </div>
-                <div class="header-right">
-                    <div class="header-indicators">
-                        <button class="header-badge harness-badge" id="harness-badge" title="Harness state" style="display:none">
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
-                                <rect x="1.5" y="1.5" width="9" height="9" rx="1.5" stroke="currentColor" stroke-width="1"/>
-                                <path d="M3.5 4h5M3.5 6h5M3.5 8h3" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
-                            </svg>
-                            <span id="harness-badge-text">Harness</span>
-                        </button>
-                        <button class="header-badge resonant-md-badge" id="resonant-md-badge" title="RESONANT.md" style="display:none">
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2 1h5l3 3v7a1 1 0 01-1 1H2a1 1 0 01-1-1V2a1 1 0 011-1z" stroke="currentColor" stroke-width="1"/><path d="M7 1v3h3" stroke="currentColor" stroke-width="1"/></svg>
-                            <span>RESONANT.md</span>
-                        </button>
-                        <button class="header-badge git-badge" id="git-badge" title="Git status" style="display:none">
-                            <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="6" cy="3" r="1.5" stroke="currentColor" stroke-width="1"/><circle cx="6" cy="9" r="1.5" stroke="currentColor" stroke-width="1"/><line x1="6" y1="4.5" x2="6" y2="7.5" stroke="currentColor" stroke-width="1"/></svg>
-                            <span id="git-branch-name">main</span>
-                            <span class="git-changes-count" id="git-changes-count" style="display:none">0</span>
-                        </button>
-                    </div>
-                    <div class="header-status" id="header-status"></div>
-                    <button id="preview-toggle" class="icon-btn preview-toggle-btn" title="Browser &amp; design preview">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                            <rect x="1" y="1" width="14" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
-                            <line x1="9" y1="1" x2="9" y2="15" stroke="currentColor" stroke-width="1.2"/>
-                            <circle cx="12.5" cy="5" r="1.2" fill="currentColor" opacity="0.5"/>
-                        </svg>
-                    </button>
-                </div>
-            </header>
 
             <!-- ═══ Split content area (chat + preview) ═══ -->
             <div id="main-split" class="main-split">
@@ -243,30 +184,6 @@
                                 <div id="backend-selector" class="backend-selector">
                                     <p class="backend-label">Select a backend</p>
                                     <div id="backend-list" class="backend-list"></div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- ═══ New Chat Welcome ═══ -->
-                    <div id="chat-welcome-screen" class="welcome-screen" style="display:none;">
-                        <div class="welcome-content">
-                            <div class="welcome-brand">
-                                <span class="welcome-icon">┃</span>
-                                <h1>Ask</h1>
-                            </div>
-                            <p class="welcome-subtitle">Quick answers without full agent setup</p>
-                            <div class="chat-welcome-input">
-                                <div class="chat-welcome-input-wrapper">
-                                    <textarea id="chat-welcome-textarea" placeholder="Ask a question…" rows="2" autocomplete="off" spellcheck="false"></textarea>
-                                    <button id="chat-welcome-send" class="send-btn" title="Send">
-                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                            <path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                                        </svg>
-                                    </button>
-                                </div>
-                                <div class="chat-welcome-footer">
-                                    <select id="chat-welcome-model" class="chat-welcome-model-select"></select>
                                 </div>
                             </div>
                         </div>
@@ -320,12 +237,12 @@
                                           rows="2"
                                           autocomplete="off"
                                           spellcheck="false"></textarea>
-                                <button id="send-btn" class="send-btn" title="Send (Enter)">
+                                <button id="send-btn" class="send-btn" title="Send message (Enter) &mdash; Shift+Enter for newline">
                                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                                         <path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                                     </svg>
                                 </button>
-                                <button id="stop-btn" class="stop-btn" title="Stop" style="display:none;">
+                                <button id="stop-btn" class="stop-btn" title="Stop the agent" style="display:none;">
                                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                                         <rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/>
                                     </svg>
@@ -333,12 +250,27 @@
                             </div>
                             <div class="input-footer">
                                 <div class="input-footer-left">
-                                    <button class="add-context-btn" id="add-context-btn" title="Add context">+</button>
+                                    <button class="add-context-btn" id="add-context-btn" title="Add context (paste/drop image, attach file)" aria-label="Add context">+</button>
+                                    <button class="plan-this-btn" id="plan-this-btn" title="Send as intent &mdash; decompose into a plan-graph and execute autonomously" aria-label="Plan this (run as intent)">
+                                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                            <circle cx="3" cy="7" r="1.5" stroke="currentColor" stroke-width="1.2"/>
+                                            <circle cx="11" cy="3" r="1.5" stroke="currentColor" stroke-width="1.2"/>
+                                            <circle cx="11" cy="11" r="1.5" stroke="currentColor" stroke-width="1.2"/>
+                                            <path d="M4.5 6.4l5-2.6M4.5 7.6l5 2.6" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                        </svg>
+                                    </button>
+                                    <button class="mic-btn" id="mic-btn" title="Hold to dictate &mdash; release to insert transcript" aria-label="Voice input (push-to-talk)">
+                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                            <rect x="6" y="2" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.4"/>
+                                            <path d="M3.5 8a4.5 4.5 0 009 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                                            <path d="M8 12.5v1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                                        </svg>
+                                    </button>
                                     <div class="permission-dropdown" id="permission-dropdown">
-                                        <button class="permission-toggle" id="permission-toggle">
-                                            <span class="perm-icon" id="perm-icon">&#9651;</span>
+                                        <button class="permission-toggle" id="permission-toggle" title="Permission mode &mdash; how the agent treats risky actions">
+                                            <span class="perm-icon" id="perm-icon" aria-hidden="true">&#9881;</span>
                                             <span id="perm-label">Full-auto</span>
-                                            <span class="perm-chevron">&#9662;</span>
+                                            <span class="perm-chevron" aria-hidden="true">&#9662;</span>
                                         </button>
                                         <div class="permission-menu" id="permission-menu">
                                             <div class="perm-option" data-mode="ask">
@@ -363,7 +295,7 @@
                                                 </div>
                                             </div>
                                             <div class="perm-option active" data-mode="bypass">
-                                                <span class="perm-opt-icon">&#9651;</span>
+                                                <span class="perm-opt-icon">🛡</span>
                                                 <div class="perm-opt-text">
                                                     <div class="perm-opt-name">Full-auto (sandboxed)</div>
                                                     <div class="perm-opt-desc">Accepts all permissions</div>
@@ -372,10 +304,25 @@
                                             </div>
                                         </div>
                                     </div>
+                                    <button class="input-git" id="git-badge" title="Current git branch and number of uncommitted changes. Click for git actions." style="display:none">
+                                        <svg width="11" height="11" viewBox="0 0 12 12" fill="none">
+                                            <circle cx="6" cy="3" r="1.5" stroke="currentColor" stroke-width="1"/>
+                                            <circle cx="6" cy="9" r="1.5" stroke="currentColor" stroke-width="1"/>
+                                            <line x1="6" y1="4.5" x2="6" y2="7.5" stroke="currentColor" stroke-width="1"/>
+                                        </svg>
+                                        <span class="input-git-branch" id="git-branch-name">main</span>
+                                        <span class="input-git-changes" id="git-changes-count" style="display:none">0</span>
+                                    </button>
                                 </div>
                                 <div class="input-footer-right">
-                                    <span class="token-info" id="token-info"></span>
-                                    <select id="model-selector" class="model-selector">
+                                    <span class="token-info" id="token-info" title="Approximate context tokens used by this turn"></span>
+                                    <select id="thinking-mode-selector" class="model-selector" title="Reasoning depth for deepseek-v* models &mdash; higher = better answers, slower" style="display:none;">
+                                        <option value="">Thinking: off</option>
+                                        <option value="low">Thinking: low</option>
+                                        <option value="med">Thinking: med</option>
+                                        <option value="high">Thinking: high</option>
+                                    </select>
+                                    <select id="model-selector" class="model-selector" title="Switch backend / model for this session">
                                         <option value="">No model</option>
                                     </select>
                                 </div>
@@ -391,58 +338,6 @@
                         </div>
                         <div class="feature-view-body" id="settings-body">
                             <!-- Sections rendered by JS -->
-                        </div>
-                    </div>
-
-                    <!-- ═══ Scheduled Tasks View ═══ -->
-                    <div id="schedule-view" class="feature-view" style="display:none">
-                        <div class="feature-view-header">
-                            <div class="feature-view-header-row">
-                                <h2>Automations</h2>
-                                <button class="btn-primary btn-sm" id="schedule-new-btn">+ New automation</button>
-                            </div>
-                            <p class="feature-view-sub">Run agent prompts on a schedule</p>
-                        </div>
-                        <div class="feature-view-body" id="schedule-body">
-                            <div class="feature-empty">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="1.5"/><path d="M16 8v9l6 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                                <span>No automations yet.</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- ═══ Dispatch View ═══ -->
-                    <div id="dispatch-view" class="feature-view" style="display:none">
-                        <div class="feature-view-header">
-                            <div class="feature-view-header-row">
-                                <h2>Background agents</h2>
-                                <button class="btn-primary btn-sm" id="dispatch-new-btn">+ New background task</button>
-                            </div>
-                            <p class="feature-view-sub">Queue work for agents while you keep building</p>
-                        </div>
-                        <div class="feature-view-body" id="dispatch-body">
-                            <div class="feature-empty">
-                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M16 4v16M10 14l6 6 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 22v4h24v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                                <span>No background agents yet.</span>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- ═══ Command Center ═══ -->
-                    <div id="command-center" class="command-center" style="display:none">
-                        <div class="cmd-sidebar">
-                            <div class="cmd-sidebar-header">
-                                <span class="cmd-sidebar-title">Workspaces</span>
-                                <button class="icon-btn" id="cmd-new-project" title="New workspace">
-                                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                                </button>
-                            </div>
-                            <div class="cmd-project-list" id="cmd-project-list">
-                                <!-- Rendered by JS -->
-                            </div>
-                        </div>
-                        <div class="cmd-main" id="cmd-main">
-                            <!-- New project form or project dashboard rendered by JS -->
                         </div>
                     </div>
 
@@ -468,11 +363,16 @@
                 <aside id="preview-panel" class="preview-panel">
                     <!-- Tab bar -->
                     <div class="preview-tab-bar">
-                        <div class="preview-tab active" id="preview-tab">
+                        <div class="preview-tab active" id="preview-tab" data-pane="browser">
                             <span class="preview-tab-dot"></span>
                             <span class="preview-tab-name" id="preview-tab-name">Browser</span>
-                            <button id="preview-close" class="preview-tab-close" title="Close preview">&times;</button>
                         </div>
+                        <div class="preview-tab" id="plan-tab" data-pane="plan" title="Live plan-graph for the active intent">
+                            <span class="preview-tab-dot"></span>
+                            <span class="preview-tab-name">Plan</span>
+                            <span class="preview-tab-badge" id="plan-tab-badge" style="display:none">0</span>
+                        </div>
+                        <button id="preview-close" class="preview-tab-close" title="Close preview">&times;</button>
                     </div>
                     <!-- Browser chrome — nav + URL bar -->
                     <div class="preview-chrome">
@@ -506,6 +406,21 @@
                             </div>
                             <span>Waiting for output...</span>
                         </div>
+                    </div>
+                    <!-- Plan-graph viewport (toggle via the Plan tab) -->
+                    <div id="plan-graph-pane" class="plan-graph-pane" style="display:none">
+                        <div class="plan-graph-toolbar">
+                            <span class="plan-graph-intent" id="plan-graph-intent">No active intent</span>
+                            <span class="plan-graph-spacer"></span>
+                            <button class="plan-graph-btn" id="plan-graph-pause" title="Pause new node spawns">Pause</button>
+                            <button class="plan-graph-btn" id="plan-graph-history" title="Plan snapshots / restore">History</button>
+                            <button class="plan-graph-btn" id="plan-graph-branch" title="Fork plan-graph from selected node">Branch</button>
+                        </div>
+                        <div id="plan-graph-checkpoint" class="plan-graph-checkpoint" style="display:none"></div>
+                        <div id="plan-graph-canvas" class="plan-graph-canvas">
+                            <div class="plan-graph-empty">Plan-graph idle &mdash; start an intent to see it populate.</div>
+                        </div>
+                        <div id="plan-graph-detail" class="plan-graph-detail" style="display:none"></div>
                     </div>
                     <!-- Console / logs panel -->
                     <div class="preview-console" id="preview-console">
@@ -563,6 +478,7 @@
         </div>
     </div>
 
-    <script src="/static/app.js?v=36"></script>
+    <script src="/static/plan_graph_view.js?v=1"></script>
+    <script src="/static/app.js?v=65"></script>
 </body>
 </html>

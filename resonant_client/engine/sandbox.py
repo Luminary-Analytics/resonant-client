@@ -20,6 +20,9 @@ READ_ONLY_TOOLS = frozenset({
     "browser_read", "browser_screenshot", "browser_js",
     "browser_scroll", "browser_hover", "browser_wait", "browser_back", "browser_tabs",
     "computer_screenshot",
+    "git_status", "git_diff", "git_log",
+    "monitors_list", "clipboard_read", "process_list",
+    "accessibility_tree", "screen_diff",
 })
 
 # Tools that write files (need auto-edit or higher)

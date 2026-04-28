@@ -38,16 +38,20 @@ def _get_setting(
 
 
 def get_default_backend(*, settings_data: Mapping[str, Any] | None = None) -> str:
+    # Default to Ollama (Mac Studio) — env var or settings can override.
     return (
         str(os.environ.get("RESONANT_DEFAULT_BACKEND", "") or "").strip()
-        or _get_setting("general", "default_backend", "", settings_data=settings_data).strip()
+        or _get_setting("general", "default_backend", "ollama", settings_data=settings_data).strip()
+        or "ollama"
     )
 
 
 def get_default_model(*, settings_data: Mapping[str, Any] | None = None) -> str:
+    # deepseek-v4-flash on Ollama is the flagship.
     return (
         str(os.environ.get("RESONANT_DEFAULT_MODEL", "") or "").strip()
-        or _get_setting("general", "default_model", "", settings_data=settings_data).strip()
+        or _get_setting("general", "default_model", "deepseek-v4-flash:cloud", settings_data=settings_data).strip()
+        or "deepseek-v4-flash:cloud"
     )
 
 

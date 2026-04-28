@@ -119,15 +119,21 @@ def update_appcast(
         print("ERROR: <channel> element not found in appcast", file=sys.stderr)
         sys.exit(1)
 
-    # Refuse to insert a duplicate version.
-    for existing in channel.findall("item"):
+    # If an entry for this version already exists (e.g. placeholder from earlier
+    # dev work, or an idempotent re-run of a CI job), REPLACE it. Bug #13 fix —
+    # was previously a hard refuse-and-exit, which broke the v0.2.0 CI run when
+    # the script was given a version that was already in the appcast (it was
+    # supposed to be the current version, just with empty enclosure metadata).
+    existing_idx = None
+    for idx, existing in enumerate(channel.findall("item")):
         existing_version = existing.find(f"{{{SPARKLE_NS}}}version")
         if existing_version is not None and existing_version.text == version:
+            existing_idx = idx
             print(
-                f"ERROR: version {version} already in appcast — bump and retry",
+                f"NOTE: version {version} already in appcast — replacing existing entry",
                 file=sys.stderr,
             )
-            sys.exit(1)
+            break
 
     new_item = build_item(
         version=version,
@@ -137,15 +143,22 @@ def update_appcast(
         download_url=download_url,
     )
 
-    # Insert as first <item> after the channel-level metadata (title/link/desc).
-    # Find the index of the first existing <item> (or end of children) and
-    # insert there.
-    insert_at = len(channel)
-    for idx, child in enumerate(channel):
-        if child.tag == "item":
-            insert_at = idx
-            break
-    channel.insert(insert_at, new_item)
+    if existing_idx is not None:
+        # Replace in place — preserves the position of the entry in the feed.
+        # Find the actual child index (since channel has non-item children too).
+        item_children = channel.findall("item")
+        target = item_children[existing_idx]
+        actual_idx = list(channel).index(target)
+        channel.remove(target)
+        channel.insert(actual_idx, new_item)
+    else:
+        # Insert as first <item> after channel-level metadata (title/link/desc).
+        insert_at = len(channel)
+        for idx, child in enumerate(channel):
+            if child.tag == "item":
+                insert_at = idx
+                break
+        channel.insert(insert_at, new_item)
 
     # Pretty-print: indent children for readable diffs.
     ET.indent(tree, space="    ")

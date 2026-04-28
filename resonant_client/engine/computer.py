@@ -121,12 +121,64 @@ def _attach_auto_screenshot(result: ToolResult) -> ToolResult:
 
 # ── Desktop tool executors ───────────────────────────────────────────
 
+def _resolve_window_or_monitor(args: dict) -> tuple[Optional[dict], str]:
+    """
+    Resolve `target_window` or `monitor` args to a region/origin tuple.
+
+    Precedence: target_window > monitor > (default: full primary monitor).
+    Returns (region_dict_or_None, label).
+    """
+    target_window = (args.get("target_window") or "").strip()
+    if target_window:
+        from .computer_use import get_window_rect
+        rect = get_window_rect(target_window)
+        if rect:
+            return ({"x": rect["x"], "y": rect["y"],
+                     "width": rect["width"], "height": rect["height"]},
+                    f"window '{rect.get('title','')}'")
+        # Window not found — fall through to default; caller decides behavior.
+        return (None, f"window not found: '{target_window}'")
+
+    monitor = args.get("monitor")
+    if monitor is not None:
+        try:
+            import mss
+            with mss.mss() as sct:
+                monitors = sct.monitors[1:]  # 0 is the virtual desktop union
+                idx = int(monitor)
+                if 0 <= idx < len(monitors):
+                    m = monitors[idx]
+                    return ({"x": m["left"], "y": m["top"],
+                             "width": m["width"], "height": m["height"]},
+                            f"monitor[{idx}]")
+        except Exception:
+            pass
+    return (None, "primary monitor")
+
+
 def exec_computer_screenshot(args: dict, start: float) -> ToolResult:
     """
-    Take a screenshot of the desktop.
+    Take a screenshot of the desktop, a window, or a specific monitor.
     Returns base64 PNG for sending to vision models.
+
+    Args:
+        region:        Optional explicit bbox {x, y, width, height}.
+        target_window: Optional window-title substring; screenshot just that window.
+        monitor:       Optional monitor index (0 = primary).
+
+    Precedence: region > target_window > monitor > full primary monitor.
     """
-    region = args.get("region")  # Optional {"x", "y", "width", "height"}
+    import uuid as _uuid
+    region = args.get("region")
+    target_label = "explicit region" if region else None
+
+    if not region:
+        resolved_region, resolved_label = _resolve_window_or_monitor(args)
+        if resolved_region is not None:
+            region = resolved_region
+            target_label = resolved_label
+        else:
+            target_label = resolved_label  # may be a "not found" message
 
     try:
         png_bytes, w, h = _take_screenshot(region)
@@ -134,8 +186,17 @@ def exec_computer_screenshot(args: dict, start: float) -> ToolResult:
         size_kb = len(png_bytes) / 1024
         elapsed = time.time() - start
 
+        # Cache for screen_diff
+        screenshot_id = _uuid.uuid4().hex[:10]
+        try:
+            from .screen_diff import remember_screenshot
+            remember_screenshot(screenshot_id, png_bytes)
+        except Exception:
+            pass
+
+        scope_msg = f" [{target_label}]" if target_label else ""
         return ToolResult(
-            f"Desktop screenshot taken ({w}x{h}, {size_kb:.0f}KB)",
+            f"Desktop screenshot taken ({w}x{h}, {size_kb:.0f}KB){scope_msg}",
             elapsed=elapsed,
             metadata={
                 "screenshot_b64": b64,
@@ -143,6 +204,8 @@ def exec_computer_screenshot(args: dict, start: float) -> ToolResult:
                 "width": w,
                 "height": h,
                 "size_bytes": len(png_bytes),
+                "target_label": target_label or "",
+                "screenshot_id": screenshot_id,
             },
         )
     except ImportError as e:
@@ -152,7 +215,14 @@ def exec_computer_screenshot(args: dict, start: float) -> ToolResult:
 
 
 def exec_computer_click(args: dict, start: float) -> ToolResult:
-    """Click at desktop coordinates. Auto-captures a follow-up screenshot."""
+    """
+    Click at desktop coordinates. Auto-captures a follow-up screenshot.
+
+    Coordinate origin:
+    - Default: absolute screen coords.
+    - With `target_window`: (x, y) are window-relative — translated to screen coords.
+    - With `monitor`:       (x, y) are monitor-relative — translated to screen coords.
+    """
     try:
         import pyautogui
     except ImportError:
@@ -161,18 +231,31 @@ def exec_computer_click(args: dict, start: float) -> ToolResult:
 
     x = args.get("x", 0)
     y = args.get("y", 0)
-    button = args.get("button", "left")  # left, right, middle
-    clicks = args.get("clicks", 1)       # 1 = single, 2 = double
-    screenshot = args.get("screenshot", True)  # Auto-screenshot after
+    button = args.get("button", "left")
+    clicks = args.get("clicks", 1)
+    screenshot = args.get("screenshot", True)
+
+    origin, label = _resolve_window_or_monitor(args)
+    abs_x, abs_y = x, y
+    if origin is not None:
+        abs_x = origin["x"] + x
+        abs_y = origin["y"] + y
 
     try:
-        pyautogui.click(x=x, y=y, button=button, clicks=clicks)
+        pyautogui.click(x=abs_x, y=abs_y, button=button, clicks=clicks)
         elapsed = time.time() - start
         click_type = "Double-clicked" if clicks == 2 else "Clicked"
+        scope_msg = f" relative to {label}" if origin is not None else ""
         result = ToolResult(
-            f"{click_type} at ({x}, {y}) [{button}]",
+            f"{click_type} at ({x}, {y}){scope_msg} → screen ({abs_x}, {abs_y}) [{button}]",
             elapsed=elapsed,
-            metadata={"action": "click", "x": x, "y": y, "button": button},
+            metadata={
+                "action": "click",
+                "x": x, "y": y,
+                "abs_x": abs_x, "abs_y": abs_y,
+                "button": button,
+                "target_label": label,
+            },
         )
         if screenshot:
             result = _attach_auto_screenshot(result)

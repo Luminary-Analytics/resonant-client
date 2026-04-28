@@ -290,6 +290,93 @@ def _list_windows_linux() -> list[dict]:
         return []
 
 
+def list_monitors() -> list[dict]:
+    """
+    Enumerate physical monitors. Returns list of:
+      [{"index": int, "x": int, "y": int, "width": int, "height": int, "primary": bool}, ...]
+
+    The mss "virtual desktop" union (monitors[0]) is excluded — only physical
+    monitors at indices 0..N-1 in the returned list.
+    """
+    try:
+        import mss
+        with mss.mss() as sct:
+            physical = sct.monitors[1:]  # skip virtual desktop
+            # Heuristic for primary: the one whose origin is (0, 0) (Windows + macOS).
+            # If none match, mark the first as primary.
+            primary_idx = next(
+                (i for i, m in enumerate(physical) if m.get("left", 0) == 0 and m.get("top", 0) == 0),
+                0 if physical else -1,
+            )
+            return [
+                {
+                    "index": i,
+                    "x": m["left"],
+                    "y": m["top"],
+                    "width": m["width"],
+                    "height": m["height"],
+                    "primary": i == primary_idx,
+                }
+                for i, m in enumerate(physical)
+            ]
+    except ImportError:
+        return []
+    except Exception as exc:
+        logger.warning(f"list_monitors failed: {exc}")
+        return []
+
+
+def exec_monitors_list(args: dict, start: float) -> ToolResult:
+    """Tool wrapper for list_monitors."""
+    monitors = list_monitors()
+    if not monitors:
+        return ToolResult(
+            "No monitors detected (mss may not be installed).",
+            elapsed=time.time() - start,
+            metadata={"monitors": []},
+        )
+    lines = [f"Found {len(monitors)} monitor(s):"]
+    for m in monitors:
+        flag = "  [primary]" if m["primary"] else ""
+        lines.append(f"  [{m['index']}] {m['width']}x{m['height']} @ ({m['x']},{m['y']}){flag}")
+    return ToolResult(
+        "\n".join(lines),
+        elapsed=time.time() - start,
+        metadata={"monitors": monitors},
+    )
+
+
+def get_window_rect(title_substring: str) -> Optional[dict]:
+    """
+    Find a visible window whose title contains `title_substring` (case-insensitive)
+    and return its bbox.
+
+    Returns {x, y, width, height, title} or None if no match.
+
+    NOTE: returns the full window rect (including title bar / chrome). This is
+    "good enough" for screenshot framing; the agent can adjust click offsets.
+    """
+    if not title_substring:
+        return None
+    needle = title_substring.lower()
+    try:
+        for w in list_windows():
+            title = (w.get("title") or "").lower()
+            if needle in title:
+                if w.get("width", 0) <= 0 or w.get("height", 0) <= 0:
+                    continue
+                return {
+                    "x": w["x"],
+                    "y": w["y"],
+                    "width": w["width"],
+                    "height": w["height"],
+                    "title": w.get("title", ""),
+                }
+    except Exception as exc:
+        logger.warning(f"get_window_rect failed: {exc}")
+    return None
+
+
 def focus_window(title_substring: str) -> str:
     """Focus a window by partial title match."""
     import sys
@@ -456,15 +543,24 @@ def exec_window_focus(args: dict, start: float) -> ToolResult:
 
 def exec_computer_wait(args: dict, start: float) -> ToolResult:
     """
-    Wait for the screen to change, or wait a fixed duration.
+    Wait for the screen (or a region) to change, or wait a fixed duration.
 
     Modes:
-    - duration: Wait N seconds
-    - change: Take screenshots until the screen changes (useful after clicking)
+    - duration: Wait N seconds (capped at 30).
+    - change:   Poll screenshots until pixels change. Set `region` to watch
+                only a bbox (much cheaper + much less false-positive than
+                comparing the whole screen).
+
+    Args:
+        mode:    "duration" | "change"
+        seconds: For mode=duration. Default 1.0.
+        timeout: For mode=change. Default 10.0.
+        region:  For mode=change. {x, y, width, height}. Optional.
     """
     mode = args.get("mode", "duration")
     seconds = args.get("seconds", 1.0)
     timeout = args.get("timeout", 10.0)
+    region = args.get("region")  # Optional {x, y, width, height}
 
     try:
         if mode == "duration":
@@ -473,12 +569,17 @@ def exec_computer_wait(args: dict, start: float) -> ToolResult:
             return ToolResult(f"Waited {seconds:.1f}s", elapsed=elapsed)
 
         elif mode == "change":
-            # Take initial screenshot hash, wait for it to change
             import hashlib
             initial_hash = None
+            scope_label = "screen"
+            if region:
+                scope_label = (
+                    f"region ({region.get('x',0)},{region.get('y',0)},"
+                    f"{region.get('width','?')}x{region.get('height','?')})"
+                )
 
             try:
-                png_bytes, _ = take_screenshot_scaled()
+                png_bytes, _ = take_screenshot_scaled(region=region)
                 initial_hash = hashlib.md5(png_bytes).hexdigest()
             except Exception:
                 time.sleep(1)
@@ -489,19 +590,22 @@ def exec_computer_wait(args: dict, start: float) -> ToolResult:
             while time.time() - wait_start < timeout:
                 time.sleep(0.5)
                 try:
-                    png_bytes, _ = take_screenshot_scaled()
+                    png_bytes, _ = take_screenshot_scaled(region=region)
                     current_hash = hashlib.md5(png_bytes).hexdigest()
                     if current_hash != initial_hash:
                         elapsed = time.time() - start
                         return ToolResult(
-                            f"Screen changed after {time.time() - wait_start:.1f}s",
+                            f"{scope_label.capitalize()} changed after {time.time() - wait_start:.1f}s",
                             elapsed=elapsed,
                         )
                 except Exception:
                     continue
 
             elapsed = time.time() - start
-            return ToolResult(f"No screen change detected within {timeout:.0f}s", elapsed=elapsed)
+            return ToolResult(
+                f"No change detected in {scope_label} within {timeout:.0f}s",
+                elapsed=elapsed,
+            )
 
         else:
             return ToolResult(f"Unknown wait mode: {mode}", is_error=True, elapsed=time.time() - start)

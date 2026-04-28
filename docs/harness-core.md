@@ -6,10 +6,24 @@ split still exists for compatibility, but the canonical direction has changed:
 `resonant-engine` is now the system of record for harness state and remote step
 / cycle execution when the active backend is `resonant`.
 
+**Two important conventions as of 2026-04:**
+
+1. **The harness is opt-in.** Set `general.harness_enabled = true` in Settings
+   (or in `~/.resonant/settings.json`) to wake up planner/generator/evaluator
+   roles, sprint contracts, and the autonomous orchestrator cycle. Default is
+   off — fresh projects get a plain agentic loop, no harness preamble.
+2. **State lives outside the user's repo.** Storage path is
+   `~/.resonant/projects/<sha1(project_path)[:12]>/harness/`, mirroring Claude
+   Code's `~/.claude/projects/<proj>/` layout. Override the parent dir with
+   `RESONANT_STATE_HOME` (used by tests). Legacy `.resonant-harness/` folders
+   are migrated transparently on first load — see
+   `HarnessWorkspace.maybe_migrate_legacy_layout`.
+
 Current split:
 
 - `resonant_client/harness/state.py`
-  - `.resonant-harness` artifact layout
+  - out-of-repo artifact layout (`~/.resonant/projects/<hash>/harness/`)
+  - one-shot legacy migration from `.resonant-harness/`
   - structured state dataclasses
   - progress / contract / evaluator report mutation helpers
 - `resonant_client/harness/orchestrator.py`

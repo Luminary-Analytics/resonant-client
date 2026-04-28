@@ -1,8 +1,5 @@
 import importlib
 import os
-import threading
-import time
-from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,8 +7,6 @@ import pytest
 
 from resonant_client.engine.mcp import MCPManager
 from resonant_client.gui.runtime import BackendSpec
-from resonant_client.gui.scheduler import Scheduler
-from resonant_client.gui.task_runner import TaskRunner, TaskStatus
 
 
 class _SettingsStub:
@@ -140,88 +135,6 @@ def test_mcp_manager_routes_longest_matching_server_name():
     result = manager.call_tool("mcp_my_server_do_thing", {"x": 1})
 
     assert result == {"name": "do_thing", "arguments": {"x": 1}}
-
-
-def test_task_runner_cancel_marks_running_task_cancelled(tmp_path):
-    runner = TaskRunner(max_concurrent=1, persist_dir=tmp_path / "tasks")
-    session_box = {}
-
-    class FakeSession:
-        def __init__(self, cancel_event):
-            self.cancel_event = cancel_event
-            self.cancel_calls = 0
-
-        def cancel(self):
-            self.cancel_calls += 1
-            self.cancel_event.set()
-
-        def run(self, prompt):
-            yield {"event": "step.start"}
-            while not self.cancel_event.is_set():
-                time.sleep(0.01)
-            yield {"event": "error", "message": "Interrupted"}
-            yield {"event": "session.end"}
-
-    def session_factory(task):
-        session = FakeSession(task.cancel_event)
-        session_box["session"] = session
-        return session
-
-    task = runner.submit(
-        name="cancel-me",
-        prompt="stop",
-        session_factory=session_factory,
-        backend_type="codex",
-        model="gpt-5",
-        project_path=str(tmp_path),
-    )
-
-    deadline = time.time() + 5
-    while task.status == TaskStatus.PENDING and time.time() < deadline:
-        time.sleep(0.01)
-
-    assert task.status == TaskStatus.RUNNING
-    assert runner.cancel(task.id) is True
-
-    while task.status not in {TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.COMPLETED} and time.time() < deadline:
-        time.sleep(0.01)
-
-    assert task.status == TaskStatus.CANCELLED
-    assert session_box["session"].cancel_calls >= 1
-
-
-def test_scheduler_uses_configured_session_factory_and_backend_spec(tmp_path):
-    submitted = []
-
-    class DummyRunner:
-        def submit(self, **kwargs):
-            submitted.append(kwargs)
-            return SimpleNamespace()
-
-    runner = DummyRunner()
-    scheduler = Scheduler(runner, persist_path=tmp_path / "schedules.json")
-    session_factory = object()
-    scheduler.set_backend_factory(lambda scheduled_task: session_factory)
-
-    task = scheduler.add(
-        name="nightly",
-        prompt="check",
-        schedule="every:1h",
-        backend_type="claude",
-        model="sonnet",
-        backend_spec={"backend_type": "claude", "model": "sonnet", "api_key_source": "env", "api_key_env": "ANTHROPIC_API_KEY"},
-        project_path=str(tmp_path),
-    )
-    task.next_run = (datetime.now() - timedelta(seconds=1)).isoformat()
-
-    scheduler._check_and_run()
-
-    assert len(submitted) == 1
-    call = submitted[0]
-    assert call["session_factory"] is session_factory
-    assert call["backend_spec"] == task.backend_spec
-    assert call["backend_type"] == "claude"
-    assert task.run_count == 1
 
 
 def test_app_state_preserves_blank_secret_and_applies_permission_mode(monkeypatch, tmp_path):

@@ -144,6 +144,42 @@ def _build_simple_tool_call(name: str, raw_args: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Image-payload helpers (shared by Ollama image paths)
+# ---------------------------------------------------------------------------
+
+_DATA_URL_RE = re.compile(r"^data:image/[A-Za-z0-9.+-]+;base64,", re.IGNORECASE)
+
+
+def _clean_image_b64(raw) -> str:
+    """Normalize a base64 string for Ollama's `images` field.
+
+    Ollama returns HTTP 400 (`illegal base64 data at input byte N`) if the
+    string is empty, contains whitespace/newlines, or carries a `data:image/...;base64,`
+    prefix. This helper strips those so we never poison a chat request with a
+    payload that the server is guaranteed to reject.
+
+    Returns "" when there's nothing usable.
+    """
+    if not raw:
+        return ""
+    if not isinstance(raw, str):
+        return ""
+    s = raw.strip()
+    if not s:
+        return ""
+    s = _DATA_URL_RE.sub("", s)
+    s = "".join(s.split())
+    return s
+
+
+def _safe_image_b64(image_payload) -> str:
+    """Pull a clean base64 string out of a tool-result image dict, or return ''."""
+    if not isinstance(image_payload, dict):
+        return ""
+    return _clean_image_b64(image_payload.get("data", ""))
+
+
+# ---------------------------------------------------------------------------
 # Ollama backend
 # ---------------------------------------------------------------------------
 
@@ -160,8 +196,10 @@ class OllamaBackend:
 
     # Cache of model -> bool (True = supports native tools)
     _tool_support_cache: dict[str, bool] = {}
+    # Cache of model -> bool (True = capabilities include "vision")
+    _vision_support_cache: dict[str, bool] = {}
 
-    def __init__(self, base_url: str, model: str):
+    def __init__(self, base_url: str, model: str, *, thinking: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.name = "ollama"
@@ -169,16 +207,126 @@ class OllamaBackend:
         # CRITICAL: Options must be IDENTICAL across ALL requests (warm_up, stream, etc.)
         # for this backend instance. If any option differs between requests, Ollama may
         # UNLOAD and RELOAD the model. Tune via env once per process, not per call.
+        #
+        # Defaults are tuned for the Mac Studio (256GB unified memory) running deepseek-v4-flash:
+        # 32k context (1M is the model's max but is wasteful for typical sessions),
+        # 1024 batch size to keep the GPU fed, num_gpu=99 forces all layers onto Metal.
+        # Override via RESONANT_OLLAMA_NUM_CTX/NUM_BATCH/NUM_GPU when needed.
         self._ollama_options = {
             "num_gpu": int(os.environ.get("RESONANT_OLLAMA_NUM_GPU", "99")),
-            "num_batch": int(os.environ.get("RESONANT_OLLAMA_NUM_BATCH", "512")),
-            "num_ctx": int(os.environ.get("RESONANT_OLLAMA_NUM_CTX", "4096")),
+            "num_batch": int(os.environ.get("RESONANT_OLLAMA_NUM_BATCH", "1024")),
+            "num_ctx": int(os.environ.get("RESONANT_OLLAMA_NUM_CTX", "32768")),
         }
-        self._ollama_keep_alive = (os.environ.get("RESONANT_OLLAMA_KEEP_ALIVE", "60m").strip() or "60m")
-        self._ollama_http_timeout = float(os.environ.get("RESONANT_OLLAMA_HTTP_TIMEOUT_SEC", "180"))
+        # Thinking-mode (deepseek-v4-flash et al.). Sent as `options.think`.
+        # NOTE: the exact key/value Ollama expects for deepseek thinking modes
+        # is model-dependent. We send `think: low|med|high` per the planned spec;
+        # if a future Ollama release uses `reasoning_effort` or similar, swap here.
+        raw = (thinking or "").strip().lower()
+        if raw in {"", "off"}:
+            self.thinking_mode = None
+        elif raw in {"low", "med", "medium", "high"}:
+            normalized = "med" if raw == "medium" else raw
+            self.thinking_mode = normalized
+            self._ollama_options["think"] = normalized
+        else:
+            # Unknown value — drop silently rather than poisoning the dict
+            self.thinking_mode = None
+        # Keep models warm — first-load on a 284B MoE is several minutes.
+        self._ollama_keep_alive = (os.environ.get("RESONANT_OLLAMA_KEEP_ALIVE", "120m").strip() or "120m")
+        # deepseek-v4-flash with thinking can take a while; raise read timeout.
+        self._ollama_http_timeout = float(os.environ.get("RESONANT_OLLAMA_HTTP_TIMEOUT_SEC", "300"))
         self._ollama_http_read_timeout = float(
-            os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "120")
+            os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "240")
         )
+
+    def get_runtime_telemetry(self, *, timeout: float = 5.0) -> dict:
+        """
+        Best-effort runtime info about the loaded model: queries Ollama's
+        /api/ps for currently-loaded models, and /api/show for static metadata.
+
+        Returns:
+            {
+                "loaded_model": str,
+                "context_length": int,
+                "size_mb": float,
+                "expires_at": str,         # ISO timestamp when keep_alive expires
+                "raw_ps_entry": dict,
+                "model_info": dict,        # selected fields from /api/show
+                "supports_thinking": bool,
+                "active_thinking": str,    # current think option, if any
+            }
+        Or {"error": str} if Ollama is unreachable / model not loaded.
+
+        NOTE: MoE expert-utilization counters are not exposed by Ollama as of
+        this writing; this method returns context_length + memory + thinking
+        state instead, which is the next-most-useful telemetry.
+        """
+        import urllib.request
+        import urllib.error
+
+        result: dict = {
+            "loaded_model": "",
+            "context_length": 0,
+            "size_mb": 0.0,
+            "expires_at": "",
+            "raw_ps_entry": {},
+            "model_info": {},
+            "supports_thinking": False,
+            "active_thinking": self._ollama_options.get("think", ""),
+        }
+
+        # /api/ps — what's loaded right now
+        try:
+            req = urllib.request.Request(
+                f"{self.base_url}/api/ps",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                ps_data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError, json.JSONDecodeError) as exc:
+            return {"error": f"failed to query /api/ps: {exc}", **result}
+
+        models_loaded = ps_data.get("models", [])
+        match = None
+        for m in models_loaded:
+            if m.get("name") == self.model or m.get("model") == self.model:
+                match = m
+                break
+        if not match and models_loaded:
+            match = models_loaded[0]
+        if match:
+            result["loaded_model"] = match.get("name") or match.get("model") or ""
+            result["context_length"] = int(match.get("context_length", 0) or match.get("size_vram", 0) or 0)
+            size_bytes = match.get("size", 0) or match.get("size_vram", 0)
+            result["size_mb"] = round(int(size_bytes) / 1024 / 1024, 1) if size_bytes else 0.0
+            result["expires_at"] = match.get("expires_at", "")
+            result["raw_ps_entry"] = match
+
+        # /api/show — static model metadata (parameters, capabilities)
+        try:
+            payload = json.dumps({"name": self.model}).encode("utf-8")
+            req = urllib.request.Request(
+                f"{self.base_url}/api/show",
+                data=payload,
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                show_data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            # Extract a few interesting fields without dragging the whole modelfile
+            result["model_info"] = {
+                "details": show_data.get("details", {}),
+                "model_info": {k: v for k, v in (show_data.get("model_info") or {}).items()
+                               if isinstance(v, (str, int, float, bool))},
+                "capabilities": show_data.get("capabilities", []),
+            }
+            params = (show_data.get("parameters") or "").lower()
+            caps = " ".join(show_data.get("capabilities", []) or []).lower()
+            result["supports_thinking"] = ("think" in params or "thinking" in caps or "reasoning" in caps)
+        except Exception:
+            pass
+
+        return result
 
     # Models known to support/not support native tool calling
     # (avoids the probe request for common models)
@@ -190,7 +338,7 @@ class OllamaBackend:
         "command-r", "command-r-plus",
         "gemma2", "gemma3", "gemma4",
         "phi4", "phi4-mini",
-        "deepseek-r1", "deepseek-v3.2",
+        "deepseek-r1", "deepseek-v3.2", "deepseek-v4-flash", "deepseek-v4",
         # Ollama cloud models (routed, tool-capable)
         "minimax-m2", "minimax-m2.5", "minimax-m2.7",
         "nemotron-3-super", "nemotron-3-nano",
@@ -204,14 +352,16 @@ class OllamaBackend:
     }
 
     # Cloud models to offer even if not yet pulled locally
+    # deepseek-v4-flash is the flagship — listed first so it surfaces in the picker
     CLOUD_MODELS = [
+        "deepseek-v4-flash:cloud",
+        "deepseek-v3.2:cloud",
         "minimax-m2.7:cloud",
         "minimax-m2.5:cloud",
         "nemotron-3-super:cloud",
         "kimi-k2.5:cloud",
         "glm-5.1:cloud",
         "glm-4.7-flash:cloud",
-        "deepseek-v3.2:cloud",
         "qwen3.5:cloud",
         "gemma4:cloud",
     ]
@@ -324,6 +474,41 @@ class OllamaBackend:
             return "unknown"
         return "native" if self._use_native_tools else "text"
 
+    def supports_vision(self) -> bool:
+        """Whether the current model accepts image attachments via /api/chat.
+
+        Critical because text-only models (deepseek-v4-flash:cloud is a common one)
+        will return HTTP 400 if `images: [...]` is included on any message — and once
+        an image lands in conversation_history, every follow-up turn 400s too.
+
+        Strategy:
+        1. Cache hit → return cached result.
+        2. Hit /api/show, look for "vision" in `capabilities`.
+        3. Default to False on any failure (safer to drop images than poison the chat).
+        """
+        if self.model in OllamaBackend._vision_support_cache:
+            return OllamaBackend._vision_support_cache[self.model]
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/api/show",
+                json={"model": self.model},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                caps = resp.json().get("capabilities", []) or []
+                supported = any(str(c).lower() == "vision" for c in caps)
+                OllamaBackend._vision_support_cache[self.model] = supported
+                logger.info(f"Vision support for {self.model}: {supported} (capabilities={caps})")
+                return supported
+        except Exception as e:
+            logger.debug(f"Vision-capability probe failed for {self.model}: {e}")
+        # Conservative default: assume no vision so we never poison /api/chat with
+        # images for a text-only model. Vision-capable models can opt in by listing
+        # "vision" in their /api/show capabilities.
+        OllamaBackend._vision_support_cache[self.model] = False
+        logger.info(f"Vision support for {self.model}: False (default)")
+        return False
+
     def warm_up(self):
         """Pre-load the model into Ollama's memory so the first request is fast."""
         try:
@@ -419,6 +604,10 @@ class OllamaBackend:
             self._use_native_tools = self._detect_tool_support()
 
         use_native = self._use_native_tools if self._use_native_tools is not None else True
+        # Resolve vision support once per stream call (cached after first hit). When
+        # the model can't see images, we silently drop them from outgoing messages so
+        # one screenshot doesn't 400 the whole conversation.
+        allow_images = self.supports_vision()
 
         # Build messages array
         messages = []
@@ -464,9 +653,11 @@ class OllamaBackend:
                     })
             elif role == "tool_result":
                 if use_native:
-                    # Check for screenshot image in tool result (computer use loop)
-                    if turn.get("image"):
-                        img = turn["image"]
+                    # Check for screenshot image in tool result (computer use loop).
+                    # Drop images entirely for non-vision models — Ollama 400s the
+                    # request and the image stays in history poisoning every retry.
+                    img_b64 = _safe_image_b64(turn.get("image")) if allow_images else ""
+                    if img_b64:
                         # Ollama: include screenshot as user message with image
                         # since tool role doesn't support images in Ollama
                         messages.append({
@@ -476,7 +667,7 @@ class OllamaBackend:
                         messages.append({
                             "role": "user",
                             "content": "[Screenshot from tool result]",
-                            "images": [img.get("data", "")],
+                            "images": [img_b64],
                         })
                     else:
                         messages.append({
@@ -486,12 +677,12 @@ class OllamaBackend:
                 else:
                     # Text mode: tool results become user messages
                     tool_name = turn.get("name", "tool")
-                    if turn.get("image"):
-                        img = turn["image"]
+                    img_b64 = _safe_image_b64(turn.get("image")) if allow_images else ""
+                    if img_b64:
                         messages.append({
                             "role": "user",
                             "content": f"[{tool_name} result]\n{content}",
-                            "images": [img.get("data", "")],
+                            "images": [img_b64],
                         })
                     else:
                         messages.append({
@@ -506,7 +697,11 @@ class OllamaBackend:
                     images = []
                     for part in content:
                         if part.get("type") == "image":
-                            images.append(part.get("data", ""))  # base64 string
+                            if not allow_images:
+                                continue
+                            cleaned = _clean_image_b64(part.get("data", ""))
+                            if cleaned:
+                                images.append(cleaned)
                         elif part.get("type") == "text":
                             text_parts.append(part.get("text", ""))
                     msg = {"role": role, "content": " ".join(text_parts)}
@@ -562,7 +757,45 @@ class OllamaBackend:
             )
             with httpx.Client(timeout=stream_timeout) as client:
                 with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
-                    resp.raise_for_status()
+                    if resp.status_code >= 400:
+                        # Read the error body before raising so the user/log can see
+                        # the actual reason (e.g. "illegal base64 data at input byte N").
+                        try:
+                            err_body = resp.read().decode("utf-8", errors="replace").strip()
+                        except Exception:
+                            err_body = "<unreadable error body>"
+                        # Log a redacted summary of the offending payload to help
+                        # diagnose recurrences without dumping screenshots into logs.
+                        try:
+                            redacted_msgs = []
+                            for m in payload.get("messages", []):
+                                rm = {"role": m.get("role"), "content_len": len(str(m.get("content", "")))}
+                                if m.get("images"):
+                                    rm["images"] = [
+                                        {"len": len(img) if isinstance(img, str) else 0,
+                                         "head": (img[:24] + "...") if isinstance(img, str) and len(img) > 24 else (img or "<empty>")}
+                                        for img in m["images"]
+                                    ]
+                                if m.get("tool_calls"):
+                                    rm["tool_calls"] = len(m["tool_calls"])
+                                redacted_msgs.append(rm)
+                            logger.error(
+                                "Ollama %d on /api/chat (model=%s): %s | messages=%s | options=%s",
+                                resp.status_code,
+                                self.model,
+                                err_body[:500],
+                                redacted_msgs,
+                                {k: v for k, v in payload.get("options", {}).items()
+                                 if k in ("num_ctx", "num_batch", "num_gpu", "think")},
+                            )
+                        except Exception:
+                            logger.exception("failed to log Ollama %d diagnostics", resp.status_code)
+                        # Re-raise with the actual body for the caller's UI to surface
+                        raise httpx.HTTPStatusError(
+                            f"Ollama {resp.status_code}: {err_body[:400]}",
+                            request=resp.request,
+                            response=resp,
+                        )
                     buf = b""
                     for chunk in resp.iter_raw():
                         if cancel_event is not None and cancel_event.is_set():
@@ -2418,11 +2651,12 @@ class MLXBackend:
 
 def create_backend(backend_type: str, url: str = None, model: str = None,
                    api_key: str = None, base_url: str = None, cwd: str = None,
-                   permission_mode: str = None, local_root: str = None):
+                   permission_mode: str = None, local_root: str = None,
+                   thinking: str | None = None):
     if backend_type == "ollama":
         if not model:
             raise ValueError("Model name required for Ollama backend")
-        return OllamaBackend(url, model)
+        return OllamaBackend(url, model, thinking=thinking)
     elif backend_type == "resonant":
         return ResonantBackend(url)
     elif backend_type == "claude":

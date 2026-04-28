@@ -1602,7 +1602,7 @@ Examples:
                         new_model = _select_model_interactive(models, current=be.model)
                         if new_model != be.model:
                             new_be = create_backend("ollama", be.base_url, model=new_model)
-                            session.set_backend(new_be)
+                            session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                             health_info = new_be.health()
                             console.print(f"  [{C_DIM}]{G_THINK} Warming up {new_model}[/{C_DIM}]")
                             new_be.warm_up()
@@ -1616,7 +1616,7 @@ Examples:
                     new_model = _select_model_interactive(models, current=be.model)
                     if new_model != be.model:
                         new_be = create_backend("claude", api_key=be.api_key, model=new_model)
-                        session.set_backend(new_be)
+                        session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                         health_info = new_be.health()
                         console.print(f"  [{C_OK}]{G_CHECK} Switched to {new_model} · conversation cleared[/{C_OK}]")
                     else:
@@ -1626,7 +1626,7 @@ Examples:
                     new_model = _select_model_interactive(models, current=be.model)
                     if new_model != be.model:
                         new_be = create_backend("openai", api_key=be.api_key, model=new_model)
-                        session.set_backend(new_be)
+                        session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                         health_info = new_be.health()
                         console.print(f"  [{C_OK}]{G_CHECK} Switched to {new_model} · conversation cleared[/{C_OK}]")
                     else:
@@ -1645,7 +1645,7 @@ Examples:
                     elif len(others) == 1:
                         target = others[0]
                         new_be = _create_backend_from_available(target, new_available)
-                        session.set_backend(new_be)
+                        session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                         health_info = new_be.health()
                         console.print(f"  [{C_OK}]{G_CHECK} Switched to {target} · conversation cleared[/{C_OK}]")
                     else:
@@ -1665,7 +1665,7 @@ Examples:
                         except (EOFError, KeyboardInterrupt, ValueError):
                             target = others[0]
                         new_be = _create_backend_from_available(target, new_available)
-                        session.set_backend(new_be)
+                        session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                         health_info = new_be.health()
                         console.print(f"  [{C_OK}]{G_CHECK} Switched to {target} · conversation cleared[/{C_OK}]")
 

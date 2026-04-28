@@ -13,6 +13,8 @@ import time
 import logging
 import threading
 import platform as plat
+import uuid as _uuid
+from pathlib import Path
 from typing import Iterator, Optional, Callable
 
 from ..backends import (
@@ -54,11 +56,21 @@ def _check_doom_loop(history: list, threshold: int = DOOM_LOOP_THRESHOLD) -> boo
 
 # ── System Instructions ────────────────────────────────────────────────
 
-def get_system_instructions(plan_mode: bool = False, project_instructions: str | None = None) -> str:
+def get_system_instructions(
+    plan_mode: bool = False,
+    project_instructions: str | None = None,
+    *,
+    working_directory: str | None = None,
+) -> str:
     """Build system instructions with platform-specific hints."""
     if sys.platform == "win32":
         platform_name = f"Windows ({plat.release()})"
-        platform_hints = "Use 'python' not 'python3'. Use 'pip' not 'pip3'. Paths use backslashes."
+        platform_hints = (
+            "Use 'python' not 'python3'. Use 'pip' not 'pip3'. Paths use backslashes. "
+            "Unix tools like `tail`, `head`, `sed`, `awk`, `grep`, `wc`, `find` are "
+            "NOT available — use `file_read` for inspection, the `grep` agent tool "
+            "for content search, and `glob` for path listing instead of shelling out."
+        )
     else:
         platform_name = f"Linux/macOS ({plat.system()})"
         platform_hints = "Use 'python3'/'pip3'."
@@ -91,20 +103,28 @@ Example format:
 
 Do NOT execute tools. Just plan.{project_block}"""
 
-    return f"""You are an expert AI coding agent running on {platform_name}. {platform_hints}
-Working directory: {os.getcwd()}
+    wd = working_directory or os.getcwd()
+    base = f"""You are an expert AI coding agent running on {platform_name}. {platform_hints}
+Working directory: {wd}
 
 You have tools. Use them to accomplish tasks — don't just talk about code.
 
 RULES:
-1. ACT FIRST — use tools immediately for any code task. Start by exploring (glob, file_read).
-2. BE CONCISE — short text, let tool output speak. No filler.
-3. One tool call per response. Wait for results before the next.
+1. ACT FIRST — use tools immediately for any code task. Start by exploring (glob, file_read, grep).
+2. BE CONCISE — short text, let tool output speak. No filler, no preamble, no recap of obvious tool results.
+3. PARALLELIZE READS — when you need to read several independent files or run several greps, use the `batch` tool to fan them out in one turn instead of sequential round-trips. Do NOT batch writes or shell commands that share state.
 4. After gathering info, provide a clear summary of what you found.
 5. bash is non-interactive (no stdin, no servers, no REPLs, no interactive games). Commands have a timeout.
-6. Prefer file_edit over file_write for existing files.
-7. When asked to evaluate/review code, READ the actual files first.
-8. For multi-step work, track progress with a markdown task list the UI can parse, e.g. `- [ ] First step` then `- [x] First step` when done.{project_block}"""
+6. Prefer file_edit over file_write for existing files. Show only the smallest diff that solves the problem.
+7. When asked to evaluate/review code, READ the actual files first — never guess from filenames.
+8. For multi-step work, track progress with a markdown task list the UI can parse, e.g. `- [ ] First step` then `- [x] First step` when done.
+9. For independent sub-investigations (codebase exploration, planning, isolated builds), spawn a sub-agent via the `task` tool — keeps the main context window clean.
+10. THINK BEFORE ACTING — for non-trivial tasks, briefly reason through the approach before the first tool call. Don't show your full chain of thought; show the conclusion.
+11. PREFER FIRST-CLASS TOOLS over `bash` when one exists:
+    - Git: use `git_status` / `git_diff` / `git_commit` / `git_branch_create` / `git_log` (not `bash(git ...)`) — safer arg handling, structured UI rendering.
+    - Iterative Python/JS exploration: use `repl_python_start` + `repl_python_eval` (not repeated `bash(python -c ...)`) — state persists across calls, so you can build up incrementally without cold starts. Always `repl_python_stop` when done.{project_block}"""
+
+    return base
 
 
 # ── Choices Parser ─────────────────────────────────────────────────────
@@ -219,11 +239,46 @@ class Session:
         self.sandbox = None  # PathSandbox, set externally
         self.event_logger = None  # EventLogger, set externally for JSONL logging
         self.execution_policy = None  # ExecutionPolicy, set externally
+        # Auto-feedback loops (set externally by AppState.build_session from settings)
+        self.auto_lint_enabled: bool = False
+        self.auto_test_enabled: bool = False
+        self.auto_test_command: str = "pytest -x"
+        # Doom-loop guards: file path → hash of last feedback we injected
+        self._lint_feedback_cache: dict[str, str] = {}
+        self._test_feedback_cache: dict[str, str] = {}
 
     @property
     def is_subagent(self) -> bool:
         """True if this session was spawned by a parent session."""
         return self.parent_session is not None
+
+    def copy_execution_context_from(self, parent: "Session") -> None:
+        """Mirror tool cwd, sandbox, and sidecar services from a parent session (e.g. sub-agents)."""
+        self.project_path = parent.project_path
+        self.sandbox = parent.sandbox
+        self.project_instructions = parent.project_instructions
+        self.autonomy_tier = parent.autonomy_tier
+        self.execution_policy = parent.execution_policy
+        self.hook_runner = parent.hook_runner
+        self.mcp_tools = parent.mcp_tools
+        self._mcp_manager = getattr(parent, "_mcp_manager", None)
+        self._engram = parent._engram
+        self._codebase_index = parent._codebase_index
+        pl = parent.event_logger
+        if pl and getattr(pl, "enabled", False):
+            try:
+                from .event_log import EventLogger
+
+                log_dir = getattr(pl, "_log_dir", None) or (Path.home() / ".resonant" / "logs")
+                self.event_logger = EventLogger(
+                    log_dir=log_dir,
+                    session_id=_uuid.uuid4().hex[:12],
+                    enabled=True,
+                )
+            except Exception:
+                self.event_logger = None
+        else:
+            self.event_logger = pl
 
     @property
     def tools(self) -> list[dict]:
@@ -248,10 +303,30 @@ class Session:
         """Clear conversation history."""
         self.conversation_history.clear()
 
-    def set_backend(self, backend):
-        """Switch to a different backend (clears history)."""
+    def set_backend(self, backend, *, reset_history: bool = False):
+        """
+        Switch to a different backend.
+
+        Args:
+            backend: New backend instance to attach to this session.
+            reset_history: If True, clears conversation_history. Default False
+                (preserves prior turns so users can swap models mid-conversation).
+
+        Bug #9+#10 fix: was previously always-clear, which silently dropped
+        the user's conversation context every time the backend dropdown
+        changed. The dropdown UX implies "swap the brain"; users don't
+        expect their history to vanish.
+
+        Caveat: CLI-wrapper backends (claude-code, codex) manage their own
+        session via --resume <session_id> and ignore the conversation_history
+        list we pass to .stream(). For those, our preserved history reaches
+        Ollama/Claude API/OpenAI fine but is invisible to claude-code/codex —
+        the GUI emits a one-time `backend_swap_warning` event when swapping
+        TO those backends so the user knows.
+        """
         self.backend = backend
-        self.conversation_history.clear()
+        if reset_history:
+            self.conversation_history.clear()
 
     @property
     def cancel_requested(self) -> bool:
@@ -299,6 +374,74 @@ class Session:
             total_elapsed=time.time() - total_start,
             total_steps=total_steps,
         )
+
+    def _run_post_edit_feedback(self, edited_path: str) -> Iterator[dict]:
+        """
+        After a successful file_edit/file_write, optionally run the project
+        linter and/or test command on the changed file. If feedback is found,
+        inject it into conversation_history as a synthetic user turn so the
+        next iteration sees it.
+
+        Doom-loop guard: tracks per-file content hash of the last feedback
+        injected; identical feedback is not re-injected.
+        """
+        import hashlib
+        import os as _os
+
+        # Resolve to absolute path under project_path if needed
+        abs_path = edited_path
+        if not _os.path.isabs(abs_path) and self.project_path:
+            abs_path = _os.path.join(self.project_path, abs_path)
+        abs_path = _os.path.normpath(abs_path)
+
+        # ── Lint ──
+        if self.auto_lint_enabled:
+            try:
+                from .lint import lint_file
+                lint_result = lint_file(self.project_path, abs_path, timeout=10.0)
+            except Exception as exc:
+                lint_result = {"error": f"lint runner crashed: {exc}", "ok": True, "errors": ""}
+
+            if not lint_result.get("ok") and lint_result.get("errors"):
+                errors_text = lint_result["errors"]
+                fingerprint = hashlib.sha256(f"lint:{abs_path}:{errors_text}".encode("utf-8")).hexdigest()
+                if self._lint_feedback_cache.get(abs_path) != fingerprint:
+                    self._lint_feedback_cache[abs_path] = fingerprint
+                    linter_name = lint_result.get("linter", "linter")
+                    truncated = errors_text if len(errors_text) <= 4000 else errors_text[:4000] + "\n…(truncated)"
+                    msg = f"[auto-lint] {linter_name} reported issues in {edited_path}:\n{truncated}"
+                    self.conversation_history.append({"role": "user", "content": msg})
+                    yield make_event(
+                        EngineEvent.STATUS,
+                        message=f"Auto-lint feedback injected ({linter_name})",
+                    )
+
+        # ── Tests ──
+        if self.auto_test_enabled:
+            try:
+                from .auto_test import run_tests_for_edit
+                test_result = run_tests_for_edit(
+                    self.project_path,
+                    abs_path,
+                    command=self.auto_test_command,
+                    timeout=60.0,
+                )
+            except Exception as exc:
+                test_result = {"error": f"test runner crashed: {exc}", "ok": True, "output": ""}
+
+            if not test_result.get("ok") and test_result.get("output"):
+                output = test_result["output"]
+                fingerprint = hashlib.sha256(f"test:{abs_path}:{output}".encode("utf-8")).hexdigest()
+                if self._test_feedback_cache.get(abs_path) != fingerprint:
+                    self._test_feedback_cache[abs_path] = fingerprint
+                    target = test_result.get("target", "")
+                    truncated = output if len(output) <= 4000 else output[:4000] + "\n…(truncated)"
+                    msg = f"[auto-test] tests failed for {edited_path} (ran: {target}):\n{truncated}"
+                    self.conversation_history.append({"role": "user", "content": msg})
+                    yield make_event(
+                        EngineEvent.STATUS,
+                        message=f"Auto-test feedback injected ({target})",
+                    )
 
     def run(
         self,
@@ -407,7 +550,12 @@ class Session:
                                 label=ctx)
 
             step_start = time.time()
-            instructions = get_system_instructions(plan_mode=is_planning, project_instructions=self.project_instructions)
+            wd = self.project_path or os.getcwd()
+            instructions = get_system_instructions(
+                plan_mode=is_planning,
+                project_instructions=self.project_instructions,
+                working_directory=wd,
+            )
 
             # ── Inject context from memory & RAG (first iteration only) ──
             if iteration == 1:
@@ -678,6 +826,35 @@ class Session:
                         "content": result.output,
                     })
                 else:
+                    # Allowlist guard: when this Session was constructed with a
+                    # filtered tool list (e.g. via specialist dispatch), refuse
+                    # to dispatch tools the model invented or pulled from text-mode
+                    # XML blocks. The filter at the API/system-prompt layer hints
+                    # the model away from disallowed tools, but doesn't enforce —
+                    # this is the real boundary.
+                    if self._allowed_tools is not None:
+                        allowed_names = {t.get("function", {}).get("name", "")
+                                          for t in self._allowed_tools}
+                        if fn_name not in allowed_names:
+                            denial = (
+                                f"Tool '{fn_name}' is not in this session's allowlist. "
+                                f"Allowed tools: {sorted(allowed_names)}"
+                            )
+                            yield make_event(EngineEvent.TOOL_RESULT,
+                                            name=fn_name, call_id=call_id,
+                                            output=denial, is_error=True,
+                                            denied=True, elapsed=0.0)
+                            self.conversation_history.append({
+                                "role": "tool_call", "name": fn_name,
+                                "arguments": fn_args_str, "call_id": call_id,
+                                "content": f"Called {fn_name}",
+                            })
+                            self.conversation_history.append({
+                                "role": "tool_result", "call_id": call_id,
+                                "content": denial,
+                            })
+                            continue
+
                     # Resolve relative file paths against project directory
                     if self.project_path:
                         if fn_name in ("file_write", "file_read", "file_edit", "glob", "grep"):
@@ -715,7 +892,12 @@ class Session:
                             })
                             continue
 
-                    result = execute_tool(fn_name, fn_args, cancel_event=self._cancel_event)
+                    result = execute_tool(
+                        fn_name, fn_args,
+                        cancel_event=self._cancel_event,
+                        project_path=self.project_path or "",
+                        settings=getattr(self, "_settings_ref", None),
+                    )
 
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
@@ -743,6 +925,21 @@ class Session:
                             "data": result.metadata["screenshot_b64"],
                         }
                     self.conversation_history.append(tool_result_entry)
+
+                    # Auto-lint / auto-test feedback loop: after a successful edit,
+                    # optionally run the project linter (and/or tests) on the changed file
+                    # and inject the output back into the conversation as a synthetic user
+                    # turn so the model sees it on the next iteration.
+                    if (
+                        not result.is_error
+                        and fn_name in ("file_edit", "file_write")
+                        and (self.auto_lint_enabled or self.auto_test_enabled)
+                        and self.project_path
+                    ):
+                        edited_path = fn_args.get("path") or ""
+                        if edited_path:
+                            for fb_event in self._run_post_edit_feedback(edited_path):
+                                yield fb_event
 
                     # Post-tool hook
                     if self.hook_runner:
@@ -874,6 +1071,7 @@ class Session:
             allowed_tools=allowed_tools,
             cancel_event=self._cancel_event,
         )
+        child.copy_execution_context_from(self)
 
         # Run the sub-agent, collecting text output and forwarding events
         collected_text = []

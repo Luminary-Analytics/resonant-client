@@ -130,13 +130,8 @@ class ResonantApp {
         this.activeToolGroupCount = 0;
         this.activeToolGroupCounts = {};  // {name: count}
 
-        // Mode tabs — Chat vs Code
-        this.sessionMode = 'code';          // active tab (affects new session creation)
-        this.currentSessionMode = 'code';   // loaded session's mode (affects rendering)
-        this.sessionRole = 'generator';     // active code-session role for new sessions
+        this.sessionRole = 'generator';     // active session role for new sessions
         this.currentSessionRole = 'generator'; // loaded session's role
-        this.chatGroups = [];               // ordered list of group names
-        this.expandedGroups = new Set();     // which groups are expanded in sidebar
 
         // Terminal tracking — active bash/tool executions
         this.activeTerminals = new Map(); // call_id → {name, command, startTime}
@@ -159,7 +154,6 @@ class ResonantApp {
         this.allSessions = [];
         this.currentSessionId = '';
         this.recentProjects = [];
-        this.projectFilter = 'all'; // 'all' = all projects (default), null = current project, or a path
         this.harnessState = null;
         this.harnessCycles = [];
         this.harnessCyclePoller = null;
@@ -167,16 +161,6 @@ class ResonantApp {
         // View state
         this.currentView = 'agents';
         this.settings = {};
-
-        // Command center state
-        this.commandPanel = 'fleet';
-        this.commandAgents = [];
-        this.commandTasks = [];
-        this.commandFeed = [];
-        this.commandProjects = [];
-        this.cmdSelectedProject = null;
-        this.cmdDashTab = 'plan';
-        this.commandCenter = document.getElementById('command-center');
 
         // Per-turn agent run summary (Cursor-style card on session.end)
         this._agentRunSummary = { title: '', fileChanges: [], todos: null };
@@ -199,8 +183,17 @@ class ResonantApp {
         this.sendBtn = document.getElementById('send-btn');
         this.stopBtn = document.getElementById('stop-btn');
         this.modelSelector = document.getElementById('model-selector');
+        this.thinkingModeSelector = document.getElementById('thinking-mode-selector');
         this.headerStatus = document.getElementById('header-status');
         this.headerProject = document.getElementById('header-project');
+        // Sidebar project switcher pill — opens the same dropdown the titlebar used to
+        // and additionally filters the sidebar session tree to the selected project.
+        this.sidebarProjectSwitch = document.getElementById('sidebar-project-switch');
+        this.sidebarProjectSwitchLabel = document.getElementById('sidebar-project-switch-label');
+        this.sidebarProjectSwitch?.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            this._openProjectSwitcher(this.sidebarProjectSwitch);
+        });
         this.sidebarCwd = document.getElementById('sidebar-cwd');
         this.sidebarProjectName = document.getElementById('sidebar-project-name');
         this.sessionList = document.getElementById('agent-list');
@@ -228,8 +221,6 @@ class ResonantApp {
 
         // Feature view refs
         this.settingsView = document.getElementById('settings-view');
-        this.scheduleView = document.getElementById('schedule-view');
-        this.dispatchView = document.getElementById('dispatch-view');
         this.settingsBody = document.getElementById('settings-body');
 
         // Header indicator refs
@@ -315,11 +306,6 @@ class ResonantApp {
     // ── Event Binding ───────────────────────────────────────────
 
     bindEvents() {
-        // Mode tabs (Chat / Code)
-        document.querySelectorAll('.mode-tab').forEach(tab => {
-            tab.addEventListener('click', () => this.setSessionMode(tab.dataset.mode));
-        });
-
         // Send message
         this.sendBtn.addEventListener('click', () => this.sendMessage());
         this.userInput.addEventListener('keydown', (e) => {
@@ -376,7 +362,38 @@ class ResonantApp {
                 const model = val.substring(idx + 1);
                 this.send({ command: 'switch_model', backend, model });
             }
+            this._refreshThinkingModeVisibility();
         });
+
+        // Voice input (push-to-talk via Web Speech API)
+        this._setupVoiceInput();
+
+        // "Plan this" button — sends the current input as an intent.
+        document.getElementById('plan-this-btn')?.addEventListener('click', () => {
+            const text = this.userInput.value.trim();
+            if (!text) {
+                this.showStatusMessage('Type a goal first, then click Plan this.');
+                this.userInput.focus();
+                return;
+            }
+            this.startIntent(text);
+            this.userInput.value = '';
+            this.userInput.style.height = 'auto';
+        });
+
+        // Thinking-mode selector (deepseek-v* only)
+        if (this.thinkingModeSelector) {
+            this.thinkingModeSelector.addEventListener('change', () => {
+                const mode = this.thinkingModeSelector.value || '';
+                if (mode && !confirm('Changing thinking mode reloads the model (~30–90s on large MoE models). Continue?')) {
+                    // Revert visually
+                    this.thinkingModeSelector.value = this._lastThinkingMode || '';
+                    return;
+                }
+                this._lastThinkingMode = mode;
+                this.send({ command: 'set_thinking_mode', mode });
+            });
+        }
 
         // Permission dropdown
         this.permissionMode = 'bypass'; // default: bypass permissions
@@ -427,23 +444,6 @@ class ResonantApp {
             this.send({ command: 'folder_dialog' });
         });
 
-        // Chat welcome screen — send button and Enter key
-        const chatWelcomeSend = document.getElementById('chat-welcome-send');
-        const chatWelcomeTextarea = document.getElementById('chat-welcome-textarea');
-        if (chatWelcomeSend && chatWelcomeTextarea) {
-            chatWelcomeSend.addEventListener('click', () => this._sendChatWelcomeMessage());
-            chatWelcomeTextarea.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    this._sendChatWelcomeMessage();
-                }
-            });
-            chatWelcomeTextarea.addEventListener('input', () => {
-                chatWelcomeTextarea.style.height = 'auto';
-                chatWelcomeTextarea.style.height = Math.min(chatWelcomeTextarea.scrollHeight, 200) + 'px';
-            });
-        }
-
         // Image paste (Ctrl+V)
         this.userInput.addEventListener('paste', (e) => {
             const items = e.clipboardData?.items;
@@ -486,6 +486,42 @@ class ResonantApp {
         this.previewClose.addEventListener('click', () => {
             this.closePreviewPanel();
         });
+
+        // Preview tab toggle (Browser ↔ Plan)
+        document.querySelectorAll('.preview-tab[data-pane]').forEach((tab) => {
+            tab.addEventListener('click', () => {
+                this.switchPreviewPane(tab.dataset.pane);
+            });
+        });
+
+        // Plan-graph toolbar buttons
+        document.getElementById('plan-graph-pause')?.addEventListener('click', () => {
+            const id = this._currentIntentId;
+            if (!id) { this.showStatusMessage('No active intent to pause.'); return; }
+            this.send({ command: 'intent_pause', intent_id: id });
+        });
+        document.getElementById('plan-graph-history')?.addEventListener('click', () => {
+            const id = this._currentIntentId;
+            if (!id) { this.showStatusMessage('No active intent — nothing to show history for.'); return; }
+            this.send({ command: 'intent_list_snapshots', intent_id: id });
+        });
+        document.getElementById('plan-graph-branch')?.addEventListener('click', () => {
+            this.showStatusMessage('Branch from a node by clicking it in the viz, then choosing Restore from here.');
+        });
+
+        // Wire host-app hooks for the plan-graph view: per-node Restore / Re-run.
+        if (window.PlanGraphView) {
+            window.PlanGraphView.onAction = (kind, nodeId) => {
+                const id = this._currentIntentId;
+                if (!id) return;
+                if (kind === 'restore_from') {
+                    this.send({ command: 'intent_list_snapshots', intent_id: id });
+                    this.showStatusMessage('Pick a snapshot to restore from the history list.');
+                } else if (kind === 'rerun') {
+                    this.showStatusMessage('Re-run is not wired yet — restart the intent or restore a snapshot.');
+                }
+            };
+        }
 
         // Preview back/forward navigation
         document.getElementById('preview-back').addEventListener('click', () => {
@@ -566,7 +602,7 @@ class ResonantApp {
         });
 
         // ── Sidebar Navigation ──
-        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(item => {
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view]').forEach(item => {
             item.addEventListener('click', () => {
                 this.switchView(item.dataset.view);
             });
@@ -587,10 +623,6 @@ class ResonantApp {
             this.renderFilteredSessions();
         });
 
-        // Dispatch + Schedule "New" buttons
-        document.getElementById('dispatch-new-btn')?.addEventListener('click', () => this.showDispatchDialog());
-        document.getElementById('schedule-new-btn')?.addEventListener('click', () => this.showScheduleDialog());
-
         // Git badge click → popover
         this.gitBadge?.addEventListener('click', () => this.toggleGitPopover());
 
@@ -610,12 +642,6 @@ class ResonantApp {
             this.toggleResonantMdPopover();
         });
 
-        // ── Command Center ──
-        document.getElementById('cmd-new-project')?.addEventListener('click', () => {
-            this.cmdSelectedProject = null;
-            this.renderCommandSidebar();
-            this.renderNewProjectScreen();
-        });
     }
 
     // ── Image Attachments ────────────────────────────────────────
@@ -672,6 +698,19 @@ class ResonantApp {
         const text = this.userInput.value.trim();
         if (!text || this.isRunning) return;
 
+        // /plan slash-prefix routes the message to the intent flow instead of
+        // a one-shot Session.run. Strip the prefix and forward.
+        if (text.startsWith('/plan ')) {
+            this.startIntent(text.slice('/plan '.length).trim());
+            this.userInput.value = '';
+            this.userInput.style.height = 'auto';
+            return;
+        }
+        if (text === '/plan') {
+            this.showStatusMessage('Type your goal after /plan, e.g. /plan add dark mode toggle.');
+            return;
+        }
+
         // Add user message to chat (with image thumbnails if attached)
         this.addUserMessage(text, this.attachedImages);
 
@@ -708,6 +747,58 @@ class ResonantApp {
         this.attachedImages = [];
         this.renderAttachedImages();
         this.setRunning(true);
+    }
+
+    /**
+     * Render a list of plan-graph snapshots in a small modal so the user can
+     * pick one to restore. Modal is dismissible; selecting fires intent_restore_snapshot.
+     */
+    _renderSnapshotList(intentId, snapshots) {
+        const existing = document.getElementById('snapshot-list-modal');
+        if (existing) existing.remove();
+        const modal = document.createElement('div');
+        modal.id = 'snapshot-list-modal';
+        modal.className = 'snapshot-list-modal';
+        const rows = (snapshots || []).map(s => `
+            <div class="snap-row" data-ts="${s.ts_ms}">
+                <span class="snap-time">${this.escapeHtml(s.ts_iso)}</span>
+                <span class="snap-meta">${s.node_count} nodes</span>
+                <button class="snap-restore" data-ts="${s.ts_ms}">Restore</button>
+            </div>
+        `).join('');
+        modal.innerHTML = `
+            <div class="snap-modal-card">
+                <div class="snap-modal-header">
+                    <span>Plan history (${snapshots.length})</span>
+                    <button class="snap-modal-close" id="snap-modal-close">&times;</button>
+                </div>
+                <div class="snap-modal-body">${rows || '<div class="snap-empty">No snapshots yet for this intent.</div>'}</div>
+            </div>`;
+        document.body.appendChild(modal);
+        modal.querySelector('#snap-modal-close')?.addEventListener('click', () => modal.remove());
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.remove(); });
+        modal.querySelectorAll('.snap-restore').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const ts = parseInt(btn.dataset.ts, 10);
+                this.send({ command: 'intent_restore_snapshot', intent_id: intentId, ts_ms: ts });
+                this.showStatusMessage('Restoring snapshot…');
+                modal.remove();
+            });
+        });
+    }
+
+    /**
+     * Send the user text as an intent — kicks off the orchestrator pipeline,
+     * not a one-shot Session.run. The plan-graph viz auto-opens; status events
+     * land in the chat as small status messages.
+     */
+    startIntent(text) {
+        text = (text || '').trim();
+        if (!text) return;
+        this.send({ command: 'intent_start', text });
+        this.addUserMessage('/plan ' + text);
+        this.showStatusMessage('Intent dispatched — plan-graph populating in the preview panel.');
+        this.openPlanTab(true);
     }
 
     setRunning(running) {
@@ -824,63 +915,6 @@ class ResonantApp {
         }, 500);
     }
 
-    // ── Mode Tabs (Chat / Code) ─────────────────────────────────
-
-    setSessionMode(mode) {
-        this.sessionMode = mode;
-        document.querySelectorAll('.mode-tab').forEach(tab =>
-            tab.classList.toggle('active', tab.dataset.mode === mode));
-
-        // Command mode: show command center, hide everything else
-        if (this.commandCenter) {
-            this.commandCenter.style.display = mode === 'command' ? 'flex' : 'none';
-        }
-        if (mode === 'command') {
-            // Hide all chat/feature views
-            if (this.agentPanel) this.agentPanel.style.display = 'none';
-            else this.chatContainer.style.display = 'none';
-            this.inputBar.style.display = 'none';
-            this.welcomeScreen.style.display = 'none';
-            const chatWelcome = document.getElementById('chat-welcome-screen');
-            if (chatWelcome) chatWelcome.style.display = 'none';
-            if (this.settingsView) this.settingsView.style.display = 'none';
-            if (this.scheduleView) this.scheduleView.style.display = 'none';
-            if (this.dispatchView) this.dispatchView.style.display = 'none';
-            // Hide the entire main sidebar — Command Center has its own project sidebar
-            const sidebar = document.getElementById('sidebar');
-            if (sidebar) sidebar.style.display = 'none';
-            this.currentView = 'command';
-            this.initCommandCenter();
-            return;
-        }
-
-        // Restore the main sidebar when leaving command mode
-        const sidebar = document.getElementById('sidebar');
-        if (sidebar) sidebar.style.display = '';
-
-        // Toggle sidebar content — project filter vs chat groups
-        const projectFilter = document.getElementById('sidebar-project-filter');
-        if (projectFilter) projectFilter.style.display = mode === 'code' ? '' : 'none';
-
-        const newBtn = document.getElementById('new-agent-btn');
-        if (newBtn) {
-            newBtn.style.display = '';
-            newBtn.title = mode === 'chat' ? 'New ask (Ctrl+N)' : 'New agent (Ctrl+N)';
-        }
-
-        const roleSelect = document.getElementById('setup-session-role');
-        if (roleSelect) roleSelect.style.display = mode === 'chat' ? 'none' : '';
-
-        this.updateHarnessBadge();
-        this.renderFilteredSessions();
-    }
-
-    applySessionModeUI(mode) {
-        this.currentSessionMode = mode || 'code';
-        document.body.classList.toggle('chat-mode', this.currentSessionMode === 'chat');
-        this.updateHarnessBadge();
-    }
-
     applySessionRoleUI(role) {
         this.currentSessionRole = role || 'generator';
         document.body.dataset.sessionRole = this.currentSessionRole;
@@ -888,7 +922,10 @@ class ResonantApp {
     }
 
     formatSessionRole(role) {
-        const labels = { planner: 'Planner', generator: 'Generator', evaluator: 'Evaluator', chat: 'Ask' };
+        // Note: 'chat' is a legacy role from the pre-refocus Ask mode. We
+        // now hide it instead of rendering "Ask" — chat mode is gone.
+        const labels = { planner: 'Planner', generator: 'Generator', evaluator: 'Evaluator' };
+        if (role === 'chat') return ''; // suppress legacy tag
         return labels[role] || 'Generator';
     }
 
@@ -1015,7 +1052,7 @@ class ResonantApp {
     requestHarnessResumePrompt() {
         this.send({
             command: 'get_harness_resume_prompt',
-            session_mode: this.currentSessionMode || 'code',
+            session_mode: 'code',
             session_role: this.currentSessionRole || 'generator',
         });
     }
@@ -1031,12 +1068,25 @@ class ResonantApp {
 
     updateHarnessBadge() {
         if (!this.harnessBadge || !this.harnessBadgeText) return;
-        const show = this.currentSessionMode !== 'chat' && !!this.harnessState;
-        this.harnessBadge.style.display = show ? 'flex' : 'none';
-        if (!show) return;
-
-        const sprint = this.harnessState.active_sprint_id || 'no sprint';
+        // Master gate first: when sprint workflow is off, the badge never appears.
+        if (this.harnessEnabled === false) {
+            this.harnessBadge.style.display = 'none';
+            return;
+        }
+        // Only surface the harness badge when the workflow is actually being used:
+        // - an active sprint exists, OR
+        // - a harness cycle is running.
+        // Otherwise the badge "no sprint · proposed" is just visual noise for
+        // users who don't use harness mode.
         const activeCycle = this.getActiveHarnessCycle();
+        const hasActiveSprint = this.harnessState && (this.harnessState.active_sprint_id || activeCycle);
+        if (!hasActiveSprint) {
+            this.harnessBadge.style.display = 'none';
+            return;
+        }
+        this.harnessBadge.style.display = 'flex';
+
+        const sprint = this.harnessState.active_sprint_id || 'cycle';
         if (activeCycle) {
             const cycleRole = activeCycle.current_role || activeCycle.active_step?.role || activeCycle.status;
             this.harnessBadgeText.textContent = `${sprint} · auto:${cycleRole}`;
@@ -1265,44 +1315,6 @@ class ResonantApp {
         });
     }
 
-    _populateChatWelcomeModels() {
-        const select = document.getElementById('chat-welcome-model');
-        if (!select || !this.backends) return;
-        const currentVal = this.modelSelector?.value || '';
-        const idx = currentVal.indexOf(':');
-        const curBackend = idx > 0 ? currentVal.substring(0, idx) : '';
-        const curModel = idx > 0 ? currentVal.substring(idx + 1) : '';
-        this._populateSelectWithGroupedModels(select, this.backends, curBackend, curModel);
-    }
-
-    _sendChatWelcomeMessage() {
-        const textarea = document.getElementById('chat-welcome-textarea');
-        const select = document.getElementById('chat-welcome-model');
-        if (!textarea || !select) return;
-        const text = textarea.value.trim();
-        if (!text) return;
-
-        // Parse backend:model from select
-        const val = select.value;
-        const idx = val.indexOf(':');
-        if (idx <= 0) return;
-        const backend = val.substring(0, idx);
-        const model = val.substring(idx + 1);
-
-        // Select backend (creates session), then send message once connected
-        this._pendingChatMessage = text;
-        this.send({ command: 'select_backend', backend, model, session_mode: 'chat', session_role: 'chat' });
-
-        // Clear and hide welcome
-        textarea.value = '';
-        const chatWelcome = document.getElementById('chat-welcome-screen');
-        if (chatWelcome) chatWelcome.style.display = 'none';
-        if (this.agentPanel) this.agentPanel.style.display = 'flex';
-        else this.chatContainer.style.display = 'flex';
-        this.inputBar.style.display = 'flex';
-        this.applySessionModeUI('chat');
-    }
-
     // ── Event Handler ───────────────────────────────────────────
 
     handleEvent(event) {
@@ -1373,17 +1385,24 @@ class ResonantApp {
                 this.chatMessages.innerHTML = '';
                 this.sessions = event.sessions || [];
                 this.currentSessionId = event.current_session_id || '';
-                this.applySessionModeUI(this.sessionMode);
                 this.applySessionRoleUI(event.session_role || this.sessionRole);
                 this.renderFilteredSessions();
                 this.showChatInterface();
+                break;
+            case 'session_forked':
+                this.showStatusMessage(`Forked: kept ${event.user_messages_kept} message(s)`);
+                break;
+            case 'session_replay_events':
+                if (event.error) {
+                    this.showStatusMessage(`Replay failed: ${event.error}`);
+                } else {
+                    this.enterReplayMode(event.events || [], event.title || '');
+                }
                 break;
             case 'session_loaded':
                 this.chatMessages.innerHTML = '';
                 this.currentSessionId = event.current_session_id || '';
                 this.sessions = event.sessions || [];
-                // Apply saved session mode before replay
-                this.applySessionModeUI(event.session_mode || 'code');
                 this.applySessionRoleUI(event.session_role || 'generator');
                 this.sessionRole = event.session_role || this.sessionRole;
                 this.renderFilteredSessions();
@@ -1397,14 +1416,62 @@ class ResonantApp {
                 // Scroll to bottom after replay
                 this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
                 break;
-            case 'chat_groups':
-                this.chatGroups = event.groups || [];
-                if (this.sessionMode === 'chat') this.renderFilteredSessions();
-                break;
             case 'harness_state':
                 this.harnessState = event.data || null;
                 this.updateHarnessBadge();
                 this.rerenderHarnessPopoverIfOpen();
+                break;
+            // ── Plan-graph (organic orchestration) ────────────────────
+            case 'plan.snapshot':
+                if (window.PlanGraphView) {
+                    window.PlanGraphView.render(event.snapshot || event.data);
+                    this.openPlanTab(false);  // open without stealing focus
+                }
+                break;
+            case 'plan.event':
+                if (window.PlanGraphView) {
+                    window.PlanGraphView.applyEvent(event.event_payload || event);
+                }
+                break;
+            case 'plan.checkpoint':
+                if (window.PlanGraphView) {
+                    window.PlanGraphView.showCheckpoint(event.payload || event);
+                    this.openPlanTab(true);
+                }
+                break;
+            case 'plan.snapshot_list':
+                this._renderSnapshotList(event.intent_id, event.snapshots || []);
+                break;
+            case 'intent.accepted':
+                this._currentIntentId = event.intent_id;
+                break;
+            case 'intent.started':
+                this.showStatusMessage(`Intent started: ${event.text || ''}`);
+                break;
+            case 'intent.complete':
+                this.showStatusMessage(
+                    event.extracted_skill_id
+                        ? `Intent complete \u00B7 skill saved: ${event.extracted_skill_id}`
+                        : 'Intent complete'
+                );
+                break;
+            case 'intent.cancelled':
+                this.showStatusMessage('Intent cancelled.');
+                break;
+            case 'intent.failed':
+                this.showStatusMessage(`Intent failed: ${event.error || 'unknown error'}`);
+                break;
+            case 'intent.paused':
+                this.showStatusMessage('Intent paused.');
+                break;
+            case 'intent.resumed':
+                this.showStatusMessage('Intent resumed.');
+                break;
+            case 'intent.cancel_ack':
+            case 'intent.pause_ack':
+            case 'intent.resume_ack':
+            case 'intent.restore_ack':
+                // Acks are silent — the followup intent.* event surfaces the user-visible message.
                 break;
             case 'harness_cycle_started':
                 this.showStatusMessage(`Started ${event.run?.name || 'harness cycle'}`);
@@ -1443,6 +1510,21 @@ class ResonantApp {
                     this.selectProjectFolder(event.path);
                 }
                 break;
+            case 'folder_picker_unavailable':
+                // No native picker (typically browser-only mode) \u2014 redirect the user
+                // to the welcome screen's text input so the click isn't a dead end.
+                this.showStatusMessage(event.message || 'Folder picker unavailable. Type a path in the welcome screen.');
+                this.showNewSessionSetup();
+                break;
+            case 'model_warmup_started':
+                // Big cloud / MoE models can take 30-90s to load on first call.
+                // Show a banner so the user knows the upcoming "thinking" delay
+                // is model-load, not the model being slow.
+                this._showWarmupBanner(event.model || event.backend || 'model');
+                break;
+            case 'model_warmup_complete':
+                this._hideWarmupBanner(event.elapsed_s);
+                break;
             case 'settings':
                 this.settings = event.data || {};
                 if (!this.isRunning) {
@@ -1470,114 +1552,6 @@ class ResonantApp {
                 break;
             case 'context.compression':
                 this.handleCompression(event);
-                break;
-            case 'dispatch_submitted':
-            case 'dispatch_cancelled':
-                this.requestDispatchList();
-                break;
-            case 'dispatch_list':
-                this.renderDispatchList(event.tasks || []);
-                break;
-            case 'dispatch_result':
-                this.renderDispatchResult(event.task);
-                break;
-            case 'schedule_created':
-                this.requestScheduleList();
-                break;
-            case 'schedule_list':
-                this.renderScheduleList(event.schedules || []);
-                break;
-            // ── Command Center Events ──
-            case 'command_project_list':
-                this.commandProjects = event.projects || [];
-                if (this.sessionMode === 'command') {
-                    this.renderCommandSidebar();
-                }
-                break;
-            case 'command_project_created':
-                this.commandProjects = event.projects || this.commandProjects;
-                this.cmdSelectedProject = event.project?.id || this.cmdSelectedProject;
-                if (this.sessionMode === 'command') {
-                    this.renderCommandSidebar();
-                    if (event.project) this.renderProjectDashboard(event.project);
-                }
-                break;
-            case 'command_project_status':
-                // Update project in list and render dashboard
-                if (event.project) {
-                    const idx = this.commandProjects.findIndex(p => p.id === event.project.id);
-                    if (idx >= 0) this.commandProjects[idx] = event.project;
-                    if (this.sessionMode === 'command') {
-                        this.renderCommandSidebar();
-                        if (this.cmdSelectedProject === event.project.id) {
-                            this.renderProjectDashboard(event.project);
-                        }
-                    }
-                }
-                break;
-            case 'command_project_chat_response':
-                this._handleProjectChatResponse(event);
-                break;
-            case 'command_project_chat_delta':
-                // Streaming text delta — update the thinking indicator with partial text
-                this._handleProjectChatDelta(event);
-                break;
-            case 'command_feed_posted':
-                this.commandFeed.push(event.message);
-                break;
-            case 'command_project_files':
-                this.cmdProjectFiles = event.files || [];
-                if (this.sessionMode === 'command' && this.cmdDashTab === 'results') {
-                    const proj = this.commandProjects.find(p => p.id === event.project_id);
-                    if (proj) this.renderProjectDashboard(proj);
-                }
-                break;
-            case 'command_project_preview':
-                if (event.url) {
-                    window.open(event.url, '_blank');
-                } else if (event.error) {
-                    alert(event.error);
-                }
-                break;
-            case 'command_workers_all_done':
-                // Show notification that all workers completed
-                if (this.sessionMode === 'command' && this.cmdDashTab === 'chat') {
-                    const chatMessages = document.getElementById('project-chat-messages');
-                    if (chatMessages) {
-                        const banner = document.createElement('div');
-                        banner.className = 'workers-done-banner';
-                        banner.innerHTML = `✅ All ${event.worker_count || ''} workers completed. Their results will be included in your next message to the coordinator.`;
-                        chatMessages.appendChild(banner);
-                        chatMessages.scrollTop = chatMessages.scrollHeight;
-                    }
-                }
-                break;
-            case 'command_org_chart':
-                this._orgChartData = event;
-                if (this.sessionMode === 'command' && this.cmdDashTab === 'org_chart') {
-                    const proj = this.commandProjects.find(p => p.id === event.project_id);
-                    if (proj) {
-                        proj.org_chart = event.nodes;
-                        this._renderDashOrgChart(document.getElementById('project-dash-content'), proj);
-                    }
-                }
-                break;
-            case 'command_project_file_content':
-                {
-                    const codeEl = document.getElementById('results-code');
-                    const viewEl = document.getElementById('results-file-content');
-                    const nameEl = document.getElementById('results-viewing-file');
-                    if (codeEl && viewEl) {
-                        codeEl.textContent = event.content || '(empty file)';
-                        if (nameEl) nameEl.textContent = event.path || '';
-                        viewEl.style.display = 'block';
-                    }
-                }
-                break;
-            case 'command_fleet':
-                this.commandAgents = event.agents || [];
-                break;
-            case 'command_spawn_ok':
                 break;
             case 'mcp_list':
                 // Refresh settings view if open
@@ -1625,6 +1599,7 @@ class ResonantApp {
             current_session_role,
             recent_projects,
             refresh_only,
+            harness_enabled,
             harness_cycles,
         } = event;
 
@@ -1632,21 +1607,36 @@ class ResonantApp {
         if (cwd) {
             const short = cwd.split('/').pop();
             this.headerProject.textContent = short;
-            this.sidebarProjectName.textContent = short;
-            this.sidebarCwd.textContent = cwd;
+            this.headerProject.title = `Project: ${cwd}`;
+            if (this.sidebarProjectName) this.sidebarProjectName.textContent = short;
+            if (this.sidebarCwd) this.sidebarCwd.textContent = cwd;
             this.currentCwd = cwd;
+            // Default the sidebar filter to the current project so users immediately
+            // see only that project's sessions; clearing it via "All projects" still works.
+            if (this.sidebarProjectSwitchLabel && !this._projectFilterUserCleared) {
+                this._projectFilter = cwd.replace(/\\/g, '/');
+                this.sidebarProjectSwitchLabel.textContent = short;
+            }
         }
 
         // Store backends for later use
         this.backends = backends || {};
         this.handlesTools = event.handles_tools || false;
 
-        // Store recent projects and chat groups
         if (recent_projects) {
             this.recentProjects = recent_projects;
         }
-        if (event.chat_groups) {
-            this.chatGroups = event.chat_groups;
+        // Master switch: when sprint workflow is off, the role selector + harness
+        // badge stay hidden and we don't even fetch cycle state. Defaults to false
+        // so legacy clients (no field present) match the new opt-in behavior.
+        this.harnessEnabled = harness_enabled === true;
+        document.body.dataset.harnessEnabled = this.harnessEnabled ? '1' : '0';
+        // Surface the one-time migration notice when legacy .resonant-harness/
+        // gets copied to ~/.resonant/projects/<hash>/harness/.
+        const migrationNotice = (event.harness_migration_notice || '').trim();
+        if (migrationNotice && migrationNotice !== this._lastShownMigrationNotice) {
+            this._lastShownMigrationNotice = migrationNotice;
+            this.showStatusMessage(migrationNotice);
         }
         if (event.harness) {
             this.harnessState = event.harness;
@@ -1681,35 +1671,22 @@ class ResonantApp {
         // Fetch git status
         this.requestGitStatus();
 
-        // Update sessions list
         if (sessions) {
             this.sessions = sessions;
             this.allSessions = all_sessions || [];
             this.currentSessionId = current_session_id || '';
-            this.applySessionModeUI(current_session_mode || this.currentSessionMode || 'code');
             this.applySessionRoleUI(current_session_role || this.currentSessionRole || 'generator');
             this.sessionRole = current_session_role || this.sessionRole;
-            this.buildProjectFilter();
             this.renderFilteredSessions();
         }
 
-        // If already connected to a backend, show chat
         if (current_backend) {
             if (!refresh_only) {
                 this.showChatInterface();
             }
             this.headerStatus.textContent = `${current_backend} · ${current_model}`;
             this.populateModelSelector(backends, current_backend, current_model);
-
-            // Send pending chat message (from chat welcome screen)
-            if (this._pendingChatMessage) {
-                const text = this._pendingChatMessage;
-                this._pendingChatMessage = null;
-                // Render user message and send
-                this.addUserMessage(text);
-                this.send({ command: 'message', text });
-                this.setRunning(true);
-            }
+            this.setThinkingMode(event.current_thinking_mode || '');
             return;
         }
 
@@ -1815,19 +1792,28 @@ class ResonantApp {
                 card.dataset.backend = key;
 
                 const modelCount = info.models ? info.models.length : 0;
-                const detail = info.patterns
+                const detail = backendDescs[key] || (info.patterns
                     ? info.patterns.toLocaleString() + ' patterns'
-                    : modelCount + (modelCount === 1 ? ' model' : ' models');
+                    : modelCount + (modelCount === 1 ? ' model' : ' models'));
                 const isPreferred = preferred && preferred.backend === key;
-                const detailText = isPreferred
-                    ? `${backendDescs[key] || detail} · Recommended`
-                    : (backendDescs[key] || detail);
+
+                // Status pills — visible signal of "is this ready to use".
+                const pills = [];
+                if (isPreferred) pills.push('<span class="backend-pill backend-pill-rec">Recommended</span>');
+                if (modelCount > 0) {
+                    pills.push(`<span class="backend-pill backend-pill-ok">\u2713 ${modelCount} model${modelCount === 1 ? '' : 's'}</span>`);
+                } else if (info.patterns) {
+                    pills.push('<span class="backend-pill backend-pill-ok">\u2713 Available</span>');
+                } else {
+                    pills.push('<span class="backend-pill backend-pill-warn">No models</span>');
+                }
 
                 card.innerHTML = `
                     <div class="backend-card-icon">${backendIcons[key] || '●'}</div>
                     <div class="backend-card-info">
                         <div class="backend-card-name">${backendLabels[key] || key}</div>
-                        <div class="backend-card-detail">${detailText}</div>
+                        <div class="backend-card-detail">${detail}</div>
+                        <div class="backend-card-pills">${pills.join('')}</div>
                     </div>
                     <div class="backend-card-dot"></div>
                 `;
@@ -1892,45 +1878,128 @@ class ResonantApp {
 
     selectBackend(backendType, model) {
         document.querySelector('.backend-label').textContent = 'Connecting...';
-        const sessionRole = this.sessionMode === 'chat'
-            ? 'chat'
-            : (document.getElementById('setup-session-role')?.value || this.sessionRole || 'generator');
+        const sessionRole = document.getElementById('setup-session-role')?.value || this.sessionRole || 'generator';
         this.sessionRole = sessionRole;
         this.send({
             command: 'select_backend',
             backend: backendType,
             model,
-            session_mode: this.sessionMode,
+            session_mode: 'code',
             session_role: sessionRole,
         });
     }
 
     showChatInterface() {
         this.welcomeScreen.style.display = 'none';
-        const chatWelcome = document.getElementById('chat-welcome-screen');
-        if (chatWelcome) chatWelcome.style.display = 'none';
         if (this.agentPanel) this.agentPanel.style.display = 'flex';
         else this.chatContainer.style.display = 'flex';
         this.inputBar.style.display = 'flex';
-        // Hide other views if they were visible
         if (this.settingsView) this.settingsView.style.display = 'none';
-        if (this.scheduleView) this.scheduleView.style.display = 'none';
-        if (this.dispatchView) this.dispatchView.style.display = 'none';
-        // Update nav
         this.currentView = 'agents';
-        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(el =>
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === 'agents'));
+        this._maybeRenderChatEmptyState();
         this.userInput.focus();
+    }
+
+    /** First-run onboarding card on the welcome screen. Dismissed permanently via localStorage. */
+    _maybeRenderOnboardingCard() {
+        try {
+            if (localStorage.getItem('resonant_onboarding_seen') === '1') return;
+        } catch (_) { /* private mode, etc. — show once anyway */ }
+
+        // Don't render twice
+        if (document.getElementById('onboarding-card')) return;
+
+        const projectStep = document.getElementById('project-step');
+        if (!projectStep) return;
+
+        const card = document.createElement('div');
+        card.id = 'onboarding-card';
+        card.className = 'onboarding-card';
+        card.innerHTML = `
+            <div class="onboarding-header">
+                <span class="onboarding-pill">Welcome</span>
+                <button class="onboarding-dismiss" aria-label="Dismiss" title="Dismiss">&times;</button>
+            </div>
+            <h3 class="onboarding-title">A laser-focused agentic IDE</h3>
+            <p class="onboarding-sub">Resonant is built around <strong>deepseek-v4-flash on Ollama</strong> &mdash; high-quality coding without sending your code to the cloud.</p>
+            <ul class="onboarding-list">
+                <li><span class="onboarding-bullet">⚡</span><span><strong>Batch + sub-agents</strong> &mdash; ask the model to fan out reads or spawn isolated investigations</span></li>
+                <li><span class="onboarding-bullet">🔍</span><span><strong>Auto-lint &amp; auto-test on edit</strong> &mdash; toggle in Settings &rarr; General</span></li>
+                <li><span class="onboarding-bullet">🛡</span><span><strong>Inline diff review</strong> &mdash; accept/reject edits without a popup</span></li>
+                <li><span class="onboarding-bullet">↪</span><span><strong>Fork from any message</strong> &mdash; explore alternate paths without losing your thread</span></li>
+            </ul>
+            <p class="onboarding-cta">Pick a workspace folder below to get started.</p>
+        `;
+        card.querySelector('.onboarding-dismiss').addEventListener('click', () => {
+            try { localStorage.setItem('resonant_onboarding_seen', '1'); } catch (_) {}
+            card.remove();
+        });
+        projectStep.parentNode.insertBefore(card, projectStep);
+    }
+
+    /** Render an empty-state card in the chat panel when there are no messages yet. */
+    _maybeRenderChatEmptyState() {
+        if (!this.chatMessages) return;
+        // Only render when chat is genuinely empty (no messages, no replays)
+        if (this.chatMessages.children.length > 0) return;
+        const empty = document.createElement('div');
+        empty.className = 'chat-empty-state';
+        const projectShort = (this.currentCwd || '').replace(/\\/g, '/').split('/').pop() || 'this project';
+        empty.innerHTML = `
+            <div class="chat-empty-glyph">┃</div>
+            <h2 class="chat-empty-title">Ready when you are.</h2>
+            <p class="chat-empty-sub">Type your request below. <kbd>Enter</kbd> to send, <kbd>Shift+Enter</kbd> for newline.</p>
+            <div class="chat-empty-suggestions">
+                <button class="chat-suggestion" data-prompt="Summarize the structure of this codebase in 5 bullets.">
+                    <span class="chat-suggestion-label">Explore the codebase</span>
+                    <span class="chat-suggestion-hint">Quick architecture summary of ${this.escapeHtml(projectShort)}</span>
+                </button>
+                <button class="chat-suggestion" data-prompt="Use git_status to show what's currently changed in this repo.">
+                    <span class="chat-suggestion-label">Check git status</span>
+                    <span class="chat-suggestion-hint">First-class git tool, structured output</span>
+                </button>
+                <button class="chat-suggestion" data-prompt="Run the test suite and tell me what failed.">
+                    <span class="chat-suggestion-label">Run the tests</span>
+                    <span class="chat-suggestion-hint">Then iterate on any failures</span>
+                </button>
+            </div>
+        `;
+        empty.addEventListener('click', (ev) => {
+            const btn = ev.target.closest('.chat-suggestion');
+            if (!btn) return;
+            this.userInput.value = btn.dataset.prompt || '';
+            this.userInput.focus();
+        });
+        this.chatMessages.appendChild(empty);
+    }
+
+    /** Remove the empty-state card the moment a real message lands. */
+    _removeChatEmptyState() {
+        const el = this.chatMessages?.querySelector('.chat-empty-state');
+        if (el) el.remove();
     }
 
     setPermissionMode(mode, notifyServer = true) {
         this.permissionMode = mode;
 
-        const icons = { ask: '⚙', 'auto-edit': '</>', plan: '☰', bypass: '△' };
+        // Use a shield (🛡) for the safe sandboxed default instead of a triangle —
+        // the triangle reads as a warning glyph and looks alarming on the safe path.
+        const icons = { ask: '⚙', 'auto-edit': '✎', plan: '☰', bypass: '🛡' };
         const labels = { ask: 'Ask', 'auto-edit': 'Auto-edit', plan: 'Plan', bypass: 'Full-auto' };
 
-        document.getElementById('perm-icon').textContent = icons[mode] || '△';
+        document.getElementById('perm-icon').textContent = icons[mode] || '🛡';
         document.getElementById('perm-label').textContent = labels[mode] || mode;
+        // Tooltip on the toggle reflects the current mode + a one-line explanation
+        const tooltips = {
+            ask: 'Ask permissions — confirm before every change',
+            'auto-edit': 'Auto-edit — files OK, shell asks',
+            plan: 'Plan mode — propose a plan before acting',
+            bypass: 'Full-auto (sandboxed) — accept all changes inside the project',
+        };
+        const toggle = document.getElementById('permission-toggle');
+        if (toggle) toggle.title = tooltips[mode] || 'Permission mode';
 
         // Update active state + checkmark
         document.querySelectorAll('.perm-option').forEach(opt => {
@@ -2078,6 +2147,126 @@ class ResonantApp {
 
     populateModelSelector(backends, currentBackend, currentModel) {
         this._populateSelectWithGroupedModels(this.modelSelector, backends, currentBackend, currentModel);
+        this._refreshThinkingModeVisibility();
+    }
+
+    /** Show the thinking-mode selector only for deepseek-v* models on Ollama. */
+    _refreshThinkingModeVisibility() {
+        if (!this.thinkingModeSelector) return;
+        const val = (this.modelSelector && this.modelSelector.value) || '';
+        const colonIdx = val.indexOf(':');
+        const backend = colonIdx > 0 ? val.substring(0, colonIdx) : '';
+        const model = colonIdx > 0 ? val.substring(colonIdx + 1) : '';
+        const supports = backend === 'ollama' && /^deepseek-v\d/i.test(model || '');
+        this.thinkingModeSelector.style.display = supports ? '' : 'none';
+    }
+
+    /**
+     * Push-to-talk voice input via the browser SpeechRecognition API.
+     *
+     * Hold the mic button → start recognition; show interim results in
+     * the textarea (greyed); release → final transcript replaces the
+     * grey text. User can edit before submitting.
+     *
+     * Falls back gracefully when SpeechRecognition isn't available
+     * (e.g. desktop pywebview without WebView2 speech support).
+     */
+    _setupVoiceInput() {
+        const btn = document.getElementById('mic-btn');
+        if (!btn) return;
+
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            btn.disabled = true;
+            btn.title = 'Voice input not supported (try a Chromium browser, or wire whisper.cpp on the desktop)';
+            btn.style.opacity = 0.4;
+            return;
+        }
+
+        let recognition = null;
+        let active = false;
+        let baseText = '';
+        let interim = '';
+
+        const start = (e) => {
+            e.preventDefault();
+            if (active) return;
+            active = true;
+            btn.classList.add('recording');
+            baseText = this.userInput.value;
+            interim = '';
+
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.interimResults = true;
+            recognition.lang = navigator.language || 'en-US';
+
+            recognition.addEventListener('result', (event) => {
+                let finalT = '';
+                let interimT = '';
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const res = event.results[i];
+                    if (res.isFinal) finalT += res[0].transcript;
+                    else interimT += res[0].transcript;
+                }
+                if (finalT) {
+                    baseText = (baseText + (baseText && !baseText.endsWith(' ') ? ' ' : '') + finalT).trimStart();
+                }
+                interim = interimT;
+                this.userInput.value = baseText + (interim ? (baseText && !baseText.endsWith(' ') ? ' ' : '') + interim : '');
+                this.userInput.style.height = 'auto';
+                this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+            });
+
+            recognition.addEventListener('error', (event) => {
+                this.showStatusMessage(`Speech: ${event.error || 'error'}`);
+                stop();
+            });
+
+            recognition.addEventListener('end', () => {
+                // Browser may end on its own (silence). Settle final text.
+                if (interim) {
+                    baseText = (baseText + (baseText && !baseText.endsWith(' ') ? ' ' : '') + interim).trimStart();
+                    interim = '';
+                    this.userInput.value = baseText;
+                }
+                stop();
+            });
+
+            try {
+                recognition.start();
+            } catch (err) {
+                this.showStatusMessage(`Speech start failed: ${err}`);
+                stop();
+            }
+        };
+
+        const stop = () => {
+            if (!active) return;
+            active = false;
+            btn.classList.remove('recording');
+            if (recognition) {
+                try { recognition.stop(); } catch (_) {}
+                recognition = null;
+            }
+            this.userInput.focus();
+        };
+
+        // Push-to-talk: mousedown / touchstart starts; mouseup / leave / touchend stops.
+        btn.addEventListener('mousedown', start);
+        btn.addEventListener('touchstart', start, { passive: false });
+        btn.addEventListener('mouseup', stop);
+        btn.addEventListener('mouseleave', stop);
+        btn.addEventListener('touchend', stop);
+        btn.addEventListener('touchcancel', stop);
+    }
+
+    /** Sync the thinking-mode selector with server state (called from init/session_loaded). */
+    setThinkingMode(mode) {
+        if (!this.thinkingModeSelector) return;
+        const value = mode || '';
+        this.thinkingModeSelector.value = value;
+        this._lastThinkingMode = value;
     }
 
     // ── Step Handling ────────────────────────────────────────────
@@ -2093,7 +2282,6 @@ class ResonantApp {
     }
 
     handleStepStart(event) {
-        if (this.currentSessionMode === 'chat') return;
         this.currentStepEvent = event;
         this.stepToolCalls = [];
         this.stepToolResults = [];
@@ -2159,7 +2347,6 @@ class ResonantApp {
     }
 
     handleStepEnd(event) {
-        if (this.currentSessionMode === 'chat') return;
         this.removeThinking();
 
         if (this.stepIsInlineOnly && this.stepToolCalls.length > 0) {
@@ -2517,11 +2704,9 @@ class ResonantApp {
             this.trackTerminalStart(callId, name, event.arguments || {});
         }
 
-        if (this.currentSessionMode !== 'chat' && (name === 'file_edit' || name === 'file_write')) {
+        if (name === 'file_edit' || name === 'file_write') {
             this._recordAgentFileChange(name, event.arguments || {}, event);
         }
-
-        if (this.currentSessionMode === 'chat') return;
 
         // CLI backends: group ALL tool calls into a collapsible activity panel
         if (this.handlesTools) {
@@ -2556,8 +2741,6 @@ class ResonantApp {
         if (!this.isReplaying && nameLower === 'bash' && callId) {
             this.trackTerminalEnd(callId);
         }
-
-        if (this.currentSessionMode === 'chat') return;
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
         if (hasImage && this.stepIsInlineOnly) {
@@ -2954,6 +3137,37 @@ class ResonantApp {
         localStorage.setItem('resonant:preview-open', '0');
     }
 
+    /**
+     * Switch the preview panel between the Browser pane and the Plan pane.
+     * Browser-related elements stay in their existing IDs (preview-chrome,
+     * preview-viewport, preview-console). Plan elements live under
+     * #plan-graph-pane. Mutually exclusive display toggle.
+     */
+    switchPreviewPane(pane) {
+        const isPlan = pane === 'plan';
+        document.querySelectorAll('.preview-tab[data-pane]').forEach((t) => {
+            t.classList.toggle('active', t.dataset.pane === pane);
+        });
+        const browserChrome = document.querySelector('#preview-panel .preview-chrome');
+        const browserViewport = document.getElementById('preview-viewport');
+        const browserConsole = document.getElementById('preview-console');
+        const planPane = document.getElementById('plan-graph-pane');
+        if (browserChrome) browserChrome.style.display = isPlan ? 'none' : '';
+        if (browserViewport) browserViewport.style.display = isPlan ? 'none' : '';
+        if (browserConsole) browserConsole.style.display = isPlan ? 'none' : '';
+        if (planPane) planPane.style.display = isPlan ? 'flex' : 'none';
+    }
+
+    /**
+     * Convenience: open the preview panel + switch to the Plan pane.
+     * `focus=true` ensures the user actually sees it (used for checkpoints);
+     * `focus=false` quietly populates the badge without stealing attention.
+     */
+    openPlanTab(focus = true) {
+        if (!this.previewOpen) this.openPreviewPanel();
+        if (focus) this.switchPreviewPane('plan');
+    }
+
     /** Update the preview URL bar when a browser_navigate tool is called */
     updatePreviewUrl(url, title) {
         this._previewUrl = url || this._previewUrl || '';
@@ -3118,36 +3332,33 @@ class ResonantApp {
     switchView(viewName) {
         this.currentView = viewName;
 
-        // If coming from command mode, switch mode tab back
-        if (this.sessionMode === 'command') {
-            this.sessionMode = 'code';
-            document.querySelectorAll('.mode-tab').forEach(tab =>
-                tab.classList.toggle('active', tab.dataset.mode === 'code'));
-        }
-
         // Hide all views
         this.welcomeScreen.style.display = 'none';
         if (this.agentPanel) this.agentPanel.style.display = 'none';
         else this.chatContainer.style.display = 'none';
         this.inputBar.style.display = 'none';
-        if (this.commandCenter) this.commandCenter.style.display = 'none';
         if (this.settingsView) this.settingsView.style.display = 'none';
-        if (this.scheduleView) this.scheduleView.style.display = 'none';
-        if (this.dispatchView) this.dispatchView.style.display = 'none';
 
-        // Agent list only in Agents window view
         const sessionList = document.getElementById('agent-list');
         if (sessionList) sessionList.style.display = viewName === 'agents' ? '' : 'none';
 
-        // Show project filter only in chat view + code mode
-        const pf = document.getElementById('sidebar-project-filter');
-        if (pf) pf.style.display = (viewName === 'agents' && this.sessionMode === 'code') ? '' : 'none';
-
-        // Update nav active state
-        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(el =>
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === viewName));
 
-        // Show the requested view
+        // Header title swap — make it obvious you're on a non-agent screen
+        if (this.headerProject) {
+            if (viewName === 'agents') {
+                // Restore project name
+                const proj = (this.currentCwd || '').replace(/\\/g, '/').split('/').pop() || '';
+                this.headerProject.textContent = proj;
+            } else if (viewName === 'settings') {
+                this.headerProject.textContent = 'Settings';
+            }
+        }
+        // Hide the header indicators on Settings — they apply to a session, not Settings
+        const indicators = document.querySelector('.header-indicators');
+        if (indicators) indicators.style.visibility = (viewName === 'agents') ? '' : 'hidden';
+
         switch (viewName) {
             case 'agents':
                 if (this.currentSessionId || (this.backends && Object.keys(this.backends).length > 0)) {
@@ -3165,14 +3376,6 @@ class ResonantApp {
                 } else {
                     this.renderSettingsView();
                 }
-                break;
-            case 'schedule':
-                this.scheduleView.style.display = 'flex';
-                this.requestScheduleList();
-                break;
-            case 'dispatch':
-                this.dispatchView.style.display = 'flex';
-                this.requestDispatchList();
                 break;
         }
     }
@@ -3199,7 +3402,9 @@ class ResonantApp {
                           { value: 'openai', label: 'OpenAI API' },
                       ]
                     },
-                    { key: 'default_model', label: 'Default model', type: 'text' },
+                    { key: 'default_model', label: 'Default model', type: 'text',
+                      placeholder: 'e.g. deepseek-v4-flash:cloud',
+                      hint: 'Leave blank to use the first model the chosen backend reports.' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },
@@ -3208,6 +3413,18 @@ class ResonantApp {
                           { value: 'plan', label: 'Plan mode' },
                       ]
                     },
+                    { key: 'auto_lint_after_edits', label: 'Auto-lint after edits', type: 'toggle',
+                      hint: 'After every file_edit/file_write, run the project linter (ruff/eslint/flake8) on the changed file. Errors are injected back as a follow-up turn.' },
+                    { key: 'auto_test_after_edits', label: 'Auto-test after edits', type: 'toggle',
+                      hint: 'After every file_edit/file_write, run the test command on the matching test file. Failures are injected back as a follow-up turn.' },
+                    { key: 'auto_test_command', label: 'Auto-test command', type: 'text',
+                      hint: 'Default: "pytest -x". For JS/TS: "npx jest" or "npx vitest run".' },
+                    { key: 'big_context_profile', label: 'Big-context profile (deepseek-v4-flash 1M)', type: 'toggle',
+                      hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
+                    { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
+                      hint: 'Off by default. Enable to use Resonant\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.resonant/, not in your repo.' },
+                    { key: 'session_max_steps', label: 'Session step budget', type: 'text',
+                      hint: 'Maximum agentic loop steps before the session caps out. Default 200 (effectively unlimited for normal tasks). Set to 0 to disable entirely \u2014 doom-loop detection still catches real runaways. Local-model users can safely raise this; cloud users may want a smaller cap for cost.' },
                 ]
             },
             {
@@ -3357,9 +3574,11 @@ class ResonantApp {
                     } else if (field.type === 'number') {
                         input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${section.id}" data-key="${field.key}" placeholder="None" style="width:80px" />`;
                     } else {
-                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}" />`;
+                        const ph = field.placeholder ? ` placeholder="${this.escapeHtml(field.placeholder)}"` : '';
+                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}"${ph} />`;
                     }
-                    bodyHtml += `<div class="settings-row"><span class="settings-row-label">${field.label}</span><div class="settings-row-value">${input}</div></div>`;
+                    const hint = field.hint ? `<div class="settings-row-hint">${this.escapeHtml(field.hint)}</div>` : '';
+                    bodyHtml += `<div class="settings-row"><span class="settings-row-label">${field.label}</span><div class="settings-row-value">${input}${hint}</div></div>`;
                 }
             }
 
@@ -3480,8 +3699,9 @@ class ResonantApp {
                 maxBtn?.addEventListener('click', doToggleMaximize);
                 document.getElementById('win-close')?.addEventListener('click', () => pywebview.api.close());
                 // Double-click title bar to toggle maximize
-                document.getElementById('app-menubar')?.addEventListener('dblclick', (e) => {
-                    if (e.target.closest('.menubar-menus') || e.target.closest('.menubar-window-controls')) return;
+                document.getElementById('app-titlebar')?.addEventListener('dblclick', (e) => {
+                    if (e.target.closest('.titlebar-menus') || e.target.closest('.titlebar-window-controls')
+                        || e.target.closest('.titlebar-icon-btn') || e.target.closest('.header-badge')) return;
                     doToggleMaximize();
                 });
             } else if (controls) {
@@ -3502,9 +3722,6 @@ class ResonantApp {
                     case 'cmd-palette': this.openCommandPalette(); break;
                     case 'toggle-sidebar': document.getElementById('sidebar-toggle')?.click(); break;
                     case 'toggle-preview': document.getElementById('preview-toggle')?.click(); break;
-                    case 'mode-agent': document.querySelector('.mode-tab[data-mode="code"]')?.click(); break;
-                    case 'mode-ask': document.querySelector('.mode-tab[data-mode="chat"]')?.click(); break;
-                    case 'mode-workspaces': document.querySelector('.mode-tab[data-mode="command"]')?.click(); break;
                     case 'shortcuts': this.toggleShortcutsOverlay(); break;
                     case 'about': this.showStatusMessage('Resonant Client — Build software with agents'); break;
                 }
@@ -3600,10 +3817,10 @@ class ResonantApp {
             return;
         }
 
-        // 1-4 keys → switch views (when not in input)
-        if (e.altKey && e.key >= '1' && e.key <= '4') {
+        // Alt+1 / Alt+2 → switch between the two remaining views (Agents / Settings)
+        if (e.altKey && (e.key === '1' || e.key === '2')) {
             e.preventDefault();
-            const views = ['agents', 'schedule', 'dispatch', 'settings'];
+            const views = ['agents', 'settings'];
             this.switchView(views[parseInt(e.key) - 1]);
             return;
         }
@@ -3648,12 +3865,7 @@ class ResonantApp {
     _cmdPaletteCommands() {
         return [
             { id: 'new-agent',  icon: '+', label: 'New agent',          hint: 'Ctrl+N',       action: () => document.getElementById('new-agent-btn')?.click() },
-            { id: 'mode-agent', icon: '\u25C6', label: 'Switch to Agent mode',  hint: '',    action: () => { const t = document.querySelector('.mode-tab[data-mode="code"]'); if (t) t.click(); } },
-            { id: 'mode-ask',   icon: '?', label: 'Switch to Ask mode',        hint: '',    action: () => { const t = document.querySelector('.mode-tab[data-mode="chat"]'); if (t) t.click(); } },
-            { id: 'mode-ws',    icon: '\u2302', label: 'Switch to Workspaces',    hint: '',    action: () => { const t = document.querySelector('.mode-tab[data-mode="command"]'); if (t) t.click(); } },
             { id: 'settings',   icon: '\u2699', label: 'Open Settings',            hint: 'Ctrl+,', action: () => this.switchView('settings') },
-            { id: 'automations',icon: '\u23F0', label: 'Automations',              hint: 'Alt+2',  action: () => this.switchView('schedule') },
-            { id: 'background', icon: '\u2193', label: 'Background agents',        hint: 'Alt+3',  action: () => this.switchView('dispatch') },
             { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
             { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
             { id: 'shortcuts',  icon: '\u2328', label: 'Keyboard shortcuts',       hint: 'Ctrl+/', action: () => this.toggleShortcutsOverlay() },
@@ -3803,9 +4015,7 @@ class ResonantApp {
             done,
             total,
         };
-        if (this.currentSessionMode !== 'chat') {
-            this._syncLiveAgentTodoStrip(done, total, raw);
-        }
+        this._syncLiveAgentTodoStrip(done, total, raw);
     }
 
     _syncLiveAgentTodoStrip(done, total, items) {
@@ -3899,18 +4109,34 @@ class ResonantApp {
         const el = document.createElement('div');
         el.className = 'agent-run-card';
 
+        // For HTML files, expose a "Preview" affordance — closes the loop so
+        // the user doesn't have to spin up their own HTTP server to see the
+        // result of a "build me a web app" task.
+        const isPreviewable = (p) => /\.(html?|htm)$/i.test(p || '');
         const changesHtml = files.length
-            ? `<ol class="agent-changes-list">${files.map((c) => `
+            ? `<ol class="agent-changes-list">${files.map((c) => {
+                const previewable = isPreviewable(c.path);
+                const preview = previewable
+                    ? `<button type="button" class="agent-file-preview-btn" data-preview-path="${this.escapeHtml(c.path)}" title="Open this file in a new browser tab">Preview \u25B6</button>`
+                    : '';
+                return `
                 <li class="agent-change-item">
-                    <code class="agent-file-path" title="${this.escapeHtml(c.path)}">${this.escapeHtml(this.shortenPath(c.path))}</code>
+                    <code class="agent-file-path" data-file-path="${this.escapeHtml(c.path)}" title="${this.escapeHtml(c.path)}">${this.escapeHtml(this.shortenPath(c.path))}</code>
                     <span class="agent-change-detail">${this.escapeHtml(c.detail || '')}</span>
-                </li>`).join('')}
+                    ${preview}
+                </li>`;
+            }).join('')}
             </ol>`
             : '';
 
+        const kicker = 'Build';
+        const actionsHtml = `<div class="agent-run-actions">
+                    <button type="button" class="agent-run-btn agent-run-btn-primary" data-agent-run-action="review">Review</button>
+                    <button type="button" class="agent-run-btn" data-agent-run-action="commit" disabled title="Not wired yet">Create branch &amp; commit</button>
+                </div>`;
         el.innerHTML = `
             <div class="agent-run-card-inner">
-                <div class="agent-run-kicker">Build</div>
+                <div class="agent-run-kicker">${kicker}</div>
                 <div class="agent-run-title">${this.escapeHtml(title)}</div>
                 <div class="agent-todo-strip">
                     <span class="agent-todo-check" aria-hidden="true">✓</span>
@@ -3918,13 +4144,11 @@ class ResonantApp {
                 </div>
                 <p class="agent-run-blurb">Worked for ${this._formatRunDuration(totalElapsed)}.${files.length ? ' Edits below.' : ''}</p>
                 ${files.length ? `<div class="agent-changes-heading">Summary of changes</div>${changesHtml}` : ''}
-                <div class="agent-run-actions">
-                    <button type="button" class="agent-run-btn agent-run-btn-primary" data-agent-run-action="review">Review</button>
-                    <button type="button" class="agent-run-btn" data-agent-run-action="commit" disabled title="Not wired yet">Create branch &amp; commit</button>
-                </div>
+                ${actionsHtml}
             </div>
         `;
 
+        // Wire the "Review" button (only present in code mode — actionsHtml is non-empty)
         const reviewBtn = el.querySelector('[data-agent-run-action="review"]');
         if (reviewBtn) {
             reviewBtn.addEventListener('click', () => {
@@ -3933,6 +4157,36 @@ class ResonantApp {
                 else this.showStatusMessage('Use the git status control in the header when available.');
             });
         }
+
+        // Wire per-file "Preview" buttons for previewable artifacts (HTML).
+        // window.open with file:// works in pywebview and most desktop Chrome
+        // setups; if the browser blocks it we still show a clear status message
+        // with the absolute path so the user can copy/paste.
+        el.querySelectorAll('[data-preview-path]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const p = btn.dataset.previewPath || '';
+                if (!p) return;
+                const url = 'file:///' + p.replace(/\\\\/g, '/').replace(/^\//, '');
+                let win = null;
+                try { win = window.open(url, '_blank', 'noopener'); } catch (e) {}
+                if (!win) {
+                    this.showStatusMessage(`Browser blocked file:// navigation. Open this manually: ${p}`);
+                }
+            });
+        });
+
+        // Make file paths copyable on click
+        el.querySelectorAll('[data-file-path]').forEach((codeEl) => {
+            codeEl.style.cursor = 'pointer';
+            codeEl.addEventListener('click', () => {
+                const p = codeEl.dataset.filePath || '';
+                if (!p) return;
+                if (navigator.clipboard?.writeText) {
+                    navigator.clipboard.writeText(p);
+                    this.showStatusMessage(`Copied: ${p}`);
+                }
+            });
+        });
 
         this.chatMessages.appendChild(el);
         this._removeLiveAgentTodoStrip();
@@ -3960,7 +4214,7 @@ class ResonantApp {
         const todoTotal = (this._agentRunSummary && this._agentRunSummary.todos)
             ? (this._agentRunSummary.todos.total || 0)
             : 0;
-        const showRunCard = this.currentSessionMode !== 'chat' && (
+        const showRunCard = (
             totalSteps >= 1 || fileCount > 0 || todoTotal > 0
         );
 
@@ -3976,8 +4230,8 @@ class ResonantApp {
 
         this.setRunning(false);
 
-        // Follow-up chips (Agent mode only, not during replay)
-        if (!this.isReplaying && this.currentSessionMode !== 'chat') {
+        // Follow-up chips (not during replay)
+        if (!this.isReplaying) {
             this._renderFollowUpChips();
         }
 
@@ -4124,6 +4378,14 @@ class ResonantApp {
         const args = event.arguments || {};
         const review = event.review || null;
 
+        // For file edits, render inline in the conversation rather than modal —
+        // less interruption, persists in the chat history. Other tools (bash etc.)
+        // still get the modal because they're more consequential.
+        if ((name === 'file_edit' || name === 'file_write') && review && review.hunks) {
+            this._renderInlineDiffPermission(name, args, review);
+            return;
+        }
+
         const titleEl = document.getElementById('permission-title');
         const riskEl = document.getElementById('permission-risk');
         const textEl = document.getElementById('permission-text');
@@ -4208,6 +4470,67 @@ class ResonantApp {
         document.getElementById('permission-dialog').style.display = 'flex';
     }
 
+    /** Render an inline diff card with accept/reject buttons in the chat stream. */
+    _renderInlineDiffPermission(toolName, args, review) {
+        const block = document.createElement('div');
+        block.className = 'inline-diff';
+
+        const filePath = review.file_path || args.path || '(no path)';
+        const additions = (review.hunks || []).reduce(
+            (sum, h) => sum + (h.lines || []).filter(l => l.startsWith('+') && !l.startsWith('+++')).length, 0);
+        const deletions = (review.hunks || []).reduce(
+            (sum, h) => sum + (h.lines || []).filter(l => l.startsWith('-') && !l.startsWith('---')).length, 0);
+
+        let diffHtml = '';
+        const hunks = review.hunks || [];
+        const showAll = hunks.length <= 5;
+        const visibleHunks = showAll ? hunks : hunks.slice(0, 5);
+        for (const hunk of visibleHunks) {
+            const hunkHeader = `@@ -${hunk.old_start},${hunk.old_count} +${hunk.new_start},${hunk.new_count} @@`;
+            diffHtml += `<div class="diff-hunk-header">${this.escapeHtml(hunkHeader)}${hunk.context ? ' ' + this.escapeHtml(hunk.context) : ''}</div>`;
+            for (const line of hunk.lines) {
+                let cls = 'diff-context';
+                if (line.startsWith('+') && !line.startsWith('+++')) cls = 'diff-add';
+                else if (line.startsWith('-') && !line.startsWith('---')) cls = 'diff-remove';
+                diffHtml += `<div class="diff-line ${cls}">${this.escapeHtml(line)}</div>`;
+            }
+        }
+        if (!showAll) {
+            diffHtml += `<div class="diff-truncated">…(${hunks.length - 5} more hunks — accept to apply all)</div>`;
+        }
+
+        const verb = toolName === 'file_write' ? 'Write' : 'Edit';
+        block.innerHTML = `
+            <div class="inline-diff-header">
+                <span class="inline-diff-verb">${verb}</span>
+                <code class="inline-diff-path" title="${this.escapeHtml(filePath)}">${this.escapeHtml(filePath)}</code>
+                <span class="inline-diff-stats">+${additions} -${deletions}</span>
+            </div>
+            <div class="inline-diff-body">${diffHtml}</div>
+            <div class="inline-diff-actions">
+                <button class="inline-diff-btn inline-diff-reject" data-action="reject">Reject</button>
+                <button class="inline-diff-btn inline-diff-accept" data-action="accept">Accept</button>
+            </div>
+        `;
+
+        const onDecide = (approved) => {
+            this.send({ command: 'approve', approved });
+            block.querySelectorAll('button').forEach(b => b.disabled = true);
+            const summary = document.createElement('div');
+            summary.className = 'inline-diff-summary ' + (approved ? 'accepted' : 'rejected');
+            summary.textContent = approved
+                ? `✓ Accepted ${verb.toLowerCase()}: ${filePath} (+${additions} -${deletions})`
+                : `✗ Rejected ${verb.toLowerCase()}: ${filePath}`;
+            block.replaceWith(summary);
+        };
+        block.querySelector('[data-action="accept"]').addEventListener('click', () => onDecide(true));
+        block.querySelector('[data-action="reject"]').addEventListener('click', () => onDecide(false));
+
+        const target = this.getRenderTarget ? this.getRenderTarget() : this.chatMessages;
+        target.appendChild(block);
+        this.scrollToBottom();
+    }
+
     // ── Choices ─────────────────────────────────────────────────
 
     handleChoices(event) {
@@ -4221,6 +4544,7 @@ class ResonantApp {
     // ── DOM Helpers ─────────────────────────────────────────────
 
     addUserMessage(text, images = []) {
+        this._removeChatEmptyState();
         const el = document.createElement('div');
         el.className = 'msg-user';
 
@@ -4235,9 +4559,39 @@ class ResonantApp {
             imagesHtml = `<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">${thumbs}</div>`;
         }
 
-        el.innerHTML = `<div class="msg-user-content">${imagesHtml}${this.escapeHtml(text)}</div>`;
+        el.innerHTML = `
+            <div class="msg-user-content">${imagesHtml}${this.escapeHtml(text)}</div>
+            <div class="msg-actions msg-actions-user">
+                <button class="msg-action-btn" data-action="fork" title="Fork from this message">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                        <circle cx="3" cy="3" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                        <circle cx="11" cy="3" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                        <circle cx="7" cy="11" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                        <path d="M3 4.5V7c0 1 .8 1.8 1.8 1.8h4.4c1 0 1.8-.8 1.8-1.8V4.5" stroke="currentColor" stroke-width="1.1" fill="none"/>
+                        <path d="M7 8.8v.7" stroke="currentColor" stroke-width="1.1"/>
+                    </svg>
+                </button>
+            </div>
+        `;
+        el.querySelector('[data-action="fork"]')?.addEventListener('click', () => {
+            this._forkFromUserMessage(el);
+        });
         this.chatMessages.appendChild(el);
         this.scrollToBottom();
+    }
+
+    /** Compute the index of `el` among .msg-user blocks, then fork. */
+    _forkFromUserMessage(el) {
+        if (!this.currentSessionId) return;
+        const rows = Array.from(this.chatMessages.querySelectorAll('.msg-user'));
+        const idx = rows.indexOf(el);
+        if (idx < 0) return;
+        if (!confirm(`Fork from this message? A new session will be created with the conversation up through this exchange.`)) return;
+        this.send({
+            command: 'fork_session',
+            session_id: this.currentSessionId,
+            user_message_index: idx,
+        });
     }
 
     addAssistantMessage() {
@@ -4270,10 +4624,21 @@ class ResonantApp {
             <div class="thinking-dots">
                 <span></span><span></span><span></span>
             </div>
-            <span>thinking</span>
+            <span class="thinking-label">thinking</span>
+            <span class="thinking-elapsed" data-elapsed></span>
         `;
         this.getRenderTarget().appendChild(el);
         this.scrollToBottom();
+        // Surface elapsed time after 5s — users panic when "thinking" sits
+        // silent for 60+s on a cold model load. Showing seconds proves it's alive.
+        const startedAt = Date.now();
+        const elapsedEl = el.querySelector('[data-elapsed]');
+        const tick = () => {
+            if (!el.isConnected) return;
+            const s = Math.floor((Date.now() - startedAt) / 1000);
+            if (s >= 5 && elapsedEl) elapsedEl.textContent = ` ${s}s`;
+        };
+        el._elapsedTimer = setInterval(tick, 1000);
     }
 
     removeThinking() {
@@ -4281,7 +4646,52 @@ class ResonantApp {
         const target = this.getRenderTarget();
         const el = target.querySelector('[data-thinking]') ||
                    this.chatMessages.querySelector('[data-thinking]');
-        if (el) el.remove();
+        if (el) {
+            if (el._elapsedTimer) clearInterval(el._elapsedTimer);
+            el.remove();
+        }
+    }
+
+    /**
+     * Show a banner above the input bar saying "Loading <model> ...". Cloud /
+     * big MoE models often take 30-90s to load on first use; this prevents the
+     * user from staring at a silent "thinking" indicator and giving up.
+     */
+    _showWarmupBanner(modelLabel) {
+        let banner = document.getElementById('model-warmup-banner');
+        if (!banner) {
+            banner = document.createElement('div');
+            banner.id = 'model-warmup-banner';
+            banner.className = 'model-warmup-banner';
+            this.inputBar.parentNode.insertBefore(banner, this.inputBar);
+        }
+        banner.innerHTML = `
+            <span class="warmup-spinner"></span>
+            <span class="warmup-text">Warming up <code>${this.escapeHtml(modelLabel)}</code>
+                <span class="warmup-hint">first load can take 30\u201390s on cloud / big-MoE models</span>
+            </span>
+            <span class="warmup-elapsed" data-warmup-elapsed>0s</span>
+        `;
+        const startedAt = Date.now();
+        if (banner._timer) clearInterval(banner._timer);
+        banner._timer = setInterval(() => {
+            const elapsedEl = banner.querySelector('[data-warmup-elapsed]');
+            if (elapsedEl) elapsedEl.textContent = `${Math.floor((Date.now() - startedAt) / 1000)}s`;
+        }, 1000);
+    }
+
+    _hideWarmupBanner(elapsedS) {
+        const banner = document.getElementById('model-warmup-banner');
+        if (!banner) return;
+        if (banner._timer) clearInterval(banner._timer);
+        if (typeof elapsedS === 'number' && elapsedS > 1) {
+            // Briefly show completion before fading
+            banner.innerHTML = `<span class="warmup-text">Model loaded \u2014 ready in ${elapsedS}s.</span>`;
+            banner.classList.add('warmup-complete');
+            setTimeout(() => banner.remove(), 2000);
+        } else {
+            banner.remove();
+        }
     }
 
     showStatusMessage(message) {
@@ -4308,6 +4718,142 @@ class ResonantApp {
     }
 
     // ── Session Replay ──────────────────────────────────────────
+
+    /**
+     * Enter replay mode: shows a scrubber over the conversation, lets the user
+     * drag through events to "time-travel" through what the agent did.
+     */
+    enterReplayMode(events, title = '') {
+        if (!Array.isArray(events) || events.length === 0) {
+            this.showStatusMessage('No replay events for this session');
+            return;
+        }
+        // Stash live state so we can restore on exit
+        if (!this._replay) {
+            this._replay = {
+                stashedHTML: this.chatMessages.innerHTML,
+                inputBarDisplay: this.inputBar.style.display,
+                events: events,
+                index: 0,
+                playing: false,
+                speed: 1,
+                playTimer: null,
+                title,
+            };
+        } else {
+            this._replay.events = events;
+            this._replay.index = 0;
+        }
+
+        // Build/show scrubber
+        let scrubber = document.getElementById('replay-scrubber');
+        if (!scrubber) {
+            scrubber = document.createElement('div');
+            scrubber.id = 'replay-scrubber';
+            scrubber.className = 'replay-scrubber';
+            scrubber.innerHTML = `
+                <button id="replay-play" title="Play / pause">▶</button>
+                <input id="replay-range" type="range" min="0" value="0" />
+                <span id="replay-time">0/0</span>
+                <select id="replay-speed">
+                    <option value="1">1×</option>
+                    <option value="2">2×</option>
+                    <option value="4">4×</option>
+                </select>
+                <span class="replay-title-label" id="replay-title">${this.escapeHtml(title)}</span>
+                <button id="replay-exit" title="Exit replay">✕ Exit</button>
+            `;
+            // Insert above input bar
+            this.inputBar.parentNode.insertBefore(scrubber, this.inputBar);
+
+            scrubber.querySelector('#replay-play').addEventListener('click', () => this._toggleReplayPlay());
+            scrubber.querySelector('#replay-range').addEventListener('input', (ev) => {
+                this._renderReplayUpTo(parseInt(ev.target.value, 10));
+            });
+            scrubber.querySelector('#replay-speed').addEventListener('change', (ev) => {
+                this._replay.speed = parseInt(ev.target.value, 10) || 1;
+                if (this._replay.playing) {
+                    this._stopReplayTimer();
+                    this._startReplayTimer();
+                }
+            });
+            scrubber.querySelector('#replay-exit').addEventListener('click', () => this.exitReplayMode());
+        } else {
+            scrubber.querySelector('#replay-title').textContent = title;
+        }
+
+        const range = scrubber.querySelector('#replay-range');
+        range.max = events.length;
+        range.value = 0;
+        scrubber.style.display = 'flex';
+        this.inputBar.style.display = 'none';
+
+        this._renderReplayUpTo(0);
+    }
+
+    exitReplayMode() {
+        if (!this._replay) return;
+        this._stopReplayTimer();
+        this.chatMessages.innerHTML = this._replay.stashedHTML;
+        this.inputBar.style.display = this._replay.inputBarDisplay || '';
+        const scrubber = document.getElementById('replay-scrubber');
+        if (scrubber) scrubber.style.display = 'none';
+        this._replay = null;
+        this.scrollToBottom();
+    }
+
+    _renderReplayUpTo(idx) {
+        if (!this._replay) return;
+        const events = this._replay.events;
+        const clamped = Math.max(0, Math.min(events.length, idx));
+        this._replay.index = clamped;
+        // Wipe + replay events 0..clamped
+        this.chatMessages.innerHTML = '';
+        if (clamped > 0) this.replayDisplayEvents(events.slice(0, clamped));
+        // Update label
+        const time = document.getElementById('replay-time');
+        const range = document.getElementById('replay-range');
+        if (time) time.textContent = `${clamped}/${events.length}`;
+        if (range && Number(range.value) !== clamped) range.value = clamped;
+        this.scrollToBottom();
+    }
+
+    _toggleReplayPlay() {
+        if (!this._replay) return;
+        if (this._replay.playing) {
+            this._stopReplayTimer();
+        } else {
+            this._startReplayTimer();
+        }
+    }
+
+    _startReplayTimer() {
+        if (!this._replay || this._replay.playing) return;
+        this._replay.playing = true;
+        const btn = document.getElementById('replay-play');
+        if (btn) btn.textContent = '⏸';
+        const tick = () => {
+            if (!this._replay) return;
+            if (this._replay.index >= this._replay.events.length) {
+                this._stopReplayTimer();
+                return;
+            }
+            this._renderReplayUpTo(this._replay.index + 1);
+        };
+        const period = Math.max(80, 600 / this._replay.speed);
+        this._replay.playTimer = setInterval(tick, period);
+    }
+
+    _stopReplayTimer() {
+        if (!this._replay) return;
+        if (this._replay.playTimer) {
+            clearInterval(this._replay.playTimer);
+            this._replay.playTimer = null;
+        }
+        this._replay.playing = false;
+        const btn = document.getElementById('replay-play');
+        if (btn) btn.textContent = '▶';
+    }
 
     replayDisplayEvents(events) {
         /**
@@ -4486,16 +5032,18 @@ class ResonantApp {
             const date = new Date(session.updated_at * 1000);
             const timeStr = this.formatRelativeTime(date);
 
-            const showProject = this.projectFilter === 'all' || (this.projectFilter && this.projectFilter !== this.currentCwd);
-            const projectTag = showProject && session.project_name
+            const projectTag = session.project_name
                 ? `<span class="session-project-tag">${this.escapeHtml(session.project_name)}</span> \u00B7 `
                 : '';
-            const roleTag = session.session_mode === 'chat'
-                ? ''
-                : `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role || 'generator'))}</span> \u00B7 `;
+            const roleLabel = this.formatSessionRole(session.session_role || 'generator');
+            const roleTag = roleLabel
+                ? `<span class="session-project-tag">${this.escapeHtml(roleLabel)}</span> \u00B7 `
+                : '';
 
+            const fullTitle = session.title || 'New agent';
+            el.title = fullTitle;  // native tooltip on hover for truncated rows
             el.innerHTML = `
-                <div class="agent-row-title">${this.escapeHtml(session.title || 'New agent')}</div>
+                <div class="agent-row-title">${this.escapeHtml(fullTitle)}</div>
                 <div class="agent-row-date">${projectTag}${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
                 <div class="agent-row-actions">
                     <button class="agent-menu-btn" title="More actions">&#8943;</button>
@@ -4532,147 +5080,22 @@ class ResonantApp {
         }
     }
 
-    // ── Project Filter ──────────────────────────────────────────
-
-    buildProjectFilter() {
-        const selected = document.getElementById('project-filter-selected');
-        const dropdown = document.getElementById('project-filter-dropdown');
-        const searchInput = document.getElementById('pf-search');
-        const optionsContainer = document.getElementById('pf-options');
-        if (!selected || !dropdown) return;
-
-        // Build unique project list from allSessions
-        const projectMap = new Map();
-        for (const s of this.allSessions) {
-            const path = (s.project_path || '').replace(/\\/g, '/');
-            const name = s.project_name || path.split('/').pop() || path;
-            if (path && !projectMap.has(path)) {
-                projectMap.set(path, { name, path, count: 0 });
-            }
-            if (projectMap.has(path)) {
-                projectMap.get(path).count++;
-            }
-        }
-        this._projectOptions = projectMap;
-
-        // Set the selected label
-        this._updateFilterLabel();
-
-        // Toggle dropdown
-        selected.onclick = () => {
-            const isOpen = dropdown.style.display !== 'none';
-            dropdown.style.display = isOpen ? 'none' : 'flex';
-            document.getElementById('sidebar-project-filter').classList.toggle('open', !isOpen);
-            if (!isOpen) {
-                searchInput.value = '';
-                this._renderProjectOptions('');
-                searchInput.focus();
-            }
-        };
-
-        // Search filtering
-        searchInput.oninput = () => {
-            this._renderProjectOptions(searchInput.value.trim().toLowerCase());
-        };
-
-        // Close dropdown when clicking outside
-        document.addEventListener('click', (e) => {
-            if (!e.target.closest('#sidebar-project-filter')) {
-                dropdown.style.display = 'none';
-                document.getElementById('sidebar-project-filter')?.classList.remove('open');
-            }
-        });
-
-        this._renderProjectOptions('');
-    }
-
-    _updateFilterLabel() {
-        const nameEl = document.getElementById('pf-selected-name');
-        if (!nameEl) return;
-        if (this.projectFilter === 'all') {
-            nameEl.textContent = 'All workspaces';
-        } else if (this.projectFilter) {
-            const name = this.projectFilter.replace(/\\/g, '/').split('/').pop();
-            nameEl.textContent = name;
-        } else {
-            const name = (this.currentCwd || '').split('/').pop() || 'Current workspace';
-            nameEl.textContent = name;
-        }
-    }
-
-    _renderProjectOptions(filter) {
-        const container = document.getElementById('pf-options');
-        if (!container) return;
-        container.innerHTML = '';
-
-        const currentPath = (this.currentCwd || '').replace(/\\/g, '/');
-
-        // "All Projects" option (always first)
-        if (!filter || 'all workspaces'.includes(filter)) {
-            const opt = document.createElement('div');
-            opt.className = 'pf-option' + (this.projectFilter === 'all' ? ' active' : '');
-            opt.innerHTML = `<span class="pf-opt-name">All workspaces</span><span class="pf-opt-count">${this.allSessions.length}</span>`;
-            opt.addEventListener('click', () => this._selectProjectFilter('all'));
-            container.appendChild(opt);
-        }
-
-        // "Current Project" option
-        const currentName = currentPath.split('/').pop() || 'Current';
-        if (!filter || currentName.toLowerCase().includes(filter)) {
-            const opt = document.createElement('div');
-            opt.className = 'pf-option' + (!this.projectFilter ? ' active' : '');
-            opt.innerHTML = `<span class="pf-opt-name">${this.escapeHtml(currentName)}</span><span class="pf-opt-count">${this.sessions.length}</span>`;
-            opt.addEventListener('click', () => this._selectProjectFilter(null));
-            container.appendChild(opt);
-        }
-
-        // Individual projects
-        for (const [path, info] of this._projectOptions || []) {
-            const normPath = path.replace(/\\/g, '/');
-            if (normPath === currentPath) continue; // already shown as "Current"
-            if (filter && !info.name.toLowerCase().includes(filter)) continue;
-
-            const opt = document.createElement('div');
-            opt.className = 'pf-option' + (this.projectFilter === path ? ' active' : '');
-            opt.innerHTML = `<span class="pf-opt-name">${this.escapeHtml(info.name)}</span><span class="pf-opt-count">${info.count}</span>`;
-            opt.addEventListener('click', () => this._selectProjectFilter(path));
-            container.appendChild(opt);
-        }
-    }
-
-    _selectProjectFilter(value) {
-        this.projectFilter = value;
-        this._updateFilterLabel();
-        this.renderFilteredSessions();
-        // Close dropdown
-        const dropdown = document.getElementById('project-filter-dropdown');
-        if (dropdown) dropdown.style.display = 'none';
-        document.getElementById('sidebar-project-filter')?.classList.remove('open');
-    }
-
     renderFilteredSessions() {
         const allSessions = this.allSessions && this.allSessions.length
             ? this.allSessions
             : this.sessions;
 
-        const modeFilter = this.sessionMode || 'code';
-        const sessionsToShow = allSessions.filter(s =>
-            (s.session_mode || 'code') === modeFilter
-        );
+        const searchVal = (document.getElementById('search-input')?.value || '').toLowerCase().trim();
+        const projFilter = (this._projectFilter || '').replace(/\\/g, '/');
 
-        // Chat mode: render grouped sidebar (existing)
-        if (this.sessionMode === 'chat') {
-            this.renderChatSidebar(sessionsToShow);
-            return;
+        let filtered = allSessions;
+        if (projFilter) {
+            filtered = filtered.filter(s => (s.project_path || '').replace(/\\/g, '/') === projFilter);
+        }
+        if (searchVal) {
+            filtered = filtered.filter(s => (s.title || '').toLowerCase().includes(searchVal));
         }
 
-        // Apply search filter
-        const searchVal = (document.getElementById('search-input')?.value || '').toLowerCase().trim();
-        const filtered = searchVal
-            ? sessionsToShow.filter(s => (s.title || '').toLowerCase().includes(searchVal))
-            : sessionsToShow;
-
-        // Code mode: project tree
         this._renderProjectTree(filtered);
     }
 
@@ -4702,6 +5125,12 @@ class ResonantApp {
         if (!this._expandedProjectsInited) {
             this._expandedProjects.add(curPath);
             this._expandedProjectsInited = true;
+        }
+        // When the tree contains a single project (e.g. filtered down), auto-expand it
+        // so users immediately see the sessions instead of having to click the chevron.
+        if (projectMap.size === 1) {
+            const onlyPath = projectMap.keys().next().value;
+            this._expandedProjects.add(onlyPath);
         }
 
         for (const [path, proj] of projectMap) {
@@ -4745,8 +5174,10 @@ class ResonantApp {
 
         const date = new Date(session.updated_at * 1000);
         const timeStr = this.formatRelativeTime(date);
-        const roleTag = session.session_role && session.session_role !== 'generator'
-            ? `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role))}</span> \u00B7 `
+        const roleLabel = (session.session_role && session.session_role !== 'generator')
+            ? this.formatSessionRole(session.session_role) : '';
+        const roleTag = roleLabel
+            ? `<span class="session-project-tag">${this.escapeHtml(roleLabel)}</span> \u00B7 `
             : '';
 
         el.innerHTML = `
@@ -4784,215 +5215,6 @@ class ResonantApp {
         return el;
     }
 
-    // ── Chat Sidebar (grouped sessions) ────────────────────────
-
-    renderChatSidebar(sessions) {
-        if (!this.sessionList) return;
-        this.sessionList.innerHTML = '';
-
-        if (sessions.length === 0 && this.chatGroups.length === 0) {
-            this.sessionList.innerHTML = '<div class="agent-empty">No ask-mode agents</div>';
-            return;
-        }
-
-        // Partition sessions by group
-        const grouped = {};
-        const ungrouped = [];
-        for (const s of sessions) {
-            const g = s.chat_group || '';
-            if (g) {
-                (grouped[g] = grouped[g] || []).push(s);
-            } else {
-                ungrouped.push(s);
-            }
-        }
-
-        // Render ungrouped sessions first (no header)
-        for (const s of ungrouped) {
-            this.sessionList.appendChild(this._createChatSessionItem(s));
-        }
-
-        // Render each group
-        for (const groupName of this.chatGroups) {
-            const groupSessions = grouped[groupName] || [];
-            const isExpanded = this.expandedGroups.has(groupName);
-
-            const header = document.createElement('div');
-            header.className = 'chat-group-header' + (isExpanded ? ' expanded' : '');
-            header.innerHTML = `
-                <span class="chat-group-chevron">${isExpanded ? '▾' : '▸'}</span>
-                <span class="chat-group-name">${this.escapeHtml(groupName)}</span>
-                <span class="chat-group-count">${groupSessions.length}</span>
-                <button class="chat-group-menu-btn" title="Group options">&#8943;</button>
-            `;
-
-            header.addEventListener('click', (e) => {
-                if (e.target.closest('.chat-group-menu-btn')) return;
-                if (this.expandedGroups.has(groupName)) {
-                    this.expandedGroups.delete(groupName);
-                } else {
-                    this.expandedGroups.add(groupName);
-                }
-                this.renderFilteredSessions();
-            });
-
-            header.querySelector('.chat-group-menu-btn').addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.showGroupContextMenu(e, groupName);
-            });
-
-            this.sessionList.appendChild(header);
-
-            if (isExpanded) {
-                const container = document.createElement('div');
-                container.className = 'chat-group-sessions';
-                for (const s of groupSessions) {
-                    container.appendChild(this._createChatSessionItem(s));
-                }
-                this.sessionList.appendChild(container);
-            }
-        }
-
-        // "New group" button
-        const addBtn = document.createElement('div');
-        addBtn.className = 'chat-group-add';
-        addBtn.innerHTML = '<span>+</span> New group';
-        addBtn.addEventListener('click', () => {
-            const name = prompt('Group name:');
-            if (name && name.trim()) {
-                this.send({ command: 'create_chat_group', name: name.trim() });
-            }
-        });
-        this.sessionList.appendChild(addBtn);
-    }
-
-    _createChatSessionItem(session) {
-        const el = document.createElement('div');
-        el.className = 'agent-row' + (session.id === this.currentSessionId ? ' active' : '');
-        el.setAttribute('role', 'button');
-        el.setAttribute('tabindex', '0');
-        el.dataset.sessionId = session.id;
-
-        const date = new Date(session.updated_at * 1000);
-        const timeStr = this.formatRelativeTime(date);
-        const roleTag = session.session_mode === 'chat'
-            ? ''
-            : `<span class="session-project-tag">${this.escapeHtml(this.formatSessionRole(session.session_role || 'generator'))}</span> \u00B7 `;
-
-        el.innerHTML = `
-            <div class="agent-row-title">${this.escapeHtml(session.title || 'New agent')}</div>
-            <div class="agent-row-date">${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
-            <div class="agent-row-actions">
-                <button class="agent-menu-btn" title="More actions">&#8943;</button>
-            </div>
-        `;
-
-        const switchToSession = (e) => {
-            if (e && e.target && e.target.closest('.agent-menu-btn')) return;
-            if (session.id !== this.currentSessionId) {
-                el.style.opacity = '0.6';
-                const msg = { command: 'switch_session', session_id: session.id };
-                if (session.project_path) msg.project_path = session.project_path;
-                this.send(msg);
-            }
-        };
-        el.addEventListener('click', switchToSession);
-        el.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchToSession(); }
-        });
-
-        el.querySelector('.agent-menu-btn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.showChatSessionContextMenu(e, session);
-        });
-
-        return el;
-    }
-
-    showGroupContextMenu(e, groupName) {
-        document.querySelector('.agent-context-menu')?.remove();
-
-        const menu = document.createElement('div');
-        menu.className = 'agent-context-menu';
-        menu.innerHTML = `
-            <div class="ctx-item" data-action="rename">&#9998; Rename</div>
-            <div class="ctx-separator"></div>
-            <div class="ctx-item danger" data-action="delete">&#128465; Delete</div>
-        `;
-        menu.style.left = `${e.clientX}px`;
-        menu.style.top = `${e.clientY}px`;
-
-        menu.addEventListener('click', (ev) => {
-            const action = ev.target.closest('.ctx-item')?.dataset.action;
-            if (action === 'rename') {
-                const newName = prompt('Rename group:', groupName);
-                if (newName && newName.trim()) {
-                    this.send({ command: 'rename_chat_group', old_name: groupName, new_name: newName.trim() });
-                }
-            } else if (action === 'delete') {
-                this.send({ command: 'delete_chat_group', name: groupName });
-            }
-            menu.remove();
-        });
-
-        document.body.appendChild(menu);
-        setTimeout(() => {
-            const close = (e2) => { if (!menu.contains(e2.target)) { menu.remove(); document.removeEventListener('click', close); } };
-            document.addEventListener('click', close);
-        }, 0);
-    }
-
-    showChatSessionContextMenu(e, session) {
-        document.querySelector('.agent-context-menu')?.remove();
-
-        const menu = document.createElement('div');
-        menu.className = 'agent-context-menu';
-
-        // Build group submenu items
-        const groupItems = this.chatGroups.map(g =>
-            `<div class="ctx-item ctx-sub" data-action="move" data-group="${this.escapeHtml(g)}">${this.escapeHtml(g)}${(session.chat_group === g) ? ' ✓' : ''}</div>`
-        ).join('');
-
-        menu.innerHTML = `
-            <div class="ctx-item" data-action="rename">&#9998; Rename</div>
-            ${this.chatGroups.length > 0 ? `
-                <div class="ctx-separator"></div>
-                <div class="ctx-label">Move to group</div>
-                ${groupItems}
-                ${session.chat_group ? `<div class="ctx-item ctx-sub" data-action="ungroup">Remove from group</div>` : ''}
-            ` : ''}
-            <div class="ctx-separator"></div>
-            <div class="ctx-item danger" data-action="delete">&#128465; Delete</div>
-        `;
-        menu.style.left = `${e.clientX}px`;
-        menu.style.top = `${e.clientY}px`;
-
-        menu.addEventListener('click', (ev) => {
-            const item = ev.target.closest('.ctx-item');
-            if (!item) return;
-            const action = item.dataset.action;
-            if (action === 'rename') {
-                const newTitle = prompt('Rename agent:', session.title);
-                if (newTitle && newTitle.trim()) {
-                    this.send({ command: 'rename_session', session_id: session.id, title: newTitle.trim() });
-                }
-            } else if (action === 'delete') {
-                this.send({ command: 'delete_session', session_id: session.id });
-            } else if (action === 'move') {
-                this.send({ command: 'set_session_group', session_id: session.id, group: item.dataset.group });
-            } else if (action === 'ungroup') {
-                this.send({ command: 'set_session_group', session_id: session.id, group: '' });
-            }
-            menu.remove();
-        });
-
-        document.body.appendChild(menu);
-        setTimeout(() => {
-            const close = (e2) => { if (!menu.contains(e2.target)) { menu.remove(); document.removeEventListener('click', close); } };
-            document.addEventListener('click', close);
-        }, 0);
-    }
-
     showSessionContextMenu(e, session) {
         // Remove any existing menu
         document.querySelector('.agent-context-menu')?.remove();
@@ -5002,6 +5224,7 @@ class ResonantApp {
 
         menu.innerHTML = `
             <div class="ctx-item" data-action="rename">&#9998; Rename</div>
+            <div class="ctx-item" data-action="replay">&#9654; Replay</div>
             <div class="ctx-separator"></div>
             <div class="ctx-item danger" data-action="delete">&#128465; Delete</div>
         `;
@@ -5020,6 +5243,12 @@ class ResonantApp {
                 if (newTitle && newTitle.trim()) {
                     this.send({ command: 'rename_session', session_id: session.id, title: newTitle.trim() });
                 }
+            } else if (action === 'replay') {
+                this.send({
+                    command: 'get_session_replay_events',
+                    session_id: session.id,
+                    project_path: session.project_path || '',
+                });
             }
             menu.remove();
         });
@@ -5046,46 +5275,189 @@ class ResonantApp {
         if (diffHours < 24) return `${diffHours}h ago`;
         const diffDays = Math.floor(diffHours / 24);
         if (diffDays < 7) return `${diffDays}d ago`;
-        return date.toLocaleDateString();
+        // Beyond a week, show a compact absolute date in a consistent format ("Mar 23")
+        // or include the year if it's not the current year ("Mar 23, 2025").
+        const opts = (date.getFullYear() === now.getFullYear())
+            ? { month: 'short', day: 'numeric' }
+            : { month: 'short', day: 'numeric', year: 'numeric' };
+        return date.toLocaleDateString(undefined, opts);
+    }
+
+    // ── Project switcher dropdown ──────────────────────────────────────
+
+    _openProjectSwitcher(anchorEl) {
+        // Toggle: if already open, close it.
+        const existing = document.getElementById('project-switcher-menu');
+        if (existing) {
+            existing.remove();
+            return;
+        }
+        const anchor = anchorEl || this.sidebarProjectSwitch || this.headerProject;
+        if (!anchor) return;
+
+        const cur = (this.currentCwd || '').replace(/\\/g, '/');
+        const filter = (this._projectFilter || '').replace(/\\/g, '/');
+        const recents = (this.recentProjects || []);
+
+        const menu = document.createElement('div');
+        menu.id = 'project-switcher-menu';
+        menu.className = 'project-switcher-menu';
+        menu.setAttribute('role', 'menu');
+
+        const itemHtml = (icon, label, sub, opts = {}) => `
+            <div class="psw-item${opts.checked ? ' is-current' : ''}${opts.cls ? ' ' + opts.cls : ''}" role="menuitem" tabindex="0"${opts.dataAttr || ''}>
+                <span class="psw-icon">${icon}</span>
+                <span class="psw-text">
+                    <span class="psw-label">${this.escapeHtml(label)}</span>
+                    ${sub ? `<span class="psw-sub">${this.escapeHtml(sub)}</span>` : ''}
+                </span>
+                ${opts.checked ? '<span class="psw-check">&#10003;</span>' : ''}
+            </div>`;
+
+        let html = '';
+        // Filter section: All projects + per-project filter is implicit via clicking a recent.
+        html += itemHtml(
+            '&#9776;',
+            'All projects',
+            'Show every session in the sidebar',
+            { checked: !filter, cls: 'psw-filter-all' }
+        );
+        html += '<div class="psw-divider"></div>';
+        // Quick actions
+        if (cur) {
+            html += itemHtml('&#43;', 'New session here', this._shortenForMenu(cur), { cls: 'psw-new-session' });
+        }
+        html += itemHtml('&#128193;', 'Open another project\u2026', '', { cls: 'psw-open-other' });
+        if (recents.length) {
+            html += `<div class="psw-divider"></div><div class="psw-heading">Recent projects</div>`;
+            for (const p of recents) {
+                const norm = (p.path || '').replace(/\\/g, '/');
+                const isCurrent = norm === cur;
+                const isFilter = norm === filter;
+                html += `<div class="psw-item psw-project${isFilter ? ' is-current' : ''}" role="menuitem" tabindex="0" data-path="${this.escapeHtml(p.path || '')}">
+                    <span class="psw-icon">&#128193;</span>
+                    <span class="psw-text">
+                        <span class="psw-label">${this.escapeHtml(p.name || '')}${isCurrent ? ' <span class="psw-pill">active</span>' : ''}</span>
+                        <span class="psw-sub">${this.escapeHtml(this._shortenForMenu(p.path || ''))}</span>
+                    </span>
+                    ${isFilter ? '<span class="psw-check">&#10003;</span>' : ''}
+                </div>`;
+            }
+        }
+        menu.innerHTML = html;
+
+        // Position under (or beside) the anchor element.
+        const rect = anchor.getBoundingClientRect();
+        const isSidebarAnchor = anchor === this.sidebarProjectSwitch;
+        menu.style.position = 'fixed';
+        if (isSidebarAnchor) {
+            // Sidebar pill: drop down with the same width as the sidebar (matches anchor width)
+            menu.style.left = `${Math.round(rect.left)}px`;
+            menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+            menu.style.minWidth = `${Math.max(220, Math.round(rect.width))}px`;
+        } else {
+            menu.style.left = `${Math.round(rect.left)}px`;
+            menu.style.top = `${Math.round(rect.bottom + 4)}px`;
+            menu.style.minWidth = `${Math.max(260, Math.round(rect.width))}px`;
+        }
+        document.body.appendChild(menu);
+        anchor.setAttribute('aria-expanded', 'true');
+
+        // Wire up actions by class (more robust than positional indexing).
+        menu.querySelector('.psw-filter-all')?.addEventListener('click', () => {
+            this._closeProjectSwitcher();
+            this._setProjectFilter('');
+        });
+        menu.querySelector('.psw-new-session')?.addEventListener('click', () => {
+            this._closeProjectSwitcher();
+            if (cur) this.selectProjectFolder(cur);
+        });
+        menu.querySelector('.psw-open-other')?.addEventListener('click', () => {
+            this._closeProjectSwitcher();
+            this.send({ command: 'folder_dialog' });
+        });
+        menu.querySelectorAll('.psw-project').forEach((row) => {
+            row.addEventListener('click', () => {
+                const path = row.dataset.path;
+                this._closeProjectSwitcher();
+                if (!path) return;
+                const norm = path.replace(/\\/g, '/');
+                // Filter the sidebar to this project. Only swap the active backend/session
+                // if the user picked a different project than the currently-loaded one.
+                this._setProjectFilter(norm);
+                if (norm !== cur) this.selectProjectFolder(path);
+            });
+        });
+
+        // Close on outside click / Escape. Guard against the click that just opened
+        // the menu re-firing through document (synthetic-click sequences sometimes do this).
+        const openedAt = Date.now();
+        const onDocClick = (e) => {
+            if (Date.now() - openedAt < 100) return;
+            if (anchor.contains(e.target)) return;
+            if (!menu.contains(e.target)) this._closeProjectSwitcher();
+        };
+        const onKey = (e) => { if (e.key === 'Escape') this._closeProjectSwitcher(); };
+        document.addEventListener('click', onDocClick);
+        document.addEventListener('keydown', onKey);
+        menu._cleanup = () => {
+            document.removeEventListener('click', onDocClick);
+            document.removeEventListener('keydown', onKey);
+            anchor.setAttribute('aria-expanded', 'false');
+        };
+    }
+
+    /**
+     * Set or clear the project filter applied to the sidebar session tree.
+     * Empty string clears the filter (show all projects).
+     */
+    _setProjectFilter(path) {
+        const norm = (path || '').replace(/\\/g, '/');
+        this._projectFilter = norm;
+        // Remember explicit "all projects" choice so init events don't re-apply the filter.
+        this._projectFilterUserCleared = !norm;
+        if (this.sidebarProjectSwitchLabel) {
+            if (!norm) {
+                this.sidebarProjectSwitchLabel.textContent = 'All projects';
+            } else {
+                const name = (this.recentProjects || [])
+                    .find(p => (p.path || '').replace(/\\/g, '/') === norm)?.name
+                    || norm.split('/').pop();
+                this.sidebarProjectSwitchLabel.textContent = name;
+            }
+        }
+        this.renderFilteredSessions();
+    }
+
+    _closeProjectSwitcher() {
+        const menu = document.getElementById('project-switcher-menu');
+        if (!menu) return;
+        if (typeof menu._cleanup === 'function') menu._cleanup();
+        menu.remove();
+    }
+
+    _shortenForMenu(path, max = 48) {
+        const norm = (path || '').replace(/\\/g, '/');
+        if (norm.length <= max) return norm;
+        return '\u2026' + norm.slice(-(max - 1));
     }
 
     // ── New Session Setup ──────────────────────────────────────
 
     showNewSessionSetup() {
-        // Hide all main views
-        this.welcomeScreen.style.display = 'none';
         if (this.agentPanel) this.agentPanel.style.display = 'none';
         else this.chatContainer.style.display = 'none';
         this.inputBar.style.display = 'none';
-        const chatWelcome = document.getElementById('chat-welcome-screen');
-        if (chatWelcome) chatWelcome.style.display = 'none';
         if (this.settingsView) this.settingsView.style.display = 'none';
-        if (this.scheduleView) this.scheduleView.style.display = 'none';
-        if (this.dispatchView) this.dispatchView.style.display = 'none';
 
-        // Chat mode: show simple chat welcome
-        if (this.sessionMode === 'chat') {
-            if (chatWelcome) {
-                chatWelcome.style.display = 'flex';
-                this._populateChatWelcomeModels();
-                document.getElementById('chat-welcome-textarea')?.focus();
-            }
-            this.currentView = 'agents';
-            document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(el =>
-                el.classList.toggle('active', el.dataset.view === 'agents'));
-            return;
-        }
-
-        // Code mode: show project picker
         this.welcomeScreen.style.display = 'flex';
-        // Update nav
         this.currentView = 'agents';
-        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view]').forEach(el =>
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === 'agents'));
 
-        // Clear and close preview panel for new session
         this.clearPreviewPanel();
         this.closePreviewPanel();
+        this._maybeRenderOnboardingCard();
 
         const projectStep = document.getElementById('project-step');
         const backendStep = document.getElementById('backend-step');
@@ -5093,20 +5465,28 @@ class ResonantApp {
         projectStep.style.display = 'block';
         backendStep.style.display = 'none';
         if (roleSelect) {
+            // Sprint workflow is opt-in. Hide the role picker entirely when off so
+            // users aren't forced to think about planner/generator/evaluator for a
+            // plain conversation.
+            const wrapper = roleSelect.closest('.chat-welcome-footer');
+            if (wrapper) wrapper.style.display = this.harnessEnabled ? '' : 'none';
             roleSelect.value = this.sessionRole || 'generator';
-            roleSelect.style.display = this.sessionMode === 'chat' ? 'none' : '';
             roleSelect.onchange = () => {
                 this.sessionRole = roleSelect.value || 'generator';
             };
         }
 
         const input = document.getElementById('welcome-folder-input');
-        input.value = this.currentCwd || '';
+        // Don't pre-fill — user is starting fresh. Show the current cwd as a
+        // placeholder hint instead so they know what would be the default.
+        input.value = '';
+        const hint = (this.currentCwd || '').trim();
+        input.placeholder = hint ? `Enter folder path or pick from Recent (default: ${hint})` : 'Enter folder path...';
 
         // Bind folder open
         const openBtn = document.getElementById('welcome-folder-open');
         openBtn.onclick = () => {
-            const path = input.value.trim();
+            const path = (input.value.trim() || (this.currentCwd || '').trim());
             if (path) this.selectProjectFolder(path);
         };
 
@@ -5176,18 +5556,30 @@ class ResonantApp {
     }
 
     selectProjectFolder(path) {
-        // Set the project and move to backend selection step
         this.send({ command: 'set_project', path });
 
-        // Update UI immediately
         const short = path.replace(/\\/g, '/').split('/').pop();
         this.currentCwd = path.replace(/\\/g, '/');
         this.headerProject.textContent = short;
         this.sidebarProjectName.textContent = short;
         this.sidebarCwd.textContent = path;
-        // Reset filter to current project
-        this.projectFilter = null;
-        this._updateFilterLabel();
+
+        // Bug #7+#8 fix: project switch was leaving the chat panel and the
+        // git pill showing the previous project's state. The set_project
+        // command above gets the backend ready, but doesn't tell the
+        // frontend to refresh dependent UI components.
+        //
+        // 1. Clear chat-panel messages immediately. The session_loaded event
+        //    that follows set_project will re-render whatever's appropriate
+        //    for the new project, but until then we want a clean slate
+        //    rather than the previous project's last conversation lingering.
+        if (this.chatMessages) this.chatMessages.innerHTML = '';
+        this.clearPreviewPanel?.();
+        // 2. Request a fresh git_status for the new project so the bottom
+        //    git pill reflects the new branch / dirty count instead of the
+        //    previous project's. The backend will respond with a git_status
+        //    event that handleGitStatus consumes.
+        this.send({ command: 'git_status' });
 
         // Show backend step
         const projectStep = document.getElementById('project-step');
@@ -5278,6 +5670,13 @@ class ResonantApp {
 
     handleGitStatus(data) {
         this.gitData = data;
+        this._applyGitBadgeFromData();
+    }
+
+    /** Git badge is Agent/workspace context; hidden on Ask so chat feels repo-agnostic. */
+    _applyGitBadgeFromData() {
+        if (!this.gitBadge) return;
+        const data = this.gitData;
         if (!data || !data.is_repo) {
             this.gitBadge.style.display = 'none';
             return;
@@ -5386,6 +5785,7 @@ class ResonantApp {
     // ── RESONANT.md Badge ───────────────────────────────────────
 
     updateResonantMdBadge() {
+        if (!this.resonantMdBadge) return;
         if (this.resonantMd && this.resonantMd.exists) {
             this.resonantMdBadge.style.display = 'flex';
         } else {
@@ -5465,1413 +5865,6 @@ class ResonantApp {
         }
     }
 
-    // ── Command Center v2 — Project-Centric ────────────────────
-
-    initCommandCenter() {
-        // Called when entering command mode
-        this.send({ command: 'command_project_list' });
-        this.renderCommandSidebar();
-        if (!this.cmdSelectedProject) {
-            this.renderNewProjectScreen();
-        }
-    }
-
-    renderCommandSidebar() {
-        const list = document.getElementById('cmd-project-list');
-        if (!list) return;
-
-        const projects = this.commandProjects || [];
-        if (projects.length === 0) {
-            list.innerHTML = '<div style="padding:16px;color:var(--dim);font-size:12px;text-align:center">No projects yet</div>';
-            return;
-        }
-
-        list.innerHTML = projects.map(p => `
-            <div class="cmd-project-item ${p.id === this.cmdSelectedProject ? 'active' : ''}" data-id="${p.id}">
-                <span class="cmd-project-dot ${p.status || 'idle'}"></span>
-                <div class="cmd-project-info">
-                    <div class="cmd-project-name">${this.escapeHtml(p.name)}</div>
-                    <div class="cmd-project-status">${p.status || 'idle'}</div>
-                </div>
-            </div>
-        `).join('');
-
-        list.querySelectorAll('.cmd-project-item').forEach(item => {
-            item.addEventListener('click', () => {
-                this.cmdSelectedProject = item.dataset.id;
-                this.renderCommandSidebar();
-                this.send({ command: 'command_project_status', project_id: item.dataset.id });
-            });
-        });
-    }
-
-    renderNewProjectScreen() {
-        const main = document.getElementById('cmd-main');
-        if (!main) return;
-
-        // Pre-fill with current project path
-        const currentPath = this.currentCwd || '';
-
-        main.innerHTML = `
-            <div class="cmd-new-project">
-                <h2>New workspace</h2>
-                <div class="cmd-subtitle">Define a goal and launch a coordinator to run agents across this workspace.</div>
-
-                <div class="cmd-form-group">
-                    <label>Workspace path</label>
-                    <input type="text" class="settings-input" id="cmd-project-path" value="${this.escapeHtml(currentPath)}" placeholder="/path/to/repo" />
-                </div>
-
-                <div class="cmd-form-group">
-                    <label>Workspace name</label>
-                    <input type="text" class="settings-input" id="cmd-project-name" placeholder="e.g. Auth refactor" />
-                </div>
-
-                <div class="cmd-form-group">
-                    <label>Strategy</label>
-                    <textarea class="settings-input" id="cmd-project-strategy" rows="6"
-                        placeholder="Describe the high-level objective. The AI coordinator will break this into tasks, spawn worker agents, and manage the execution.&#10;&#10;Example: Build a complete user authentication system with JWT tokens. Implement signup, login, password reset endpoints. Add auth middleware. Write tests for all endpoints."></textarea>
-                </div>
-
-                <div class="cmd-form-group">
-                    <label>Coordinator Model</label>
-                    <select class="settings-input" id="cmd-coordinator-model"></select>
-                </div>
-
-                <div style="display:flex;gap:10px;margin-top:8px">
-                    <button class="btn-primary" id="cmd-launch-btn" style="padding:10px 24px;font-size:14px">
-                        Launch Coordinator
-                    </button>
-                </div>
-            </div>
-        `;
-
-        // Populate model selector dropdown
-        const modelSelect = document.getElementById('cmd-coordinator-model');
-        if (modelSelect) {
-            this._populateCommandModelSelector(modelSelect);
-        }
-
-        document.getElementById('cmd-launch-btn')?.addEventListener('click', () => {
-            const path = document.getElementById('cmd-project-path')?.value?.trim();
-            const name = document.getElementById('cmd-project-name')?.value?.trim();
-            const strategy = document.getElementById('cmd-project-strategy')?.value?.trim();
-            if (!strategy) return;
-            // Use the selected model from dropdown
-            const selectedValue = document.getElementById('cmd-coordinator-model')?.value || '';
-            const [backendType, backendModel] = selectedValue.includes(':') ? selectedValue.split(':') : ['', ''];
-            this.send({
-                command: 'command_project_create',
-                path: path || this.currentCwd,
-                name: name || (path || 'Project').split(/[/\\]/).pop(),
-                strategy,
-                backend: backendType,
-                model: backendModel,
-            });
-        });
-    }
-
-    _populateCommandModelSelector(selectEl, selectedValue) {
-        selectEl.innerHTML = '';
-        const backendLabels = this._getBackendLabels ? this._getBackendLabels() : {};
-        for (const [key, info] of Object.entries(this.backends || {})) {
-            if (!info || !info.models || info.models.length === 0) continue;
-            const labels = info.model_labels || {};
-            const bLabel = backendLabels[key] || key;
-            const optgroup = document.createElement('optgroup');
-            optgroup.label = bLabel;
-            for (const m of info.models) {
-                const opt = document.createElement('option');
-                opt.value = `${key}:${m}`;
-                opt.textContent = labels[m] || m;
-                if (selectedValue && opt.value === selectedValue) opt.selected = true;
-                optgroup.appendChild(opt);
-            }
-            selectEl.appendChild(optgroup);
-        }
-        // If nothing selected, try to pick a sensible default
-        if (!selectedValue && selectEl.options.length > 0) {
-            // Prefer codex or claude-code
-            for (const opt of selectEl.options) {
-                if (opt.value.startsWith('codex:') || opt.value.startsWith('claude-code:')) {
-                    opt.selected = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    renderProjectDashboard(project) {
-        const main = document.getElementById('cmd-main');
-        if (!main) return;
-
-        // Auto-refresh: poll every 5s while project has active agents
-        if (this._cmdRefreshTimer) clearInterval(this._cmdRefreshTimer);
-        const hasActive = (project.agents || []).some(a => a.status === 'running');
-        if (hasActive && this.sessionMode === 'command') {
-            this._cmdRefreshTimer = setInterval(() => {
-                if (this.sessionMode !== 'command' || this.cmdSelectedProject !== project.id) {
-                    clearInterval(this._cmdRefreshTimer);
-                    return;
-                }
-                this.send({ command: 'command_project_status', project_id: project.id });
-            }, 5000);
-        }
-
-        const tasks = project.tasks || [];
-        const completedTasks = tasks.filter(t => t.status === 'completed').length;
-        const totalTasks = tasks.length;
-        const activeAgents = (project.agents || []).filter(a => a.status === 'running').length;
-        const progressPct = totalTasks > 0 ? Math.round((completedTasks / totalTasks) * 100) : 0;
-        const statusLabel = {
-            idle: 'Idle', planning: 'Planning...', running: 'Running',
-            completed: 'Completed', failed: 'Failed'
-        }[project.status] || project.status;
-
-        const dashTab = this.cmdDashTab || 'chat';
-
-        main.innerHTML = `
-            <div class="project-dashboard">
-                <div class="project-dash-header">
-                    <div class="project-dash-title">${this.escapeHtml(project.name)}</div>
-                    <div class="project-dash-strategy">${this.escapeHtml(project.strategy)}</div>
-                    <div class="project-dash-stats">
-                        <span>Status: <span class="stat-value">${statusLabel}</span></span>
-                        <span>Tasks: <span class="stat-value">${completedTasks}/${totalTasks}</span></span>
-                        <span>Agents: <span class="stat-value">${activeAgents} active</span></span>
-                        <span class="project-dash-actions">
-                            <button class="btn-sm" id="dash-preview-btn" title="Preview in browser">▶ Preview</button>
-                            <button class="btn-sm" id="dash-files-btn" title="View generated files">📁 Files</button>
-                        </span>
-                    </div>
-                    <div class="project-dash-progress">
-                        <div class="project-dash-progress-bar" style="width:${progressPct}%"></div>
-                    </div>
-                </div>
-                <div class="project-dash-tabs">
-                    <button class="project-dash-tab ${dashTab === 'chat' ? 'active' : ''}" data-tab="chat">Coordinator</button>
-                    <button class="project-dash-tab ${dashTab === 'plan' ? 'active' : ''}" data-tab="plan">Plan</button>
-                    <button class="project-dash-tab ${dashTab === 'agents' ? 'active' : ''}" data-tab="agents">Agents</button>
-                    <button class="project-dash-tab ${dashTab === 'activity' ? 'active' : ''}" data-tab="activity">Activity</button>
-                    <button class="project-dash-tab ${dashTab === 'results' ? 'active' : ''}" data-tab="results">Results</button>
-                    <button class="project-dash-tab ${dashTab === 'org_chart' ? 'active' : ''}" data-tab="org_chart">Org Chart</button>
-                </div>
-                <div class="project-dash-content" id="project-dash-content"></div>
-            </div>
-        `;
-
-        // Preview button — open project's index.html or serve files
-        document.getElementById('dash-preview-btn')?.addEventListener('click', () => {
-            this.send({ command: 'command_project_preview', project_id: project.id });
-        });
-
-        // Files button — request file listing
-        document.getElementById('dash-files-btn')?.addEventListener('click', () => {
-            this.cmdDashTab = 'results';
-            this.send({ command: 'command_project_files', project_id: project.id });
-        });
-
-        // Tab switching
-        main.querySelectorAll('.project-dash-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                this.cmdDashTab = tab.dataset.tab;
-                if (tab.dataset.tab === 'results') {
-                    this.send({ command: 'command_project_files', project_id: project.id });
-                }
-                this.renderProjectDashboard(project);
-            });
-        });
-
-        // Render active tab content
-        const content = document.getElementById('project-dash-content');
-        if (!content) return;
-
-        switch (dashTab) {
-            case 'chat': this._renderDashChat(content, project); break;
-            case 'plan': this._renderDashPlan(content, project); break;
-            case 'agents': this._renderDashAgents(content, project); break;
-            case 'activity': this._renderDashActivity(content, project); break;
-            case 'results': this._renderDashResults(content, project); break;
-            case 'org_chart': this._renderDashOrgChart(content, project); break;
-        }
-    }
-
-    _renderDashChat(el, project) {
-        // Initialize chat history for this project if not exists
-        if (!this._projectChatHistory) this._projectChatHistory = {};
-        const history = this._projectChatHistory[project.id] || [];
-
-        el.innerHTML = `
-            <div class="project-chat">
-                <div class="project-chat-messages" id="project-chat-messages">
-                    ${history.length === 0 ? `
-                        <div class="project-chat-welcome">
-                            <div class="project-chat-welcome-icon">🤖</div>
-                            <h3>Coordinator</h3>
-                            <p>Message the workspace coordinator. You can ask it to:</p>
-                            <ul>
-                                <li>Break down the strategy into tasks</li>
-                                <li>Spawn worker agents for specific tasks</li>
-                                <li>Check on agent progress</li>
-                                <li>Modify the plan or priorities</li>
-                                <li>Get status updates</li>
-                            </ul>
-                        </div>
-                    ` : history.map(m => `
-                        <div class="project-chat-msg project-chat-${m.role}">
-                            <div class="project-chat-msg-avatar">${m.role === 'user' ? '👤' : '🤖'}</div>
-                            <div class="project-chat-msg-body">
-                                <div class="project-chat-msg-content">${this.escapeHtml(m.content)}</div>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-                <div class="project-chat-input-bar">
-                    <div class="project-chat-model-row">
-                        <span class="project-chat-model-label">Model:</span>
-                        <select class="settings-input" id="project-chat-model" style="width:200px;font-size:12px"></select>
-                    </div>
-                    <div class="project-chat-input-row">
-                        <textarea class="settings-input" id="project-chat-input" rows="2"
-                            placeholder="Tell the coordinator what to do..."></textarea>
-                        <button class="btn-primary btn-sm" id="project-chat-send">Send</button>
-                    </div>
-                </div>
-            </div>
-        `;
-
-        // Scroll to bottom
-        const messagesEl = document.getElementById('project-chat-messages');
-        if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
-
-        // Populate model selector
-        const chatModelSelect = document.getElementById('project-chat-model');
-        if (chatModelSelect) this._populateCommandModelSelector(chatModelSelect);
-
-        // Send handler
-        const sendMessage = () => {
-            const input = document.getElementById('project-chat-input');
-            const content = input?.value?.trim();
-            if (!content) return;
-
-            // Add user message to history
-            history.push({ role: 'user', content });
-            this._projectChatHistory[project.id] = history;
-
-            // Add user message to UI immediately
-            const msgEl = document.createElement('div');
-            msgEl.className = 'project-chat-msg project-chat-user';
-            msgEl.innerHTML = `
-                <div class="project-chat-msg-avatar">👤</div>
-                <div class="project-chat-msg-body">
-                    <div class="project-chat-msg-content">${this.escapeHtml(content)}</div>
-                </div>
-            `;
-
-            // Remove welcome screen if present
-            const welcome = messagesEl?.querySelector('.project-chat-welcome');
-            if (welcome) welcome.remove();
-
-            messagesEl?.appendChild(msgEl);
-
-            // Add "thinking" indicator
-            const thinkingEl = document.createElement('div');
-            thinkingEl.className = 'project-chat-msg project-chat-assistant';
-            thinkingEl.id = 'project-chat-thinking';
-            thinkingEl.innerHTML = `
-                <div class="project-chat-msg-avatar">🤖</div>
-                <div class="project-chat-msg-body">
-                    <div class="project-chat-msg-content project-chat-thinking">Thinking...</div>
-                </div>
-            `;
-            messagesEl?.appendChild(thinkingEl);
-            if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
-
-            // Send to backend
-            this.send({
-                command: 'command_project_chat',
-                project_id: project.id,
-                message: content,
-            });
-
-            input.value = '';
-        };
-
-        document.getElementById('project-chat-send')?.addEventListener('click', sendMessage);
-        document.getElementById('project-chat-input')?.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        });
-
-        // Focus input
-        document.getElementById('project-chat-input')?.focus();
-    }
-
-    _handleProjectChatResponse(event) {
-        const messagesEl = document.getElementById('project-chat-messages');
-        if (!messagesEl) return;
-
-        // Remove thinking indicator
-        const thinking = document.getElementById('project-chat-thinking');
-        if (thinking) thinking.remove();
-
-        const content = event.response || event.text || '(no response)';
-
-        // Add to history
-        if (!this._projectChatHistory) this._projectChatHistory = {};
-        const history = this._projectChatHistory[event.project_id] || [];
-        history.push({ role: 'assistant', content });
-        this._projectChatHistory[event.project_id] = history;
-
-        // Add assistant message to UI
-        const msgEl = document.createElement('div');
-        msgEl.className = 'project-chat-msg project-chat-assistant';
-        msgEl.innerHTML = `
-            <div class="project-chat-msg-avatar">🤖</div>
-            <div class="project-chat-msg-body">
-                <div class="project-chat-msg-content">${this.escapeHtml(content)}</div>
-            </div>
-        `;
-        messagesEl.appendChild(msgEl);
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-    }
-
-    _handleProjectChatDelta(event) {
-        const messagesEl = document.getElementById('project-chat-messages');
-        if (!messagesEl) return;
-
-        // Find or create streaming message element
-        let streamEl = document.getElementById('project-chat-streaming');
-        if (!streamEl) {
-            // Remove thinking indicator
-            const thinking = document.getElementById('project-chat-thinking');
-            if (thinking) thinking.remove();
-
-            streamEl = document.createElement('div');
-            streamEl.className = 'project-chat-msg project-chat-assistant';
-            streamEl.id = 'project-chat-streaming';
-            streamEl.innerHTML = `
-                <div class="project-chat-msg-avatar">🤖</div>
-                <div class="project-chat-msg-body">
-                    <div class="project-chat-msg-content" id="project-chat-stream-text"></div>
-                </div>
-            `;
-            messagesEl.appendChild(streamEl);
-        }
-
-        const textEl = document.getElementById('project-chat-stream-text');
-        if (textEl) {
-            textEl.textContent += event.text || '';
-            messagesEl.scrollTop = messagesEl.scrollHeight;
-        }
-    }
-
-    _renderDashPlan(el, project) {
-        const tasks = project.tasks || [];
-        if (tasks.length === 0) {
-            const isPlanning = project.status === 'planning';
-            el.innerHTML = `<div class="feature-empty" style="padding:40px">
-                <span>${isPlanning ? 'Coordinator is analyzing the project and creating a plan...' : 'No tasks yet. Launch the coordinator to generate a plan.'}</span>
-            </div>`;
-            return;
-        }
-
-        const statusIcon = { todo: '○', running: '◉', completed: '✓', failed: '✗', assigned: '◎' };
-        const statusClass = { todo: 'task-status-todo', running: 'task-status-running', completed: 'task-status-completed', failed: 'task-status-failed', assigned: 'task-status-assigned' };
-
-        el.innerHTML = `<div class="task-list">${tasks.map((t, i) => `
-            <div class="task-item">
-                <span class="task-priority" style="font-size:16px;min-width:20px;text-align:center">${statusIcon[t.status] || '○'}</span>
-                <div class="task-info">
-                    <div class="task-title">${this.escapeHtml(t.title || t.name || `Task ${i + 1}`)}</div>
-                    ${t.description ? `<div class="task-desc">${this.escapeHtml(t.description).substring(0, 120)}</div>` : ''}
-                </div>
-                <span class="task-status-badge ${statusClass[t.status] || ''}">${t.status || 'todo'}</span>
-                ${t.agent_id ? `<span class="task-agent-id">${t.agent_id}</span>` : ''}
-            </div>
-        `).join('')}</div>`;
-    }
-
-    _renderDashAgents(el, project) {
-        const agents = project.agents || [];
-        if (agents.length === 0) {
-            el.innerHTML = `<div class="feature-empty" style="padding:40px"><span>No agents spawned yet.</span></div>`;
-            return;
-        }
-
-        // Group: coordinator first, then workers
-        const coordinator = agents.find(a => a.role === 'coordinator');
-        const workers = agents.filter(a => a.role !== 'coordinator');
-
-        el.innerHTML = `
-            <div style="display:flex;flex-direction:column;gap:8px">
-                ${coordinator ? `
-                    <div class="agent-card" style="border-left:3px solid var(--brand)">
-                        <div class="agent-card-header">
-                            <div class="agent-card-status">
-                                <span class="agent-status-dot ${coordinator.status}"></span>
-                                Coordinator
-                            </div>
-                            <span class="agent-card-id">${coordinator.id || ''}</span>
-                        </div>
-                        <div class="agent-card-name">${this.escapeHtml(coordinator.name || 'Project Coordinator')}</div>
-                        <div class="agent-card-meta">
-                            <span>${coordinator.model || ''}</span>
-                            <span>${coordinator.steps || 0} steps</span>
-                        </div>
-                    </div>
-                    ${workers.length > 0 ? '<div style="margin-left:24px;border-left:2px solid var(--border);padding-left:16px;display:flex;flex-direction:column;gap:8px">' : ''}
-                ` : ''}
-                ${workers.map(a => `
-                    <div class="agent-card">
-                        <div class="agent-card-header">
-                            <div class="agent-card-status">
-                                <span class="agent-status-dot ${a.status}"></span>
-                                Worker
-                            </div>
-                            <span class="agent-card-id">${a.id || ''}</span>
-                        </div>
-                        <div class="agent-card-name">${this.escapeHtml(a.name || 'Worker')}</div>
-                        <div class="agent-card-meta">
-                            <span>${a.model || ''}</span>
-                            <span>${a.steps || 0} steps</span>
-                            <span>${a.elapsed ? Math.round(a.elapsed) + 's' : ''}</span>
-                        </div>
-                    </div>
-                `).join('')}
-                ${coordinator && workers.length > 0 ? '</div>' : ''}
-            </div>
-        `;
-    }
-
-    _renderDashActivity(el, project) {
-        const activity = project.activity || this.commandFeed || [];
-        if (activity.length === 0) {
-            el.innerHTML = `<div class="feature-empty" style="padding:40px"><span>No activity yet.</span></div>`;
-            return;
-        }
-
-        const senderIcon = (type) => type === 'user' ? '👤' : type === 'agent' ? '🤖' : 'ℹ️';
-
-        el.innerHTML = `
-            <div class="comms-feed" style="padding:0">
-                ${activity.map(m => {
-                    const dirBadge = m.direction === 'up'
-                        ? `<span class="msg-direction msg-up">↑ ${this.escapeHtml(m.sender_name || '')} → ${this.escapeHtml(m.recipient_name || '')}</span>`
-                        : m.direction === 'down'
-                        ? `<span class="msg-direction msg-down">↓ ${this.escapeHtml(m.sender_name || '')} → ${this.escapeHtml(m.recipient_name || '')}</span>`
-                        : '';
-                    return `
-                    <div class="comms-message ${m.direction || ''}">
-                        <span class="comms-icon">${senderIcon(m.sender_type)}</span>
-                        <div class="comms-body">
-                            <div class="comms-header">
-                                <span class="comms-sender">${this.escapeHtml(m.sender_name || m.sender_id || '')}</span>
-                                ${dirBadge}
-                                <span class="comms-time">${m.timestamp ? new Date(m.timestamp).toLocaleTimeString() : ''}</span>
-                            </div>
-                            <div class="comms-content">${this.escapeHtml(m.content || '')}</div>
-                        </div>
-                    </div>`;
-                }).join('')}
-            </div>
-        `;
-        el.scrollTop = el.scrollHeight;
-    }
-
-    _renderDashOrgChart(el, project) {
-        const nodes = project.org_chart || [];
-
-        // Request latest org chart from server
-        this.send({ command: 'command_org_chart_get', project_id: project.id });
-
-        const _renderTree = (nodeList, depth = 0) => {
-            return nodeList.map(node => {
-                const statusDot = { idle: '⚪', running: '🟢', completed: '🔵', failed: '🔴' }[node.status] || '⚪';
-                const modelLabel = node.model ? node.model.split(':').pop() : 'no model';
-                const indent = depth * 28;
-                const childrenHtml = (node.children && node.children.length > 0)
-                    ? _renderTree(node.children, depth + 1)
-                    : '';
-                return `
-                    <div class="org-node" style="margin-left:${indent}px" data-id="${node.id}">
-                        <div class="org-node-content">
-                            <span class="org-node-connector">${depth > 0 ? '└── ' : ''}</span>
-                            <span class="org-node-status">${statusDot}</span>
-                            <span class="org-node-role">${this.escapeHtml(node.role)}</span>
-                            <span class="org-node-model">${this.escapeHtml(modelLabel)}</span>
-                            <button class="org-node-edit" data-id="${node.id}" title="Edit">&#9998;</button>
-                            <button class="org-node-delete" data-id="${node.id}" title="Delete">&times;</button>
-                        </div>
-                        ${node.description ? `<div class="org-node-desc" style="margin-left:${indent + 48}px">${this.escapeHtml(node.description)}</div>` : ''}
-                        ${childrenHtml}
-                    </div>`;
-            }).join('');
-        };
-
-        // Build tree from flat nodes
-        const tree = this._orgChartData?.tree || this._buildOrgTree(nodes);
-        const hasNodes = nodes.length > 0;
-
-        el.innerHTML = `
-            <div class="org-chart-header">
-                <button class="btn-primary btn-sm" id="org-add-role-btn">+ Add Role</button>
-                ${hasNodes ? `<button class="btn-sm" id="org-activate-btn" style="background:var(--ok);color:#000;border-color:var(--ok)">&#9654; Activate All</button>` : ''}
-            </div>
-            <div class="org-tree">
-                <div class="org-node org-user-node">
-                    <div class="org-node-content">
-                        <span class="org-node-status">👤</span>
-                        <span class="org-node-role" style="font-weight:700">You</span>
-                    </div>
-                </div>
-                ${hasNodes ? _renderTree(tree, 1) : `
-                    <div class="feature-empty" style="padding:30px">
-                        <span>No roles defined yet. Click <strong>+ Add Role</strong> to build your agent hierarchy.</span>
-                    </div>
-                `}
-            </div>
-        `;
-
-        // Bind buttons
-        document.getElementById('org-add-role-btn')?.addEventListener('click', () => this._showOrgAddForm(el, project));
-        document.getElementById('org-activate-btn')?.addEventListener('click', () => {
-            this.send({ command: 'command_org_chart_activate', project_id: project.id });
-        });
-        el.querySelectorAll('.org-node-edit').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this._showOrgEditForm(el, project, btn.dataset.id);
-            });
-        });
-        el.querySelectorAll('.org-node-delete').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.send({ command: 'command_org_chart_remove_node', project_id: project.id, node_id: btn.dataset.id });
-            });
-        });
-    }
-
-    _buildOrgTree(nodes) {
-        // Convert flat node list to nested tree
-        const map = {};
-        const roots = [];
-        for (const n of nodes) { map[n.id] = { ...n, children: [] }; }
-        for (const n of nodes) {
-            if (n.parent_id && map[n.parent_id]) {
-                map[n.parent_id].children.push(map[n.id]);
-            } else {
-                roots.push(map[n.id]);
-            }
-        }
-        return roots;
-    }
-
-    _showOrgAddForm(el, project) {
-        const nodes = project.org_chart || [];
-        const parentOptions = nodes.map(n =>
-            `<option value="${n.id}">${this.escapeHtml(n.role)}</option>`
-        ).join('');
-
-        const content = document.getElementById('project-dash-content');
-        if (!content) return;
-
-        content.innerHTML = `
-            <div class="spawn-agent-form">
-                <h3 class="cmd-dialog-title">Add Role to Org Chart</h3>
-                <div class="settings-row"><label>Role</label>
-                    <input type="text" class="settings-input" id="org-role-name" placeholder="e.g., Backend Developer" /></div>
-                <div class="settings-row"><label>Description</label>
-                    <textarea class="settings-input" id="org-role-desc" rows="2" placeholder="What does this agent do?"></textarea></div>
-                <div class="settings-row"><label>Model</label>
-                    <select class="settings-input" id="org-role-model"></select></div>
-                <div class="settings-row"><label>Reports to</label>
-                    <select class="settings-input" id="org-role-parent">
-                        <option value="">You (top level)</option>
-                        ${parentOptions}
-                    </select></div>
-                <div style="display:flex;gap:8px;margin-top:12px">
-                    <button class="btn-primary btn-sm" id="org-add-submit">Add Role</button>
-                    <button class="btn-sm" id="org-add-cancel">Cancel</button>
-                </div>
-            </div>
-        `;
-
-        const modelSelect = document.getElementById('org-role-model');
-        if (modelSelect) this._populateCommandModelSelector(modelSelect);
-
-        document.getElementById('org-add-submit')?.addEventListener('click', () => {
-            const role = document.getElementById('org-role-name')?.value?.trim();
-            if (!role) return;
-            this.send({
-                command: 'command_org_chart_add_node',
-                project_id: project.id,
-                role,
-                description: document.getElementById('org-role-desc')?.value || '',
-                model: document.getElementById('org-role-model')?.value || '',
-                parent_id: document.getElementById('org-role-parent')?.value || null,
-            });
-            // Switch back to org chart view
-            this.cmdDashTab = 'org_chart';
-            this.renderProjectDashboard(project);
-        });
-        document.getElementById('org-add-cancel')?.addEventListener('click', () => {
-            this.cmdDashTab = 'org_chart';
-            this.renderProjectDashboard(project);
-        });
-    }
-
-    _showOrgEditForm(el, project, nodeId) {
-        const nodes = project.org_chart || [];
-        const node = nodes.find(n => n.id === nodeId);
-        if (!node) return;
-
-        const parentOptions = nodes
-            .filter(n => n.id !== nodeId)
-            .map(n => `<option value="${n.id}" ${n.id === node.parent_id ? 'selected' : ''}>${this.escapeHtml(n.role)}</option>`)
-            .join('');
-
-        const content = document.getElementById('project-dash-content');
-        if (!content) return;
-
-        content.innerHTML = `
-            <div class="spawn-agent-form">
-                <h3 class="cmd-dialog-title">Edit Role: ${this.escapeHtml(node.role)}</h3>
-                <div class="settings-row"><label>Role</label>
-                    <input type="text" class="settings-input" id="org-edit-name" value="${this.escapeHtml(node.role)}" /></div>
-                <div class="settings-row"><label>Description</label>
-                    <textarea class="settings-input" id="org-edit-desc" rows="2">${this.escapeHtml(node.description || '')}</textarea></div>
-                <div class="settings-row"><label>Model</label>
-                    <select class="settings-input" id="org-edit-model"></select></div>
-                <div class="settings-row"><label>Reports to</label>
-                    <select class="settings-input" id="org-edit-parent">
-                        <option value="">You (top level)</option>
-                        ${parentOptions}
-                    </select></div>
-                <div style="display:flex;gap:8px;margin-top:12px">
-                    <button class="btn-primary btn-sm" id="org-edit-submit">Save</button>
-                    <button class="btn-sm" id="org-edit-cancel">Cancel</button>
-                </div>
-            </div>
-        `;
-
-        const modelSelect = document.getElementById('org-edit-model');
-        if (modelSelect) {
-            this._populateCommandModelSelector(modelSelect, node.model);
-        }
-
-        document.getElementById('org-edit-submit')?.addEventListener('click', () => {
-            this.send({
-                command: 'command_org_chart_update_node',
-                project_id: project.id,
-                node_id: nodeId,
-                role: document.getElementById('org-edit-name')?.value?.trim() || node.role,
-                description: document.getElementById('org-edit-desc')?.value || '',
-                model: document.getElementById('org-edit-model')?.value || '',
-                parent_id: document.getElementById('org-edit-parent')?.value || null,
-            });
-            this.cmdDashTab = 'org_chart';
-            this.renderProjectDashboard(project);
-        });
-        document.getElementById('org-edit-cancel')?.addEventListener('click', () => {
-            this.cmdDashTab = 'org_chart';
-            this.renderProjectDashboard(project);
-        });
-    }
-
-    _renderDashResults(el, project) {
-        const files = this.cmdProjectFiles || [];
-        const projectPath = project.path || '';
-
-        el.innerHTML = `
-            <div class="results-panel">
-                <div class="results-header">
-                    <h3 class="cmd-dialog-title" style="margin-bottom:0">Generated Files</h3>
-                    <div class="results-actions">
-                        <button class="btn-primary btn-sm" id="results-preview-btn">▶ Preview in Browser</button>
-                        <button class="btn-sm" id="results-refresh-btn">↻ Refresh</button>
-                    </div>
-                </div>
-                <div class="results-path" style="font-size:12px;color:var(--dim);margin:8px 0">${this.escapeHtml(projectPath)}</div>
-                ${files.length === 0 ? `
-                    <div class="feature-empty" style="padding:30px">
-                        <span>No files generated yet. Launch an initiative to start building.</span>
-                    </div>
-                ` : `
-                    <div class="results-file-list">
-                        ${files.map(f => `
-                            <div class="results-file-item" data-path="${this.escapeHtml(f.path)}">
-                                <span class="results-file-icon">${f.is_dir ? '📁' : this._fileIcon(f.name)}</span>
-                                <span class="results-file-name">${this.escapeHtml(f.name)}</span>
-                                <span class="results-file-size">${f.is_dir ? '' : this._formatSize(f.size)}</span>
-                                <span class="results-file-time">${f.modified ? new Date(f.modified * 1000).toLocaleTimeString() : ''}</span>
-                                ${!f.is_dir ? `<button class="btn-sm results-view-btn" data-path="${this.escapeHtml(f.path)}">View</button>` : ''}
-                            </div>
-                        `).join('')}
-                    </div>
-                `}
-                <div class="results-file-content" id="results-file-content" style="display:none">
-                    <div class="results-file-content-header">
-                        <span id="results-viewing-file"></span>
-                        <button class="btn-sm" id="results-close-file">Close</button>
-                    </div>
-                    <pre class="results-code" id="results-code"></pre>
-                </div>
-            </div>
-        `;
-
-        // Preview button
-        el.querySelector('#results-preview-btn')?.addEventListener('click', () => {
-            this.send({ command: 'command_project_preview', project_id: project.id });
-        });
-
-        // Refresh
-        el.querySelector('#results-refresh-btn')?.addEventListener('click', () => {
-            this.send({ command: 'command_project_files', project_id: project.id });
-        });
-
-        // View file content
-        el.querySelectorAll('.results-view-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.send({ command: 'command_project_read_file', project_id: project.id, path: btn.dataset.path });
-            });
-        });
-
-        // Close file view
-        el.querySelector('#results-close-file')?.addEventListener('click', () => {
-            document.getElementById('results-file-content').style.display = 'none';
-        });
-    }
-
-    _fileIcon(name) {
-        const ext = (name || '').split('.').pop()?.toLowerCase();
-        const icons = { html: '🌐', css: '🎨', js: '⚡', json: '📋', md: '📝', py: '🐍', ts: '💠' };
-        return icons[ext] || '📄';
-    }
-
-    _formatSize(bytes) {
-        if (!bytes) return '';
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
-    }
-
-    switchCommandPanel(panel) {
-        this.commandPanel = panel;
-        document.querySelectorAll('.command-tab').forEach(tab =>
-            tab.classList.toggle('active', tab.dataset.panel === panel));
-        document.querySelectorAll('.command-panel').forEach(p => p.style.display = 'none');
-        const target = document.getElementById(`command-${panel}`);
-        if (target) target.style.display = 'flex';
-
-        // Refresh data for the panel
-        switch (panel) {
-            case 'fleet': this.requestCommandFleet(); break;
-            case 'tasks': this.send({ command: 'command_task_list' }); break;
-            case 'monitor': this.renderCommandMonitor(); break;
-            case 'comms': this.send({ command: 'command_feed_list' }); break;
-        }
-    }
-
-    requestCommandFleet() {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ command: 'command_fleet' }));
-        }
-    }
-
-    renderCommandFleet() {
-        const panel = document.getElementById('command-fleet');
-        if (!panel) return;
-
-        const agents = this.commandAgents;
-        if (!agents || agents.length === 0) {
-            panel.innerHTML = `
-                <div class="feature-empty">
-                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="10" stroke="currentColor" stroke-width="1.5"/><path d="M16 11v6M13 20h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>No agents running. Click <strong>+ Spawn Agent</strong> to start one.</span>
-                </div>`;
-            return;
-        }
-
-        panel.innerHTML = `<div class="fleet-grid">${agents.map(a => this._renderAgentCard(a)).join('')}</div>`;
-
-        // Bind cancel buttons
-        panel.querySelectorAll('.agent-cancel-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                const id = btn.dataset.id;
-                this.send({ command: 'dispatch_cancel', task_id: id });
-                setTimeout(() => this.requestCommandFleet(), 500);
-            });
-        });
-
-        // Bind card clicks → switch to monitor panel
-        panel.querySelectorAll('.agent-card').forEach(card => {
-            card.addEventListener('click', () => {
-                this.commandMonitorAgent = card.dataset.id;
-                this.switchCommandPanel('monitor');
-            });
-        });
-    }
-
-    _renderAgentCard(agent) {
-        const status = agent.status || 'pending';
-        const statusLabel = status.charAt(0).toUpperCase() + status.slice(1);
-        const name = agent.name || agent.prompt?.substring(0, 60) || 'Unnamed agent';
-        const model = agent.model || '';
-        const steps = agent.steps || 0;
-        const elapsed = agent.elapsed ? `${Math.round(agent.elapsed)}s` : '—';
-        const isRunning = status === 'running' || status === 'pending';
-
-        return `
-            <div class="agent-card" data-id="${agent.id}">
-                <div class="agent-card-header">
-                    <div class="agent-card-status">
-                        <span class="agent-status-dot ${status}"></span>
-                        ${statusLabel}
-                    </div>
-                    <span class="agent-card-id">${agent.id}</span>
-                </div>
-                <div class="agent-card-name">${this.escapeHtml(name)}</div>
-                <div class="agent-card-meta">
-                    <span>${this.escapeHtml(model)}</span>
-                    <span>${steps} steps</span>
-                    <span>${elapsed}</span>
-                </div>
-                ${isRunning ? `<div class="agent-card-actions"><button class="agent-cancel-btn cancel-btn" data-id="${agent.id}">Cancel</button></div>` : ''}
-            </div>`;
-    }
-
-    showSpawnAgentDialog() {
-        const panel = document.getElementById('command-fleet');
-        if (!panel) return;
-
-        panel.innerHTML = `
-            <div class="spawn-agent-form">
-                <h3 class="cmd-dialog-title">Spawn New Agent</h3>
-                <div class="settings-row"><label>Name</label>
-                    <input type="text" class="settings-input" id="spawn-name" placeholder="Agent name (optional)" /></div>
-                <div class="settings-row"><label>Prompt</label>
-                    <textarea class="settings-input" id="spawn-prompt" rows="5" placeholder="What should this agent work on?"></textarea></div>
-                <div class="settings-row"><label>Role</label>
-                    <select class="settings-input" id="spawn-role">
-                        <option value="generator">Generator</option>
-                        <option value="evaluator">Evaluator</option>
-                        <option value="planner">Planner</option>
-                    </select></div>
-                <div style="display:flex;gap:8px;margin-top:12px">
-                    <button class="btn-primary btn-sm" id="spawn-submit-btn">Launch Agent</button>
-                    <button class="btn-sm" id="spawn-cancel-btn">Cancel</button>
-                </div>
-            </div>
-        `;
-
-        document.getElementById('spawn-submit-btn')?.addEventListener('click', () => {
-            const name = document.getElementById('spawn-name')?.value || '';
-            const prompt = document.getElementById('spawn-prompt')?.value || '';
-            const role = document.getElementById('spawn-role')?.value || 'generator';
-            if (prompt.trim()) {
-                this.send({ command: 'command_spawn', name, prompt, session_role: role });
-                this.requestCommandFleet();
-            }
-        });
-        document.getElementById('spawn-cancel-btn')?.addEventListener('click', () => this.renderCommandFleet());
-    }
-
-    // ── Command Center: Task Board ────────────────────────────────
-
-    renderCommandTasks() {
-        const panel = document.getElementById('command-tasks');
-        if (!panel) return;
-
-        const tasks = this.commandTasks;
-        if (!tasks || tasks.length === 0) {
-            panel.innerHTML = `
-                <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
-                    <button class="btn-primary btn-sm" id="task-create-btn">+ New Task</button>
-                </div>
-                <div class="feature-empty">
-                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="8" y="6" width="16" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M12 12h8M12 16h8M12 20h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>No tasks yet. Create tasks and assign them to agents.</span>
-                </div>`;
-            panel.querySelector('#task-create-btn')?.addEventListener('click', () => this.showCommandTaskDialog());
-            return;
-        }
-
-        const priorityIcon = { high: '🔴', medium: '🟡', low: '🟢' };
-        const statusBadge = (s) => `<span class="task-status-badge task-status-${s}">${s}</span>`;
-
-        panel.innerHTML = `
-            <div style="display:flex;justify-content:flex-end;margin-bottom:12px">
-                <button class="btn-primary btn-sm" id="task-create-btn">+ New Task</button>
-            </div>
-            <div class="task-list">
-                ${tasks.map(t => `
-                    <div class="task-item" data-id="${t.id}">
-                        <span class="task-priority">${priorityIcon[t.priority] || '⚪'}</span>
-                        <div class="task-info">
-                            <div class="task-title">${this.escapeHtml(t.title)}</div>
-                            ${t.description ? `<div class="task-desc">${this.escapeHtml(t.description).substring(0, 80)}${t.description.length > 80 ? '...' : ''}</div>` : ''}
-                        </div>
-                        ${statusBadge(t.status)}
-                        <div class="task-actions">
-                            ${t.status === 'todo' ? `<button class="btn-sm task-assign-btn" data-id="${t.id}">Assign</button>` : ''}
-                            ${t.assigned_agent_id ? `<span class="task-agent-id">${t.assigned_agent_id}</span>` : ''}
-                            <button class="btn-sm task-delete-btn" data-id="${t.id}" title="Delete">&times;</button>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>`;
-
-        panel.querySelector('#task-create-btn')?.addEventListener('click', () => this.showCommandTaskDialog());
-        panel.querySelectorAll('.task-assign-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.send({ command: 'command_task_assign', task_id: btn.dataset.id });
-            });
-        });
-        panel.querySelectorAll('.task-delete-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.send({ command: 'command_task_delete', id: btn.dataset.id });
-            });
-        });
-    }
-
-    showCommandTaskDialog() {
-        const panel = document.getElementById('command-tasks');
-        if (!panel) return;
-
-        panel.innerHTML = `
-            <div class="spawn-agent-form">
-                <h3 class="cmd-dialog-title">Create Task</h3>
-                <div class="settings-row"><label>Title</label>
-                    <input type="text" class="settings-input" id="task-title" placeholder="Task title" /></div>
-                <div class="settings-row"><label>Description</label>
-                    <textarea class="settings-input" id="task-desc" rows="4" placeholder="Detailed instructions for the agent"></textarea></div>
-                <div class="settings-row"><label>Priority</label>
-                    <select class="settings-input" id="task-priority">
-                        <option value="high">High</option>
-                        <option value="medium" selected>Medium</option>
-                        <option value="low">Low</option>
-                    </select></div>
-                <div style="display:flex;gap:8px;margin-top:12px">
-                    <button class="btn-primary btn-sm" id="task-submit-btn">Create Task</button>
-                    <button class="btn-sm" id="task-cancel-btn">Cancel</button>
-                </div>
-            </div>
-        `;
-
-        document.getElementById('task-submit-btn')?.addEventListener('click', () => {
-            const title = document.getElementById('task-title')?.value?.trim();
-            if (title) {
-                this.send({
-                    command: 'command_task_create',
-                    title,
-                    description: document.getElementById('task-desc')?.value || '',
-                    priority: document.getElementById('task-priority')?.value || 'medium',
-                });
-            }
-        });
-        document.getElementById('task-cancel-btn')?.addEventListener('click', () => {
-            this.send({ command: 'command_task_list' });
-        });
-    }
-
-    // ── Command Center: Live Monitor ────────────────────────────
-
-    renderCommandMonitor() {
-        const panel = document.getElementById('command-monitor');
-        if (!panel) return;
-
-        const agents = this.commandAgents.filter(a => a.status === 'running' || a.status === 'pending');
-        const allAgents = this.commandAgents;
-
-        if (allAgents.length === 0) {
-            panel.innerHTML = `
-                <div class="feature-empty">
-                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="4" y="6" width="24" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M10 26h12M16 22v4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8 14l4-3 4 5 4-4 4 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    <span>No agents to monitor. Spawn agents from the Fleet panel first.</span>
-                </div>`;
-            return;
-        }
-
-        const selected = this.commandMonitorAgent || (agents[0] || allAgents[0])?.id || '';
-
-        panel.innerHTML = `
-            <div class="monitor-layout">
-                <div class="monitor-sidebar">
-                    <div class="monitor-sidebar-title">Agents</div>
-                    ${allAgents.map(a => `
-                        <div class="monitor-agent-item ${a.id === selected ? 'active' : ''}" data-id="${a.id}">
-                            <span class="agent-status-dot ${a.status}"></span>
-                            <span class="monitor-agent-name">${this.escapeHtml(a.name || a.id)}</span>
-                        </div>
-                    `).join('')}
-                </div>
-                <div class="monitor-feed" id="monitor-feed">
-                    <div class="monitor-stats" id="monitor-stats"></div>
-                    <div class="monitor-events" id="monitor-events">
-                        <div style="color:var(--dim);padding:20px;text-align:center">
-                            ${selected ? 'Loading events...' : 'Select an agent to monitor'}
-                        </div>
-                    </div>
-                </div>
-            </div>`;
-
-        // Bind agent selection
-        panel.querySelectorAll('.monitor-agent-item').forEach(item => {
-            item.addEventListener('click', () => {
-                // Unsubscribe from previous
-                if (this.commandMonitorAgent) {
-                    this.send({ command: 'command_monitor_unsubscribe', task_id: this.commandMonitorAgent });
-                }
-                this.commandMonitorAgent = item.dataset.id;
-                this.renderCommandMonitor();
-                // Subscribe to new
-                this.send({ command: 'command_monitor_subscribe', task_id: item.dataset.id });
-            });
-        });
-
-        // Auto-subscribe if selected
-        if (selected) {
-            this.commandMonitorAgent = selected;
-            this.send({ command: 'command_monitor_subscribe', task_id: selected });
-        }
-    }
-
-    handleCommandAgentEvent(event) {
-        const eventsEl = document.getElementById('monitor-events');
-        if (!eventsEl || event.task_id !== this.commandMonitorAgent) return;
-
-        // Clear "Loading events..." placeholder
-        if (eventsEl.querySelector('[style*="text-align:center"]')) {
-            eventsEl.innerHTML = '';
-        }
-
-        const eventType = event.event || '';
-        let html = '';
-
-        if (eventType === 'tool_call') {
-            const name = event.name || 'tool';
-            const args = event.args ? JSON.stringify(event.args).substring(0, 120) : '';
-            html = `<div class="monitor-event tool-call"><span class="me-label">⚡ ${this.escapeHtml(name)}</span><span class="me-detail">${this.escapeHtml(args)}</span></div>`;
-        } else if (eventType === 'tool_result') {
-            const result = (event.result || '').substring(0, 150);
-            html = `<div class="monitor-event tool-result"><span class="me-label">↩ result</span><span class="me-detail">${this.escapeHtml(result)}</span></div>`;
-        } else if (eventType === 'text.done') {
-            const text = (event.text || '').substring(0, 200);
-            html = `<div class="monitor-event text-done"><span class="me-label">💬</span><span class="me-detail">${this.escapeHtml(text)}</span></div>`;
-        } else if (eventType === 'step.start') {
-            html = `<div class="monitor-event step-marker">── Step ${event.step || ''} ──</div>`;
-        } else if (eventType === 'step.end') {
-            html = `<div class="monitor-event step-marker">── Step complete ──</div>`;
-        } else if (eventType === 'error') {
-            html = `<div class="monitor-event error-event">✗ ${this.escapeHtml(event.message || 'Error')}</div>`;
-        }
-
-        if (html) {
-            eventsEl.insertAdjacentHTML('beforeend', html);
-            eventsEl.scrollTop = eventsEl.scrollHeight;
-        }
-    }
-
-    handleCommandAgentHistory(event) {
-        const eventsEl = document.getElementById('monitor-events');
-        const statsEl = document.getElementById('monitor-stats');
-        if (!eventsEl || event.task_id !== this.commandMonitorAgent) return;
-
-        // Update stats
-        if (statsEl) {
-            statsEl.innerHTML = `
-                <span>Status: <strong>${event.status || 'unknown'}</strong></span>
-                <span>Steps: <strong>${event.steps || 0}</strong></span>
-                <span>Elapsed: <strong>${event.elapsed || 0}s</strong></span>
-            `;
-        }
-
-        // Replay recent events
-        eventsEl.innerHTML = '';
-        const events = event.events || [];
-        // Only show last 50 events for performance
-        const recent = events.slice(-50);
-        for (const evt of recent) {
-            this.handleCommandAgentEvent({ ...evt, task_id: event.task_id });
-        }
-    }
-
-    // ── Command Center: Comms Feed ──────────────────────────────
-
-    renderCommandComms() {
-        const panel = document.getElementById('command-comms');
-        if (!panel) return;
-
-        const messages = this.commandFeed;
-
-        const senderIcon = (type) => {
-            if (type === 'user') return '👤';
-            if (type === 'agent') return '🤖';
-            return 'ℹ️';
-        };
-
-        panel.innerHTML = `
-            <div class="comms-feed" id="comms-feed">
-                ${messages.length === 0 ? '<div style="color:var(--dim);text-align:center;padding:40px">No messages yet. Send a broadcast to your agents.</div>' : ''}
-                ${messages.map(m => `
-                    <div class="comms-message comms-${m.sender_type}">
-                        <span class="comms-icon">${senderIcon(m.sender_type)}</span>
-                        <div class="comms-body">
-                            <div class="comms-header">
-                                <span class="comms-sender">${this.escapeHtml(m.sender_name || m.sender_id)}</span>
-                                <span class="comms-time">${new Date(m.timestamp).toLocaleTimeString()}</span>
-                                ${m.target !== 'all' ? `<span class="comms-target">→ ${m.target}</span>` : ''}
-                            </div>
-                            <div class="comms-content">${this.escapeHtml(m.content)}</div>
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-            <div class="comms-input-bar">
-                <textarea class="settings-input" id="comms-input" rows="2" placeholder="Broadcast a message to all agents..."></textarea>
-                <button class="btn-primary btn-sm" id="comms-send-btn">Send</button>
-            </div>`;
-
-        // Scroll feed to bottom
-        const feed = document.getElementById('comms-feed');
-        if (feed) feed.scrollTop = feed.scrollHeight;
-
-        // Send button
-        document.getElementById('comms-send-btn')?.addEventListener('click', () => {
-            const input = document.getElementById('comms-input');
-            const content = input?.value?.trim();
-            if (content) {
-                this.send({ command: 'command_feed_post', content, target: 'all' });
-                input.value = '';
-            }
-        });
-
-        // Enter to send (Shift+Enter for newline)
-        document.getElementById('comms-input')?.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                document.getElementById('comms-send-btn')?.click();
-            }
-        });
-    }
-
-    // ── Context Compression ─────────────────────────────────────
-
-    handleCompression(event) {
-        const el = document.createElement('div');
-        el.className = 'compression-banner';
-        el.innerHTML = `
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M3 4h8M5 7h4M3 10h8" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-            <span>Context compressed: ${event.old_entries} → ${event.new_entries} entries (~${Math.round((event.old_tokens - event.new_tokens)/1000)}k tokens saved)</span>
-        `;
-        this.chatMessages.appendChild(el);
-        this.scrollToBottom();
-    }
-
-    // ── Dispatch (Background Tasks) ─────────────────────────
-
-    requestDispatchList() {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ command: 'dispatch_list' }));
-        }
-    }
-
-    submitDispatch(name, prompt) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ command: 'dispatch', name, prompt }));
-        }
-    }
-
-    renderDispatchList(tasks) {
-        const body = document.getElementById('dispatch-body');
-        if (!body) return;
-
-        if (tasks.length === 0) {
-            body.innerHTML = `
-                <div class="feature-empty">
-                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><path d="M16 4v16M10 14l6 6 6-6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M4 22v4h24v-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    <span>No background agents yet.</span>
-                </div>`;
-            return;
-        }
-
-        body.innerHTML = tasks.map(t => {
-            const statusClass = t.status === 'completed' ? 'ok' : t.status === 'failed' ? 'err' : t.status === 'running' ? 'brand' : 'muted';
-            const statusIcon = t.status === 'completed' ? '✓' : t.status === 'failed' ? '✗' : t.status === 'running' ? '⟳' : '○';
-            return `<div class="dispatch-item" data-task-id="${t.id}">
-                <div class="dispatch-item-header">
-                    <span class="dispatch-status" style="color:var(--${statusClass})">${statusIcon}</span>
-                    <span class="dispatch-name">${t.name}</span>
-                    <span class="dispatch-meta">${t.model || ''} · ${t.steps} steps · ${t.elapsed}s</span>
-                </div>
-                <div class="dispatch-prompt">${t.prompt.substring(0, 100)}${t.prompt.length > 100 ? '...' : ''}</div>
-                ${t.error ? `<div class="dispatch-error">${t.error}</div>` : ''}
-            </div>`;
-        }).join('');
-
-        body.querySelectorAll('.dispatch-item').forEach(el => {
-            el.addEventListener('click', () => {
-                const taskId = el.dataset.taskId;
-                this.ws.send(JSON.stringify({ command: 'dispatch_result', task_id: taskId }));
-            });
-        });
-    }
-
-    renderDispatchResult(task) {
-        const body = document.getElementById('dispatch-body');
-        if (!body || !task) return;
-
-        const resultHtml = task.result ? this.renderMarkdown(task.result) : '<em>No output</em>';
-        body.innerHTML = `
-            <div class="dispatch-result-view">
-                <button class="btn-sm dispatch-back-btn">&larr; Back to list</button>
-                <h3>${task.name}</h3>
-                <div class="dispatch-result-meta">${task.status} · ${task.model} · ${task.steps} steps · ${task.elapsed}s</div>
-                <div class="dispatch-result-content markdown-body">${resultHtml}</div>
-            </div>
-        `;
-        body.querySelector('.dispatch-back-btn')?.addEventListener('click', () => this.requestDispatchList());
-    }
-
-    showDispatchDialog() {
-        const body = document.getElementById('dispatch-body');
-        if (!body) return;
-
-        body.innerHTML = `
-            <div class="dispatch-form">
-                <div class="settings-row"><label>Name</label>
-                    <input type="text" class="settings-input" id="dispatch-name" placeholder="Task name (optional)" /></div>
-                <div class="settings-row"><label>Prompt</label>
-                    <textarea class="settings-input" id="dispatch-prompt" rows="4" placeholder="What should the agent do?"></textarea></div>
-                <div class="dispatch-form-actions">
-                    <button class="btn-primary btn-sm" id="dispatch-submit-btn">Submit</button>
-                    <button class="btn-sm" id="dispatch-cancel-btn">Cancel</button>
-                </div>
-            </div>
-        `;
-
-        document.getElementById('dispatch-submit-btn')?.addEventListener('click', () => {
-            const name = document.getElementById('dispatch-name')?.value || '';
-            const prompt = document.getElementById('dispatch-prompt')?.value || '';
-            if (prompt.trim()) {
-                this.submitDispatch(name, prompt);
-                this.requestDispatchList();
-            }
-        });
-        document.getElementById('dispatch-cancel-btn')?.addEventListener('click', () => this.requestDispatchList());
-    }
-
-    // ── Scheduled Tasks ─────────────────────────────────────
-
-    requestScheduleList() {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ command: 'schedule_list' }));
-        }
-    }
-
-    renderScheduleList(schedules) {
-        const body = document.getElementById('schedule-body');
-        if (!body) return;
-
-        if (schedules.length === 0) {
-            body.innerHTML = `
-                <div class="feature-empty">
-                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><circle cx="16" cy="16" r="12" stroke="currentColor" stroke-width="1.5"/><path d="M16 8v9l6 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>No automations yet.</span>
-                </div>`;
-            return;
-        }
-
-        body.innerHTML = schedules.map(s => {
-            const statusDot = s.enabled ? '<span class="schedule-dot-on">\u25CF</span>' : '<span class="schedule-dot-off">\u25CB</span>';
-            const taskKind = s.task_kind === 'harness_cycle' ? 'harness cycle' : 'session';
-            const metaSuffix = s.task_kind === 'harness_cycle'
-                ? `${taskKind} · loops:${s.max_loops || 6}`
-                : `${taskKind}`;
-            return `<div class="schedule-item" data-schedule-id="${s.id}">
-                <div class="dispatch-item-header">
-                    ${statusDot}
-                    <span class="dispatch-name">${s.name}</span>
-                    <span class="dispatch-meta">${s.schedule} · ${s.run_count} runs · ${metaSuffix}</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" ${s.enabled ? 'checked' : ''} data-id="${s.id}" class="schedule-toggle" />
-                        <span class="toggle-slider"></span>
-                    </label>
-                </div>
-                <div class="dispatch-prompt">${s.prompt.substring(0, 100)}${s.prompt.length > 100 ? '...' : ''}</div>
-                ${s.next_run ? `<div class="schedule-next">Next: ${new Date(s.next_run).toLocaleTimeString()}</div>` : ''}
-            </div>`;
-        }).join('');
-
-        body.querySelectorAll('.schedule-toggle').forEach(toggle => {
-            toggle.addEventListener('change', (e) => {
-                const id = e.target.dataset.id;
-                this.ws.send(JSON.stringify({ command: 'schedule_update', task_id: id, enabled: e.target.checked }));
-            });
-        });
-    }
-
-    showScheduleDialog() {
-        const body = document.getElementById('schedule-body');
-        if (!body) return;
-
-        body.innerHTML = `
-            <div class="dispatch-form">
-                <div class="settings-row"><label>Name</label>
-                    <input type="text" class="settings-input" id="schedule-name" placeholder="Task name" /></div>
-                <div class="settings-row"><label>Type</label>
-                    <select class="settings-input" id="schedule-kind">
-                        <option value="session">Prompt Session</option>
-                        <option value="harness_cycle">Harness Cycle</option>
-                    </select></div>
-                <div class="settings-row"><label>Prompt</label>
-                    <textarea class="settings-input" id="schedule-prompt" rows="4" placeholder="Prompt or top-level objective"></textarea></div>
-                <div class="settings-row"><label>Schedule</label>
-                    <input type="text" class="settings-input" id="schedule-interval" placeholder="every:5m, every:1h, every:30s" /></div>
-                <div class="settings-row" id="schedule-max-loops-row"><label>Max Loops</label>
-                    <input type="number" min="1" class="settings-input" id="schedule-max-loops" value="6" /></div>
-                <div class="dispatch-form-actions">
-                    <button class="btn-primary btn-sm" id="schedule-submit-btn">Create</button>
-                    <button class="btn-sm" id="schedule-cancel-btn">Cancel</button>
-                </div>
-            </div>
-        `;
-
-        const kindSelect = document.getElementById('schedule-kind');
-        const maxLoopsRow = document.getElementById('schedule-max-loops-row');
-        const updateVisibility = () => {
-            if (!maxLoopsRow || !kindSelect) return;
-            maxLoopsRow.style.display = kindSelect.value === 'harness_cycle' ? 'flex' : 'none';
-        };
-        kindSelect?.addEventListener('change', updateVisibility);
-        updateVisibility();
-
-        document.getElementById('schedule-submit-btn')?.addEventListener('click', () => {
-            const name = document.getElementById('schedule-name')?.value || '';
-            const taskKind = document.getElementById('schedule-kind')?.value || 'session';
-            const prompt = document.getElementById('schedule-prompt')?.value || '';
-            const schedule = document.getElementById('schedule-interval')?.value || '';
-            const maxLoops = Number.parseInt(document.getElementById('schedule-max-loops')?.value || '6', 10) || 6;
-            if (prompt.trim() && schedule.trim()) {
-                this.ws.send(JSON.stringify({
-                    command: 'schedule_create',
-                    name,
-                    prompt,
-                    schedule,
-                    task_kind: taskKind,
-                    max_loops: maxLoops,
-                }));
-            }
-        });
-        document.getElementById('schedule-cancel-btn')?.addEventListener('click', () => this.requestScheduleList());
-    }
 }
 
 

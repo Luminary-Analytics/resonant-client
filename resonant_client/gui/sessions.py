@@ -1,7 +1,7 @@
 """
 Resonant Client GUI — Session & Project Manager
 
-Manages persistent sessions organized by project folder.
+Manages persistent agentic-coding sessions organized by project folder.
 Sessions are stored as JSON files under ~/.resonant/projects/<hash>/sessions/.
 """
 
@@ -16,7 +16,6 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Storage root
 _RESONANT_DIR = Path.home() / ".resonant"
 _PROJECTS_DIR = _RESONANT_DIR / "projects"
 
@@ -48,15 +47,11 @@ def _read_session_summary(filepath: Path) -> Optional[dict]:
     """
     try:
         with open(filepath, "r", encoding="utf-8") as f:
-            # Read a small prefix — metadata fields are at the top of the JSON
             prefix = f.read(4096)
 
-        # Try to extract fields from the prefix using simple string scanning
-        # JSON keys are at the top level: "id", "title", "backend_type", "model",
-        # "created_at", "updated_at", "message_count"
         import re
         summary = {}
-        for key in ("id", "title", "backend_type", "model", "session_mode", "session_role", "chat_group"):
+        for key in ("id", "title", "backend_type", "model", "session_role"):
             m = re.search(rf'"{key}"\s*:\s*"([^"]*)"', prefix)
             if m:
                 summary[key] = m.group(1)
@@ -71,7 +66,6 @@ def _read_session_summary(filepath: Path) -> Optional[dict]:
     except Exception:
         pass
 
-    # Fallback: full parse
     try:
         with open(filepath, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -101,9 +95,8 @@ class SessionRecord:
         conversation_history: list = None,
         display_events: list = None,
         message_count: int = 0,
-        session_mode: str = "code",
         session_role: str = "generator",
-        chat_group: str = "",
+        thinking_mode: str = "",
     ):
         self.id = session_id or str(uuid.uuid4())[:8]
         self.title = title
@@ -115,9 +108,8 @@ class SessionRecord:
         self.conversation_history = conversation_history or []
         self.display_events = display_events or []
         self.message_count = message_count
-        self.session_mode = session_mode or "code"
-        self.session_role = session_role or ("chat" if self.session_mode == "chat" else "generator")
-        self.chat_group = chat_group
+        self.session_role = session_role or "generator"
+        self.thinking_mode = thinking_mode or ""
 
     def to_dict(self) -> dict:
         return {
@@ -131,9 +123,8 @@ class SessionRecord:
             "conversation_history": self.conversation_history,
             "display_events": self.display_events,
             "message_count": self.message_count,
-            "session_mode": self.session_mode,
             "session_role": self.session_role,
-            "chat_group": self.chat_group,
+            "thinking_mode": self.thinking_mode,
         }
 
     def to_summary(self) -> dict:
@@ -146,9 +137,8 @@ class SessionRecord:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "message_count": self.message_count,
-            "session_mode": self.session_mode,
             "session_role": self.session_role,
-            "chat_group": self.chat_group,
+            "thinking_mode": self.thinking_mode,
         }
 
     @classmethod
@@ -164,12 +154,8 @@ class SessionRecord:
             conversation_history=data.get("conversation_history", []),
             display_events=data.get("display_events", []),
             message_count=data.get("message_count", 0),
-            session_mode=data.get("session_mode", "code"),
-            session_role=data.get(
-                "session_role",
-                "chat" if data.get("session_mode", "code") == "chat" else "generator",
-            ),
-            chat_group=data.get("chat_group", ""),
+            session_role=data.get("session_role", "generator"),
+            thinking_mode=data.get("thinking_mode", ""),
         )
 
     def save(self):
@@ -198,7 +184,6 @@ class ProjectManager:
     def __init__(self, project_path: str = ""):
         self.project_path = project_path or os.getcwd()
         self.current_session: Optional[SessionRecord] = None
-        # Track recent projects
         self._ensure_storage()
 
     def _ensure_storage(self):
@@ -222,18 +207,13 @@ class ProjectManager:
         except Exception:
             pass
 
-        # Normalize
         norm = self.project_path.replace("\\", "/")
-
-        # Remove if already exists, then prepend
         recents = [r for r in recents if r.get("path", "").replace("\\", "/") != norm]
         recents.insert(0, {
             "path": self.project_path,
             "name": os.path.basename(self.project_path),
             "last_used": time.time(),
         })
-
-        # Keep last 20
         recents = recents[:20]
 
         try:
@@ -243,16 +223,59 @@ class ProjectManager:
         except Exception as e:
             logger.error(f"Failed to save recent projects: {e}")
 
-    def get_recent_projects(self) -> list:
-        """Get list of recent project paths."""
+    def get_recent_projects(self, *, limit: int = 10) -> list:
+        """Get list of recent project paths.
+
+        Filters out:
+        - pytest temp dirs (paths containing 'pytest-of-' or '\\Temp\\pytest-')
+        - paths that no longer exist on disk
+        - duplicates (case-insensitive normalized path)
+
+        Capped at `limit` entries.
+        """
         recents_file = _RESONANT_DIR / "recent_projects.json"
+        raw: list = []
         try:
             if recents_file.exists():
                 with open(recents_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    raw = json.load(f) or []
+        except Exception:
+            return []
+
+        if not isinstance(raw, list):
+            return []
+
+        cleaned: list = []
+        seen: set[str] = set()
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            path = (entry.get("path") or "").strip()
+            if not path:
+                continue
+            normalized = path.replace("\\", "/").lower()
+            # Filter out pytest test fixture dirs
+            if "pytest-of-" in normalized or "/temp/pytest-" in normalized:
+                continue
+            # Filter out paths that no longer exist
+            if not os.path.isdir(path):
+                continue
+            # De-dup
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            cleaned.append(entry)
+            if len(cleaned) >= limit:
+                break
+        return cleaned
+
+    def clear_recent_projects(self) -> None:
+        """Wipe the recent-projects history (keeps the current project)."""
+        recents_file = _RESONANT_DIR / "recent_projects.json"
+        try:
+            recents_file.unlink(missing_ok=True)
         except Exception:
             pass
-        return []
 
     def list_sessions(self) -> list[dict]:
         """List all sessions for the current project (summaries only)."""
@@ -276,14 +299,12 @@ class ProjectManager:
         all_sessions = []
         seen_projects = set()
 
-        # Current project first
         for s in self.list_sessions():
             s["project_name"] = os.path.basename(self.project_path)
             s["project_path"] = self.project_path
             all_sessions.append(s)
         seen_projects.add(os.path.normpath(self.project_path).replace("\\", "/").lower())
 
-        # Then other recent projects
         for proj in self.get_recent_projects():
             path = proj.get("path", "") if isinstance(proj, dict) else str(proj)
             norm = os.path.normpath(path).replace("\\", "/").lower()
@@ -301,7 +322,6 @@ class ProjectManager:
                     summary["project_path"] = path
                     all_sessions.append(summary)
 
-        # Sort all by updated_at descending
         all_sessions.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
         return all_sessions
 
@@ -309,7 +329,6 @@ class ProjectManager:
         self,
         backend_type: str = "",
         model: str = "",
-        session_mode: str = "code",
         session_role: str = "generator",
     ) -> SessionRecord:
         """Create a new session for the current project."""
@@ -318,7 +337,6 @@ class ProjectManager:
             backend_type=backend_type,
             model=model,
             title="New session",
-            session_mode=session_mode,
             session_role=session_role,
         )
         record.save()
@@ -348,16 +366,13 @@ class ProjectManager:
 
         self.current_session.updated_at = time.time()
 
-        # Sync conversation history from the engine session
         if engine_session and hasattr(engine_session, "conversation_history"):
             self.current_session.conversation_history = engine_session.conversation_history
-            # Count user messages
             self.current_session.message_count = sum(
                 1 for m in engine_session.conversation_history
                 if m.get("role") == "user"
             )
 
-        # Append display events for UI replay
         if display_events:
             self.current_session.display_events.extend(display_events)
 
@@ -366,7 +381,6 @@ class ProjectManager:
     def update_session_title(self, first_message: str):
         """Auto-title the session from the first user message."""
         if self.current_session and self.current_session.title == "New session":
-            # Use first 60 chars of first message as title
             title = first_message.strip()
             if len(title) > 60:
                 title = title[:57] + "..."
@@ -380,108 +394,61 @@ class ProjectManager:
         if self.current_session and self.current_session.id == session_id:
             self.current_session = None
 
-    # ── Chat Groups ────────────────────────────────────────────────
+    def fork_session(self, source_id: str, fork_at_user_index: int) -> Optional[SessionRecord]:
+        """
+        Create a new session that branches from `source_id` at the
+        (fork_at_user_index)-th user message (0-indexed, inclusive).
 
-    _GROUPS_FILE = _RESONANT_DIR / "chat_groups.json"
+        Slices conversation_history at the boundary right after the kept
+        user message's response (i.e. just before the next user message),
+        and slices display_events proportionally.
 
-    def list_chat_groups(self) -> list[str]:
-        """Return ordered list of chat group names."""
-        try:
-            if self._GROUPS_FILE.exists():
-                with open(self._GROUPS_FILE, "r", encoding="utf-8") as f:
-                    groups = json.load(f)
-                if isinstance(groups, list):
-                    return groups
-        except Exception:
-            pass
-        return []
+        Returns the new SessionRecord, or None if source not found.
+        """
+        source = self.load_session(source_id)
+        if source is None:
+            return None
 
-    def _save_groups(self, groups: list[str]):
-        self._GROUPS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(self._GROUPS_FILE, "w", encoding="utf-8") as f:
-            json.dump(groups, f, indent=2, ensure_ascii=False)
+        history = source.conversation_history or []
+        # Find indices of user messages
+        user_idxs = [i for i, m in enumerate(history) if isinstance(m, dict) and m.get("role") == "user"]
+        if not user_idxs:
+            cutoff = len(history)
+        elif fork_at_user_index < 0:
+            cutoff = 0
+        elif fork_at_user_index >= len(user_idxs) - 1:
+            # Past the last user msg → keep everything
+            cutoff = len(history)
+        else:
+            # Cutoff = index of the (N+1)th user msg → drop it and everything after
+            cutoff = user_idxs[fork_at_user_index + 1]
 
-    def create_chat_group(self, name: str) -> list[str]:
-        """Create a new chat group. Returns updated list."""
-        groups = self.list_chat_groups()
-        if name and name not in groups:
-            groups.append(name)
-            self._save_groups(groups)
-        return groups
+        sliced_history = history[:cutoff]
 
-    def rename_chat_group(self, old_name: str, new_name: str) -> list[str]:
-        """Rename a chat group and update all sessions referencing it."""
-        groups = self.list_chat_groups()
-        if old_name in groups and new_name:
-            groups = [new_name if g == old_name else g for g in groups]
-            self._save_groups(groups)
-            # Update sessions across all projects
-            self._update_group_in_sessions(old_name, new_name)
-        return groups
+        # Slice display_events proportionally — best-effort. Replay tolerates incomplete tails.
+        evts = source.display_events or []
+        if cutoff >= len(history) or not history:
+            sliced_events = list(evts)
+        else:
+            ratio = cutoff / max(1, len(history))
+            sliced_events = evts[: max(1, int(round(len(evts) * ratio)))]
 
-    def delete_chat_group(self, name: str) -> list[str]:
-        """Delete a chat group and ungroup its sessions."""
-        groups = self.list_chat_groups()
-        if name in groups:
-            groups.remove(name)
-            self._save_groups(groups)
-            # Ungroup affected sessions
-            self._update_group_in_sessions(name, "")
-        return groups
+        title = source.title or "Untitled"
+        if not title.startswith("Fork: "):
+            title = f"Fork: {title}"
+        msg_count = sum(1 for m in sliced_history if isinstance(m, dict) and m.get("role") == "user")
 
-    def set_session_group(self, session_id: str, group: str):
-        """Assign a session to a chat group (or ungroup with empty string)."""
-        # Search across all project session directories
-        for proj in self.get_recent_projects():
-            path = proj.get("path", "") if isinstance(proj, dict) else str(proj)
-            if not path:
-                continue
-            filepath = _sessions_dir(path) / f"{session_id}.json"
-            if filepath.exists():
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    data["chat_group"] = group
-                    with open(filepath, "w", encoding="utf-8") as f:
-                        json.dump(data, f, indent=2, ensure_ascii=False)
-                except Exception:
-                    pass
-                return
-        # Also check current project
-        filepath = _sessions_dir(self.project_path) / f"{session_id}.json"
-        if filepath.exists():
-            try:
-                with open(filepath, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                data["chat_group"] = group
-                with open(filepath, "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2, ensure_ascii=False)
-            except Exception:
-                pass
-
-    def _update_group_in_sessions(self, old_group: str, new_group: str):
-        """Update chat_group in all session files across all projects."""
-        seen = set()
-        paths = [self.project_path]
-        for proj in self.get_recent_projects():
-            p = proj.get("path", "") if isinstance(proj, dict) else str(proj)
-            if p:
-                paths.append(p)
-        for path in paths:
-            norm = os.path.normpath(path).replace("\\", "/").lower()
-            if norm in seen:
-                continue
-            seen.add(norm)
-            d = _sessions_dir(path)
-            if not d.exists():
-                continue
-            for filepath in d.glob("*.json"):
-                try:
-                    with open(filepath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    if data.get("chat_group") == old_group:
-                        data["chat_group"] = new_group
-                        with open(filepath, "w", encoding="utf-8") as f:
-                            json.dump(data, f, indent=2, ensure_ascii=False)
-                except Exception:
-                    pass
+        new_record = SessionRecord(
+            project_path=self.project_path,
+            backend_type=source.backend_type,
+            model=source.model,
+            session_role=source.session_role,
+            title=title,
+            conversation_history=sliced_history,
+            display_events=sliced_events,
+            message_count=msg_count,
+            thinking_mode=getattr(source, "thinking_mode", "") or "",
+        )
+        new_record.save()
+        self.current_session = new_record
+        return new_record

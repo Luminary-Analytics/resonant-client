@@ -1,11 +1,11 @@
 """
-RESONANT.md — Project Instructions Loader.
+Project conventions loader.
 
-Loads project-specific instructions from RESONANT.md files,
-similar to how Claude Code uses CLAUDE.md. Supports:
-  - RESONANT.md in project root
-  - .resonant/RESONANT.md
-  - Sections: Instructions, Conventions, Architecture, Memory, Context
+Reads project-specific instructions from a markdown file at the project root.
+Prefers `AGENTS.md` (the cross-tool standard adopted by Codex CLI, OpenCode,
+Cursor, OpenHands as of 2026) and falls back to legacy `RESONANT.md` for older
+Resonant projects. `CLAUDE.md` (Anthropic's pattern) is recognized as a final
+fallback so users coming from Claude Code get continuity for free.
 """
 
 import logging
@@ -13,10 +13,19 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Files to search, in priority order (first found wins)
+# Files to search, in priority order (first found wins).
+#
+# AGENTS.md is the cross-tool convention — committing one file gives a project
+# instant interop with Codex, OpenCode, Cursor, OpenHands, and (via bridge
+# import) Claude Code. RESONANT.md is the historical Resonant-only filename;
+# kept for back-compat. CLAUDE.md is a courtesy fallback so users with an
+# existing Claude Code project don't have to copy/paste their conventions.
 INSTRUCTION_FILES = [
+    "AGENTS.md",
+    ".agents/AGENTS.md",
     "RESONANT.md",
     ".resonant/RESONANT.md",
+    "CLAUDE.md",
 ]
 
 
@@ -87,10 +96,12 @@ def find_all_instruction_files(project_path: str, cwd: str | None = None) -> lis
     found: list[tuple[str, Path]] = []
     root = Path(project_path).resolve()
 
-    # 1. Global instructions
-    global_path = Path.home() / ".resonant" / "RESONANT.md"
-    if global_path.is_file():
-        found.append(("global", global_path))
+    # 1. Global instructions — AGENTS.md preferred, RESONANT.md kept for back-compat.
+    for global_name in ("AGENTS.md", "RESONANT.md"):
+        global_path = Path.home() / ".resonant" / global_name
+        if global_path.is_file():
+            found.append(("global", global_path))
+            break
 
     # 2. Project root instructions
     for rel in INSTRUCTION_FILES:
@@ -137,7 +148,7 @@ def load_hierarchical_instructions(project_path: str, cwd: str | None = None) ->
             text = path.read_text(encoding="utf-8").strip()
             if text:
                 label_map = {
-                    "global": f"GLOBAL INSTRUCTIONS (~/.resonant/RESONANT.md)",
+                    "global": f"GLOBAL INSTRUCTIONS ({path.name})",
                     "project": f"PROJECT INSTRUCTIONS ({path.name})",
                 }
                 label = label_map.get(scope_label, f"DIRECTORY INSTRUCTIONS ({scope_label})")

@@ -12,13 +12,13 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 | 4 | Browser MCP `navigate` adds `https://` to `file://` URLs | Low | Won't fix (not our bug) | Dogfood pass 1 |
 | 5 | Agent placed rocket outside playable area | N/A (design) | Closed | Dogfood pass 2 |
 | 6 | WS listener dies during context compaction | Medium | Open | Dogfood marathon |
-| 7 | Git pill stale on project switch | Low | Open | Dogfood marathon |
-| 8 | Chat panel doesn't clear on project switch | Low | Open | Dogfood marathon |
-| 9 | Backend swap drops conversation history | **High** | Open | Dogfood marathon (Pass 9) |
-| 10 | Cross-backend swap-back returns silent empty turn | **High** | Open | Dogfood marathon (Pass 10) |
+| 7 | Git pill stale on project switch | Low | ✅ Shipped fix (v0.2.1) | Dogfood marathon |
+| 8 | Chat panel doesn't clear on project switch | Low | ✅ Shipped fix (v0.2.1) | Dogfood marathon |
+| 9 | Backend swap drops conversation history | **High** | ✅ Shipped fix (v0.2.1) | Dogfood marathon (Pass 9) |
+| 10 | Cross-backend swap-back returns silent empty turn | **High** | ✅ Shipped fix (v0.2.1) | Dogfood marathon (Pass 10) |
 | 11 | Multi-deliverable prompts can silently skip hard parts | Medium | Open | Dogfood marathon (Pass 11) |
-| 12 | PR-time PyInstaller smoke build missing | Medium | Open | Phase 3 release CI |
-| 13 | Appcast updater duplicate-version refusal too strict | Low | Open | Phase 3 release CI |
+| 12 | PR-time PyInstaller smoke build missing | Medium | ✅ Shipped fix (v0.2.1) | Phase 3 release CI |
+| 13 | Appcast updater duplicate-version refusal too strict | Low | ✅ Shipped fix (v0.2.1) | Phase 3 release CI |
 | 14 | Local PyInstaller bundle 2.6× bigger than CI build | Low | Open | Phase 3 release |
 
 ---
@@ -140,11 +140,11 @@ Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at
 
 ---
 
-## #9 — Backend swap drops conversation history ⚠️ HIGH
+## #9 — Backend swap drops conversation history ✅ Shipped fix (v0.2.1)
 
 **Severity:** **High** — directly damages user trust on a feature users will absolutely try.
 
-**Repro:**
+**Original repro:**
 1. Start a session on Ollama with a few turns of history
 2. Mid-session, swap the backend dropdown from `ollama:deepseek-v4-flash:cloud` to `claude-code:haiku`
 3. Send a follow-up message asking what was just discussed
@@ -152,35 +152,41 @@ Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at
 
 **Surfaced in:** dogfood marathon Pass 9 — Haiku said *"I haven't read any files yet in this session—this is our first turn"* despite 8+ prior turns visible in the chat.
 
-**Hypothesis:** the Claude Code backend wraps the CLI which has its own session boundary. Swapping mid-conversation effectively starts a fresh Claude Code session with only the new user message; the prior messages don't get bridged.
+**Root cause:** TWO problems compounded:
+1. `Session.set_backend()` deliberately called `self.conversation_history.clear()` on every swap (one line in `engine/session.py`).
+2. The GUI's `switch_model` WebSocket handler called `state.create_backend()`, which builds an entirely fresh Session object via `build_session()` — silently discarding the prior session's `conversation_history`, `todos`, `allowed_tools`, sandbox, autonomy_tier, and event_logger.
 
-**Why this is high-severity:** users will think backend swap = model swap (just changing the brain). They'll be surprised when their context vanishes mid-task.
+**Fix shipped (v0.2.1):**
+1. `Session.set_backend(backend, *, reset_history=False)` — now defaults to NOT clearing. Callers that genuinely want a fresh start (TUI's `/model` and `/backend` commands which advertise "conversation cleared") pass `reset_history=True` explicitly.
+2. New `AppState.swap_backend()` method in `gui/app.py` — mutates the existing session's `.backend` attribute instead of rebuilding from scratch. The `switch_model` WebSocket handler now calls this instead of `create_backend()`.
+3. For CLI-wrapper backends (`claude-code`, `codex`) which manage their own session via `--resume <id>` and ignore our `conversation_history` list, the GUI emits a `backend_swap_warning` WebSocket event so the user knows even though our session-level history survived, the new backend's CLI process can't see it.
 
-**Fix proposals (pick one):**
-1. **Bridge history** — when a backend swap happens, replay the conversation history into the new backend's prompt format. Most robust, hardest to get right (different backends have different prompt structures).
-2. **Surface a banner** — *"Switching to Claude Code starts a fresh session — Haiku won't see prior turns. Continue?"* with Cancel button. Cheapest, least magical.
-3. **Confirm dialog** — block the dropdown change until user explicitly accepts the consequence.
+**Test pinned:** `tests/test_backend_swap.py` (6 tests, all pass) — verifies default-preserve, opt-in clear, round-trip preservation (the bug #10 case), and signature stability against future regressions.
 
-**Probably option 2 + small subset of option 1** (bridge for backends that support it, banner for the ones that don't). Lives in `resonant_client/engine/session.py` (backend-dispatch path).
+**Files changed:**
+- `resonant_client/engine/session.py` — `set_backend` signature
+- `resonant_client/gui/app.py` — `swap_backend()` method + `switch_model` handler
+- `resonant_client/tui.py` — 5 call sites updated to `reset_history=True` (preserves their explicit "conversation cleared" UX)
+- `tests/test_backend_swap.py` — new file, 6 regression tests
 
 ---
 
-## #10 — Cross-backend swap-back returns silent empty turn ⚠️ HIGH
+## #10 — Cross-backend swap-back returns silent empty turn ✅ Shipped fix (v0.2.1)
 
-**Severity:** **High** — same root-cause family as #9, equally trust-damaging.
+**Severity:** **High** — same root-cause family as #9.
 
-**Repro:**
+**Original repro:**
 1. Start a session on Ollama
-2. Swap to Claude Code mid-conversation (triggers #9 above)
+2. Swap to Claude Code mid-conversation (triggered #9)
 3. Swap BACK to Ollama
 4. Send a new prompt
 5. Receive a 1-step / N-second "success" with **zero actual work** — no tool calls, no text response, no file written, just a green-checkmark card
 
 **Surfaced in:** dogfood marathon Pass 10. Manifested as a 44-second "Worked for 44s" run that produced nothing.
 
-**Hypothesis:** the engine's session state machine is fragile under swaps. When swapping back, it sends a prompt to Ollama with broken/empty conversation history (because Claude Code's lack of history poisoned the state), and Ollama returns garbage.
+**Root cause:** same as #9 — both swaps wiped history. By the time the user swapped back to Ollama, conversation_history was empty and the system prompt alone was insufficient context for Ollama to produce useful output.
 
-**Fix:** same family of fixes as #9. Probably solved by the same change.
+**Fix shipped (v0.2.1):** preserved by the same change as #9. With the new `swap_backend()` method, history survives the round-trip Ollama → Claude Code → Ollama. The third regression test (`test_round_trip_swap_preserves_history`) pins this specific scenario.
 
 ---
 

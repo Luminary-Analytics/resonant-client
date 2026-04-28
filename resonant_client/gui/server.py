@@ -144,7 +144,9 @@ def launch_gui(
                 min_size=(800, 600),
                 text_select=True,
                 frameless=True,
-                easy_drag=True,
+                # Whole-window drag off; pywebview moves the window only from .pywebview-drag-region
+                # (see menubar title in index.html). -webkit-app-region is for other hosts only.
+                easy_drag=False,
                 js_api=api,
             )
 

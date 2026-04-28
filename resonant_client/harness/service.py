@@ -239,40 +239,45 @@ class HarnessService:
         if session_mode == "chat":
             return ""
 
-        harness = HarnessWorkspace(project_path)
+        # Slim role descriptions — no file paths, no "read these 5 files first."
+        # Sprint state lives at ~/.resonant/projects/<hash>/harness/ (out of the
+        # user's repo) and the agent can query it on demand via tools when
+        # specific details matter. Project conventions (architecture, style,
+        # don't-do-X) live in AGENTS.md and are loaded separately.
         role_block = {
             "planner": (
-                "You are the planner session. Start by reading the harness files, then update "
-                "`spec.json`, `progress_state.json`, and `sprint_contract.json`. Define the next "
-                "sprint in concrete, testable terms before implementation starts."
+                "You are the planner session. Use AGENTS.md and any active sprint context to define "
+                "the next sprint in concrete, testable terms. Keep implementation out unless the user "
+                "explicitly asks for it."
             ),
             "generator": (
-                "You are the generator session. Read the current harness state first. Implement only "
-                "the active sprint, run the cheapest relevant validation, then update "
-                "`progress_state.json` and `handoff.md` before finishing. Do not start coding if the "
-                "sprint contract is not approved or marked for revision."
+                "You are the generator session. Implement only what the active sprint requires, run "
+                "the cheapest relevant validation, then summarize what changed. Do not start coding "
+                "if the sprint contract is not approved or marked for revision."
             ),
             "evaluator": (
-                "You are the evaluator session. Read the sprint contract and current progress first. "
-                "Verify the implementation against the stated acceptance checks, run focused tests or "
-                "tool-based checks, then write a concrete verdict to `evaluator_report.json`."
+                "You are the evaluator session. Verify the implementation against the sprint's "
+                "acceptance checks, run focused tests or tool-based checks, then deliver a concrete "
+                "verdict (pass / revise / blocked) with required revisions if any."
             ),
         }[session_role]
 
+        # Drop the JSON output contract for the generator role — it's noise for a
+        # session that mostly edits files. Planner and evaluator still emit the
+        # `resonant-harness` JSON block because the orchestrator parses it back.
+        contract_block = ""
+        if session_role in {"planner", "evaluator"}:
+            contract_block = (
+                "\n\n"
+                + self.build_output_contract(session_mode=session_mode, session_role=session_role)
+            )
+
         return (
-            "\n\n--- HARNESS INSTRUCTIONS (.resonant-harness) ---\n"
+            "\n\n--- SPRINT WORKFLOW ---\n"
             f"Session role: {session_role}\n"
-            f"Harness root: {harness.root}\n"
-            f"Read first:\n"
-            f"- {harness.spec_path}\n"
-            f"- {harness.progress_path}\n"
-            f"- {harness.sprint_contract_path}\n"
-            f"- {harness.evaluator_report_path}\n"
-            f"- {harness.handoff_path}\n\n"
-            f"{role_block}\n"
-            "If the harness files are mostly empty, initialize only the minimum state needed for the current request.\n"
-            f"{self.build_output_contract(session_mode=session_mode, session_role=session_role)}\n"
-            "--- END HARNESS INSTRUCTIONS ---"
+            f"{role_block}"
+            f"{contract_block}\n"
+            "--- END SPRINT WORKFLOW ---"
         )
 
     def get_summary(self, project_path: str) -> dict[str, Any]:

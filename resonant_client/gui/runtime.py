@@ -1,5 +1,8 @@
 """
-Runtime helpers shared by the GUI app, dispatch tasks, and scheduler.
+Runtime helpers shared by the GUI app's session/backend wiring.
+
+Hosts BackendSpec, the serializable backend configuration used to recreate
+backends across session loads / reconnects.
 """
 
 from __future__ import annotations
@@ -30,6 +33,8 @@ class BackendSpec:
     api_key_env: str = ""
     api_key_setting: str = ""
     api_key: str = ""
+    # deepseek-v4-flash et al. thinking mode: "low" | "med" | "high" | ""
+    thinking_mode: str = ""
 
     def to_dict(self, include_sensitive: bool = False) -> dict[str, Any]:
         data = {
@@ -43,6 +48,7 @@ class BackendSpec:
             "api_key_source": self.api_key_source,
             "api_key_env": self.api_key_env,
             "api_key_setting": self.api_key_setting,
+            "thinking_mode": self.thinking_mode,
         }
         if include_sensitive and self.api_key:
             data["api_key"] = self.api_key
@@ -63,6 +69,7 @@ class BackendSpec:
             api_key_env=str(data.get("api_key_env", "")),
             api_key_setting=str(data.get("api_key_setting", "")),
             api_key=str(data.get("api_key", "")),
+            thinking_mode=str(data.get("thinking_mode", "")),
         )
 
     def resolve_api_key(self, settings=None) -> str:
@@ -81,7 +88,12 @@ class BackendSpec:
             return create_backend("resonant", url=self.url)
 
         if backend_type == "ollama":
-            return create_backend("ollama", url=self.url, model=self.model)
+            return create_backend(
+                "ollama",
+                url=self.url,
+                model=self.model,
+                thinking=self.thinking_mode or None,
+            )
 
         if backend_type == "mlx":
             return create_backend("mlx", model=self.model, local_root=self.local_root)

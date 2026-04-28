@@ -1,8 +1,9 @@
 """
-Platform-specific clipboard image reader.
+Platform-specific clipboard reader for both images and text.
 
-Reads images from the system clipboard for multimodal input.
-Supports Windows, macOS, and Linux (Wayland + X11).
+- Image: used by the multimodal Ctrl+V paste path (Windows, macOS, Linux).
+- Text:  exposed as `clipboard_read` / `clipboard_write` agent tools so the
+         agent can stash content across calls without going through the FS.
 """
 
 import base64
@@ -10,8 +11,121 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
+
+
+# ── Text clipboard ─────────────────────────────────────────────────────
+
+
+def read_clipboard_text() -> str:
+    """
+    Return the current clipboard text, or '' if empty / non-text / unavailable.
+    Uses pyperclip (cross-platform); falls back to OS-specific tools.
+    """
+    try:
+        import pyperclip  # type: ignore
+        return pyperclip.paste() or ""
+    except ImportError:
+        pass
+    except Exception:
+        return ""
+
+    # Fallbacks
+    try:
+        if sys.platform == "win32":
+            # PowerShell Get-Clipboard
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
+                capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="replace",
+            )
+            return (result.stdout or "").rstrip("\r\n")
+        elif sys.platform == "darwin":
+            result = subprocess.run(["pbpaste"], capture_output=True, text=True, timeout=5,
+                                    encoding="utf-8", errors="replace")
+            return result.stdout or ""
+        else:
+            for cmd in (["xclip", "-selection", "clipboard", "-o"], ["xsel", "-b", "-o"], ["wl-paste"]):
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=5,
+                                            encoding="utf-8", errors="replace")
+                    if result.returncode == 0:
+                        return result.stdout or ""
+                except FileNotFoundError:
+                    continue
+            return ""
+    except Exception:
+        return ""
+
+
+def write_clipboard_text(text: str) -> None:
+    """
+    Replace the current clipboard contents with `text`. Raises on failure.
+    """
+    try:
+        import pyperclip  # type: ignore
+        pyperclip.copy(text or "")
+        return
+    except ImportError:
+        pass
+
+    if sys.platform == "win32":
+        # Use clip.exe — pipe text via stdin
+        proc = subprocess.run(["clip"], input=text, text=True, encoding="utf-8")
+        if proc.returncode != 0:
+            raise RuntimeError("clip.exe failed")
+    elif sys.platform == "darwin":
+        proc = subprocess.run(["pbcopy"], input=text, text=True, encoding="utf-8")
+        if proc.returncode != 0:
+            raise RuntimeError("pbcopy failed")
+    else:
+        # Try wl-copy, xclip, xsel in order
+        last_err: Optional[Exception] = None
+        for cmd in (["wl-copy"], ["xclip", "-selection", "clipboard"], ["xsel", "-b", "-i"]):
+            try:
+                proc = subprocess.run(cmd, input=text, text=True, encoding="utf-8")
+                if proc.returncode == 0:
+                    return
+            except FileNotFoundError as e:
+                last_err = e
+                continue
+        raise RuntimeError(f"no clipboard utility available (install xclip, xsel, or wl-clipboard): {last_err}")
+
+
+# ── Tool wrappers (ToolResult shape) ────────────────────────────────────
+
+
+def exec_clipboard_read(args: dict, start: float):
+    """Tool: clipboard_read — returns current text contents."""
+    from .tools import ToolResult
+    text = read_clipboard_text()
+    if not text:
+        return ToolResult("(clipboard is empty or non-text)", elapsed=time.time() - start, metadata={"chars": 0})
+    return ToolResult(text, elapsed=time.time() - start, metadata={"chars": len(text)})
+
+
+def exec_clipboard_write(args: dict, start: float):
+    """Tool: clipboard_write — replaces clipboard contents with given text."""
+    from .tools import ToolResult
+    text = args.get("text")
+    if text is None:
+        return ToolResult("`text` is required.", is_error=True, elapsed=time.time() - start)
+    if not isinstance(text, str):
+        text = str(text)
+    try:
+        write_clipboard_text(text)
+    except Exception as exc:
+        return ToolResult(f"Clipboard write failed: {exc}", is_error=True, elapsed=time.time() - start)
+    return ToolResult(
+        f"Copied {len(text)} chars to clipboard",
+        elapsed=time.time() - start,
+        metadata={"chars": len(text)},
+    )
+
+
+# ── Image clipboard (existing) ─────────────────────────────────────────
 
 
 def read_clipboard_image() -> tuple[Optional[bytes], str]:

@@ -17,6 +17,22 @@ DEFAULTS = {
         "default_model": "",
         "default_permission_mode": "bypass",
         "theme": "dark",
+        # Sprint workflow (planner / generator / evaluator). Off by default — most
+        # users want a plain agentic loop and never opt into the structured
+        # planner/generator/evaluator pattern. When off, no .resonant-harness/
+        # directory is created and the harness preamble is never injected.
+        "harness_enabled": False,
+        # Per-session agentic loop budget. 200 by default (effectively unlimited
+        # for normal tasks). Set to 0 to disable the cap entirely (relies on the
+        # separate doom-loop detector). Local-model users typically want this
+        # high since each step costs nothing but time.
+        "session_max_steps": 200,
+        # Full-Autonomy tenet — concrete dials. The agent runs everything else
+        # without asking; only these floor checks pause for explicit approval.
+        # See resonant_client/orchestration/autonomy.py.
+        "budget_usd_max": 5.00,
+        "autonomy_protected_branches": ["main", "master", "prod", "production"],
+        "autonomy_external_paths": [],   # empty → use the defaults from autonomy.py
     },
     "network": {
         "resonant_api_url": "",

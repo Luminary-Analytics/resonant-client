@@ -41,13 +41,14 @@ from ..network_defaults import resolve_resonant_api_url
 from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
-from .project_instructions import load_project_instructions, get_instruction_info
-from .command_projects import CommandProjectStore
-from .command_tasks import CommandTaskStore
-from .task_runner import TaskRunner
-from .scheduler import Scheduler
+from .project_instructions import (
+    find_instruction_file,
+    get_instruction_info,
+    load_project_instructions,
+)
 from .runtime import BackendSpec
 from ..harness import EvaluatorReport, HarnessWorkspace, HarnessOrchestrator, HarnessService
+from ..orchestration import IntentService
 from ..engine.hooks import HookRunner
 from ..engine.mcp import MCPManager
 from ..engine.memory import EngramIntegration
@@ -73,7 +74,10 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 class AppState:
     """Shared application state."""
 
-    SESSION_MAX_STEPS = 25
+    # Effectively unlimited for normal tasks — separate doom-loop detection
+    # (see _check_doom_loop in engine/session.py) catches the real runaways.
+    # Override per-user via Settings → general.session_max_steps.
+    SESSION_MAX_STEPS = 200
     SESSION_MAX_TOKENS = 4096
     HARNESS_ROLE_MAX_TOKENS = {
         "planner": 1024,
@@ -102,6 +106,8 @@ class AppState:
         self._first_message_sent = False
         # Settings & cost tracking
         self.settings = SettingsManager()
+        self._migrate_stale_defaults()
+        self._apply_big_context_preset()
         self.permission_mode = str(
             self.settings.get("general", "default_permission_mode", "bypass") or "bypass"
         )
@@ -109,18 +115,8 @@ class AppState:
         self._budget_alert_days: set[str] = set()
         # Project instructions (RESONANT.md)
         self._project_instructions: str | None = None
-        # Background tasks & scheduler
-        self.task_runner = TaskRunner()
-        self.task_runner.set_on_complete(self._on_task_complete)
-        self.scheduler = Scheduler(self.task_runner)
-        # Command center
-        self.command_task_store = CommandTaskStore()
-        self.command_project_store = CommandProjectStore()
-        self.command_feed: list[dict] = []
         self._ws_ref = None
         self._ws_loop = None
-        self._monitored_task_ids: set[str] = set()
-        self._scheduler_started = False
         # Extension systems
         self.hook_runner = HookRunner(self.settings)
         self.mcp_manager = MCPManager(self.settings)
@@ -154,107 +150,53 @@ class AppState:
             role_runner=lambda **kwargs: self.run_harness_role_once(**kwargs),
             teacher_escalator=lambda **kwargs: self.run_harness_teacher_escalation(**kwargs),
         )
-        self.scheduler.set_backend_factory(lambda _task: self.make_background_session)
-        self.scheduler.set_special_executor(self.run_scheduled_task)
         self.refresh_network_defaults()
         self.apply_project_context(self.project.project_path, refresh_index=True)
 
-    def _on_task_complete(self, task):
-        """Called when a background task completes. Updates project agent status."""
+    def _migrate_stale_defaults(self) -> None:
+        """
+        After the April-2026 refocus, the flagship is Ollama + deepseek-v4-flash.
+        Settings persisted from earlier versions may still pin "default_backend"
+        to "resonant" or other backends that the user picked once and forgot
+        about. We override only when the saved value points at a now-deprecated
+        choice; explicit choices for a still-supported backend are preserved.
+        """
         try:
-            # Find which project this agent belongs to
-            for proj in self.command_project_store._projects.values():
-                for agent in (proj.agents or []):
-                    if agent.get("id") == task.id:
-                        agent["status"] = task.status.value
-                        agent["steps"] = task.steps
-                        agent["elapsed"] = round(task.elapsed, 1)
-                        self.command_project_store._persist(proj)
-
-                        # Add completion activity with direction metadata
-                        status_emoji = "✅" if task.status.value == "completed" else "❌"
-                        result_summary = (task.result or "")[:150]
-                        agent_name = agent.get("name", "Worker")
-                        self.command_project_store.add_activity(
-                            proj.id, "agent", agent_name,
-                            f"{status_emoji} {task.status.value}: {result_summary}"
-                        )
-
-                        # Deliver result to parent's inbox via org chart
-                        org_node_id = agent.get("org_node_id", "")
-                        if org_node_id:
-                            from .org_chart import OrgChart
-                            chart = OrgChart.from_dict(proj.org_chart or [])
-                            node = chart.get_node(org_node_id)
-                            if node and node.parent_id:
-                                parent = chart.get_node(node.parent_id)
-                                parent_name = parent.role if parent else "Coordinator"
-                                proj.send_message(
-                                    sender_id=org_node_id,
-                                    sender_name=agent_name,
-                                    recipient_id=node.parent_id,
-                                    recipient_name=parent_name,
-                                    content=(task.result or "")[:2000],
-                                    direction="up",
-                                    msg_type="result",
-                                )
-                                # Add directed activity
-                                proj.add_activity(
-                                    "agent", agent_name,
-                                    f"↑ Result delivered to {parent_name}",
-                                    sender_id=org_node_id,
-                                    recipient_id=node.parent_id,
-                                    recipient_name=parent_name,
-                                    direction="up",
-                                )
-
-                        # Check if all agents are done → update project status
-                        all_done = all(
-                            a.get("status") in ("completed", "failed", "cancelled")
-                            for a in proj.agents if a.get("role") != "coordinator"
-                        )
-                        running_workers = [a for a in proj.agents if a.get("status") == "running" and a.get("role") != "coordinator"]
-                        if all_done and not running_workers and proj.agents:
-                            proj.status = "completed"
-                            self.command_project_store._persist(proj)
-
-                        # Push update to WebSocket if connected
-                        ws = self._ws_ref
-                        loop = self._ws_loop
-                        if ws and loop:
-                            try:
-                                asyncio.run_coroutine_threadsafe(
-                                    ws.send_json({"event": "command_project_status", "project": proj.to_dict()}),
-                                    loop,
-                                )
-                                # Notify frontend when all workers are done
-                                if all_done and not running_workers:
-                                    worker_count = len([a for a in proj.agents if a.get("role") != "coordinator"])
-                                    asyncio.run_coroutine_threadsafe(
-                                        ws.send_json({
-                                            "event": "command_workers_all_done",
-                                            "project_id": proj.id,
-                                            "worker_count": worker_count,
-                                        }),
-                                        loop,
-                                    )
-                            except Exception:
-                                pass
-                        return
-        except Exception as e:
-            logger.error("Error in task completion handler: %s", e)
-
-    def _push_agent_event(self, task_id: str, event: dict):
-        """Push a live agent event to the frontend via WebSocket (called from worker thread)."""
-        ws = self._ws_ref
-        loop = self._ws_loop
-        if not ws or not loop or task_id not in self._monitored_task_ids:
-            return
-        try:
-            payload = {"event": "command_agent_event", "task_id": task_id, **event}
-            asyncio.run_coroutine_threadsafe(ws.send_json(payload), loop)
+            current_backend = str(self.settings.get("general", "default_backend", "") or "").strip()
+            # If the user has resonant pinned but no explicit URL configured (the
+            # common "leftover from a previous install" pattern), nudge to ollama.
+            if current_backend == "resonant":
+                try:
+                    self.settings.set("general", "default_backend", "ollama")
+                except Exception:
+                    pass
+            current_model = str(self.settings.get("general", "default_model", "") or "").strip()
+            if not current_model and current_backend in ("", "ollama"):
+                try:
+                    self.settings.set("general", "default_model", "deepseek-v4-flash:cloud")
+                except Exception:
+                    pass
         except Exception:
             pass
+
+    def _apply_big_context_preset(self) -> None:
+        """
+        If `general.big_context_profile` is true and the user has NOT manually
+        set RESONANT_OLLAMA_NUM_CTX/NUM_BATCH via env, bump them to the
+        deepseek-v4-flash 1M-context profile (131072 ctx, 2048 batch).
+
+        Env-var overrides win — we only set defaults if env is unset.
+        """
+        try:
+            enabled = bool(self.settings.get("general", "big_context_profile", False))
+        except Exception:
+            enabled = False
+        if not enabled:
+            return
+        if "RESONANT_OLLAMA_NUM_CTX" not in os.environ:
+            os.environ["RESONANT_OLLAMA_NUM_CTX"] = "131072"
+        if "RESONANT_OLLAMA_NUM_BATCH" not in os.environ:
+            os.environ["RESONANT_OLLAMA_NUM_BATCH"] = "2048"
 
     @staticmethod
     def _normalize_path(project_path: str) -> str:
@@ -270,13 +212,10 @@ class AppState:
 
     @staticmethod
     def normalize_session_mode(value: str) -> str:
-        return "chat" if value == "chat" else "code"
+        return "code"
 
     @classmethod
     def normalize_session_role(cls, session_mode: str, value: str) -> str:
-        session_mode = cls.normalize_session_mode(session_mode)
-        if session_mode == "chat":
-            return "chat"
         return value if value in cls.CODE_SESSION_ROLES else "generator"
 
     def _get_remote_harness_step_payload(
@@ -305,6 +244,47 @@ class AppState:
             return None
         return payload if isinstance(payload, dict) else None
 
+    def get_intent_service(self, *, on_event=None) -> IntentService:
+        """Return the IntentService for the current backend + project.
+
+        Stateful singleton: the same instance survives across WS commands so
+        `start_intent` and a later `cancel(intent_id)` reach the same `_active`
+        dict. Rebuilt whenever the backend or project changes (so a project
+        switch doesn't leak active intents from the prior project).
+
+        `on_event` is rebound on every call — the WebSocket-scoped emitter
+        changes per connection.
+        """
+        from ..engine.tools import AGENT_TOOLS
+        signature = (id(self.backend), self.project.project_path)
+        existing = getattr(self, "_intent_service", None)
+        if existing is None or getattr(self, "_intent_service_signature", None) != signature:
+            self._intent_service = IntentService(
+                project_path=self.project.project_path,
+                backend=self.backend,
+                all_tools=list(AGENT_TOOLS),
+                project_instructions=(self._project_instructions or ""),
+                settings=self.settings,
+                on_event=on_event or (lambda ev: None),
+            )
+            self._intent_service_signature = signature
+        elif on_event is not None:
+            self._intent_service.on_event = on_event
+        return self._intent_service
+
+    def harness_enabled(self) -> bool:
+        """Master switch for the sprint workflow.
+
+        When False (the default): no `.resonant-harness/` directory is created,
+        no harness preamble is injected into the system prompt, no message-wrap
+        runs, and the role/badge UI stays hidden. The agent operates as a plain
+        ReAct loop — the same flow Claude Code / Codex / OpenCode / Cursor offer.
+
+        When True: planner / generator / evaluator roles, sprint contracts,
+        evaluator reports, and the autonomous HarnessOrchestrator cycle all wake up.
+        """
+        return bool(self.settings.get("general", "harness_enabled", False))
+
     def build_harness_instructions(
         self,
         *,
@@ -314,6 +294,11 @@ class AppState:
         backend=None,
         objective: str = "",
     ) -> str:
+        # Master gate: sprint workflow is opt-in. When off, nothing about the
+        # harness leaks into the system prompt.
+        if not self.harness_enabled():
+            return ""
+        # Remote engines that own canonical harness state always take precedence.
         payload = self._get_remote_harness_step_payload(
             project_path=project_path,
             session_mode=session_mode,
@@ -323,6 +308,21 @@ class AppState:
         )
         if payload and payload.get("instructions"):
             return str(payload["instructions"])
+        # Local fallback: only inject the "Read first: spec.json / progress_state.json /
+        # sprint_contract.json / ..." block when there's actually an active sprint.
+        # Otherwise every casual question (e.g. "help me with desktop issues") wastes a
+        # tool-call cycle reading empty harness files.
+        try:
+            summary = self.get_harness_summary(project_path) or {}
+        except Exception:
+            summary = {}
+        has_active_sprint = bool(
+            summary.get("active_sprint_id")
+            and str(summary.get("contract_status") or "").strip()
+            in {"approved", "needs_revision"}
+        )
+        if not has_active_sprint:
+            return ""
         return self.harness_service.build_instructions(
             project_path=project_path,
             session_mode=session_mode,
@@ -3293,8 +3293,6 @@ class AppState:
     ) -> str:
         session_mode = self.normalize_session_mode(session_mode)
         session_role = self.normalize_session_role(session_mode, session_role)
-        if session_mode == "chat":
-            return user_msg
 
         payload = self._get_remote_harness_step_payload(
             project_path=self.project.project_path,
@@ -3715,7 +3713,7 @@ class AppState:
     ) -> tuple[str, dict[str, Any] | None, str | None]:
         session_mode = self.normalize_session_mode(session_mode)
         session_role = self.normalize_session_role(session_mode, session_role)
-        if session_mode == "chat" or not text:
+        if not text:
             return text, None, None
 
         matches = list(
@@ -3755,8 +3753,6 @@ class AppState:
     ) -> str:
         session_mode = self.normalize_session_mode(session_mode)
         session_role = self.normalize_session_role(session_mode, session_role)
-        if session_mode == "chat":
-            return "Ignored harness update for chat session"
 
         harness = HarnessWorkspace(project_path or self.project.project_path)
         harness.ensure_layout()
@@ -4283,7 +4279,24 @@ class AppState:
         self.engram = self.base_engram.clone(namespace=self._project_namespace(project_path))
         self.engram.set_mcp_manager(self.mcp_manager)
         self.harness = HarnessWorkspace(project_path)
-        self.harness.ensure_layout()
+        # Migrate legacy .resonant-harness/ to ~/.resonant/projects/<hash>/harness/
+        # whether or not sprint mode is on — keeps the user's repo clean either way.
+        # The notice gets surfaced via the next init payload (see _last_migration_notice).
+        self._last_migration_notice = ""
+        try:
+            migrated = self.harness.maybe_migrate_legacy_layout()
+            if migrated:
+                self._last_migration_notice = (
+                    f"Moved {migrated} harness file(s) from .resonant-harness/ to "
+                    f"~/.resonant/projects/. You can `git rm -r .resonant-harness/` "
+                    f"when you're ready."
+                )
+                logger.info(self._last_migration_notice)
+        except Exception as exc:
+            logger.warning("Harness legacy migration check failed: %s", exc)
+        # Only materialize the new harness root when the user has opted in.
+        if self.harness_enabled():
+            self.harness.ensure_layout()
 
         current_index_path = (
             self._normalize_path(str(self.codebase_index.project_path))
@@ -4564,10 +4577,12 @@ class AppState:
             self.detect_backends()
 
         project_path = os.path.normpath(project_path or self.project.project_path)
+        # Ollama-first: deepseek-v4-flash on the Mac Studio is the flagship.
+        # Cloud backends are fallbacks for when Ollama isn't reachable.
         preferences = {
-            "planner": ["claude-code", "codex", "openai", "claude", "mlx", "ollama", "lmstudio"],
-            "generator": ["mlx", "codex", "claude-code", "openai", "claude", "ollama", "lmstudio"],
-            "evaluator": ["claude-code", "codex", "claude", "openai", "mlx", "ollama", "lmstudio"],
+            "planner": ["ollama", "lmstudio", "claude-code", "codex", "openai", "claude", "mlx"],
+            "generator": ["ollama", "lmstudio", "mlx", "claude-code", "codex", "openai", "claude"],
+            "evaluator": ["ollama", "lmstudio", "claude-code", "codex", "claude", "openai", "mlx"],
         }
         preferred_mlx_model_by_role = {
             "planner": "fast-14b",
@@ -4605,6 +4620,9 @@ class AppState:
                 "generator": ["claude-code", "codex", "mlx", "openai", "claude", "ollama", "lmstudio"],
             }
 
+        # Flagship Ollama model — first choice when Ollama is the picked backend.
+        ollama_flagship = "deepseek-v4-flash:cloud"
+
         for backend_type in preferences.get(session_role, preferences["generator"]):
             info = self.available_backends.get(backend_type)
             if not info:
@@ -4613,6 +4631,8 @@ class AppState:
             preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
             if self.backend_spec and self.backend_spec.backend_type == backend_type and self.backend_spec.model:
                 model = self.backend_spec.model
+            elif backend_type == "ollama" and ollama_flagship in models:
+                model = ollama_flagship
             elif session_role == "generator" and backend_type == "claude-code" and self._harness_generator_needs_frontier_repair(project_path):
                 model = "sonnet" if "sonnet" in models else (models[0] if models else "")
             elif session_role == "generator" and backend_type == "codex" and self._harness_generator_needs_frontier_repair(project_path):
@@ -5287,7 +5307,7 @@ class AppState:
         max_tokens: Optional[int] = None,
         allowed_tools: Optional[list[dict[str, Any]]] = None,
     ) -> Session:
-        project_path = os.path.normpath(project_path or self.project.project_path)
+        effective_root = os.path.normpath(project_path or self.project.project_path)
         session_mode = self.normalize_session_mode(session_mode)
         session_role = self.normalize_session_role(session_mode, session_role)
         spec = (
@@ -5299,18 +5319,18 @@ class AppState:
         if backend is None:
             raise ValueError("Backend or backend spec is required to build a session")
 
-        if self._normalize_path(project_path) == self._normalize_path(self.project.project_path):
-            project_instructions = self._project_instructions or load_project_instructions(project_path)
+        if self._normalize_path(effective_root) == self._normalize_path(self.project.project_path):
+            project_instructions = self._project_instructions or load_project_instructions(effective_root)
             engram = self.engram
             codebase_index = self.codebase_index
         else:
-            project_instructions = load_project_instructions(project_path)
-            engram = self.base_engram.clone(namespace=self._project_namespace(project_path))
+            project_instructions = load_project_instructions(effective_root)
+            engram = self.base_engram.clone(namespace=self._project_namespace(effective_root))
             engram.set_mcp_manager(self.mcp_manager)
-            codebase_index = CodebaseIndex(project_path, engram=engram)
+            codebase_index = CodebaseIndex(effective_root, engram=engram)
 
         harness_instructions = self.build_harness_instructions(
-            project_path=project_path,
+            project_path=effective_root,
             session_mode=session_mode,
             session_role=session_role,
             backend=backend,
@@ -5323,20 +5343,30 @@ class AppState:
                 else harness_instructions
             )
 
+        # User-overridable step budget. Default is high enough that normal tasks
+        # never hit it; doom-loop detection in engine/session.py catches real runaways.
+        configured_max_steps = self.settings.get("general", "session_max_steps", None)
+        try:
+            effective_max_steps = int(configured_max_steps) if configured_max_steps else self.SESSION_MAX_STEPS
+        except (TypeError, ValueError):
+            effective_max_steps = self.SESSION_MAX_STEPS
+        if effective_max_steps <= 0:
+            effective_max_steps = 10000  # sentinel for "treat as unlimited"
+
         session = Session(
             backend=backend,
-            max_steps=self.SESSION_MAX_STEPS,
+            max_steps=effective_max_steps,
             max_tokens=max_tokens or self.SESSION_MAX_TOKENS,
             auto_approve=self._session_auto_approve() if auto_approve is None else auto_approve,
             allowed_tools=allowed_tools,
             project_instructions=project_instructions,
             cancel_event=cancel_event,
         )
-        session.project_path = project_path  # For relative path resolution in tools
+        session.project_path = effective_root  # Tools + sandbox cwd
 
         # Attach sandbox for path safety (always on for sessions with a project)
         from ..engine.sandbox import PathSandbox
-        session.sandbox = PathSandbox(project_path, enabled=True)
+        session.sandbox = PathSandbox(effective_root, enabled=True)
 
         # Set autonomy tier based on permission mode
         if self.permission_mode == "ask":
@@ -5363,7 +5393,7 @@ class AppState:
             base_policy = policy_for_tier(session.autonomy_tier)
             # Check for project-level policy file
             project_policy = ExecutionPolicy.from_file(
-                os.path.join(project_path, "resonant-policy.json")
+                os.path.join(effective_root, "resonant-policy.json")
             )
             if project_policy:
                 session.execution_policy = base_policy.merge(project_policy)
@@ -5372,9 +5402,22 @@ class AppState:
         except Exception:
             pass
 
+        # Auto-feedback loops (lint / test) — settings-driven, off by default
+        session.auto_lint_enabled = bool(
+            self.settings.get("general", "auto_lint_after_edits", False)
+        )
+        session.auto_test_enabled = bool(
+            self.settings.get("general", "auto_test_after_edits", False)
+        )
+        configured_test_cmd = str(
+            self.settings.get("general", "auto_test_command", "") or ""
+        ).strip()
+        if configured_test_cmd:
+            session.auto_test_command = configured_test_cmd
+
         return self._wire_session(
             session,
-            project_path=project_path,
+            project_path=effective_root,
             project_instructions=project_instructions,
             engram=engram,
             codebase_index=codebase_index,
@@ -5390,6 +5433,16 @@ class AppState:
     ):
         """Create a backend and session."""
         spec = self.build_backend_spec(backend_type, model=model, project_path=self.project.project_path)
+        # Preserve thinking_mode from the previous spec (or current session) when
+        # the backend is being rebuilt for the same model — UX-driven option swaps.
+        prior_thinking = ""
+        if self.backend_spec and self.backend_spec.backend_type == backend_type:
+            prior_thinking = self.backend_spec.thinking_mode or ""
+        if not prior_thinking and self.project.current_session:
+            prior_thinking = getattr(self.project.current_session, "thinking_mode", "") or ""
+        if prior_thinking and backend_type == "ollama":
+            spec.thinking_mode = prior_thinking
+
         self.backend = spec.create_backend(self.settings)
         self.backend_spec = spec
         self._project_instructions = load_project_instructions(self.project.project_path)
@@ -5402,6 +5455,72 @@ class AppState:
         )
         self.apply_permission_mode(self.permission_mode, session=self.session)
         return self.backend
+
+    # CLI-wrapper backends manage their own session via --resume <id> and
+    # ignore the conversation_history list we pass to .stream(). When the
+    # user swaps TO one of these mid-conversation, they need a heads-up
+    # that history won't carry over.
+    CLI_WRAPPED_BACKENDS = {"claude-code", "codex"}
+
+    def swap_backend(
+        self,
+        backend_type: str,
+        model: str = None,
+        *,
+        session_mode: str = "code",
+        session_role: str = "generator",
+    ):
+        """
+        Swap the backend on the EXISTING session (preserves conversation_history,
+        todos, allowed_tools, sandbox, autonomy_tier, event_logger, etc.).
+
+        This is the right operation when the user changes the model/backend
+        dropdown — they want to swap "the brain", not start over.
+
+        Bug #9+#10 fix: previously the `switch_model` WebSocket handler called
+        `create_backend()` which always rebuilds the session from scratch via
+        `build_session()`, silently discarding conversation_history. This new
+        method only mutates `self.backend`, `self.backend_spec`, and the
+        existing `self.session.backend` — nothing else changes.
+
+        For CLI-wrapper backends (claude-code, codex) the conversation_history
+        survives in the session but isn't visible to the new backend's CLI
+        process — the GUI emits `backend_swap_warning` separately so the user
+        knows. For HTTP-based backends (ollama, claude API, openai, lmstudio,
+        mlx, resonant) the new backend's stream() reads the preserved history
+        and produces a coherent next turn.
+
+        Returns the new backend (same shape as create_backend for compatibility).
+        """
+        spec = self.build_backend_spec(backend_type, model=model, project_path=self.project.project_path)
+
+        # Preserve thinking_mode (mirrors create_backend's logic).
+        prior_thinking = ""
+        if self.backend_spec and self.backend_spec.backend_type == backend_type:
+            prior_thinking = self.backend_spec.thinking_mode or ""
+        if not prior_thinking and self.project.current_session:
+            prior_thinking = getattr(self.project.current_session, "thinking_mode", "") or ""
+        if prior_thinking and backend_type == "ollama":
+            spec.thinking_mode = prior_thinking
+
+        new_backend = spec.create_backend(self.settings)
+        self.backend = new_backend
+        self.backend_spec = spec
+
+        if self.session is None:
+            # Fall through to the full create path on the rare case where there's
+            # no session yet (initial app boot before any project is open).
+            return self.create_backend(
+                backend_type,
+                model=model,
+                session_mode=session_mode,
+                session_role=session_role,
+            )
+
+        # The whole point of swap_backend: just rewire .backend on the existing
+        # session, leaving conversation_history + todos + everything else intact.
+        self.session.set_backend(new_backend)  # set_backend defaults to reset_history=False
+        return new_backend
 
     def apply_settings(self, section: str = "", key: str | None = None):
         if section == "mcp_servers":
@@ -5471,26 +5590,6 @@ class AppState:
 
         return self.apply_settings(section, key)
 
-    def make_background_session(self, task) -> Session:
-        project_path = os.path.normpath(task.project_path or self.project.project_path)
-        spec = (
-            BackendSpec.from_dict(task.backend_spec)
-            if task.backend_spec else
-            self.build_backend_spec(task.backend_type, model=task.model, project_path=project_path)
-        )
-        backend = spec.create_backend(self.settings)
-        return self.build_session(
-            backend=backend,
-            backend_spec=spec,
-            project_path=project_path,
-            cancel_event=task.cancel_event,
-            session_mode=self.normalize_session_mode(getattr(task, "session_mode", "code")),
-            session_role=self.normalize_session_role(
-                getattr(task, "session_mode", "code"),
-                getattr(task, "session_role", "generator"),
-            ),
-        )
-
     def get_init_data(self, refresh_only: bool = False) -> dict:
         """Get initial state for the frontend."""
         backends_info = {}
@@ -5524,228 +5623,24 @@ class AppState:
             "sessions": self.project.list_sessions(),
             "all_sessions": self.project.list_all_sessions(),
             "current_session_id": self.project.current_session.id if self.project.current_session else "",
-            "current_session_mode": self.project.current_session.session_mode if self.project.current_session else "code",
             "current_session_role": self.project.current_session.session_role if self.project.current_session else "generator",
+            "current_thinking_mode": (
+                getattr(self.backend_spec, "thinking_mode", "") if self.backend_spec else ""
+            ) or (
+                getattr(self.project.current_session, "thinking_mode", "") if self.project.current_session else ""
+            ),
             "recent_projects": self.project.get_recent_projects(),
             "settings": self.settings.get_masked(),
             "resonant_md": get_instruction_info(self.project.project_path),
             "rag": self.codebase_index.get_stats() if self.codebase_index else {"total_files": 0, "is_indexed": False},
-            "chat_groups": self.project.list_chat_groups(),
             "harness": self.get_harness_summary(self.project.project_path),
             "harness_cycles": self.harness_orchestrator.list_runs(),
+            "harness_enabled": self.harness_enabled(),
+            "harness_migration_notice": getattr(self, "_last_migration_notice", "") or "",
         }
 
 
 state = AppState()
-
-
-import re as _re
-
-
-async def _execute_coordinator_commands(state, ws, project_id: str, response_text: str):
-    """Parse and execute resonant-command JSON blocks from coordinator responses."""
-    pattern = r'```resonant-command\s*\n(.*?)\n```'
-    matches = _re.findall(pattern, response_text, _re.DOTALL)
-
-    for match in matches:
-        try:
-            cmd = json.loads(match.strip())
-            action = cmd.get("action", "")
-
-            if action == "spawn_worker":
-                name = cmd.get("name", "Worker")
-                prompt = cmd.get("prompt", "")
-                if not prompt:
-                    continue
-
-                proj = state.command_project_store.get_project(project_id)
-                if not proj:
-                    continue
-
-                try:
-                    backend_type = getattr(state.backend, "name", "")
-                    model = getattr(state.backend, "model", "")
-                    if not backend_type:
-                        for bname in ("codex", "claude-code", "openai"):
-                            if bname in state.available_backends:
-                                backend_type = bname
-                                binfo = state.available_backends[bname]
-                                if isinstance(binfo, dict) and binfo.get("models"):
-                                    models_list = binfo["models"]
-                                    if isinstance(models_list, list) and models_list:
-                                        model = models_list[0] if isinstance(models_list[0], str) else models_list[0].get("id", "")
-                                break
-
-                    spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
-
-                    worker_prompt = (
-                        f"You are a worker agent for the project at: {proj.path}\n\n"
-                        f"## Project: {proj.name}\n"
-                        f"Strategy: {proj.strategy}\n\n"
-                        f"## Your Task\n{prompt}\n\n"
-                        f"## Instructions\n"
-                        f"Execute this task autonomously. Use your tools to read, write, and modify files. "
-                        f"Do not ask questions — just complete the work. When done, summarize what you did."
-                    )
-
-                    def _make_worker_event_handler(pid, worker_name):
-                        def handler(task_id, event):
-                            state._push_agent_event(task_id, event)
-                            if event.get("event") == "text.done":
-                                text = event.get("text", "")[:200]
-                                if text.strip():
-                                    state.command_project_store.add_activity(
-                                        pid, "agent", worker_name, text
-                                    )
-                        return handler
-
-                    bg_task = state.task_runner.submit(
-                        name=name,
-                        prompt=worker_prompt,
-                        session_factory=state.make_background_session,
-                        backend_type=backend_type,
-                        model=spec.model,
-                        project_path=proj.path,
-                        session_mode="code",
-                        session_role="generator",
-                        backend_spec=spec.to_dict(),
-                        on_event=_make_worker_event_handler(project_id, name),
-                    )
-
-                    # Add to project agents
-                    agents = proj.agents.copy() if proj.agents else []
-                    agents.append({
-                        "id": bg_task.id, "name": name,
-                        "role": "worker", "status": "running",
-                        "model": spec.model, "steps": 0, "elapsed": 0,
-                    })
-                    state.command_project_store.update_project(project_id, agents=agents, status="running")
-                    state.command_project_store.add_activity(
-                        project_id, "system", "System",
-                        f"Worker spawned: {name} ({bg_task.id})"
-                    )
-
-                    # Notify frontend
-                    proj = state.command_project_store.get_project(project_id)
-                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
-
-                except Exception as e:
-                    logger.error("Failed to spawn worker: %s", e)
-                    state.command_project_store.add_activity(
-                        project_id, "system", "System", f"Failed to spawn worker '{name}': {e}"
-                    )
-
-            elif action == "update_plan":
-                tasks = cmd.get("tasks", [])
-                if isinstance(tasks, list):
-                    normalized = []
-                    for i, t in enumerate(tasks):
-                        if isinstance(t, str):
-                            t = {"title": t}
-                        normalized.append({
-                            "title": t.get("title", f"Task {i+1}"),
-                            "description": t.get("description", ""),
-                            "priority": t.get("priority", "medium"),
-                            "status": t.get("status", "todo"),
-                        })
-                    state.command_project_store.update_project(project_id, tasks=normalized)
-                    proj = state.command_project_store.get_project(project_id)
-                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
-
-            elif action == "post_update":
-                message = cmd.get("message", "")
-                if message:
-                    state.command_project_store.add_activity(
-                        project_id, "coordinator", "Coordinator", message
-                    )
-                    proj = state.command_project_store.get_project(project_id)
-                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
-
-            elif action == "check_workers":
-                # Return status of all workers in the project
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    workers = []
-                    for agent in (proj.agents or []):
-                        if agent.get("role") == "worker":
-                            bg = state.task_runner.get_task(agent.get("id", ""))
-                            workers.append({
-                                "name": agent.get("name", "Worker"),
-                                "status": bg.status.value if bg else agent.get("status", "unknown"),
-                                "steps": bg.steps if bg else agent.get("steps", 0),
-                                "elapsed": round(bg.elapsed, 1) if bg else 0,
-                                "result_preview": (bg.result or "")[:200] if bg and bg.status.value == "completed" else "",
-                            })
-                    summary = f"{sum(1 for w in workers if w['status'] == 'completed')}/{len(workers)} workers completed."
-                    # Post status to activity
-                    state.command_project_store.add_activity(
-                        project_id, "system", "System",
-                        f"Worker status check: {summary}",
-                    )
-
-            elif action == "get_worker_results":
-                # Retrieve unread results from coordinator's inbox
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    # Find coordinator's org node
-                    from .org_chart import OrgChart
-                    chart = OrgChart.from_dict(proj.org_chart or [])
-                    roots = chart.get_roots()
-                    coord_node_id = roots[0].id if roots else None
-                    if coord_node_id:
-                        unread = proj.get_inbox(coord_node_id, unread_only=True)
-                        results = [m for m in unread if m.get("type") == "result"]
-                        proj.mark_read(coord_node_id, [m["id"] for m in results])
-                        state.command_project_store._persist(proj)
-
-            elif action == "send_instruction":
-                # Send instruction down to a child agent
-                target_name = cmd.get("target", "")
-                instruction = cmd.get("instruction", "")
-                if target_name and instruction:
-                    proj = state.command_project_store.get_project(project_id)
-                    if proj:
-                        from .org_chart import OrgChart
-                        chart = OrgChart.from_dict(proj.org_chart or [])
-                        # Find target node by role name
-                        target_node = None
-                        for node in chart.get_all_nodes():
-                            if node.role.lower() == target_name.lower():
-                                target_node = node
-                                break
-                        if target_node:
-                            roots = chart.get_roots()
-                            coord_name = roots[0].role if roots else "Coordinator"
-                            proj.send_message(
-                                sender_id=roots[0].id if roots else "coordinator",
-                                sender_name=coord_name,
-                                recipient_id=target_node.id,
-                                recipient_name=target_node.role,
-                                content=instruction,
-                                direction="down",
-                                msg_type="instruction",
-                            )
-                            proj.add_activity(
-                                "coordinator", coord_name,
-                                f"↓ Instruction to {target_node.role}: {instruction[:80]}",
-                                recipient_id=target_node.id,
-                                recipient_name=target_node.role,
-                                direction="down",
-                            )
-                            state.command_project_store._persist(proj)
-
-            elif action == "complete_project":
-                summary = cmd.get("summary", "Project completed.")
-                state.command_project_store.update_project(project_id, status="completed")
-                state.command_project_store.add_activity(
-                    project_id, "coordinator", "Coordinator", f"Project completed: {summary}"
-                )
-                proj = state.command_project_store.get_project(project_id)
-                await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
-
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
-            logger.debug("Failed to parse coordinator command: %s — %s", match[:100], e)
-            continue
 
 
 # ── WebSocket Handler ─────────────────────────────────────────────────
@@ -5773,11 +5668,6 @@ async def websocket_endpoint(ws: WebSocket):
     # Initialize codebase index if not already set
     if not state.codebase_index and state.project:
         state.codebase_index = CodebaseIndex(state.project.project_path, engram=state.engram)
-
-    # Start scheduler daemon (once)
-    if not state._scheduler_started:
-        state.scheduler.start()
-        state._scheduler_started = True
 
     try:
         while True:
@@ -6032,6 +5922,11 @@ async def websocket_endpoint(ws: WebSocket):
                 session_mode = msg.get("session_mode", "code")
                 session_role = msg.get("session_role", "generator")
                 try:
+                    state.project.create_session(
+                        backend_type=backend_type,
+                        model=model or "",
+                        session_role=session_role,
+                    )
                     await asyncio.get_event_loop().run_in_executor(
                         None,
                         lambda: state.create_backend(
@@ -6041,16 +5936,47 @@ async def websocket_endpoint(ws: WebSocket):
                             session_role=session_role,
                         ),
                     )
-                    # Auto-create a new session when backend is selected
-                    state.project.create_session(
-                        backend_type=backend_type,
-                        model=model or getattr(state.backend, "model", ""),
-                        session_mode=session_mode,
-                        session_role=session_role,
-                    )
                     state._first_message_sent = False
                     await ws.send_json(state.get_init_data())
                     await ws.send_json({"event": "status_msg", "message": f"Connected to {backend_type}"})
+
+                    # Pre-warm the model so the user's first message doesn't sit
+                    # at "thinking" for 60-90s while Ollama cold-loads. Fire and
+                    # forget — we don't want to block the connect response.
+                    backend_for_warm = state.backend
+                    if backend_for_warm and hasattr(backend_for_warm, "warm_up"):
+                        async def _emit_warm_event(payload: dict):
+                            try:
+                                await ws.send_json(payload)
+                            except Exception:
+                                pass
+
+                        loop = asyncio.get_running_loop()
+                        warm_started = time.time()
+                        await ws.send_json({
+                            "event": "model_warmup_started",
+                            "backend": backend_type,
+                            "model": getattr(backend_for_warm, "model", model),
+                        })
+
+                        def _warm_in_bg(be=backend_for_warm, started=warm_started):
+                            try:
+                                be.warm_up()
+                            except Exception as exc:
+                                logger.debug("warm_up raised: %s", exc)
+                            elapsed = time.time() - started
+                            try:
+                                asyncio.run_coroutine_threadsafe(
+                                    _emit_warm_event({
+                                        "event": "model_warmup_complete",
+                                        "elapsed_s": round(elapsed, 1),
+                                    }),
+                                    loop,
+                                )
+                            except Exception:
+                                pass
+
+                        threading.Thread(target=_warm_in_bg, name="model-warmup", daemon=True).start()
                 except Exception as e:
                     await ws.send_json({"event": "error", "message": str(e)})
 
@@ -6083,33 +6009,30 @@ async def websocket_endpoint(ws: WebSocket):
                         except Exception:
                             pass
 
-                session_mode = (
-                    state.project.current_session.session_mode
-                    if state.project.current_session else "code"
-                )
+                # session_mode was removed from SessionRecord in the April-2026 refocus.
+                # Always "code" now (the only mode).
+                session_mode = "code"
                 session_role = (
                     state.project.current_session.session_role
                     if state.project.current_session else "generator"
                 )
-                if session_mode == "code" and session_role == "generator" and not state._first_message_sent:
-                    harness_summary = state.get_harness_summary(state.project.project_path)
-                    if (
-                        not harness_summary.get("active_sprint_id")
-                        or harness_summary.get("contract_status") not in {"approved", "needs_revision"}
-                    ):
-                        await ws.send_json({
-                            "event": "error",
-                            "message": "Generator session requires an approved or needs_revision sprint contract",
-                        })
-                        continue
+                # Sprint workflow is opt-in. The wrap only runs when (a) the master
+                # setting is on AND (b) an active sprint contract exists. Otherwise
+                # the message goes through unmodified — same as Claude Code / Codex.
                 text_for_session = text
-                if not state._first_message_sent:
-                    text_for_session = state.wrap_user_message_for_harness(
-                        user_msg=text,
-                        session_mode=session_mode,
-                        session_role=session_role,
+                if not state._first_message_sent and state.harness_enabled():
+                    harness_summary = state.get_harness_summary(state.project.project_path)
+                    has_active_sprint = bool(
+                        harness_summary.get("active_sprint_id")
+                        and harness_summary.get("contract_status") in {"approved", "needs_revision"}
                     )
-                    state._first_message_sent = True
+                    if has_active_sprint:
+                        text_for_session = state.wrap_user_message_for_harness(
+                            user_msg=text,
+                            session_mode=session_mode,
+                            session_role=session_role,
+                        )
+                state._first_message_sent = True
 
                 state.cancel_requested.clear()
                 state.session.reset_cancel()
@@ -6145,16 +6068,15 @@ async def websocket_endpoint(ws: WebSocket):
                 if state.backend:
                     backend_type = getattr(state.backend, "name", "")
                     model = getattr(state.backend, "model", "")
+                    state.project.create_session(
+                        backend_type=backend_type,
+                        model=model,
+                        session_role=session_role,
+                    )
                     state.session = state.build_session(
                         backend=state.backend,
                         backend_spec=state.backend_spec,
                         project_path=state.project.project_path,
-                        session_mode=session_mode,
-                        session_role=session_role,
-                    )
-                    state.project.create_session(
-                        backend_type=backend_type,
-                        model=model,
                         session_mode=session_mode,
                         session_role=session_role,
                     )
@@ -6175,23 +6097,89 @@ async def websocket_endpoint(ws: WebSocket):
                     backend_type = getattr(state.backend, "name", "")
                 if backend_type:
                     try:
-                        session_mode = (
-                            state.project.current_session.session_mode
-                            if state.project.current_session else "code"
-                        )
                         session_role = (
                             state.project.current_session.session_role
                             if state.project.current_session else "generator"
                         )
+                        # Bug #9+#10 fix: swap_backend (not create_backend)
+                        # preserves the existing session's conversation_history.
+                        # Previously we rebuilt the session from scratch, silently
+                        # discarding all prior turns.
                         await asyncio.get_event_loop().run_in_executor(
                             None,
-                            lambda: state.create_backend(
+                            lambda: state.swap_backend(
                                 backend_type,
                                 model,
-                                session_mode=session_mode,
+                                session_mode="code",
                                 session_role=session_role,
                             ),
                         )
+                        # Heads-up for CLI-wrapper backends: their underlying
+                        # CLI sessions ignore our conversation_history list, so
+                        # even though the session-level history survived the
+                        # swap, the new backend can't see it. Emit a one-time
+                        # warning so the user knows.
+                        if backend_type in state.CLI_WRAPPED_BACKENDS:
+                            await ws.send_json({
+                                "event": "backend_swap_warning",
+                                "backend": backend_type,
+                                "message": (
+                                    f"Switched to {backend_type}. This backend uses its own CLI "
+                                    f"session and won't see prior conversation turns. "
+                                    f"Switch back to your previous backend to resume the "
+                                    f"original thread with full context."
+                                ),
+                            })
+                        await ws.send_json(state.get_init_data())
+                    except Exception as e:
+                        await ws.send_json({"event": "error", "message": str(e)})
+
+            elif command == "get_model_telemetry":
+                # Best-effort runtime info about the loaded Ollama model
+                # (context_length, memory, supports_thinking).
+                if state.backend and getattr(state.backend, "name", "") == "ollama" \
+                        and hasattr(state.backend, "get_runtime_telemetry"):
+                    data = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.backend.get_runtime_telemetry(timeout=4.0),
+                    )
+                    await ws.send_json({"event": "model_telemetry", "data": data})
+                else:
+                    await ws.send_json({"event": "model_telemetry", "data": {"error": "no Ollama backend"}})
+
+            elif command == "set_thinking_mode":
+                # Per-session thinking-mode toggle (deepseek-v* etc.).
+                # Forces a backend rebuild because Ollama options must be stable
+                # for the lifetime of an OllamaBackend instance.
+                mode = (msg.get("mode") or "").strip().lower()
+                if mode not in {"", "off", "low", "med", "medium", "high"}:
+                    await ws.send_json({"event": "error", "message": f"invalid thinking mode: {mode!r}"})
+                else:
+                    try:
+                        normalized = "" if mode in {"", "off"} else ("med" if mode == "medium" else mode)
+                        if state.project.current_session:
+                            state.project.current_session.thinking_mode = normalized
+                            state.project.current_session.save()
+                        # Rebuild the backend with the new thinking_mode in spec
+                        if state.backend_spec:
+                            state.backend_spec.thinking_mode = normalized
+                            session_role = (
+                                state.project.current_session.session_role
+                                if state.project.current_session else "generator"
+                            )
+                            await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: state.create_backend(
+                                    state.backend_spec.backend_type,
+                                    state.backend_spec.model,
+                                    session_mode="code",
+                                    session_role=session_role,
+                                ),
+                            )
+                        await ws.send_json({
+                            "event": "thinking_mode_set",
+                            "mode": normalized,
+                        })
                         await ws.send_json(state.get_init_data())
                     except Exception as e:
                         await ws.send_json({"event": "error", "message": str(e)})
@@ -6199,6 +6187,78 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "set_permission_mode":
                 mode = msg.get("mode", "bypass")
                 state.apply_permission_mode(mode)
+
+            elif command == "get_session_replay_events":
+                # Fetch full display_events for any session without switching the active one.
+                target_id = msg.get("session_id", "")
+                project_path = msg.get("project_path") or state.project.project_path
+                # Try the requested project path, then any recent project that has it
+                from .sessions import _sessions_dir
+                fp = _sessions_dir(project_path) / f"{target_id}.json"
+                if not fp.exists():
+                    for proj in state.project.get_recent_projects():
+                        path = proj.get("path", "") if isinstance(proj, dict) else str(proj)
+                        if not path:
+                            continue
+                        candidate = _sessions_dir(path) / f"{target_id}.json"
+                        if candidate.exists():
+                            fp = candidate
+                            break
+                if not fp.exists():
+                    await ws.send_json({"event": "session_replay_events", "session_id": target_id, "error": "not found", "events": []})
+                else:
+                    try:
+                        with open(fp, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        events = data.get("display_events") or []
+                        title = data.get("title") or ""
+                        await ws.send_json({
+                            "event": "session_replay_events",
+                            "session_id": target_id,
+                            "title": title,
+                            "events": events,
+                        })
+                    except Exception as exc:
+                        await ws.send_json({"event": "session_replay_events", "session_id": target_id, "error": str(exc), "events": []})
+
+            elif command == "fork_session":
+                source_id = msg.get("session_id", "")
+                idx = int(msg.get("user_message_index", 0))
+                forked = state.project.fork_session(source_id, idx)
+                if forked is None:
+                    await ws.send_json({"event": "error", "message": f"Cannot fork: session {source_id} not found"})
+                else:
+                    # Rebuild a session bound to the forked record so subsequent messages append correctly.
+                    if state.backend_spec:
+                        try:
+                            await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: state.create_backend(
+                                    state.backend_spec.backend_type,
+                                    state.backend_spec.model,
+                                    session_mode="code",
+                                    session_role=forked.session_role,
+                                ),
+                            )
+                            # Restore the forked conversation onto the new Session
+                            state.session.conversation_history = list(forked.conversation_history)
+                            state._first_message_sent = bool(forked.conversation_history)
+                        except Exception as exc:
+                            logger.warning("fork_session backend rebuild failed: %s", exc)
+
+                    await ws.send_json({
+                        "event": "session_forked",
+                        "session_id": forked.id,
+                        "title": forked.title,
+                        "user_messages_kept": forked.message_count,
+                    })
+                    await ws.send_json({
+                        "event": "session_loaded",
+                        "current_session_id": forked.id,
+                        "session_role": forked.session_role,
+                        "display_events": forked.display_events,
+                        "sessions": state.project.list_sessions(),
+                    })
 
             elif command == "switch_session":
                 session_id = msg.get("session_id", "")
@@ -6224,7 +6284,7 @@ async def websocket_endpoint(ws: WebSocket):
                                 lambda: state.create_backend(
                                     backend_type,
                                     model or None,
-                                    session_mode=record.session_mode or "code",
+                                    session_mode="code",
                                     session_role=record.session_role or "generator",
                                 ),
                             )
@@ -6244,7 +6304,7 @@ async def websocket_endpoint(ws: WebSocket):
                             "backend_type": record.backend_type,
                             "model": record.model,
                             "message_count": record.message_count,
-                            "session_mode": record.session_mode or "code",
+                            "session_mode": "code",
                             "session_role": record.session_role or "generator",
                             "display_events": record.display_events,
                             "sessions": state.project.list_sessions(),
@@ -6285,46 +6345,72 @@ async def websocket_endpoint(ws: WebSocket):
                         "current_session_id": state.project.current_session.id if state.project.current_session else "",
                     })
 
-            # ── Chat Group Commands ───────────────────────────
-            elif command == "create_chat_group":
-                name = msg.get("name", "").strip()
-                groups = state.project.create_chat_group(name)
-                await ws.send_json({"event": "chat_groups", "groups": groups})
+            # ── Intent / organic-orchestration commands ─────────────
+            elif command in ("intent_start", "intent_cancel", "intent_pause",
+                             "intent_resume", "intent_list_snapshots",
+                             "intent_restore_snapshot"):
+                # Bridge the intent worker thread back to this WebSocket. The
+                # service runs on a thread, so we hand it a thread-safe emitter
+                # that schedules `ws.send_json` on the asyncio loop.
+                loop = asyncio.get_running_loop()
 
-            elif command == "rename_chat_group":
-                old_name = msg.get("old_name", "")
-                new_name = msg.get("new_name", "").strip()
-                groups = state.project.rename_chat_group(old_name, new_name)
-                await ws.send_json({"event": "chat_groups", "groups": groups})
-                # Sessions may have changed group names
-                await ws.send_json({
-                    "event": "sessions_updated",
-                    "sessions": state.project.list_sessions(),
-                    "all_sessions": state.project.list_all_sessions(),
-                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
-                })
+                def _emit_intent(payload: dict, _ws=ws, _loop=loop):
+                    try:
+                        asyncio.run_coroutine_threadsafe(_ws.send_json(payload), _loop)
+                    except Exception:
+                        logger.debug("intent emit raised", exc_info=True)
 
-            elif command == "delete_chat_group":
-                name = msg.get("name", "")
-                groups = state.project.delete_chat_group(name)
-                await ws.send_json({"event": "chat_groups", "groups": groups})
-                await ws.send_json({
-                    "event": "sessions_updated",
-                    "sessions": state.project.list_sessions(),
-                    "all_sessions": state.project.list_all_sessions(),
-                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
-                })
+                if state.backend is None:
+                    await ws.send_json({"event": "error",
+                                        "message": "Connect a backend before starting an intent."})
+                else:
+                    intent_service = state.get_intent_service(on_event=_emit_intent)
 
-            elif command == "set_session_group":
-                session_id = msg.get("session_id", "")
-                group = msg.get("group", "")
-                state.project.set_session_group(session_id, group)
-                await ws.send_json({
-                    "event": "sessions_updated",
-                    "sessions": state.project.list_sessions(),
-                    "all_sessions": state.project.list_all_sessions(),
-                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
-                })
+                    if command == "intent_start":
+                        text = (msg.get("text") or "").strip()
+                        if not text:
+                            await ws.send_json({"event": "error",
+                                                "message": "intent text is required"})
+                        else:
+                            try:
+                                intent_id = intent_service.start_intent(text)
+                                await ws.send_json({
+                                    "event": "intent.accepted",
+                                    "intent_id": intent_id,
+                                    "text": text,
+                                })
+                            except Exception as exc:
+                                logger.exception("intent_start failed")
+                                await ws.send_json({"event": "error",
+                                                    "message": f"intent_start failed: {exc}"})
+                    elif command == "intent_cancel":
+                        ok = intent_service.cancel(msg.get("intent_id", ""))
+                        await ws.send_json({"event": "intent.cancel_ack",
+                                            "intent_id": msg.get("intent_id", ""),
+                                            "ok": ok})
+                    elif command == "intent_pause":
+                        ok = intent_service.pause(msg.get("intent_id", ""))
+                        await ws.send_json({"event": "intent.pause_ack",
+                                            "intent_id": msg.get("intent_id", ""),
+                                            "ok": ok})
+                    elif command == "intent_resume":
+                        ok = intent_service.resume(msg.get("intent_id", ""))
+                        await ws.send_json({"event": "intent.resume_ack",
+                                            "intent_id": msg.get("intent_id", ""),
+                                            "ok": ok})
+                    elif command == "intent_list_snapshots":
+                        snaps = intent_service.list_snapshots(msg.get("intent_id", ""))
+                        await ws.send_json({"event": "plan.snapshot_list",
+                                            "intent_id": msg.get("intent_id", ""),
+                                            "snapshots": snaps})
+                    elif command == "intent_restore_snapshot":
+                        ok = intent_service.restore_snapshot(
+                            msg.get("intent_id", ""),
+                            int(msg.get("ts_ms") or 0),
+                        )
+                        await ws.send_json({"event": "intent.restore_ack",
+                                            "intent_id": msg.get("intent_id", ""),
+                                            "ok": ok})
 
             elif command == "set_project":
                 project_path = msg.get("path", "").strip()
@@ -6343,7 +6429,12 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "message": f"Invalid directory: {project_path}"})
 
             elif command == "folder_dialog":
-                # Open native folder picker via pywebview (or tkinter fallback)
+                # Open native folder picker via pywebview (or tkinter fallback). Always
+                # acknowledge the click — silent failure was a real UX issue surfaced
+                # in the dogfood test (the user clicks "Open another project..." and
+                # has no idea whether it worked).
+                await ws.send_json({"event": "status_msg", "message": "Opening folder picker..."})
+
                 def _pick_folder():
                     global _webview_window
                     if _webview_window:
@@ -6356,8 +6447,6 @@ async def websocket_endpoint(ws: WebSocket):
                                 return result[0]
                         except Exception as e:
                             logger.warning(f"pywebview folder dialog failed: {e}")
-                        # Don't fall through to tkinter when pywebview is active —
-                        # if the dialog failed it's likely because the window is closing.
                         return None
                     # Fallback: tkinter (only when pywebview is not available)
                     try:
@@ -6376,6 +6465,16 @@ async def websocket_endpoint(ws: WebSocket):
                 picked = await asyncio.get_event_loop().run_in_executor(None, _pick_folder)
                 if picked:
                     await ws.send_json({"event": "folder_picked", "path": picked})
+                else:
+                    # No pick — tell the user what to do next so the click isn't a dead end.
+                    await ws.send_json({
+                        "event": "folder_picker_unavailable",
+                        "message": (
+                            "Couldn't open the native folder picker. "
+                            "Type the project path in the workspace folder field instead, "
+                            "or pick from the Recent list."
+                        ),
+                    })
 
             elif command == "list_dirs":
                 # List subdirectories for folder browsing
@@ -6428,1091 +6527,6 @@ async def websocket_endpoint(ws: WebSocket):
             # ── Cost Tracking ───────────────────────────────
             elif command == "get_costs":
                 await ws.send_json({"event": "costs", "data": state.costs.get_all_costs()})
-
-            # ── Dispatch (Background Tasks) ──────────────────
-            elif command == "dispatch":
-                prompt = msg.get("prompt", "").strip()
-                name = msg.get("name", "").strip()
-                backend_type = msg.get("backend", getattr(state.backend, "name", ""))
-                model = msg.get("model", getattr(state.backend, "model", ""))
-                session_mode = msg.get("session_mode", "code")
-                session_role = msg.get("session_role", "generator")
-                if not prompt:
-                    await ws.send_json({"event": "error", "message": "No prompt provided"})
-                    continue
-                try:
-                    spec = state.build_backend_spec(
-                        backend_type,
-                        model=model or None,
-                        project_path=state.project.project_path,
-                    )
-                    task = state.task_runner.submit(
-                        name=name,
-                        prompt=prompt,
-                        session_factory=state.make_background_session,
-                        backend_type=backend_type,
-                        model=spec.model,
-                        project_path=state.project.project_path,
-                        session_mode=state.normalize_session_mode(session_mode),
-                        session_role=state.normalize_session_role(session_mode, session_role),
-                        backend_spec=spec.to_dict(),
-                    )
-                    await ws.send_json({
-                        "event": "dispatch_submitted",
-                        "task": task.to_dict(),
-                    })
-                except Exception as e:
-                    await ws.send_json({"event": "error", "message": str(e)})
-
-            elif command == "dispatch_list":
-                tasks = state.task_runner.list_tasks()
-                await ws.send_json({"event": "dispatch_list", "tasks": tasks})
-
-            elif command == "dispatch_result":
-                task_id = msg.get("task_id", "")
-                task = state.task_runner.get_task(task_id)
-                if task:
-                    await ws.send_json({"event": "dispatch_result", "task": task.to_full_dict()})
-                else:
-                    await ws.send_json({"event": "error", "message": f"Task {task_id} not found"})
-
-            elif command == "dispatch_cancel":
-                task_id = msg.get("task_id", "")
-                cancelled = state.task_runner.cancel(task_id)
-                await ws.send_json({"event": "dispatch_cancelled", "task_id": task_id, "success": cancelled})
-                # Refresh list
-                tasks = state.task_runner.list_tasks()
-                await ws.send_json({"event": "dispatch_list", "tasks": tasks})
-
-            # ── Command Center: Projects ────────────────────
-            elif command == "command_project_list":
-                projects = state.command_project_store.list_projects()
-                await ws.send_json({"event": "command_project_list", "projects": projects})
-
-            elif command == "command_project_create":
-                name = msg.get("name", "").strip()
-                path = msg.get("path", "").strip() or state.project.project_path
-                strategy = msg.get("strategy", "").strip()
-                if not strategy:
-                    await ws.send_json({"event": "error", "message": "Strategy is required"})
-                    continue
-                proj = state.command_project_store.create_project(
-                    name=name or path.replace("\\", "/").split("/")[-1],
-                    path=path,
-                    strategy=strategy,
-                )
-                proj.status = "planning"
-                proj.add_activity("system", "System", f"Project created. Strategy: {strategy[:100]}...")
-                state.command_project_store._persist(proj)
-
-                # Spawn coordinator agent
-                try:
-                    coordinator_prompt = (
-                        f"You are a project coordinator working in: {path}\n\n"
-                        f"## Strategy\n{strategy}\n\n"
-                        f"## Instructions\n"
-                        f"You MUST complete ALL of the following:\n"
-                        f"1. First, list the files in the project directory to understand the current state\n"
-                        f"2. Create a clear task plan and explain what you will build\n"
-                        f"3. Execute EVERY task — write all the code files, create directories, install dependencies\n"
-                        f"4. After each file is created, briefly confirm what was done\n"
-                        f"5. When ALL tasks are complete, give a final summary\n\n"
-                        f"IMPORTANT: Do not just plan — actually CREATE all the files and write all the code. "
-                        f"Use the Write tool to create files, Bash to run commands (npm init, npm install, etc). "
-                        f"Be thorough and complete every task in the strategy."
-                    )
-                    backend_type = msg.get("backend", "") or getattr(state.backend, "name", "")
-                    model = msg.get("model", "") or getattr(state.backend, "model", "")
-                    if not backend_type:
-                        # Try to pick the first available backend
-                        for bname in ("codex", "claude-code", "openai", "resonant"):
-                            if bname in state.available_backends:
-                                backend_type = bname
-                                binfo = state.available_backends[bname]
-                                if isinstance(binfo, dict) and binfo.get("models"):
-                                    models_list = binfo["models"]
-                                    if isinstance(models_list, list) and models_list:
-                                        model = models_list[0] if isinstance(models_list[0], str) else models_list[0].get("id", "")
-                                    elif isinstance(models_list, dict):
-                                        model = next(iter(models_list.values()), {}).get("id", "")
-                                break
-                    if not backend_type:
-                        raise ValueError("No AI backend available. Please select a backend first.")
-                    spec = state.build_backend_spec(backend_type, model=model or None, project_path=path)
-
-                    def _make_coordinator_event_handler(pid):
-                        def handler(task_id, event):
-                            state._push_agent_event(task_id, event)
-                            # Also post text completions to project activity
-                            if event.get("event") == "text.done":
-                                text = event.get("text", "")[:200]
-                                if text.strip():
-                                    state.command_project_store.add_activity(
-                                        pid, "agent", "Coordinator", text
-                                    )
-                        return handler
-
-                    bg_task = state.task_runner.submit(
-                        name=f"Coordinator: {name}",
-                        prompt=coordinator_prompt,
-                        session_factory=state.make_background_session,
-                        backend_type=backend_type,
-                        model=spec.model,
-                        project_path=path,
-                        session_mode="code",
-                        session_role="generator",
-                        backend_spec=spec.to_dict(),
-                        on_event=_make_coordinator_event_handler(proj.id),
-                    )
-                    state.command_project_store.update_project(
-                        proj.id,
-                        coordinator_task_id=bg_task.id,
-                        status="running",
-                        agents=[{
-                            "id": bg_task.id, "name": f"Coordinator: {name}",
-                            "role": "coordinator", "status": "running",
-                            "model": spec.model, "steps": 0, "elapsed": 0,
-                        }],
-                    )
-                    proj = state.command_project_store.get_project(proj.id)
-                except Exception as e:
-                    state.command_project_store.update_project(proj.id, status="failed")
-                    proj = state.command_project_store.get_project(proj.id)
-                    proj.add_activity("system", "System", f"Failed to launch coordinator: {e}")
-                    state.command_project_store._persist(proj)
-
-                await ws.send_json({
-                    "event": "command_project_created",
-                    "project": proj.to_dict(),
-                    "projects": state.command_project_store.list_projects(),
-                })
-
-            elif command == "command_project_status":
-                project_id = msg.get("project_id", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    # Refresh agent status from task runner
-                    for agent in proj.agents:
-                        bg = state.task_runner.get_task(agent.get("id", ""))
-                        if bg:
-                            agent["status"] = bg.status.value
-                            agent["steps"] = bg.steps
-                            agent["elapsed"] = round(bg.elapsed, 2)
-                    # Check if coordinator finished
-                    if proj.coordinator_task_id:
-                        coord = state.task_runner.get_task(proj.coordinator_task_id)
-                        if coord and coord.status.value in ("completed", "failed", "cancelled"):
-                            if proj.status == "running":
-                                new_status = "completed" if coord.status.value == "completed" else "failed"
-                                state.command_project_store.update_project(proj.id, status=new_status)
-                                proj.status = new_status
-                    state.command_project_store._persist(proj)
-                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
-                else:
-                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
-
-            # ── Command Center: Files & Preview ──────────────
-            elif command == "command_project_files":
-                project_id = msg.get("project_id", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    import glob as _glob
-                    project_path = os.path.normpath(proj.path)
-                    files = []
-                    for entry in sorted(os.scandir(project_path), key=lambda e: (not e.is_dir(), e.name.lower())):
-                        if entry.name.startswith('.'):
-                            continue
-                        try:
-                            stat = entry.stat()
-                            files.append({
-                                "name": entry.name,
-                                "path": os.path.join(project_path, entry.name),
-                                "is_dir": entry.is_dir(),
-                                "size": stat.st_size if not entry.is_dir() else 0,
-                                "modified": stat.st_mtime,
-                            })
-                            # Also list files inside directories (1 level deep)
-                            if entry.is_dir():
-                                for sub in sorted(os.scandir(entry.path), key=lambda e: e.name.lower()):
-                                    if sub.name.startswith('.'):
-                                        continue
-                                    sub_stat = sub.stat()
-                                    files.append({
-                                        "name": f"  {entry.name}/{sub.name}",
-                                        "path": os.path.join(entry.path, sub.name),
-                                        "is_dir": sub.is_dir(),
-                                        "size": sub_stat.st_size if not sub.is_dir() else 0,
-                                        "modified": sub_stat.st_mtime,
-                                    })
-                        except Exception:
-                            pass
-                    await ws.send_json({"event": "command_project_files", "project_id": project_id, "files": files})
-                else:
-                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
-
-            elif command == "command_project_read_file":
-                project_id = msg.get("project_id", "")
-                file_path = msg.get("path", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj and file_path:
-                    try:
-                        # Security: ensure path is under project directory
-                        norm_path = os.path.normpath(file_path)
-                        norm_proj = os.path.normpath(proj.path)
-                        if not norm_path.startswith(norm_proj):
-                            raise ValueError("Path outside project directory")
-                        with open(norm_path, "r", encoding="utf-8", errors="replace") as f:
-                            content = f.read(100_000)  # max 100KB
-                        await ws.send_json({
-                            "event": "command_project_file_content",
-                            "project_id": project_id,
-                            "path": file_path,
-                            "content": content,
-                        })
-                    except Exception as e:
-                        await ws.send_json({"event": "error", "message": f"Cannot read file: {e}"})
-                else:
-                    await ws.send_json({"event": "error", "message": "Project or file not found"})
-
-            elif command == "command_project_preview":
-                project_id = msg.get("project_id", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    project_path = os.path.normpath(proj.path)
-                    # Look for index.html or any HTML file
-                    index_path = os.path.join(project_path, "index.html")
-                    if os.path.exists(index_path):
-                        preview_url = f"/preview/{project_id}/index.html"
-                        await ws.send_json({"event": "command_project_preview", "url": preview_url})
-                    else:
-                        html_files = [f for f in os.listdir(project_path) if f.endswith('.html')]
-                        if html_files:
-                            preview_url = f"/preview/{project_id}/{html_files[0]}"
-                            await ws.send_json({"event": "command_project_preview", "url": preview_url})
-                        else:
-                            await ws.send_json({"event": "command_project_preview", "error": "No HTML files found in project. The project may still be building."})
-                else:
-                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
-
-            # ── Command Center: Chat with Coordinator ─────────
-            elif command == "command_project_chat":
-                project_id = msg.get("project_id", "")
-                message = msg.get("message", "").strip()
-                proj = state.command_project_store.get_project(project_id)
-                if not proj:
-                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
-                    continue
-                if not message:
-                    await ws.send_json({"event": "error", "message": "Message is required"})
-                    continue
-
-                try:
-                    # Build or reuse coordinator session for this project
-                    session_key = f"_coordinator_session_{project_id}"
-                    coordinator_session = getattr(state, session_key, None)
-
-                    if coordinator_session is None:
-                        # Create a new coordinator session
-                        backend_type = getattr(state.backend, "name", "")
-                        model = getattr(state.backend, "model", "")
-                        if not backend_type:
-                            for bname in ("codex", "claude-code", "openai", "resonant"):
-                                if bname in state.available_backends:
-                                    backend_type = bname
-                                    binfo = state.available_backends[bname]
-                                    if isinstance(binfo, dict) and binfo.get("models"):
-                                        models_list = binfo["models"]
-                                        if isinstance(models_list, list) and models_list:
-                                            model = models_list[0] if isinstance(models_list[0], str) else models_list[0].get("id", "")
-                                    break
-                        if not backend_type:
-                            raise ValueError("No AI backend available")
-
-                        spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
-                        coordinator_session = state.build_session(
-                            backend=spec.create_backend(state.settings),
-                            backend_spec=spec,
-                            project_path=proj.path,
-                            session_mode="code",
-                            session_role="generator",
-                        )
-                        # Add project context + coordinator tools to the first message
-                        context_prefix = (
-                            f"You are the project coordinator for: {proj.name}\n"
-                            f"Project path: {proj.path}\n"
-                            f"Strategy: {proj.strategy}\n\n"
-                            f"## Your Role\n"
-                            f"You are the Product Owner / Project Manager for this project. You can:\n"
-                            f"1. Use your tools (shell, read, write) to directly work on files\n"
-                            f"2. Break the strategy into tasks and track progress\n"
-                            f"3. Spawn worker agents to handle tasks in parallel\n"
-                            f"4. Monitor worker progress and report back\n\n"
-                            f"## Spawning Workers\n"
-                            f"To spawn a worker agent, include a JSON block in your response like this:\n"
-                            f'```resonant-command\n'
-                            f'{{"action": "spawn_worker", "name": "Worker name", "prompt": "Detailed instructions for the worker"}}\n'
-                            f"```\n"
-                            f"You can spawn multiple workers in one response. Each worker runs autonomously in parallel.\n\n"
-                            f"## Updating the Plan\n"
-                            f"To update the task plan visible on the dashboard, include:\n"
-                            f'```resonant-command\n'
-                            f'{{"action": "update_plan", "tasks": [{{"title": "Task 1", "description": "...", "status": "todo"}}, ...]}}\n'
-                            f"```\n\n"
-                            f"## Posting Status Updates\n"
-                            f"To post a status update to the Activity feed:\n"
-                            f'```resonant-command\n'
-                            f'{{"action": "post_update", "message": "Status update text"}}\n'
-                            f"```\n\n"
-                            f"## Checking Worker Status\n"
-                            f"To check the status of all your workers:\n"
-                            f'```resonant-command\n'
-                            f'{{"action": "check_workers"}}\n'
-                            f"```\n\n"
-                            f"## Getting Worker Results\n"
-                            f"Worker results are automatically included at the top of your next prompt.\n"
-                            f"You can also explicitly request them:\n"
-                            f'```resonant-command\n'
-                            f'{{"action": "get_worker_results"}}\n'
-                            f"```\n\n"
-                            f"## Sending Instructions to Workers\n"
-                            f"To send instructions to a specific worker:\n"
-                            f'```resonant-command\n'
-                            f'{{"action": "send_instruction", "target": "Worker Role Name", "instruction": "What to do next"}}\n'
-                            f"```\n\n"
-                            f"## Important\n"
-                            f"- When asked to do something, actually do it using your tools — don't just describe what you would do.\n"
-                            f"- Use workers for parallelizable tasks. Do simple tasks yourself directly.\n"
-                            f"- Always keep the user informed of progress.\n\n"
-                        )
-                        message = context_prefix + "User says: " + message
-                        setattr(state, session_key, coordinator_session)
-                    else:
-                        # Inject unread inbox messages (worker results) into the prompt
-                        from .org_chart import OrgChart
-                        chart = OrgChart.from_dict(proj.org_chart or [])
-                        roots = chart.get_roots()
-                        coord_node_id = roots[0].id if roots else None
-                        if coord_node_id:
-                            unread = proj.get_inbox(coord_node_id, unread_only=True)
-                            if unread:
-                                inbox_lines = ["## Worker Reports (new since your last response)"]
-                                for m in unread:
-                                    inbox_lines.append(f"### From: {m['sender_name']} ({m['type']})")
-                                    inbox_lines.append(m['content'][:500])
-                                    inbox_lines.append("")
-                                proj.mark_read(coord_node_id, [m["id"] for m in unread])
-                                state.command_project_store._persist(proj)
-                                message = "\n".join(inbox_lines) + f"\n## User Message\n{message}"
-
-                        # Add a brief reminder about spawning workers
-                        if any(kw in message.lower() for kw in ("spawn", "worker", "parallel", "tasks", "plan", "break down", "delegate")):
-                            message += (
-                                "\n\n[Reminder: To spawn workers, include ```resonant-command blocks with "
-                                '{"action": "spawn_worker", "name": "...", "prompt": "..."} in your response. '
-                                'To update the plan, use {"action": "update_plan", "tasks": [...]}. '
-                                'To check worker status, use {"action": "check_workers"}. '
-                                'To get worker results, use {"action": "get_worker_results"}.]'
-                            )
-
-                    # Run the coordinator session in a background thread and stream results
-                    async def _run_coordinator_chat(session, prompt, pid):
-                        try:
-                            _ws = ws  # capture ws reference
-                            _loop = asyncio.get_event_loop()
-                            _texts = []
-
-                            def _run():
-                                # CRITICAL: Reset cancel state before reusing session
-                                session.reset_cancel()
-
-                                for event in session.run(prompt):
-                                    event_type = event.get("event", "")
-                                    if event_type == "text.delta":
-                                        delta = event.get("text", "")
-                                        if delta:
-                                            _texts.append(delta)
-                                            # Stream delta to frontend
-                                            try:
-                                                asyncio.run_coroutine_threadsafe(
-                                                    _ws.send_json({
-                                                        "event": "command_project_chat_delta",
-                                                        "project_id": pid,
-                                                        "text": delta,
-                                                    }),
-                                                    _loop,
-                                                )
-                                            except Exception:
-                                                pass
-                                    elif event_type == "text.done":
-                                        text = event.get("text", "")
-                                        if text:
-                                            _texts.append(text)
-                                    elif event_type == "tool_call":
-                                        # Stream tool call info so UI shows activity
-                                        tool_name = event.get("name", "tool")
-                                        try:
-                                            asyncio.run_coroutine_threadsafe(
-                                                _ws.send_json({
-                                                    "event": "command_project_chat_delta",
-                                                    "project_id": pid,
-                                                    "text": f"\n🔧 Using tool: {tool_name}...\n",
-                                                    "is_tool": True,
-                                                }),
-                                                _loop,
-                                            )
-                                        except Exception:
-                                            pass
-                                    elif event_type == "tool_result":
-                                        # Show brief tool result
-                                        result_text = str(event.get("result", ""))[:100]
-                                        try:
-                                            asyncio.run_coroutine_threadsafe(
-                                                _ws.send_json({
-                                                    "event": "command_project_chat_delta",
-                                                    "project_id": pid,
-                                                    "text": f"✓ Done\n",
-                                                    "is_tool": True,
-                                                }),
-                                                _loop,
-                                            )
-                                        except Exception:
-                                            pass
-                                    # All other events (step.start, step.end, etc.) are silently processed
-                                return "".join(_texts) if _texts else "(no response)"
-
-                            result = await asyncio.wait_for(
-                                _loop.run_in_executor(None, _run),
-                                timeout=600,  # 10 minute timeout for complex operations
-                            )
-
-                            await ws.send_json({
-                                "event": "command_project_chat_response",
-                                "project_id": pid,
-                                "response": result,
-                            })
-
-                            # Also add to project activity
-                            state.command_project_store.add_activity(pid, "agent", "Coordinator", result[:200])
-
-                            # Parse and execute any resonant-command blocks
-                            await _execute_coordinator_commands(state, ws, pid, result)
-
-                        except asyncio.TimeoutError:
-                            partial = "".join(_texts) if _texts else ""
-                            await ws.send_json({
-                                "event": "command_project_chat_response",
-                                "project_id": pid,
-                                "response": (partial + "\n\n⚠️ Response timed out after 10 minutes.") if partial else "⚠️ Response timed out after 10 minutes. The AI backend may be slow or unreachable.",
-                            })
-                        except Exception as e:
-                            await ws.send_json({
-                                "event": "command_project_chat_response",
-                                "project_id": pid,
-                                "response": f"Error: {e}",
-                            })
-
-                    asyncio.create_task(_run_coordinator_chat(coordinator_session, message, project_id))
-
-                except Exception as e:
-                    await ws.send_json({
-                        "event": "command_project_chat_response",
-                        "project_id": project_id,
-                        "response": f"Failed to start coordinator: {e}",
-                    })
-
-            # ── Command Center: Org Chart ─────────────────────
-            elif command == "command_org_chart_get":
-                project_id = msg.get("project_id", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    from .org_chart import OrgChart
-                    chart = OrgChart.from_dict(proj.org_chart or [])
-                    await ws.send_json({
-                        "event": "command_org_chart",
-                        "project_id": project_id,
-                        "nodes": chart.to_dict(),
-                        "tree": chart.get_tree(),
-                    })
-
-            elif command == "command_org_chart_add_node":
-                project_id = msg.get("project_id", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    from .org_chart import OrgChart
-                    chart = OrgChart.from_dict(proj.org_chart or [])
-                    node = chart.add_node(
-                        role=msg.get("role", "Agent"),
-                        description=msg.get("description", ""),
-                        model=msg.get("model", ""),
-                        parent_id=msg.get("parent_id"),
-                    )
-                    state.command_project_store.update_project(project_id, org_chart=chart.to_dict())
-                    await ws.send_json({
-                        "event": "command_org_chart",
-                        "project_id": project_id,
-                        "nodes": chart.to_dict(),
-                        "tree": chart.get_tree(),
-                    })
-
-            elif command == "command_org_chart_remove_node":
-                project_id = msg.get("project_id", "")
-                node_id = msg.get("node_id", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    from .org_chart import OrgChart
-                    chart = OrgChart.from_dict(proj.org_chart or [])
-                    chart.remove_node(node_id)
-                    state.command_project_store.update_project(project_id, org_chart=chart.to_dict())
-                    await ws.send_json({
-                        "event": "command_org_chart",
-                        "project_id": project_id,
-                        "nodes": chart.to_dict(),
-                        "tree": chart.get_tree(),
-                    })
-
-            elif command == "command_org_chart_update_node":
-                project_id = msg.get("project_id", "")
-                node_id = msg.get("node_id", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    from .org_chart import OrgChart
-                    chart = OrgChart.from_dict(proj.org_chart or [])
-                    updates = {k: v for k, v in msg.items() if k not in ("command", "project_id", "node_id")}
-                    chart.update_node(node_id, **updates)
-                    state.command_project_store.update_project(project_id, org_chart=chart.to_dict())
-                    await ws.send_json({
-                        "event": "command_org_chart",
-                        "project_id": project_id,
-                        "nodes": chart.to_dict(),
-                        "tree": chart.get_tree(),
-                    })
-
-            elif command == "command_org_chart_activate":
-                project_id = msg.get("project_id", "")
-                proj = state.command_project_store.get_project(project_id)
-                if proj:
-                    from .org_chart import OrgChart
-                    chart = OrgChart.from_dict(proj.org_chart or [])
-                    roots = chart.get_roots()
-                    if not roots:
-                        await ws.send_json({"event": "error", "message": "No agents in org chart"})
-                        continue
-
-                    # Spawn all agents in the hierarchy
-                    new_agents = []
-                    for node in chart.get_all_nodes():
-                        try:
-                            backend_type, model = "", ""
-                            if ":" in (node.model or ""):
-                                backend_type, model = node.model.split(":", 1)
-                            elif node.model:
-                                backend_type = node.model
-
-                            if not backend_type:
-                                for bname in ("codex", "claude-code", "openai", "resonant"):
-                                    if bname in state.available_backends:
-                                        backend_type = bname
-                                        break
-
-                            spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
-                            hierarchy_context = chart.get_node_context(node.id, proj.name)
-
-                            agent_prompt = (
-                                f"You are working on the project: {proj.name}\n"
-                                f"Project path: {proj.path}\n"
-                                f"Strategy: {proj.strategy}\n\n"
-                                f"{hierarchy_context}\n\n"
-                                f"Execute your role autonomously. Use your tools to read, write, and modify files. "
-                                f"Report progress clearly."
-                            )
-
-                            def _make_org_event_handler(pid, role_name):
-                                def handler(task_id, event):
-                                    state._push_agent_event(task_id, event)
-                                    if event.get("event") == "text.done":
-                                        text = event.get("text", "")[:200]
-                                        if text.strip():
-                                            state.command_project_store.add_activity(pid, "agent", role_name, text)
-                                return handler
-
-                            bg_task = state.task_runner.submit(
-                                name=node.role,
-                                prompt=agent_prompt,
-                                session_factory=state.make_background_session,
-                                backend_type=backend_type,
-                                model=spec.model,
-                                project_path=proj.path,
-                                session_mode="code",
-                                session_role="generator",
-                                backend_spec=spec.to_dict(),
-                                on_event=_make_org_event_handler(project_id, node.role),
-                            )
-
-                            node.status = "running"
-                            node.agent_task_id = bg_task.id
-                            new_agents.append({
-                                "id": bg_task.id, "name": node.role,
-                                "role": "coordinator" if not node.parent_id else "worker",
-                                "status": "running", "model": spec.model,
-                                "steps": 0, "elapsed": 0,
-                                "org_node_id": node.id,
-                            })
-
-                        except Exception as e:
-                            node.status = "failed"
-                            state.command_project_store.add_activity(
-                                project_id, "system", "System", f"Failed to spawn {node.role}: {e}"
-                            )
-
-                    state.command_project_store.update_project(
-                        project_id,
-                        org_chart=chart.to_dict(),
-                        agents=new_agents,
-                        status="running",
-                    )
-                    proj = state.command_project_store.get_project(project_id)
-                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
-                    await ws.send_json({
-                        "event": "command_org_chart",
-                        "project_id": project_id,
-                        "nodes": chart.to_dict(),
-                        "tree": chart.get_tree(),
-                    })
-
-            # ── Command Center: Initiative ────────────────────
-            elif command == "command_project_initiative":
-                project_id = msg.get("project_id", "")
-                prompt = msg.get("prompt", "").strip()
-                proj = state.command_project_store.get_project(project_id)
-                if not proj:
-                    await ws.send_json({"event": "error", "message": f"Project {project_id} not found"})
-                    continue
-                if not prompt:
-                    await ws.send_json({"event": "error", "message": "Initiative prompt is required"})
-                    continue
-                try:
-                    backend_type = msg.get("backend", "") or getattr(state.backend, "name", "")
-                    model = msg.get("model", "") or getattr(state.backend, "model", "")
-                    if not backend_type:
-                        for bname in ("codex", "claude-code", "openai", "resonant"):
-                            if bname in state.available_backends:
-                                backend_type = bname
-                                binfo = state.available_backends[bname]
-                                if isinstance(binfo, dict) and binfo.get("models"):
-                                    models_list = binfo["models"]
-                                    if isinstance(models_list, list) and models_list:
-                                        model = models_list[0] if isinstance(models_list[0], str) else models_list[0].get("id", "")
-                                break
-                    if not backend_type:
-                        raise ValueError("No AI backend available")
-                    spec = state.build_backend_spec(backend_type, model=model or None, project_path=proj.path)
-                    initiative_prompt = (
-                        f"You are an autonomous coding agent working on the project at: {proj.path}\n\n"
-                        f"## Project Context\n{proj.strategy}\n\n"
-                        f"## Your Task\n{prompt}\n\n"
-                        f"## CRITICAL INSTRUCTIONS\n"
-                        f"You MUST act autonomously. Do NOT ask questions or wait for input. "
-                        f"Start immediately by creating files using your write/shell tools. "
-                        f"Write complete, production-quality code. Do not describe what you would do — actually do it. "
-                        f"Create all necessary files, write all the code, and verify it works. "
-                        f"When done, summarize what you created."
-                    )
-
-                    def _make_init_event_handler(pid):
-                        def handler(task_id, event):
-                            state._push_agent_event(task_id, event)
-                            if event.get("event") == "text.done":
-                                text = event.get("text", "")[:200]
-                                if text.strip():
-                                    state.command_project_store.add_activity(pid, "agent", "Worker", text)
-                        return handler
-
-                    bg_task = state.task_runner.submit(
-                        name=prompt[:60],
-                        prompt=initiative_prompt,
-                        session_factory=state.make_background_session,
-                        backend_type=backend_type,
-                        model=spec.model,
-                        project_path=proj.path,
-                        session_mode="code",
-                        session_role="generator",
-                        backend_spec=spec.to_dict(),
-                        on_event=_make_init_event_handler(proj.id),
-                    )
-                    # Add agent to project
-                    agents = proj.agents.copy() if hasattr(proj, 'agents') and proj.agents else []
-                    agents.append({
-                        "id": bg_task.id, "name": prompt[:60],
-                        "role": "worker", "status": "running",
-                        "model": spec.model, "steps": 0, "elapsed": 0,
-                    })
-                    state.command_project_store.update_project(proj.id, agents=agents, status="running")
-                    proj.add_activity("system", "System", f"Initiative launched: {prompt[:80]}")
-                    state.command_project_store._persist(proj)
-                    proj = state.command_project_store.get_project(proj.id)
-                    await ws.send_json({"event": "command_project_status", "project": proj.to_dict()})
-                except Exception as e:
-                    await ws.send_json({"event": "error", "message": f"Failed to launch initiative: {e}"})
-
-            # ── Command Center: Fleet ───────────────────────
-            elif command == "command_fleet":
-                tasks = state.task_runner.list_tasks(limit=100)
-                # Also include harness cycle runs if available
-                cycles = []
-                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_cycles"):
-                    try:
-                        payload = state.backend.list_harness_cycles(limit=100)
-                        cycles = payload.get("runs", [])
-                    except Exception:
-                        pass
-                elif hasattr(state, "harness_orchestrator") and state.harness_orchestrator:
-                    try:
-                        cycles = state.harness_orchestrator.list_runs()
-                    except Exception:
-                        pass
-                # Merge into a unified agent list
-                agents = []
-                for t in tasks:
-                    agents.append({
-                        "id": t.get("id", ""),
-                        "name": t.get("name", ""),
-                        "prompt": t.get("prompt", ""),
-                        "status": t.get("status", ""),
-                        "model": t.get("model", ""),
-                        "steps": t.get("steps", 0),
-                        "elapsed": t.get("elapsed", 0),
-                        "created_at": t.get("created_at", ""),
-                        "source": "dispatch",
-                    })
-                for c in cycles:
-                    agents.append({
-                        "id": c.get("id", ""),
-                        "name": c.get("name", "harness cycle"),
-                        "prompt": "",
-                        "status": c.get("status", ""),
-                        "model": "",
-                        "steps": c.get("step_count", len(c.get("steps", []))),
-                        "elapsed": 0,
-                        "created_at": c.get("started_at", ""),
-                        "source": "harness",
-                    })
-                # Sort: running first, then by created_at descending
-                status_order = {"running": 0, "pending": 1, "completed": 2, "failed": 3, "cancelled": 4}
-                agents.sort(key=lambda a: (status_order.get(a["status"], 9), a.get("created_at", "")), reverse=False)
-                await ws.send_json({"event": "command_fleet", "agents": agents})
-
-            elif command == "command_spawn":
-                prompt = msg.get("prompt", "").strip()
-                name = msg.get("name", "").strip()
-                session_role = msg.get("session_role", "generator")
-                if not prompt:
-                    await ws.send_json({"event": "error", "message": "No prompt provided"})
-                    continue
-                try:
-                    backend_type = getattr(state.backend, "name", "")
-                    model = getattr(state.backend, "model", "")
-                    spec = state.build_backend_spec(
-                        backend_type,
-                        model=model or None,
-                        project_path=state.project.project_path,
-                    )
-                    task = state.task_runner.submit(
-                        name=name or prompt[:50],
-                        prompt=prompt,
-                        session_factory=state.make_background_session,
-                        backend_type=backend_type,
-                        model=spec.model,
-                        project_path=state.project.project_path,
-                        session_mode="code",
-                        session_role=state.normalize_session_role("code", session_role),
-                        backend_spec=spec.to_dict(),
-                        on_event=state._push_agent_event,
-                    )
-                    await ws.send_json({"event": "command_spawn_ok", "task": task.to_dict()})
-                except Exception as e:
-                    await ws.send_json({"event": "error", "message": f"Failed to spawn agent: {e}"})
-
-            # ── Command Center: Task Board ──────────────────
-            elif command == "command_task_list":
-                tasks = state.command_task_store.list_tasks()
-                await ws.send_json({"event": "command_task_list", "tasks": tasks})
-
-            elif command == "command_task_create":
-                title = msg.get("title", "").strip()
-                if not title:
-                    await ws.send_json({"event": "error", "message": "Task title required"})
-                    continue
-                task = state.command_task_store.create_task(
-                    title=title,
-                    description=msg.get("description", ""),
-                    priority=msg.get("priority", "medium"),
-                    tags=msg.get("tags", []),
-                )
-                await ws.send_json({"event": "command_task_created", "task": task.to_dict()})
-                await ws.send_json({"event": "command_task_list", "tasks": state.command_task_store.list_tasks()})
-
-            elif command == "command_task_update":
-                task_id = msg.get("id", "")
-                updates = {k: v for k, v in msg.items() if k not in ("command", "id")}
-                task = state.command_task_store.update_task(task_id, **updates)
-                if task:
-                    await ws.send_json({"event": "command_task_list", "tasks": state.command_task_store.list_tasks()})
-                else:
-                    await ws.send_json({"event": "error", "message": f"Task {task_id} not found"})
-
-            elif command == "command_task_delete":
-                task_id = msg.get("id", "")
-                state.command_task_store.delete_task(task_id)
-                await ws.send_json({"event": "command_task_list", "tasks": state.command_task_store.list_tasks()})
-
-            elif command == "command_task_assign":
-                task_id = msg.get("task_id", "")
-                ct = state.command_task_store.get_task(task_id)
-                if not ct:
-                    await ws.send_json({"event": "error", "message": f"Task {task_id} not found"})
-                    continue
-                try:
-                    backend_type = getattr(state.backend, "name", "")
-                    model = getattr(state.backend, "model", "")
-                    spec = state.build_backend_spec(backend_type, model=model or None, project_path=state.project.project_path)
-                    bg_task = state.task_runner.submit(
-                        name=ct.title,
-                        prompt=ct.description or ct.title,
-                        session_factory=state.make_background_session,
-                        backend_type=backend_type,
-                        model=spec.model,
-                        project_path=state.project.project_path,
-                        session_mode="code",
-                        session_role="generator",
-                        backend_spec=spec.to_dict(),
-                        on_event=state._push_agent_event,
-                    )
-                    state.command_task_store.update_task(task_id, status="running", assigned_agent_id=bg_task.id)
-                    await ws.send_json({"event": "command_task_list", "tasks": state.command_task_store.list_tasks()})
-                    await ws.send_json({"event": "command_spawn_ok", "task": bg_task.to_dict()})
-                except Exception as e:
-                    await ws.send_json({"event": "error", "message": f"Failed to assign task: {e}"})
-
-            # ── Command Center: Monitor ──────────────────────
-            elif command == "command_monitor_subscribe":
-                task_id = msg.get("task_id", "")
-                state._monitored_task_ids.add(task_id)
-                # Send existing events for catch-up
-                bg_task = state.task_runner.get_task(task_id)
-                if bg_task:
-                    await ws.send_json({
-                        "event": "command_agent_history",
-                        "task_id": task_id,
-                        "events": bg_task.display_events[-200:],  # last 200 events
-                        "status": bg_task.status.value,
-                        "steps": bg_task.steps,
-                        "elapsed": round(bg_task.elapsed, 2),
-                    })
-
-            elif command == "command_monitor_unsubscribe":
-                task_id = msg.get("task_id", "")
-                state._monitored_task_ids.discard(task_id)
-
-            # ── Command Center: Comms Feed ───────────────────
-            elif command == "command_feed_list":
-                limit = msg.get("limit", 100)
-                await ws.send_json({"event": "command_feed_list", "messages": state.command_feed[-limit:]})
-
-            elif command == "command_feed_post":
-                content = msg.get("content", "").strip()
-                target = msg.get("target", "all")
-                if content:
-                    feed_msg = {
-                        "id": uuid.uuid4().hex[:12],
-                        "timestamp": datetime.now().isoformat(),
-                        "sender_type": "user",
-                        "sender_id": "user",
-                        "sender_name": "You",
-                        "target": target,
-                        "content": content,
-                        "message_type": "broadcast" if target == "all" else "instruction",
-                    }
-                    state.command_feed.append(feed_msg)
-                    await ws.send_json({"event": "command_feed_posted", "message": feed_msg})
-
-            # ── Scheduled Tasks ──────────────────────────────
-            elif command == "schedule_create":
-                name = msg.get("name", "").strip()
-                prompt = msg.get("prompt", "").strip()
-                schedule = msg.get("schedule", "").strip()
-                task_kind = (msg.get("task_kind") or "session").strip() or "session"
-                max_loops = max(1, int(msg.get("max_loops") or 6))
-                backend_type = msg.get("backend", getattr(state.backend, "name", ""))
-                model = msg.get("model", getattr(state.backend, "model", ""))
-                session_mode = msg.get("session_mode", "code")
-                session_role = msg.get("session_role", "generator")
-                if not prompt or not schedule:
-                    await ws.send_json({"event": "error", "message": "Prompt and schedule are required"})
-                    continue
-                try:
-                    is_remote_harness_schedule = (
-                        task_kind == "harness_cycle"
-                        and getattr(state.backend, "name", "") == "resonant"
-                        and hasattr(state.backend, "create_harness_schedule")
-                    )
-                    spec = None
-                    if task_kind != "harness_cycle":
-                        spec = state.build_backend_spec(
-                            backend_type,
-                            model=model or None,
-                            project_path=state.project.project_path,
-                        )
-                    if is_remote_harness_schedule:
-                        payload = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: state.backend.create_harness_schedule(
-                                project_path=state.project.project_path,
-                                name=name,
-                                prompt=prompt,
-                                schedule=schedule,
-                                max_loops=max_loops,
-                            ),
-                        )
-                        await ws.send_json({"event": "schedule_created", "schedule": payload.get("schedule")})
-                    else:
-                        sched = state.scheduler.add(
-                            name=name,
-                            prompt=prompt,
-                            schedule=schedule,
-                            backend_type="" if task_kind == "harness_cycle" else backend_type,
-                            model="" if task_kind == "harness_cycle" else spec.model,
-                            task_kind=task_kind,
-                            max_loops=max_loops,
-                            session_mode=state.normalize_session_mode(session_mode),
-                            session_role=state.normalize_session_role(session_mode, session_role),
-                            backend_spec={} if task_kind == "harness_cycle" else spec.to_dict(),
-                            project_path=state.project.project_path,
-                        )
-                        await ws.send_json({"event": "schedule_created", "schedule": sched.to_dict()})
-                except ValueError as e:
-                    await ws.send_json({"event": "error", "message": str(e)})
-
-            elif command == "schedule_list":
-                schedules = state.scheduler.list_schedules()
-                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_schedules"):
-                    try:
-                        payload = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: state.backend.list_harness_schedules(),
-                        )
-                        schedules = [
-                            item for item in schedules if item.get("task_kind") != "harness_cycle"
-                        ] + list(payload.get("schedules", []))
-                    except Exception:
-                        pass
-                await ws.send_json({"event": "schedule_list", "schedules": schedules})
-
-            elif command == "schedule_update":
-                task_id = msg.get("task_id", "")
-                updates = {}
-                for key in (
-                    "name",
-                    "prompt",
-                    "schedule",
-                    "backend_type",
-                    "model",
-                    "task_kind",
-                    "max_loops",
-                    "session_mode",
-                    "session_role",
-                    "enabled",
-                ):
-                    if key in msg:
-                        updates[key] = msg[key]
-                schedules = state.scheduler.list_schedules()
-                remote_schedules = []
-                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_schedules"):
-                    try:
-                        payload = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: state.backend.list_harness_schedules(),
-                        )
-                        remote_schedules = list(payload.get("schedules", []))
-                    except Exception:
-                        remote_schedules = []
-                existing = next((item for item in schedules if item["id"] == task_id), None)
-                existing_remote = next((item for item in remote_schedules if item["id"] == task_id), None)
-                effective_kind = updates.get("task_kind", (existing or {}).get("task_kind", "session"))
-                if existing_remote is not None:
-                    remote_updates = {
-                        key: value
-                        for key, value in updates.items()
-                        if key in {"name", "prompt", "schedule", "max_loops", "enabled"}
-                    }
-                    await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: state.backend.update_harness_schedule(task_id, **remote_updates),
-                    )
-                    payload = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: state.backend.list_harness_schedules(),
-                    )
-                    merged = [
-                        item for item in schedules if item.get("task_kind") != "harness_cycle"
-                    ] + list(payload.get("schedules", []))
-                    await ws.send_json({"event": "schedule_list", "schedules": merged})
-                elif effective_kind == "harness_cycle":
-                    updates["backend_spec"] = {}
-                    updates["backend_type"] = ""
-                    updates["model"] = ""
-                    state.scheduler.update(task_id, **updates)
-                    schedules = state.scheduler.list_schedules()
-                    await ws.send_json({"event": "schedule_list", "schedules": schedules})
-                elif "backend_type" in updates or "model" in updates:
-                    if existing:
-                        spec = state.build_backend_spec(
-                            updates.get("backend_type", existing.get("backend_type", "")),
-                            model=updates.get("model", existing.get("model", "")) or None,
-                            project_path=existing.get("project_path", state.project.project_path),
-                        )
-                        updates["backend_spec"] = spec.to_dict()
-                        updates["model"] = spec.model
-                    state.scheduler.update(task_id, **updates)
-                    schedules = state.scheduler.list_schedules()
-                    await ws.send_json({"event": "schedule_list", "schedules": schedules})
-                else:
-                    state.scheduler.update(task_id, **updates)
-                    schedules = state.scheduler.list_schedules()
-                    await ws.send_json({"event": "schedule_list", "schedules": schedules})
-
-            elif command == "schedule_delete":
-                task_id = msg.get("task_id", "")
-                remote_deleted = False
-                schedules = state.scheduler.list_schedules()
-                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_schedules"):
-                    try:
-                        payload = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: state.backend.list_harness_schedules(),
-                        )
-                        if any(item["id"] == task_id for item in payload.get("schedules", [])):
-                            remote_deleted = True
-                            await asyncio.get_event_loop().run_in_executor(
-                                None,
-                                lambda: state.backend.delete_harness_schedule(task_id),
-                            )
-                    except Exception:
-                        remote_deleted = False
-                if not remote_deleted:
-                    state.scheduler.remove(task_id)
-                schedules = state.scheduler.list_schedules()
-                if getattr(state.backend, "name", "") == "resonant" and hasattr(state.backend, "list_harness_schedules"):
-                    try:
-                        payload = await asyncio.get_event_loop().run_in_executor(
-                            None,
-                            lambda: state.backend.list_harness_schedules(),
-                        )
-                        schedules = [
-                            item for item in schedules if item.get("task_kind") != "harness_cycle"
-                        ] + list(payload.get("schedules", []))
-                    except Exception:
-                        pass
-                await ws.send_json({"event": "schedule_list", "schedules": schedules})
 
             # ── Git Integration ─────────────────────────────
             elif command == "git_status":
@@ -7936,12 +6950,19 @@ def _git_quick(action: str, msg: dict) -> dict:
         return {"success": False, "output": f"Unknown action: {action}"}
 
 
-# ── RESONANT.md Helpers ──────────────────────────────────────────────
+# ── Project conventions file helpers ─────────────────────────────────
 
 def _save_resonant_md(project_path: str, content: str):
-    """Save RESONANT.md to the project root."""
-    path = Path(project_path) / "RESONANT.md"
-    path.write_text(content, encoding="utf-8")
+    """Persist project conventions.
+
+    Writes back to the existing instructions file if one is present (so a
+    project already using RESONANT.md or CLAUDE.md keeps that filename).
+    For brand-new projects, writes `AGENTS.md` — the cross-tool standard
+    adopted by Codex, OpenCode, Cursor, and OpenHands.
+    """
+    existing = find_instruction_file(project_path)
+    target = existing if existing else (Path(project_path) / "AGENTS.md")
+    target.write_text(content, encoding="utf-8")
 
 
 # ── HTTP Routes ───────────────────────────────────────────────────────
@@ -7950,29 +6971,11 @@ async def homepage(request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
-async def preview_file(request):
-    """Serve project files for preview. URL: /preview/{project_id}/{path:path}"""
-    from starlette.responses import FileResponse, JSONResponse
-    project_id = request.path_params.get("project_id", "")
-    file_path = request.path_params.get("path", "index.html")
-    proj = state.command_project_store.get_project(project_id) if hasattr(state, "command_project_store") else None
-    if not proj:
-        return JSONResponse({"error": "Project not found"}, status_code=404)
-    full_path = os.path.normpath(os.path.join(proj.path, file_path))
-    # Security: ensure the file is within the project directory
-    if not full_path.startswith(os.path.normpath(proj.path)):
-        return JSONResponse({"error": "Access denied"}, status_code=403)
-    if not os.path.isfile(full_path):
-        return JSONResponse({"error": f"File not found: {file_path}"}, status_code=404)
-    return FileResponse(full_path)
-
-
 # ── Starlette App ─────────────────────────────────────────────────────
 
 app = Starlette(
     routes=[
         Route("/", homepage),
-        Route("/preview/{project_id}/{path:path}", preview_file),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

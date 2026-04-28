@@ -1,9 +1,10 @@
 """
 Harness core package.
 
-This package contains the reusable planner/generator/evaluator orchestration
-and `.resonant-harness` state management logic. UI surfaces such as the GUI
-should import from here rather than owning the harness implementation.
+The reusable planner/generator/evaluator orchestration plus harness state
+management. State lives at `~/.resonant/projects/<sha1[:12]>/harness/`, not
+in the user's repo. UI surfaces such as the GUI should import from here
+rather than owning the harness implementation.
 """
 
 from .state import (

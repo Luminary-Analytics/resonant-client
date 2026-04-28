@@ -435,19 +435,27 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_screenshot",
-            "description": "Take a screenshot of the desktop. Returns a PNG image of the primary monitor or a specified region.",
+            "description": "Take a screenshot. Defaults to full primary monitor; pass `target_window` to capture just one window, `monitor` for a specific display, or `region` for an explicit bbox. Precedence: region > target_window > monitor.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "region": {
                         "type": "object",
-                        "description": "Optional region to capture: {x, y, width, height}",
+                        "description": "Explicit region to capture: {x, y, width, height}",
                         "properties": {
                             "x": {"type": "integer"},
                             "y": {"type": "integer"},
                             "width": {"type": "integer"},
                             "height": {"type": "integer"}
                         }
+                    },
+                    "target_window": {
+                        "type": "string",
+                        "description": "Substring of a window title; capture just that window (full window rect, including title bar)."
+                    },
+                    "monitor": {
+                        "type": "integer",
+                        "description": "Monitor index (0 = primary). Use monitors_list to enumerate."
                     }
                 }
             }
@@ -457,12 +465,12 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_click",
-            "description": "Click at a specific position on the desktop screen. Automatically captures a follow-up screenshot so you can see the result.",
+            "description": "Click at a position. By default (x,y) are absolute screen coords. With `target_window`, (x,y) are relative to that window's top-left. With `monitor`, relative to that monitor's top-left. Auto-captures a follow-up screenshot.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "x": {"type": "integer", "description": "X coordinate on screen"},
-                    "y": {"type": "integer", "description": "Y coordinate on screen"},
+                    "x": {"type": "integer", "description": "X coordinate (interpretation depends on target_window/monitor)"},
+                    "y": {"type": "integer", "description": "Y coordinate (interpretation depends on target_window/monitor)"},
                     "button": {
                         "type": "string",
                         "enum": ["left", "right", "middle"],
@@ -475,6 +483,14 @@ AGENT_TOOLS = [
                     "screenshot": {
                         "type": "boolean",
                         "description": "Take a follow-up screenshot after clicking (default: true)"
+                    },
+                    "target_window": {
+                        "type": "string",
+                        "description": "If set, (x,y) are interpreted relative to this window's top-left."
+                    },
+                    "monitor": {
+                        "type": "integer",
+                        "description": "If set, (x,y) are interpreted relative to this monitor's top-left."
                     }
                 },
                 "required": ["x", "y"]
@@ -614,7 +630,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_wait",
-            "description": "Wait for the screen to change or pause for a duration. Use 'change' mode after clicking something that triggers a load.",
+            "description": "Wait for the screen to change or pause for a duration. Use 'change' mode after clicking something that triggers a load. Pass `region` to watch only a bbox (cheaper, fewer false positives than whole-screen watching).",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -630,6 +646,16 @@ AGENT_TOOLS = [
                     "timeout": {
                         "type": "number",
                         "description": "Max seconds to wait for change (change mode, default: 10)"
+                    },
+                    "region": {
+                        "type": "object",
+                        "description": "Optional bbox to watch instead of whole screen (change mode only).",
+                        "properties": {
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"}
+                        }
                     }
                 }
             }
@@ -710,6 +736,315 @@ AGENT_TOOLS = [
             }
         }
     },
+    # ── Git tools (first-class, structured output) ──────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Show the working tree status with structured output: branch, ahead/behind counts, staged/unstaged/untracked files. Prefer over `bash(git status)` — output is structured for the UI.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Show diff for working tree (or staged area). Returns structured hunks with addition/deletion counts per file. Prefer over `bash(git diff)`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                    "staged": {"type": "boolean", "description": "If true, show diff of staged changes (--cached)"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional file paths to limit the diff"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Create a NEW git commit. Optionally stages `paths` first. Always creates a new commit (never amends, never skips hooks).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                    "message": {"type": "string", "description": "Commit message (supports multi-line)"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional paths to stage before committing"}
+                },
+                "required": ["message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_branch_create",
+            "description": "Create AND check out a new branch from `from_ref` (default HEAD). Refuses if branch already exists.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                    "branch": {"type": "string", "description": "New branch name"},
+                    "from_ref": {"type": "string", "description": "Ref to branch from (default: HEAD)"}
+                },
+                "required": ["branch"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_log",
+            "description": "Show recent commits as a structured table: short_sha, date, author, subject. Prefer over `bash(git log)`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                    "limit": {"type": "integer", "description": "Max commits to return (default: 20, max: 200)"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional paths to filter the log"}
+                },
+                "required": []
+            }
+        }
+    },
+    # ── Multi-monitor / clipboard / process tools ──
+    {
+        "type": "function",
+        "function": {
+            "name": "monitors_list",
+            "description": "List physical monitors with their bounds and primary flag. Use the returned indices with computer_screenshot(monitor=N) or computer_click(monitor=N).",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clipboard_read",
+            "description": "Read the current text contents of the system clipboard. Returns empty string if non-text or empty.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clipboard_write",
+            "description": "Replace the system clipboard with the given text. Useful for stashing snippets the user can paste elsewhere.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to copy to clipboard"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "process_list",
+            "description": "List running processes (pid, name, memory, command line). Optionally filter by name substring.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name_filter": {"type": "string", "description": "Case-insensitive substring match on process name or cmdline"},
+                    "limit": {"type": "integer", "description": "Max rows to return (default: 100)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "process_kill",
+            "description": "Terminate a process by pid OR exact name (case-insensitive). Refuses system PIDs and critical names. Specify exactly one of pid/name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pid": {"type": "integer", "description": "Process ID to kill"},
+                    "name": {"type": "string", "description": "Exact process name to kill (matches all instances)"}
+                },
+                "required": []
+            }
+        }
+    },
+    # ── Screen recording + visual diff ──
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_record_start",
+            "description": "Start recording the screen to an MP4 file (~/.resonant/recordings/). Useful for debugging long-running automation. Use screen_record_stop when done.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fps": {"type": "integer", "description": "Frames per second (default: 10, max: 30)"},
+                    "monitor": {"type": "integer", "description": "Monitor index (default: 0 = primary)"},
+                    "region": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "integer"}, "y": {"type": "integer"},
+                            "width": {"type": "integer"}, "height": {"type": "integer"}
+                        }
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_record_stop",
+            "description": "Stop the active screen recording. Returns the MP4 file path, duration, and size.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_diff",
+            "description": "Detect changed regions between two screenshots. Defaults to (prev = last computer_* screenshot, current = a fresh screenshot now). Returns a list of bounding boxes where pixels changed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prev_id": {"type": "string", "description": "Cached screenshot id; defaults to penultimate"},
+                    "current_id": {"type": "string", "description": "Cached screenshot id; defaults to fresh capture"},
+                    "threshold": {"type": "integer", "description": "Per-pixel max-channel-delta to count as 'changed' (0–255, default 30)"}
+                },
+                "required": []
+            }
+        }
+    },
+    # ── Accessibility-tree targeting (semantic, more reliable than pixel coords) ──
+    {
+        "type": "function",
+        "function": {
+            "name": "accessibility_tree",
+            "description": "Return the OS accessibility tree for a window (or the desktop). Each node has role/name/automation_id/bounds. Use this BEFORE accessibility_click to discover element identifiers — far more reliable than pixel-coord clicking. Windows: requires `pip install uiautomation`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_title": {"type": "string", "description": "Optional substring of a window title; scopes the tree to that window"},
+                    "verbose": {"type": "boolean", "description": "Return more rows in the text summary (full tree always in metadata)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "accessibility_click",
+            "description": "Click an element in the OS accessibility tree by its semantic identifiers (role / name / automation_id). Resilient to DPI changes, theme changes, and window moves. Use accessibility_tree first to discover identifiers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string", "description": "Control type (e.g. 'Button', 'Edit', 'Tab')"},
+                    "name": {"type": "string", "description": "Substring match on element name (e.g. 'Save', '7')"},
+                    "automation_id": {"type": "string", "description": "Exact AutomationId (Windows UIA)"},
+                    "window_title": {"type": "string", "description": "Optional window scope"}
+                },
+                "required": []
+            }
+        }
+    },
+    # ── Persistent REPLs (long-lived interpreter for incremental work) ──
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_python_start",
+            "description": "Start a long-lived Python REPL. Returns a repl_id you pass to repl_python_eval. Prefer over repeated `bash(python -c ...)` for incremental work — state persists across calls.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: current)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_python_eval",
+            "description": "Eval Python code in an existing REPL. State (variables, imports) persists across calls. Hard timeout per call.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repl_id": {"type": "string", "description": "ID returned by repl_python_start"},
+                    "code": {"type": "string", "description": "Python source to evaluate"},
+                    "timeout": {"type": "number", "description": "Max seconds to wait for output (default: 30)"}
+                },
+                "required": ["repl_id", "code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_python_stop",
+            "description": "Terminate a Python REPL. Always stop REPLs you started when you're done with them.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repl_id": {"type": "string", "description": "ID returned by repl_python_start"}
+                },
+                "required": ["repl_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_node_start",
+            "description": "Start a long-lived Node.js REPL. Returns a repl_id for repl_node_eval. State persists across calls.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: current)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_node_eval",
+            "description": "Eval JavaScript code in an existing Node REPL. State persists across calls.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repl_id": {"type": "string", "description": "ID returned by repl_node_start"},
+                    "code": {"type": "string", "description": "JavaScript source to evaluate"},
+                    "timeout": {"type": "number", "description": "Max seconds to wait for output (default: 30)"}
+                },
+                "required": ["repl_id", "code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_node_stop",
+            "description": "Terminate a Node REPL. Always stop REPLs you started when done.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repl_id": {"type": "string", "description": "ID returned by repl_node_start"}
+                },
+                "required": ["repl_id"]
+            }
+        }
+    },
 ]
 
 
@@ -749,6 +1084,32 @@ TOOL_ICONS = {
     "window_focus":        "◉",
     "screen_ocr":          "🔍",
     "open_application":    "▶",
+    # Git tools
+    "git_status":          "±",
+    "git_diff":            "≠",
+    "git_commit":          "✓",
+    "git_branch_create":   "⎇",
+    "git_log":             "☷",
+    # REPL tools
+    "repl_python_start":   "🐍",
+    "repl_python_eval":    "▶",
+    "repl_python_stop":    "■",
+    "repl_node_start":     "⬢",
+    "repl_node_eval":      "▶",
+    "repl_node_stop":      "■",
+    # Multi-monitor / clipboard / process
+    "monitors_list":       "🖥",
+    "clipboard_read":      "📋",
+    "clipboard_write":     "📋",
+    "process_list":        "⚙",
+    "process_kill":        "✗",
+    # Recording / diff
+    "screen_record_start": "●",
+    "screen_record_stop":  "■",
+    "screen_diff":         "◇",
+    # Accessibility
+    "accessibility_tree":  "🌳",
+    "accessibility_click": "◉",
 }
 
 
@@ -778,16 +1139,65 @@ class ToolResult:
         }
 
 
-def execute_tool(name: str, arguments: dict, cancel_event: Optional[threading.Event] = None) -> ToolResult:
+def execute_tool(
+    name: str,
+    arguments: dict,
+    cancel_event: Optional[threading.Event] = None,
+    *,
+    project_path: str = "",
+    settings: object = None,
+) -> ToolResult:
     """
     Execute a tool and return structured result.
 
     This is the pure execution layer — no display logic, no approval prompts.
     The engine handles permission; the TUI handles display.
 
+    Full Autonomy floor: before dispatching, run the irreversibility-floor
+    checks (`autonomy.check_floor`). On violation, return a ToolResult flagged
+    with `metadata["floor_violation"]` so Session can pause for the user via
+    the existing tool.permission flow. Routine actions never trigger the
+    floor — only the ones that can't be undone.
+
+    Per-tool-call auditing happens upstream in the orchestrator's specialist
+    runner (it observes `tool.call` events from Session); this layer only
+    handles dispatch + floor enforcement.
+
     Note: 'task' tool is handled by Session (needs backend access), not here.
     """
     start = time.time()
+
+    # ── Irreversibility floor check ──
+    if name not in ("task",):  # task isn't dispatched here at all
+        try:
+            from ..orchestration.autonomy import check_floor
+            violation = check_floor(
+                tool_name=name,
+                args=arguments or {},
+                project_path=project_path or "",
+                settings=settings,
+            )
+        except Exception:
+            violation = None
+        if violation is not None:
+            return ToolResult(
+                output=(
+                    f"FLOOR_VIOLATION: {violation.rule}\n"
+                    f"{violation.reason}\n"
+                    f"Suggested: {violation.suggested_action or '(none)'}"
+                ),
+                is_error=True,
+                elapsed=time.time() - start,
+                metadata={
+                    "floor_violation": {
+                        "rule": violation.rule,
+                        "reason": violation.reason,
+                        "severity": violation.severity,
+                        "suggested_action": violation.suggested_action,
+                        "tool_name": name,
+                    },
+                },
+            )
 
     try:
         if name == "bash":
@@ -882,6 +1292,72 @@ def execute_tool(name: str, arguments: dict, cancel_event: Optional[threading.Ev
         elif name == "open_application":
             from .computer_use import exec_open_application
             return exec_open_application(arguments, start)
+        # Git tools
+        elif name == "git_status":
+            from .git_tools import exec_git_status
+            return exec_git_status(arguments, start)
+        elif name == "git_diff":
+            from .git_tools import exec_git_diff
+            return exec_git_diff(arguments, start)
+        elif name == "git_commit":
+            from .git_tools import exec_git_commit
+            return exec_git_commit(arguments, start)
+        elif name == "git_branch_create":
+            from .git_tools import exec_git_branch_create
+            return exec_git_branch_create(arguments, start)
+        elif name == "git_log":
+            from .git_tools import exec_git_log
+            return exec_git_log(arguments, start)
+        # REPL tools
+        elif name == "repl_python_start":
+            from .repl import exec_repl_python_start
+            return exec_repl_python_start(arguments, start)
+        elif name == "repl_python_eval":
+            from .repl import exec_repl_python_eval
+            return exec_repl_python_eval(arguments, start)
+        elif name == "repl_python_stop":
+            from .repl import exec_repl_python_stop
+            return exec_repl_python_stop(arguments, start)
+        elif name == "repl_node_start":
+            from .repl import exec_repl_node_start
+            return exec_repl_node_start(arguments, start)
+        elif name == "repl_node_eval":
+            from .repl import exec_repl_node_eval
+            return exec_repl_node_eval(arguments, start)
+        elif name == "repl_node_stop":
+            from .repl import exec_repl_node_stop
+            return exec_repl_node_stop(arguments, start)
+        # Multi-monitor / clipboard / process tools
+        elif name == "monitors_list":
+            from .computer_use import exec_monitors_list
+            return exec_monitors_list(arguments, start)
+        elif name == "clipboard_read":
+            from .clipboard import exec_clipboard_read
+            return exec_clipboard_read(arguments, start)
+        elif name == "clipboard_write":
+            from .clipboard import exec_clipboard_write
+            return exec_clipboard_write(arguments, start)
+        elif name == "process_list":
+            from .processes import exec_process_list
+            return exec_process_list(arguments, start)
+        elif name == "process_kill":
+            from .processes import exec_process_kill
+            return exec_process_kill(arguments, start)
+        elif name == "screen_record_start":
+            from .recording import exec_screen_record_start
+            return exec_screen_record_start(arguments, start)
+        elif name == "screen_record_stop":
+            from .recording import exec_screen_record_stop
+            return exec_screen_record_stop(arguments, start)
+        elif name == "screen_diff":
+            from .screen_diff import exec_screen_diff
+            return exec_screen_diff(arguments, start)
+        elif name == "accessibility_tree":
+            from .accessibility import exec_accessibility_tree
+            return exec_accessibility_tree(arguments, start)
+        elif name == "accessibility_click":
+            from .accessibility import exec_accessibility_click
+            return exec_accessibility_click(arguments, start)
         else:
             return ToolResult(f"Error: Unknown tool '{name}'", is_error=True, elapsed=time.time() - start)
 
@@ -1047,13 +1523,45 @@ def _exec_file_edit(args: dict, start: float) -> ToolResult:
 def _exec_glob(args: dict, start: float) -> ToolResult:
     pattern = args.get("pattern", "")
     base = args.get("path", ".")
-    matches = sorted(Path(base).glob(pattern))[:50]
+
+    # Models often pass absolute patterns (e.g. "D:/Repos/proj/**/*.py") —
+    # Python's Path.glob refuses those with "Non-relative patterns are
+    # unsupported." Split absolute patterns into (longest non-glob prefix,
+    # relative pattern remainder) so callers don't need to know the convention.
+    pat = Path(pattern)
+    if pat.is_absolute():
+        parts = pat.parts
+        meta_chars = ("*", "?", "[")
+        split_at = None
+        for i, part in enumerate(parts):
+            if any(c in part for c in meta_chars):
+                split_at = i
+                break
+        if split_at is None:
+            base = str(pat.parent) if pat.parent != pat else str(pat.anchor or ".")
+            pattern = pat.name
+        elif split_at == 0:
+            base = pat.anchor or "."
+            pattern = str(Path(*parts))
+        else:
+            base = str(Path(*parts[:split_at]))
+            pattern = str(Path(*parts[split_at:]))
+
+    try:
+        matches = sorted(Path(base).glob(pattern))[:50]
+    except (NotImplementedError, OSError) as exc:
+        return ToolResult(
+            f"Error: glob pattern not supported ({exc}). "
+            f"Try a relative pattern like '**/*.py' with the project root as base.",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
     result = "\n".join(str(m) for m in matches)
     elapsed = time.time() - start
     return ToolResult(
         result or "(no matches)",
         elapsed=elapsed,
-        metadata={"pattern": pattern, "count": len(matches)},
+        metadata={"pattern": pattern, "count": len(matches), "base": base},
     )
 
 

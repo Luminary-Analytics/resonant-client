@@ -1,0 +1,179 @@
+name: Release
+
+# Triggered by pushing a tag like v0.2.0 / v0.2.1 / v1.0.0.
+# Tag-only â never on plain commits to main, never on branches.
+#
+# What this workflow does end-to-end:
+#   1. Builds the PyInstaller bundle for the tagged version
+#   2. Wraps it into an Inno Setup installer (resonant-setup-X.Y.Z.exe)
+#   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
+#   4. Creates a GitHub Release, uploads the signed installer
+#   5. Updates appcast.xml on the gh-pages branch with the new entry
+#   6. Pushes gh-pages â WinSparkle in deployed v0.2.X exes will pick up the
+#      new release within 24h (or on next launch if the cached check is stale)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write   # needed for creating Releases and pushing gh-pages
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: version
+        shell: bash
+        run: |
+          # GITHUB_REF is refs/tags/v0.2.0 â strip the prefix.
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building release $VERSION"
+
+      - name: Sanity check â tag matches __version__
+        shell: bash
+        run: |
+          PKG_VERSION=$(python -c "import re,pathlib;m=re.search(r'__version__\\s*=\\s*\"([^\"]+)\"',pathlib.Path('resonant_client/__init__.py').read_text());print(m.group(1))")
+          if [ "$PKG_VERSION" != "${{ steps.version.outputs.version }}" ]; then
+            echo "::error::Tag version (${{ steps.version.outputs.version }}) does not match resonant_client/__init__.py __version__ ($PKG_VERSION)"
+            exit 1
+          fi
+          echo "Version match: $PKG_VERSION"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          # Install the project + the deps PyInstaller needs to bundle.
+          # [all] pulls in gui + desktop + claude + openai + browser, but we
+          # exclude playwright/pywebview from the bundle via the spec excludes.
+          pip install -e ".[gui,desktop,claude,openai]"
+          pip install pyinstaller
+
+      - name: Build PyInstaller bundle
+        shell: pwsh
+        run: |
+          pyinstaller packaging/resonant.spec --clean --noconfirm
+          if (-not (Test-Path "dist/resonant/resonant.exe")) {
+              throw "PyInstaller did not produce dist/resonant/resonant.exe"
+          }
+
+      - name: Smoke-test bundled exe
+        shell: pwsh
+        run: |
+          # Just confirm --version works â quick sanity that the bundle is
+          # not totally broken before we spend time wrapping it.
+          $output = & "dist/resonant/resonant.exe" --version
+          if ($output -notmatch "resonant-client ${{ steps.version.outputs.version }}") {
+              throw "Bundled exe reported wrong version: $output"
+          }
+          Write-Host "Smoke test passed: $output"
+
+      - name: Set up Inno Setup
+        shell: pwsh
+        run: |
+          # GitHub-hosted windows-latest runners don't ship Inno Setup. Install
+          # via Chocolatey â this typically takes ~30 sec.
+          choco install innosetup --version=6.4.3 --no-progress -y
+
+      - name: Build installer with Inno Setup
+        shell: pwsh
+        run: |
+          $iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+              # Fallback for newer choco installs.
+              $iscc = (Get-ChildItem "C:\" -Filter "ISCC.exe" -Recurse -ErrorAction SilentlyContinue -Depth 5 | Select-Object -First 1).FullName
+          }
+          & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" "packaging/installer.iss"
+          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+          if (-not (Test-Path $installer)) {
+              throw "Installer not produced at $installer"
+          }
+          $size = (Get-Item $installer).Length
+          Write-Host "Installer: $installer ($([math]::Round($size / 1MB, 1)) MB)"
+
+      - name: Sign installer with EdDSA
+        id: sign
+        shell: pwsh
+        env:
+          EDDSA_PRIVATE_KEY: ${{ secrets.EDDSA_PRIVATE_KEY }}
+        run: |
+          if (-not $env:EDDSA_PRIVATE_KEY) {
+              throw "EDDSA_PRIVATE_KEY repo secret is not set. Generate with `winsparkle-tool generate-key` and add to repo secrets."
+          }
+          # Materialize the private key to a temp file. Auto-cleaned when
+          # the runner is destroyed at end of job.
+          $keyPath = "$env:RUNNER_TEMP\eddsa_priv.key"
+          $env:EDDSA_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $keyPath
+
+          $tool = "packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe"
+          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+
+          # winsparkle-tool sign prints just the base64 EdDSA signature to
+          # stdout. The installer is the trailing positional arg, NOT --file.
+          $signature = & $tool sign --private-key-file $keyPath $installer
+          if ($LASTEXITCODE -ne 0) {
+              throw "winsparkle-tool sign failed with exit code $LASTEXITCODE"
+          }
+          $signature = "$signature".Trim()
+          Write-Host "EdDSA signature: $($signature.Substring(0, [Math]::Min(20, $signature.Length)))..."
+          echo "signature=$signature" >> $env:GITHUB_OUTPUT
+
+      - name: Create GitHub Release with installer
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Resonant Client ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, '-') }}
+          generate_release_notes: true
+          files: |
+            dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe
+
+      - name: Checkout gh-pages branch
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          path: gh-pages-checkout
+
+      - name: Update appcast.xml on gh-pages
+        shell: pwsh
+        run: |
+          # Build release-notes HTML from the GitHub-generated release body, or
+          # fall back to a simple line if that's not available.
+          $notes = "<p>Release v${{ steps.version.outputs.version }}. See the <a href=`"https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}`">GitHub release page</a> for details.</p>"
+
+          python packaging/update_appcast.py `
+              --version "${{ steps.version.outputs.version }}" `
+              --installer "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe" `
+              --signature "${{ steps.sign.outputs.signature }}" `
+              --notes $notes `
+              --appcast "gh-pages-checkout/appcast.xml" `
+              --download-base "https://github.com/${{ github.repository }}/releases/download"
+
+      - name: Push appcast update to gh-pages
+        shell: bash
+        working-directory: gh-pages-checkout
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
+          git commit -m "release: appcast entry for v${{ steps.version.outputs.version }}"
+          git push origin gh-pages

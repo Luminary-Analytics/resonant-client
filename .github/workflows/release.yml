@@ -85,12 +85,10 @@ jobs:
           }
           Write-Host "Smoke test passed: $output"
 
-      - name: Set up Inno Setup
-        shell: pwsh
-        run: |
-          # GitHub-hosted windows-latest runners don't ship Inno Setup. Install
-          # via Chocolatey — this typically takes ~30 sec.
-          choco install innosetup --version=6.4.3 --no-progress -y
+      # NOTE: windows-latest GitHub-hosted runners ship Inno Setup pre-installed
+      # (v6.7+ as of late 2025). No need to install — the "Build installer" step
+      # below has a recursive fallback in case the path moves between runner
+      # images.
 
       - name: Build installer with Inno Setup
         shell: pwsh
@@ -172,7 +170,6 @@ jobs:
         working-directory: gh-pages-checkout
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add appcast.xml
           git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
           git commit -m "release: appcast entry for v${{ steps.version.outputs.version }}"

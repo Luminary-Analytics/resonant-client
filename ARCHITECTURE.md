@@ -4,12 +4,19 @@ This document describes every major module, data flow, and extension point in `r
 
 ## Overview
 
-Resonant Client is a **Cursor 3-style agentic coding IDE** that connects to multiple LLM backends (Ollama, Claude, OpenAI, LM Studio, Resonant Engine). It runs as a frameless desktop app (pywebview) or in a browser, providing:
+Resonant Client is an **agentic-coding IDE** that connects to multiple LLM backends (Ollama, Claude, OpenAI, LM Studio, Resonant Engine, Codex CLI, Claude Code CLI, MLX). The flagship configuration is **`deepseek-v4-flash:cloud` on Ollama running on the Mac Studio at `10.0.0.133`**; cloud backends are fallbacks.
+
+It runs as a frameless desktop app (pywebview) or in a browser, providing:
 
 - An agentic tool loop (LLM → tool → LLM → tool → ...)
-- 25+ tools (file ops, bash, browser automation, desktop control)
-- A Cursor 3-inspired GUI with project tree, command palette, preview panel
-- Background agents, automations, and multi-project workspaces
+- 25+ tools (file ops, bash, browser automation, desktop control, sub-agents, batch)
+- A focused single-mode GUI: Agent + Settings only
+- Project tree, command palette, preview panel, AGENTS.md badge, git badge
+- An optional **sprint workflow** (planner / generator / evaluator with an autonomous orchestrator) — off by default; opt in via Settings → General
+
+**Project conventions:** Resonant reads `AGENTS.md` from the project root (the cross-tool standard adopted by Codex CLI, OpenCode, Cursor, and OpenHands). Legacy `RESONANT.md` and Anthropic's `CLAUDE.md` are also recognized as fallbacks.
+
+**Sprint workflow state** (when enabled) lives at `~/.resonant/projects/<sha1(project_path)[:12]>/harness/`, NOT in the user's repo. Mirrors Claude Code's `~/.claude/projects/<proj>/` pattern. Legacy `.resonant-harness/` folders are migrated transparently on first project load.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -24,13 +31,25 @@ Resonant Client is a **Cursor 3-style agentic coding IDE** that connects to mult
 │  Agentic loop: stream → parse → execute tools → repeat        │
 ├──────────────┬───────────────┬────────────────────────────────┤
 │  backends.py │  engine/      │  engine/browser.py             │
-│  Ollama      │  tools.py     │  12 Playwright tools           │
+│  Ollama ★    │  tools.py     │  12 Playwright tools           │
 │  Claude      │  bash, file_* │  navigate, click, type, read   │
 │  OpenAI      │  glob, grep   │  screenshot, js, scroll, hover │
 │  LM Studio   │  task (sub)   │  select, wait, back, tabs      │
-│  Cloud models│               │                                │
+│  Cloud models│  batch        │                                │
 └──────────────┴───────────────┴────────────────────────────────┘
+
+★ Default backend. Mac Studio @ http://10.0.0.133:11434 with deepseek-v4-flash:cloud
 ```
+
+## Scope (April 2026 refocus)
+
+The client is laser-focused on **the Agent (agentic-coding) experience**. Removed in the refocus:
+- **Ask / chat mode** (`#chat-welcome-screen`, `chat_group`, `ask_workspace_path`, all chat-mode branches)
+- **Workspaces / Command Center / Fleet** (`#command-center`, `command_*` WebSocket commands, `command_coordinator`, `command_projects`, `command_tasks`, `org_chart`, fleet worktree isolation)
+- **Automations / Scheduler** (`#schedule-view`, `scheduler.py`, `schedule_*` commands)
+- **Background agents / Dispatch** (`#dispatch-view`, `task_runner.py`, `dispatch*` commands)
+
+Everything else (the agentic loop, all 25+ tools, RAG, MCP, harness, sub-agents via the Task tool, browser/computer-use, multi-backend support) is preserved.
 
 ## Module Reference
 
@@ -40,17 +59,27 @@ Each backend implements: `stream()`, `health()`, `list_models()`, `classify()`.
 
 | Class | Protocol | Notes |
 |-------|----------|-------|
-| `OllamaBackend` | HTTP `/api/chat` | Adaptive tool calling (native or text-mode), env-tunable options (`RESONANT_OLLAMA_*`), `CLOUD_MODELS` list auto-appended |
-| `OpenAIBackend` | OpenAI SDK | Also used for LM Studio (`base_url` set), env-tunable read timeout |
+| `OllamaBackend` ★ | HTTP `/api/chat` | Adaptive tool calling (native or text-mode), Mac Studio defaults (32k ctx, 1024 batch, 120m keep-alive), `CLOUD_MODELS` list auto-appended |
+| `OpenAIBackend` | OpenAI SDK | Also used for LM Studio (`base_url` set) |
 | `ClaudeBackend` | Anthropic SDK | Native tool calling |
 | `ClaudeCodeBackend` | CLI subprocess | Wraps `claude` CLI, `handles_tools=True` |
 | `CodexBackend` | CLI subprocess | Wraps `codex` CLI |
 | `ResonantBackend` | SSE `/v1/responses` | Cognitive engine with harness |
 | `MLXBackend` | Local MLX adapter | Apple Silicon optimized |
 
-**Key design rule for Ollama:** All requests to a given `OllamaBackend` instance must use identical `_ollama_options` (num_ctx, num_batch, num_gpu). If any option differs between requests, Ollama unloads and reloads the entire model (30-120s penalty). Options are set once at init from environment variables.
+★ Default backend.
 
-**Cloud models:** `OllamaBackend.CLOUD_MODELS` lists models available via Ollama's cloud routing (`:cloud` tag). These are appended to the model list even if not pulled locally. Current list: minimax-m2.7, minimax-m2.5, nemotron-3-super, kimi-k2.5, glm-5.1, glm-4.7-flash, deepseek-v3.2, qwen3.5, gemma4.
+**Key design rule for Ollama:** All requests to a given `OllamaBackend` instance must use identical `_ollama_options` (num_ctx, num_batch, num_gpu). If any option differs between requests, Ollama unloads and reloads the entire model (30-120s penalty, much worse for 284B MoE models). Options are set once at init from environment variables.
+
+**Cloud models:** `OllamaBackend.CLOUD_MODELS` lists models routed via Ollama's cloud (`:cloud` tag). The flagship `deepseek-v4-flash:cloud` is listed first. Current list: deepseek-v4-flash, deepseek-v3.2, minimax-m2.7, minimax-m2.5, nemotron-3-super, kimi-k2.5, glm-5.1, glm-4.7-flash, qwen3.5, gemma4.
+
+**Backend priority** (`select_harness_backend` in `gui/app.py`): All roles default to `ollama` first, then LM Studio, then cloud backends. Override with `RESONANT_HARNESS_<ROLE>_BACKEND` / `RESONANT_HARNESS_<ROLE>_MODEL` env vars.
+
+### `network_defaults.py` — Default backend/model resolution
+
+- `get_default_backend()` → `RESONANT_DEFAULT_BACKEND` env / `general.default_backend` setting / `"ollama"`
+- `get_default_model()` → `RESONANT_DEFAULT_MODEL` env / `general.default_model` setting / `"deepseek-v4-flash:cloud"`
+- Endpoint helpers (`resolve_resonant_api_url`, `resolve_remote_engine_ws_url`)
 
 ### `events.py` — Event Protocol
 
@@ -64,7 +93,7 @@ class EngineEvent(str, Enum):
     TOOL_CALL, TOOL_RESULT              # Tool execution
     TOOL_PERMISSION                     # Permission request
     PLAN_GENERATED, PLAN_APPROVED       # Plan mode
-    SUBAGENT_START, SUBAGENT_END        # Sub-agent lifecycle
+    SUBAGENT_START, SUBAGENT_END        # Sub-agent lifecycle (Task tool)
     TODOS_UPDATED                       # Markdown task list progress
     COMPRESSION                         # Context compressed
     STATUS, ERROR, CHOICES              # Metadata
@@ -76,7 +105,7 @@ The `TODOS_UPDATED` event is emitted when the model's text contains GitHub-style
 
 The core loop:
 
-1. Build system instructions (platform-aware, includes project instructions from RESONANT.md)
+1. Build system instructions (platform-aware, includes RESONANT.md project instructions, encourages `batch` for parallel reads and `task` for isolated sub-investigations)
 2. Stream from backend (`backend.stream()`)
 3. Collect text tokens → yield `TEXT_DELTA` / `TEXT_DONE`
 4. Parse tool calls (native API or text-mode XML)
@@ -85,7 +114,7 @@ The core loop:
 7. Detect doom loops (same tool+args repeated N times)
 8. Handle plan mode, choices, sub-agents
 
-**System prompt rule 8** nudges models to use markdown task lists for multi-step work, enabling the live todo strip in the GUI.
+**System prompt rule 8** nudges models to use markdown task lists for multi-step work, enabling the live todo strip in the GUI. **Rule 3** nudges models to use the `batch` tool for parallel independent reads. **Rule 9** nudges models to use the `task` tool for sub-investigations.
 
 ### `engine/tools.py` — Tool Definitions and Execution
 
@@ -97,8 +126,8 @@ The core loop:
 | **Shell** | `bash` (non-interactive, timeout-guarded) |
 | **Browser** | `browser_navigate`, `browser_click`, `browser_type`, `browser_read`, `browser_screenshot`, `browser_js`, `browser_scroll`, `browser_hover`, `browser_select`, `browser_wait`, `browser_back`, `browser_tabs` |
 | **Desktop** | `computer_screenshot`, `computer_click`, `computer_type`, `computer_scroll`, `computer_key`, `computer_drag`, `computer_hover`, `computer_window` |
-| **Agent** | `task` (sub-agent spawning) |
-| **Batch** | `batch` (parallel tool execution) |
+| **Agent** | `task` (sub-agent spawning — see `engine/agents.py`) |
+| **Batch** | `batch` (parallel tool execution, max 25 calls) |
 
 ### `engine/browser.py` — Playwright Browser Automation
 
@@ -121,38 +150,37 @@ Four modes: `ask` (approve everything), `auto-edit` (files OK, shell asks), `pla
 ### `gui/server.py` — Application Launcher
 
 Starts uvicorn in a background thread, then either:
-- **pywebview:** Frameless native window with `easy_drag=True`, custom `_WindowAPI` (minimize, toggle_maximize, close), Windows taskbar icon via `WM_SETICON`
+- **pywebview:** Frameless native window with `easy_drag=False`; draggable area is elements with class `pywebview-drag-region` (menubar logo + centered title strip — menus and window buttons stay interactive). `-webkit-app-region` in CSS does not drive WebView2 dragging; pywebview uses its injected `customize.js` + `pywebviewMoveWindow`. Custom `_WindowAPI` (minimize, toggle_maximize, close), Windows taskbar icon via `WM_SETICON`
 - **Browser fallback:** Prints URL, waits for Ctrl+C
 
-The `_set_icon_on_shown` callback uses Win32 `LoadImageW` + `SendMessageW` to replace the Python icon with `resonant.ico` in the taskbar. `SetCurrentProcessExplicitAppUserModelID` ensures Windows treats it as a standalone app.
-
-### `gui/app.py` — Web Application (~8000 lines)
+### `gui/app.py` — Web Application
 
 Starlette ASGI app with:
 - `/` — serves `index.html`
 - `/static/*` — JS, CSS, icons
 - `/ws` — WebSocket for all client-server communication
 
-**`AppState`** (singleton) holds: backends, session, project context, settings, costs, scheduler, harness state.
+**`AppState`** (singleton) holds: backends, session, project context, settings, costs, harness state.
 
 Key methods:
-- `detect_backends()` — parallel network checks for Ollama/LM Studio/Resonant Engine + API key checks for Claude/OpenAI. Appends `OllamaBackend.CLOUD_MODELS` to Ollama results.
-- `create_backend(type, model, session_mode, session_role)` — instantiates backend + session
+- `detect_backends()` — parallel network checks for Ollama (`http://10.0.0.133:11434`) / LM Studio (`http://10.0.0.133:1234/v1`) / Resonant Engine + API key checks for Claude/OpenAI. Appends `OllamaBackend.CLOUD_MODELS` to Ollama results.
+- `select_harness_backend(session_role, project_path)` — picks a backend by role preference (Ollama-first), prefers `deepseek-v4-flash:cloud` when Ollama is chosen.
+- `create_backend(type, model, session_role)` — instantiates backend + session
 - `_run_session_streaming(ws, user_msg, ...)` — streams engine events to WebSocket
 - `get_init_data()` — sends full state to frontend on connect
 
-WebSocket commands: `message`, `switch_session`, `select_backend`, `update_settings`, `dispatch`, `schedule_create`, `rag_index`, `mcp_connect`, etc.
+WebSocket commands (post-refocus): `init`, `message`, `cancel`, `clear`, `switch_session`, `select_backend`, `switch_model`, `delete_session`, `rename_session`, `set_project`, `folder_dialog`, `list_dirs`, `approve`, `choice_select`, `get_settings`, `update_settings`, `get_costs`, `git_status`, `git_quick`, `get_resonant_md`, `save_resonant_md`, `mcp_list`, `mcp_connect`, `rag_index`, harness commands.
 
-### `gui/static/app.js` — Frontend (~6800 lines)
+### `gui/static/app.js` — Frontend (~4800 lines)
 
 `ResonantApp` class handles everything:
 
 **Initialization:**
 - `constructor()` — DOM refs, state init, `_restoreAppearance()`, `_bindMenuBar()`, WebSocket connect
-- `bindEvents()` — mode tabs, sidebar nav, keyboard shortcuts, search, preview resize
+- `bindEvents()` — sidebar nav, keyboard shortcuts, search, preview resize
 
 **Event handling:**
-- `handleEvent(event)` — routes `session.start`, `text.delta`, `text.done`, `tool.call`, `tool.result`, `step.start/end`, `session.end`, `todos.updated`, `subagent.start/end`, etc.
+- `handleEvent(event)` — routes `session.start`, `text.delta`, `text.done`, `tool.call`, `tool.result`, `step.start/end`, `session.end`, `todos.updated`, `subagent.start/end`, `harness_state`, `git_status`, etc.
 - `handleTodosUpdated(event)` — updates live todo progress strip
 - `handleSessionEnd(event)` — renders run summary card, follow-up chips
 
@@ -162,7 +190,7 @@ WebSocket commands: `message`, `switch_session`, `select_backend`, `update_setti
 
 **Command palette:**
 - `openCommandPalette()` / `closeCommandPalette()` — Ctrl/Cmd+K overlay
-- `_cmdPaletteCommands()` — list of available commands
+- `_cmdPaletteCommands()` — list of available commands (new agent, settings, preview, sidebar, shortcuts)
 - `_renderCommandPaletteResults(query)` — fuzzy filter + keyboard nav
 
 **Settings:**
@@ -174,7 +202,7 @@ WebSocket commands: `message`, `switch_session`, `select_backend`, `update_setti
 - `_bindMenuBar()` — wires File/Edit/View/Help actions + window controls (min/max/close)
 - `doToggleMaximize()` — calls `pywebview.api.toggle_maximize()`, swaps icon SVG
 
-### `gui/static/styles.css` — Design System (~5300 lines)
+### `gui/static/styles.css` — Design System
 
 **Token hierarchy:**
 ```css
@@ -197,16 +225,7 @@ WebSocket commands: `message`, `switch_session`, `select_backend`, `update_setti
 
 **Themes:** `[data-theme="light"]` overrides all tokens. `[data-density="compact"]` reduces spacing.
 
-**Key component classes:**
-- `.app-menubar` — frameless title bar with File/Edit/View/Help + window controls
-- `.sidebar-icon-nav` — horizontal icon strip (Agent/Automations/Background/Settings)
-- `.proj-tree-header` / `.proj-tree-sessions` — collapsible project/session tree
-- `.agent-row` — session list item with `role="button"`, focus-visible outline
-- `.input-wrapper` → `.input-top` + `.input-footer` — full-width textarea with controls row below
-- `.cmd-palette-overlay` — Ctrl+K command palette
-- `.agent-run-card` — session complete summary with todo strip
-- `.follow-up-chips` — suggestion pills after session.end
-- `.msg-actions` — hover-visible copy button on messages
+(Note: dead style rules from the deleted chat/fleet/dispatch/schedule features still exist in styles.css. They're harmless dead code; clean up opportunistically.)
 
 ### `gui/templates/index.html` — HTML Structure
 
@@ -214,20 +233,15 @@ WebSocket commands: `message`, `switch_session`, `select_backend`, `update_setti
 body
 ├── #app-menubar          — Logo + File/Edit/View/Help + window controls (−□×)
 └── #app
-    ├── aside#sidebar     — Brand + icon nav + search + project tree + footer
+    ├── aside#sidebar     — Brand + icon nav (Agent / Settings) + search + project tree + footer
     └── main#main
         └── #main-split
             ├── #main-content
             │   ├── #welcome-screen      — Project picker + backend selector
-            │   ├── #chat-welcome-screen — Ask mode welcome
             │   ├── .agent-panel         — Chat container + scroll-end button
             │   ├── #terminal-bar        — Running terminals indicator
             │   ├── #input-bar           — .input-wrapper > .input-top + .input-footer
-            │   ├── #settings-view       — Settings sections
-            │   ├── #schedule-view       — Automations
-            │   ├── #dispatch-view       — Background agents
-            │   ├── #command-center      — Workspaces (multi-project)
-            │   └── #shortcuts-overlay   — Keyboard shortcuts
+            │   └── #settings-view       — Settings sections
             ├── #preview-resize          — Drag handle
             └── #preview-panel           — Browser/screenshot preview
 ```
@@ -281,9 +295,9 @@ body
 
 | File | Lines | Purpose |
 |------|-------|---------|
-| `gui/app.py` | ~8000 | Server-side state, WebSocket handler, all API commands |
-| `gui/static/app.js` | ~6800 | Frontend: all UI logic, event handling, rendering |
-| `gui/static/styles.css` | ~5300 | Design system + all component styles |
+| `gui/app.py` | ~6500 | Server-side state, WebSocket handler, all API commands |
+| `gui/static/app.js` | ~4800 | Frontend: all UI logic, event handling, rendering |
+| `gui/static/styles.css` | ~5500 | Design system + all component styles |
 | `backends.py` | ~2400 | All backend implementations |
 | `engine/tools.py` | ~1100 | Tool definitions + execution routing |
 | `engine/session.py` | ~950 | Agentic loop orchestration |
@@ -294,25 +308,62 @@ body
 ## Running
 
 ```bash
-# Desktop app (pywebview frameless window)
+# Desktop app (pywebview frameless window) — defaults to Ollama on Mac Studio
 python -m resonant_client.gui.server --port 8765
 
 # Browser-only mode
 python -m resonant_client.gui.server --port 8765 --browser
 
-# Terminal UI
-resonant --backend ollama --model qwen3:8b
+# Override defaults
+RESONANT_DEFAULT_BACKEND=claude python -m resonant_client.gui.server --port 8765
+RESONANT_DEFAULT_MODEL=deepseek-v3.2:cloud python -m resonant_client.gui.server --port 8765
 
-# With Ollama tuning for large models (Mac Studio 256GB)
-RESONANT_OLLAMA_NUM_CTX=131072 RESONANT_OLLAMA_NUM_BATCH=1024 python -m resonant_client.gui.server --port 8765
+# Tune Ollama for the Mac Studio (already defaults to 32k ctx / 1024 batch / 120m keep-alive)
+RESONANT_OLLAMA_NUM_CTX=131072 RESONANT_OLLAMA_NUM_BATCH=2048 \
+  python -m resonant_client.gui.server --port 8765
+
+# Terminal UI
+resonant --backend ollama --model deepseek-v4-flash:cloud
 ```
 
 ## Testing
 
 ```bash
-pytest                              # all 516+ tests
+pytest                              # all 514+ tests
 pytest -m unit                      # fast unit tests
-pytest tests/test_backends.py       # backend tests
+pytest tests/test_backends.py       # backend tests (Ollama tool detection, format conversion)
 pytest tests/test_session_todos.py  # todo parsing
-pytest tests/test_gui_hardening.py  # GUI checks
+pytest tests/test_gui_hardening.py  # GUI hardening (BackendSpec, MCP, AppState)
 ```
+
+## Release & Distribution
+
+As of v0.2.0 (April 2026), Resonant Client ships as a Windows installer with silent auto-update. The full pipeline is:
+
+1. `git push origin vX.Y.Z` triggers `.github/workflows/release.yml`
+2. CI builds a PyInstaller bundle, wraps it in an Inno Setup installer, signs it with EdDSA, publishes a GitHub Release, and updates `appcast.xml` on the `gh-pages` branch
+3. Every running v0.2.0+ client polls the appcast on a 24-hour interval via WinSparkle (`resonant_client/updater.py`) and prompts the user when a new version is available
+4. EdDSA signature verification protects against update-channel hijacking
+
+### Release pipeline files
+
+| Purpose | File |
+|---------|------|
+| **Operational runbook** ("ship a release") | [`RELEASING.md`](RELEASING.md) |
+| **Architectural deep-dive** ("understand the pipeline") | [`docs/release-pipeline.md`](docs/release-pipeline.md) |
+| **Bug ledger** ("what's broken, what's known") | [`docs/known-issues.md`](docs/known-issues.md) |
+| PyInstaller bundle config | [`packaging/resonant.spec`](packaging/resonant.spec) |
+| Inno Setup installer script | [`packaging/installer.iss`](packaging/installer.iss) |
+| Appcast XML mutator (CI script) | [`packaging/update_appcast.py`](packaging/update_appcast.py) |
+| Vendored WinSparkle 0.9.2 binaries | [`packaging/winsparkle/`](packaging/winsparkle/) (3.3 MB) |
+| WinSparkle ctypes wrapper (runtime) | [`resonant_client/updater.py`](resonant_client/updater.py) |
+| Entry point with updater wiring + `--version` | [`resonant_client/__main__.py`](resonant_client/__main__.py) |
+| GitHub Actions release workflow | [`.github/workflows/release.yml`](.github/workflows/release.yml) |
+
+### Key invariants
+
+- **Tag must match `__version__`** — CI step 3 fails the run if `resonant_client/__init__.py:__version__` doesn't match the pushed tag (sans `v` prefix).
+- **EdDSA private key never leaves the dev machine** — lives at `~/.resonant/keys/eddsa_priv.key`, mirrored to GitHub repo secret `EDDSA_PRIVATE_KEY` for CI access only. Never committed.
+- **Public key is hardcoded** in `resonant_client/updater.py:EDDSA_PUBLIC_KEY` and bundled into every binary. Required for offline signature verification.
+- **`gh-pages` branch is orphan** — separate from `main` history, contains only `appcast.xml`, `index.html`, `.nojekyll`. GitHub Pages serves from this branch automatically.
+- **Auto-update is fire-and-forget** — `init_updater()` runs in a background thread; updater failures never block app startup (try/except wraps the call site).

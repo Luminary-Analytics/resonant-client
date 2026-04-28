@@ -102,12 +102,20 @@ Related docs:
 
 - GUI/runtime hardening summary: [docs/gui-hardening.md](docs/gui-hardening.md)
 
-## Prerequisites
+## Install
 
-- Python 3.11+
-- One of: Ollama server, Resonant Engine, Claude API key, or OpenAI API key
+### Recommended — Windows installer (with silent auto-updates)
 
-## Installation
+Download the latest `resonant-setup-X.Y.Z.exe` from the [GitHub Releases page](https://github.com/Luminary-Analytics/resonant-client/releases) and run it.
+
+- Installs to `%LOCALAPPDATA%\Programs\Resonant Client\` (no admin / UAC prompt)
+- Adds Start Menu shortcut "Resonant Client"
+- Future updates land automatically — WinSparkle polls the [appcast feed](https://luminary-analytics.github.io/resonant-client/appcast.xml) every 24 hours and prompts when a new version is available
+- All updates are EdDSA-signed end-to-end (the embedded public key verifies every download against the private key on the publisher's machine)
+
+First-install only: SmartScreen will show "Unrecognized publisher" — click "More info" → "Run anyway". The v0.x line is unsigned for now; code signing planned for v1.0+.
+
+### Alternative — install from source
 
 ```bash
 git clone https://github.com/Luminary-Analytics/resonant-client.git
@@ -125,6 +133,14 @@ pip install -e ".[claude]"     # Claude/Anthropic backend
 pip install -e ".[openai]"     # OpenAI backend
 pip install -e ".[dev]"        # Testing (pytest, ruff)
 ```
+
+Source installs run identically to the bundled exe but without auto-update (pull + reinstall to upgrade).
+
+## Prerequisites
+
+- **Bundled installer:** Windows 10+ (x64). No Python install needed — everything's in the bundle.
+- **Source install:** Python 3.11+ on Windows / macOS / Linux
+- One of: Ollama server, Resonant Engine, Claude API key, or OpenAI API key
 
 ### Environment Variables
 

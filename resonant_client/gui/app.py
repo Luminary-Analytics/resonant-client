@@ -6987,7 +6987,17 @@ def _save_resonant_md(project_path: str, content: str):
 # ── HTTP Routes ───────────────────────────────────────────────────────
 
 async def homepage(request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    # Bug #23 fix — Starlette 0.29+ changed TemplateResponse signature:
+    #   OLD: templates.TemplateResponse(name, {"request": request, ...})
+    #   NEW: templates.TemplateResponse(request, name, {...})
+    # Calling the new binding with the old API made `name` resolve to the
+    # request object and `{"request": request}` got passed as the cache
+    # key, producing TypeError: unhashable type: 'dict' from Jinja2's
+    # LRUCache. Locally we had Starlette pinned at an older version that
+    # accepted both shapes; CI's pip install --upgrade pulled 0.29+ and
+    # broke. Use the new (request-first) signature explicitly so it works
+    # with both old and new Starlette.
+    return templates.TemplateResponse(request, "index.html")
 
 
 # ── Starlette App ─────────────────────────────────────────────────────

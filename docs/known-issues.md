@@ -22,7 +22,9 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 | 14 | Local PyInstaller bundle 2.6× bigger than CI build | Low | Open | Phase 3 release |
 | 15 | Release CI re-runs invalidate prior signatures (PyInstaller builds aren't byte-deterministic) | **High** | Workaround documented; preventative fix open | v0.2.1 release |
 | 16 | Bundled exe console window visible in production | Low | Open (v0.2.2) | v0.2.1 install |
-| 17 | Browser doesn't always auto-open after install | Low | Open (v0.2.2) | v0.2.1 install |
+| 17 | Browser doesn't always auto-open after install | Low | ✅ Shipped fix (v0.2.2) | v0.2.1 install |
+| 18 | Per-user install invisible to Windows Search | High (UX-blocking on Win11) | ✅ Shipped fix (v0.2.3) | v0.2.2 install |
+| 19 | console=False crashes uvicorn ColourizedFormatter at startup | **Critical** (app won't launch) | ✅ Shipped fix (v0.2.4) | v0.2.3 install |
 
 ---
 

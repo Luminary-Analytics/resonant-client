@@ -1,34 +1,33 @@
-<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0"
-     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"
-     xmlns:dc="http://purl.org/dc/elements/1.1/">
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
     <channel>
         <title>Resonant Client Updates</title>
         <link>https://luminary-analytics.github.io/resonant-client/</link>
         <description>Auto-update channel for Resonant Client</description>
         <language>en</language>
-
+        <item>
+            <title>Version 0.2.1</title>
+            <pubDate>Tue, 28 Apr 2026 16:24:22 +0000</pubDate>
+            <sparkle:version>0.2.1</sparkle:version>
+            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Resonant Client 0.2.1 — backend swap context loss fix (#9, #10), project-switch UI race fix (#7, #8), appcast updater idempotency fix (#13). See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.1"&gt;release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.1/resonant-setup-0.2.1.exe" sparkle:version="0.2.1" sparkle:shortVersionString="0.2.1" length="27362264" type="application/octet-stream" sparkle:edSignature="pQWkhebG29Qx1h9/g082CbYtD7NUHRJMUvDoy0MYia//e+MG16CRJjjvkqB0iXZnAO46SWw5z+oORtxMQhtRCA==" />
+        </item>
         <item>
             <title>Version 0.2.0</title>
             <pubDate>Tue, 28 Apr 2026 00:00:00 +0000</pubDate>
             <sparkle:version>0.2.0</sparkle:version>
             <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
-            <description><![CDATA[
-                <h2>Resonant Client 0.2.0</h2>
-                <p>Initial public release with auto-update support.</p>
-                <ul>
-                    <li>PyInstaller bundle for one-click Windows install</li>
-                    <li>WinSparkle auto-update channel (this!)</li>
-                    <li>Agentic coding loop with deepseek-v4-flash:cloud as flagship</li>
-                </ul>
-            ]]></description>
-            <enclosure
-                url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.0/resonant-setup-0.2.0.exe"
-                sparkle:version="0.2.0"
-                sparkle:shortVersionString="0.2.0"
-                length="27281447"
-                type="application/octet-stream"
-                sparkle:edSignature="iWM2C3x4BUu/TUvfDSOWkP642wlltjMtYHe+598lpPG1vMAFp5/jXBufm6rC3+0j5wfUo3grxYucJ/m7zfjrDw==" />
+            <description>
+                &lt;h2&gt;Resonant Client 0.2.0&lt;/h2&gt;
+                &lt;p&gt;Initial public release with auto-update support.&lt;/p&gt;
+                &lt;ul&gt;
+                    &lt;li&gt;PyInstaller bundle for one-click Windows install&lt;/li&gt;
+                    &lt;li&gt;WinSparkle auto-update channel (this!)&lt;/li&gt;
+                    &lt;li&gt;Agentic coding loop with deepseek-v4-flash:cloud as flagship&lt;/li&gt;
+                &lt;/ul&gt;
+            </description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.0/resonant-setup-0.2.0.exe" sparkle:version="0.2.0" sparkle:shortVersionString="0.2.0" length="27281447" type="application/octet-stream" sparkle:edSignature="iWM2C3x4BUu/TUvfDSOWkP642wlltjMtYHe+598lpPG1vMAFp5/jXBufm6rC3+0j5wfUo3grxYucJ/m7zfjrDw==" />
         </item>
     </channel>
 </rss>

@@ -33,25 +33,37 @@ logger = logging.getLogger(__name__)
 
 
 # ── Doom Loop Detection ────────────────────────────────────────────────
-DOOM_LOOP_THRESHOLD = 3  # Same tool+args N times in a row = stop
+# Catch agents that fall into a tight repetition loop — calling the same tool
+# with the same args over and over, getting the same result and never moving
+# forward. We give the model one corrective nudge first, then hard-stop.
+DOOM_LOOP_THRESHOLD = 4   # N identical tool+args calls in a row → hard stop
+DOOM_LOOP_NUDGE_AT = 2    # First repeat → inject a "try a different approach" prompt
+
+
+def _count_trailing_identical_tool_calls(history: list) -> int:
+    """How many of the most recent tool calls (within the current turn) are identical."""
+    sig = None
+    count = 0
+    for entry in reversed(history):
+        role = entry.get("role")
+        if role == "tool_call":
+            curr = (entry.get("name", ""), entry.get("arguments", ""))
+            if sig is None:
+                sig = curr
+                count = 1
+            elif curr == sig:
+                count += 1
+            else:
+                break
+        elif role == "user":
+            break  # Only count within the current turn
+        # tool_result / assistant entries are skipped — they sit between calls
+    return count
 
 
 def _check_doom_loop(history: list, threshold: int = DOOM_LOOP_THRESHOLD) -> bool:
     """Check if the last N tool calls are identical (same name + same args)."""
-    recent_calls = []
-    for entry in reversed(history):
-        if entry.get("role") == "tool_call":
-            sig = (entry.get("name", ""), entry.get("arguments", ""))
-            recent_calls.append(sig)
-            if len(recent_calls) >= threshold:
-                break
-        elif entry.get("role") == "user":
-            break  # Only check within the current turn
-
-    if len(recent_calls) < threshold:
-        return False
-
-    return len(set(recent_calls)) == 1
+    return _count_trailing_identical_tool_calls(history) >= threshold
 
 
 # ── System Instructions ────────────────────────────────────────────────
@@ -246,6 +258,8 @@ class Session:
         # Doom-loop guards: file path → hash of last feedback we injected
         self._lint_feedback_cache: dict[str, str] = {}
         self._test_feedback_cache: dict[str, str] = {}
+        # Per-turn flag: did we already inject the corrective doom-loop nudge?
+        self._doom_loop_nudged: bool = False
 
     @property
     def is_subagent(self) -> bool:
@@ -485,6 +499,8 @@ class Session:
         total_start = time.time()
         executing_plan = False
         last_tool_used = None
+        # One corrective nudge per turn before the doom-loop hard-stop fires.
+        self._doom_loop_nudged = False
 
         if self.cancel_requested:
             yield from self._cancelled_events(total_start, 0)
@@ -975,9 +991,28 @@ class Session:
                 return  # Caller handles plan approval and re-calls run()
 
             # ── Doom loop detection ──
-            if has_tool_calls and _check_doom_loop(self.conversation_history):
-                yield make_event(EngineEvent.ERROR,
-                                message=f"Doom loop detected: last {DOOM_LOOP_THRESHOLD} tool calls were identical. Stopping.")
+            # Two-stage: nudge on the first repeat, hard-stop only if the
+            # agent ignores the nudge. This avoids false positives during
+            # legitimate retry-with-same-args patterns (e.g. flaky reads)
+            # while still catching genuine stuck loops.
+            identical_count = _count_trailing_identical_tool_calls(self.conversation_history) if has_tool_calls else 0
+
+            if has_tool_calls and identical_count >= DOOM_LOOP_THRESHOLD:
+                last_call = next(
+                    (e for e in reversed(self.conversation_history)
+                     if e.get("role") == "tool_call"),
+                    {},
+                )
+                tool_name = last_call.get("name", "the same tool")
+                yield make_event(
+                    EngineEvent.ERROR,
+                    message=(
+                        f"Stopped: the agent called `{tool_name}` with the same "
+                        f"arguments {identical_count} times in a row and isn't making "
+                        f"progress. Try rephrasing your request or switching to a "
+                        f"stronger model."
+                    ),
+                )
                 yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
                 break
 
@@ -990,7 +1025,27 @@ class Session:
                     last_tool_used = ", ".join(last_names)
                 tool_calls = []
                 collected_text = []
-                current_msg = "Continue based on the tool results above."
+
+                # Early-warning nudge: if the agent is starting to repeat itself,
+                # tell it to try a different approach BEFORE the hard stop fires.
+                # One nudge per turn — we don't want to spam the conversation.
+                if identical_count >= DOOM_LOOP_NUDGE_AT and not self._doom_loop_nudged:
+                    last_call = next(
+                        (e for e in reversed(self.conversation_history)
+                         if e.get("role") == "tool_call"),
+                        {},
+                    )
+                    tool_name = last_call.get("name", "")
+                    current_msg = (
+                        f"You just called `{tool_name}` with the same arguments "
+                        f"{identical_count} times in a row. The result will not change — "
+                        f"try a DIFFERENT approach: read a different file, search a "
+                        f"different term, or summarize what you have and answer the "
+                        f"user. Do NOT call `{tool_name}` again with these arguments."
+                    )
+                    self._doom_loop_nudged = True
+                else:
+                    current_msg = "Continue based on the tool results above."
                 continue
             else:
                 break

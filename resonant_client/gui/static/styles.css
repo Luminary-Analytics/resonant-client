@@ -5363,3 +5363,616 @@ body {
     font-weight: 600;
     color: var(--text);
 }
+
+/* ── Live collapsed-group state (engine backend) ──
+   The collapsed-group used to render only after the next step started.
+   It now renders eagerly with .running while inline tools are still
+   coming in, so the user sees activity instead of a blank thinking dot. */
+.collapsed-group.running {
+    border-color: color-mix(in srgb, var(--brand) 35%, var(--border));
+    box-shadow: inset 2px 0 0 var(--brand);
+}
+
+.collapsed-group.running .collapsed-icon {
+    animation: collapsed-running-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes collapsed-running-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+
+.collapsed-group.running .collapsed-summary::after {
+    content: '…';
+    color: var(--brand);
+    margin-left: 4px;
+    display: inline-block;
+    animation: collapsed-running-pulse 1.4s ease-in-out infinite;
+}
+
+.collapsed-group:not(.running) .collapsed-summary::after {
+    content: none;
+}
+
+/* Pending tool item — call has been issued, result not yet back. */
+.tool-inline.pending {
+    opacity: 0.85;
+}
+
+.tool-inline.pending .tool-status {
+    animation: collapsed-running-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Stopped / errored agent-run card variant ──
+   When the run terminated before completion (doom loop, step limit,
+   cancellation), shift accents from "ok" green to "warn" amber so the
+   card reads as "didn't ship" rather than "succeeded". */
+.agent-run-card.agent-run-stopped .agent-run-kicker {
+    color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 12%, transparent);
+    border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+}
+
+.agent-run-card.agent-run-stopped .agent-todo-strip {
+    background: color-mix(in srgb, var(--bg-elem) 85%, var(--warn));
+    border-color: color-mix(in srgb, var(--warn) 30%, var(--border));
+}
+
+.agent-run-card.agent-run-stopped .agent-todo-check {
+    background: color-mix(in srgb, var(--warn) 18%, transparent);
+    color: var(--warn);
+}
+
+.agent-run-blurb.agent-run-error-blurb {
+    color: var(--text);
+    background: color-mix(in srgb, var(--bg-input) 70%, transparent);
+    border-left: 3px solid var(--warn);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+
+/* ── Smart auto-scroll pill — "↓ New messages" state ──
+   When the user has scrolled up and new content arrives during streaming,
+   the existing scroll-to-bottom pill turns brand-colored and pulses to
+   signal there's something fresh waiting below. */
+.chat-scroll-end.has-new {
+    background: var(--brand);
+    border-color: var(--brand);
+    color: #fff;
+    animation: chat-scroll-end-pulse 1.6s ease-in-out infinite;
+}
+
+.chat-scroll-end.has-new:hover {
+    background: color-mix(in srgb, var(--brand) 88%, white);
+    border-color: color-mix(in srgb, var(--brand) 88%, white);
+}
+
+@keyframes chat-scroll-end-pulse {
+    0%, 100% {
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35),
+                    0 0 0 0 color-mix(in srgb, var(--brand) 40%, transparent);
+    }
+    50% {
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.35),
+                    0 0 0 6px color-mix(in srgb, var(--brand) 0%, transparent);
+    }
+}
+
+/* ── Live collapsed-group enter animation ──
+   The card now renders the moment the first inline tool arrives instead
+   of waiting for the next step. A short fade+slide makes the appearance
+   feel intentional rather than jumpy. */
+@keyframes collapsed-group-enter {
+    from { opacity: 0; transform: translateY(-3px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+.collapsed-group {
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+
+/* Same gentle entrance for the agent-run summary card and the inline error
+   block — both arrive at terminal moments where a hard pop reads as glitchy. */
+.agent-run-card,
+.error-block {
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+
+/* ── Hover-revealed copy button on code blocks ──
+   Code blocks render with ``` fences in markdown. We add a small unobtrusive
+   copy button in the top-right corner that fades in on hover and confirms
+   the copy with a checkmark for ~1.2s. */
+.message-content pre {
+    position: relative;
+}
+
+.code-copy-btn {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: color-mix(in srgb, var(--bg-elem) 70%, transparent);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 3px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+    line-height: 0;
+    font-size: 12px;
+    font-family: var(--font-mono, monospace);
+}
+
+.message-content pre:hover .code-copy-btn,
+.code-copy-btn:focus-visible {
+    opacity: 1;
+}
+
+.code-copy-btn:hover {
+    color: var(--text);
+    background: var(--bg-hover);
+    border-color: var(--dim);
+}
+
+.code-copy-btn.copied {
+    color: var(--ok);
+    border-color: color-mix(in srgb, var(--ok) 50%, var(--border));
+    opacity: 1;
+}
+
+/* ── Stronger user/assistant message distinction ──
+   The brand-color accent bar already differentiated user turns; we add a
+   faint rounded background so user blocks read as discrete "input" units
+   while assistant prose continues to flow uninterrupted across the column.
+   Replaces the old ::before pseudo-bar with a real border-left so the
+   background and the bar are part of the same shape. */
+.msg-user {
+    padding: 8px 12px 8px 14px;
+    border-left: 2px solid color-mix(in srgb, var(--brand) 75%, transparent);
+    background: color-mix(in srgb, var(--bg-elem) 45%, transparent);
+    border-radius: 4px;
+}
+
+.msg-user::before {
+    /* The old pseudo-bar is now replaced by border-left above. Keep the
+       selector but disable it so the visual doesn't double up. */
+    display: none;
+}
+
+/* ── Shell shortcut snippets ──
+   Rendered when the user types `!cmd` or `!!cmd` in the input. The single-
+   bang variant feeds output to the model (border tinted brand-purple);
+   the double-bang variant is side-channel only (border tinted muted-gray).
+   While the command is running we show a pulsing border and an animated
+   "running…" status; the output area becomes a real <pre> on completion. */
+.shell-snippet {
+    margin: 14px 0 18px;
+    border: 1px solid var(--border);
+    border-left-width: 2px;
+    border-radius: 6px;
+    background: color-mix(in srgb, var(--bg-elem) 55%, transparent);
+    overflow: hidden;
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+
+.shell-snippet.fed {
+    border-left-color: var(--brand);
+}
+
+.shell-snippet.silent {
+    border-left-color: var(--muted);
+}
+
+.shell-snippet.errored {
+    border-left-color: var(--err);
+}
+
+.shell-snippet.running {
+    border-left-color: color-mix(in srgb, var(--brand) 50%, var(--border));
+    animation: collapsed-group-enter 0.18s ease-out, shell-snippet-running-pulse 1.4s ease-in-out 0.18s infinite;
+}
+
+@keyframes shell-snippet-running-pulse {
+    0%, 100% { box-shadow: inset 2px 0 0 transparent; }
+    50%      { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--brand) 35%, transparent); }
+}
+
+.shell-snippet-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+    background: color-mix(in srgb, var(--bg-input) 60%, transparent);
+    border-bottom: 1px solid var(--border);
+}
+
+.shell-snippet-prompt {
+    font-family: var(--font-mono, monospace);
+    color: var(--brand);
+    font-weight: 700;
+    letter-spacing: -0.5px;
+}
+
+.shell-snippet.silent .shell-snippet-prompt {
+    color: var(--muted);
+}
+
+.shell-snippet-cmd {
+    flex: 1;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    color: var(--text);
+    background: none;
+    padding: 0;
+    overflow-x: auto;
+    white-space: pre;
+}
+
+.shell-snippet-status {
+    font-size: 11px;
+    color: var(--muted);
+    flex-shrink: 0;
+}
+
+.shell-snippet.errored .shell-snippet-status {
+    color: var(--err);
+}
+
+.shell-snippet-output {
+    margin: 0;
+    padding: 8px 12px;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    color: var(--text);
+    background: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 380px;
+    overflow-y: auto;
+}
+
+.shell-snippet-output[data-empty="true"] {
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* ── @-file fuzzy autocomplete popup ──
+   Floats above the input bar; keyboard-driven. The selected row gets a
+   brand-tinted background; basenames are emphasized over directory paths
+   since matching usually targets the file name, not the folder. */
+.file-fuzzy-popup {
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 0;
+    right: 0;
+    max-height: 280px;
+    overflow-y: auto;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    z-index: 30;
+    padding: 4px;
+    display: none;
+    animation: collapsed-group-enter 0.12s ease-out;
+}
+
+.file-fuzzy-list {
+    display: flex;
+    flex-direction: column;
+}
+
+.file-fuzzy-item {
+    display: flex;
+    align-items: baseline;
+    gap: 4px;
+    padding: 5px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12.5px;
+    line-height: 1.35;
+    color: var(--text);
+    user-select: none;
+}
+
+.file-fuzzy-item:hover {
+    background: var(--bg-hover);
+}
+
+.file-fuzzy-item.selected {
+    background: color-mix(in srgb, var(--brand) 18%, transparent);
+    color: var(--text);
+}
+
+.file-fuzzy-base {
+    font-family: var(--font-mono, monospace);
+    font-weight: 500;
+    color: var(--text);
+}
+
+.file-fuzzy-dir {
+    font-family: var(--font-mono, monospace);
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.file-fuzzy-empty {
+    padding: 10px 12px;
+    color: var(--muted);
+    font-size: 12.5px;
+    font-style: italic;
+}
+
+.file-fuzzy-hint {
+    padding: 6px 10px 4px;
+    margin-top: 2px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+}
+
+/* ── Compact tool-row (replaces .tool-block heavy rendering) ──
+   One-line summary by default; click row or chevron to expand the detail
+   panel (full bash output / unified diff / written-file content).
+   Layout: [status] [glyph] [summary..............] [meta] [▸]  */
+.tool-row {
+    display: grid;
+    grid-template-columns: 18px 14px 1fr auto 16px;
+    align-items: baseline;
+    gap: 8px;
+    padding: 5px 8px;
+    margin: 2px 0;
+    border-radius: 4px;
+    font-size: 12.5px;
+    line-height: 1.4;
+    background: transparent;
+    border-left: 2px solid transparent;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease,
+                border-left-color var(--duration-fast) ease;
+}
+
+.tool-row:hover {
+    background: var(--bg-hover);
+}
+
+.tool-row.expanded {
+    background: color-mix(in srgb, var(--bg-elem) 50%, transparent);
+    border-left-color: var(--brand);
+    cursor: default;
+}
+
+/* Errored rows take precedence over the brand-colored expand state — when
+   a tool fails, the red left-border + faint warn-tinted bg should remain
+   even after the user expands the detail panel, so the failure stays
+   visually obvious in a scroll of multiple completed rows. */
+.tool-row.errored {
+    border-left-color: var(--err);
+    background: color-mix(in srgb, var(--bg-elem) 65%, color-mix(in srgb, var(--err) 12%, transparent));
+}
+
+.tool-row.errored.expanded {
+    border-left-color: var(--err);
+    background: color-mix(in srgb, var(--bg-elem) 45%, color-mix(in srgb, var(--err) 16%, transparent));
+}
+
+.tool-row-status {
+    font-family: var(--font-mono, monospace);
+    font-weight: 600;
+    text-align: center;
+    user-select: none;
+}
+
+.tool-row-status.pending {
+    color: var(--muted);
+    animation: tool-row-pulse 1.4s ease-in-out infinite;
+}
+
+.tool-row-status.ok  { color: var(--ok); }
+.tool-row-status.err { color: var(--err); }
+
+@keyframes tool-row-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.4; }
+}
+
+.tool-row-glyph {
+    font-family: var(--font-mono, monospace);
+    font-weight: 700;
+    text-align: center;
+    user-select: none;
+}
+
+.tool-row-summary {
+    font-family: var(--font-mono, monospace);
+    color: var(--text);
+    background: none;
+    padding: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.tool-row-meta {
+    font-size: 11.5px;
+    color: var(--muted);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.tool-row.expanded .tool-row-meta {
+    color: var(--text);
+}
+
+.tool-row-toggle {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.tool-row-toggle:hover { color: var(--text); }
+
+.tool-row-detail {
+    grid-column: 1 / -1;
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: var(--bg-elem);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    max-height: 420px;
+    overflow-y: auto;
+}
+
+.tool-row-detail-cmd {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.tool-row-detail-cmd code {
+    color: var(--text);
+    background: none;
+    padding: 0;
+}
+
+.tool-row-detail-output,
+.tool-row-detail-content {
+    font-family: var(--font-mono, monospace);
+    font-size: 11.5px;
+    color: var(--text);
+    margin: 0;
+    background: none;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.tool-row-detail-output.err {
+    color: var(--err);
+}
+
+.tool-row-detail-diff {
+    font-family: var(--font-mono, monospace);
+    font-size: 11.5px;
+    line-height: 1.45;
+}
+
+.tool-row-detail-diff .diff-line {
+    display: block;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.tool-row-detail-empty {
+    color: var(--muted);
+    font-style: italic;
+}
+
+/* ── Per-turn footer ── */
+.turn-footer {
+    margin: 4px 0 14px;
+    padding: 0 2px;
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.4;
+    user-select: none;
+    opacity: 0.85;
+}
+
+.turn-footer .sep {
+    margin: 0 6px;
+    color: var(--dimmer, var(--muted));
+}
+
+/* ── Compact agent-run-card (default) ──
+   Banner is the always-visible row; .compact hides the detail panel.
+   Click the banner to toggle. Full panel keeps the existing styling so
+   we don't have to re-style it twice. */
+.agent-run-card.compact {
+    margin: 14px auto 18px;
+}
+
+.agent-run-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 14px;
+    background: var(--bg-elem);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font: inherit;
+    color: var(--text);
+    text-align: left;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease,
+                border-color var(--duration-fast) ease;
+}
+
+.agent-run-banner:hover {
+    background: var(--bg-hover);
+    border-color: color-mix(in srgb, var(--border) 50%, var(--text));
+}
+
+.agent-run-banner .agent-run-kicker {
+    margin: 0;
+    flex-shrink: 0;
+}
+
+.agent-run-banner .agent-run-title {
+    margin: 0;
+    flex: 1;
+    font-size: 13.5px;
+    font-weight: 500;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.agent-run-summary-meta {
+    font-size: 12px;
+    color: var(--muted);
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.agent-run-banner-chevron {
+    color: var(--muted);
+    font-size: 11px;
+    transition: transform var(--duration-fast) ease;
+    flex-shrink: 0;
+}
+
+.agent-run-card:not(.compact) .agent-run-banner {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+}
+
+.agent-run-card-detail {
+    margin: 0;
+}
+
+.agent-run-card-detail .agent-run-card-inner {
+    border: 1px solid var(--border);
+    border-top: none;
+    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+}
+
+.agent-run-card.compact .agent-run-card-detail {
+    display: none;
+}
+
+/* Old layout (non-compact mode renders the original full panel) — no
+   changes needed; the existing .agent-run-card-inner / .agent-run-kicker
+   / .agent-todo-strip / etc. rules from earlier in this file still apply. */

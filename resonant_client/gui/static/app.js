@@ -111,7 +111,21 @@ class ResonantApp {
         this.streamBuffer = '';
         this.isStreaming = false;
         this.currentMessageEl = null;
-        this._renderScheduled = false;
+        this._renderTimer = null;          // setTimeout handle for throttled re-parse
+        this._lastStreamParseAt = 0;       // perf timestamp of last successful parse
+        this._userScrolledUp = false;      // true → don't auto-scroll, show "↓ new" pill
+
+        // @-file fuzzy autocomplete state. Files are fetched once per session
+        // (lazy-loaded on first @ trigger) and filtered client-side.
+        this._fuzzyFiles = null;           // string[] of project-relative paths, or null = unloaded
+        this._fuzzyFilesLoading = false;
+        this._fuzzyFilesPending = false;   // true → reopen popup once load completes
+        this._fuzzyOpen = false;
+        this._fuzzyAtPos = -1;             // index of the `@` that triggered the popup
+        this._fuzzyQuery = '';
+        this._fuzzyMatches = [];
+        this._fuzzyIdx = 0;
+        this._fuzzyPopupEl = null;
 
         // Step collapsing state
         this.currentStepEvent = null;
@@ -120,8 +134,17 @@ class ResonantApp {
         this.stepIsInlineOnly = true;
         this.stepRendered = false;
         this.collapsedGroup = [];
+        this._liveCollapsedGroup = null;  // live-rendering DOM tracker for inline-only streaks
         this.lastModel = '';
         this.lastStats = null;
+
+        // Per-turn aggregate — replaces the per-step footers (model · tokens ·
+        // elapsed). Stats accumulate across step.end events; we render one
+        // dim line below the assistant's prose at session.end.
+        this._currentTurn = this._freshTurnAggregate();
+        // Map of in-flight block tool call_id → DOM row, so tool.result can
+        // update the same row in place rather than rendering a separate one.
+        this._blockToolRows = new Map();
 
         // CLI backend tool activity group
         this.handlesTools = false;
@@ -309,21 +332,51 @@ class ResonantApp {
         // Send message
         this.sendBtn.addEventListener('click', () => this.sendMessage());
         this.userInput.addEventListener('keydown', (e) => {
+            // Fuzzy file picker hijacks navigation/select keys when open so
+            // it can act like a real autocomplete instead of moving the
+            // textarea cursor. Order matters: handle this BEFORE the Enter
+            // → sendMessage shortcut so picking with Enter doesn't fire send.
+            if (this._fuzzyOpen && this._handleFuzzyKeydown(e)) {
+                return;
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 this.sendMessage();
             }
         });
 
-        // Auto-resize textarea
+        // Auto-resize textarea + drive the @-file fuzzy popup off the same
+        // input event (avoids needing a second listener that could race).
         this.userInput.addEventListener('input', () => {
             this.userInput.style.height = 'auto';
             this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+            this._updateFileFuzzyState();
+        });
+        // Caret moves on click/arrow without firing 'input' — keep the popup
+        // in sync so it closes when the user navigates away from the @-token.
+        this.userInput.addEventListener('keyup', (e) => {
+            if (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') {
+                this._updateFileFuzzyState();
+            }
+        });
+        this.userInput.addEventListener('blur', () => {
+            // Close on blur, but with a tiny delay so clicking a popup item
+            // doesn't get cancelled by the focus loss.
+            setTimeout(() => this._closeFileFuzzy(), 120);
         });
 
         if (this.chatContainer && this.chatScrollEndBtn) {
-            this.chatContainer.addEventListener('scroll', () => this._syncChatScrollEndBtn(), { passive: true });
-            this.chatScrollEndBtn.addEventListener('click', () => this.scrollToBottom());
+            this.chatContainer.addEventListener('scroll', () => {
+                // Track whether the user has manually scrolled up to read older
+                // content. While scrolled up, scrollToBottom() is a no-op so
+                // we don't yank them away from what they're reading; the
+                // existing scroll-end pill becomes the "↓ new messages" cue.
+                this._userScrolledUp = !this._isAtBottom();
+                if (!this._userScrolledUp) this._clearScrollEndPillNew();
+                this._syncChatScrollEndBtn();
+            }, { passive: true });
+            // Click the pill → force scroll to bottom regardless of state.
+            this.chatScrollEndBtn.addEventListener('click', () => this.forceScrollToBottom());
         }
 
         // Stop button
@@ -696,7 +749,37 @@ class ResonantApp {
 
     sendMessage() {
         const text = this.userInput.value.trim();
-        if (!text || this.isRunning) return;
+        if (!text) return;
+
+        // Pi-style shell shortcuts: `!cmd` runs the command and feeds output
+        // back to the model; `!!cmd` runs and shows output without involving
+        // the model. Lets you hand quick context to the agent (or just check
+        // git status mid-flow) without burning a full model turn.
+        // Order matters — check `!!` before `!` since strings starting with
+        // `!!` also start with `!`.
+        if (text.startsWith('!!') && text.length > 2) {
+            const cmd = text.slice(2).trim();
+            if (cmd) {
+                this._runShellShortcut(cmd, /* feedToLlm= */ false);
+                this.userInput.value = '';
+                this.userInput.style.height = 'auto';
+                return;
+            }
+        } else if (text.startsWith('!') && text.length > 1 && !text.startsWith('!!')) {
+            const cmd = text.slice(1).trim();
+            if (cmd) {
+                if (this.isRunning) {
+                    this.showStatusMessage('Cannot feed shell output to model while a session is running. Use !!cmd to peek without involving the model.');
+                    return;
+                }
+                this._runShellShortcut(cmd, /* feedToLlm= */ true);
+                this.userInput.value = '';
+                this.userInput.style.height = 'auto';
+                return;
+            }
+        }
+
+        if (this.isRunning) return;
 
         // /plan slash-prefix routes the message to the intent flow instead of
         // a one-shot Session.run. Strip the prefix and forward.
@@ -717,6 +800,11 @@ class ResonantApp {
         this._resetAgentRunSummary(text);
 
         // Reset streaming state
+        if (this._renderTimer) {
+            clearTimeout(this._renderTimer);
+            this._renderTimer = null;
+        }
+        this._lastStreamParseAt = 0;
         this.streamBuffer = '';
         this.isStreaming = false;
         this.currentMessageEl = null;
@@ -726,6 +814,9 @@ class ResonantApp {
         this.stepIsInlineOnly = true;
         this.stepRendered = false;
         this.collapsedGroup = [];
+        this._liveCollapsedGroup = null;
+        this._currentTurn = this._freshTurnAggregate();
+        this._blockToolRows = new Map();
         this.subagentDepth = 0;
         this.subagentContainer = null;
         this.clearTerminals();
@@ -1362,6 +1453,12 @@ class ResonantApp {
                 break;
             case 'subagent.end':
                 this.handleSubagentEnd(event);
+                break;
+            case 'shell_exec_result':
+                this.handleShellExecResult(event);
+                break;
+            case 'project_files':
+                this.handleProjectFiles(event);
                 break;
             case 'tool_permission':
                 this.handleToolPermission(event);
@@ -2291,66 +2388,73 @@ class ResonantApp {
         this._currentStepHeaderEl = null;
         this._currentStepToolCounts = {};
 
-        // Add thinking indicator
+        // Skip the thinking indicator if a live tool group is already on screen —
+        // its spinner already signals the agent is working. Re-adding here causes
+        // a flicker between every consecutive inline-only step.
+        if (this._liveCollapsedGroup) return;
+
         this.removeThinking();
         this.addThinking();
     }
 
+    /** Fresh aggregator object for a new turn — accumulates step stats so we
+     *  can render a single dim "▣ model · tokens · elapsed" footer beneath
+     *  the assistant's prose instead of repeating one per step. */
+    _freshTurnAggregate() {
+        return {
+            totalElapsed: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            stepCount: 0,
+            footerEl: null,  // set lazily on session.end render
+        };
+    }
+
     ensureStepRendered() {
+        // Step headers no longer render at all in the default view — agent
+        // activity is presented as a flat list of tool rows + assistant
+        // prose. We still need to flush any pending inline-tool group when
+        // a block tool / text starts, so non-inline-only steps don't get
+        // visually fused with the prior inline streak.
         if (!this.stepRendered && this.currentStepEvent) {
-            // Flush collapsed group first
             this.flushCollapsedGroup();
-
-            // Render step header
-            this.renderStepHeader(this.currentStepEvent);
-
-            // Flush any buffered inline tools
+            // Buffered inline tools (rare — they'd only buffer if their
+            // group hasn't been live-rendered yet) flush now too.
             for (const tc of this.stepToolCalls) {
                 this.renderToolCall(tc);
             }
             for (const tr of this.stepToolResults) {
                 this.renderToolResult(tr);
             }
-
             this.stepRendered = true;
         }
     }
 
-    renderStepHeader(event) {
-        const step = event.step || 0;
+    /** No-op (kept as an empty stub for replay paths that still call it). */
+    renderStepHeader(_event) { /* step decoration removed in compact view */ }
 
-        const el = document.createElement('div');
-        el.className = 'step-header';
-        el.dataset.step = step;
-        el.innerHTML = `
-            <div class="step-divider"></div>
-            <span class="step-label">◆ Working...</span>
-            <span class="step-meta">step ${step}</span>
-            <div class="step-divider"></div>
-        `;
-        this.getRenderTarget().appendChild(el);
-        this._currentStepHeaderEl = el;
-        this._currentStepToolCounts = {};
-    }
-
-    /** Update the current step header label based on tools used so far. */
-    updateStepActionLabel() {
-        if (!this._currentStepHeaderEl || !this._currentStepToolCounts) return;
-        const total = Object.values(this._currentStepToolCounts).reduce((s, v) => s + v, 0);
-        if (total === 0) return;
-        const action = inferActionLabel(this._currentStepToolCounts);
-        const step = this._currentStepHeaderEl.dataset.step || '0';
-        const labelEl = this._currentStepHeaderEl.querySelector('.step-label');
-        if (labelEl) labelEl.textContent = `◆ ${action}`;
-        const metaEl = this._currentStepHeaderEl.querySelector('.step-meta');
-        if (metaEl) metaEl.textContent = `step ${step}`;
-    }
+    /** No-op (kept as an empty stub — labels live on the live-group header now). */
+    updateStepActionLabel() { /* step decoration removed in compact view */ }
 
     handleStepEnd(event) {
-        this.removeThinking();
+        // Accumulate per-step stats into the per-turn aggregate. The single
+        // dim footer at session.end uses these instead of repeating a
+        // ▣ model · tokens · elapsed line after every step.
+        const t = this._currentTurn;
+        if (t) {
+            t.totalElapsed += (event.elapsed || 0);
+            t.stepCount += 1;
+            if (this.lastStats) {
+                t.totalInputTokens += (this.lastStats.input_tokens || 0);
+                t.totalOutputTokens += (this.lastStats.output_tokens || 0);
+            }
+        }
 
         if (this.stepIsInlineOnly && this.stepToolCalls.length > 0) {
-            // Inline-only step → add to collapsed group
+            // Inline-only step → keep data buffer in sync (used on session-end /
+            // replay). The live group is already on screen; just bump the step
+            // range in its header so "step 2" becomes "steps 2–3" as more
+            // inline-only steps complete.
             this.collapsedGroup.push({
                 stepEvent: this.currentStepEvent,
                 toolCalls: [...this.stepToolCalls],
@@ -2359,129 +2463,248 @@ class ResonantApp {
                 model: this.lastModel,
                 stats: this.lastStats,
             });
+            if (this._liveCollapsedGroup) {
+                this._liveCollapsedGroup.lastStep = event.step ?? this._liveCollapsedGroup.lastStep;
+                this._updateLiveCollapsedHeader();
+            }
+            // Don't yank the thinking indicator (or the live spinner) — the
+            // model is about to start the next step.
         } else if (this.stepRendered) {
-            // Fully rendered step → show footer
-            this.renderStepFooter(event);
+            // Per-step footer no longer renders — the single per-turn footer
+            // at session.end carries the aggregated stats.
+            this.removeThinking();
+        } else {
+            // Step had no rendered output (no tools, no text) — clear thinking
+            this.removeThinking();
         }
     }
 
-    renderStepFooter(event) {
-        const elapsed = event.elapsed || 0;
-        if (elapsed <= 0 && !this.lastModel) return;
+    /** No-op stub kept so any older replay code paths don't break. */
+    renderStepFooter(_event) { /* per-step footer removed in compact view */ }
+
+    /**
+     * Render the single dim per-turn footer beneath the assistant's prose.
+     * Format: `▣ model · 1234→340 tok · 4.7s`. Called once at session.end
+     * (after the last text.done has flushed the assistant message), so it
+     * sits between prose and the run-card.
+     */
+    _renderTurnFooter() {
+        const t = this._currentTurn;
+        if (!t || (t.stepCount === 0 && !this.lastModel)) return;
 
         const parts = [];
         if (this.lastModel) parts.push(this.lastModel);
-        if (this.lastStats) {
-            const inp = this.lastStats.input_tokens;
-            const out = this.lastStats.output_tokens;
-            if (inp && out) parts.push(`${inp}→${out} tok`);
+        if (t.totalInputTokens || t.totalOutputTokens) {
+            parts.push(`${t.totalInputTokens}→${t.totalOutputTokens} tok`);
         }
-        if (elapsed > 0) parts.push(`${elapsed.toFixed(1)}s`);
+        if (t.totalElapsed > 0) parts.push(`${t.totalElapsed.toFixed(1)}s`);
+        if (parts.length === 0) return;
 
         const el = document.createElement('div');
-        el.className = 'step-footer';
-        el.innerHTML = `▣ ${parts.map(p => `<span>${p}</span>`).join('<span class="sep">·</span>')}`;
-        this.getRenderTarget().appendChild(el);
+        el.className = 'turn-footer';
+        el.innerHTML = `▣ ${parts.map((p) => `<span>${this.escapeHtml(p)}</span>`).join('<span class="sep">·</span>')}`;
+        this.chatMessages.appendChild(el);
+        t.footerEl = el;
     }
 
     // ── Collapsed Group ─────────────────────────────────────────
+    //
+    // Inline-only tool calls (file_read / glob / grep / etc.) used to be
+    // buffered and rendered as a single collapsed card the *next* time a
+    // step needed to render — which made the card pop in late and caused
+    // visible flicker as the thinking indicator and step headers cycled
+    // around it. We now render the card immediately when the first inline
+    // tool arrives and append items live as more come in. flushCollapsedGroup
+    // therefore just finalizes (removes the .running class) — the legacy
+    // bulk-render path is kept as a fallback for any edge case where a
+    // collapsedGroup data buffer somehow ends up populated without a
+    // matching live DOM (defensive only).
 
     flushCollapsedGroup() {
+        if (this._liveCollapsedGroup) {
+            this._finalizeLiveCollapsedGroup();
+            return;
+        }
         if (this.collapsedGroup.length === 0) return;
-
-        const group = this.collapsedGroup;
-        const firstStep = group[0].stepEvent.step || 0;
-        const lastStep = group[group.length - 1].stepEvent.step || 0;
-
-        // Count tools
-        const toolCounts = {};
-        const allCalls = [];
-        for (const g of group) {
+        // Defensive fallback: bulk-render from buffered data.
+        for (const g of this.collapsedGroup) {
             for (let i = 0; i < g.toolCalls.length; i++) {
-                const tc = g.toolCalls[i];
-                const name = tc.name || '';
-                toolCounts[name] = (toolCounts[name] || 0) + 1;
-                allCalls.push({
-                    call: tc,
-                    result: g.toolResults[i] || {},
-                });
+                this._appendToLiveCollapsedGroup(g.toolCalls[i], g.stepEvent);
+                const r = g.toolResults[i];
+                if (r) this._updateLiveCollapsedItemResult(r);
+            }
+            if (this._liveCollapsedGroup && g.endEvent) {
+                this._liveCollapsedGroup.lastStep = g.endEvent.step ?? this._liveCollapsedGroup.lastStep;
             }
         }
+        this._updateLiveCollapsedHeader();
+        this._finalizeLiveCollapsedGroup();
+    }
 
-        // Summary
-        const summaryParts = [];
-        for (const [name, count] of Object.entries(toolCounts)) {
-            const info = getToolInfo(name);
-            summaryParts.push(count > 1 ? `${info.label} ×${count}` : info.label);
-        }
+    /**
+     * Append (or create) the live collapsed-group DOM for an inline tool
+     * call. The card is marked .running while in flight and finalized when
+     * a block tool, text streaming, error, or session end arrives.
+     */
+    _appendToLiveCollapsedGroup(callEvent, stepEvent) {
+        const stepRef = stepEvent || this.currentStepEvent || {};
+        const stepNum = stepRef.step ?? 0;
 
-        const actionLabel = inferActionLabel(toolCounts);
-        const stepMeta = firstStep === lastStep
-            ? `step ${firstStep}`
-            : `steps ${firstStep}–${lastStep}`;
+        if (!this._liveCollapsedGroup) {
+            // Start expanded so the user can SEE what the agent is doing in
+            // real time. We auto-collapse it the moment the assistant starts
+            // streaming prose (signal that tool work is winding down) — that
+            // happens in _finalizeLiveCollapsedGroup, which is called from
+            // text.delta / block-tool / session-end / error paths.
+            const container = document.createElement('div');
+            container.className = 'collapsed-group running expanded';
 
-        const container = document.createElement('div');
-        container.className = 'collapsed-group';
-
-        const header = document.createElement('div');
-        header.className = 'collapsed-header';
-        header.innerHTML = `
-            <span class="collapsed-icon">▸</span>
-            <span class="collapsed-summary">◆ ${actionLabel}</span>
-            <span class="collapsed-meta">${stepMeta} · ${allCalls.length} calls</span>
-        `;
-
-        const items = document.createElement('div');
-        items.className = 'collapsed-items';
-
-        for (const { call, result } of allCalls) {
-            const name = call.name || '';
-            const args = call.arguments || {};
-            const info = getToolInfo(name);
-            const meta = result.metadata || {};
-            const isError = result.is_error || false;
-
-            let desc = '';
-            let metaText = '';
-
-            if (name === 'file_read') {
-                const p = args.path || '';
-                desc = `<span style="color:var(--file)">${this.shortenPath(p)}</span>`;
-                metaText = meta.lines ? `${meta.lines} lines` : '';
-            } else if (name === 'glob') {
-                desc = args.pattern || '';
-                metaText = meta.count != null ? `${meta.count} files` : '';
-            } else if (name === 'grep') {
-                desc = `'${args.pattern || ''}'`;
-                metaText = meta.count != null ? `${meta.count} matches` : '';
-            } else {
-                desc = info.label;
-            }
-
-            const statusIcon = isError ? '✗' : '✓';
-            const statusColor = isError ? 'var(--err)' : 'var(--ok)';
-
-            const line = document.createElement('div');
-            line.className = 'tool-inline';
-            line.innerHTML = `
-                <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
-                <span class="tool-desc">${desc}</span>
-                <span class="tool-meta">${metaText}</span>
-                <span class="tool-status" style="color:${statusColor}">${statusIcon}</span>
+            const header = document.createElement('div');
+            header.className = 'collapsed-header';
+            header.innerHTML = `
+                <span class="collapsed-icon">▾</span>
+                <span class="collapsed-summary">◆ Working...</span>
+                <span class="collapsed-meta">step ${stepNum}</span>
             `;
-            items.appendChild(line);
+
+            const items = document.createElement('div');
+            items.className = 'collapsed-items';
+
+            header.addEventListener('click', () => {
+                container.classList.toggle('expanded');
+                header.querySelector('.collapsed-icon').textContent =
+                    container.classList.contains('expanded') ? '▾' : '▸';
+            });
+
+            container.appendChild(header);
+            container.appendChild(items);
+            this.getRenderTarget().appendChild(container);
+
+            this._liveCollapsedGroup = {
+                container, header, items,
+                firstStep: stepNum,
+                lastStep: stepNum,
+                toolCounts: {},
+                callIdToItem: new Map(),
+                callCount: 0,
+            };
         }
 
-        header.addEventListener('click', () => {
-            container.classList.toggle('expanded');
-            header.querySelector('.collapsed-icon').textContent =
-                container.classList.contains('expanded') ? '▾' : '▸';
-        });
+        const live = this._liveCollapsedGroup;
+        live.lastStep = Math.max(live.lastStep, stepNum);
+        live.callCount++;
 
-        container.appendChild(header);
-        container.appendChild(items);
-        this.getRenderTarget().appendChild(container);
+        const name = callEvent.name || '';
+        const args = callEvent.arguments || {};
+        const info = getToolInfo(name);
+        live.toolCounts[name] = (live.toolCounts[name] || 0) + 1;
 
+        let desc = '';
+        if (name === 'file_read') {
+            const p = args.path || '';
+            desc = `<span style="color:var(--file)">${this.escapeHtml(this.shortenPath(p))}</span>`;
+        } else if (name === 'glob') {
+            desc = this.escapeHtml(args.pattern || '');
+        } else if (name === 'grep') {
+            desc = `'${this.escapeHtml(args.pattern || '')}'`;
+        } else {
+            desc = this.escapeHtml(info.label);
+        }
+
+        const line = document.createElement('div');
+        line.className = 'tool-inline pending';
+        line.innerHTML = `
+            <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
+            <span class="tool-desc">${desc}</span>
+            <span class="tool-meta"></span>
+            <span class="tool-status" style="color:var(--muted)">…</span>
+        `;
+        live.items.appendChild(line);
+
+        const callId = callEvent.call_id || '';
+        if (callId) {
+            live.callIdToItem.set(callId, line);
+        } else {
+            // Fallback: track latest item for tools that don't emit a call_id
+            live._lastItem = line;
+            live._lastItemTool = name;
+        }
+
+        this._updateLiveCollapsedHeader();
+        this.scrollToBottom();
+    }
+
+    /** Update an in-flight live item with result metadata (line counts, error state). */
+    _updateLiveCollapsedItemResult(resultEvent) {
+        if (!this._liveCollapsedGroup) return;
+        const live = this._liveCollapsedGroup;
+        const name = resultEvent.name || '';
+        const callId = resultEvent.call_id || '';
+
+        let line = null;
+        if (callId && live.callIdToItem.has(callId)) {
+            line = live.callIdToItem.get(callId);
+            live.callIdToItem.delete(callId);
+        } else if (live._lastItem && live._lastItemTool === name) {
+            line = live._lastItem;
+            live._lastItem = null;
+            live._lastItemTool = null;
+        }
+        if (!line) return;
+
+        const meta = resultEvent.metadata || {};
+        const isError = resultEvent.is_error || false;
+
+        let metaText = '';
+        if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
+        else if (name === 'glob' && meta.count != null) metaText = `${meta.count} files`;
+        else if (name === 'grep' && meta.count != null) metaText = `${meta.count} matches`;
+
+        const metaEl = line.querySelector('.tool-meta');
+        if (metaEl) metaEl.textContent = metaText;
+
+        const statusEl = line.querySelector('.tool-status');
+        if (statusEl) {
+            statusEl.textContent = isError ? '✗' : '✓';
+            statusEl.style.color = isError ? 'var(--err)' : 'var(--ok)';
+        }
+        line.classList.remove('pending');
+    }
+
+    /** Refresh the live group's summary label, step range, and call count. */
+    _updateLiveCollapsedHeader() {
+        if (!this._liveCollapsedGroup) return;
+        const live = this._liveCollapsedGroup;
+        const summaryEl = live.header.querySelector('.collapsed-summary');
+        const metaEl = live.header.querySelector('.collapsed-meta');
+        if (summaryEl) {
+            const action = inferActionLabel(live.toolCounts);
+            summaryEl.textContent = `◆ ${action}`;
+        }
+        if (metaEl) {
+            const stepMeta = live.firstStep === live.lastStep
+                ? `step ${live.firstStep}`
+                : `steps ${live.firstStep}–${live.lastStep}`;
+            metaEl.textContent = `${stepMeta} · ${live.callCount} call${live.callCount === 1 ? '' : 's'}`;
+        }
+    }
+
+    /**
+     * Finalize the live group: drop the .running class so its spinner stops,
+     * and auto-collapse it (the .expanded class) so the chat doesn't keep
+     * the now-static tool list taking up vertical space. The user can
+     * still re-expand it with a click. Called from text.delta (assistant
+     * is now writing prose), block-tool starts, session.end, and error.
+     */
+    _finalizeLiveCollapsedGroup() {
+        if (this._liveCollapsedGroup) {
+            const live = this._liveCollapsedGroup;
+            live.container.classList.remove('running');
+            live.container.classList.remove('expanded');
+            const icon = live.header && live.header.querySelector('.collapsed-icon');
+            if (icon) icon.textContent = '▸';
+            this._liveCollapsedGroup = null;
+        }
         this.collapsedGroup = [];
     }
 
@@ -2629,25 +2852,40 @@ class ResonantApp {
     }
 
     handleTextDone(event) {
+        // Cancel any pending throttled re-parse — we're about to do the
+        // final, fully-formatted parse and we don't want a stale partial
+        // re-parse to land after it.
+        if (this._renderTimer) {
+            clearTimeout(this._renderTimer);
+            this._renderTimer = null;
+        }
         if (this.isStreaming && this.currentMessageEl) {
             this.isStreaming = false;
             const finalText = (event.text || this.streamBuffer || '').trim();
             this.streamBuffer = finalText;
+            // streaming=false on the final parse runs hljs + decorates code
+            // blocks with copy buttons (skipped during streaming for perf).
             this.renderMarkdown(this.currentMessageEl, finalText);
             this.currentMessageEl.querySelector('.message-content')?.classList.remove('streaming-cursor');
         }
     }
 
     scheduleRender() {
-        if (!this._renderScheduled) {
-            this._renderScheduled = true;
-            requestAnimationFrame(() => {
-                this._renderScheduled = false;
-                if (this.currentMessageEl) {
-                    this.renderMarkdown(this.currentMessageEl, this.streamBuffer, true);
-                }
-            });
-        }
+        // Re-parsing the entire markdown buffer on every animation frame is
+        // O(n²) for long responses — a 50KB stream would re-parse 50KB on
+        // every frame ~60×/sec. Throttle to ~12fps; the final fully-formatted
+        // parse runs unconditionally on text.done.
+        if (this._renderTimer) return;
+        const now = performance.now();
+        const elapsed = now - (this._lastStreamParseAt || 0);
+        const wait = Math.max(16, 80 - elapsed);
+        this._renderTimer = setTimeout(() => {
+            this._renderTimer = null;
+            this._lastStreamParseAt = performance.now();
+            if (this.currentMessageEl) {
+                this.renderMarkdown(this.currentMessageEl, this.streamBuffer, true);
+            }
+        }, wait);
     }
 
     renderMarkdown(el, text, streaming = false) {
@@ -2674,17 +2912,58 @@ class ResonantApp {
                 contentEl.classList.remove('streaming-cursor');
             }
 
-            // Syntax highlight code blocks
-            contentEl.querySelectorAll('pre code').forEach(block => {
-                if (typeof hljs !== 'undefined') {
-                    hljs.highlightElement(block);
-                }
-            });
+            // Defer expensive syntax highlighting + copy-button decoration
+            // until streaming completes — running hljs on every code block
+            // on every throttled re-parse still adds up on long responses,
+            // and the user can't read or copy the code until it's stable
+            // anyway.
+            if (!streaming) {
+                contentEl.querySelectorAll('pre code').forEach(block => {
+                    if (typeof hljs !== 'undefined') {
+                        hljs.highlightElement(block);
+                    }
+                });
+                this._decorateCodeBlocks(contentEl);
+            }
         } catch (err) {
             contentEl.textContent = text;
         }
 
         this.scrollToBottom();
+    }
+
+    /**
+     * Add a hover-revealed copy button to each `<pre>` block in a rendered
+     * message. Idempotent — if the button already exists, leaves it alone.
+     */
+    _decorateCodeBlocks(contentEl) {
+        const copyIcon = '<svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">'
+            + '<rect x="4" y="4" width="8" height="8" rx="1.2" stroke="currentColor" stroke-width="1.1"/>'
+            + '<path d="M10 4V2.8A.8.8 0 0 0 9.2 2H2.8a.8.8 0 0 0-.8.8v6.4a.8.8 0 0 0 .8.8H4" stroke="currentColor" stroke-width="1.1"/>'
+            + '</svg>';
+        contentEl.querySelectorAll('pre').forEach((pre) => {
+            if (pre.querySelector(':scope > .code-copy-btn')) return;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'code-copy-btn';
+            btn.title = 'Copy code';
+            btn.setAttribute('aria-label', 'Copy code');
+            btn.innerHTML = copyIcon;
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const code = pre.querySelector('code')?.textContent || pre.textContent || '';
+                if (!navigator.clipboard?.writeText) return;
+                navigator.clipboard.writeText(code).then(() => {
+                    btn.classList.add('copied');
+                    btn.innerHTML = '✓';
+                    setTimeout(() => {
+                        btn.classList.remove('copied');
+                        btn.innerHTML = copyIcon;
+                    }, 1200);
+                }).catch(() => {});
+            });
+            pre.appendChild(btn);
+        });
     }
 
     // ── Tool Calls ──────────────────────────────────────────────
@@ -2721,11 +3000,19 @@ class ResonantApp {
         }
 
         if (COLLAPSIBLE_TOOLS.has(name) && this.stepIsInlineOnly) {
-            // Buffer inline tool
+            // Live-render into the running collapsed group + keep the data
+            // buffer in sync (used by step.end / replay paths).
+            this._appendToLiveCollapsedGroup(event);
             this.stepToolCalls.push(event);
         } else {
-            // Block tool → render immediately
+            // Block tool → finalize any live group first, then render the
+            // step header and the block tool. The buffered inline calls (if
+            // any) are already on screen inside the now-finalized live group,
+            // so we drop them from the local buffers to avoid double-render.
+            this._finalizeLiveCollapsedGroup();
             this.stepIsInlineOnly = false;
+            this.stepToolCalls = [];
+            this.stepToolResults = [];
             this.ensureStepRendered();
             this.renderToolCall(event);
         }
@@ -2744,13 +3031,18 @@ class ResonantApp {
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
         if (hasImage && this.stepIsInlineOnly) {
+            this._finalizeLiveCollapsedGroup();
             this.stepIsInlineOnly = false;
+            this.stepToolCalls = [];
+            this.stepToolResults = [];
             this.ensureStepRendered();
             this.renderToolResult(event);
             return;
         }
 
         if (this.stepIsInlineOnly && COLLAPSIBLE_TOOLS.has(name)) {
+            // Update the live item with status + metadata (e.g. "5 matches")
+            this._updateLiveCollapsedItemResult(event);
             this.stepToolResults.push(event);
         } else {
             if (!this.stepRendered) this.ensureStepRendered();
@@ -2849,74 +3141,157 @@ class ResonantApp {
         this.getRenderTarget().appendChild(el);
     }
 
+    /**
+     * Render a block tool (bash / file_edit / file_write / browser_js) as a
+     * single compact row that sits in the flat per-turn list. The tool's
+     * full output (diff / file content / shell output) is stashed on the
+     * row's dataset and rendered lazily into a hidden detail panel that
+     * the user expands by clicking the chevron — or that auto-expands when
+     * the result event reports an error.
+     *
+     * Row anatomy:
+     *   ◯ ~ foo.py · pending …                ← while running
+     *   ✓ ~ foo.py · +12 −3              ▸    ← after success result
+     *   ✗ $ npm test · exit 1 · 1.2s    ▾    ← after error result (auto-expanded)
+     */
     renderBlockToolCall(name, args, info, category, event) {
-        const el = document.createElement('div');
-        el.className = `tool-block ${category}`;
-        el.setAttribute('data-tool', name);
-        el.style.borderLeftColor = `var(--${info.color})`;
+        const callId = event.call_id || `__nocallid_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
 
-        let headerContent = '';
-        let bodyContent = '';
+        const el = document.createElement('div');
+        el.className = `tool-row ${category}`;
+        el.dataset.tool = name;
+        el.dataset.callId = callId;
+
+        // Per-tool args summary + the icon glyph that goes in the second slot.
+        let glyph = info.icon;
+        let glyphColor = info.color;
+        let summary = '';
+        let detailKind = ''; // what we'll render when expanded
 
         if (name === 'bash') {
+            glyph = '$';
+            glyphColor = info.color;
             const cmd = args.command || '';
-            const displayCmd = cmd.length > 100 ? cmd.slice(0, 97) + '...' : cmd;
-            headerContent = `<span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
-                             <span class="tool-name" style="color:var(--${info.color})">${info.label}</span>`;
-            bodyContent = `<span style="color:var(--muted)">$ </span>${this.escapeHtml(displayCmd)}`;
-
-            // Push command to preview console
+            summary = cmd;
+            el.dataset.fullCommand = cmd;
+            detailKind = 'bash';
             this.pushPreviewConsole(`$ ${cmd}`, 'stdout');
-
         } else if (name === 'file_write') {
-            const fpath = args.path || '';
+            glyph = '+';
+            glyphColor = 'ok';
+            summary = args.path || '';
             const content = args.content || '';
-            const lines = content.split('\n');
-            const lineCount = lines.length;
-            const preview = lines.slice(0, 15).join('\n');
-
-            headerContent = `<span class="tool-icon" style="color:var(--ok)">${info.icon}</span>
-                             <span class="tool-name" style="color:var(--ok)">${info.label}</span>
-                             <span class="tool-file">${this.escapeHtml(fpath)}</span>`;
-            bodyContent = this.escapeHtml(preview);
-            if (lineCount > 15) bodyContent += `\n<span style="color:var(--dim)"># ... (${lineCount - 15} more lines)</span>`;
-
+            el.dataset.fullContent = content;
+            detailKind = 'file_write';
         } else if (name === 'file_edit') {
-            const fpath = args.path || '';
+            glyph = '~';
+            glyphColor = 'warn';
+            summary = args.path || '';
+            // Stash diff lines as JSON so the lazy expand can re-render them
+            // with proper +/- coloring without re-fetching anything.
             const diffLines = event.diff_lines || [];
+            el.dataset.diffLines = JSON.stringify(diffLines);
+            detailKind = 'file_edit';
+        } else if (name === 'browser_js') {
+            glyph = '>';
+            glyphColor = 'brand2';
+            const code = args.code || '';
+            summary = code.length > 100 ? code.slice(0, 97) + '...' : code;
+            el.dataset.fullCode = code;
+            detailKind = 'browser_js';
+        } else {
+            summary = info.label;
+        }
 
-            headerContent = `<span class="tool-icon" style="color:var(--warn)">${info.icon}</span>
-                             <span class="tool-name" style="color:var(--warn)">${info.label}</span>
-                             <span class="tool-file">${this.escapeHtml(fpath)}</span>`;
+        el.dataset.detailKind = detailKind;
 
-            if (diffLines.length > 2) {
-                const rendered = diffLines.slice(2, 20).map(line => {
+        el.innerHTML = `
+            <span class="tool-row-status pending" data-status>◯</span>
+            <span class="tool-row-glyph" style="color:var(--${glyphColor})" data-glyph>${glyph}</span>
+            <code class="tool-row-summary" data-summary></code>
+            <span class="tool-row-meta" data-meta>running…</span>
+            <button type="button" class="tool-row-toggle" data-toggle aria-expanded="false" tabindex="-1">▸</button>
+            <div class="tool-row-detail" data-detail hidden></div>
+        `;
+        // Use textContent for summary so paths / commands aren't HTML-injected.
+        el.querySelector('[data-summary]').textContent = summary;
+
+        // Click anywhere on the row (except the toggle button which stops
+        // propagation) → expand. Idempotent: clicking again toggles.
+        el.addEventListener('click', () => this._toggleBlockRowDetail(el));
+
+        this.getRenderTarget().appendChild(el);
+        if (this._blockToolRows) this._blockToolRows.set(callId, el);
+    }
+
+    /**
+     * Lazy-render the detail panel for a block tool row. Called the first
+     * time the user expands the row (or auto-triggered on error in
+     * renderBlockToolResult).
+     */
+    _renderBlockRowDetail(el) {
+        const detail = el.querySelector('[data-detail]');
+        if (!detail || detail.dataset.rendered === 'true') return;
+        const kind = el.dataset.detailKind || '';
+
+        if (kind === 'bash') {
+            const cmd = el.dataset.fullCommand || '';
+            const output = el.dataset.fullOutput || '';
+            const isError = el.dataset.isError === 'true';
+            detail.innerHTML = `
+                <div class="tool-row-detail-cmd">$ <code></code></div>
+                <pre class="tool-row-detail-output ${isError ? 'err' : ''}"></pre>
+            `;
+            detail.querySelector('code').textContent = cmd;
+            detail.querySelector('pre').textContent = output || '(no output)';
+        } else if (kind === 'file_write') {
+            const content = el.dataset.fullContent || '';
+            detail.innerHTML = `<pre class="tool-row-detail-content"></pre>`;
+            detail.querySelector('pre').textContent = content;
+        } else if (kind === 'file_edit') {
+            let lines = [];
+            try { lines = JSON.parse(el.dataset.diffLines || '[]'); } catch (_e) { /* keep [] */ }
+            const rendered = lines.length > 2
+                ? lines.slice(2).map((line) => {
                     if (line.startsWith('+')) return `<span class="diff-line add">+ ${this.escapeHtml(line.slice(1))}</span>`;
                     if (line.startsWith('-')) return `<span class="diff-line del">- ${this.escapeHtml(line.slice(1))}</span>`;
                     if (line.startsWith('@@')) return `<span class="diff-line hunk">${this.escapeHtml(line)}</span>`;
                     return `<span class="diff-line ctx">  ${this.escapeHtml(line)}</span>`;
-                }).join('');
-                bodyContent = rendered;
-                if (diffLines.length > 20) bodyContent += `<span class="diff-line ctx">  ⋯ ${diffLines.length - 20} more lines</span>`;
-            } else {
-                bodyContent = '<span style="color:var(--dim)">(no visible diff)</span>';
-            }
-
-        } else if (name === 'browser_js') {
-            const code = args.code || '';
-            const display = code.length > 200 ? code.slice(0, 197) + '...' : code;
-            headerContent = `<span class="tool-icon" style="color:var(--brand2)">${info.icon}</span>
-                             <span class="tool-name" style="color:var(--brand2)">${info.label}</span>`;
-            bodyContent = this.escapeHtml(display);
+                }).join('')
+                : '<span class="tool-row-detail-empty">(no visible diff)</span>';
+            detail.innerHTML = `<div class="tool-row-detail-diff">${rendered}</div>`;
+        } else if (kind === 'browser_js') {
+            const code = el.dataset.fullCode || '';
+            const output = el.dataset.fullOutput || '';
+            detail.innerHTML = `
+                <pre class="tool-row-detail-content"></pre>
+                <pre class="tool-row-detail-output"></pre>
+            `;
+            detail.querySelector('.tool-row-detail-content').textContent = code;
+            detail.querySelector('.tool-row-detail-output').textContent = output || '(no output)';
         }
 
-        el.innerHTML = `
-            <div class="tool-block-header">${headerContent}</div>
-            <div class="tool-block-body">${bodyContent}</div>
-            <div class="tool-block-footer" data-tool-footer="${name}"></div>
-        `;
+        detail.dataset.rendered = 'true';
+    }
 
-        this.getRenderTarget().appendChild(el);
+    _toggleBlockRowDetail(el) {
+        const expanded = el.classList.toggle('expanded');
+        const detail = el.querySelector('[data-detail]');
+        const toggle = el.querySelector('[data-toggle]');
+        if (expanded) {
+            this._renderBlockRowDetail(el);
+            if (detail) detail.hidden = false;
+            if (toggle) {
+                toggle.textContent = '▾';
+                toggle.setAttribute('aria-expanded', 'true');
+            }
+        } else {
+            if (detail) detail.hidden = true;
+            if (toggle) {
+                toggle.textContent = '▸';
+                toggle.setAttribute('aria-expanded', 'false');
+            }
+        }
     }
 
     renderToolResult(event) {
@@ -2933,8 +3308,13 @@ class ResonantApp {
             return;
         }
 
+        // Splice call_id into meta so the block-row lookup can match the
+        // exact call (multiple parallel calls of the same tool exist with
+        // tool batching). Inline result path doesn't need this.
+        const metaWithId = event.call_id ? { ...meta, _call_id: event.call_id } : meta;
+
         if (BLOCK_TOOLS.has(name)) {
-            this.renderBlockToolResult(name, output, isError, elapsed, meta);
+            this.renderBlockToolResult(name, output, isError, elapsed, metaWithId);
         } else {
             this.renderInlineToolResult(name, output, isError, elapsed, meta);
         }
@@ -2996,58 +3376,98 @@ class ResonantApp {
         last.appendChild(status);
     }
 
+    /**
+     * Update the in-place tool row created by renderBlockToolCall with the
+     * result. Sets the status glyph (✓/✗), populates the meta column with
+     * a one-line summary (`+12 −3` / `exit 0 · 1.2s` / `145 lines`), and
+     * stashes the full output on the row so the lazy detail render can
+     * find it. Auto-expands on error so the user immediately sees what
+     * went wrong without an extra click.
+     */
     renderBlockToolResult(name, output, isError, elapsed, meta) {
-        const target = this.getRenderTarget();
-        const footers = target.querySelectorAll(`[data-tool-footer="${name}"]`);
-        const footer = footers[footers.length - 1];
-        if (!footer) return;
+        // Find the most recent row for this tool. We try call_id first
+        // (precise — multiple parallel calls of the same tool are kept
+        // distinct) then fall back to "last row of this tool name" so
+        // backends that don't emit call_ids still get correct updates.
+        const callId = meta && meta._call_id;
+        let row = null;
+        if (callId && this._blockToolRows && this._blockToolRows.has(callId)) {
+            row = this._blockToolRows.get(callId);
+            this._blockToolRows.delete(callId);
+        } else {
+            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${name}"]`);
+            row = all[all.length - 1] || null;
+        }
+        if (!row) return;
 
+        // Status glyph + class
+        const statusEl = row.querySelector('[data-status]');
+        const metaEl = row.querySelector('[data-meta]');
+        if (statusEl) {
+            statusEl.classList.remove('pending');
+            statusEl.classList.add(isError ? 'err' : 'ok');
+            statusEl.textContent = isError ? '✗' : '✓';
+        }
+        row.dataset.isError = isError ? 'true' : 'false';
+        // Stamp the row with the .errored class so the whole row picks up
+        // the warn-tinted styling (red left-border + faint bg). The status
+        // glyph alone is too easy to miss when skimming a long turn.
+        if (isError) {
+            row.classList.add('errored');
+        } else {
+            row.classList.remove('errored');
+        }
+
+        // Per-tool meta summary (the right-aligned dim line on the row)
+        let metaText = '';
         if (name === 'bash') {
-            const lines = output.split('\n');
-            const displayLines = lines.length > MAX_OUTPUT_LINES
-                ? [...lines.slice(0, MAX_OUTPUT_LINES), `⋯ +${lines.length - MAX_OUTPUT_LINES} lines`]
-                : lines;
-
-            // Add output to block body
-            const body = footer.previousElementSibling;
-            if (body) {
-                const outputEl = document.createElement('div');
-                outputEl.style.marginTop = '8px';
-                outputEl.style.borderTop = '1px solid var(--border)';
-                outputEl.style.paddingTop = '6px';
-                outputEl.style.color = isError ? 'var(--err)' : 'var(--dim)';
-                outputEl.textContent = displayLines.join('\n');
-                body.appendChild(outputEl);
+            const parts = [];
+            if (meta && meta.exit_code !== undefined && meta.exit_code !== null) {
+                parts.push(`exit ${meta.exit_code}`);
             }
-
-            const parts = [`${elapsed.toFixed(1)}s`];
-            if (meta.timed_out) parts.push('timeout');
-            if (meta.exit_code && meta.exit_code !== 0) parts.push(`exit ${meta.exit_code}`);
-            footer.innerHTML = `<span class="tool-status ${isError ? 'err' : 'ok'}">${isError ? '✗' : '✓'}</span> ${parts.join(' · ')}`;
-
-            // Push to preview console
+            if (elapsed > 0) parts.push(`${elapsed.toFixed(1)}s`);
+            if (meta && meta.timed_out) parts.push('timeout');
+            metaText = parts.join(' · ');
+            row.dataset.fullOutput = output || '';
+            // Push to preview console regardless of expand state.
             if (output && output.trim()) {
-                const type = isError ? 'stderr' : 'stdout';
-                this.pushPreviewConsole(output.trim(), type);
+                this.pushPreviewConsole(output.trim(), isError ? 'stderr' : 'stdout');
             }
-
         } else if (name === 'file_write') {
-            const lineCount = meta.lines || 0;
-            const chars = meta.chars || 0;
-            const icon = isError ? '✗' : '✓';
-            footer.innerHTML = `<span class="tool-status ${isError ? 'err' : 'ok'}">${icon}</span> ${lineCount} lines, ${chars} chars`;
-
+            const lineCount = (meta && meta.lines) || 0;
+            metaText = isError ? (output || 'error').slice(0, 80) : `${lineCount} line${lineCount === 1 ? '' : 's'}`;
         } else if (name === 'file_edit') {
-            const icon = isError ? '✗' : '✓';
-            const msg = isError ? output : 'applied';
-            footer.innerHTML = `<span class="tool-status ${isError ? 'err' : 'ok'}">${icon}</span> ${msg}`;
-
+            // Count +/- from the diff_lines we stashed on the row.
+            let add = 0, del = 0;
+            try {
+                const lines = JSON.parse(row.dataset.diffLines || '[]');
+                for (const ln of lines) {
+                    if (ln.startsWith('+') && !ln.startsWith('+++')) add++;
+                    else if (ln.startsWith('-') && !ln.startsWith('---')) del++;
+                }
+            } catch (_e) { /* keep zero counts */ }
+            metaText = isError
+                ? (output || 'error').slice(0, 80)
+                : (add || del ? `+${add} −${del}` : 'applied');
         } else if (name === 'browser_js') {
-            const lines = output.split('\n');
-            const display = lines.length > MAX_OUTPUT_LINES
-                ? [...lines.slice(0, MAX_OUTPUT_LINES), `⋯ +${lines.length - MAX_OUTPUT_LINES} lines`].join('\n')
-                : output;
-            footer.innerHTML = `<span style="color:${isError ? 'var(--err)' : 'var(--dim)'}">${this.escapeHtml(display)}</span>`;
+            row.dataset.fullOutput = output || '';
+            metaText = elapsed > 0 ? `${elapsed.toFixed(1)}s` : '';
+        }
+        if (metaEl) metaEl.textContent = metaText;
+
+        // Auto-expand on error so the user sees the failure immediately.
+        if (isError && !row.classList.contains('expanded')) {
+            this._toggleBlockRowDetail(row);
+        }
+
+        // If detail panel is already open (user expanded before result
+        // arrived), invalidate the cache so the next render picks up the
+        // now-populated dataset fields.
+        const detail = row.querySelector('[data-detail]');
+        if (detail && detail.dataset.rendered === 'true' && row.classList.contains('expanded')) {
+            detail.dataset.rendered = '';
+            detail.innerHTML = '';
+            this._renderBlockRowDetail(row);
         }
     }
 
@@ -3992,6 +4412,8 @@ class ResonantApp {
             fileChanges: [],
             todos: null,
         };
+        this._agentRunErrored = false;
+        this._agentRunErrorMessage = '';
     }
 
     _removeLiveAgentTodoStrip() {
@@ -4097,8 +4519,15 @@ class ResonantApp {
         const n = Math.max(0, Math.floor(totalSteps || 0));
         const files = summary.fileChanges || [];
         const td = summary.todos;
+        const errored = !!this._agentRunErrored;
+        const errorMsg = this._agentRunErrorMessage || '';
+
         let progressLabel;
-        if (td && td.total > 0) {
+        if (errored) {
+            progressLabel = n > 0
+                ? `Stopped after ${n} step${n === 1 ? '' : 's'}`
+                : 'Stopped';
+        } else if (td && td.total > 0) {
             progressLabel = `${td.done} of ${td.total} to-dos completed`;
         } else if (n > 0) {
             progressLabel = `${n} agent step${n === 1 ? '' : 's'}`;
@@ -4107,7 +4536,11 @@ class ResonantApp {
         }
 
         const el = document.createElement('div');
-        el.className = 'agent-run-card';
+        // Default to `compact` — click the banner to expand to the full panel
+        // (file changes list, blurb, Review/Commit buttons). One-line by
+        // default keeps completed turns from accumulating visual weight.
+        const compactClass = errored ? 'agent-run-card agent-run-stopped compact' : 'agent-run-card compact';
+        el.className = compactClass;
 
         // For HTML files, expose a "Preview" affordance — closes the loop so
         // the user doesn't have to spin up their own HTTP server to see the
@@ -4129,29 +4562,74 @@ class ResonantApp {
             </ol>`
             : '';
 
-        const kicker = 'Build';
-        const actionsHtml = `<div class="agent-run-actions">
+        const kicker = errored ? 'Stopped' : 'Build';
+        const checkGlyph = errored ? '⚠' : '✓';
+
+        // Hide Review / Commit actions when there is nothing actionable —
+        // either the run errored out, or zero files were edited (a pure
+        // exploration / Q&A turn shouldn't pretend it has changes to ship).
+        const showActions = !errored && files.length > 0;
+        const actionsHtml = showActions
+            ? `<div class="agent-run-actions">
                     <button type="button" class="agent-run-btn agent-run-btn-primary" data-agent-run-action="review">Review</button>
                     <button type="button" class="agent-run-btn" data-agent-run-action="commit" disabled title="Not wired yet">Create branch &amp; commit</button>
-                </div>`;
+                </div>`
+            : '';
+
+        const blurbHtml = errored
+            ? `<p class="agent-run-blurb agent-run-error-blurb">${this.escapeHtml(errorMsg || 'Run stopped before completion.')}</p>`
+            : `<p class="agent-run-blurb">Worked for ${this._formatRunDuration(totalElapsed)}.${files.length ? ' Edits below.' : ''}</p>`;
+
+        // Compact summary line — always visible. The expanded sections
+        // (todo strip, blurb, changes list, action buttons) live inside
+        // .agent-run-card-detail and toggle on click of the banner.
+        const summaryParts = [];
+        if (files.length) summaryParts.push(`${files.length} file${files.length === 1 ? '' : 's'}`);
+        if (totalElapsed > 0) summaryParts.push(this._formatRunDuration(totalElapsed));
+        const summaryLine = summaryParts.length
+            ? `<span class="agent-run-summary-meta">${this.escapeHtml('· ' + summaryParts.join(' · '))}</span>`
+            : '';
+
         el.innerHTML = `
-            <div class="agent-run-card-inner">
-                <div class="agent-run-kicker">${kicker}</div>
-                <div class="agent-run-title">${this.escapeHtml(title)}</div>
-                <div class="agent-todo-strip">
-                    <span class="agent-todo-check" aria-hidden="true">✓</span>
-                    <span class="agent-todo-text">${this.escapeHtml(progressLabel)}</span>
+            <button type="button" class="agent-run-banner" data-agent-run-toggle aria-expanded="false">
+                <span class="agent-run-kicker">${kicker}</span>
+                <span class="agent-run-title">${this.escapeHtml(title)}</span>
+                ${summaryLine}
+                <span class="agent-run-banner-chevron" aria-hidden="true">▸</span>
+            </button>
+            <div class="agent-run-card-detail" hidden>
+                <div class="agent-run-card-inner">
+                    <div class="agent-todo-strip">
+                        <span class="agent-todo-check" aria-hidden="true">${checkGlyph}</span>
+                        <span class="agent-todo-text">${this.escapeHtml(progressLabel)}</span>
+                    </div>
+                    ${blurbHtml}
+                    ${files.length ? `<div class="agent-changes-heading">Summary of changes</div>${changesHtml}` : ''}
+                    ${actionsHtml}
                 </div>
-                <p class="agent-run-blurb">Worked for ${this._formatRunDuration(totalElapsed)}.${files.length ? ' Edits below.' : ''}</p>
-                ${files.length ? `<div class="agent-changes-heading">Summary of changes</div>${changesHtml}` : ''}
-                ${actionsHtml}
             </div>
         `;
+
+        // Banner toggles the detail panel.
+        const banner = el.querySelector('[data-agent-run-toggle]');
+        const detail = el.querySelector('.agent-run-card-detail');
+        const chev = el.querySelector('.agent-run-banner-chevron');
+        if (banner && detail) {
+            banner.addEventListener('click', () => {
+                el.classList.toggle('compact');
+                const isExpanded = !el.classList.contains('compact');
+                detail.hidden = !isExpanded;
+                if (chev) chev.textContent = isExpanded ? '▾' : '▸';
+                banner.setAttribute('aria-expanded', isExpanded ? 'true' : 'false');
+            });
+        }
 
         // Wire the "Review" button (only present in code mode — actionsHtml is non-empty)
         const reviewBtn = el.querySelector('[data-agent-run-action="review"]');
         if (reviewBtn) {
-            reviewBtn.addEventListener('click', () => {
+            reviewBtn.addEventListener('click', (e) => {
+                // Don't bubble into the banner toggle.
+                e.stopPropagation();
                 const gitBadge = document.getElementById('git-badge');
                 if (gitBadge && gitBadge.style.display !== 'none') gitBadge.click();
                 else this.showStatusMessage('Use the git status control in the header when available.');
@@ -4207,6 +4685,11 @@ class ResonantApp {
 
         const totalElapsed = event.total_elapsed || 0;
         const totalSteps = event.total_steps || 0;
+
+        // Per-turn footer — single dim line below the assistant's prose,
+        // replaces the per-step "▣ model · tokens · 1.2s" footer that used
+        // to repeat after every step.
+        this._renderTurnFooter();
 
         const fileCount = (this._agentRunSummary && this._agentRunSummary.fileChanges)
             ? this._agentRunSummary.fileChanges.length
@@ -4352,7 +4835,13 @@ class ResonantApp {
 
     handleError(event) {
         this.removeThinking();
+        this._finalizeLiveCollapsedGroup();
         this.ensureStepRendered();
+
+        // Track error state so the run-card can drop the "Build" framing and
+        // hide Review/Commit actions when there's nothing successfully to act on.
+        this._agentRunErrored = true;
+        this._agentRunErrorMessage = event.message || '';
 
         const el = document.createElement('div');
         el.className = 'error-block';
@@ -4543,6 +5032,332 @@ class ResonantApp {
 
     // ── DOM Helpers ─────────────────────────────────────────────
 
+    /**
+     * Pi-style shell shortcut: render a "running" snippet in chat and ask the
+     * server to execute the command. Output lands via handleShellExecResult.
+     *
+     * `feedToLlm=true` (single-bang `!cmd`) — the server feeds the output back
+     * to the model after the command finishes, kicking off a normal assistant
+     * turn. The snippet stays in chat as the visible representation of the
+     * "user message" the model is responding to.
+     *
+     * `feedToLlm=false` (double-bang `!!cmd`) — pure side-channel. Output is
+     * displayed in chat for the user only; the model is not involved.
+     */
+    _runShellShortcut(cmd, feedToLlm) {
+        this._removeChatEmptyState();
+        const reqId = `shell-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+        if (!this._pendingShellExec) this._pendingShellExec = new Map();
+        const el = this._renderShellSnippetRunning(cmd, feedToLlm);
+        this._pendingShellExec.set(reqId, { cmd, feedToLlm, el });
+
+        this.send({
+            command: 'shell_exec',
+            cmd,
+            feed_to_llm: feedToLlm,
+            request_id: reqId,
+        });
+
+        if (feedToLlm) {
+            // Reset agent-run state — the LLM turn that follows is a fresh turn.
+            this._resetAgentRunSummary(`!${cmd}`);
+            if (this._renderTimer) {
+                clearTimeout(this._renderTimer);
+                this._renderTimer = null;
+            }
+            this._lastStreamParseAt = 0;
+            this.streamBuffer = '';
+            this.isStreaming = false;
+            this.currentMessageEl = null;
+            this.currentStepEvent = null;
+            this.stepToolCalls = [];
+            this.stepToolResults = [];
+            this.stepIsInlineOnly = true;
+            this.stepRendered = false;
+            this.collapsedGroup = [];
+            this._liveCollapsedGroup = null;
+        }
+    }
+
+    _renderShellSnippetRunning(cmd, feedToLlm) {
+        const el = document.createElement('div');
+        el.className = `shell-snippet ${feedToLlm ? 'fed' : 'silent'} running`;
+        el.innerHTML = `
+            <div class="shell-snippet-header">
+                <span class="shell-snippet-prompt">${feedToLlm ? '!' : '!!'}</span>
+                <code class="shell-snippet-cmd"></code>
+                <span class="shell-snippet-status">running…</span>
+            </div>
+            <pre class="shell-snippet-output" data-empty="true">running…</pre>
+        `;
+        el.querySelector('.shell-snippet-cmd').textContent = cmd;
+        this.chatMessages.appendChild(el);
+        this.scrollToBottom();
+        return el;
+    }
+
+    handleShellExecResult(event) {
+        const reqId = event.request_id || '';
+        const pending = this._pendingShellExec ? this._pendingShellExec.get(reqId) : null;
+        if (!pending) return;
+        this._pendingShellExec.delete(reqId);
+
+        const el = pending.el;
+        if (!el) return;
+
+        el.classList.remove('running');
+        if (!event.ok) el.classList.add('errored');
+
+        const elapsed = typeof event.elapsed === 'number' ? event.elapsed.toFixed(2) : '0.00';
+        const statusText = event.ok
+            ? `done · ${elapsed}s`
+            : `failed (exit ${event.exit_code ?? '?'}) · ${elapsed}s`;
+        el.querySelector('.shell-snippet-status').textContent = statusText;
+
+        const out = event.output || '(no output)';
+        const outputEl = el.querySelector('.shell-snippet-output');
+        outputEl.textContent = out;
+        outputEl.dataset.empty = out ? 'false' : 'true';
+
+        // For `!cmd` (feed_to_llm), the backend automatically kicks off a
+        // session.run after this event; the streaming events that follow
+        // arrive on the same websocket. We've already cleared streaming
+        // state in _runShellShortcut, so the assistant message will render
+        // normally below the snippet.
+        this.scrollToBottom();
+    }
+
+    // ── @-file Fuzzy Autocomplete ─────────────────────────────────────
+    //
+    // Inspired by pi's `@`-prefixed file references. Type `@` in the input
+    // → popup opens with project files; continue typing to filter; arrow
+    // keys to navigate, Tab/Enter to insert, Escape to dismiss. The path
+    // is inserted as-is (project-relative) so the model can resolve it via
+    // its existing path-resolution logic.
+
+    handleProjectFiles(event) {
+        // The backend may emit project_files for other unrelated requests
+        // in the future, but for now there's only the autocomplete consumer.
+        this._fuzzyFiles = Array.isArray(event.files) ? event.files : [];
+        this._fuzzyFilesLoading = false;
+        if (this._fuzzyFilesPending) {
+            this._fuzzyFilesPending = false;
+            // User triggered `@` while we were still loading — open the popup now.
+            this._updateFileFuzzyState();
+        }
+    }
+
+    _ensureFuzzyFilesLoaded() {
+        if (this._fuzzyFiles !== null) return true;
+        if (!this._fuzzyFilesLoading) {
+            this._fuzzyFilesLoading = true;
+            this.send({ command: 'list_project_files', request_id: 'fuzzy-init' });
+        }
+        return false;
+    }
+
+    /**
+     * Read the current input value + caret position. If the caret is
+     * immediately after an `@` token (no whitespace between `@` and the
+     * caret), open or update the fuzzy popup with the token as the query.
+     * Otherwise close the popup. Called from input/keyup handlers.
+     */
+    _updateFileFuzzyState() {
+        if (!this.userInput) return;
+        const value = this.userInput.value;
+        const caret = this.userInput.selectionStart || 0;
+
+        // Walk backwards from caret to find an `@` that's preceded by
+        // whitespace or start-of-string and has no whitespace after it.
+        let atPos = -1;
+        for (let i = caret - 1; i >= 0; i--) {
+            const ch = value[i];
+            if (ch === '@') {
+                const before = i === 0 ? ' ' : value[i - 1];
+                if (/\s/.test(before)) atPos = i;
+                break;
+            }
+            if (/\s/.test(ch)) break;
+        }
+
+        if (atPos < 0) {
+            this._closeFileFuzzy();
+            return;
+        }
+
+        const query = value.slice(atPos + 1, caret);
+        if (!this._ensureFuzzyFilesLoaded()) {
+            this._fuzzyFilesPending = true;
+            return;
+        }
+
+        this._fuzzyAtPos = atPos;
+        this._fuzzyQuery = query;
+        this._fuzzyMatches = this._computeFuzzyMatches(query);
+        this._fuzzyIdx = 0;
+        this._renderFileFuzzy();
+    }
+
+    _computeFuzzyMatches(query) {
+        const files = this._fuzzyFiles || [];
+        if (!query) {
+            return files.slice(0, 10);
+        }
+        const q = query.toLowerCase();
+        const scored = [];
+        for (const f of files) {
+            const score = this._fuzzyScore(q, f.toLowerCase());
+            if (score > 0) scored.push({ f, score });
+        }
+        // Higher score first. Within equal scores, shorter paths win — the
+        // closest match in a deeply nested project is usually what you want.
+        scored.sort((a, b) => b.score - a.score || a.f.length - b.f.length);
+        return scored.slice(0, 10).map((s) => s.f);
+    }
+
+    /**
+     * Subsequence fuzzy score: every char of query must appear in path in
+     * order. Bonuses for: matching the basename, consecutive char runs,
+     * matching at a path-segment boundary. Returns 0 if no match.
+     */
+    _fuzzyScore(query, path) {
+        let qi = 0;
+        let score = 0;
+        let consecutive = 0;
+        const slashIdx = path.lastIndexOf('/');
+        const baseStart = slashIdx >= 0 ? slashIdx + 1 : 0;
+        for (let i = 0; i < path.length && qi < query.length; i++) {
+            if (path[i] === query[qi]) {
+                let bonus = 1;
+                if (i === 0 || path[i - 1] === '/' || path[i - 1] === '-' || path[i - 1] === '_' || path[i - 1] === '.') bonus += 3;
+                if (i >= baseStart) bonus += 2;
+                consecutive = path[i - 1] === query[qi - 1] ? consecutive + 1 : 0;
+                score += bonus + consecutive;
+                qi++;
+            }
+        }
+        return qi === query.length ? score : 0;
+    }
+
+    _renderFileFuzzy() {
+        if (!this._fuzzyPopupEl) {
+            const el = document.createElement('div');
+            el.className = 'file-fuzzy-popup';
+            // Position relative to the input bar (parent of userInput).
+            const anchor = this.userInput.closest('.input-bar') || this.userInput.parentElement;
+            if (anchor && getComputedStyle(anchor).position === 'static') {
+                anchor.style.position = 'relative';
+            }
+            (anchor || document.body).appendChild(el);
+            this._fuzzyPopupEl = el;
+        }
+        const el = this._fuzzyPopupEl;
+        el.innerHTML = '';
+
+        if (this._fuzzyMatches.length === 0) {
+            el.innerHTML = `
+                <div class="file-fuzzy-empty">No files match "${this.escapeHtml(this._fuzzyQuery)}"</div>
+            `;
+            this._fuzzyOpen = true;
+            el.style.display = 'block';
+            return;
+        }
+
+        const list = document.createElement('div');
+        list.className = 'file-fuzzy-list';
+        this._fuzzyMatches.forEach((path, idx) => {
+            const row = document.createElement('div');
+            row.className = 'file-fuzzy-item' + (idx === this._fuzzyIdx ? ' selected' : '');
+            const slashIdx = path.lastIndexOf('/');
+            const dir = slashIdx >= 0 ? path.slice(0, slashIdx + 1) : '';
+            const base = slashIdx >= 0 ? path.slice(slashIdx + 1) : path;
+            row.innerHTML = `
+                <span class="file-fuzzy-base"></span><span class="file-fuzzy-dir"></span>
+            `;
+            row.querySelector('.file-fuzzy-base').textContent = base;
+            row.querySelector('.file-fuzzy-dir').textContent = dir ? ` · ${dir}` : '';
+            row.addEventListener('mousedown', (e) => {
+                // mousedown so we win the race against blur → close.
+                e.preventDefault();
+                this._fuzzyIdx = idx;
+                this._selectFileFuzzy();
+            });
+            list.appendChild(row);
+        });
+        el.appendChild(list);
+
+        if (this._fuzzyFiles && this._fuzzyFiles.length > this._fuzzyMatches.length) {
+            const hint = document.createElement('div');
+            hint.className = 'file-fuzzy-hint';
+            hint.textContent = `${this._fuzzyMatches.length} of ${this._fuzzyFiles.length} files · Tab/Enter to insert · Esc to dismiss`;
+            el.appendChild(hint);
+        }
+
+        this._fuzzyOpen = true;
+        el.style.display = 'block';
+    }
+
+    _handleFuzzyKeydown(e) {
+        if (!this._fuzzyOpen) return false;
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            this._fuzzyIdx = Math.min(this._fuzzyMatches.length - 1, this._fuzzyIdx + 1);
+            this._renderFileFuzzy();
+            return true;
+        }
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            this._fuzzyIdx = Math.max(0, this._fuzzyIdx - 1);
+            this._renderFileFuzzy();
+            return true;
+        }
+        if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+            if (this._fuzzyMatches.length > 0) {
+                e.preventDefault();
+                this._selectFileFuzzy();
+                return true;
+            }
+        }
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            this._closeFileFuzzy();
+            return true;
+        }
+        return false;
+    }
+
+    _selectFileFuzzy() {
+        const path = this._fuzzyMatches[this._fuzzyIdx];
+        if (!path) {
+            this._closeFileFuzzy();
+            return;
+        }
+        const value = this.userInput.value;
+        const caret = this.userInput.selectionStart || 0;
+        const before = value.slice(0, this._fuzzyAtPos);
+        const after = value.slice(caret);
+        // Insert as `@path ` so the model has a clear delimiter and the user
+        // can keep typing. We don't try to be clever about quoting — paths
+        // with spaces are rare enough; the user can wrap manually.
+        const inserted = `@${path} `;
+        this.userInput.value = before + inserted + after;
+        const newCaret = before.length + inserted.length;
+        this.userInput.selectionStart = newCaret;
+        this.userInput.selectionEnd = newCaret;
+        this.userInput.focus();
+        this._closeFileFuzzy();
+    }
+
+    _closeFileFuzzy() {
+        if (this._fuzzyPopupEl) this._fuzzyPopupEl.style.display = 'none';
+        this._fuzzyOpen = false;
+        this._fuzzyAtPos = -1;
+        this._fuzzyQuery = '';
+        this._fuzzyMatches = [];
+        this._fuzzyIdx = 0;
+    }
+
     addUserMessage(text, images = []) {
         this._removeChatEmptyState();
         const el = document.createElement('div');
@@ -4703,18 +5518,73 @@ class ResonantApp {
         this.scrollToBottom();
     }
 
+    /**
+     * Auto-scroll the chat to the bottom — but ONLY if the user hasn't
+     * deliberately scrolled up. Yanking someone's viewport back down while
+     * they're trying to read older context is one of the most disorienting
+     * things a chat UI can do; instead we mark the existing "↓" pill as
+     * having new content and let them scroll on their own terms.
+     */
     scrollToBottom() {
+        if (this._userScrolledUp) {
+            this._markScrollEndPillNew();
+            return;
+        }
         requestAnimationFrame(() => {
+            if (!this.chatContainer) return;
             this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
             this._syncChatScrollEndBtn();
         });
+    }
+
+    /** Force-scroll regardless of user state — used when the user clicks the pill. */
+    forceScrollToBottom() {
+        this._userScrolledUp = false;
+        this._clearScrollEndPillNew();
+        requestAnimationFrame(() => {
+            if (!this.chatContainer) return;
+            this.chatContainer.scrollTop = this.chatContainer.scrollHeight;
+            this._syncChatScrollEndBtn();
+        });
+    }
+
+    _isAtBottom() {
+        if (!this.chatContainer) return true;
+        const el = this.chatContainer;
+        // 80px threshold = "close enough to bottom that incremental
+        // streaming still feels like it's anchored to the live edge"
+        return (el.scrollHeight - el.scrollTop - el.clientHeight) < 80;
+    }
+
+    _markScrollEndPillNew() {
+        if (!this.chatScrollEndBtn) return;
+        if (!this.chatScrollEndBtn.classList.contains('has-new')) {
+            this.chatScrollEndBtn.dataset.defaultText =
+                this.chatScrollEndBtn.dataset.defaultText || this.chatScrollEndBtn.textContent || 'Scroll';
+            this.chatScrollEndBtn.textContent = '↓ New messages';
+            this.chatScrollEndBtn.classList.add('has-new');
+        }
+        // Make sure it's visible even if our usual sync logic would hide it
+        // (it shouldn't, since user is scrolled up by definition, but guard anyway).
+        this.chatScrollEndBtn.style.display = 'flex';
+    }
+
+    _clearScrollEndPillNew() {
+        if (!this.chatScrollEndBtn) return;
+        if (this.chatScrollEndBtn.classList.contains('has-new')) {
+            this.chatScrollEndBtn.classList.remove('has-new');
+            this.chatScrollEndBtn.textContent = this.chatScrollEndBtn.dataset.defaultText || 'Scroll';
+        }
     }
 
     _syncChatScrollEndBtn() {
         if (!this.chatScrollEndBtn || !this.chatContainer) return;
         const el = this.chatContainer;
         const room = el.scrollHeight - el.scrollTop - el.clientHeight;
-        this.chatScrollEndBtn.style.display = room < 120 ? 'none' : 'flex';
+        // Hide the pill when we're effectively at the bottom; if there's
+        // pending "new" content we still keep it visible.
+        const hasNew = this.chatScrollEndBtn.classList.contains('has-new');
+        this.chatScrollEndBtn.style.display = (room < 120 && !hasNew) ? 'none' : 'flex';
     }
 
     // ── Session Replay ──────────────────────────────────────────
@@ -4875,6 +5745,9 @@ class ResonantApp {
         this.stepIsInlineOnly = true;
         this.stepRendered = false;
         this.collapsedGroup = [];
+        this._liveCollapsedGroup = null;
+        this._currentTurn = this._freshTurnAggregate();
+        this._blockToolRows = new Map();
         this.subagentDepth = 0;
         this.subagentContainer = null;
 

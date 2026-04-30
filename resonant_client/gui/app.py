@@ -6080,6 +6080,162 @@ async def websocket_endpoint(ws: WebSocket):
                     state.session.cancel()
                 await ws.send_json({"event": "status_msg", "message": "Cancelling..."})
 
+            elif command == "list_project_files":
+                # Pi-style `@file` autocomplete: front-end caches a file list
+                # for the current project and filters it client-side. We walk
+                # the tree once on demand, skipping the usual bloat dirs and
+                # capping at a sane upper bound so giant monorepos don't
+                # ship multi-megabyte JSON over the websocket.
+                request_id = msg.get("request_id", "")
+                project_path_str = (
+                    state.project.project_path
+                    if state.project and state.project.project_path
+                    else os.getcwd()
+                )
+                _SKIP_DIRS = {
+                    ".git", "node_modules", "__pycache__", ".pytest_cache",
+                    "dist", "build", ".venv", "venv", ".tox", ".idea",
+                    ".vscode", ".cache", ".next", ".turbo", "target",
+                    "out", "coverage", ".mypy_cache", ".ruff_cache",
+                    ".terraform", ".gradle",
+                }
+                _MAX_FILES = 5000
+                _files: list[str] = []
+                _root = Path(project_path_str)
+                try:
+                    for dirpath, dirnames, filenames in os.walk(project_path_str):
+                        # Prune in-place so os.walk doesn't descend into them.
+                        dirnames[:] = [
+                            d for d in dirnames
+                            if d not in _SKIP_DIRS and not d.startswith(".")
+                        ]
+                        for fname in filenames:
+                            if fname.startswith("."):
+                                continue
+                            full = Path(dirpath) / fname
+                            try:
+                                rel = full.relative_to(_root)
+                            except ValueError:
+                                continue
+                            _files.append(str(rel).replace("\\", "/"))
+                            if len(_files) >= _MAX_FILES:
+                                break
+                        if len(_files) >= _MAX_FILES:
+                            break
+                except (OSError, PermissionError) as _e:
+                    logger.debug("list_project_files walk failed: %s", _e)
+
+                _files.sort()
+                await ws.send_json({
+                    "event": "project_files",
+                    "request_id": request_id,
+                    "files": _files,
+                    "total": len(_files),
+                    "truncated": len(_files) >= _MAX_FILES,
+                    "project_path": project_path_str,
+                })
+
+            elif command == "shell_exec":
+                # Pi-style `!cmd` / `!!cmd` shortcut from the input box. Runs a
+                # subprocess in the project directory and either feeds the
+                # output back to the model (`!cmd`, feed_to_llm=True) or
+                # displays it inline without involving the model (`!!cmd`,
+                # feed_to_llm=False — useful for "let me check git status real
+                # quick" without burning a model turn).
+                cmd_str = (msg.get("cmd") or "").strip()
+                request_id = msg.get("request_id", "")
+                feed_to_llm = bool(msg.get("feed_to_llm", False))
+
+                if not cmd_str:
+                    await ws.send_json({
+                        "event": "shell_exec_result",
+                        "request_id": request_id,
+                        "ok": False,
+                        "output": "(empty command)",
+                        "exit_code": -1,
+                        "elapsed": 0.0,
+                        "feed_to_llm": False,
+                        "command": "",
+                    })
+                    continue
+
+                # Refuse `!cmd` (LLM-feeding) if a session is already streaming;
+                # `!!cmd` is just a subprocess and is safe to run anytime.
+                if feed_to_llm and state.active_thread and state.active_thread.is_alive():
+                    await ws.send_json({
+                        "event": "shell_exec_result",
+                        "request_id": request_id,
+                        "ok": False,
+                        "output": "Cannot feed shell output to model while a session is running.",
+                        "exit_code": -1,
+                        "elapsed": 0.0,
+                        "feed_to_llm": True,
+                        "command": cmd_str,
+                    })
+                    continue
+
+                project_path = (
+                    state.project.project_path
+                    if state.project and state.project.project_path
+                    else os.getcwd()
+                )
+
+                # Reuse the bash tool's executor so timeout, cancellation, and
+                # truncation are consistent with what the model's bash tool sees.
+                from ..engine.tools import _exec_bash as _bash_executor
+                import time as _time
+                _start = _time.time()
+                _result = _bash_executor(
+                    {"command": cmd_str, "timeout": 30, "cwd": project_path},
+                    _start,
+                )
+                _output = _result.output
+                _exit = (_result.metadata or {}).get("exit_code", -1)
+
+                await ws.send_json({
+                    "event": "shell_exec_result",
+                    "request_id": request_id,
+                    "ok": not _result.is_error,
+                    "output": _output,
+                    "exit_code": _exit,
+                    "elapsed": _result.elapsed,
+                    "feed_to_llm": feed_to_llm,
+                    "command": cmd_str,
+                })
+
+                if feed_to_llm and state.session:
+                    # Synthesize a user message that gives the model the
+                    # command + its output, while keeping the *displayed*
+                    # user message short ("!git status") so chat history
+                    # reads cleanly.
+                    fed_text = f"Output of `{cmd_str}`:\n\n```\n{_output}\n```"
+                    display_text = f"!{cmd_str}"
+
+                    if not state._first_message_sent:
+                        state.project.update_session_title(display_text)
+                    state._first_message_sent = True
+
+                    state.cancel_requested.clear()
+                    state.session.reset_cancel()
+                    _session_role = (
+                        state.project.current_session.session_role
+                        if state.project.current_session else "generator"
+                    )
+                    display_events = await _run_session_streaming(
+                        ws,
+                        state.session,
+                        fed_text,
+                        display_user_msg=display_text,
+                        session_mode="code",
+                        session_role=_session_role,
+                    )
+                    state.project.save_current_session(state.session, display_events=display_events)
+                    await ws.send_json({
+                        "event": "sessions_updated",
+                        "sessions": state.project.list_sessions(),
+                        "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                    })
+
             elif command == "clear":
                 # Create a new session (don't destroy old one)
                 session_mode = msg.get("session_mode", "code")

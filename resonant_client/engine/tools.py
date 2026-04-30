@@ -16,6 +16,14 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+from .truncation import (
+    GREP_MAX_LINE_LENGTH,
+    render_truncation_footer,
+    truncate_head,
+    truncate_line,
+    truncate_tail,
+)
+
 
 # ── Tool Definitions (OpenAI function-calling format) ──────────────────
 
@@ -1446,11 +1454,22 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
         if returncode != 0:
             output += f"\n(exit code: {returncode})"
         output = output.strip() or "(no output)"
+        # Tail truncation — for shell output the model needs the *end* (errors,
+        # final exit codes, last lines of a build log). Previously bash had no
+        # truncation at all, so a `cat huge.log` could blow the context.
+        result = truncate_tail(output)
+        output = result.content + render_truncation_footer(result)
         return ToolResult(
             output,
             is_error=returncode != 0,
             elapsed=elapsed,
-            metadata={"command": cmd, "exit_code": returncode},
+            metadata={
+                "command": cmd,
+                "exit_code": returncode,
+                "lines": result.total_lines,
+                "shown_lines": result.output_lines,
+                "truncated": result.truncated,
+            },
         )
     except subprocess.TimeoutExpired:
         return ToolResult(
@@ -1482,14 +1501,21 @@ def _exec_file_read(args: dict, start: float) -> ToolResult:
     if not path.exists():
         return ToolResult(f"Error: File not found: {fpath}", is_error=True, elapsed=time.time() - start)
     content = path.read_text(encoding="utf-8")
-    lines = len(content.split("\n"))
-    if len(content) > 10000:
-        content = content[:10000] + f"\n\n... (truncated, {len(content)} total chars)"
+    # Head truncation — for files the model needs the start (imports, top-level
+    # structure). The previous 10KB char slice was hard-cutting lines mid-token;
+    # the unified utility caps at 2000 lines / 50KB and stays line-aligned.
+    result = truncate_head(content)
+    output = result.content + render_truncation_footer(result)
     elapsed = time.time() - start
     return ToolResult(
-        content,
+        output,
         elapsed=elapsed,
-        metadata={"path": fpath, "lines": lines},
+        metadata={
+            "path": fpath,
+            "lines": result.total_lines,
+            "shown_lines": result.output_lines,
+            "truncated": result.truncated,
+        },
     )
 
 
@@ -1614,8 +1640,24 @@ def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event]
 
     lines = output.split("\n") if output else []
     count = len(lines)
-    if count > 30:
-        output = "\n".join(lines[:30]) + f"\n... ({count} total matches)"
+    # Cap each match line at 500 chars so a single minified-JS hit can't
+    # dominate the result list. Then head-truncate the overall match set.
+    if lines:
+        capped: list[str] = []
+        any_line_truncated = False
+        for ln in lines:
+            t, was = truncate_line(ln, GREP_MAX_LINE_LENGTH)
+            capped.append(t)
+            any_line_truncated = any_line_truncated or was
+        # Keep grep's existing 30-match preview but route through the unified
+        # head utility so the footer is consistent with the other tools.
+        joined = "\n".join(capped)
+        result = truncate_head(joined, max_lines=30)
+        output = result.content
+        if result.truncated:
+            output += f"\n... ({count} total matches)"
+        if any_line_truncated and not result.truncated:
+            output += "\n[note: some match lines were individually truncated]"
 
     elapsed = time.time() - start
     return ToolResult(

@@ -98,6 +98,15 @@ Before cutting any non-trivial release, run this checklist:
 
 - [ ] `python -m pytest` is green locally
 - [ ] `pyinstaller packaging/resonant.spec --clean --noconfirm` builds successfully on your dev machine
+- [ ] **Bundled-exe smoke test** (the v0.2.4–v0.2.7 lesson — see [Frozen-only bug class](#frozen-only-bug-class) below):
+  - Kill any running `resonant.exe`: `Stop-Process -Name resonant -Force -ErrorAction SilentlyContinue`
+  - Delete log: `Remove-Item ~/.resonant/logs/resonant-startup.log -Force`
+  - Launch bundled exe: `dist/resonant/resonant.exe gui --port 8950`
+  - Wait ~10s for the server to bind
+  - HTTP probe: `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8950/` → expect **200**
+  - WebSocket probe: `curl --http1.1 -H "Connection: Upgrade" -H "Upgrade: websocket" -H "Sec-WebSocket-Version: 13" -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" -H "Origin: http://127.0.0.1:8950" http://127.0.0.1:8950/ws -m 5 -o /dev/null -w "%{http_code}\n"` → expect **101**
+  - Log inspection: `cat ~/.resonant/logs/resonant-startup.log` → expect **empty** (no warnings, no tracebacks)
+  - All four checks must pass. If ANY fails, the tag push will produce a broken release.
 - [ ] All files referenced by `packaging/resonant.spec` are tracked in git (the missing-`plan_graph_view.js` bug was a real CI failure — see [Bug #12](docs/known-issues.md#12))
 - [ ] No new unicode characters introduced into `.github/workflows/release.yml` via web UI paste (CodeMirror's atob path drops UTF-8; see [Lessons learned](#lessons-learned-from-v020) below)
 - [ ] `__version__` in `resonant_client/__init__.py` matches the intended tag
@@ -223,6 +232,35 @@ python -c "import resonant_client; print(resonant_client.__version__)"   # check
 git tag v0.2.0-rc1 && git push origin v0.2.0-rc1
 gh run watch --repo <owner>/<repo>
 ```
+
+---
+
+## Frozen-only bug class
+
+Bugs that ONLY surface in the PyInstaller-bundled exe — never in `python -m resonant_client` dev mode. The v0.2.4–v0.2.7 release arc hit four of these in a row, each blocking until shipped.
+
+**The pattern:** anything that depends on `__file__` resolving to a real on-disk path, on `sys.std*` being a real terminal, on a package being importable that the spec didn't bundle, or on a library's auto-discovery via `importlib` — all behave differently when frozen. The only reliable test is to **launch the bundled exe and probe its endpoints**, never just trust that `python -m resonant_client` working means the bundle works.
+
+**Real bugs that hit in this class:**
+
+| Bug | Symptom | Root cause | Fix |
+|---|---|---|---|
+| #19 | `AttributeError: 'NoneType' has no attribute 'isatty'` at startup | `console=False` makes `sys.stderr = None`; uvicorn's `ColourizedFormatter.__init__` crashes calling `.isatty()` | Redirect `None` std streams to a real file at top of `__main__.py` |
+| #20 | Every page returns "Internal Server Error" | `Path(__file__).parent` resolves to a *virtual* path inside PyInstaller's PYZ archive; Jinja2 can't find `templates/index.html` | Detect frozen mode and use `sys._MEIPASS` to resolve template + static dirs |
+| #21 | Errors invisible (false-success during diagnosis) | v0.2.4's stderr→/dev/null shim made all runtime errors silent | Redirect stderr to `~/.resonant/logs/resonant-startup.log` instead of /dev/null |
+| #23 | Homepage returns 500 with `TypeError: unhashable type: 'dict'` | Starlette 0.29+ changed `TemplateResponse` signature from `(name, context)` to `(request, name, context=None)`; old call form sends dict to wrong slot | Use new request-first API; pin starlette range in pyproject |
+| #24 | UI hangs at "Reconnecting..."; sidebar never hydrates | `websockets` package is in `[server]` extras but not `[gui]`; CI builds without it; uvicorn can't load WS protocol | Add `websockets>=12.0` to `[gui]` extras + hidden imports |
+
+**Mandatory mitigations** (now in the pre-release checklist above):
+
+1. Run the **bundled** exe (not dev Python) for smoke tests
+2. **Empty the log** before each smoke run, then **inspect it after** — a clean HTTP 200 isn't enough, the request handler can return 200 from a fallback while the log captures the real warning
+3. **Probe WebSocket separately** from HTTP — the WS upgrade path is a different code path that HTTP probes won't exercise
+4. **Test on a fresh checkout** — the dev machine has system packages that PyInstaller may pull in transitively, masking missing-dep bugs that bite CI's clean env
+
+**Future preventative work:**
+
+- `.github/workflows/build-check.yml` — PR-time job that does the bundled-exe smoke automatically on every PR. Catches frozen-only bugs before tag push instead of after. Tracked as bug #22 in [docs/known-issues.md](docs/known-issues.md).
 
 ---
 

@@ -6101,6 +6101,31 @@ async def websocket_endpoint(ws: WebSocket):
                                         "message": "A session is already running"})
                     continue
 
+                # v0.3.3 — accept an explicit project path from the
+                # composer so the mission writes files where the user
+                # expects, not wherever os.getcwd() happened to land
+                # (Bug #25: bundled exe cwd was C:\Program Files\...).
+                # We swap the project context BEFORE creating the
+                # session so all specialist hand-offs see the right
+                # path.
+                requested_path = (msg.get("project_path") or "").strip()
+                if requested_path:
+                    try:
+                        norm_requested = os.path.normpath(requested_path)
+                        if not os.path.isdir(norm_requested):
+                            try:
+                                os.makedirs(norm_requested, exist_ok=True)
+                            except OSError as exc:
+                                await ws.send_json({"event": "error",
+                                                    "message": f"Could not create project folder: {exc}"})
+                                continue
+                        state.apply_project_context(norm_requested, refresh_index=True)
+                    except Exception as exc:
+                        logger.exception("mission_start: apply_project_context failed")
+                        await ws.send_json({"event": "error",
+                                            "message": f"Failed to switch project: {exc}"})
+                        continue
+
                 # Create the fresh session — mirrors `clear` flow.
                 session_role = msg.get("session_role", "generator")
                 backend_type = getattr(state.backend, "name", "")

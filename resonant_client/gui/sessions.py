@@ -20,6 +20,103 @@ _RESONANT_DIR = Path.home() / ".resonant"
 _PROJECTS_DIR = _RESONANT_DIR / "projects"
 
 
+# v0.3.3 — directories where the bundled exe must never treat the
+# current working directory as a "project." When the Start Menu
+# shortcut launches resonant.exe, Windows sets cwd to the install
+# location; ProjectManager() used to take that as the project path,
+# producing permission-denied storms when the agent tried to write to
+# `C:\Program Files\Resonant Client`. We detect the install/system
+# locations and fall back to a writable workspace instead.
+_UNSAFE_CWD_PREFIXES_WIN = (
+    "c:\\program files",
+    "c:\\program files (x86)",
+    "c:\\windows",
+    "c:\\programdata",
+)
+_UNSAFE_CWD_PREFIXES_POSIX = (
+    "/applications/",
+    "/usr/",
+    "/bin/",
+    "/sbin/",
+    "/opt/",
+    "/system/",
+)
+
+
+def _is_unsafe_cwd(path: str) -> bool:
+    """True if `path` looks like an OS / app-install location that the
+    user clearly didn't pick as a project. Case-insensitive on Windows.
+    """
+    if not path:
+        return True
+    norm = os.path.normpath(path)
+    if os.name == "nt":
+        norm = norm.lower()
+        return any(norm.startswith(prefix) for prefix in _UNSAFE_CWD_PREFIXES_WIN)
+    return any(norm.startswith(prefix) for prefix in _UNSAFE_CWD_PREFIXES_POSIX)
+
+
+def _safe_default_project_path() -> str:
+    """Pick a sensible project path for cold launches where the user
+    hasn't explicitly chosen one yet.
+
+    Resolution order:
+      1. Most-recent project from `~/.resonant/recent_projects.json`
+         (filtered to existing dirs).
+      2. `~/Documents/Resonant Projects` — created if missing.
+      3. `~/.resonant/workspace` — last-resort fallback inside our own
+         data dir, always writable.
+
+    NEVER returns `os.getcwd()` when cwd is an OS/install location —
+    that was the Bug #25 footgun (writes to `C:\\Program Files\\...`
+    silently failing). If cwd is a normal user-writable dir, it still
+    wins over (2)/(3) so the existing "launch from terminal in repo
+    root" workflow keeps working.
+    """
+    # Honor cwd when it's user-writable (preserves dev workflow).
+    cwd = os.getcwd()
+    if not _is_unsafe_cwd(cwd):
+        try:
+            test_path = os.path.join(cwd, ".resonant_write_probe")
+            with open(test_path, "w", encoding="utf-8"):
+                pass
+            os.unlink(test_path)
+            return cwd
+        except OSError:
+            pass
+
+    # Most-recent project (best signal for repeat users).
+    recents_file = _RESONANT_DIR / "recent_projects.json"
+    try:
+        if recents_file.exists():
+            with open(recents_file, "r", encoding="utf-8") as f:
+                raw = json.load(f) or []
+            for entry in raw:
+                if not isinstance(entry, dict):
+                    continue
+                path = (entry.get("path") or "").strip()
+                if path and os.path.isdir(path) and not _is_unsafe_cwd(path):
+                    return path
+    except Exception:
+        pass
+
+    # Fresh user — try ~/Documents/Resonant Projects.
+    docs = Path.home() / "Documents" / "Resonant Projects"
+    try:
+        docs.mkdir(parents=True, exist_ok=True)
+        return str(docs)
+    except OSError:
+        pass
+
+    # Last resort — always writable since it's our own data dir.
+    workspace = _RESONANT_DIR / "workspace"
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(workspace)
+
+
 def _project_hash(project_path: str) -> str:
     """Create a short hash for a project path."""
     normalized = os.path.normpath(project_path).replace("\\", "/").lower()
@@ -271,7 +368,11 @@ class ProjectManager:
     """Manages sessions for a given project folder."""
 
     def __init__(self, project_path: str = ""):
-        self.project_path = project_path or os.getcwd()
+        # v0.3.3 — never silently take os.getcwd() when cwd is an OS or
+        # app-install location (Bug #25). _safe_default_project_path
+        # falls back through recent-projects → ~/Documents/Resonant
+        # Projects → ~/.resonant/workspace.
+        self.project_path = project_path or _safe_default_project_path()
         self.current_session: Optional[SessionRecord] = None
         self._ensure_storage()
 

@@ -12,11 +12,16 @@ from unittest.mock import patch
 
 from resonant_client.backends import EVENT_DONE, EVENT_TOOL_CALL
 from resonant_client.engine.session import (
+    CHURN_LIMIT,
+    CYCLE_WINDOW,
+    CYCLE_WINDOW_REPEAT,
     DOOM_LOOP_NUDGE_AT,
     DOOM_LOOP_THRESHOLD,
     Session,
     _check_doom_loop,
+    _count_read_only_churn,
     _count_trailing_identical_tool_calls,
+    _windowed_cycle_repeat,
 )
 from resonant_client.engine.tools import ToolResult
 
@@ -210,12 +215,15 @@ class TestStuckBackendSmoke:
         assert len(end_events) == 1
 
     def test_hard_stop_at_threshold_not_max_steps(self):
-        # The stuck backend would loop forever if not for the doom-loop check.
+        # The stuck backend would loop forever if not for the loop guards.
         # We give it max_steps=10 — but the hard-stop should fire well before
-        # that, capping stream() calls at roughly DOOM_LOOP_THRESHOLD.
+        # that. v0.3.3 added the windowed cycle guard (fires at
+        # CYCLE_WINDOW_REPEAT=3), which trips slightly earlier than the
+        # strict trailing check (DOOM_LOOP_THRESHOLD=4). Either guard is
+        # acceptable; the assertion is "we stopped well before max_steps."
         backend, _, _ = self._run_stuck(max_steps=10)
         assert len(backend.user_msgs_received) <= DOOM_LOOP_THRESHOLD + 1
-        assert len(backend.user_msgs_received) >= DOOM_LOOP_THRESHOLD
+        assert len(backend.user_msgs_received) >= CYCLE_WINDOW_REPEAT
 
     def test_doom_loop_nudged_flag_resets_per_turn(self):
         # Simulate two turns: each turn should get its own nudge attempt.
@@ -235,3 +243,127 @@ class TestStuckBackendSmoke:
             1 for m in backend.user_msgs_received if "different" in m.lower()
         )
         assert nudge_count == 2, backend.user_msgs_received
+
+
+# ── v0.3.3 cycle guards ───────────────────────────────────────────────────
+# Two new signals on top of the strict trailing-identical doom loop:
+#   1. _windowed_cycle_repeat — sliding-window dedup (catches "tool A,
+#      B, A, C, A, D, A" within a 12-call window).
+#   2. _count_read_only_churn — N consecutive glob/grep/file_read with
+#      zero writes (catches "the agent only looks, never builds").
+
+class TestWindowedCycleRepeat:
+    def test_empty_history_returns_zero(self):
+        count, name, args = _windowed_cycle_repeat([])
+        assert count == 0
+        assert name == ""
+        assert args == ""
+
+    def test_single_call_returns_one(self):
+        h = [_user(), _call("glob", '{"pattern":"*"}')]
+        count, name, args = _windowed_cycle_repeat(h)
+        assert count == 1
+        assert name == "glob"
+
+    def test_catches_interleaved_repeats(self):
+        # tool_A, tool_B, tool_A, tool_C, tool_A — strict trailing
+        # check returns 1, but windowed catches 3.
+        h = [_user()]
+        for variant in ("A", "B", "A", "C", "A"):
+            h.append(_call(variant, "{}"))
+            h.append(_result(variant))
+        count, name, args = _windowed_cycle_repeat(h)
+        assert count == 3
+        assert name == "A"
+
+    def test_does_not_cross_user_turn_boundary(self):
+        # Repeated `glob` BEFORE the latest user message must not count.
+        h = [
+            _user("first"),
+            _call("glob", "X"), _result("glob"),
+            _call("glob", "X"), _result("glob"),
+            _call("glob", "X"), _result("glob"),
+            _user("second"),  # turn boundary
+            _call("glob", "X"), _result("glob"),
+        ]
+        count, _, _ = _windowed_cycle_repeat(h)
+        assert count == 1
+
+    def test_window_caps_at_configured_size(self):
+        # 20 calls of `A` followed by 3 calls of `B` — window=12 so
+        # only the trailing 12 are counted; B has 3 hits, A has 9.
+        h = [_user()]
+        for _ in range(20):
+            h.append(_call("A", "{}"))
+            h.append(_result("A"))
+        for _ in range(3):
+            h.append(_call("B", "{}"))
+            h.append(_result("B"))
+        count, name, _ = _windowed_cycle_repeat(h, window=12)
+        assert name == "A"
+        # Within the last 12 calls (3 B + 9 A), A wins with 9.
+        assert count == 9
+
+    def test_threshold_trips_at_configured_value(self):
+        # A 3rd identical call inside the window equals the threshold.
+        h = [_user()]
+        for _ in range(CYCLE_WINDOW_REPEAT):
+            h.append(_call("glob", "X"))
+            h.append(_result("glob"))
+        count, _, _ = _windowed_cycle_repeat(h, window=CYCLE_WINDOW)
+        assert count >= CYCLE_WINDOW_REPEAT
+
+
+class TestCountReadOnlyChurn:
+    def test_empty_returns_zero(self):
+        assert _count_read_only_churn([]) == 0
+
+    def test_counts_consecutive_lookups(self):
+        h = [
+            _user(),
+            _call("glob", "X"), _result("glob"),
+            _call("grep", "Y"), _result("grep"),
+            _call("file_read", "Z"), _result("file_read"),
+        ]
+        assert _count_read_only_churn(h) == 3
+
+    def test_write_resets_counter(self):
+        # 5 reads + 1 write + 2 reads → only the trailing 2 count.
+        h = [
+            _user(),
+            _call("glob", "1"), _result("glob"),
+            _call("glob", "2"), _result("glob"),
+            _call("file_write", "{}"), _result("file_write"),
+            _call("grep", "3"), _result("grep"),
+            _call("file_read", "4"), _result("file_read"),
+        ]
+        assert _count_read_only_churn(h) == 2
+
+    def test_bash_is_neutral_does_not_break_streak(self):
+        # bash/batch/task are uncertain — they shouldn't count toward
+        # churn, but they also shouldn't reset it. A `glob → bash → glob`
+        # sequence still reads as 2 lookups for churn purposes.
+        h = [
+            _user(),
+            _call("glob", "1"), _result("glob"),
+            _call("bash", '{"command":"ls"}'), _result("bash"),
+            _call("glob", "2"), _result("glob"),
+        ]
+        assert _count_read_only_churn(h) == 2
+
+    def test_does_not_cross_user_turn_boundary(self):
+        h = [
+            _user("first"),
+            _call("glob", "1"), _result("glob"),
+            _call("glob", "2"), _result("glob"),
+            _user("second"),
+            _call("glob", "3"), _result("glob"),
+        ]
+        # Only the trailing turn's 1 read counts.
+        assert _count_read_only_churn(h) == 1
+
+    def test_threshold_constant_is_sane(self):
+        # Sanity check — too low and legitimate "explore N files then
+        # write" patterns falsely trip; too high and stuck specialists
+        # waste budget. 14 gives ~5-7 file reads + a few greps headroom.
+        assert 8 <= CHURN_LIMIT <= 24

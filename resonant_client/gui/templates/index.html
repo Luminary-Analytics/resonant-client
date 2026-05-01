@@ -195,6 +195,14 @@
                              Mission toggle (off-state) or Mission badge (on-state).
                              See docs/long-running-agents.md (Phase 1 UI). -->
                         <div id="chat-header" class="chat-header">
+                            <!-- v0.3.3 — surface the active project path so misconfigurations
+                                 are visible BEFORE the agent writes anywhere. Click to swap
+                                 projects via the native folder picker. -->
+                            <button type="button" id="header-project-path" class="header-project-path"
+                                    title="Click to change project folder">
+                                <span class="header-project-path-icon" aria-hidden="true">📁</span>
+                                <span class="header-project-path-text" id="header-project-path-text">—</span>
+                            </button>
                             <button type="button" id="mission-toggle" class="mission-toggle"
                                     title="Start a Mission — long-running spec → roadmap → execution">
                                 <span class="mission-toggle-icon" aria-hidden="true">🎯</span>

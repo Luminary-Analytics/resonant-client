@@ -86,7 +86,13 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "shape — the verifier needs to know what to check."
         ),
         tool_allowlist=ALL_EDIT_TOOLS,
-        max_steps=24,
+        # v0.3.3 — bumped from 24 to 50. The two new cycle guards in
+        # session.py (windowed signature dedup + read-only churn cap)
+        # catch the runaways the old hard cap was the only line of
+        # defense against, so legitimate "scaffold a project" runs can
+        # use the headroom they need. The cap stays in place as a final
+        # safety net.
+        max_steps=50,
         confidence_threshold=0.6,
     ),
 
@@ -114,7 +120,7 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "you finish, the verifier will re-check."
         ),
         tool_allowlist=ALL_EDIT_TOOLS,
-        max_steps=16,
+        max_steps=24,  # v0.3.3 — bumped from 16; cycle guards backstop runaways
         confidence_threshold=0.7,
     ),
 

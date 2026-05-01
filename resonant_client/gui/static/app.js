@@ -929,8 +929,9 @@ class ResonantApp {
      * `mission.spec_ready` event and we render a "Build this roadmap"
      * affordance beneath that assistant message.
      */
-    startMission(feature) {
+    startMission(feature, projectPath) {
         feature = (feature || '').trim();
+        projectPath = (projectPath || '').trim();
         if (!feature) {
             this.showStatusMessage('Describe the feature or product first.');
             return;
@@ -994,7 +995,16 @@ class ResonantApp {
         this._pendingMissionFeature = feature;
         this._refreshMissionBadge('drafting', feature);
 
-        this.send({ command: 'mission_start', feature });
+        // v0.3.3 — only ship project_path when it actually differs from
+        // the current cwd, so re-running a mission inside an existing
+        // project doesn't churn the project context.
+        const payload = { command: 'mission_start', feature };
+        const cur = (this.currentCwd || '').replace(/\\/g, '/').toLowerCase();
+        const chosen = projectPath.replace(/\\/g, '/').toLowerCase();
+        if (projectPath && chosen !== cur) {
+            payload.project_path = projectPath;
+        }
+        this.send(payload);
     }
 
     /**
@@ -1040,6 +1050,47 @@ class ResonantApp {
         this.renderFilteredSessions();
         this._syncMissionUI();
         this.showStatusMessage('Mission exited.');
+    }
+
+    /**
+     * v0.3.3 — Bug #25 surface. The chat-header now shows the active
+     * project path so misconfigurations (the install dir is the project!
+     * permission denied!) are visible BEFORE the agent does damage.
+     * Click swaps projects via the native picker.
+     */
+    _updateHeaderProjectPath(cwd) {
+        const btn = document.getElementById('header-project-path');
+        const text = document.getElementById('header-project-path-text');
+        if (!btn || !text) return;
+        const path = (cwd || '').replace(/\\/g, '/');
+        if (!path) {
+            text.textContent = '— no project —';
+            btn.classList.add('header-project-path-empty');
+            btn.title = 'Click to pick a project folder';
+            return;
+        }
+        // Surface the install-dir foot-gun directly in the header so the
+        // user sees it before they ever start a session.
+        const lower = path.toLowerCase();
+        const isUnsafe = lower.includes('/program files') ||
+                         lower.startsWith('c:/windows') ||
+                         lower.startsWith('/applications/');
+        btn.classList.toggle('header-project-path-unsafe', isUnsafe);
+        btn.classList.remove('header-project-path-empty');
+        // Show the trailing folder + parent for context (full path on hover).
+        const parts = path.split('/');
+        const tail = parts.slice(-2).join('/') || path;
+        text.textContent = tail;
+        btn.title = isUnsafe
+            ? `⚠ Project is in a system / install folder: ${path}\nClick to switch.`
+            : `Project: ${path}\nClick to switch.`;
+        if (!btn._wired) {
+            btn._wired = true;
+            btn.addEventListener('click', () => {
+                this._pendingFolderPickConsumer = null;  // global project switch
+                this.send({ command: 'folder_dialog' });
+            });
+        }
     }
 
     /** Look up the current session summary. Tries `sessions` (per-project,
@@ -1264,6 +1315,15 @@ class ResonantApp {
         const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
         const submitHintKey = isMac ? '⌘' : 'Ctrl';
 
+        // v0.3.3 — Bug #25 fix. Mission must let the user pick where the
+        // agent is allowed to write. Without this, the mission inherits
+        // whatever os.getcwd() landed on at app launch — which for a
+        // Start-Menu shortcut on Windows is `C:\Program Files\Resonant
+        // Client`. Permission-denied storms followed. The composer now
+        // shows the chosen path inline with a picker + manual-edit
+        // fallback. The chosen path is only applied on Start, not Cancel.
+        this._missionComposerPath = (this.currentCwd || '').replace(/\\/g, '/');
+
         // v0.3.2 — surface a backend health hint up-front. Cross-model
         // testing showed Codex/GPT-5.2 stalls past the typical Mission
         // grill cadence and Qwen3 drifts off the spec format. Steer the
@@ -1311,6 +1371,15 @@ class ResonantApp {
                     plan-graph of work to deliver it.
                 </p>
                 ${modelHintHTML}
+                <label class="mission-composer-field-label" for="mission-composer-path">
+                    Build it at
+                </label>
+                <div class="mission-composer-path-row">
+                    <input type="text" id="mission-composer-path" class="mission-composer-path-input"
+                        placeholder="C:\\Dev\\my-roguelite" spellcheck="false" autocomplete="off">
+                    <button type="button" class="mission-composer-path-pick" title="Browse for folder">📁 Browse</button>
+                </div>
+                <div class="mission-composer-path-hint" id="mission-composer-path-hint"></div>
                 <textarea class="mission-composer-input" rows="4"
                     placeholder="Add a /export command that exports the current chat to markdown…"></textarea>
                 <div class="mission-composer-actions">
@@ -1323,6 +1392,41 @@ class ResonantApp {
             </div>
         `;
         document.body.appendChild(overlay);
+
+        // Pre-fill the path with the current project (or the safe default
+        // backend resolution). The user can pick a different folder via
+        // the Browse button or just edit the field directly.
+        const pathInput = overlay.querySelector('#mission-composer-path');
+        const pathHint = overlay.querySelector('#mission-composer-path-hint');
+        pathInput.value = this._missionComposerPath || '';
+        const updatePathHint = () => {
+            const v = pathInput.value.trim();
+            if (!v) {
+                pathHint.className = 'mission-composer-path-hint mission-composer-path-hint-warn';
+                pathHint.textContent = 'Pick or type a folder — the agent will write files here.';
+                return;
+            }
+            // Surface the install-dir / system-dir foot-gun BEFORE the
+            // user invests in writing a feature description.
+            const lower = v.toLowerCase().replace(/\\/g, '/');
+            if (lower.includes('/program files') || lower.startsWith('c:/windows') ||
+                lower.startsWith('/applications/') || lower.startsWith('/usr/')) {
+                pathHint.className = 'mission-composer-path-hint mission-composer-path-hint-warn';
+                pathHint.textContent = '⚠ This is a system / install directory. Pick somewhere under your home folder instead.';
+                return;
+            }
+            pathHint.className = 'mission-composer-path-hint mission-composer-path-hint-ok';
+            pathHint.textContent = 'Folder will be created if it doesn\'t exist yet.';
+        };
+        updatePathHint();
+        pathInput.addEventListener('input', updatePathHint);
+
+        overlay.querySelector('.mission-composer-path-pick').addEventListener('click', () => {
+            // Mark that the next folder_picked event belongs to the
+            // mission composer, not the welcome screen flow.
+            this._pendingFolderPickConsumer = 'mission';
+            this.send({ command: 'folder_dialog' });
+        });
 
         const textarea = overlay.querySelector('textarea');
         const startBtn = overlay.querySelector('.mission-composer-start');
@@ -1368,10 +1472,15 @@ class ResonantApp {
             // before delegating so a second click within the same animation
             // frame can't fire a second mission_start.
             if (startBtn.disabled) return;
+            // v0.3.3 — capture the chosen project path. Empty falls back
+            // to whatever the backend already has (currentCwd). A non-empty
+            // path that differs from currentCwd triggers a project switch
+            // before the session is created.
+            const chosenPath = pathInput.value.trim();
             startBtn.disabled = true;
             startBtn.textContent = 'Starting…';
             close();
-            this.startMission(feature);
+            this.startMission(feature, chosenPath);
         });
 
         setTimeout(() => textarea.focus(), 50);
@@ -2169,8 +2278,21 @@ class ResonantApp {
                 this.handleDirList(event);
                 break;
             case 'folder_picked':
-                // Native folder dialog returned a path
+                // Native folder dialog returned a path. v0.3.3 — when
+                // the mission composer asked for the picker, route the
+                // result there instead of switching the global project
+                // (the global switch only happens on Start).
                 if (event.path) {
+                    if (this._pendingFolderPickConsumer === 'mission') {
+                        this._pendingFolderPickConsumer = null;
+                        const pathInput = document.getElementById('mission-composer-path');
+                        if (pathInput) {
+                            pathInput.value = event.path;
+                            pathInput.dispatchEvent(new Event('input'));
+                            pathInput.focus();
+                        }
+                        break;
+                    }
                     const folderInput = document.getElementById('welcome-folder-input');
                     if (folderInput) folderInput.value = event.path;
                     this.selectProjectFolder(event.path);
@@ -2277,6 +2399,7 @@ class ResonantApp {
             if (this.sidebarProjectName) this.sidebarProjectName.textContent = short;
             if (this.sidebarCwd) this.sidebarCwd.textContent = cwd;
             this.currentCwd = cwd;
+            this._updateHeaderProjectPath(cwd);
             // Default the sidebar filter to the current project so users immediately
             // see only that project's sessions; clearing it via "All projects" still works.
             if (this.sidebarProjectSwitchLabel && !this._projectFilterUserCleared) {

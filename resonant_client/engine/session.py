@@ -39,6 +39,24 @@ logger = logging.getLogger(__name__)
 DOOM_LOOP_THRESHOLD = 4   # N identical tool+args calls in a row → hard stop
 DOOM_LOOP_NUDGE_AT = 2    # First repeat → inject a "try a different approach" prompt
 
+# v0.3.3 — sliding-window cycle detection. The strict trailing-identical
+# check above only catches `tool A → tool A → tool A` back-to-back. Real
+# stuck specialists also exhibit `tool A → tool B → tool A → tool C →
+# tool A` — 3 occurrences of the same call inside a 12-call window. The
+# windowed signature multiset catches both.
+CYCLE_WINDOW = 12
+CYCLE_WINDOW_REPEAT = 3
+
+# v0.3.3 — read-only churn cap. The agent tool taxonomy lets us
+# distinguish "looked at the world" from "changed the world." If we see
+# CHURN_LIMIT consecutive read-only tools with zero writes, the agent is
+# spinning — abort the turn. `bash`/`batch`/`task` are treated as
+# *uncertain* (could mutate) and neither increment nor reset the counter,
+# so legitimate "mkdir + ls + cat" sequences don't trip it.
+READ_ONLY_TOOLS = frozenset({"glob", "grep", "file_read"})
+WRITE_TOOLS = frozenset({"file_write", "file_edit", "file_replace"})
+CHURN_LIMIT = 14   # generous — gives room for "explore THEN write" patterns
+
 
 def _count_trailing_identical_tool_calls(history: list) -> int:
     """How many of the most recent tool calls (within the current turn) are identical."""
@@ -64,6 +82,64 @@ def _count_trailing_identical_tool_calls(history: list) -> int:
 def _check_doom_loop(history: list, threshold: int = DOOM_LOOP_THRESHOLD) -> bool:
     """Check if the last N tool calls are identical (same name + same args)."""
     return _count_trailing_identical_tool_calls(history) >= threshold
+
+
+def _windowed_cycle_repeat(history: list, *, window: int = CYCLE_WINDOW) -> tuple[int, str, str]:
+    """Return (max_repeat_count, tool_name, args_repr) for the most-repeated
+    tool-call signature inside the last `window` calls of the current turn.
+
+    A return of (1, "", "") means no signature appeared more than once.
+    Useful when the agent is varying its calls just enough to dodge the
+    strict trailing check but is clearly cycling through the same handful
+    of probes (the C:\\Dev scavenger-hunt from Bug #25 was the trigger).
+    """
+    counts: dict[tuple, int] = {}
+    last_winner: tuple = ("", "")
+    seen = 0
+    for entry in reversed(history):
+        role = entry.get("role")
+        if role == "user":
+            break  # current turn only
+        if role != "tool_call":
+            continue
+        sig = (entry.get("name", ""), entry.get("arguments", ""))
+        counts[sig] = counts.get(sig, 0) + 1
+        if counts[sig] > counts.get(last_winner, 0):
+            last_winner = sig
+        seen += 1
+        if seen >= window:
+            break
+    if not counts:
+        return 0, "", ""
+    return counts[last_winner], last_winner[0], last_winner[1]
+
+
+def _count_read_only_churn(history: list) -> int:
+    """Count consecutive trailing read-only tool calls within the current
+    turn, capped by the most recent write. bash/batch/task are treated
+    as uncertain (could mutate) — they neither extend nor truncate the
+    read-only streak.
+
+    Iteration is reverse-chronological: we accumulate read-only calls as
+    the streak, and stop when we hit a write (the streak is "since the
+    last productive action") or the user-message turn boundary.
+    """
+    streak = 0
+    for entry in reversed(history):
+        role = entry.get("role")
+        if role == "user":
+            break
+        if role != "tool_call":
+            continue
+        name = entry.get("name", "")
+        if name in WRITE_TOOLS:
+            # Most recent write found — everything before it is a previous
+            # streak that doesn't matter; return what we accumulated AFTER it.
+            break
+        if name in READ_ONLY_TOOLS:
+            streak += 1
+        # else (bash/batch/task/etc.) — uncertain, neither break nor count
+    return streak
 
 
 # ── System Instructions ────────────────────────────────────────────────
@@ -1015,6 +1091,50 @@ class Session:
                 )
                 yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
                 break
+
+            # v0.3.3 — sliding-window cycle detection. Catches the looser
+            # case where the agent isn't repeating *immediately* but
+            # cycles through the same handful of probes (Bug #25's
+            # scavenger hunt: 24 tool calls hunting for `C:\Dev\roguelite`
+            # by varying findstr filters and target dirs). If any single
+            # signature appears 3× inside the last 12 calls, abort.
+            if has_tool_calls:
+                wrep_count, wrep_tool, wrep_args = _windowed_cycle_repeat(
+                    self.conversation_history, window=CYCLE_WINDOW
+                )
+                if wrep_count >= CYCLE_WINDOW_REPEAT:
+                    args_repr = wrep_args if len(wrep_args) <= 80 else wrep_args[:77] + "..."
+                    yield make_event(
+                        EngineEvent.ERROR,
+                        message=(
+                            f"Stopped: `{wrep_tool}` with args `{args_repr}` was "
+                            f"called {wrep_count} times in the last {CYCLE_WINDOW} "
+                            f"steps. The agent is cycling through the same probes "
+                            f"instead of moving forward. Try a different request "
+                            f"or switch to a stronger model."
+                        ),
+                    )
+                    yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+                    break
+
+                # v0.3.3 — read-only churn cap. N consecutive lookups
+                # (glob/grep/file_read) with zero writes means the agent
+                # is *exploring* without ever *acting*. bash/batch/task
+                # are uncertain so they don't increment, which preserves
+                # legitimate "explore → mkdir → write" patterns.
+                churn = _count_read_only_churn(self.conversation_history)
+                if churn >= CHURN_LIMIT:
+                    yield make_event(
+                        EngineEvent.ERROR,
+                        message=(
+                            f"Stopped: {churn} consecutive read-only lookups "
+                            f"(glob / grep / file_read) without writing anything. "
+                            f"The agent is stuck exploring instead of producing. "
+                            f"Try a more concrete request or rephrase the goal."
+                        ),
+                    )
+                    yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+                    break
 
             # ── Continue or stop ──
             yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)

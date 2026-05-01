@@ -71,6 +71,13 @@ have a *shared understanding* clear enough to hand to a build team.
    describes what this codebase actually is. Don't invent assumptions
    that contradict it (e.g. don't claim it's a CLI app if the context
    says it's a desktop GUI).
+9. **If the feature partially exists, keep grilling — don't abandon.**
+   When a glob/read reveals the feature is already partly built, that's
+   *information* for the spec, not a reason to bail. Acknowledge what
+   exists, then ask the user what's missing or wrong. The spec should
+   describe the *delta* (what to add / change / remove), not pretend
+   the existing code isn't there. Never silently rewrite scope to match
+   what already shipped.
 
 ## When you're done
 
@@ -102,6 +109,12 @@ heading and these subsections. The downstream system parses it.
 **Open risks:**
 - ...
 ```
+
+**Format reminders (the parser is strict):**
+- The heading must be exactly `## Final spec` on its own line.
+- Each subsection label must be in `**bold:**` form, lowercase as shown
+  (e.g. `**Refined intent:**`, not `REFINED INTENT:` or `Refined Intent:`).
+- Put the spec at the *end* of your message — nothing important after it.
 
 If the user's input is too vague to even start, ask the first scoping
 question — don't refuse. If they answer "I don't know" repeatedly to
@@ -161,8 +174,8 @@ def extract_spec(message_text: str) -> Optional[ExtractedSpec]:
 
 
 _REFINED_INTENT_RE = re.compile(
-    r"\*\*Refined intent:\*\*\s*(.+?)(?:\n\n|\n\*\*|$)",
-    re.DOTALL,
+    r"\*\*Refined intent:?\*\*\s*(.+?)(?:\n\n|\n\*\*|$)",
+    re.DOTALL | re.IGNORECASE,
 )
 
 

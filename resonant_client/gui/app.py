@@ -6134,6 +6134,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({
                     "event": "session_cleared",
                     "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
                     "current_session_id": state.project.current_session.id,
                     "session_mode": "code",
                     "session_role": session_role,
@@ -6161,6 +6162,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({
                     "event": "sessions_updated",
                     "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
                     "current_session_id": state.project.current_session.id if state.project.current_session else "",
                 })
 
@@ -6210,6 +6212,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({
                     "event": "sessions_updated",
                     "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
                     "current_session_id": cur.id,
                 })
 
@@ -6228,6 +6231,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({
                     "event": "mission_exited",
                     "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
                     "current_session_id": state.project.current_session.id if state.project.current_session else "",
                 })
 
@@ -6291,6 +6295,7 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({
                     "event": "sessions_updated",
                     "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
                     "current_session_id": state.project.current_session.id,
                 })
 
@@ -6733,6 +6738,28 @@ async def websocket_endpoint(ws: WebSocket):
                         "all_sessions": state.project.list_all_sessions(),
                         "current_session_id": state.project.current_session.id if state.project.current_session else "",
                     })
+
+            elif command == "pin_session":
+                session_id = msg.get("session_id", "")
+                # Use current session when no explicit ID supplied (/pin command)
+                if session_id:
+                    record = state.project.load_session(session_id)
+                    # Restore current session pointer after the load
+                    if record and state.project.current_session and state.project.current_session.id != session_id:
+                        state.project.load_session(state.project.current_session.id)
+                else:
+                    record = state.project.current_session
+                if record:
+                    record.pinned = not record.pinned
+                    record.save()
+                    verb = "Pinned" if record.pinned else "Unpinned"
+                    await ws.send_json({"event": "status_msg", "message": f"{verb} session."})
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
+                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                })
 
             # ── Intent / organic-orchestration commands ─────────────
             elif command in ("intent_start", "intent_cancel", "intent_pause",

@@ -174,6 +174,51 @@ This is all one logical paragraph.
         assert result is not None
         assert "Foo" in result.refined_intent
 
+    def test_refined_intent_uppercase_label_matches(self):
+        # v0.3.2 — Qwen3 was emitting `**REFINED INTENT:**` (all caps).
+        # Regex was case-sensitive, so we fell back to "first paragraph"
+        # heuristic. Now case-insensitive, the explicit label wins.
+        text = (
+            "## Final spec\n\n"
+            "**REFINED INTENT:** Build a thing that handles Z.\n\n"
+            "**KEY ASSUMPTIONS:**\n- foo\n"
+        )
+        result = extract_spec(text)
+        assert result is not None
+        assert "Build a thing that handles Z" in result.refined_intent
+        assert "KEY ASSUMPTIONS" not in result.refined_intent
+
+    def test_refined_intent_titlecase_label_matches(self):
+        text = (
+            "## Final spec\n\n"
+            "**Refined Intent:** Add a slash command.\n\n"
+            "**Key assumptions:**\n- foo\n"
+        )
+        result = extract_spec(text)
+        assert result is not None
+        assert "Add a slash command" in result.refined_intent
+
+
+# ---------------------------------------------------------------------------
+# Prompt content — v0.3.2 reminders & rules
+# ---------------------------------------------------------------------------
+
+class TestGrillPromptContent:
+    def test_format_reminder_present(self):
+        # Cross-model testing showed Qwen3 drifting to UPPERCASE labels and
+        # stopping the spec mid-message. The format reminder block at the
+        # end teaches the model the parser is strict about heading + labels.
+        msg = format_grill_first_message("anything")
+        assert "Format reminders" in msg
+        assert "## Final spec" in msg
+        assert "**bold:**" in msg or "bold" in msg.lower()
+
+    def test_partial_existence_rule_present(self):
+        # Qwen3 abandoned an interview when it discovered the feature was
+        # partially shipped. Rule #9 says "describe the delta, don't bail."
+        msg = format_grill_first_message("anything")
+        assert "partially exists" in msg or "partly built" in msg
+
 
 # ---------------------------------------------------------------------------
 # Project-context injection — Tier-1 fix #4

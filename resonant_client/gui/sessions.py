@@ -67,6 +67,10 @@ def _read_session_summary(filepath: Path) -> Optional[dict]:
         # indent-2 JSON layout. If mission_state is present but malformed,
         # we fall through to the full-parse path so we never silently
         # mis-classify a mission as a regular session.
+        m = re.search(r'"pinned"\s*:\s*(true|false)', prefix)
+        if m:
+            summary["pinned"] = m.group(1) == "true"
+
         if '"mission_state"' in prefix:
             ms_match = re.search(r'"mission_state"\s*:\s*(\{[^{}]*\})', prefix, re.DOTALL)
             if ms_match:
@@ -120,6 +124,7 @@ class SessionRecord:
         session_role: str = "generator",
         thinking_mode: str = "",
         mission_state: Optional[dict] = None,
+        pinned: bool = False,
     ):
         self.id = session_id or str(uuid.uuid4())[:8]
         self.title = title
@@ -146,6 +151,7 @@ class SessionRecord:
         #   "intent_id"      — UUID of the dispatched intent (planning_dispatched+)
         #   "started_at"     — epoch float
         self.mission_state: Optional[dict] = mission_state
+        self.pinned: bool = bool(pinned)
 
     def to_dict(self) -> dict:
         # Field order matters: small metadata fields go FIRST so the
@@ -167,6 +173,7 @@ class SessionRecord:
             "session_role": self.session_role,
             "thinking_mode": self.thinking_mode,
             "mission_state": self.mission_state,
+            "pinned": self.pinned,
             "conversation_history": self.conversation_history,
             "display_events": self.display_events,
         }
@@ -186,6 +193,7 @@ class SessionRecord:
             # Sidebar needs to know if this session is a Mission so it can
             # render it in the Missions group with the right phase badge.
             "mission_state": self.mission_state,
+            "pinned": self.pinned,
         }
 
     @classmethod
@@ -204,6 +212,7 @@ class SessionRecord:
             session_role=data.get("session_role", "generator"),
             thinking_mode=data.get("thinking_mode", ""),
             mission_state=data.get("mission_state"),
+            pinned=data.get("pinned", False),
         )
 
     # ── Mission helpers ────────────────────────────────────────────────

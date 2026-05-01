@@ -170,6 +170,7 @@ class ResonantApp {
         // Preview panel state
         this.previewOpen = false;
         this.previewImages = []; // {src, toolName, timestamp}
+        this._currentPreviewPane = '';  // C2 — drives the plan-tab unread indicator
         this._previewResizing = false;
 
         // Session management state
@@ -805,6 +806,13 @@ class ResonantApp {
             return;
         }
 
+        if (text === '/pin') {
+            this.send({ command: 'pin_session' });
+            this.userInput.value = '';
+            this.userInput.style.height = 'auto';
+            return;
+        }
+
         // Mission entry is now a UI toggle (chat-header) — slash command
         // dropped. If a stale `/grill` muscle-memory shows up, point them
         // at the toggle so they don't get silently confused.
@@ -931,6 +939,20 @@ class ResonantApp {
             this.showStatusMessage('A session is already running — wait for it to finish or cancel.');
             return;
         }
+        // v0.3.2 — second-line double-submit guard. The composer button is
+        // already disabled on click, but the Cmd+Enter handler can still
+        // race that. A short-lived in-flight flag (cleared by the
+        // session_cleared response or after a 6s safety timeout) catches
+        // the gap.
+        if (this._missionStartInflight) {
+            this.showStatusMessage('Mission is already starting — give it a second.');
+            return;
+        }
+        this._missionStartInflight = true;
+        if (this._missionStartInflightTimer) clearTimeout(this._missionStartInflightTimer);
+        this._missionStartInflightTimer = setTimeout(() => {
+            this._missionStartInflight = false;
+        }, 6000);
         if (!this.chatMessages) return;
 
         // Mission lives in a fresh session, so we wipe local turn state
@@ -1005,6 +1027,12 @@ class ResonantApp {
         // session automatically; they can decide where to go next.
         if (event && Array.isArray(event.sessions)) {
             this.sessions = event.sessions;
+        }
+        // v0.3.2: backend now ships all_sessions on mission_* events too.
+        // Without this update the cross-project sidebar reads from a stale
+        // snapshot (mission stuck in 'drafting' even after exit).
+        if (event && Array.isArray(event.all_sessions)) {
+            this.allSessions = event.all_sessions;
         }
         if (event && event.current_session_id !== undefined) {
             this.currentSessionId = event.current_session_id || '';
@@ -1236,6 +1264,37 @@ class ResonantApp {
         const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
         const submitHintKey = isMac ? '⌘' : 'Ctrl';
 
+        // v0.3.2 — surface a backend health hint up-front. Cross-model
+        // testing showed Codex/GPT-5.2 stalls past the typical Mission
+        // grill cadence and Qwen3 drifts off the spec format. Steer the
+        // user toward Sonnet (gold standard) before they invest typing.
+        const modelVal = (this.modelSelector && this.modelSelector.value) || '';
+        const backendType = modelVal.indexOf(':') > 0 ? modelVal.substring(0, modelVal.indexOf(':')) : '';
+        const modelName = modelVal.indexOf(':') > 0 ? modelVal.substring(modelVal.indexOf(':') + 1) : '';
+        let modelHintHTML = '';
+        if (!backendType) {
+            modelHintHTML = `
+                <div class="mission-composer-hint mission-composer-hint-warn">
+                    <span aria-hidden="true">⚠</span>
+                    Pick a model first — the Mission needs a backend to run the interview.
+                </div>`;
+        } else if (backendType === 'codex') {
+            modelHintHTML = `
+                <div class="mission-composer-hint mission-composer-hint-warn">
+                    <span aria-hidden="true">⏳</span>
+                    Codex tends to be slow for the Mission interview.
+                    <strong>claude-code:sonnet</strong> is the most reliable choice if you have it.
+                </div>`;
+        } else if (backendType === 'ollama' && /qwen/i.test(modelName)) {
+            modelHintHTML = `
+                <div class="mission-composer-hint mission-composer-hint-info">
+                    <span aria-hidden="true">ℹ</span>
+                    Heads up: Qwen sometimes formats the spec loosely. If the
+                    "Build this roadmap" button doesn't appear, exit and retry,
+                    or switch to <strong>claude-code:sonnet</strong>.
+                </div>`;
+        }
+
         overlay = document.createElement('div');
         overlay.id = 'mission-composer-overlay';
         overlay.className = 'mission-composer-overlay';
@@ -1251,6 +1310,7 @@ class ResonantApp {
                     interview you to nail down the spec, then dispatch a
                     plan-graph of work to deliver it.
                 </p>
+                ${modelHintHTML}
                 <textarea class="mission-composer-input" rows="4"
                     placeholder="Add a /export command that exports the current chat to markdown…"></textarea>
                 <div class="mission-composer-actions">
@@ -1304,6 +1364,12 @@ class ResonantApp {
         startBtn.addEventListener('click', () => {
             const feature = textarea.value.trim();
             if (!feature) return;
+            // v0.3.2 — double-submit guard. Disable + relabel the button
+            // before delegating so a second click within the same animation
+            // frame can't fire a second mission_start.
+            if (startBtn.disabled) return;
+            startBtn.disabled = true;
+            startBtn.textContent = 'Starting…';
             close();
             this.startMission(feature);
         });
@@ -1963,11 +2029,24 @@ class ResonantApp {
                     this.chatMessages.innerHTML = '';
                 }
                 this.sessions = event.sessions || [];
+                if (Array.isArray(event.all_sessions)) {
+                    this.allSessions = event.all_sessions;
+                }
                 this.currentSessionId = event.current_session_id || '';
                 this.applySessionRoleUI(event.session_role || this.sessionRole);
                 this.renderFilteredSessions();
                 this.showChatInterface();
                 this._syncMissionUI();
+                // v0.3.2 — release the mission_start guard. session_cleared
+                // is the success ack for mission_start, so it's safe to let
+                // a future click through.
+                if (this._missionStartInflight) {
+                    this._missionStartInflight = false;
+                    if (this._missionStartInflightTimer) {
+                        clearTimeout(this._missionStartInflightTimer);
+                        this._missionStartInflightTimer = null;
+                    }
+                }
                 break;
             case 'session_forked':
                 this.showStatusMessage(`Forked: kept ${event.user_messages_kept} message(s)`);
@@ -2006,17 +2085,24 @@ class ResonantApp {
                 if (window.PlanGraphView) {
                     window.PlanGraphView.render(event.snapshot || event.data);
                     this.openPlanTab(false);  // open without stealing focus
+                    this._markPlanTabUnread();
                 }
                 break;
             case 'plan.event':
                 if (window.PlanGraphView) {
                     window.PlanGraphView.applyEvent(event.event_payload || event);
+                    this._markPlanTabUnread();
                 }
                 break;
             case 'plan.checkpoint':
                 if (window.PlanGraphView) {
                     window.PlanGraphView.showCheckpoint(event.payload || event);
+                    // Checkpoints DO grab focus (an explicit user-attention
+                    // moment). The mark-unread is moot since the switch
+                    // immediately clears it, but keep it for symmetry in
+                    // case the focus call ever becomes optional.
                     this.openPlanTab(true);
+                    this._markPlanTabUnread();
                 }
                 break;
             case 'plan.snapshot_list':
@@ -2545,8 +2631,23 @@ class ResonantApp {
                     <span class="chat-suggestion-hint">Then iterate on any failures</span>
                 </button>
             </div>
+            <div class="chat-empty-mission">
+                <button type="button" class="chat-empty-mission-btn" data-action="start-mission">
+                    <span class="chat-empty-mission-icon" aria-hidden="true">🎯</span>
+                    <span class="chat-empty-mission-text">
+                        <span class="chat-empty-mission-label">Or start a Mission</span>
+                        <span class="chat-empty-mission-hint">Get interviewed about a feature, then dispatch a plan-graph to build it.</span>
+                    </span>
+                </button>
+            </div>
         `;
         empty.addEventListener('click', (ev) => {
+            // v0.3.2 — Mission entry from empty state. Discoverable surface
+            // for users who don't know about the chat-header toggle yet.
+            if (ev.target.closest('[data-action="start-mission"]')) {
+                this.openMissionComposer();
+                return;
+            }
             const btn = ev.target.closest('.chat-suggestion');
             if (!btn) return;
             this.userInput.value = btn.dataset.prompt || '';
@@ -4120,6 +4221,29 @@ class ResonantApp {
         if (browserViewport) browserViewport.style.display = isPlan ? 'none' : '';
         if (browserConsole) browserConsole.style.display = isPlan ? 'none' : '';
         if (planPane) planPane.style.display = isPlan ? 'flex' : 'none';
+
+        // C2 — track the active pane so plan-event handlers can decide
+        // whether to flash the unread-update indicator. Switching TO the
+        // plan pane clears any pending indicator.
+        this._currentPreviewPane = pane;
+        if (isPlan) this._clearPlanTabUnread();
+    }
+
+    /**
+     * Mark the plan tab as having unread updates. Called when a
+     * plan.event / plan.snapshot / plan.checkpoint arrives while the
+     * user is on a different preview pane (or the panel is closed but
+     * not focused on plan). Pure DOM affordance — never grabs focus.
+     */
+    _markPlanTabUnread() {
+        if (this._currentPreviewPane === 'plan') return;
+        const tab = document.querySelector('.preview-tab[data-pane="plan"]');
+        if (tab) tab.classList.add('has-unread');
+    }
+
+    _clearPlanTabUnread() {
+        const tab = document.querySelector('.preview-tab[data-pane="plan"]');
+        if (tab) tab.classList.remove('has-unread');
     }
 
     /**
@@ -5404,6 +5528,17 @@ class ResonantApp {
         this._finalizeLiveCollapsedGroup();
         this.ensureStepRendered();
 
+        // v0.3.2 — release the mission_start in-flight guard on error so a
+        // failed mission_start doesn't leave the user locked out of retries
+        // for the full 6s safety timeout.
+        if (this._missionStartInflight) {
+            this._missionStartInflight = false;
+            if (this._missionStartInflightTimer) {
+                clearTimeout(this._missionStartInflightTimer);
+                this._missionStartInflightTimer = null;
+            }
+        }
+
         // Track error state so the run-card can drop the "Build" framing and
         // hide Review/Commit actions when there's nothing successfully to act on.
         this._agentRunErrored = true;
@@ -6456,6 +6591,27 @@ class ResonantApp {
 
     // ── Session List ─────────────────────────────────────────────
 
+    _renderPinnedGroup(sessions) {
+        const wrap = document.createElement('div');
+        wrap.className = 'pinned-group';
+
+        const header = document.createElement('div');
+        header.className = 'pinned-group-header';
+        header.innerHTML = `
+            <span class="pinned-group-icon" aria-hidden="true">📌</span>
+            <span class="pinned-group-title">Pinned</span>
+            <span class="pinned-group-count">${sessions.length}</span>
+        `;
+        wrap.appendChild(header);
+
+        const sortByUpdated = (a, b) => (b.updated_at || 0) - (a.updated_at || 0);
+        [...sessions].sort(sortByUpdated).forEach(s => {
+            wrap.appendChild(this._createTreeSessionRow(s));
+        });
+
+        this.sessionList.appendChild(wrap);
+    }
+
     /**
      * Render the "Missions" sidebar group — split into Active and
      * Completed subsections (B6 fix). Active = drafting / planning /
@@ -6678,12 +6834,21 @@ class ResonantApp {
             return;
         }
 
+        // Pinned sessions float to the top in their own group, removed from
+        // their original section to avoid double-listing.
+        const pinned = sessions.filter(s => s && s.pinned);
+        const unpinned = sessions.filter(s => !s || !s.pinned);
+
+        if (pinned.length > 0) {
+            this._renderPinnedGroup(pinned);
+        }
+
         // Split missions out into their own top-level group so they read as
         // first-class entities (per the long-running-agents design). They
         // are also filtered out of the per-project tree below to avoid
         // double-listing.
-        const missions = sessions.filter(s => s && s.mission_state);
-        const nonMissions = sessions.filter(s => !s || !s.mission_state);
+        const missions = unpinned.filter(s => s && s.mission_state);
+        const nonMissions = unpinned.filter(s => !s || !s.mission_state);
 
         if (missions.length > 0) {
             this._renderMissionsGroup(missions);
@@ -6767,8 +6932,9 @@ class ResonantApp {
             ? `<span class="session-project-tag">${this.escapeHtml(roleLabel)}</span> \u00B7 `
             : '';
 
+        const pinIcon = session.pinned ? '<span class="session-pin-icon" aria-label="Pinned">📌</span>' : '';
         el.innerHTML = `
-            <div class="agent-row-title">${this.escapeHtml(session.title || 'New session')}</div>
+            <div class="agent-row-title">${pinIcon}${this.escapeHtml(session.title || 'New session')}</div>
             <div class="agent-row-date">${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
             <div class="agent-row-actions">
                 <button class="agent-menu-btn" title="More actions">&#8943;</button>
@@ -6809,7 +6975,9 @@ class ResonantApp {
         const menu = document.createElement('div');
         menu.className = 'agent-context-menu';
 
+        const pinLabel = session.pinned ? '📌 Unpin' : '📌 Pin to top';
         menu.innerHTML = `
+            <div class="ctx-item" data-action="pin">${pinLabel}</div>
             <div class="ctx-item" data-action="rename">&#9998; Rename</div>
             <div class="ctx-item" data-action="replay">&#9654; Replay</div>
             <div class="ctx-separator"></div>
@@ -6823,7 +6991,9 @@ class ResonantApp {
         // Handle actions
         menu.addEventListener('click', (ev) => {
             const action = ev.target.closest('.ctx-item')?.dataset.action;
-            if (action === 'delete') {
+            if (action === 'pin') {
+                this.send({ command: 'pin_session', session_id: session.id });
+            } else if (action === 'delete') {
                 this.send({ command: 'delete_session', session_id: session.id });
             } else if (action === 'rename') {
                 const newTitle = prompt('Rename agent:', session.title);

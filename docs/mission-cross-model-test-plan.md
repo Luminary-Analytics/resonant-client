@@ -294,3 +294,172 @@ deepseek; Degraded on codex, qwen3" — surface the distinction in
 the model selector or release notes. The `_REFINED_INTENT_RE` fallback
 path absorbs Qwen's format drift cleanly so users don't see broken
 extraction. The Codex slowness is the real issue for daily use.
+
+---
+
+# v0.3.3 — Bug #25 fix verification (2026-05-01)
+
+After the user's roguelite mission revealed Bug #25 (project_path
+defaulted to `C:\Program Files\Resonant Client` because the bundled
+exe inherits that as cwd), v0.3.3 added: a sane project-path default
+chain, an explicit "Build it at" picker in the mission composer, a
+clickable project-path display in the chat header, and two new cycle
+guards (windowed signature dedup + read-only churn cap).
+
+## E2E pass — Chrome MCP against `claude-code:sonnet`
+
+Run: dev server via `python -m resonant_client gui --browser --port 8909`,
+viewport 1400×900, project pre-set to `D:\Repos\resonant-client`.
+
+### Chat-header path display (A3)
+
+✅ Visible top-left of chat header on a regular project — renders
+   `Repos/resonant-client` (last two segments) with full path on hover.
+✅ Click target wired — fires `folder_dialog` to swap projects.
+✅ Unsafe path detection works — calling
+   `_updateHeaderProjectPath('C:\\Program Files\\Resonant Client')`
+   adds `header-project-path-unsafe` class, renders orange-tinted
+   border + 8% wash, title becomes "⚠ Project is in a system /
+   install folder…". Visual confirmation via screenshot.
+
+**Verdict:** A3 ships clean.
+
+### Mission composer project picker (A2)
+
+✅ "BUILD IT AT" label + path input + 📁 Browse button visible on
+   composer open. Pre-fills with `currentCwd`.
+✅ Inline hints update on every keystroke:
+   - empty → "Pick or type a folder — the agent will write files
+     here." (warn class)
+   - `C:\Program Files\evil` → "⚠ This is a system / install directory.
+     Pick somewhere under your home folder instead." (warn class)
+   - `D:\Repos\test-v033-target` (non-existent OK path) → "Folder
+     will be created if it doesn't exist yet." (ok class)
+✅ Browse button fires `folder_dialog` with `_pendingFolderPickConsumer
+   = 'mission'` so the picked path lands in the composer field, NOT
+   the welcome flow.
+
+**Verdict:** A2 ships clean.
+
+### Real mission — explicit path, no scavenger hunt (A2 + Bug #25)
+
+Hooked the WebSocket to capture sends. Opened composer, set path to
+`D:\Repos\test-v033-target` (a directory that didn't exist), entered
+feature `Add a tiny TypeScript file that logs hello world.`, hit Start.
+
+**Captured WS payload:**
+```json
+{
+  "command": "mission_start",
+  "feature": "Add a tiny TypeScript file that logs hello world.",
+  "project_path": "D:\\Repos\\test-v033-target"
+}
+```
+
+**Backend behavior (verified via session JSON on disk):**
+- ✅ `D:\Repos\test-v033-target` was created on disk (was missing
+  before the call).
+- ✅ Session JSON at `~/.resonant/projects/be1ba420f3a0/sessions/0cdf68c2.json`
+  records `project_path: "D:\\Repos\\test-v033-target"` and
+  `mission_state.phase: "drafting"`.
+- ✅ The session/project hash `be1ba420f3a0` matches `sha256(D:/Repos/test-v033-target)[:12]`,
+  so apply_project_context was reached.
+
+**Agent's actual tool calls (display_events):**
+1. `Read C:\Users\richa\AppData\Local\Temp\resonant_prompt_*.txt` —
+   internal claude-code IPC reading the prompt file Resonant wrote
+   for it. Not a scavenger hunt; this is normal.
+2. `Glob "**/*" path=D:\Repos\test-v033-target` — **globs the
+   explicit project path.** Empty, as expected.
+3. `text.done`: "The project directory is empty — no existing code
+   to reference. **Question:** Where should this file live, and what
+   should it be called? **My recommendation:** `src/hello.ts` …"
+
+Total elapsed: 24.9s. Compare to the v0.3.2 baseline where the agent
+hit the 24-step cap searching `C:\Users\richa\Desktop`,
+`C:\Users\richa\source\repos`, etc., for files it had created in a
+sibling specialist's session.
+
+**Verdict:** Bug #25 fix works end-to-end. The agent does NOT scavenger-
+hunt when the project path is explicitly set.
+
+### Cycle guards (windowed dedup + read-only churn cap)
+
+Trusted via 12 new unit tests (all pass):
+- `TestWindowedCycleRepeat`: 6 cases covering empty history, single
+  call, interleaved repeats (`A→B→A→C→A` catches at 3), turn
+  boundary respect, window cap, threshold trip.
+- `TestCountReadOnlyChurn`: 6 cases covering empty, consecutive reads,
+  write-resets-streak, bash-is-neutral-not-truncating, turn boundary,
+  sane threshold constant.
+
+E2E loop trigger deferred — forcing claude-code to loop is expensive
+and the unit-test surface is already comprehensive. Wire is identical
+to the existing strict-trailing doom-loop, which has E2E coverage.
+
+**Verdict:** Ship as covered by unit tests.
+
+## Bugs surfaced during E2E
+
+### Bug A — chat-header path goes stale after explicit-path mission
+
+When the user opens a mission with a project_path different from
+`currentCwd`, the backend correctly switches the project context but
+the frontend's `currentCwd` (and therefore the chat-header path
+display) doesn't update until the next init event.
+
+**Reproduction:**
+1. Open the app on project `D:\Repos\foo` (chat header shows `Repos/foo`).
+2. Open mission composer. Set "Build it at" to `D:\Repos\bar`.
+3. Type a feature, hit Start.
+4. Backend creates `D:\Repos\bar`, switches project context, runs grill.
+5. Chat header still shows `Repos/foo`. Title hover still says "Project: D:/Repos/foo".
+
+**Why:** `this.currentCwd` is only assigned in two places:
+`app.js:2360` (handles `init` event) and `app.js:7400`
+(`selectProjectFolder`, the welcome screen flow). Neither fires on a
+mission_start project swap. The `session_cleared` event payload
+doesn't carry `cwd` either.
+
+**Severity:** UI display bug, not a data corruption. The session JSON
+is correct, the agent works in the right place, the user just sees
+the wrong path label. Confusing but not destructive.
+
+**Fix path for v0.3.4:** Either (a) include `cwd` field in the
+`session_cleared` event when `apply_project_context` was called, and
+have the frontend update `currentCwd` + call `_updateHeaderProjectPath`
+on receipt; or (b) emit a separate `cwd_changed` event whenever
+`apply_project_context` runs.
+
+### Bug B — `header-project-path-empty` class never fires in practice
+
+The `_updateHeaderProjectPath('')` branch sets the empty state, but
+`apply_project_context` always falls through to a non-empty path
+(`os.getcwd()` or the safe-default), so empty cwd is unreachable on
+the live app. Dead code, low priority — drop the branch in v0.3.4
+unless we add a "no project" lifecycle.
+
+## v0.3.3 verdict
+
+**Bug #25 root cause is fixed.** The four pieces (sane default,
+explicit picker, header display, cycle guards) all work as designed
+when exercised end-to-end against the gold-standard model
+(`claude-code:sonnet`).
+
+**One real follow-up bug** (chat-header staleness on mission project
+swap) and **one cosmetic loose end** (dead empty-state branch) — both
+file for v0.3.4.
+
+**Recommended next iteration after v0.3.4:**
+1. **Telemetry/log shipping** (deferred from v0.3.3 plan) — at minimum,
+   a "Help → Save diagnostics ZIP" button so users can attach logs to
+   GitHub issues without hunting `~/.resonant/`.
+2. **Plan-graph node `working_subdir` field** — even with the right
+   project_path, sibling specialists still have no formal channel to
+   tell each other "I created `src/scenes/` — work there." This was
+   the deferred A3 from v0.3.3 planning. Lower priority now that the
+   common case (explicit path) works, but worth doing before Phase 2.
+3. **Specialist "stop and ask" affordance** — the cycle guards stop
+   loops, but the agent still can't ASK the user for missing context
+   ("which folder under the project should I scaffold into?"). A new
+   `await_user` tool would close that gap without a Session refactor.

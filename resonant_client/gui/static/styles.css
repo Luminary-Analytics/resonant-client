@@ -6175,9 +6175,81 @@ body {
     text-align: left;
 }
 
-.header-project-path-empty {
-    color: color-mix(in srgb, #d97706 80%, var(--text));
-    border-color: color-mix(in srgb, #d97706 30%, var(--border));
+/* v0.3.4 — Help → Save Diagnostics confirmation toast. Inline in the
+   chat panel so the user definitely sees it; auto-dismiss isn't worth
+   the risk of missing the path. */
+.diagnostics-toast {
+    margin: 12px auto;
+    max-width: 540px;
+    padding: 14px 16px;
+    background: color-mix(in srgb, var(--brand) 6%, var(--bg-panel));
+    border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--border));
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+
+.diagnostics-toast-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.diagnostics-toast-icon {
+    font-size: 18px;
+    line-height: 1;
+}
+
+.diagnostics-toast-text {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-weight: 600;
+}
+
+.diagnostics-toast-meta {
+    font-weight: 400;
+    color: var(--dim);
+    font-size: 11px;
+}
+
+.diagnostics-toast-path {
+    display: block;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    color: var(--text);
+    word-break: break-all;
+    margin: 0 0 10px;
+}
+
+.diagnostics-toast-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+.diagnostics-toast-actions button {
+    padding: 5px 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background var(--duration-fast), border-color var(--duration-fast);
+}
+
+.diagnostics-toast-actions button:hover {
+    background: var(--bg-hover);
+    border-color: var(--brand);
 }
 
 .header-project-path-unsafe {

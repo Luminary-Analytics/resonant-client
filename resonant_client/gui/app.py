@@ -6156,6 +6156,12 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # Tell the frontend to switch to the new session before
                 # streaming starts so the chat panel renders into it.
+                # v0.3.4 — include cwd so the chat-header path display
+                # updates immediately when a mission picks a different
+                # project (Bug A from v0.3.3 E2E testing). Without this,
+                # apply_project_context above silently changed the
+                # backend's project_path but the frontend's currentCwd
+                # stayed stale until the next init.
                 await ws.send_json({
                     "event": "session_cleared",
                     "sessions": state.project.list_sessions(),
@@ -6164,6 +6170,7 @@ async def websocket_endpoint(ws: WebSocket):
                     "session_mode": "code",
                     "session_role": session_role,
                     "mission_started": True,
+                    "cwd": state.project.project_path,
                 })
 
                 from ..orchestration.grill_me import format_grill_first_message
@@ -6507,6 +6514,7 @@ async def websocket_endpoint(ws: WebSocket):
                     "current_session_id": state.project.current_session.id if state.project.current_session else "",
                     "session_mode": session_mode,
                     "session_role": session_role,
+                    "cwd": state.project.project_path,
                 })
 
             elif command == "switch_model":
@@ -6868,6 +6876,36 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json(state.get_init_data())
                 else:
                     await ws.send_json({"event": "error", "message": f"Invalid directory: {project_path}"})
+
+            elif command == "save_diagnostics":
+                # v0.3.4 — Help → Save diagnostics. Bundles redacted logs
+                # + intent audits + settings into a ZIP under ~/Downloads
+                # so the user can attach to a GitHub issue. No data ever
+                # leaves the machine without an explicit user action.
+                try:
+                    from . import diagnostics
+                    from pathlib import Path as _P
+                    from .. import __version__ as _ver
+                    resonant_dir = _P.home() / ".resonant"
+                    output_dir = diagnostics.default_output_dir()
+                    zip_path = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: diagnostics.build_diagnostics_zip(
+                            resonant_dir, output_dir, version=_ver
+                        ),
+                    )
+                    size_bytes = zip_path.stat().st_size if zip_path.exists() else 0
+                    await ws.send_json({
+                        "event": "diagnostics_saved",
+                        "path": str(zip_path),
+                        "size_bytes": size_bytes,
+                    })
+                except Exception as exc:
+                    logger.exception("save_diagnostics failed")
+                    await ws.send_json({
+                        "event": "error",
+                        "message": f"Failed to save diagnostics: {exc}",
+                    })
 
             elif command == "folder_dialog":
                 # Open native folder picker via pywebview (or tkinter fallback). Always

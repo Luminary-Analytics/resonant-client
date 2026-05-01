@@ -1063,12 +1063,10 @@ class ResonantApp {
         const text = document.getElementById('header-project-path-text');
         if (!btn || !text) return;
         const path = (cwd || '').replace(/\\/g, '/');
-        if (!path) {
-            text.textContent = '— no project —';
-            btn.classList.add('header-project-path-empty');
-            btn.title = 'Click to pick a project folder';
-            return;
-        }
+        // v0.3.4 — empty-state branch dropped. apply_project_context
+        // always falls through to a non-empty path (safe-default chain
+        // guarantees this since v0.3.3), so the empty rendering was
+        // unreachable in practice.
         // Surface the install-dir foot-gun directly in the header so the
         // user sees it before they ever start a session.
         const lower = path.toLowerCase();
@@ -1076,7 +1074,6 @@ class ResonantApp {
                          lower.startsWith('c:/windows') ||
                          lower.startsWith('/applications/');
         btn.classList.toggle('header-project-path-unsafe', isUnsafe);
-        btn.classList.remove('header-project-path-empty');
         // Show the trailing folder + parent for context (full path on hover).
         const parts = path.split('/');
         const tail = parts.slice(-2).join('/') || path;
@@ -2142,6 +2139,17 @@ class ResonantApp {
                     this.allSessions = event.all_sessions;
                 }
                 this.currentSessionId = event.current_session_id || '';
+                // v0.3.4 — when the backend swapped the project context
+                // (mission_start with explicit project_path, or any
+                // other path-changing path), the new cwd rides on the
+                // session_cleared event. Keep `currentCwd` and the
+                // chat-header path display in sync. Without this, the
+                // header lied for the rest of the app's lifetime
+                // (Bug A from v0.3.3 E2E).
+                if (event.cwd) {
+                    this.currentCwd = event.cwd.replace(/\\/g, '/');
+                    this._updateHeaderProjectPath(this.currentCwd);
+                }
                 this.applySessionRoleUI(event.session_role || this.sessionRole);
                 this.renderFilteredSessions();
                 this.showChatInterface();
@@ -2303,6 +2311,12 @@ class ResonantApp {
                 // to the welcome screen's text input so the click isn't a dead end.
                 this.showStatusMessage(event.message || 'Folder picker unavailable. Type a path in the welcome screen.');
                 this.showNewSessionSetup();
+                break;
+            case 'diagnostics_saved':
+                // v0.3.4 \u2014 Help \u2192 Save Diagnostics result. Show the path
+                // and size so the user knows what to attach to a GitHub
+                // issue. The size confirms the bundle isn't empty.
+                this._showDiagnosticsToast(event.path || '', event.size_bytes || 0);
                 break;
             case 'model_warmup_started':
                 // Big cloud / MoE models can take 30-90s to load on first call.
@@ -4934,6 +4948,16 @@ class ResonantApp {
                     case 'toggle-sidebar': document.getElementById('sidebar-toggle')?.click(); break;
                     case 'toggle-preview': document.getElementById('preview-toggle')?.click(); break;
                     case 'shortcuts': this.toggleShortcutsOverlay(); break;
+                    case 'save-diagnostics':
+                        // v0.3.4 — Help → Save Diagnostics. Bundles
+                        // redacted logs / intent audits / settings into
+                        // a ZIP under ~/Downloads. The user attaches
+                        // that to a GitHub issue. The result event
+                        // (`diagnostics_saved`) shows the path so the
+                        // user knows where it landed.
+                        this.showStatusMessage('Bundling diagnostics…');
+                        this.send({ command: 'save_diagnostics' });
+                        break;
                     case 'about': this.showStatusMessage('Resonant Client — Build software with agents'); break;
                 }
             });
@@ -6352,6 +6376,46 @@ class ResonantApp {
         el.style.cssText = 'text-align:center;color:var(--muted);font-size:12px;padding:8px;';
         el.textContent = message;
         this.chatMessages.appendChild(el);
+        this.scrollToBottom();
+    }
+
+    /**
+     * v0.3.4 — confirmation toast after Help → Save Diagnostics. Shows
+     * the on-disk path + size, with a "copy path" button so the user
+     * can paste straight into a GitHub issue.
+     */
+    _showDiagnosticsToast(zipPath, sizeBytes) {
+        if (!zipPath) {
+            this.showStatusMessage('Diagnostics saved (path unknown).');
+            return;
+        }
+        const sizeKB = Math.max(1, Math.round((sizeBytes || 0) / 1024));
+        const wrap = document.createElement('div');
+        wrap.className = 'diagnostics-toast';
+        wrap.innerHTML = `
+            <div class="diagnostics-toast-row">
+                <span class="diagnostics-toast-icon" aria-hidden="true">📦</span>
+                <span class="diagnostics-toast-text">
+                    Diagnostics ZIP saved
+                    <span class="diagnostics-toast-meta">${sizeKB} KB · attach to a GitHub issue</span>
+                </span>
+            </div>
+            <code class="diagnostics-toast-path">${this.escapeHtml(zipPath)}</code>
+            <div class="diagnostics-toast-actions">
+                <button type="button" class="diagnostics-toast-copy">Copy path</button>
+                <button type="button" class="diagnostics-toast-dismiss">Dismiss</button>
+            </div>
+        `;
+        wrap.querySelector('.diagnostics-toast-copy').addEventListener('click', async () => {
+            try {
+                await navigator.clipboard.writeText(zipPath);
+                this.showStatusMessage('Path copied to clipboard.');
+            } catch {
+                this.showStatusMessage('Copy failed — select the path manually.');
+            }
+        });
+        wrap.querySelector('.diagnostics-toast-dismiss').addEventListener('click', () => wrap.remove());
+        this.chatMessages.appendChild(wrap);
         this.scrollToBottom();
     }
 

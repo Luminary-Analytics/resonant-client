@@ -331,6 +331,12 @@ class ResonantApp {
     bindEvents() {
         // Send message
         this.sendBtn.addEventListener('click', () => this.sendMessage());
+
+        // Mission toggle in chat header — opens the composer.
+        const missionToggle = document.getElementById('mission-toggle');
+        if (missionToggle) {
+            missionToggle.addEventListener('click', () => this.openMissionComposer());
+        }
         this.userInput.addEventListener('keydown', (e) => {
             // Fuzzy file picker hijacks navigation/select keys when open so
             // it can act like a real autocomplete instead of moving the
@@ -379,9 +385,14 @@ class ResonantApp {
             this.chatScrollEndBtn.addEventListener('click', () => this.forceScrollToBottom());
         }
 
-        // Stop button
+        // Stop button — cancel current turn. If the user is in the
+        // drafting phase of a Mission, a Cancel mid-question is usually a
+        // signal of "I want out of this mission", not just "retry". Show
+        // a small inline prompt right after cancel, asking whether they
+        // want to exit the mission entirely (A1 fix).
         this.stopBtn.addEventListener('click', () => {
             this.send({ command: 'cancel' });
+            this._maybeOfferMissionExitOnCancel();
         });
 
         // Terminal bar — header click toggles expand/collapse
@@ -794,6 +805,14 @@ class ResonantApp {
             return;
         }
 
+        // Mission entry is now a UI toggle (chat-header) — slash command
+        // dropped. If a stale `/grill` muscle-memory shows up, point them
+        // at the toggle so they don't get silently confused.
+        if (text.startsWith('/grill') || text.startsWith('/mission')) {
+            this.showStatusMessage('Missions are now started from the 🎯 toggle in the chat header.');
+            return;
+        }
+
         // Add user message to chat (with image thumbnails if attached)
         this.addUserMessage(text, this.attachedImages);
 
@@ -890,6 +909,451 @@ class ResonantApp {
         this.addUserMessage('/plan ' + text);
         this.showStatusMessage('Intent dispatched — plan-graph populating in the preview panel.');
         this.openPlanTab(true);
+    }
+
+    /**
+     * Start a Mission. Always creates a fresh chat session on the backend
+     * (the grill phase needs a clean slate; mixing it with prior chat
+     * history pollutes the interview). The new session is flagged with
+     * `mission_state: {phase: "drafting", ...}` and the first assistant
+     * turn streams the interviewer's first question. When the model
+     * emits its `## Final spec` block, the backend fires a
+     * `mission.spec_ready` event and we render a "Build this roadmap"
+     * affordance beneath that assistant message.
+     */
+    startMission(feature) {
+        feature = (feature || '').trim();
+        if (!feature) {
+            this.showStatusMessage('Describe the feature or product first.');
+            return;
+        }
+        if (this.isRunning) {
+            this.showStatusMessage('A session is already running — wait for it to finish or cancel.');
+            return;
+        }
+        if (!this.chatMessages) return;
+
+        // Mission lives in a fresh session, so we wipe local turn state
+        // before sending. The backend will follow up with a session_cleared
+        // event that re-renders chat — but we want the user message to
+        // appear immediately for responsive feel.
+        this.chatMessages.innerHTML = '';
+        this.addUserMessage(feature);
+        this._resetAgentRunSummary(feature);
+
+        if (this._renderTimer) {
+            clearTimeout(this._renderTimer);
+            this._renderTimer = null;
+        }
+        this._lastStreamParseAt = 0;
+        this.streamBuffer = '';
+        this.isStreaming = false;
+        this.currentMessageEl = null;
+        this.currentStepEvent = null;
+        this.stepToolCalls = [];
+        this.stepToolResults = [];
+        this.stepIsInlineOnly = true;
+        this.stepRendered = false;
+        this.collapsedGroup = [];
+        this._liveCollapsedGroup = null;
+        if (this._currentTurn !== undefined) {
+            this._currentTurn = this._freshTurnAggregate();
+        }
+        if (this._blockToolRows && this._blockToolRows.clear) {
+            this._blockToolRows.clear();
+        }
+        this.subagentDepth = 0;
+        this.subagentContainer = null;
+        this.clearTerminals();
+        this._removeLiveAgentTodoStrip();
+
+        // Stash so the chat-header badge knows we're in drafting before
+        // session_cleared lands and overwrites currentSessionId.
+        this._pendingMissionFeature = feature;
+        this._refreshMissionBadge('drafting', feature);
+
+        this.send({ command: 'mission_start', feature });
+    }
+
+    /**
+     * Backend signaled that the assistant just emitted a `## Final spec`
+     * block in a drafting Mission. Render a "Build this roadmap" button
+     * beneath the most-recent assistant message.
+     */
+    /**
+     * Backend signals that the mission has advanced from one phase to
+     * the next (drafting → planning_dispatched, etc.). Sync the header
+     * badge accordingly. The session's mission_state is the source of
+     * truth — we just mirror it.
+     */
+    handleMissionPhaseChanged(event) {
+        const phase = (event && event.phase) || '';
+        if (!phase) return;
+        // Find the seed feature from the current session record so the
+        // badge can keep showing the original intent text.
+        const sess = this._currentSessionSummary();
+        const seed = sess?.mission_state?.seed_feature || this._pendingMissionFeature || '';
+        this._refreshMissionBadge(phase, seed);
+    }
+
+    handleMissionExited(event) {
+        // Mirror the sessions_updated update path so the per-project
+        // session list, the active-session pointer, and the chat-header
+        // chrome all converge on the new (exited) state. The mission
+        // session stays in the sidebar under "Missions" with its dim
+        // inactive style — we don't kick the user back to a regular
+        // session automatically; they can decide where to go next.
+        if (event && Array.isArray(event.sessions)) {
+            this.sessions = event.sessions;
+        }
+        if (event && event.current_session_id !== undefined) {
+            this.currentSessionId = event.current_session_id || '';
+        }
+        this.renderFilteredSessions();
+        this._syncMissionUI();
+        this.showStatusMessage('Mission exited.');
+    }
+
+    /** Look up the current session summary. Tries `sessions` (per-project,
+     *  always fresh after session_cleared) first, falls back to
+     *  `allSessions` (cross-project, sometimes stale immediately after a
+     *  session_cleared since that event only carries per-project data). */
+    _currentSessionSummary() {
+        if (!this.currentSessionId) return null;
+        if (Array.isArray(this.sessions)) {
+            const hit = this.sessions.find(s => s && s.id === this.currentSessionId);
+            if (hit) return hit;
+        }
+        if (Array.isArray(this.allSessions)) {
+            return this.allSessions.find(s => s && s.id === this.currentSessionId) || null;
+        }
+        return null;
+    }
+
+    /**
+     * Sync the chat-header chrome with the current session's mission state.
+     * Called whenever sessions_updated or session_cleared lands.
+     *
+     * Three visible states:
+     * - Regular session (no mission_state)        → show "🎯 Mission" toggle
+     * - Active mission (drafting/planning/etc.)   → hide toggle, show badge
+     * - Past mission (exited / completed)         → hide toggle, show muted
+     *                                                "viewing past mission"
+     *                                                indicator (B1 fix)
+     */
+    _syncMissionUI() {
+        const sess = this._currentSessionSummary();
+        const ms = sess && sess.mission_state;
+        const phase = ms && ms.phase;
+        const seed = (ms && ms.seed_feature) || '';
+        const active = phase && phase !== 'exited' && phase !== 'completed';
+        const past = phase === 'exited' || phase === 'completed';
+
+        const toggle = document.getElementById('mission-toggle');
+        if (toggle) {
+            // Hide the toggle whenever we're inside any mission session
+            // (active OR past) — for past missions, the past-mission
+            // indicator takes the toggle's slot.
+            toggle.style.display = (active || past) ? 'none' : '';
+        }
+        this._refreshMissionBadge(active ? phase : '', seed);
+        this._refreshPastMissionIndicator(past ? phase : '', seed);
+
+        // Clear the pending feature once the real session arrives so we
+        // don't keep showing it on stale switches.
+        if (active && this._pendingMissionFeature && seed) {
+            this._pendingMissionFeature = '';
+        }
+    }
+
+    /**
+     * The past-mission indicator — sibling of `mission-badge` in the
+     * chat header. Shown only when the current session is a mission
+     * whose phase is 'exited' or 'completed'. Pure read-only — no
+     * exit/cancel action; the only interaction is the optional Resume
+     * affordance (B4) on the sidebar row.
+     */
+    _refreshPastMissionIndicator(phase, seedFeature) {
+        const header = document.getElementById('chat-header') ||
+                       document.querySelector('.chat-header');
+        if (!header) return;
+
+        let el = document.getElementById('mission-past-indicator');
+        if (!phase) {
+            if (el) el.remove();
+            return;
+        }
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'mission-past-indicator';
+            el.className = 'mission-past-indicator';
+            header.appendChild(el);
+        }
+        const phaseLabel = phase === 'completed' ? 'completed' : 'exited';
+        el.dataset.phase = phase;
+        el.innerHTML = `
+            <span class="mission-past-icon" aria-hidden="true">🎯</span>
+            <span class="mission-past-text">
+                <span class="mission-past-label">Mission</span>
+                <span class="mission-past-phase">${this.escapeHtml(phaseLabel)}</span>
+            </span>
+        `;
+    }
+
+    /**
+     * Build / update the chat-header Mission badge. Pure DOM work — the
+     * source of truth lives in the session's `mission_state`. Called from
+     * mission_start, session switch, mission_phase_changed, mission_exited.
+     *
+     * B2 fix — when the badge's phase changes (e.g. drafting → planning),
+     * trigger a brief pulse animation so the transition is visually
+     * acknowledged rather than silently swapping a label.
+     */
+    _refreshMissionBadge(phase, seedFeature) {
+        const header = document.getElementById('chat-header') ||
+                       document.querySelector('.chat-header') ||
+                       document.querySelector('header.app-titlebar');
+        if (!header) return;
+
+        let badge = document.getElementById('mission-badge');
+        const isActive = phase && phase !== 'exited' && phase !== 'completed';
+
+        if (!isActive) {
+            if (badge) badge.remove();
+            return;
+        }
+
+        const previousPhase = badge ? badge.dataset.phase : '';
+
+        if (!badge) {
+            badge = document.createElement('button');
+            badge.id = 'mission-badge';
+            badge.className = 'mission-badge';
+            badge.type = 'button';
+            badge.title = 'Mission in progress — click to exit';
+            badge.addEventListener('click', () => this._handleMissionBadgeClick());
+            header.appendChild(badge);
+        }
+
+        const phaseLabel = {
+            drafting: 'Drafting',
+            planning_dispatched: 'Planning',
+            executing: 'Executing',
+            reviewing: 'Reviewing',
+            completed: 'Done',
+        }[phase] || phase;
+
+        badge.dataset.phase = phase;
+        badge.innerHTML = `
+            <span class="mission-badge-icon" aria-hidden="true">🎯</span>
+            <span class="mission-badge-text">
+                <span class="mission-badge-label">Mission</span>
+                <span class="mission-badge-phase">${this.escapeHtml(phaseLabel)}</span>
+            </span>
+            <span class="mission-badge-exit" title="Exit mission" aria-label="Exit mission">×</span>
+        `;
+        const exitBtn = badge.querySelector('.mission-badge-exit');
+        if (exitBtn) {
+            exitBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this._handleMissionExitClick();
+            });
+        }
+
+        // Phase-transition pulse (B2). Only fire when the phase actually
+        // changed (not on first render — initial appearance already
+        // animates via collapsed-group-enter). Forces an animation
+        // restart by removing → reflowing → re-adding the class.
+        if (previousPhase && previousPhase !== phase) {
+            badge.classList.remove('mission-badge-pulse');
+            void badge.offsetWidth;
+            badge.classList.add('mission-badge-pulse');
+        }
+    }
+
+    /**
+     * Inline post-cancel affordance — A1 fix. When the user cancels a
+     * turn during a Mission's drafting phase, surface a small banner
+     * inviting them to exit the mission too. We don't auto-exit because
+     * the user might just want to redo the current question; the banner
+     * lets them opt in. Auto-dismisses after 12s.
+     */
+    _maybeOfferMissionExitOnCancel() {
+        const sess = this._currentSessionSummary();
+        const phase = sess && sess.mission_state && sess.mission_state.phase;
+        if (phase !== 'drafting' && phase !== 'planning_dispatched') return;
+        // Only one banner at a time.
+        if (document.getElementById('mission-cancel-exit-banner')) return;
+
+        const banner = document.createElement('div');
+        banner.id = 'mission-cancel-exit-banner';
+        banner.className = 'mission-cancel-exit-banner';
+        banner.innerHTML = `
+            <span class="mission-cancel-exit-msg">Mission paused. Exit it entirely, or stay in drafting?</span>
+            <button type="button" class="mission-cancel-exit-btn-stay">Stay</button>
+            <button type="button" class="mission-cancel-exit-btn-exit">Exit mission</button>
+        `;
+        const cleanup = () => banner.remove();
+        banner.querySelector('.mission-cancel-exit-btn-stay').addEventListener('click', cleanup);
+        banner.querySelector('.mission-cancel-exit-btn-exit').addEventListener('click', () => {
+            cleanup();
+            this._handleMissionExitClick();
+        });
+        this.chatMessages.appendChild(banner);
+        this.scrollToBottom();
+        setTimeout(cleanup, 12000);
+    }
+
+    _handleMissionBadgeClick() {
+        // Click on the badge itself — show a small confirm (no popover
+        // library, just a confirm() for v1) so the user doesn't lose work
+        // on a fat-finger click.
+        const ok = confirm('Exit this mission?\n\nThe session stays in your sidebar under "Missions" and you can review the conversation, but no new work will be dispatched.');
+        if (ok) this._handleMissionExitClick();
+    }
+
+    _handleMissionExitClick() {
+        this.send({ command: 'mission_exit' });
+    }
+
+    /**
+     * Open the Mission composer — small inline modal that asks
+     * "What do you want to build?" and dispatches mission_start on submit.
+     * Triggered by the "🎯 Mission" button (off state) in the chat header
+     * or the "+ Mission" sidebar button.
+     */
+    openMissionComposer() {
+        let overlay = document.getElementById('mission-composer-overlay');
+        if (overlay) {
+            // Already open — just focus the input.
+            overlay.querySelector('textarea')?.focus();
+            return;
+        }
+
+        // macOS users see ⌘, everyone else sees Ctrl. Surfacing the
+        // shortcut directly so the affordance is discoverable (B5 fix —
+        // the keybinding existed before but was invisible).
+        const isMac = /Mac|iPhone|iPad/i.test(navigator.platform || navigator.userAgent || '');
+        const submitHintKey = isMac ? '⌘' : 'Ctrl';
+
+        overlay = document.createElement('div');
+        overlay.id = 'mission-composer-overlay';
+        overlay.className = 'mission-composer-overlay';
+        overlay.innerHTML = `
+            <div class="mission-composer">
+                <div class="mission-composer-header">
+                    <span class="mission-composer-icon" aria-hidden="true">🎯</span>
+                    <span class="mission-composer-title">Start a Mission</span>
+                    <button type="button" class="mission-composer-close" aria-label="Close">×</button>
+                </div>
+                <p class="mission-composer-blurb">
+                    Describe a feature or product you want built. The agent will
+                    interview you to nail down the spec, then dispatch a
+                    plan-graph of work to deliver it.
+                </p>
+                <textarea class="mission-composer-input" rows="4"
+                    placeholder="Add a /export command that exports the current chat to markdown…"></textarea>
+                <div class="mission-composer-actions">
+                    <span class="mission-composer-shortcut">
+                        <kbd>${submitHintKey}</kbd> <kbd>Enter</kbd> to start
+                    </span>
+                    <button type="button" class="mission-composer-cancel">Cancel</button>
+                    <button type="button" class="mission-composer-start" disabled>Start mission</button>
+                </div>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+
+        const textarea = overlay.querySelector('textarea');
+        const startBtn = overlay.querySelector('.mission-composer-start');
+        // A2 fix — backdrop click discards work. If the textarea has
+        // substantial input, treat backdrop click as a no-op so a
+        // fat-finger doesn't lose the user's typed feature description.
+        // The Cancel button and Esc still dismiss intentionally.
+        const SUBSTANTIAL_INPUT_THRESHOLD = 20;  // chars
+        const close = () => overlay.remove();
+
+        textarea.addEventListener('input', () => {
+            startBtn.disabled = textarea.value.trim().length === 0;
+        });
+        textarea.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !startBtn.disabled) {
+                e.preventDefault();
+                startBtn.click();
+            } else if (e.key === 'Escape') {
+                close();
+            }
+        });
+        overlay.querySelector('.mission-composer-close').addEventListener('click', close);
+        overlay.querySelector('.mission-composer-cancel').addEventListener('click', close);
+        overlay.addEventListener('click', (e) => {
+            if (e.target !== overlay) return;
+            const len = textarea.value.trim().length;
+            if (len >= SUBSTANTIAL_INPUT_THRESHOLD) {
+                // User has real input — flash the modal as a hint that
+                // backdrop click was ignored, but don't close.
+                const composer = overlay.querySelector('.mission-composer');
+                composer.classList.remove('mission-composer-flash');
+                // Force reflow so the next class addition retriggers the animation.
+                void composer.offsetWidth;
+                composer.classList.add('mission-composer-flash');
+                return;
+            }
+            close();
+        });
+        startBtn.addEventListener('click', () => {
+            const feature = textarea.value.trim();
+            if (!feature) return;
+            close();
+            this.startMission(feature);
+        });
+
+        setTimeout(() => textarea.focus(), 50);
+    }
+
+    handleMissionSpecReady(event) {
+        const refined = (event && event.refined_intent) || '';
+        const specMd = (event && event.spec_markdown) || '';
+        const sessionId = (event && event.session_id) || '';
+        if (!refined && !specMd) return;
+
+        // Anchor to the latest assistant message.
+        const messages = this.chatMessages.querySelectorAll('.msg-assistant');
+        const target = messages[messages.length - 1];
+        if (!target) return;
+        // Idempotent — multiple text.done events on the same message
+        // shouldn't stack buttons.
+        if (target.querySelector('.mission-build-action')) return;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'mission-build-action';
+        wrap.innerHTML = `
+            <button type="button" class="mission-build-btn" title="Hand this spec to the planner">
+                <span class="mission-build-icon" aria-hidden="true">▸</span>
+                <span class="mission-build-label">Build this roadmap</span>
+            </button>
+            <span class="mission-build-hint">Spec captured. Click to dispatch the planner with the full spec.</span>
+        `;
+        wrap.querySelector('.mission-build-btn').addEventListener('click', () => {
+            // Tier-1 fix #1: hand the FULL spec markdown over, not just
+            // the refined-intent paragraph — the planner needs the
+            // assumptions / scope / acceptance criteria too. Backend
+            // owns the intent_start + phase transition.
+            this.send({
+                command: 'mission_dispatch_roadmap',
+                session_id: sessionId,
+                spec_markdown: specMd,
+                refined_intent: refined,
+            });
+            const btn = wrap.querySelector('.mission-build-btn');
+            btn.disabled = true;
+            btn.querySelector('.mission-build-label').textContent = 'Roadmap dispatched';
+            // Surface the planner UI proactively so the user sees the
+            // graph populate as it builds.
+            this.openPlanTab(true);
+        });
+        target.appendChild(wrap);
+        this.scrollToBottom();
     }
 
     setRunning(running) {
@@ -1460,6 +1924,15 @@ class ResonantApp {
             case 'project_files':
                 this.handleProjectFiles(event);
                 break;
+            case 'mission.spec_ready':
+                this.handleMissionSpecReady(event);
+                break;
+            case 'mission_phase_changed':
+                this.handleMissionPhaseChanged(event);
+                break;
+            case 'mission_exited':
+                this.handleMissionExited(event);
+                break;
             case 'tool_permission':
                 this.handleToolPermission(event);
                 break;
@@ -1477,14 +1950,24 @@ class ResonantApp {
                 if (event.all_sessions) this.allSessions = event.all_sessions;
                 this.currentSessionId = event.current_session_id || '';
                 this.renderFilteredSessions();
+                this._syncMissionUI();
                 break;
             case 'session_cleared':
-                this.chatMessages.innerHTML = '';
+                // Mission flow: the frontend already rendered the seed
+                // feature as a user message before sending mission_start.
+                // Wiping the chat here would visually delete it, leaving
+                // an empty chat until the model's first reply streams.
+                // Skip the wipe in that case — the new (empty) session
+                // is already what we're showing.
+                if (!event.mission_started) {
+                    this.chatMessages.innerHTML = '';
+                }
                 this.sessions = event.sessions || [];
                 this.currentSessionId = event.current_session_id || '';
                 this.applySessionRoleUI(event.session_role || this.sessionRole);
                 this.renderFilteredSessions();
                 this.showChatInterface();
+                this._syncMissionUI();
                 break;
             case 'session_forked':
                 this.showStatusMessage(`Forked: kept ${event.user_messages_kept} message(s)`);
@@ -2406,7 +2889,8 @@ class ResonantApp {
             totalInputTokens: 0,
             totalOutputTokens: 0,
             stepCount: 0,
-            footerEl: null,  // set lazily on session.end render
+            toolCallCount: 0,    // UX fix #7 — honest tool-call count in run-card
+            footerEl: null,      // set lazily on session.end render
         };
     }
 
@@ -2924,6 +3408,7 @@ class ResonantApp {
                     }
                 });
                 this._decorateCodeBlocks(contentEl);
+                this._decorateMissionSpec(contentEl);
             }
         } catch (err) {
             contentEl.textContent = text;
@@ -2966,6 +3451,58 @@ class ResonantApp {
         });
     }
 
+    /**
+     * B3 fix — when an assistant message contains a `## Final spec`
+     * heading (Mission drafting phase output), wrap the heading + all
+     * following content into a `.mission-spec-card` container. CSS then
+     * styles the result as a structured spec card instead of a wall of
+     * bold-on-newline labels. Idempotent: if the card already exists
+     * (re-render path), do nothing.
+     */
+    _decorateMissionSpec(contentEl) {
+        const headings = contentEl.querySelectorAll('h2');
+        let specHeading = null;
+        for (const h of headings) {
+            if (h.textContent.trim() === 'Final spec') {
+                specHeading = h;
+                break;
+            }
+        }
+        if (!specHeading) return;
+        // Guard: already wrapped (post-streaming re-render shouldn't double-wrap).
+        if (specHeading.parentElement && specHeading.parentElement.classList.contains('mission-spec-card-body')) {
+            return;
+        }
+
+        const card = document.createElement('div');
+        card.className = 'mission-spec-card';
+        const head = document.createElement('div');
+        head.className = 'mission-spec-card-head';
+        head.innerHTML = '<span class="mission-spec-card-icon" aria-hidden="true">📋</span><span class="mission-spec-card-title">Final spec</span>';
+        const body = document.createElement('div');
+        body.className = 'mission-spec-card-body';
+        card.appendChild(head);
+        card.appendChild(body);
+
+        // Insert the card in place of specHeading, then move the
+        // heading + every following sibling into card.body until the
+        // next h2 (or end of content).
+        const parent = specHeading.parentNode;
+        parent.insertBefore(card, specHeading);
+        let node = specHeading;
+        while (node) {
+            const next = node.nextSibling;
+            if (node.nodeType === 1 && node.tagName === 'H2' && node !== specHeading) break;
+            // Skip the heading itself — we already rendered it in the card head.
+            if (node === specHeading) {
+                node.remove();
+            } else {
+                body.appendChild(node);
+            }
+            node = next;
+        }
+    }
+
     // ── Tool Calls ──────────────────────────────────────────────
 
     handleToolCall(event) {
@@ -2973,6 +3510,13 @@ class ResonantApp {
         const name = event.name || '';
         const callId = event.call_id || '';
         const nameLower = name.toLowerCase();
+
+        // UX fix #7 — accumulate tool-call count for the per-turn aggregate
+        // so the run-card can report something honest like "3 steps · 7 tools"
+        // instead of just "3 agent steps".
+        if (this._currentTurn) {
+            this._currentTurn.toolCallCount = (this._currentTurn.toolCallCount || 0) + 1;
+        }
 
         // Track in terminal bar (bash commands — works for all backends and modes)
         // For CLI backends: a new tool call means the previous one finished
@@ -4515,22 +5059,44 @@ class ResonantApp {
 
     _renderAgentRunCompleteCard(totalElapsed, totalSteps) {
         const summary = this._agentRunSummary || { title: '', fileChanges: [], todos: null };
-        const title = summary.title || 'Agent task';
         const n = Math.max(0, Math.floor(totalSteps || 0));
         const files = summary.fileChanges || [];
         const td = summary.todos;
         const errored = !!this._agentRunErrored;
         const errorMsg = this._agentRunErrorMessage || '';
 
+        // UX fix #6 — when the active session is a Mission, anchor the
+        // run-card title to the original feature description rather than
+        // the user's last reply. Without this, every grill round produces
+        // a card titled "Backend, agreed. New ClientCommand.EXPORT…" or
+        // similar — which is confusing for a multi-turn mission.
+        const sess = this._currentSessionSummary && this._currentSessionSummary();
+        const ms = sess && sess.mission_state;
+        const missionSeed = ms && ms.seed_feature ? ms.seed_feature : '';
+        const title = missionSeed || summary.title || 'Agent task';
+
+        // UX fix #7 — pull tool-call count from the per-turn aggregate
+        // (which counts every tool.call event) so the progress label can
+        // honestly say "3 steps · 7 tool calls" instead of "1 agent step"
+        // when the model fanned out 7 inline tools across 3 step events.
+        const tools = (this._currentTurn && this._currentTurn.toolCallCount) || 0;
+        const stepsToolsLabel = (steps) => {
+            const stepPart = `${steps} step${steps === 1 ? '' : 's'}`;
+            if (tools > 0 && tools !== steps) {
+                return `${stepPart} · ${tools} tool call${tools === 1 ? '' : 's'}`;
+            }
+            return stepPart;
+        };
+
         let progressLabel;
         if (errored) {
             progressLabel = n > 0
-                ? `Stopped after ${n} step${n === 1 ? '' : 's'}`
+                ? `Stopped after ${stepsToolsLabel(n)}`
                 : 'Stopped';
         } else if (td && td.total > 0) {
             progressLabel = `${td.done} of ${td.total} to-dos completed`;
         } else if (n > 0) {
-            progressLabel = `${n} agent step${n === 1 ? '' : 's'}`;
+            progressLabel = stepsToolsLabel(n);
         } else {
             progressLabel = 'Completed';
         }
@@ -5363,34 +5929,47 @@ class ResonantApp {
         const el = document.createElement('div');
         el.className = 'msg-user';
 
-        let imagesHtml = '';
+        // Build the content node with textContent (no template-literal
+        // whitespace bleeding into the rendered output — A3 fix). Images
+        // and the action row stay as innerHTML since their structure is
+        // shape-fixed.
+        const content = document.createElement('div');
+        content.className = 'msg-user-content';
         if (images && images.length > 0) {
-            const thumbs = images.map(img =>
-                `<img src="${img.dataUrl || `data:${img.media_type};base64,${img.data}`}"
-                      style="max-width:120px;max-height:80px;border-radius:4px;border:1px solid var(--border);cursor:pointer"
-                      onclick="app.showLightbox(this.src)"
-                      alt="Attached">`
-            ).join('');
-            imagesHtml = `<div style="display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap">${thumbs}</div>`;
+            const wrap = document.createElement('div');
+            wrap.style.cssText = 'display:flex;gap:8px;margin-bottom:8px;flex-wrap:wrap';
+            for (const img of images) {
+                const thumb = document.createElement('img');
+                thumb.src = img.dataUrl || `data:${img.media_type};base64,${img.data}`;
+                thumb.alt = 'Attached';
+                thumb.style.cssText = 'max-width:120px;max-height:80px;border-radius:4px;border:1px solid var(--border);cursor:pointer';
+                thumb.addEventListener('click', () => this.showLightbox(thumb.src));
+                wrap.appendChild(thumb);
+            }
+            content.appendChild(wrap);
         }
+        const textNode = document.createElement('span');
+        textNode.textContent = (text || '').trim();
+        content.appendChild(textNode);
+        el.appendChild(content);
 
-        el.innerHTML = `
-            <div class="msg-user-content">${imagesHtml}${this.escapeHtml(text)}</div>
-            <div class="msg-actions msg-actions-user">
-                <button class="msg-action-btn" data-action="fork" title="Fork from this message">
-                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-                        <circle cx="3" cy="3" r="1.5" stroke="currentColor" stroke-width="1.1"/>
-                        <circle cx="11" cy="3" r="1.5" stroke="currentColor" stroke-width="1.1"/>
-                        <circle cx="7" cy="11" r="1.5" stroke="currentColor" stroke-width="1.1"/>
-                        <path d="M3 4.5V7c0 1 .8 1.8 1.8 1.8h4.4c1 0 1.8-.8 1.8-1.8V4.5" stroke="currentColor" stroke-width="1.1" fill="none"/>
-                        <path d="M7 8.8v.7" stroke="currentColor" stroke-width="1.1"/>
-                    </svg>
-                </button>
-            </div>
-        `;
-        el.querySelector('[data-action="fork"]')?.addEventListener('click', () => {
+        const actions = document.createElement('div');
+        actions.className = 'msg-actions msg-actions-user';
+        actions.innerHTML = `
+            <button class="msg-action-btn" data-action="fork" title="Fork from this message">
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+                    <circle cx="3" cy="3" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                    <circle cx="11" cy="3" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                    <circle cx="7" cy="11" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                    <path d="M3 4.5V7c0 1 .8 1.8 1.8 1.8h4.4c1 0 1.8-.8 1.8-1.8V4.5" stroke="currentColor" stroke-width="1.1" fill="none"/>
+                    <path d="M7 8.8v.7" stroke="currentColor" stroke-width="1.1"/>
+                </svg>
+            </button>`;
+        actions.querySelector('[data-action="fork"]').addEventListener('click', () => {
             this._forkFromUserMessage(el);
         });
+        el.appendChild(actions);
+
         this.chatMessages.appendChild(el);
         this.scrollToBottom();
     }
@@ -5877,6 +6456,124 @@ class ResonantApp {
 
     // ── Session List ─────────────────────────────────────────────
 
+    /**
+     * Render the "Missions" sidebar group — split into Active and
+     * Completed subsections (B6 fix). Active = drafting / planning /
+     * executing / reviewing. Completed = exited / completed. Each
+     * subsection has its own subheader; the Completed subsection is
+     * collapsed by default to keep the sidebar compact when a project
+     * accumulates archived missions.
+     */
+    _renderMissionsGroup(missions) {
+        const ACTIVE_PHASES = new Set(['drafting', 'planning_dispatched', 'executing', 'reviewing']);
+        const active = missions.filter(s => ACTIVE_PHASES.has(s.mission_state?.phase || ''));
+        const inactive = missions.filter(s => !ACTIVE_PHASES.has(s.mission_state?.phase || ''));
+        const sortByUpdated = (a, b) => (b.updated_at || 0) - (a.updated_at || 0);
+        active.sort(sortByUpdated);
+        inactive.sort(sortByUpdated);
+
+        const wrap = document.createElement('div');
+        wrap.className = 'mission-group';
+
+        const header = document.createElement('div');
+        header.className = 'mission-group-header';
+        header.innerHTML = `
+            <span class="mission-group-icon" aria-hidden="true">🎯</span>
+            <span class="mission-group-title">Missions</span>
+            <span class="mission-group-count">${missions.length}</span>
+            <button type="button" class="mission-group-add" title="Start a Mission" aria-label="New mission">+</button>
+        `;
+        header.querySelector('.mission-group-add').addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.openMissionComposer();
+        });
+        wrap.appendChild(header);
+
+        if (active.length > 0) {
+            const sub = this._createMissionSubsection('Active', active, /* defaultExpanded= */ true);
+            wrap.appendChild(sub);
+        }
+        if (inactive.length > 0) {
+            const sub = this._createMissionSubsection('Completed', inactive, /* defaultExpanded= */ false);
+            wrap.appendChild(sub);
+        }
+        this.sessionList.appendChild(wrap);
+    }
+
+    _createMissionSubsection(label, missions, defaultExpanded) {
+        const sub = document.createElement('div');
+        sub.className = 'mission-subsection' + (defaultExpanded ? ' expanded' : '');
+
+        const subhead = document.createElement('div');
+        subhead.className = 'mission-subsection-header';
+        subhead.innerHTML = `
+            <span class="mission-subsection-chevron">${defaultExpanded ? '▾' : '▸'}</span>
+            <span class="mission-subsection-label">${this.escapeHtml(label)}</span>
+            <span class="mission-subsection-count">${missions.length}</span>
+        `;
+        const items = document.createElement('div');
+        items.className = 'mission-subsection-items';
+        for (const m of missions) items.appendChild(this._createMissionRow(m));
+        subhead.addEventListener('click', () => {
+            const expanded = sub.classList.toggle('expanded');
+            subhead.querySelector('.mission-subsection-chevron').textContent = expanded ? '▾' : '▸';
+        });
+        sub.appendChild(subhead);
+        sub.appendChild(items);
+        return sub;
+    }
+
+    _createMissionRow(session) {
+        const phase = (session.mission_state && session.mission_state.phase) || '';
+        const seed = (session.mission_state && session.mission_state.seed_feature) || session.title || '';
+        const phaseLabel = {
+            drafting: 'drafting',
+            planning_dispatched: 'planning',
+            executing: 'executing',
+            reviewing: 'reviewing',
+            completed: 'done',
+            exited: 'exited',
+        }[phase] || phase;
+
+        const isActive = session.id === this.currentSessionId;
+        const isInactive = phase === 'exited' || phase === 'completed';
+
+        const el = document.createElement('div');
+        el.className = 'mission-row' + (isActive ? ' active' : '') + (isInactive ? ' inactive' : '');
+        el.setAttribute('role', 'button');
+        el.setAttribute('tabindex', '0');
+        el.dataset.sessionId = session.id;
+
+        // B4 fix — Resume affordance on inactive rows. Hover-revealed so
+        // it doesn't compete with the row's primary "click to switch"
+        // affordance, but prominent on hover.
+        const resumeButtonHtml = isInactive
+            ? `<button type="button" class="mission-row-resume" title="Resume this mission" aria-label="Resume mission">↻</button>`
+            : '';
+
+        el.innerHTML = `
+            <span class="mission-row-dot" data-phase="${this.escapeHtml(phase)}"></span>
+            <span class="mission-row-body">
+                <span class="mission-row-title">${this.escapeHtml(seed.slice(0, 80))}</span>
+                <span class="mission-row-meta">${this.escapeHtml(phaseLabel)}</span>
+            </span>
+            ${resumeButtonHtml}
+        `;
+        el.addEventListener('click', () => {
+            if (session.id !== this.currentSessionId) {
+                this.send({ command: 'switch_session', session_id: session.id });
+            }
+        });
+        const resumeBtn = el.querySelector('.mission-row-resume');
+        if (resumeBtn) {
+            resumeBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                this.send({ command: 'mission_resume', session_id: session.id });
+            });
+        }
+        return el;
+    }
+
     showSessionSkeletons() {
         if (!this.sessionList) return;
         let html = '';
@@ -5981,9 +6678,26 @@ class ResonantApp {
             return;
         }
 
-        // Group by project
+        // Split missions out into their own top-level group so they read as
+        // first-class entities (per the long-running-agents design). They
+        // are also filtered out of the per-project tree below to avoid
+        // double-listing.
+        const missions = sessions.filter(s => s && s.mission_state);
+        const nonMissions = sessions.filter(s => !s || !s.mission_state);
+
+        if (missions.length > 0) {
+            this._renderMissionsGroup(missions);
+        }
+
+        if (!nonMissions.length) {
+            // All filtered sessions are missions — nothing more to render
+            // beneath the Missions group.
+            return;
+        }
+
+        // Group regular sessions by project.
         const projectMap = new Map();
-        for (const s of sessions) {
+        for (const s of nonMissions) {
             const path = (s.project_path || this.currentCwd || '').replace(/\\/g, '/');
             const name = s.project_name || path.split('/').pop() || 'Unknown';
             if (!projectMap.has(path)) {

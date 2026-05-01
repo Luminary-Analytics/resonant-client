@@ -5976,3 +5976,715 @@ body {
 /* Old layout (non-compact mode renders the original full panel) — no
    changes needed; the existing .agent-run-card-inner / .agent-run-kicker
    / .agent-todo-strip / etc. rules from earlier in this file still apply. */
+
+/* ── Mission spec → roadmap handoff button ──
+   Rendered beneath the assistant message that contained `## Final spec`
+   in a Mission's drafting phase. Click → backend dispatches the FULL
+   spec to intent_service. See docs/long-running-agents.md (Phase 1). */
+.mission-build-action {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 10px 0 6px;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--bg-elem) 65%, transparent);
+    border: 1px solid color-mix(in srgb, var(--brand) 25%, var(--border));
+    border-left: 2px solid var(--brand);
+    border-radius: 6px;
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+
+.mission-build-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: var(--brand);
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color var(--duration-fast) ease;
+}
+
+.mission-build-btn:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--brand) 85%, white);
+}
+
+.mission-build-btn:disabled {
+    background: var(--muted);
+    color: var(--bg-panel);
+    cursor: default;
+}
+
+.mission-build-icon {
+    font-size: 11px;
+    line-height: 1;
+}
+
+.mission-build-hint {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+/* ── Chat header — slim bar above the messages ──
+   Hosts the Mission toggle (off-state) or Mission badge (active) in
+   the right-hand area. Designed to be unobtrusive when no mission is
+   running — just a thin separator that the eye glides past. */
+.chat-header {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    padding: 6px 14px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    background: color-mix(in srgb, var(--bg-panel) 50%, transparent);
+    min-height: 36px;
+    flex-shrink: 0;
+}
+
+.mission-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease,
+                color var(--duration-fast) ease,
+                border-color var(--duration-fast) ease;
+}
+
+.mission-toggle:hover {
+    color: var(--text);
+    border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
+    background: color-mix(in srgb, var(--brand) 8%, transparent);
+}
+
+.mission-toggle-icon {
+    font-size: 13px;
+    line-height: 1;
+    filter: grayscale(0.4);
+    transition: filter var(--duration-fast) ease;
+}
+
+.mission-toggle:hover .mission-toggle-icon {
+    filter: none;
+}
+
+/* ── Mission badge — shown in chat header during an active mission ── */
+.mission-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px 4px 10px;
+    background: color-mix(in srgb, var(--brand) 16%, transparent);
+    color: var(--text);
+    border: 1px solid color-mix(in srgb, var(--brand) 50%, transparent);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+
+.mission-badge:hover {
+    background: color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+.mission-badge-icon {
+    font-size: 13px;
+    line-height: 1;
+}
+
+.mission-badge-text {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 6px;
+}
+
+.mission-badge-label {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.mission-badge-phase {
+    color: var(--brand);
+    font-size: 11.5px;
+    font-weight: 500;
+    text-transform: lowercase;
+}
+
+.mission-badge-exit {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: transparent;
+    color: var(--muted);
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1;
+    transition: background-color var(--duration-fast) ease,
+                color var(--duration-fast) ease;
+}
+
+.mission-badge-exit:hover {
+    background: color-mix(in srgb, var(--err) 30%, transparent);
+    color: var(--text);
+}
+
+/* Phase-specific accent on the badge */
+.mission-badge[data-phase="planning_dispatched"] { border-color: color-mix(in srgb, var(--accent, var(--brand)) 50%, transparent); }
+.mission-badge[data-phase="executing"] { border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+.mission-badge[data-phase="reviewing"] { border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+
+/* ── Mission composer — modal that asks "What do you want to build?" ── */
+.mission-composer-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    animation: collapsed-group-enter 0.12s ease-out;
+}
+
+.mission-composer {
+    width: min(540px, calc(100vw - 40px));
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    padding: 18px 20px 16px;
+    color: var(--text);
+}
+
+.mission-composer-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+
+.mission-composer-icon {
+    font-size: 18px;
+    line-height: 1;
+}
+
+.mission-composer-title {
+    font-size: 15px;
+    font-weight: 600;
+    flex: 1;
+}
+
+.mission-composer-close {
+    background: none;
+    border: none;
+    color: var(--muted);
+    font-size: 18px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+}
+
+.mission-composer-close:hover {
+    color: var(--text);
+    background: var(--bg-hover);
+}
+
+.mission-composer-blurb {
+    margin: 0 0 12px;
+    color: var(--muted);
+    font-size: 12.5px;
+    line-height: 1.5;
+}
+
+.mission-composer-input {
+    width: 100%;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 10px 12px;
+    resize: vertical;
+    min-height: 80px;
+    box-sizing: border-box;
+    transition: border-color var(--duration-fast) ease;
+}
+
+.mission-composer-input:focus {
+    outline: none;
+    border-color: var(--brand);
+}
+
+.mission-composer-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.mission-composer-shortcut {
+    margin-right: auto;
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.mission-composer-shortcut kbd {
+    display: inline-block;
+    padding: 1px 5px;
+    margin: 0 1px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: var(--font-mono, monospace);
+    font-size: 10.5px;
+    color: var(--text);
+    line-height: 1.4;
+}
+
+/* A2 fix — short attention-grab when the user clicks the backdrop with
+   substantial input. Tells them the click wasn't ignored, just refused. */
+@keyframes mission-composer-flash {
+    0%   { transform: scale(1); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45); }
+    30%  { transform: scale(1.012); box-shadow: 0 14px 50px rgba(0, 0, 0, 0.55), 0 0 0 3px color-mix(in srgb, var(--brand) 35%, transparent); }
+    100% { transform: scale(1); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45); }
+}
+
+.mission-composer-flash {
+    animation: mission-composer-flash 320ms ease-out;
+}
+
+/* A1 — inline banner shown after Cancel inside a mission, offering an
+   exit. Lives in the chat flow rather than as a modal because the user
+   just hit a stop button — another modal would be obnoxious. */
+.mission-cancel-exit-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 10px 0;
+    padding: 10px 14px;
+    background: color-mix(in srgb, var(--bg-elem) 65%, transparent);
+    border: 1px solid color-mix(in srgb, var(--brand) 25%, var(--border));
+    border-left: 2px solid var(--brand);
+    border-radius: 6px;
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+
+.mission-cancel-exit-msg {
+    flex: 1;
+    color: var(--text);
+    font-size: 12.5px;
+}
+
+.mission-cancel-exit-btn-stay,
+.mission-cancel-exit-btn-exit {
+    padding: 5px 10px;
+    border-radius: 4px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.mission-cancel-exit-btn-stay {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+}
+
+.mission-cancel-exit-btn-stay:hover {
+    background: var(--bg-hover);
+}
+
+.mission-cancel-exit-btn-exit {
+    background: color-mix(in srgb, var(--err) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--err) 50%, transparent);
+    color: var(--text);
+}
+
+.mission-cancel-exit-btn-exit:hover {
+    background: color-mix(in srgb, var(--err) 30%, transparent);
+}
+
+/* B1 — past-mission indicator (shown when current session is an
+   exited/completed mission). Sits where the toggle would be, but
+   read-only and visually muted. No exit button, no click action. */
+.mission-past-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 10px;
+    background: color-mix(in srgb, var(--bg-elem) 60%, transparent);
+    color: var(--muted);
+    border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    user-select: none;
+}
+
+.mission-past-icon {
+    font-size: 13px;
+    line-height: 1;
+    filter: grayscale(0.6);
+    opacity: 0.7;
+}
+
+.mission-past-label {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.mission-past-phase {
+    color: var(--muted);
+    font-size: 11.5px;
+    font-weight: 500;
+    text-transform: lowercase;
+    margin-left: 4px;
+}
+
+.mission-past-indicator[data-phase="completed"] .mission-past-phase {
+    color: var(--ok);
+}
+
+.mission-past-indicator[data-phase="exited"] .mission-past-phase {
+    color: color-mix(in srgb, var(--err) 70%, var(--muted));
+}
+
+/* B2 — phase-transition pulse on the badge. Force-restart by
+   removing/re-adding `.mission-badge-pulse` (see _refreshMissionBadge). */
+@keyframes mission-badge-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 50%, transparent); }
+    50%  { box-shadow: 0 0 0 6px color-mix(in srgb, var(--brand) 0%,   transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--brand) 0%,   transparent); }
+}
+
+.mission-badge-pulse {
+    animation: mission-badge-pulse 700ms ease-out;
+}
+
+/* B6 — Active / Completed sub-grouping */
+.mission-subsection {
+    margin-top: 4px;
+}
+
+.mission-subsection-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    color: var(--muted);
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.mission-subsection-header:hover {
+    color: var(--text);
+}
+
+.mission-subsection-chevron {
+    font-size: 9px;
+    width: 10px;
+    text-align: center;
+    color: var(--muted);
+}
+
+.mission-subsection-label {
+    flex: 1;
+    color: var(--text);
+}
+
+.mission-subsection-count {
+    color: var(--muted);
+    font-weight: 500;
+}
+
+.mission-subsection-items {
+    display: none;
+}
+
+.mission-subsection.expanded .mission-subsection-items {
+    display: block;
+}
+
+/* B4 — Resume button on inactive mission rows */
+.mission-row-resume {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--muted);
+    font-size: 14px;
+    line-height: 1;
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    cursor: pointer;
+    flex-shrink: 0;
+    opacity: 0;
+    transition: opacity var(--duration-fast) ease,
+                color var(--duration-fast) ease,
+                background-color var(--duration-fast) ease;
+}
+
+.mission-row:hover .mission-row-resume,
+.mission-row-resume:focus-visible {
+    opacity: 1;
+}
+
+.mission-row-resume:hover {
+    color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 14%, transparent);
+    border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
+}
+
+/* B3 — Spec card. Replaces the wall of bold-label paragraphs the
+   model emits in the `## Final spec` block with a structured card.
+   Uses the existing markdown elements (h3-like headings via the
+   model's bold tags, lists, paragraphs) but wrapped in a panel
+   with consistent vertical rhythm. */
+.mission-spec-card {
+    margin: 14px 0 18px;
+    background: color-mix(in srgb, var(--bg-elem) 65%, transparent);
+    border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--border));
+    border-left: 3px solid var(--brand);
+    border-radius: 8px;
+    overflow: hidden;
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+
+.mission-spec-card-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: color-mix(in srgb, var(--brand) 12%, transparent);
+    border-bottom: 1px solid color-mix(in srgb, var(--brand) 25%, var(--border));
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.mission-spec-card-icon {
+    font-size: 15px;
+    line-height: 1;
+}
+
+.mission-spec-card-title {
+    color: var(--text);
+}
+
+.mission-spec-card-body {
+    padding: 4px 16px 12px;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text);
+}
+
+/* The body holds the model's emitted markdown — paragraphs with
+   leading <strong>Field:</strong> labels, plus bullet lists. We
+   tighten up the rhythm and give labels a brand-toned accent. */
+.mission-spec-card-body > p {
+    margin: 8px 0 0;
+}
+
+.mission-spec-card-body > p:first-child {
+    margin-top: 8px;
+}
+
+.mission-spec-card-body > p > strong:first-child {
+    display: inline-block;
+    color: var(--brand);
+    margin-right: 4px;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+}
+
+.mission-spec-card-body > ul {
+    margin: 4px 0 8px;
+    padding-left: 22px;
+}
+
+.mission-spec-card-body > ul > li {
+    margin: 2px 0;
+}
+
+.mission-composer-cancel,
+.mission-composer-start {
+    padding: 7px 14px;
+    border-radius: 5px;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+}
+
+.mission-composer-cancel {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text);
+}
+
+.mission-composer-cancel:hover {
+    background: var(--bg-hover);
+}
+
+.mission-composer-start {
+    background: var(--brand);
+    border: 1px solid var(--brand);
+    color: #fff;
+}
+
+.mission-composer-start:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--brand) 85%, white);
+}
+
+.mission-composer-start:disabled {
+    background: var(--muted);
+    border-color: var(--muted);
+    cursor: default;
+    opacity: 0.7;
+}
+
+/* ── Sidebar "Missions" group — first-class section above the project
+   tree. Active missions sort to the top with a brand-colored dot;
+   exited / completed ones dim out at the bottom. */
+.mission-group {
+    margin-bottom: 12px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+}
+
+.mission-group-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px 4px;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.mission-group-icon {
+    font-size: 12px;
+    filter: grayscale(0.3);
+}
+
+.mission-group-title {
+    flex: 1;
+    color: var(--text);
+}
+
+.mission-group-count {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 10.5px;
+}
+
+.mission-group-add {
+    background: transparent;
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    color: var(--muted);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1;
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease, color var(--duration-fast) ease;
+    padding: 0;
+}
+
+.mission-group-add:hover {
+    color: var(--text);
+    background: color-mix(in srgb, var(--brand) 14%, transparent);
+    border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
+}
+
+.mission-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    margin: 1px 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease;
+}
+
+.mission-row:hover {
+    background: var(--bg-hover);
+}
+
+.mission-row.active {
+    background: color-mix(in srgb, var(--brand) 16%, transparent);
+}
+
+.mission-row.inactive {
+    opacity: 0.6;
+}
+
+.mission-row-dot {
+    flex-shrink: 0;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--muted);
+}
+
+.mission-row-dot[data-phase="drafting"] { background: var(--brand); }
+.mission-row-dot[data-phase="planning_dispatched"] { background: var(--accent, var(--brand)); }
+.mission-row-dot[data-phase="executing"] { background: var(--ok); }
+.mission-row-dot[data-phase="reviewing"] { background: var(--warn); }
+.mission-row-dot[data-phase="completed"] { background: var(--ok); opacity: 0.5; }
+.mission-row-dot[data-phase="exited"] { background: var(--err); opacity: 0.5; }
+
+.mission-row-body {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
+}
+
+.mission-row-title {
+    font-size: 12.5px;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mission-row-meta {
+    font-size: 10.5px;
+    color: var(--muted);
+    text-transform: lowercase;
+}

@@ -61,6 +61,28 @@ def _read_session_summary(filepath: Path) -> Optional[dict]:
                 val = m.group(1)
                 summary[key] = float(val) if "." in val else int(val)
 
+        # Mission detection — sidebar needs to know whether to render this
+        # session under "Sessions" or "Missions" and which phase badge to
+        # show. We match a small subset of fields in the predictable
+        # indent-2 JSON layout. If mission_state is present but malformed,
+        # we fall through to the full-parse path so we never silently
+        # mis-classify a mission as a regular session.
+        if '"mission_state"' in prefix:
+            ms_match = re.search(r'"mission_state"\s*:\s*(\{[^{}]*\})', prefix, re.DOTALL)
+            if ms_match:
+                ms_block = ms_match.group(1)
+                phase_m = re.search(r'"phase"\s*:\s*"([^"]+)"', ms_block)
+                seed_m = re.search(r'"seed_feature"\s*:\s*"((?:\\"|[^"])*)"', ms_block)
+                if phase_m:
+                    summary["mission_state"] = {
+                        "phase": phase_m.group(1),
+                        "seed_feature": (seed_m.group(1) if seed_m else "").replace('\\"', '"'),
+                    }
+            elif '"mission_state": null' not in prefix:
+                # Mission state is present but didn't fit our small-dict
+                # regex. Fall through to full parse rather than guess.
+                summary.pop("id", None)
+
         if "id" in summary and "updated_at" in summary:
             return summary
     except Exception:
@@ -97,6 +119,7 @@ class SessionRecord:
         message_count: int = 0,
         session_role: str = "generator",
         thinking_mode: str = "",
+        mission_state: Optional[dict] = None,
     ):
         self.id = session_id or str(uuid.uuid4())[:8]
         self.title = title
@@ -110,8 +133,28 @@ class SessionRecord:
         self.message_count = message_count
         self.session_role = session_role or "generator"
         self.thinking_mode = thinking_mode or ""
+        # Mission state — None for regular chat sessions. A dict with at
+        # least {"phase": str, "seed_feature": str} when this session was
+        # started in Mission mode. Phases:
+        #   "drafting"            — grilling the user, no spec emitted yet
+        #   "planning_dispatched" — Build Roadmap clicked, intent_service running
+        #   "completed"           — orchestration finished, deliverables ready
+        #   "exited"              — user clicked Exit Mission before completion
+        # Optional fields:
+        #   "spec_markdown"  — full spec block once emitted
+        #   "refined_intent" — extracted refined-intent paragraph
+        #   "intent_id"      — UUID of the dispatched intent (planning_dispatched+)
+        #   "started_at"     — epoch float
+        self.mission_state: Optional[dict] = mission_state
 
     def to_dict(self) -> dict:
+        # Field order matters: small metadata fields go FIRST so the
+        # 4KB fast-path summary scanner in `_read_session_summary` can
+        # find them without touching the (potentially multi-MB)
+        # conversation_history / display_events arrays. Active mission
+        # sessions in particular need mission_state to be discoverable
+        # by the sidebar without forcing a full file load on every
+        # session list refresh.
         return {
             "id": self.id,
             "title": self.title,
@@ -120,11 +163,12 @@ class SessionRecord:
             "model": self.model,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
-            "conversation_history": self.conversation_history,
-            "display_events": self.display_events,
             "message_count": self.message_count,
             "session_role": self.session_role,
             "thinking_mode": self.thinking_mode,
+            "mission_state": self.mission_state,
+            "conversation_history": self.conversation_history,
+            "display_events": self.display_events,
         }
 
     def to_summary(self) -> dict:
@@ -139,6 +183,9 @@ class SessionRecord:
             "message_count": self.message_count,
             "session_role": self.session_role,
             "thinking_mode": self.thinking_mode,
+            # Sidebar needs to know if this session is a Mission so it can
+            # render it in the Missions group with the right phase badge.
+            "mission_state": self.mission_state,
         }
 
     @classmethod
@@ -156,7 +203,40 @@ class SessionRecord:
             message_count=data.get("message_count", 0),
             session_role=data.get("session_role", "generator"),
             thinking_mode=data.get("thinking_mode", ""),
+            mission_state=data.get("mission_state"),
         )
+
+    # ── Mission helpers ────────────────────────────────────────────────
+    @property
+    def is_mission(self) -> bool:
+        return bool(self.mission_state)
+
+    @property
+    def mission_phase(self) -> str:
+        return (self.mission_state or {}).get("phase", "")
+
+    def start_mission(self, seed_feature: str) -> None:
+        """Mark this session as a Mission in the drafting phase."""
+        self.mission_state = {
+            "phase": "drafting",
+            "seed_feature": (seed_feature or "").strip(),
+            "started_at": time.time(),
+        }
+
+    def advance_mission_phase(self, phase: str, **fields) -> None:
+        """Move the mission to a new phase, optionally setting additional
+        state fields (e.g. spec_markdown, refined_intent, intent_id)."""
+        if not self.mission_state:
+            return
+        self.mission_state["phase"] = phase
+        for key, value in fields.items():
+            self.mission_state[key] = value
+
+    def exit_mission(self) -> None:
+        """Mark the mission as exited (user-cancelled before completion)."""
+        if self.mission_state:
+            self.mission_state["phase"] = "exited"
+            self.mission_state["exited_at"] = time.time()
 
     def save(self):
         """Persist to disk."""

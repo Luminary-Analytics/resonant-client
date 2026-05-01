@@ -6080,6 +6080,220 @@ async def websocket_endpoint(ws: WebSocket):
                     state.session.cancel()
                 await ws.send_json({"event": "status_msg", "message": "Cancelling..."})
 
+            elif command == "mission_start":
+                # Toggle-driven Mission entry. Always creates a fresh chat
+                # session so the grill phase has a clean slate (mixing it
+                # with prior chat would pollute the interview). The new
+                # session is flagged with mission_state, which gates the
+                # spec-extraction scan and drives the header badge.
+                # See docs/long-running-agents.md (Phase 1).
+                feature = (msg.get("feature") or "").strip()
+                if not feature:
+                    await ws.send_json({"event": "error",
+                                        "message": "Mission feature description required"})
+                    continue
+                if not state.backend:
+                    await ws.send_json({"event": "error",
+                                        "message": "Connect a backend before starting a mission"})
+                    continue
+                if state.active_thread and state.active_thread.is_alive():
+                    await ws.send_json({"event": "error",
+                                        "message": "A session is already running"})
+                    continue
+
+                # Create the fresh session — mirrors `clear` flow.
+                session_role = msg.get("session_role", "generator")
+                backend_type = getattr(state.backend, "name", "")
+                model = getattr(state.backend, "model", "")
+                record = state.project.create_session(
+                    backend_type=backend_type,
+                    model=model,
+                    session_role=session_role,
+                )
+                # Flag it as a mission BEFORE the first message so the
+                # spec-extraction gate trips correctly on the upcoming
+                # text.done events.
+                record.start_mission(feature)
+                # Title from the feature, not the long grill prompt.
+                title = feature if len(feature) <= 60 else feature[:57] + "..."
+                record.title = title
+                record.save()
+
+                state.session = state.build_session(
+                    backend=state.backend,
+                    backend_spec=state.backend_spec,
+                    project_path=state.project.project_path,
+                    session_mode="code",
+                    session_role=session_role,
+                )
+                state._first_message_sent = True  # title is already set
+                state.costs.reset_session()
+
+                # Tell the frontend to switch to the new session before
+                # streaming starts so the chat panel renders into it.
+                await ws.send_json({
+                    "event": "session_cleared",
+                    "sessions": state.project.list_sessions(),
+                    "current_session_id": state.project.current_session.id,
+                    "session_mode": "code",
+                    "session_role": session_role,
+                    "mission_started": True,
+                })
+
+                from ..orchestration.grill_me import format_grill_first_message
+                fed_text = format_grill_first_message(
+                    feature,
+                    project_path=state.project.project_path,
+                )
+                display_text = feature  # what shows in chat as the user msg
+
+                state.cancel_requested.clear()
+                state.session.reset_cancel()
+                display_events = await _run_session_streaming(
+                    ws,
+                    state.session,
+                    fed_text,
+                    display_user_msg=display_text,
+                    session_mode="code",
+                    session_role=session_role,
+                )
+                state.project.save_current_session(state.session, display_events=display_events)
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                })
+
+            elif command == "mission_resume":
+                # B4 — Resume an exited / completed mission. Flips the
+                # phase back to whatever phase it was in before exit; if
+                # it was already past completion, drop back to drafting
+                # so the user can keep iterating. Also switches to that
+                # session if it's not already current.
+                target_id = (msg.get("session_id") or "").strip()
+                if not target_id:
+                    await ws.send_json({"event": "error",
+                                        "message": "session_id required"})
+                    continue
+                # Switch to that session first if needed.
+                if (not state.project.current_session) or (state.project.current_session.id != target_id):
+                    state.project.load_session(target_id)
+                    if state.project.current_session and state.backend:
+                        state.session = state.build_session(
+                            backend=state.backend,
+                            backend_spec=state.backend_spec,
+                            project_path=state.project.project_path,
+                            session_mode="code",
+                            session_role=state.project.current_session.session_role,
+                        )
+                cur = state.project.current_session
+                if not cur or not cur.is_mission:
+                    await ws.send_json({"event": "error",
+                                        "message": "Not a mission session"})
+                    continue
+                # If we have a captured spec already, return to planning.
+                # Otherwise drop back to drafting so the user can keep
+                # grilling.
+                ms = cur.mission_state or {}
+                if ms.get("intent_id"):
+                    cur.advance_mission_phase("planning_dispatched")
+                else:
+                    cur.advance_mission_phase("drafting")
+                if "exited_at" in cur.mission_state:
+                    cur.mission_state.pop("exited_at", None)
+                cur.save()
+                await ws.send_json({
+                    "event": "mission_phase_changed",
+                    "session_id": cur.id,
+                    "phase": cur.mission_state["phase"],
+                })
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "current_session_id": cur.id,
+                })
+
+            elif command == "mission_exit":
+                # User hit "Exit Mission" on the header badge. Cancels any
+                # in-flight turn, marks the mission as exited, leaves the
+                # session selectable in the sidebar (under Missions /
+                # exited) for review.
+                if state.active_thread and state.active_thread.is_alive():
+                    state.cancel_requested.set()
+                    if state.session:
+                        state.session.cancel()
+                if state.project.current_session:
+                    state.project.current_session.exit_mission()
+                    state.project.current_session.save()
+                await ws.send_json({
+                    "event": "mission_exited",
+                    "sessions": state.project.list_sessions(),
+                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                })
+
+            elif command == "mission_dispatch_roadmap":
+                # User clicked "Build this roadmap" on the spec card. We
+                # advance the mission phase, dispatch the FULL spec to
+                # intent_service (not just the refined-intent paragraph —
+                # that was a Tier-1 bug from the first iteration), and
+                # let the existing intent flow take over.
+                if not state.project.current_session:
+                    await ws.send_json({"event": "error",
+                                        "message": "No active mission to dispatch"})
+                    continue
+                ms = state.project.current_session.mission_state or {}
+                if ms.get("phase") != "drafting":
+                    await ws.send_json({"event": "error",
+                                        "message": f"Mission phase is {ms.get('phase','?')}, expected drafting"})
+                    continue
+
+                spec_md = (msg.get("spec_markdown") or "").strip()
+                refined = (msg.get("refined_intent") or "").strip()
+                if not spec_md and not refined:
+                    await ws.send_json({"event": "error",
+                                        "message": "No spec to dispatch"})
+                    continue
+
+                # Tier-1 fix #1: pass the full spec block as the intent
+                # text so the planner sees assumptions / scope / acceptance
+                # criteria, not just one paragraph. Refined intent stays
+                # in mission_state for display.
+                intent_text = spec_md or refined
+
+                def _emit_intent(payload: dict, _ws=ws, _loop=asyncio.get_running_loop()):
+                    try:
+                        asyncio.run_coroutine_threadsafe(_ws.send_json(payload), _loop)
+                    except Exception:
+                        logger.debug("intent emit raised", exc_info=True)
+
+                intent_service = state.get_intent_service(on_event=_emit_intent)
+                try:
+                    intent_id = intent_service.start_intent(intent_text)
+                except Exception as exc:
+                    logger.exception("mission_dispatch_roadmap failed")
+                    await ws.send_json({"event": "error",
+                                        "message": f"Roadmap dispatch failed: {exc}"})
+                    continue
+
+                state.project.current_session.advance_mission_phase(
+                    "planning_dispatched",
+                    spec_markdown=spec_md or "",
+                    refined_intent=refined or "",
+                    intent_id=intent_id,
+                )
+                state.project.current_session.save()
+                await ws.send_json({
+                    "event": "mission_phase_changed",
+                    "session_id": state.project.current_session.id,
+                    "phase": "planning_dispatched",
+                    "intent_id": intent_id,
+                })
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "current_session_id": state.project.current_session.id,
+                })
+
             elif command == "list_project_files":
                 # Pi-style `@file` autocomplete: front-end caches a file list
                 # for the current project and filters it client-side. We walk
@@ -6963,6 +7177,31 @@ async def _run_session_streaming(
                     event["text"] = cleaned_text
                     state.rewrite_last_assistant_message(session, raw_text, cleaned_text)
 
+                # Mission spec detection — only fires for sessions that are
+                # in Mission mode AND in the drafting phase, so a regular
+                # chat where someone happens to use the `## Final spec`
+                # heading (e.g. reviewing a doc) doesn't accidentally
+                # surface a Build Roadmap button. Tier-1 fix #2.
+                try:
+                    cur_session = state.project.current_session if state.project else None
+                    in_drafting = bool(
+                        cur_session
+                        and cur_session.is_mission
+                        and cur_session.mission_phase == "drafting"
+                    )
+                    if in_drafting:
+                        from ..orchestration.grill_me import extract_spec as _extract_spec
+                        _spec = _extract_spec(cleaned_text if cleaned_text else raw_text)
+                        if _spec is not None:
+                            await ws.send_json({
+                                "event": "mission.spec_ready",
+                                "session_id": cur_session.id,
+                                "spec_markdown": _spec.raw,
+                                "refined_intent": _spec.refined_intent,
+                            })
+                except Exception as _e:
+                    logger.debug("mission spec extraction failed: %s", _e)
+
             if event_type == "status":
                 stats = event.get("stats", {})
                 model = event.get("model", "")
@@ -7142,18 +7381,46 @@ def _save_resonant_md(project_path: str, content: str):
 
 # ── HTTP Routes ───────────────────────────────────────────────────────
 
+def _asset_version() -> str:
+    """Compute a cache-buster string for the static assets the template loads.
+
+    Uses the max mtime across `app.js` + `styles.css` + the template itself
+    so any edit to those files generates a fresh value — dev iteration on
+    the GUI no longer requires manual cache-busting (a real bug we hit
+    during Phase-1 mission UI testing).
+
+    For frozen / packaged builds the files don't change at runtime, so this
+    just returns a stable value tied to install time, which is fine — the
+    bundled exe ships with a single self-consistent set of assets.
+    """
+    try:
+        static = Path(__file__).parent / "static"
+        templates_dir = Path(__file__).parent / "templates"
+        candidates = [
+            static / "app.js",
+            static / "styles.css",
+            static / "plan_graph_view.js",
+            templates_dir / "index.html",
+        ]
+        mtimes = [int(p.stat().st_mtime) for p in candidates if p.is_file()]
+        if not mtimes:
+            return "0"
+        return str(max(mtimes))
+    except Exception:
+        return "0"
+
+
 async def homepage(request):
     # Bug #23 fix — Starlette 0.29+ changed TemplateResponse signature:
     #   OLD: templates.TemplateResponse(name, {"request": request, ...})
     #   NEW: templates.TemplateResponse(request, name, {...})
-    # Calling the new binding with the old API made `name` resolve to the
-    # request object and `{"request": request}` got passed as the cache
-    # key, producing TypeError: unhashable type: 'dict' from Jinja2's
-    # LRUCache. Locally we had Starlette pinned at an older version that
-    # accepted both shapes; CI's pip install --upgrade pulled 0.29+ and
-    # broke. Use the new (request-first) signature explicitly so it works
-    # with both old and new Starlette.
-    return templates.TemplateResponse(request, "index.html")
+    # Use the new (request-first) signature explicitly so it works with
+    # both old and new Starlette.
+    return templates.TemplateResponse(
+        request,
+        "index.html",
+        {"asset_version": _asset_version()},
+    )
 
 
 # ── Starlette App ─────────────────────────────────────────────────────

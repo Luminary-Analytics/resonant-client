@@ -39,15 +39,16 @@ yet — that's v0.5.0 GA.
 | **a2** | Acceptance-check dispatchers | `orchestration/acceptance_check.py` (~590 lines) + 59 tests | ✅ shipped | `v0.5.0a2` |
 | **a3** | Rigorous-grill mode | `orchestration/grill_me.py` (rigorous additions ~220 lines) + 36 tests | ✅ shipped | `v0.5.0a3` |
 | **a4** | REFLECT specialist + run_reflect_pass | `orchestration/specialists.py::REFLECT` + new `orchestration/reflect.py` (~250 lines) + 40 tests + 19-test roguelite integration | ✅ shipped | `v0.5.0a4` |
-| **a5** | Autonomous loop daemon | new `gui/autonomous_loop.py` (~350 lines est.) | ⏭️ next | — |
-| **a6** | WS protocol additions | `gui/app.py` event handlers | ⏳ planned | — |
-| **a7** | Frontend (composer toggle, spec card, header badge) | `gui/static/app.js` + styling | ⏳ planned | — |
-| **GA** | End-to-end smoke against deepseek-v4-flash:cloud | (no new code) | ⏳ planned | `v0.5.0` |
+| **a5** | Autonomous loop daemon | new `gui/autonomous_loop.py` (~470 lines) + 22 tests | ✅ shipped | `v0.5.0a5` |
+| **a6** | WS protocol + production hooks | new `gui/autonomous_factory.py` + `gui/autonomous_session.py` + WS handlers in `gui/app.py` (+150 lines) + 60 tests | ✅ shipped | `v0.5.0a6` |
+| **a7** | Frontend (composer toggle, spec card, header badge) | `gui/static/app.js` + styling | ⏭️ next | — |
+| **GA** | End-to-end smoke against deepseek-v4-flash + deepseek-v4-pro | (no new code) | ⏳ planned | `v0.5.0` |
 
-**Total tests:** 1279 passing, 2 skipped (was 1185 at start of v0.5.0).
+**Total tests:** 1361 passing, 2 skipped (was 1185 at start of v0.5.0;
+added 176 across a1–a6).
 
-**Lines added since `5584833` (design freeze):** +4550 / −29 across 14
-files.
+**Lines added since `5584833` (design freeze):** ~6000 lines net across
+17 files.
 
 ---
 
@@ -503,6 +504,98 @@ Iterates `roadmap.acceptance_criteria`, dispatches each via
 
 **Tests:** `tests/test_reflect.py` (40), `tests/test_roguelite_integration.py` (19).
 
+### 4.5 `gui/autonomous_loop.py::AutonomousMissionDaemon` (v0.5.0a5)
+
+**Purpose:** the outer iteration loop. One daemon instance per
+in-flight autonomous mission (per intent_id). Background thread
+picks roadmap items, dispatches each as a Phase-1 sub-mission, runs
+REFLECT every K iterations, stops on the first triggered rule.
+
+**Key types:**
+
+| Class | Role |
+|---|---|
+| `AutonomousMissionConfig` | intent_id, roadmap_path, time_budget_seconds (None = full-auto), max_iterations (100 default), full_reflect_cadence (3), tick_pause_seconds (5.0), blocked_streak_limit (3), check_failed_streak_limit (2). |
+| `DaemonHooks` | All I/O the daemon needs, injected for testability: `dispatch_item` / `wait_for_dispatch` / `cancel_dispatch` / `get_commit_sha` / `validate_sha` / `run_full_reflect` / `check_context_factory`. |
+| `DispatchOutcome` | Result of one Phase-1 sub-mission. `success: bool`, `error: str`, `handle: Any`. |
+| `FullReflectOutcome` | Result of one full REFLECT pass — both halves combined: `pass_result: ReflectPassResult` + verdict / chrome_results / added_items / blocked_items / manual_pending / summary / estimated_remaining_minutes / error. |
+| `AutonomousMissionDaemon` | The class. Public: `start()` / `stop(reason, message)` / `is_running()` / `join(timeout)` / `state_snapshot()`. |
+
+**Stopping rules (priority order):**
+1. `user_stop` — `daemon.stop()` was called
+2. `time_budget_exhausted` — wall-clock budget elapsed (skipped for full-auto)
+3. `iteration_cap` — defensive backstop at 100 iters
+4. `satisfied` — full-reflect verdict + cross-check agree
+5. `blocked` — `blocked_streak_limit` consecutive blocked verdicts
+6. `check_failed` — `check_failed_streak_limit` consecutive failed sub-missions
+7. `stuck` — roadmap empty, verdict=continue, no items added (would infinite-loop)
+8. `misconfigured` — roadmap has no acceptance criteria
+
+**Cross-check enforcement:** when REFLECT model emits
+`verdict=satisfied`, the daemon RE-LOADS the roadmap from disk and
+checks `roadmap.is_converged()`. If it disagrees, the daemon
+overrides to `continue` and notes "[Daemon override]" in the
+summary. This is the convergence-ground-truth contract's runtime
+guard.
+
+**Tests:** `tests/test_autonomous_loop.py` (22 tests).
+
+### 4.6 `gui/autonomous_factory.py` + `gui/autonomous_session.py` (v0.5.0a6)
+
+**Purpose:** the production wiring that turns the dependency-injected
+daemon into a working autonomous mission. Two modules:
+
+#### `gui/autonomous_factory.py`
+
+Builds production `DaemonHooks` from a live `IntentService`, git
+subprocess calls, and a `LocalSpecialistRunner` for REFLECT.
+
+| Function | Purpose |
+|---|---|
+| `DispatchTracker` | Subscribes to IntentService events; signals per-intent `threading.Event`s on terminal events. Bridges async events into `wait_for_dispatch`'s sync interface. |
+| `make_git_get_commit_sha(project_path)` | Wraps `git log -1 --format=%H` into a callable. Returns None on any failure. |
+| `make_git_validate_sha(project_path)` | Wraps `git rev-parse --verify <sha>^{commit}`. Returns bool. |
+| `build_reflect_goal(roadmap, pass_result, roadmap_path)` | Pure function. Builds the goal string for the REFLECT specialist's full pass — includes mode, criteria status, chrome_pending list, manual_pending list, tally, cross-check reminder. |
+| `parse_reflect_verdict(text)` | Pure function. Extracts the JSON envelope from REFLECT's response. Lenient: handles fenced ```json blocks, unfenced trailing JSON, stray `{` chars, embedded braces in strings. Returns `{"verdict": "continue", "_parse_error": "..."}` on failure (never raises). |
+| `make_reflect_runner(...)` | Constructs the REFLECT model session callable. Internally builds a one-node PlanGraph with `specialization=REFLECT` and runs it via `LocalSpecialistRunner`. |
+| `make_check_context_factory(project_path, settings, image_provider)` | Returns the per-pass CheckContext factory. Reads vision-model setting from settings, falls back to `qwen2.5vl:7b`. |
+| `build_autonomous_mission_hooks(...)` | Top-level: assembles all of the above into a `DaemonHooks`. |
+
+#### `gui/autonomous_session.py`
+
+Mid-tier orchestration — the bridge between the WS handler and
+the daemon.
+
+| Function | Purpose |
+|---|---|
+| `parse_time_budget(label)` | Convert `"4h"` / `"full auto"` / `"30m"` to seconds (None = no time ceiling). |
+| `build_roadmap_from_spec(feature, intent_id, spec_markdown, project_path, started_iso)` | Parse a rigorous-grill spec, build a Roadmap, persist to `<project>/.resonant/roadmap-<id>.md`. Raises ValueError on malformed input. |
+| `start_autonomous_mission(state, intent_id, feature, spec_markdown, on_event, ...)` | Top-level: builds roadmap + hooks + daemon, wires events, starts daemon, registers on AppState. |
+| `stop_autonomous_mission(state, intent_id, reason, message)` | Looks up the active daemon and signals it. |
+| `get_autonomous_daemon(state, intent_id)` | Lookup. |
+| `cleanup_finished_daemons(state)` | Drop exited daemons from the AppState registry. Called on each new dispatch + on project switch. |
+
+#### WS protocol additions in `gui/app.py`
+
+Two new commands:
+
+| Command | Payload | Effect |
+|---|---|---|
+| `mission_dispatch_autonomous` | `{spec_markdown}` | Validates the spec, builds the roadmap, spawns the daemon, advances mission phase to `autonomous_running`, returns `mission_phase_changed` + `sessions_updated` events. |
+| `autonomous_mission_stop` | `{intent_id}` (optional — falls back to current mission's intent_id) | Calls `daemon.stop("user_stop", ...)`. The daemon emits `autonomous_mission_paused` itself; we don't preempt the phase transition here to avoid races with the daemon's own emission. |
+
+The daemon's events flow through the WS naturally via the `on_event`
+callback the dispatch handler installs. The frontend (a7) renders
+`autonomous_iteration_*` and `autonomous_reflection` events as
+styled chat cards.
+
+**Mission state phases** (in `gui/sessions.py`):
+- `autonomous_running` — daemon iterating
+- `autonomous_complete` — daemon ended with `verdict=satisfied`
+- `autonomous_paused` — daemon ended for any other reason
+
+**Tests:** `tests/test_autonomous_factory.py` (35), `tests/test_autonomous_session.py` (25).
+
 ---
 
 ## 5. Decisions log (mini-ADRs)
@@ -656,98 +749,93 @@ The `chrome_pending` list contains the SAME objects as
 `roadmap.acceptance_criteria` — don't `[c for c in chrome_pending]`
 and lose the reference.
 
+### ADR 9 — Item-mark mode is daemon-only, not a model session
+
+**Choice:** when an iteration's sub-mission ships, the daemon marks
+the roadmap item complete itself (read SHA via `git log -1`,
+validate via `git rev-parse`, write via `mark_item_complete`). It
+does NOT invoke the REFLECT model session for item-mark — only for
+full-reflect every K iterations.
+
+**Why:**
+- The daemon already knows EXACTLY which item it dispatched. There's
+  nothing for a model to "synthesize."
+- `git log -1 --format=%H` is the authoritative SHA source — having
+  the model fetch it via `bash` is purely indirection.
+- A model dispatch costs tokens + latency. Across a 30-iteration run
+  with `full_reflect_cadence=3`, that's ~30 saved REFLECT calls
+  (item-mark only) + 10 actual REFLECT calls (full mode). About 75%
+  cost reduction vs. doing both modes through the model.
+
+**Trade:** the design doc's §7 envisioned both modes through REFLECT.
+Skipping item-mark means the model session never gets a chance to
+"observe what shipped" between full passes. The chat events
+(`autonomous_iteration_complete` per iter) still surface this to
+the user, just not to the model.
+
+**Revisit when:** real missions show the model needs the per-iteration
+context to make better full-pass decisions. Current bet: the
+roadmap state + iteration log give it enough. If we see REFLECT
+making confused calls because it doesn't know what the implementer
+just did, we can pipe iteration summaries into the next full pass's
+context.
+
+### ADR 10 — "Stuck" stopping rule for empty-roadmap-not-converged
+
+**Choice:** when `roadmap.next_unchecked_item()` returns None AND
+the full-reflect verdict is `continue` AND no new items were added,
+the daemon stops with `reason="stuck"` instead of looping forever.
+
+**Why:**
+- Caught while writing v0.5.0a5 tests. Without this rule, an empty
+  roadmap with un-converged criteria (e.g., a [chrome] criterion the
+  model can't validate) sits in an infinite "next iter, still nothing
+  to do" loop — the daemon picks no item, runs reflect, gets
+  `continue`, sleeps, repeats.
+- The right semantics for empty + not-converged + no-items-added is
+  "we're stuck; user must intervene." Distinguished from `blocked`
+  (which is the model's verdict) so the user knows the issue is
+  scope, not implementation.
+
+**Trade:** a generous user might want the daemon to keep trying even
+in this state ("maybe the chrome criterion will pass on a re-test
+after a config change"). They can simply re-trigger the mission.
+Stuck is a stop, not a permanent block.
+
+**Revisit when:** real missions show false-stuck cases where the
+model SHOULD have added items but didn't. If REFLECT under-adds
+items, we can either tune its prompt or relax this rule.
+
+### ADR 11 — JSON-verdict parsing tolerates model drift
+
+**Choice:** `parse_reflect_verdict` accepts both fenced (```json)
+and unfenced JSON, picks the LAST balanced top-level `{...}` block,
+ignores stray unmatched `{` characters in prose, and never raises —
+on any failure it returns `{"verdict": "continue", "_parse_error":
+"..."}` so the daemon can keep going.
+
+**Why:**
+- Real model output drifts: sometimes the fence is missing,
+  sometimes the model writes a sketch JSON before the real one,
+  sometimes there's a stray `{` from prose. Strict parsing would
+  hand the daemon a `verdict=continue` from a parse failure even
+  though the model produced a valid JSON — losing real signal.
+- The lenient parser is unit-tested across 4 drift modes
+  (`tests/test_autonomous_factory.py::TestParseReflectVerdict`)
+  including the "stray `{` then real JSON" case which the original
+  forward-scan implementation got wrong.
+
+**Trade:** lenient parsing means we accept slightly malformed JSON
+that strict parsing would reject. Mitigated: the daemon's cross-
+check still validates `verdict=satisfied` against the roadmap
+state, so a parse-success with a wrong verdict doesn't translate
+into false convergence.
+
 ---
 
 ## 6. What's NOT built yet
 
-### 6.1 a5 — `gui/autonomous_loop.py` (the daemon)
-
-**Estimated:** ~350 lines. Critical path.
-
-**What it needs to do:**
-
-```python
-class AutonomousMissionDaemon:
-    def __init__(self, state, mission_id, intent_id,
-                 time_budget_seconds, on_event): ...
-    def start(self) -> None: ...      # spawn daemon thread
-    def stop(self, reason) -> None:   # graceful wind-down
-    def _run(self) -> None:
-        while not self._should_stop():
-            item = self._pick_next_item()
-            if item is None:
-                self._reflect_full()
-                if self._verdict == "satisfied":
-                    return self._emit("mission_complete", ...)
-                if self._verdict == "blocked":
-                    return self._emit("mission_blocked", ...)
-                continue
-            self._dispatch_item(item)        # Phase-1 sub-mission
-            self._reflect_item(item)         # mark done
-            if self._iter_count % 3 == 0:
-                self._reflect_full()         # add items, update summary
-            self._iter_count += 1
-            time.sleep(self._tick_pause_seconds)
-```
-
-**Key responsibilities:**
-- Thread management (`threading.Thread(daemon=True)` + cancellation
-  via `threading.Event`)
-- Stopping rules (priority order):
-  1. user_stop
-  2. time_budget_seconds elapsed (skipped for full-auto)
-  3. iter_count >= MAX_ITERATIONS=100 (always)
-  4. verdict=satisfied (convergence)
-  5. verdict=blocked + already tried await_user
-  6. consecutive check failures
-  7. consecutive blocked iterations
-- Resume-from-restart (read mission_state.phase=="autonomous_running")
-- Cross-check REFLECT verdict against `roadmap.is_converged()`
-- Validate commit SHAs via `git rev-parse`
-- Emit WS events at each phase boundary
-- Handle the "post-iteration check" command (defaults to
-  `pytest -x --quiet`)
-- Save roadmap to disk after each iteration
-
-**Risks:**
-- Threading + cancellation correctness. The daemon thread holds an
-  in-flight Phase-1 mission; cancellation must signal both the
-  daemon's `Event` and the engine's `cancel_event`.
-- Resume idempotency. If the daemon dies mid-iteration after a
-  commit landed but before REFLECT marked the item, resume should
-  detect the SHA in `git log` and mark the item without re-dispatching.
-- `git rev-parse` failures in detached-HEAD / corrupted-repo states.
-  Daemon should log a warning and skip the SHA, marking the iteration
-  log as `<empty>`.
-
-### 6.2 a6 — WS protocol additions
-
-**Estimated:** ~150 lines spread across `gui/app.py` event handlers
-and the chat session bookkeeping.
-
-**New events the daemon emits:**
-
-| Event | Payload | When |
-|---|---|---|
-| `autonomous_mission_started` | `{intent_id, started_iso, time_budget, roadmap_snapshot}` | daemon began |
-| `autonomous_iteration_started` | `{iter_count, item_id, item_title}` | picked an item |
-| `autonomous_iteration_complete` | `{iter_count, item_id, commit_sha, duration_seconds}` | sub-mission shipped + REFLECT marked done |
-| `autonomous_reflection` | `{verdict, completed, added, blocked, manual_pending, summary, accept_summary}` | full REFLECT pass result |
-| `autonomous_mission_complete` | `{reason: "satisfied"\|"time_budget_exhausted"\|...}` | end |
-| `autonomous_mission_paused` | `{reason: "user_stop"\|"blocked"\|...}` | end |
-| `autonomous_mission_failed` | `{error_message}` | daemon crashed (shouldn't happen) |
-
-Each event carries `intent_id` + a `roadmap_snapshot` (parsed roadmap
-state) so the frontend can re-render live.
-
-**New commands the frontend can send:**
-
-| Command | Payload | What |
-|---|---|---|
-| `autonomous_mission_start` | `{intent_id, time_budget_label}` | start the daemon |
-| `autonomous_mission_stop` | `{intent_id}` | request graceful stop |
-
-### 6.3 a7 — Frontend
+### 6.1 a7 — Frontend
 
 **Estimated:** ~250 lines across `gui/static/app.js` + styling.
 
@@ -774,10 +862,10 @@ state) so the frontend can re-render live.
 5. **Plan-graph view** — extended to show roadmap as top-level
    structure with tier sections + checkboxes.
 
-### 6.4 GA — End-to-end smoke
+### 6.2 GA — End-to-end smoke
 
-**Target:** a real autonomous run against `ollama:deepseek-v4-flash:cloud`
-with at least one criterion of EACH type:
+**Target:** a real autonomous run against the bootstrap-roguelite
+spec, exercising at least one criterion of EACH type:
 - `[bash]`: build passes
 - `[chrome]`: counter button click increments via DOM assertion
 - `[vision]`: rendered counter is centered + readable
@@ -786,6 +874,13 @@ The bootstrap-roguelite spec from `docs/long-running-agents-phase-2.md`
 §11.2 is the canonical test mission. We have it as a unit-level
 integration test (`tests/test_roguelite_integration.py`); GA is when
 the same spec runs through the live daemon.
+
+**Multi-model GA: flash vs pro side-by-side.** Per user direction
+(see `docs/v0.5.0-smoke-plan.md`), GA includes a comparison run on
+both `deepseek-v4-flash:cloud` and `deepseek-v4-pro:cloud` so we
+can characterize where pro's extra deliberation pays off (planner /
+REFLECT) vs where it doesn't (cheap implementer iterations).
+Detailed protocol + scoring rubric in the smoke plan doc.
 
 ---
 

@@ -46,6 +46,12 @@ from .project_instructions import (
 from .runtime import BackendSpec
 from ..harness import EvaluatorReport, HarnessWorkspace, HarnessOrchestrator, HarnessService
 from ..orchestration import IntentService
+from .autonomous_session import (
+    cleanup_finished_daemons as _cleanup_autonomous_daemons,
+    get_autonomous_daemon as _get_autonomous_daemon,
+    start_autonomous_mission as _start_autonomous_mission,
+    stop_autonomous_mission as _stop_autonomous_mission,
+)
 from ..engine.hooks import HookRunner
 from ..engine.mcp import MCPManager
 from ..engine.memory import EngramIntegration
@@ -6002,6 +6008,135 @@ async def websocket_endpoint(ws: WebSocket):
                     "all_sessions": state.project.list_all_sessions(),
                     "current_session_id": state.project.current_session.id,
                 })
+
+            elif command == "mission_dispatch_autonomous":
+                # v0.5.0a6 — User clicked "∞ Build autonomously" on the
+                # spec card. We expect a rigorous-grill spec (typed
+                # acceptance criteria + time budget) — the helper
+                # validates and raises ValueError on misconfiguration.
+                #
+                # Flow:
+                #   1. Build roadmap from spec, persist to <project>/.resonant/
+                #   2. Spawn AutonomousMissionDaemon with production hooks
+                #   3. Advance mission phase to "autonomous_running"
+                #   4. Daemon emits autonomous_* events asynchronously;
+                #      we forward them to the WS here.
+                #
+                # See docs/long-running-agents-phase-2-implementation.md
+                # for the full architecture.
+                if not state.project.current_session:
+                    await ws.send_json({"event": "error",
+                                        "message": "No active mission to dispatch"})
+                    continue
+                ms = state.project.current_session.mission_state or {}
+                if ms.get("phase") != "drafting":
+                    await ws.send_json({"event": "error",
+                                        "message": f"Mission phase is {ms.get('phase','?')}, expected drafting"})
+                    continue
+                spec_md = (msg.get("spec_markdown") or "").strip()
+                if not spec_md:
+                    await ws.send_json({"event": "error",
+                                        "message": "spec_markdown required for autonomous dispatch"})
+                    continue
+                feature = (
+                    state.project.current_session.title
+                    or ms.get("seed_feature", "")
+                    or "autonomous mission"
+                )
+
+                # Drop any finished daemons from prior missions so the
+                # registry doesn't grow unbounded over a long session.
+                _cleanup_autonomous_daemons(state)
+
+                # Forward daemon events into the WS chat stream so the
+                # frontend can render iteration cards / reflection
+                # summaries / mission complete banners.
+                def _emit_autonomous(payload: dict, _ws=ws,
+                                     _loop=asyncio.get_running_loop()):
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            _ws.send_json(payload), _loop,
+                        )
+                    except Exception:
+                        logger.debug("autonomous emit raised", exc_info=True)
+
+                # The intent_id for the umbrella autonomous mission —
+                # NOT the per-iteration sub-intent ids. We use a fresh
+                # uuid; the rigorous-grill spec didn't provide one.
+                autonomous_intent_id = str(uuid.uuid4())
+                started_iso = time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+                )
+
+                try:
+                    daemon = _start_autonomous_mission(
+                        state=state,
+                        intent_id=autonomous_intent_id,
+                        feature=feature,
+                        spec_markdown=spec_md,
+                        on_event=_emit_autonomous,
+                        started_iso=started_iso,
+                    )
+                except ValueError as exc:
+                    # Misconfigured spec (no typed criteria / no Final
+                    # spec block). Surface to the user.
+                    await ws.send_json({"event": "error",
+                                        "message": f"Autonomous dispatch failed: {exc}"})
+                    continue
+                except Exception as exc:
+                    logger.exception("mission_dispatch_autonomous failed")
+                    await ws.send_json({"event": "error",
+                                        "message": f"Autonomous dispatch failed: {exc}"})
+                    continue
+
+                state.project.current_session.advance_mission_phase(
+                    "autonomous_running",
+                    spec_markdown=spec_md,
+                    intent_id=autonomous_intent_id,
+                    autonomous_started_at=time.time(),
+                )
+                state.project.current_session.save()
+                await ws.send_json({
+                    "event": "mission_phase_changed",
+                    "session_id": state.project.current_session.id,
+                    "phase": "autonomous_running",
+                    "intent_id": autonomous_intent_id,
+                })
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
+                    "current_session_id": state.project.current_session.id,
+                })
+
+            elif command == "autonomous_mission_stop":
+                # v0.5.0a6 — User clicked Stop in the chat-header
+                # autonomous badge. Find the daemon by intent_id and
+                # signal it; the daemon emits autonomous_mission_paused
+                # asynchronously as it winds down. The mission_state
+                # phase transition to autonomous_paused happens when
+                # we receive that event (kept in one place to avoid
+                # races).
+                target_intent = (msg.get("intent_id") or "").strip()
+                if not target_intent and state.project.current_session:
+                    ms = state.project.current_session.mission_state or {}
+                    target_intent = ms.get("intent_id", "")
+                if not target_intent:
+                    await ws.send_json({"event": "error",
+                                        "message": "intent_id required (or active mission)"})
+                    continue
+
+                stopped = _stop_autonomous_mission(
+                    state, target_intent,
+                    reason="user_stop",
+                    message="user clicked Stop",
+                )
+                if not stopped:
+                    await ws.send_json({"event": "error",
+                                        "message": f"No active autonomous daemon for intent {target_intent}"})
+                    continue
+                # Daemon will emit `autonomous_mission_paused` itself;
+                # nothing else to do here.
 
             elif command == "list_project_files":
                 # Pi-style `@file` autocomplete: front-end caches a file list

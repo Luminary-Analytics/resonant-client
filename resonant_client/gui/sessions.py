@@ -242,11 +242,20 @@ class SessionRecord:
         #   "planning_dispatched" — Build Roadmap clicked, intent_service running
         #   "completed"           — orchestration finished, deliverables ready
         #   "exited"              — user clicked Exit Mission before completion
+        #   v0.5.0a6 — Autonomous Mission phases:
+        #   "autonomous_running"  — ∞ Build autonomously clicked,
+        #                            AutonomousMissionDaemon iterating
+        #   "autonomous_complete" — daemon ended with verdict=satisfied
+        #   "autonomous_paused"   — daemon ended for any other reason
+        #                            (user_stop / time_budget / blocked /
+        #                            check_failed / stuck / misconfigured)
         # Optional fields:
-        #   "spec_markdown"  — full spec block once emitted
-        #   "refined_intent" — extracted refined-intent paragraph
-        #   "intent_id"      — UUID of the dispatched intent (planning_dispatched+)
-        #   "started_at"     — epoch float
+        #   "spec_markdown"           — full spec block once emitted
+        #   "refined_intent"          — extracted refined-intent paragraph
+        #   "intent_id"               — UUID of the dispatched intent
+        #                                (planning_dispatched / autonomous_*)
+        #   "started_at"              — epoch float
+        #   "autonomous_started_at"   — epoch float at autonomous dispatch
         self.mission_state: Optional[dict] = mission_state
         self.pinned: bool = bool(pinned)
 

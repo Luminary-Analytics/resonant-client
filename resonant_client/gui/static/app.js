@@ -2638,6 +2638,13 @@ class ResonantApp {
                         placeholder="http://10.0.0.133:11434" spellcheck="false" autocomplete="off">
                     <button type="button" class="ollama-wizard-test">Test</button>
                 </div>
+                <div class="ollama-wizard-quick-row">
+                    <span class="ollama-wizard-quick-label">Quick fill:</span>
+                    <button type="button" class="ollama-wizard-quick" data-url="http://10.0.0.133:11434"
+                        title="Mac Studio (canonical Resonant deployment)">Mac Studio</button>
+                    <button type="button" class="ollama-wizard-quick" data-url="http://localhost:11434"
+                        title="Ollama on this machine (dev / single-host setups)">localhost</button>
+                </div>
                 <div class="ollama-wizard-hint" id="ollama-wizard-hint">
                     Default: <code>http://10.0.0.133:11434</code> (Mac Studio).
                     Override via <code>OLLAMA_HOST</code> env or fill above.
@@ -2665,24 +2672,44 @@ class ResonantApp {
             </div>
         `;
 
-        wizard.querySelector('.ollama-wizard-test').addEventListener('click', () => {
-            const newUrl = wizard.querySelector('.ollama-wizard-url').value.trim();
+        // Probe a URL: persist it to settings and re-detect. Used by both
+        // the "Test" button (current input value) and the quick-fill chips
+        // (the chip's URL is filled into the input first so the user can
+        // see what got tried, then probed).
+        const probeUrl = (newUrl) => {
+            const urlInput = wizard.querySelector('.ollama-wizard-url');
             const hint = wizard.querySelector('#ollama-wizard-hint');
-            if (!newUrl) {
+            const trimmed = (newUrl || '').trim();
+            if (!trimmed) {
                 hint.textContent = '⚠ URL is empty.';
                 hint.className = 'ollama-wizard-hint ollama-wizard-hint-warn';
                 return;
             }
-            hint.textContent = `Saving and probing ${newUrl}…`;
+            urlInput.value = trimmed;  // visible feedback for quick-fill
+            hint.textContent = `Saving and probing ${trimmed}…`;
             hint.className = 'ollama-wizard-hint';
             this.send({
                 command: 'update_settings',
                 section: 'network',
-                values: { ollama_url: newUrl },
+                values: { ollama_url: trimmed },
             });
             setTimeout(() => {
                 this.send({ command: 'redetect_backends' });
             }, 400);
+        };
+
+        wizard.querySelector('.ollama-wizard-test').addEventListener('click', () => {
+            probeUrl(wizard.querySelector('.ollama-wizard-url').value);
+        });
+
+        // T1.2 (v0.4.x roadmap): quick-fill chips. Pre-fills the URL field
+        // and immediately re-probes — one click gets the user unstuck if
+        // the canonical Mac Studio URL didn't work but Ollama is on this
+        // machine (or vice versa).
+        wizard.querySelectorAll('.ollama-wizard-quick').forEach(btn => {
+            btn.addEventListener('click', () => {
+                probeUrl(btn.dataset.url);
+            });
         });
 
         list.appendChild(wizard);

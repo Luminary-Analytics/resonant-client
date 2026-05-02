@@ -2316,6 +2316,44 @@ body {
 
 .ollama-wizard-test:hover { opacity: 0.85; }
 
+/* v0.4.2 — quick-fill chips for the URL field. One-click recovery
+   when the canonical Mac Studio default didn't work but Ollama is on
+   localhost (or vice versa). Distinct visual treatment from the Test
+   button so they read as suggestions, not the primary action. */
+.ollama-wizard-quick-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 6px 0 8px;
+}
+
+.ollama-wizard-quick-label {
+    font-size: 11px;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-right: 2px;
+}
+
+.ollama-wizard-quick {
+    padding: 3px 10px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    font: inherit;
+    font-size: 11.5px;
+    font-family: var(--font-mono);
+    cursor: pointer;
+    transition: background var(--duration-fast), border-color var(--duration-fast);
+}
+
+.ollama-wizard-quick:hover {
+    background: var(--bg-hover);
+    border-color: var(--brand);
+}
+
 .ollama-wizard-hint {
     font-size: 11.5px;
     color: var(--dim);

@@ -1,0 +1,914 @@
+"""Tests for v0.5.0a5 — `gui/autonomous_loop.py::AutonomousMissionDaemon`.
+
+The daemon is the outer loop for an Autonomous Mission. It picks
+roadmap items, dispatches them as Phase-1 sub-missions, marks them
+complete in the roadmap, runs a full REFLECT pass every K iterations,
+and stops when one of the priority-ordered stopping rules fires.
+
+Every external dependency (sub-mission dispatch, git, REFLECT model
+session, CheckContext) is injected via `DaemonHooks`, so these tests
+run without a real subprocess, real LLM, or real wall-clock waiting.
+The trick: `tick_pause_seconds=0.0` and stub callables that complete
+in microseconds keep the whole suite under a second.
+
+Coverage:
+- Lifecycle (idempotent start, stop, is_running, state_snapshot)
+- All 7 stopping rules in priority order
+- Iteration loop happy path + failure path + check_failed_streak
+- Full reflect every K iterations + on roadmap empty
+- Cross-check: verdict=satisfied while roadmap not converged → override
+- SHA validation (valid passes, invalid → "<empty>")
+- needs_model_session() == False path (pure-bash converged)
+- Events emitted in the right order with the right payloads
+- Misconfigured roadmap (no criteria → loud stop)
+"""
+from __future__ import annotations
+
+import threading
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Optional
+
+import pytest
+
+from resonant_client.gui import roadmap as roadmap_module
+from resonant_client.gui.autonomous_loop import (
+    AutonomousMissionConfig,
+    AutonomousMissionDaemon,
+    DaemonHooks,
+    DispatchOutcome,
+    FullReflectOutcome,
+)
+from resonant_client.gui.roadmap import (
+    AcceptanceCriterion,
+    Roadmap,
+    RoadmapItem,
+)
+from resonant_client.orchestration.acceptance_check import (
+    BashRunner,
+    CheckContext,
+    VisionRunner,
+)
+from resonant_client.orchestration.reflect import ReflectPassResult
+
+
+# ── Test helpers ────────────────────────────────────────────────────────
+
+
+def _build_roadmap_on_disk(
+    tmp_path: Path,
+    items: list[tuple[int, str, str]],
+    criteria: list[tuple[str, str]],
+) -> Path:
+    """Construct a Roadmap in memory and save it to `tmp_path/roadmap.md`.
+    Returns the path. `items` are `(tier, title, description)`; criteria
+    are `(type, text)`."""
+    rm = Roadmap(
+        feature="test mission",
+        intent_id="test-intent",
+        time_budget_label="1h",
+        status="running",
+    )
+    for tier, title, desc in items:
+        roadmap_module.add_item(rm, tier=tier, title=title, description=desc)
+    for ctype, text in criteria:
+        rm.acceptance_criteria.append(
+            AcceptanceCriterion(type=ctype, text=text)
+        )
+    path = tmp_path / "roadmap.md"
+    roadmap_module.save(rm, path)
+    return path
+
+
+@dataclass
+class _StubCallTracker:
+    """Records what the daemon called on its hooks. Useful for
+    verifying iteration ordering + stopping-rule enforcement."""
+    dispatched_items: list[str] = field(default_factory=list)
+    waited_handles: list[Any] = field(default_factory=list)
+    cancelled_handles: list[Any] = field(default_factory=list)
+    sha_reads: int = 0
+    sha_validations: list[str] = field(default_factory=list)
+    full_reflects: int = 0
+
+
+def _make_hooks(
+    tracker: _StubCallTracker,
+    *,
+    dispatch_succeeds: bool = True,
+    dispatch_error: str = "",
+    sha_to_return: Optional[str] = "abc123def456",
+    sha_is_valid: bool = True,
+    reflect_outcome: Optional[FullReflectOutcome] = None,
+    flip_criteria_on_reflect: bool = False,
+    roadmap_path: Optional[Path] = None,
+    bash_runner: Optional[BashRunner] = None,
+    vision_runner: Optional[VisionRunner] = None,
+) -> DaemonHooks:
+    """Build a DaemonHooks with simple stubs. Each stub records its
+    invocation in `tracker` so tests can assert the right calls
+    happened in the right order."""
+
+    handles = iter(range(10000))
+
+    def dispatch_item(item: RoadmapItem) -> int:
+        tracker.dispatched_items.append(item.id)
+        return next(handles)
+
+    def wait_for_dispatch(handle: int) -> DispatchOutcome:
+        tracker.waited_handles.append(handle)
+        return DispatchOutcome(
+            success=dispatch_succeeds,
+            error=dispatch_error,
+            handle=handle,
+        )
+
+    def cancel_dispatch(handle: int) -> None:
+        tracker.cancelled_handles.append(handle)
+
+    def get_commit_sha() -> Optional[str]:
+        tracker.sha_reads += 1
+        return sha_to_return
+
+    def validate_sha(sha: str) -> bool:
+        tracker.sha_validations.append(sha)
+        return sha_is_valid
+
+    def run_full_reflect(
+        roadmap: Roadmap, pass_result: ReflectPassResult
+    ) -> FullReflectOutcome:
+        tracker.full_reflects += 1
+        if flip_criteria_on_reflect and roadmap_path is not None:
+            # Simulate the REFLECT model session validating every
+            # outstanding criterion via file_edit. Used by tests
+            # that want a `satisfied` verdict to survive the
+            # daemon's cross-check (which re-loads the roadmap
+            # from disk and refuses to honor satisfied if any
+            # criterion is still unpassed).
+            for c in roadmap.acceptance_criteria:
+                if c.passed is not True and c.type != "manual":
+                    c.passed = True
+                    c.evidence = "PASS: stub flip"
+            roadmap_module.save(roadmap, roadmap_path)
+        if reflect_outcome is not None:
+            # Re-attach the actual pass_result so cross-check sees
+            # current roadmap state.
+            return FullReflectOutcome(
+                pass_result=pass_result,
+                verdict=reflect_outcome.verdict,
+                chrome_results=reflect_outcome.chrome_results,
+                added_items=reflect_outcome.added_items,
+                blocked_items=reflect_outcome.blocked_items,
+                manual_pending=reflect_outcome.manual_pending,
+                summary=reflect_outcome.summary,
+                estimated_remaining_minutes=reflect_outcome.estimated_remaining_minutes,
+                error=reflect_outcome.error,
+            )
+        return FullReflectOutcome(pass_result=pass_result, verdict="continue")
+
+    def check_context_factory(roadmap: Roadmap) -> CheckContext:
+        return CheckContext(
+            bash_runner=bash_runner,
+            vision_runner=vision_runner,
+        )
+
+    return DaemonHooks(
+        dispatch_item=dispatch_item,
+        wait_for_dispatch=wait_for_dispatch,
+        cancel_dispatch=cancel_dispatch,
+        get_commit_sha=get_commit_sha,
+        validate_sha=validate_sha,
+        run_full_reflect=run_full_reflect,
+        check_context_factory=check_context_factory,
+    )
+
+
+def _make_daemon(
+    roadmap_path: Path,
+    hooks: DaemonHooks,
+    *,
+    time_budget_seconds: Optional[float] = None,
+    max_iterations: int = 100,
+    full_reflect_cadence: int = 3,
+    tick_pause_seconds: float = 0.0,
+    intent_id: str = "test-intent",
+) -> tuple[AutonomousMissionDaemon, list[dict]]:
+    """Build a daemon with an event-collecting on_event callback.
+    Returns `(daemon, events_list)` so tests can inspect event order."""
+    events: list[dict] = []
+
+    def on_event(ev: dict) -> None:
+        events.append(ev)
+
+    config = AutonomousMissionConfig(
+        intent_id=intent_id,
+        roadmap_path=roadmap_path,
+        time_budget_seconds=time_budget_seconds,
+        max_iterations=max_iterations,
+        full_reflect_cadence=full_reflect_cadence,
+        tick_pause_seconds=tick_pause_seconds,
+    )
+    daemon = AutonomousMissionDaemon(config, hooks, on_event=on_event)
+    return daemon, events
+
+
+def _run_daemon_to_completion(
+    daemon: AutonomousMissionDaemon, timeout: float = 5.0
+) -> None:
+    """Start, join with timeout, fail loudly if the daemon hung."""
+    daemon.start()
+    daemon.join(timeout=timeout)
+    if daemon.is_running():
+        daemon.stop()
+        daemon.join(timeout=2.0)
+        raise AssertionError(
+            f"Daemon did not exit within {timeout}s — likely an "
+            f"infinite loop in the test setup. State: "
+            f"{daemon.state_snapshot()}"
+        )
+
+
+def _events_of_kind(events: list[dict], kind: str) -> list[dict]:
+    return [ev for ev in events if ev.get("event") == kind]
+
+
+# ── Lifecycle ───────────────────────────────────────────────────────────
+
+
+class TestDaemonLifecycle:
+    def test_start_is_idempotent(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path, items=[(1, "T1", "do thing")],
+            criteria=[("bash", "`true` exits 0")],
+        )
+        tracker = _StubCallTracker()
+        # Make dispatch hang briefly so we can observe is_running=True.
+        slow = threading.Event()
+
+        def wait_slow(handle):
+            slow.wait(timeout=0.5)
+            return DispatchOutcome(success=True, handle=handle)
+
+        hooks = _make_hooks(tracker)
+        hooks = DaemonHooks(
+            dispatch_item=hooks.dispatch_item,
+            wait_for_dispatch=wait_slow,
+            cancel_dispatch=hooks.cancel_dispatch,
+            get_commit_sha=hooks.get_commit_sha,
+            validate_sha=hooks.validate_sha,
+            run_full_reflect=hooks.run_full_reflect,
+            check_context_factory=hooks.check_context_factory,
+        )
+        daemon, events = _make_daemon(path, hooks, max_iterations=1)
+
+        daemon.start()
+        # Calling start again is a no-op.
+        daemon.start()
+        assert daemon.is_running()
+        slow.set()
+        daemon.join(timeout=2.0)
+        assert not daemon.is_running()
+
+    def test_stop_before_start_is_safe(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path, items=[], criteria=[("bash", "x")],
+        )
+        daemon, _ = _make_daemon(path, _make_hooks(_StubCallTracker()))
+        # Doesn't raise.
+        daemon.stop()
+        assert not daemon.is_running()
+
+    def test_state_snapshot_before_start(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path, items=[], criteria=[("bash", "x")],
+        )
+        daemon, _ = _make_daemon(path, _make_hooks(_StubCallTracker()))
+        snap = daemon.state_snapshot()
+        assert snap["iter_count"] == 0
+        assert snap["is_running"] is False
+
+
+# ── Iteration happy path ────────────────────────────────────────────────
+
+
+class TestIterationHappyPath:
+    def test_picks_first_unchecked_item(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1 — first", "first item"), (1, "T1.2 — second", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+            flip_criteria_on_reflect=True,
+            roadmap_path=path,
+        )
+        daemon, events = _make_daemon(path, hooks, max_iterations=10)
+
+        _run_daemon_to_completion(daemon)
+
+        # First iteration should have dispatched T1.1 (not T1.2).
+        assert tracker.dispatched_items[0] == "T1.1"
+
+    def test_marks_item_complete_with_sha(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1 — first", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            sha_to_return="deadbeef",
+            sha_is_valid=True,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+            flip_criteria_on_reflect=True,
+            roadmap_path=path,
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        # Re-load the roadmap to confirm the item was checked.
+        rm = roadmap_module.load(path)
+        item = next(i for i in rm.items if i.id == "T1.1")
+        assert item.checked is True
+        assert item.commit_sha == "deadbeef"
+
+    def test_invalid_sha_marked_as_empty(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1 — first", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            sha_to_return="bogus_sha",
+            sha_is_valid=False,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+            flip_criteria_on_reflect=True,
+            roadmap_path=path,
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        rm = roadmap_module.load(path)
+        item = next(i for i in rm.items if i.id == "T1.1")
+        assert item.checked is True
+        # The roadmap parser only writes the `*(shipped at sha)*`
+        # suffix when commit_sha is a real 6-40-hex SHA, so an
+        # invalid SHA round-trips as commit_sha="" with no item
+        # suffix. The iteration log is where the `<empty>` marker
+        # lives so the user can see WHICH iteration shipped without
+        # a verifiable commit.
+        assert item.commit_sha == ""
+        assert len(rm.iteration_log) >= 1
+        assert "<empty>" in rm.iteration_log[0].note
+
+    def test_emits_iteration_lifecycle_events(self, tmp_path):
+        # Use a [chrome] criterion so the deterministic prelude
+        # produces chrome_pending=[criterion] → needs_model_session()
+        # is True → the daemon dispatches the model session, which
+        # uses our stubbed reflect_outcome to return `satisfied`.
+        # Also flip `criterion.passed=True` in the stub so the
+        # cross-check (re-load from disk) sees a converged roadmap
+        # and doesn't override the satisfied verdict.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1 — first", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+
+        def reflect_with_chrome_marked(rm, pass_result):
+            # Simulate the REFLECT model session flipping the
+            # [chrome] criterion to passed via file_edit, then
+            # save + return satisfied.
+            rm.acceptance_criteria[0].passed = True
+            rm.acceptance_criteria[0].evidence = "PASS: model validated"
+            roadmap_module.save(rm, path)
+            tracker.full_reflects += 1
+            return FullReflectOutcome(
+                pass_result=pass_result, verdict="satisfied",
+                summary="all chrome criteria passed",
+            )
+
+        base = _make_hooks(tracker)
+        hooks = DaemonHooks(
+            dispatch_item=base.dispatch_item,
+            wait_for_dispatch=base.wait_for_dispatch,
+            cancel_dispatch=base.cancel_dispatch,
+            get_commit_sha=base.get_commit_sha,
+            validate_sha=base.validate_sha,
+            run_full_reflect=reflect_with_chrome_marked,
+            check_context_factory=base.check_context_factory,
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        # Expected event sequence:
+        # autonomous_mission_started → autonomous_iteration_started →
+        # autonomous_iteration_complete → autonomous_reflection
+        # → autonomous_mission_complete
+        kinds = [ev["event"] for ev in events]
+        assert kinds[0] == "autonomous_mission_started"
+        assert "autonomous_iteration_started" in kinds
+        assert "autonomous_iteration_complete" in kinds
+        assert "autonomous_reflection" in kinds
+        assert kinds[-1] == "autonomous_mission_complete"
+
+
+# ── Failed iteration ────────────────────────────────────────────────────
+
+
+class TestFailedIteration:
+    def test_failed_dispatch_increments_streak(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "first"), (1, "T1.2", "second"), (1, "T1.3", "third")],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            dispatch_succeeds=False,
+            dispatch_error="implementer broke",
+        )
+        daemon, events = _make_daemon(
+            path, hooks,
+            full_reflect_cadence=999,  # don't trigger full reflect
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        # Default check_failed_streak_limit=2, so 2 failures stop us.
+        failed_events = _events_of_kind(events, "autonomous_iteration_failed")
+        assert len(failed_events) >= 2
+
+        # Final event should be paused with reason=check_failed.
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["stop_reason"] == "check_failed"
+
+    def test_successful_iteration_resets_streak(self, tmp_path):
+        # 3 items + 3 dispatch results: fail, success, fail. With
+        # check_failed_streak_limit=2, if streak DIDN'T reset on the
+        # success in iter 2, we'd stop after iter 1+3 with
+        # `check_failed`. Because it DOES reset, we run all 3 iters,
+        # then stop on iteration_cap (3).
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", ""), (1, "T1.2", ""), (1, "T1.3", "")],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        results = iter([
+            DispatchOutcome(success=False, error="boom1"),
+            DispatchOutcome(success=True),
+            DispatchOutcome(success=False, error="boom3"),
+        ])
+
+        def wait(handle):
+            return next(results)
+
+        base = _make_hooks(tracker)
+        hooks = DaemonHooks(
+            dispatch_item=base.dispatch_item,
+            wait_for_dispatch=wait,
+            cancel_dispatch=base.cancel_dispatch,
+            get_commit_sha=base.get_commit_sha,
+            validate_sha=base.validate_sha,
+            run_full_reflect=base.run_full_reflect,
+            check_context_factory=base.check_context_factory,
+        )
+        daemon, events = _make_daemon(
+            path, hooks,
+            max_iterations=3,
+            full_reflect_cadence=999,  # don't trigger reflect
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        # Stop reason should be iteration_cap (not check_failed) —
+        # proves the success reset the streak so the second failure
+        # didn't trip the limit.
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["stop_reason"] == "iteration_cap"
+
+        # All 3 dispatches happened (proves we didn't stop early).
+        assert len(tracker.dispatched_items) == 3
+
+
+# ── Stopping rules ──────────────────────────────────────────────────────
+
+
+class TestStoppingRules:
+    def test_user_stop_takes_priority(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        # Hang in dispatch so we have time to call stop().
+        block = threading.Event()
+
+        def wait_block(handle):
+            block.wait(timeout=2.0)
+            return DispatchOutcome(success=True, handle=handle)
+
+        base = _make_hooks(tracker)
+        hooks = DaemonHooks(
+            dispatch_item=base.dispatch_item,
+            wait_for_dispatch=wait_block,
+            cancel_dispatch=base.cancel_dispatch,
+            get_commit_sha=base.get_commit_sha,
+            validate_sha=base.validate_sha,
+            run_full_reflect=base.run_full_reflect,
+            check_context_factory=base.check_context_factory,
+        )
+        daemon, events = _make_daemon(path, hooks)
+        daemon.start()
+        # Wait for the daemon to enter wait_for_dispatch.
+        time.sleep(0.05)
+        daemon.stop("user_stop", "user clicked stop")
+        block.set()
+        daemon.join(timeout=2.0)
+
+        # cancel_dispatch should have been called on the in-flight handle.
+        assert len(tracker.cancelled_handles) == 1
+
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["stop_reason"] == "user_stop"
+
+    def test_time_budget_stops_loop(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, f"T1.{i}", "") for i in range(1, 20)],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        # 0.05s budget — should fire after the first iteration.
+        daemon, events = _make_daemon(
+            path, hooks,
+            time_budget_seconds=0.05,
+            tick_pause_seconds=0.05,
+            full_reflect_cadence=999,
+        )
+
+        _run_daemon_to_completion(daemon, timeout=3.0)
+
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["stop_reason"] == "time_budget_exhausted"
+
+    def test_iteration_cap_stops_loop(self, tmp_path):
+        # Many items, no time budget, low iteration cap.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, f"T1.{i}", "") for i in range(1, 10)],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        daemon, events = _make_daemon(
+            path, hooks,
+            max_iterations=3,
+            full_reflect_cadence=999,
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["stop_reason"] == "iteration_cap"
+
+    def test_satisfied_verdict_completes_mission(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+            flip_criteria_on_reflect=True,
+            roadmap_path=path,
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        complete = _events_of_kind(events, "autonomous_mission_complete")
+        assert len(complete) == 1
+        assert complete[0]["stop_reason"] == "satisfied"
+
+    def test_blocked_streak_stops_loop(self, tmp_path):
+        # Four items, full_reflect_cadence=1 so we reflect after each.
+        # Each reflect returns blocked. Default streak_limit=3 →
+        # stop after the third blocked verdict (in iter 3).
+        # Use [chrome] criterion so the model session fires (and
+        # uses our stubbed reflect_outcome=blocked).
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, f"T1.{i}", "") for i in range(1, 5)],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="blocked",
+            ),
+        )
+        daemon, events = _make_daemon(
+            path, hooks, full_reflect_cadence=1,
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["stop_reason"] == "blocked"
+
+    def test_misconfigured_roadmap_stops_loud(self, tmp_path):
+        # No acceptance criteria → daemon should refuse to run.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["stop_reason"] == "misconfigured"
+        # Daemon should NOT have dispatched anything.
+        assert tracker.dispatched_items == []
+
+
+# ── Full reflect cadence ────────────────────────────────────────────────
+
+
+class TestFullReflectCadence:
+    def test_full_reflect_runs_every_k_iterations(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, f"T1.{i}", "") for i in range(1, 8)],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="continue",
+            ),
+        )
+        daemon, events = _make_daemon(
+            path, hooks,
+            full_reflect_cadence=3,
+            max_iterations=6,
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        # 6 iterations with cadence 3 → reflect after iter 3 and 6.
+        # Tracker counts model-session reflects only (when
+        # `needs_model_session()` is True). We use a non-empty
+        # criterion list so deterministic pass returns
+        # `chrome_pending=[]` AND `manual_pending=[]` AND has bash
+        # criteria → after the deterministic pass, those criteria
+        # have `passed=...` written, so re-runs skip them. With our
+        # stub bash runner being None (no _run), the dispatch falls
+        # through to subprocess — which will likely fail. So the
+        # criterion passed=False → not converged → not skip.
+        #
+        # Just count the autonomous_reflection events that fired.
+        reflections = _events_of_kind(events, "autonomous_reflection")
+        # iter 3 + iter 6 = 2 reflections
+        assert len(reflections) == 2
+
+    def test_full_reflect_runs_on_empty_roadmap(self, tmp_path):
+        # No items → first action is full reflect.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        reflections = _events_of_kind(events, "autonomous_reflection")
+        assert len(reflections) == 1
+
+
+# ── Cross-check (the "convergence is real" guard) ───────────────────────
+
+
+class TestConvergenceCrossCheck:
+    def test_satisfied_verdict_overridden_when_roadmap_disagrees(
+        self, tmp_path
+    ):
+        # A roadmap with a [chrome] criterion that's NOT marked
+        # passed=True. Model claims `verdict=satisfied` (lying).
+        # Daemon should override to `continue`.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        # Model claims satisfied but doesn't actually flip the
+        # criterion's passed field in the file.
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+                summary="all done!",
+            ),
+        )
+        daemon, events = _make_daemon(
+            path, hooks,
+            max_iterations=2,  # let one iter run, then reflect, then stop
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        # The autonomous_reflection event should show verdict=continue
+        # (overridden), not satisfied.
+        reflections = _events_of_kind(events, "autonomous_reflection")
+        assert len(reflections) >= 1
+        for r in reflections:
+            assert r["verdict"] != "satisfied", (
+                "Daemon failed to override model's bogus satisfied verdict"
+            )
+
+    def test_satisfied_verdict_kept_when_roadmap_agrees(self, tmp_path):
+        # Roadmap with one [bash] criterion. Stub runs it → passed=True.
+        # needs_model_session() is False (no chrome/manual). Daemon
+        # mechanically declares satisfied. Verdict should stick.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("bash", "`true` exits 0")],
+        )
+
+        def good_run(cmd, **kw):
+            return (0, "ok\n", "")
+
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            bash_runner=BashRunner(_run=good_run),
+        )
+        daemon, events = _make_daemon(path, hooks, full_reflect_cadence=1)
+
+        _run_daemon_to_completion(daemon)
+
+        complete = _events_of_kind(events, "autonomous_mission_complete")
+        assert len(complete) == 1
+        # The model session shouldn't have been called at all —
+        # pure-bash converged path skips it.
+        assert tracker.full_reflects == 0
+
+
+# ── Pure-bash spec converges without model session ──────────────────────
+
+
+class TestPureBashConvergence:
+    def test_no_model_session_when_all_bash_pass(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[
+                ("bash", "`true` exits 0"),
+                ("bash", "`echo hi` exits 0"),
+            ],
+        )
+
+        def good_run(cmd, **kw):
+            return (0, "ok\n", "")
+
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            bash_runner=BashRunner(_run=good_run),
+        )
+        daemon, events = _make_daemon(path, hooks, full_reflect_cadence=1)
+
+        _run_daemon_to_completion(daemon)
+
+        # full_reflects counts model-session calls, NOT deterministic
+        # passes. For pure-bash all-passing, model session is skipped.
+        assert tracker.full_reflects == 0
+
+        complete = _events_of_kind(events, "autonomous_mission_complete")
+        assert len(complete) == 1
+        assert complete[0]["stop_reason"] == "satisfied"
+
+
+# ── State snapshot ──────────────────────────────────────────────────────
+
+
+class TestStateSnapshot:
+    def test_snapshot_reflects_iteration_progress(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", ""), (1, "T1.2", "")],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+        )
+        daemon, events = _make_daemon(
+            path, hooks, full_reflect_cadence=1,
+            time_budget_seconds=60.0,
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        snap = daemon.state_snapshot()
+        assert snap["intent_id"] == "test-intent"
+        assert snap["iter_count"] >= 1
+        assert snap["is_running"] is False
+        assert snap["time_budget_seconds"] == 60.0
+
+
+# ── Iteration log appended ──────────────────────────────────────────────
+
+
+class TestIterationLogPersisted:
+    def test_iteration_log_appended_on_disk(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            sha_to_return="abc1234",
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+            flip_criteria_on_reflect=True,
+            roadmap_path=path,
+        )
+        daemon, _ = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        rm = roadmap_module.load(path)
+        assert len(rm.iteration_log) >= 1
+        first = rm.iteration_log[0]
+        # The roadmap markdown serializes iter_num + timestamp +
+        # duration + note as the structured triplet; item_id and
+        # commit_sha are encoded INSIDE the note prose ("shipped
+        # T1.1"). The parser doesn't sub-parse the note back out,
+        # so assertions on the note text are what survives.
+        assert first.iter_num == 1
+        assert "T1.1" in first.note  # daemon wrote "shipped T1.1"

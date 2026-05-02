@@ -131,3 +131,75 @@ def test_filter_handles_malformed_tool_entries():
     out = filter_tools_for_specialist(NodeSpecialization.EXPLORE, fake_tools)
     assert len(out) == 1
     assert out[0]["function"]["name"] == "file_read"
+
+
+# ── v0.4.8 (T2.3) — DeepSeek prompt-tuning invariants ─────────────────
+#
+# These tests pin the FORMAT REMINDER blocks added to the planner /
+# verifier prompts. DeepSeek (especially flash) tends to drop the
+# JSON envelope unless heavily reinforced; we put the schema reminder
+# at the END of the prompt where the model attends most. If a future
+# refactor moves it back to the middle or drops it entirely, these
+# tests fail.
+
+
+class TestPlanPromptFormatReminder:
+    def test_plan_prompt_has_format_reminder_block(self):
+        profile = get_specialist(NodeSpecialization.PLAN)
+        assert "FORMAT REMINDER" in profile.system_block
+
+    def test_plan_format_reminder_is_near_the_end(self):
+        # FORMAT REMINDER should appear in the LAST third of the prompt.
+        # DeepSeek attends to recent tokens; burying the reminder mid-prompt
+        # defeats the purpose.
+        block = get_specialist(NodeSpecialization.PLAN).system_block
+        idx = block.find("FORMAT REMINDER")
+        assert idx > len(block) * 0.5, "FORMAT REMINDER must be in the last half of the prompt"
+
+    def test_plan_prompt_forbids_drift_modes(self):
+        # The reminder must explicitly forbid the common JSON drift
+        # modes seen in cross-model testing: trailing commas, single
+        # quotes, comments inside JSON.
+        block = get_specialist(NodeSpecialization.PLAN).system_block.lower()
+        assert "trailing comma" in block
+        assert "single quote" in block
+        assert "comment" in block
+
+    def test_plan_prompt_says_json_goes_last(self):
+        # Hard-pin the "nothing important after the JSON" instruction —
+        # DeepSeek tends to add follow-up prose that wastes tokens.
+        block = get_specialist(NodeSpecialization.PLAN).system_block.lower()
+        assert "goes last" in block or "wasted tokens" in block
+
+
+class TestVerifyPromptStructured:
+    def test_verify_prompt_has_json_envelope_spec(self):
+        # Pre-T2.3 the verify prompt had NO JSON spec; the runner
+        # relied on a heuristic prose-fallback. Verify the explicit
+        # envelope is now in place.
+        block = get_specialist(NodeSpecialization.VERIFY).system_block
+        assert '"verdict"' in block
+        assert '"findings"' in block
+        assert "```json" in block
+
+    def test_verify_prompt_lists_allowed_verdicts(self):
+        block = get_specialist(NodeSpecialization.VERIFY).system_block.lower()
+        # All three verdicts the parser recognizes must be documented.
+        assert "pass" in block
+        assert "revise" in block
+        assert "blocked" in block
+
+    def test_verify_prompt_has_format_reminder(self):
+        profile = get_specialist(NodeSpecialization.VERIFY)
+        assert "FORMAT REMINDER" in profile.system_block
+
+    def test_verify_format_reminder_is_near_the_end(self):
+        block = get_specialist(NodeSpecialization.VERIFY).system_block
+        idx = block.find("FORMAT REMINDER")
+        assert idx > len(block) * 0.5, "FORMAT REMINDER must be in the last half"
+
+    def test_verify_still_forbids_edits(self):
+        # The original "you may NOT edit files" invariant must survive
+        # the prompt restructure — verify is read-only by design.
+        block = get_specialist(NodeSpecialization.VERIFY).system_block
+        assert "may NOT edit" in block or "may not edit" in block.lower()

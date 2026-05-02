@@ -123,8 +123,38 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
         system_block=(
             "You are a verifier. The implementer says they're done. Your job is to "
             "confirm the change actually works: read what they touched, run focused "
-            "tests with bash, check edge cases. You may NOT edit files. Report a "
-            "concrete verdict: pass / revise (with specific failing checks) / blocked."
+            "tests with bash, check edge cases. You may NOT edit files.\n\n"
+            "End your response with a single fenced JSON code block in this "
+            "exact shape:\n\n"
+            "```json\n"
+            "{\n"
+            '  "verdict": "pass",\n'
+            '  "findings": ["short bullet describing what you confirmed", "..."]\n'
+            "}\n"
+            "```\n\n"
+            "Allowed `verdict` values:\n"
+            "- `pass` — every check you ran succeeded; the change works\n"
+            "- `revise` — at least one specific check failed; `findings` lists "
+            "what's wrong with enough detail for the repair specialist to fix it\n"
+            "- `blocked` — you couldn't run the checks (missing dependency, "
+            "ambiguous scope, etc.); `findings` says what's blocking\n\n"
+            # v0.4.8 (T2.3) — DeepSeek tuning. Pre-T2.3 the verify
+            # prompt asked for a "concrete verdict" in prose and relied
+            # on the runner's heuristic prose-fallback to extract it.
+            # That fallback only catches a few canonical phrasings;
+            # everything else parsed as `verdict=""` which softened
+            # confidence and confused the orchestrator. Adding the
+            # explicit JSON envelope (mirroring the planner pattern)
+            # gives DeepSeek a stable target.
+            "─── FORMAT REMINDER (the parser is strict) ───\n\n"
+            "Your final output MUST end with one fenced JSON block:\n"
+            "- `verdict` is one of: pass / revise / blocked (lowercase)\n"
+            "- `findings` is an array of short strings (can be empty for `pass`)\n"
+            "- Strict JSON: double-quoted keys and strings, no trailing commas, "
+            "no comments\n"
+            "- Goes LAST — nothing important after it\n\n"
+            "If you find yourself writing more prose after the JSON, stop and "
+            "delete that prose — anything after the JSON is wasted tokens."
         ),
         tool_allowlist=VERIFY_TOOLS,
         max_steps=12,
@@ -183,7 +213,29 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "earlier subgoals. Even a tiny goal that could fit in one step needs "
             "to be emitted as a JSON plan with at least one subgoal — DO NOT "
             "attempt to do the work yourself. Use file_read / glob / grep first "
-            "if you need to understand the codebase before planning."
+            "if you need to understand the codebase before planning.\n\n"
+            # v0.4.8 (T2.3) — DeepSeek tuning. Both flash and pro tend to
+            # explain themselves at length and occasionally drop the JSON
+            # envelope at the end (the structured-output bit gets buried
+            # under prose). DeepSeek attends more to recent tokens, so a
+            # FORMAT REMINDER block at the END of the prompt reinforces
+            # the schema right before the model starts generating. Also
+            # explicitly forbid the common drift modes seen in cross-model
+            # testing: trailing commas, single quotes, comments inside
+            # JSON.
+            "─── FORMAT REMINDER (the parser is strict) ───\n\n"
+            "Your final output MUST end with one fenced JSON block. The block:\n"
+            "- Uses the exact shape above (`subgoals` array of objects)\n"
+            "- Each subgoal has `goal` (string) and `specialization` (one of "
+            "the allowed values above); `depends_on` is optional (array of "
+            "integer indices into earlier subgoals)\n"
+            "- Strict JSON: double-quoted keys and strings, no trailing commas, "
+            "no comments, no single quotes\n"
+            "- Wrapped in a ```json ... ``` fence (the parser accepts this and "
+            "also a bare {...} block but the fence is preferred)\n"
+            "- Goes LAST — nothing important after it\n\n"
+            "If you find yourself writing more prose after the JSON, stop and "
+            "delete that prose — anything after the JSON is wasted tokens."
         ),
         tool_allowlist=READ_ONLY_TOOLS | _AWAIT_USER,
         max_steps=8,

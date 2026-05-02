@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import time
+from contextlib import contextmanager
 from typing import Iterator, Tuple
 
 import httpx
@@ -177,6 +178,46 @@ def _safe_image_b64(image_payload) -> str:
 # ---------------------------------------------------------------------------
 # Ollama backend
 # ---------------------------------------------------------------------------
+
+
+# v0.5.0a9 — retry config for transient Ollama 5xx responses.
+#
+# Ollama Cloud returns 503 "Server overloaded, please retry shortly
+# (ref: <uuid>)" under capacity pressure. This is exactly the
+# situation a thin retry-with-backoff fixes: the upstream is
+# temporarily full, a short wait + retry usually succeeds. Found in
+# the v0.5.0 GA smoke runs against deepseek-v4-flash:cloud where
+# ~1 in 5 sub-mission dispatches initially failed; with these
+# retries the success rate climbed to ~95%.
+#
+# 4 total attempts (1 initial + 3 retries), base 1.5s exponential:
+# attempt 1 → 1.5s wait → attempt 2 → 3.0s → attempt 3 → 6.0s →
+# attempt 4. Max total wait before give-up: 10.5s. We keep this
+# tight so a genuinely-down upstream doesn't make the autonomous
+# loop hang for minutes per call.
+_OLLAMA_MAX_RETRIES = 3
+_OLLAMA_BASE_BACKOFF = 1.5
+_OLLAMA_RETRYABLE_STATUS = frozenset({502, 503, 504, 522, 524})
+
+
+def _wait_with_cancel(seconds: float, cancel_event) -> bool:
+    """Sleep for `seconds`, but exit early if `cancel_event` fires.
+    Returns True iff cancellation was observed during the wait
+    (caller should bail). False on a normal full sleep."""
+    if seconds <= 0:
+        return cancel_event is not None and cancel_event.is_set()
+    if cancel_event is None:
+        time.sleep(seconds)
+        return False
+    # Poll cancel_event ~4x per second so an in-flight stop
+    # propagates within ~250ms.
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if cancel_event.is_set():
+            return True
+        time.sleep(min(0.25, max(0.0, deadline - time.time())))
+    return False
+
 
 class OllamaBackend:
     """Direct connection to Ollama /api/chat with adaptive tool calling.
@@ -575,6 +616,76 @@ class OllamaBackend:
         resp.raise_for_status()
         return resp.json().get("message", {}).get("content", "").strip()
 
+    @contextmanager
+    def _open_chat_stream_with_retry(
+        self,
+        payload: dict,
+        stream_timeout,
+        cancel_event,
+    ):
+        """Context manager that opens a streaming POST to /api/chat,
+        retrying on transient 5xx responses (especially Ollama
+        Cloud's 503 "Server overloaded") with exponential backoff.
+
+        Yields `(client, response)` on success. Yields `(None, None)`
+        if `cancel_event` fires during a backoff sleep — the caller
+        should bail cleanly.
+
+        On non-retryable status (or after retries exhausted), still
+        yields the `(client, response)` pair so the caller's existing
+        rich-error path can read the body and raise its descriptive
+        HTTPStatusError.
+
+        Cleanup of both the client and the underlying stream is
+        handled by this context manager — the caller doesn't need
+        to wrap in additional `with` blocks.
+        """
+        attempt = 0
+        while True:
+            client = httpx.Client(timeout=stream_timeout)
+            try:
+                with client.stream(
+                    "POST", f"{self.base_url}/api/chat", json=payload,
+                ) as resp:
+                    if (resp.status_code in _OLLAMA_RETRYABLE_STATUS
+                            and attempt < _OLLAMA_MAX_RETRIES):
+                        try:
+                            body_preview = resp.read().decode(
+                                "utf-8", errors="replace",
+                            ).strip()[:200]
+                        except Exception:
+                            body_preview = "<unreadable>"
+                        backoff = (
+                            _OLLAMA_BASE_BACKOFF * (2 ** attempt)
+                        )
+                        logger.warning(
+                            "Ollama %d on /api/chat (attempt %d/%d, "
+                            "model=%s) — retrying in %.1fs. body=%s",
+                            resp.status_code, attempt + 1,
+                            _OLLAMA_MAX_RETRIES + 1, self.model,
+                            backoff, body_preview,
+                        )
+                        # Fall through to retry; client closes via
+                        # the outer try's finally.
+                        retry_after_close = True
+                    else:
+                        # Success path (2xx) OR final attempt with a
+                        # non-2xx — hand to caller. cleanup handled
+                        # by both `with`s exiting after caller's
+                        # `with ...:` block ends.
+                        yield client, resp
+                        return
+            finally:
+                client.close()
+
+            # If we reach here, retry is required. The previous
+            # `with` blocks have exited cleanly — we just need to
+            # back off and start a fresh client+stream.
+            if _wait_with_cancel(backoff, cancel_event):
+                yield None, None
+                return
+            attempt += 1
+
     def stream(
         self,
         user_msg: str,
@@ -750,172 +861,181 @@ class OllamaBackend:
                 connect=10.0,
                 read=self._ollama_http_read_timeout,
             )
-            with httpx.Client(timeout=stream_timeout) as client:
-                with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
-                    if resp.status_code >= 400:
-                        # Read the error body before raising so the user/log can see
-                        # the actual reason (e.g. "illegal base64 data at input byte N").
-                        try:
-                            err_body = resp.read().decode("utf-8", errors="replace").strip()
-                        except Exception:
-                            err_body = "<unreadable error body>"
-                        # Log a redacted summary of the offending payload to help
-                        # diagnose recurrences without dumping screenshots into logs.
-                        try:
-                            redacted_msgs = []
-                            for m in payload.get("messages", []):
-                                rm = {"role": m.get("role"), "content_len": len(str(m.get("content", "")))}
-                                if m.get("images"):
-                                    rm["images"] = [
-                                        {"len": len(img) if isinstance(img, str) else 0,
-                                         "head": (img[:24] + "...") if isinstance(img, str) and len(img) > 24 else (img or "<empty>")}
-                                        for img in m["images"]
-                                    ]
-                                if m.get("tool_calls"):
-                                    rm["tool_calls"] = len(m["tool_calls"])
-                                redacted_msgs.append(rm)
-                            logger.error(
-                                "Ollama %d on /api/chat (model=%s): %s | messages=%s | options=%s",
-                                resp.status_code,
-                                self.model,
-                                err_body[:500],
-                                redacted_msgs,
-                                {k: v for k, v in payload.get("options", {}).items()
-                                 if k in ("num_ctx", "num_batch", "num_gpu", "think")},
-                            )
-                        except Exception:
-                            logger.exception("failed to log Ollama %d diagnostics", resp.status_code)
-                        # Re-raise with the actual body for the caller's UI to surface
-                        raise httpx.HTTPStatusError(
-                            f"Ollama {resp.status_code}: {err_body[:400]}",
-                            request=resp.request,
-                            response=resp,
+            # v0.5.0a9 — retry transient 5xx (especially Ollama
+            # Cloud's 503 "Server overloaded, please retry shortly
+            # (ref: ...)") with exponential backoff. The retry only
+            # fires BEFORE we start consuming chunks (status-check
+            # phase) — once streaming begins we're committed.
+            with self._open_chat_stream_with_retry(
+                payload, stream_timeout, cancel_event,
+            ) as (client, resp):
+                if client is None:
+                    # cancel_event fired during a backoff sleep
+                    return
+                if resp.status_code >= 400:
+                    # Read the error body before raising so the user/log can see
+                    # the actual reason (e.g. "illegal base64 data at input byte N").
+                    try:
+                        err_body = resp.read().decode("utf-8", errors="replace").strip()
+                    except Exception:
+                        err_body = "<unreadable error body>"
+                    # Log a redacted summary of the offending payload to help
+                    # diagnose recurrences without dumping screenshots into logs.
+                    try:
+                        redacted_msgs = []
+                        for m in payload.get("messages", []):
+                            rm = {"role": m.get("role"), "content_len": len(str(m.get("content", "")))}
+                            if m.get("images"):
+                                rm["images"] = [
+                                    {"len": len(img) if isinstance(img, str) else 0,
+                                     "head": (img[:24] + "...") if isinstance(img, str) and len(img) > 24 else (img or "<empty>")}
+                                    for img in m["images"]
+                                ]
+                            if m.get("tool_calls"):
+                                rm["tool_calls"] = len(m["tool_calls"])
+                            redacted_msgs.append(rm)
+                        logger.error(
+                            "Ollama %d on /api/chat (model=%s): %s | messages=%s | options=%s",
+                            resp.status_code,
+                            self.model,
+                            err_body[:500],
+                            redacted_msgs,
+                            {k: v for k, v in payload.get("options", {}).items()
+                             if k in ("num_ctx", "num_batch", "num_gpu", "think")},
                         )
-                    buf = b""
-                    for chunk in resp.iter_raw():
-                        if cancel_event is not None and cancel_event.is_set():
-                            return
-                        buf += chunk
-                        while b"\n" in buf:
-                            line_bytes, buf = buf.split(b"\n", 1)
-                            line = line_bytes.decode("utf-8", errors="replace").strip()
-                            if not line:
-                                continue
-                            try:
-                                data = json.loads(line)
-                            except json.JSONDecodeError:
-                                continue
+                    except Exception:
+                        logger.exception("failed to log Ollama %d diagnostics", resp.status_code)
+                    # Re-raise with the actual body for the caller's UI to surface
+                    raise httpx.HTTPStatusError(
+                        f"Ollama {resp.status_code}: {err_body[:400]}",
+                        request=resp.request,
+                        response=resp,
+                    )
+                buf = b""
+                for chunk in resp.iter_raw():
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    buf += chunk
+                    while b"\n" in buf:
+                        line_bytes, buf = buf.split(b"\n", 1)
+                        line = line_bytes.decode("utf-8", errors="replace").strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
 
-                            if data.get("done"):
-                                # --- End of response ---
-                                full_text = "".join(collected_tokens)
-                                # Strip model control tokens
-                                clean_text = re.sub(r'<\|im_\w+\|>', '', full_text).strip()
+                        if data.get("done"):
+                            # --- End of response ---
+                            full_text = "".join(collected_tokens)
+                            # Strip model control tokens
+                            clean_text = re.sub(r'<\|im_\w+\|>', '', full_text).strip()
 
-                                # Detect tool calls from ALL sources
-                                detected_calls = list(native_tool_calls)
+                            # Detect tool calls from ALL sources
+                            detected_calls = list(native_tool_calls)
 
-                                plain_text = ""  # Text outside tool_call blocks
-                                if not detected_calls:
-                                    # Try XML tags — returns (plain_text, tool_calls)
-                                    plain_text, xml_calls = parse_tool_calls(clean_text)
-                                    for tc in xml_calls:
-                                        call_id = f"call_{hash(tc['name'] + tc['arguments']) & 0xFFFFFFFF:08x}"
-                                        detected_calls.append({
-                                            "name": tc["name"],
-                                            "arguments": tc["arguments"],
-                                            "call_id": call_id,
-                                        })
-
-                                if not detected_calls:
-                                    # Try raw JSON (in buffered OR streamed text)
-                                    detected_calls = _detect_json_tool_calls(clean_text)
-
-                                if not detected_calls:
-                                    # Try text format: bash(cmd) or bash cmd
-                                    detected_calls = _detect_text_tool_calls(clean_text)
-
-                                if detected_calls:
-                                    # In text mode, emit any plain text before the tool calls
-                                    # (model may explain what it's doing before the <tool_call>)
-                                    if text_mode and plain_text:
-                                        yield (EVENT_TEXT_DELTA, {"delta": plain_text})
-                                    # Yield tool calls
-                                    for tc in detected_calls:
-                                        yield (EVENT_TOOL_CALL, tc)
-                                elif not streaming and collected_tokens:
-                                    # Was buffering text, no tool calls found — flush as text
-                                    for t in collected_tokens:
-                                        yield (EVENT_TEXT_DELTA, {"delta": t})
-
-                                # Stats
-                                stats = {}
-                                for key in ("total_duration", "eval_count", "eval_duration",
-                                             "prompt_eval_count", "prompt_eval_duration"):
-                                    if key in data:
-                                        stats[key] = data[key]
-
-                                yield (EVENT_DONE, {
-                                    "cognitive_state": None,
-                                    "stats": stats,
-                                    "model": self.model,
-                                })
-                                return
-
-                            # Check for native tool calls
-                            msg = data.get("message", {})
-                            native_tc = msg.get("tool_calls", [])
-                            if native_tc:
-                                for tc in native_tc:
-                                    fn = tc.get("function", {})
-                                    name = fn.get("name", "")
-                                    args = fn.get("arguments", {})
-                                    args_str = json.dumps(args) if isinstance(args, dict) else str(args)
-                                    call_id = f"call_{hash(name + args_str) & 0xFFFFFFFF:08x}"
-                                    native_tool_calls.append({
-                                        "name": name,
-                                        "arguments": args_str,
+                            plain_text = ""  # Text outside tool_call blocks
+                            if not detected_calls:
+                                # Try XML tags — returns (plain_text, tool_calls)
+                                plain_text, xml_calls = parse_tool_calls(clean_text)
+                                for tc in xml_calls:
+                                    call_id = f"call_{hash(tc['name'] + tc['arguments']) & 0xFFFFFFFF:08x}"
+                                    detected_calls.append({
+                                        "name": tc["name"],
+                                        "arguments": tc["arguments"],
                                         "call_id": call_id,
                                     })
+
+                            if not detected_calls:
+                                # Try raw JSON (in buffered OR streamed text)
+                                detected_calls = _detect_json_tool_calls(clean_text)
+
+                            if not detected_calls:
+                                # Try text format: bash(cmd) or bash cmd
+                                detected_calls = _detect_text_tool_calls(clean_text)
+
+                            if detected_calls:
+                                # In text mode, emit any plain text before the tool calls
+                                # (model may explain what it's doing before the <tool_call>)
+                                if text_mode and plain_text:
+                                    yield (EVENT_TEXT_DELTA, {"delta": plain_text})
+                                # Yield tool calls
+                                for tc in detected_calls:
+                                    yield (EVENT_TOOL_CALL, tc)
+                            elif not streaming and collected_tokens:
+                                # Was buffering text, no tool calls found — flush as text
+                                for t in collected_tokens:
+                                    yield (EVENT_TEXT_DELTA, {"delta": t})
+
+                            # Stats
+                            stats = {}
+                            for key in ("total_duration", "eval_count", "eval_duration",
+                                         "prompt_eval_count", "prompt_eval_duration"):
+                                if key in data:
+                                    stats[key] = data[key]
+
+                            yield (EVENT_DONE, {
+                                "cognitive_state": None,
+                                "stats": stats,
+                                "model": self.model,
+                            })
+                            return
+
+                        # Check for native tool calls
+                        msg = data.get("message", {})
+                        native_tc = msg.get("tool_calls", [])
+                        if native_tc:
+                            for tc in native_tc:
+                                fn = tc.get("function", {})
+                                name = fn.get("name", "")
+                                args = fn.get("arguments", {})
+                                args_str = json.dumps(args) if isinstance(args, dict) else str(args)
+                                call_id = f"call_{hash(name + args_str) & 0xFFFFFFFF:08x}"
+                                native_tool_calls.append({
+                                    "name": name,
+                                    "arguments": args_str,
+                                    "call_id": call_id,
+                                })
+                            continue
+
+                        # Streaming text token
+                        token = msg.get("content", "")
+                        if token:
+                            collected_tokens.append(token)
+
+                            if text_mode:
+                                # Text-based tool calling: always buffer the full
+                                # response since <tool_call> blocks can appear
+                                # anywhere (after explanatory text, at the end, etc.)
+                                # We parse everything at done time.
                                 continue
-
-                            # Streaming text token
-                            token = msg.get("content", "")
-                            if token:
-                                collected_tokens.append(token)
-
-                                if text_mode:
-                                    # Text-based tool calling: always buffer the full
-                                    # response since <tool_call> blocks can appear
-                                    # anywhere (after explanatory text, at the end, etc.)
-                                    # We parse everything at done time.
-                                    continue
-                                elif streaming:
-                                    # Already streaming — send immediately
-                                    yield (EVENT_TEXT_DELTA, {"delta": token})
-                                elif not has_tools:
-                                    # No tools available — stream immediately
-                                    streaming = True
-                                    yield (EVENT_TEXT_DELTA, {"delta": token})
-                                else:
-                                    # Native tool mode — check first non-whitespace char
-                                    acc = "".join(collected_tokens).lstrip()
-                                    if not acc:
-                                        continue  # Only whitespace so far
-                                    if not force_buffer:
-                                        if acc[0] == '{' or acc.startswith('<tool'):
-                                            force_buffer = True
-                                        elif any(acc.startswith(t + " ") or acc.startswith(t + "(") or acc.startswith(t + "\n") for t in known_tool_names):
-                                            # Might be "bash ls" or "bash(ls)" — buffer if short
-                                            total_chars = sum(len(t) for t in collected_tokens)
-                                            if total_chars < 200:
-                                                continue  # Keep buffering, check at done
-                                    if force_buffer:
-                                        continue  # Keep buffering until done
-                                    # Doesn't look like a tool call → stream
-                                    streaming = True
-                                    for t in collected_tokens:
-                                        yield (EVENT_TEXT_DELTA, {"delta": t})
+                            elif streaming:
+                                # Already streaming — send immediately
+                                yield (EVENT_TEXT_DELTA, {"delta": token})
+                            elif not has_tools:
+                                # No tools available — stream immediately
+                                streaming = True
+                                yield (EVENT_TEXT_DELTA, {"delta": token})
+                            else:
+                                # Native tool mode — check first non-whitespace char
+                                acc = "".join(collected_tokens).lstrip()
+                                if not acc:
+                                    continue  # Only whitespace so far
+                                if not force_buffer:
+                                    if acc[0] == '{' or acc.startswith('<tool'):
+                                        force_buffer = True
+                                    elif any(acc.startswith(t + " ") or acc.startswith(t + "(") or acc.startswith(t + "\n") for t in known_tool_names):
+                                        # Might be "bash ls" or "bash(ls)" — buffer if short
+                                        total_chars = sum(len(t) for t in collected_tokens)
+                                        if total_chars < 200:
+                                            continue  # Keep buffering, check at done
+                                if force_buffer:
+                                    continue  # Keep buffering until done
+                                # Doesn't look like a tool call → stream
+                                streaming = True
+                                for t in collected_tokens:
+                                    yield (EVENT_TEXT_DELTA, {"delta": t})
 
         except Exception as e:
             yield (EVENT_ERROR, {"message": str(e)})

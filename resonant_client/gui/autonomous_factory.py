@@ -574,7 +574,11 @@ def make_check_context_factory(
     """
     bash_timeout = 60.0
     vision_url = "http://10.0.0.133:11434"
-    vision_model = "qwen2.5vl:7b"
+    # v0.5.0a9 — keep the default in sync with
+    # acceptance_check.DEFAULT_VISION_MODEL so the GUI and the
+    # daemon agree on the fallback when settings.vision is unset.
+    from ..orchestration.acceptance_check import DEFAULT_VISION_MODEL
+    vision_model = DEFAULT_VISION_MODEL
 
     if settings is not None:
         try:

@@ -395,7 +395,14 @@ def run_bash_check(
 # Default vision model per the v0.5.0 design (open question #11
 # resolution). Configurable via Settings → Vision model; the default
 # below is what `detect_backends` checks for at mission start.
-DEFAULT_VISION_MODEL = "qwen2.5vl:7b"
+# v0.5.0a9 — switched default from qwen2.5vl:7b → qwen3-vl:8b.
+# qwen3-vl is Alibaba's explicit successor (DeepStack ViT fusion,
+# Interleaved-MRoPE, expanded OCR for 32 langs); same VRAM class,
+# same Apache-2 license, on Ollama today, and already 2x more pulls
+# than qwen2.5vl per the Ollama library. Pre-GA web research +
+# Mac Studio pull validated the choice. Users can override via
+# Settings → Vision → default_model.
+DEFAULT_VISION_MODEL = "qwen3-vl:8b"
 
 
 @dataclass

@@ -429,5 +429,10 @@ class TestCheckContextFactory:
             project_path="/tmp", settings=_Bad(),
         )
         ctx = factory(Roadmap())
-        # Defaults apply.
-        assert ctx.vision_runner.model == "qwen2.5vl:7b"
+        # Defaults apply — track DEFAULT_VISION_MODEL so a future
+        # bump (qwen3-vl → qwen4-vl, whenever that lands) doesn't
+        # require touching this test.
+        from resonant_client.orchestration.acceptance_check import (
+            DEFAULT_VISION_MODEL,
+        )
+        assert ctx.vision_runner.model == DEFAULT_VISION_MODEL

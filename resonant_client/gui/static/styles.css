@@ -2373,6 +2373,38 @@ body {
     color: color-mix(in srgb, #d97706 80%, var(--text));
 }
 
+.ollama-wizard-hint-ok {
+    color: color-mix(in srgb, #10b981 70%, var(--text));
+}
+
+.ollama-wizard-hint code {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+}
+
+/* v0.4.3 (T1.3) — inline spinner for the wizard's "probing…" state.
+   8px circle, 800ms rotation, brand-colored arc on transparent
+   background. Sits inline before the URL text. */
+.ollama-wizard-spinner {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: 6px;
+    border: 1.5px solid var(--border);
+    border-top-color: var(--brand);
+    border-radius: 50%;
+    animation: ollama-wizard-spinner-rot 0.8s linear infinite;
+    vertical-align: middle;
+}
+
+@keyframes ollama-wizard-spinner-rot {
+    to { transform: rotate(360deg); }
+}
+
 .ollama-wizard-cmd {
     font-family: var(--font-mono);
     font-size: 12px;

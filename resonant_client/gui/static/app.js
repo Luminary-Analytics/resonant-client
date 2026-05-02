@@ -2322,6 +2322,15 @@ class ResonantApp {
                 this.showStatusMessage(event.message || 'Folder picker unavailable. Type a path in the welcome screen.');
                 this.showNewSessionSetup();
                 break;
+            case 'ollama_probe_result':
+                // v0.4.3 (T1.3) — real-time feedback for the Ollama
+                // setup wizard's URL probe. Lands BEFORE the init
+                // payload that re-renders the welcome flow, so the
+                // wizard's hint area can show "✓ Reachable, N models"
+                // or "✗ No models / unreachable" before the wizard
+                // gets replaced (success) or re-renders (failure).
+                this._handleOllamaProbeResult(event);
+                break;
             case 'diagnostics_saved':
                 // v0.3.4 \u2014 Help \u2192 Save Diagnostics result. Show the path
                 // and size so the user knows what to attach to a GitHub
@@ -2676,6 +2685,12 @@ class ResonantApp {
         // the "Test" button (current input value) and the quick-fill chips
         // (the chip's URL is filled into the input first so the user can
         // see what got tried, then probed).
+        //
+        // v0.4.3 (T1.3) — wires up real-time feedback. Sets
+        // `_ollamaProbeInflight` so the `ollama_probe_result` event
+        // handler knows to update this wizard's hint, and arms a 7s
+        // safety timeout that surfaces "no response" if the backend
+        // somehow never emits the event (network stack hung).
         const probeUrl = (newUrl) => {
             const urlInput = wizard.querySelector('.ollama-wizard-url');
             const hint = wizard.querySelector('#ollama-wizard-hint');
@@ -2686,13 +2701,30 @@ class ResonantApp {
                 return;
             }
             urlInput.value = trimmed;  // visible feedback for quick-fill
-            hint.textContent = `Saving and probing ${trimmed}…`;
+            hint.innerHTML = `<span class="ollama-wizard-spinner" aria-hidden="true"></span>Probing <code>${this.escapeHtml(trimmed)}</code>…`;
             hint.className = 'ollama-wizard-hint';
             this.send({
                 command: 'update_settings',
                 section: 'network',
                 values: { ollama_url: trimmed },
             });
+            // Stash a reference to this wizard's hint + a generation token
+            // so a stale probe (user clicked twice fast) can't overwrite a
+            // fresher result.
+            const generation = (this._ollamaProbeGeneration || 0) + 1;
+            this._ollamaProbeGeneration = generation;
+            this._ollamaProbeInflight = { hint, generation, url: trimmed };
+            // Arm a safety timeout — the backend's httpx connect+read
+            // budget is ~6s, so 7s is a generous "no response at all"
+            // catch. Fires only if `ollama_probe_result` never arrives.
+            if (this._ollamaProbeTimeout) clearTimeout(this._ollamaProbeTimeout);
+            this._ollamaProbeTimeout = setTimeout(() => {
+                if (this._ollamaProbeInflight && this._ollamaProbeInflight.generation === generation) {
+                    hint.innerHTML = `✗ No response from <code>${this.escapeHtml(trimmed)}</code> after 7s. Is the URL correct? Is <code>ollama serve</code> running?`;
+                    hint.className = 'ollama-wizard-hint ollama-wizard-hint-warn';
+                    this._ollamaProbeInflight = null;
+                }
+            }, 7000);
             setTimeout(() => {
                 this.send({ command: 'redetect_backends' });
             }, 400);
@@ -2713,6 +2745,47 @@ class ResonantApp {
         });
 
         list.appendChild(wizard);
+    }
+
+    /**
+     * v0.4.3 (T1.3) — handle the structured probe result the backend
+     * emits BEFORE the init payload. Updates the wizard's hint with
+     * a real-time success/failure message. On success the wizard gets
+     * replaced by the model picker shortly after (init payload land);
+     * on failure the wizard stays put with this hint surfaced.
+     *
+     * Generation token guards against a stale event landing after
+     * the user kicked off a fresher probe — only the inflight
+     * generation gets to update the hint.
+     */
+    _handleOllamaProbeResult(event) {
+        if (this._ollamaProbeTimeout) {
+            clearTimeout(this._ollamaProbeTimeout);
+            this._ollamaProbeTimeout = null;
+        }
+        const inflight = this._ollamaProbeInflight;
+        if (!inflight) return;  // no wizard listening — probably timed out already
+        const hint = inflight.hint;
+        // Confirm the hint is still in the DOM (wizard might have been
+        // re-rendered for a different reason).
+        if (!hint || !hint.isConnected) {
+            this._ollamaProbeInflight = null;
+            return;
+        }
+        const ok = !!(event && event.ok);
+        const url = (event && event.url) || inflight.url || '';
+        const count = (event && event.models_count) || 0;
+        if (ok && count > 0) {
+            hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code> — found ${count} model${count === 1 ? '' : 's'}.`;
+            hint.className = 'ollama-wizard-hint ollama-wizard-hint-ok';
+        } else if (ok) {
+            hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code>, but no models pulled yet. Try <code>ollama pull deepseek-v4-flash:cloud</code>.`;
+            hint.className = 'ollama-wizard-hint ollama-wizard-hint-warn';
+        } else {
+            hint.innerHTML = `✗ <code>${this.escapeHtml(url)}</code> unreachable. Is <code>ollama serve</code> running on that host?`;
+            hint.className = 'ollama-wizard-hint ollama-wizard-hint-warn';
+        }
+        this._ollamaProbeInflight = null;
     }
 
     showModelPicker(backendType, models, container, card, modelLabels) {

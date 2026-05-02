@@ -6631,8 +6631,23 @@ async def websocket_endpoint(ws: WebSocket):
                 # ships a fresh init payload so the wizard either
                 # shows the model picker (success) or stays put with
                 # a fresh diagnostic (still unreachable).
+                #
+                # v0.4.3 (T1.3) — emit a structured `ollama_probe_result`
+                # event BEFORE the init payload so the wizard can render
+                # success/failure feedback without waiting for the full
+                # init round-trip (which the wizard wouldn't see on
+                # success since it gets re-rendered into the model
+                # picker). The wizard listens for this event and
+                # updates its hint area in real time.
                 state.refresh_network_defaults()
                 await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
+                ollama_info = state.available_backends.get("ollama") or {}
+                await ws.send_json({
+                    "event": "ollama_probe_result",
+                    "ok": bool(ollama_info),
+                    "url": state.ollama_url,
+                    "models_count": len(ollama_info.get("models") or []),
+                })
                 await ws.send_json(state.get_init_data())
 
             elif command == "set_project":

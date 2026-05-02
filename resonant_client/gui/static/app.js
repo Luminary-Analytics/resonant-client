@@ -929,9 +929,10 @@ class ResonantApp {
      * `mission.spec_ready` event and we render a "Build this roadmap"
      * affordance beneath that assistant message.
      */
-    startMission(feature, projectPath) {
+    startMission(feature, projectPath, options) {
         feature = (feature || '').trim();
         projectPath = (projectPath || '').trim();
+        const autonomous = !!(options && options.autonomous);
         if (!feature) {
             this.showStatusMessage('Describe the feature or product first.');
             return;
@@ -1004,6 +1005,16 @@ class ResonantApp {
         if (projectPath && chosen !== cur) {
             payload.project_path = projectPath;
         }
+        // v0.5.0a7 — opt-in to the rigorous-grill / autonomous-loop
+        // flow. Backend reads this on mission_start, swaps in the
+        // rigorous-grill prompt, and stashes the flag in mission_state
+        // so the spec card later renders the right "Build" CTA.
+        if (autonomous) {
+            payload.autonomous = true;
+            this._pendingMissionAutonomous = true;
+        } else {
+            this._pendingMissionAutonomous = false;
+        }
         this.send(payload);
     }
 
@@ -1050,6 +1061,327 @@ class ResonantApp {
         this.renderFilteredSessions();
         this._syncMissionUI();
         this.showStatusMessage('Mission exited.');
+    }
+
+    // ── Autonomous Mission events (v0.5.0a7) ───────────────────────
+
+    /**
+     * Per-AppState live state for the active autonomous mission.
+     * Cleared on autonomous_mission_complete / paused / failed.
+     */
+    _ensureAutonomousState(event) {
+        if (!this._autonomousState) {
+            this._autonomousState = {
+                intentId: '',
+                iterCount: 0,
+                startedAt: 0,
+                timeBudgetSeconds: null,
+                lastVerdict: 'continue',
+                lastReflection: null,
+                acceptanceSummary: null,
+            };
+        }
+        if (event && event.intent_id) {
+            this._autonomousState.intentId = event.intent_id;
+        }
+        return this._autonomousState;
+    }
+
+    handleAutonomousMissionStarted(event) {
+        const s = this._ensureAutonomousState(event);
+        // started_iso → epoch seconds; the daemon sends ISO + budget
+        // up front, then per-iter events update iter_count + elapsed.
+        const isoStr = event && event.started_iso;
+        s.startedAt = isoStr
+            ? Math.floor(new Date(isoStr).getTime() / 1000)
+            : Math.floor(Date.now() / 1000);
+        s.timeBudgetSeconds = event && typeof event.time_budget_seconds === 'number'
+            ? event.time_budget_seconds
+            : null;
+        s.iterCount = 0;
+        s.lastVerdict = 'continue';
+
+        this._renderAutonomousBanner('start', event);
+        this._refreshMissionBadge('autonomous_running', '');
+        // Repaint the badge once a second while the run is live so
+        // "1h 23m left" / cost stay current without waiting for the
+        // next event.
+        if (!this._autonomousBadgeTimer) {
+            this._autonomousBadgeTimer = setInterval(
+                () => this._updateAutonomousBadgeState(), 1000,
+            );
+        }
+    }
+
+    handleAutonomousIterationStarted(event) {
+        const s = this._ensureAutonomousState(event);
+        s.iterCount = (event && event.iter_count) || s.iterCount;
+        this._updateAutonomousBadgeState();
+        this._renderIterationCard(event, /*complete=*/false);
+    }
+
+    handleAutonomousIterationComplete(event) {
+        const s = this._ensureAutonomousState(event);
+        s.iterCount = (event && event.iter_count) || s.iterCount;
+        this._updateAutonomousBadgeState();
+        this._upgradeIterationCardToComplete(event);
+    }
+
+    handleAutonomousIterationFailed(event) {
+        const s = this._ensureAutonomousState(event);
+        s.iterCount = (event && event.iter_count) || s.iterCount;
+        this._updateAutonomousBadgeState();
+        this._upgradeIterationCardToFailed(event);
+    }
+
+    handleAutonomousReflection(event) {
+        const s = this._ensureAutonomousState(event);
+        s.iterCount = (event && event.iter_count) || s.iterCount;
+        s.lastVerdict = (event && event.verdict) || s.lastVerdict;
+        s.acceptanceSummary = (event && event.acceptance_summary) || s.acceptanceSummary;
+        s.lastReflection = event;
+        this._updateAutonomousBadgeState();
+        this._renderReflectionCard(event);
+    }
+
+    handleAutonomousMissionEnded(event, isComplete) {
+        const s = this._ensureAutonomousState(event);
+        s.iterCount = (event && event.iter_count) || s.iterCount;
+        s.lastVerdict = isComplete ? 'satisfied' : (event && event.stop_reason) || 'paused';
+
+        // Stop the live-update tick and dismiss the badge.
+        if (this._autonomousBadgeTimer) {
+            clearInterval(this._autonomousBadgeTimer);
+            this._autonomousBadgeTimer = null;
+        }
+        const newPhase = isComplete ? 'autonomous_complete' : 'autonomous_paused';
+        this._refreshMissionBadge(newPhase, '');
+
+        this._renderAutonomousBanner(isComplete ? 'complete' : 'paused', event);
+    }
+
+    handleAutonomousMissionFailed(event) {
+        if (this._autonomousBadgeTimer) {
+            clearInterval(this._autonomousBadgeTimer);
+            this._autonomousBadgeTimer = null;
+        }
+        this._refreshMissionBadge('autonomous_paused', '');
+        this._renderAutonomousBanner('failed', event);
+    }
+
+    /**
+     * Render an iteration card in the chat panel. Stays in
+     * "in-progress" state (spinner + "iter N — picked T1.x") until
+     * the matching `iteration_complete` / `_failed` event upgrades
+     * the trailing label.
+     */
+    _renderIterationCard(event, _complete) {
+        if (!this.chatMessages) return;
+        const iter = (event && event.iter_count) || 0;
+        const itemId = (event && event.item_id) || '';
+        const itemTitle = (event && event.item_title) || '';
+
+        const card = document.createElement('div');
+        card.className = 'autonomous-iter-card autonomous-iter-card-running';
+        card.dataset.iterCount = String(iter);
+        card.innerHTML = `
+            <div class="autonomous-iter-head">
+                <span class="autonomous-iter-icon" aria-hidden="true">∞</span>
+                <span class="autonomous-iter-label">Iteration ${iter}</span>
+                <span class="autonomous-iter-spinner" aria-hidden="true"></span>
+            </div>
+            <div class="autonomous-iter-body">
+                <span class="autonomous-iter-action">picked</span>
+                <code class="autonomous-iter-item-id">${this.escapeHtml(itemId)}</code>:
+                <span class="autonomous-iter-item-title">${this.escapeHtml(itemTitle)}</span>
+            </div>
+            <div class="autonomous-iter-footer" data-final="">
+                <span class="autonomous-iter-status">in flight…</span>
+            </div>
+        `;
+        this.chatMessages.appendChild(card);
+        this.scrollToBottom();
+    }
+
+    _upgradeIterationCardToComplete(event) {
+        const iter = (event && event.iter_count) || 0;
+        const card = this.chatMessages.querySelector(
+            `.autonomous-iter-card[data-iter-count="${iter}"]`,
+        );
+        if (!card) return;
+        card.classList.remove('autonomous-iter-card-running');
+        card.classList.add('autonomous-iter-card-complete');
+        const sha = (event && event.commit_sha) || '';
+        const dur = (event && event.duration_seconds) || 0;
+        const footer = card.querySelector('.autonomous-iter-footer');
+        if (footer) {
+            footer.dataset.final = '1';
+            const shaPart = sha
+                ? `shipped at <code>${this.escapeHtml(sha.slice(0, 7))}</code>`
+                : 'shipped <em>&lt;no commit recorded&gt;</em>';
+            footer.innerHTML = `
+                <span class="autonomous-iter-status autonomous-iter-status-ok">✓</span>
+                ${shaPart}
+                <span class="autonomous-iter-duration">${this._fmtDuration(dur)}</span>
+            `;
+        }
+        const spinner = card.querySelector('.autonomous-iter-spinner');
+        if (spinner) spinner.remove();
+    }
+
+    _upgradeIterationCardToFailed(event) {
+        const iter = (event && event.iter_count) || 0;
+        const card = this.chatMessages.querySelector(
+            `.autonomous-iter-card[data-iter-count="${iter}"]`,
+        );
+        if (!card) return;
+        card.classList.remove('autonomous-iter-card-running');
+        card.classList.add('autonomous-iter-card-failed');
+        const err = (event && event.error) || '(no error message)';
+        const footer = card.querySelector('.autonomous-iter-footer');
+        if (footer) {
+            footer.dataset.final = '1';
+            footer.innerHTML = `
+                <span class="autonomous-iter-status autonomous-iter-status-fail">✗</span>
+                <span class="autonomous-iter-error">${this.escapeHtml(err)}</span>
+            `;
+        }
+        const spinner = card.querySelector('.autonomous-iter-spinner');
+        if (spinner) spinner.remove();
+    }
+
+    /**
+     * Render a reflection card from a full-pass result. Shows
+     * verdict, acceptance summary (X/Y), bash/vision/chrome tally,
+     * added items, blocked items, manual pending, model summary.
+     */
+    _renderReflectionCard(event) {
+        if (!this.chatMessages) return;
+        const verdict = (event && event.verdict) || 'continue';
+        const summary = (event && event.summary) || '';
+        const accept = (event && event.acceptance_summary) || { passed: 0, total: 0 };
+        const tally = (event && event.pass_tally) || {};
+        const added = (event && event.added) || [];
+        const blocked = (event && event.blocked) || [];
+        const manual = (event && event.manual_pending) || [];
+        const iter = (event && event.iter_count) || 0;
+
+        const verdictClass = `autonomous-reflect-verdict-${verdict}`;
+        const tallyParts = [];
+        if (typeof tally.bash_passed === 'number') {
+            tallyParts.push(`bash ${tally.bash_passed} pass / ${tally.bash_failed || 0} fail`);
+        }
+        if (typeof tally.vision_passed === 'number' && (tally.vision_passed + (tally.vision_failed || 0)) > 0) {
+            tallyParts.push(`vision ${tally.vision_passed} pass / ${tally.vision_failed || 0} fail`);
+        }
+        if (typeof tally.chrome_pending === 'number' && tally.chrome_pending > 0) {
+            tallyParts.push(`chrome ${tally.chrome_pending} pending`);
+        }
+
+        const addedHTML = added.length ? `
+            <div class="autonomous-reflect-section">
+                <div class="autonomous-reflect-section-title">Added items</div>
+                <ul class="autonomous-reflect-list">
+                    ${added.map((it) => `<li><strong>T${this.escapeHtml(it.tier || '?')}</strong> ${this.escapeHtml(it.title || '')}</li>`).join('')}
+                </ul>
+            </div>` : '';
+
+        const blockedHTML = blocked.length ? `
+            <div class="autonomous-reflect-section">
+                <div class="autonomous-reflect-section-title">Blocked</div>
+                <ul class="autonomous-reflect-list">
+                    ${blocked.map((it) => `<li><code>${this.escapeHtml(it.id || '?')}</code> — ${this.escapeHtml(it.reason || '')}</li>`).join('')}
+                </ul>
+            </div>` : '';
+
+        const manualHTML = manual.length ? `
+            <div class="autonomous-reflect-section">
+                <div class="autonomous-reflect-section-title">Manual verification (handoff)</div>
+                <ul class="autonomous-reflect-list">
+                    ${manual.map((m) => `<li>${this.escapeHtml(m)}</li>`).join('')}
+                </ul>
+            </div>` : '';
+
+        const card = document.createElement('div');
+        card.className = `autonomous-reflect-card ${verdictClass}`;
+        card.innerHTML = `
+            <div class="autonomous-reflect-head">
+                <span class="autonomous-reflect-icon" aria-hidden="true">∞</span>
+                <span class="autonomous-reflect-label">Reflection · iter ${iter}</span>
+                <span class="autonomous-reflect-verdict">${this.escapeHtml(verdict)}</span>
+            </div>
+            <div class="autonomous-reflect-body">
+                <div class="autonomous-reflect-acceptance">
+                    Acceptance: <strong>${accept.passed}/${accept.total}</strong> blocking criteria passed
+                </div>
+                ${tallyParts.length ? `<div class="autonomous-reflect-tally">${tallyParts.join(' · ')}</div>` : ''}
+                ${summary ? `<div class="autonomous-reflect-summary">${this.escapeHtml(summary)}</div>` : ''}
+                ${addedHTML}
+                ${blockedHTML}
+                ${manualHTML}
+            </div>
+        `;
+        this.chatMessages.appendChild(card);
+        this.scrollToBottom();
+    }
+
+    /**
+     * Render mission start / complete / paused / failed banners.
+     * Visually distinct from iteration cards — they're terminal
+     * messages that bookmark the run.
+     */
+    _renderAutonomousBanner(kind, event) {
+        if (!this.chatMessages) return;
+
+        let icon = '∞';
+        let titleText = '';
+        let subText = '';
+        let cls = 'autonomous-banner';
+
+        if (kind === 'start') {
+            const budget = event && typeof event.time_budget_seconds === 'number'
+                ? `time budget: ${this._fmtDuration(event.time_budget_seconds)}`
+                : 'full auto (no time cap)';
+            const cap = event && event.max_iterations ? `, iteration cap: ${event.max_iterations}` : '';
+            titleText = 'Autonomous Mission started';
+            subText = `${budget}${cap}.`;
+            cls += ' autonomous-banner-start';
+        } else if (kind === 'complete') {
+            const reason = (event && event.stop_reason) || 'satisfied';
+            const elapsed = event && typeof event.elapsed_seconds === 'number'
+                ? this._fmtDuration(event.elapsed_seconds)
+                : '';
+            titleText = 'Mission complete · all acceptance criteria passed';
+            subText = `Stop reason: ${this.escapeHtml(reason)}${elapsed ? ` · ${elapsed} elapsed` : ''}.`;
+            cls += ' autonomous-banner-complete';
+        } else if (kind === 'paused') {
+            const reason = (event && event.stop_reason) || 'paused';
+            const message = (event && event.stop_message) || '';
+            const elapsed = event && typeof event.elapsed_seconds === 'number'
+                ? this._fmtDuration(event.elapsed_seconds)
+                : '';
+            titleText = `Mission paused · ${this.escapeHtml(reason)}`;
+            subText = `${this.escapeHtml(message)}${elapsed ? ` · ${elapsed} elapsed` : ''}.`;
+            cls += ' autonomous-banner-paused';
+        } else if (kind === 'failed') {
+            const err = (event && event.error) || 'unknown failure';
+            titleText = 'Mission failed';
+            subText = `${this.escapeHtml(err)}`;
+            cls += ' autonomous-banner-failed';
+            icon = '✗';
+        }
+
+        const banner = document.createElement('div');
+        banner.className = cls;
+        banner.innerHTML = `
+            <span class="autonomous-banner-icon" aria-hidden="true">${icon}</span>
+            <div class="autonomous-banner-text">
+                <div class="autonomous-banner-title">${titleText}</div>
+                ${subText ? `<div class="autonomous-banner-sub">${subText}</div>` : ''}
+            </div>
+        `;
+        this.chatMessages.appendChild(banner);
+        this.scrollToBottom();
     }
 
     /**
@@ -1192,7 +1524,12 @@ class ResonantApp {
         if (!header) return;
 
         let badge = document.getElementById('mission-badge');
-        const isActive = phase && phase !== 'exited' && phase !== 'completed';
+        // v0.5.0a7 — autonomous_complete is a new "satisfied" state we
+        // still want to show briefly (so the user sees the ∞ done
+        // banner). autonomous_paused / exited / completed all hide
+        // the badge; the chat-card banner conveys the outcome.
+        const isActive = phase && phase !== 'exited' && phase !== 'completed' &&
+                         phase !== 'autonomous_complete' && phase !== 'autonomous_paused';
 
         if (!isActive) {
             if (badge) badge.remove();
@@ -1200,6 +1537,15 @@ class ResonantApp {
         }
 
         const previousPhase = badge ? badge.dataset.phase : '';
+
+        // v0.5.0a7 — autonomous_running gets a richer badge:
+        // ∞ glyph + live iter / time remaining / cost. Render via the
+        // dedicated method; non-autonomous phases keep the original
+        // 🎯 + phase-name layout below.
+        if (phase === 'autonomous_running') {
+            this._renderAutonomousBadge(header, badge, previousPhase);
+            return;
+        }
 
         if (!badge) {
             badge = document.createElement('button');
@@ -1244,6 +1590,135 @@ class ResonantApp {
             badge.classList.remove('mission-badge-pulse');
             void badge.offsetWidth;
             badge.classList.add('mission-badge-pulse');
+        }
+    }
+
+    /**
+     * v0.5.0a7 — autonomous-mission badge with live iter / time-left /
+     * cost / Stop button. Updated on every autonomous_* event via
+     * `_updateAutonomousBadgeState`. Replaces the standard 🎯 badge
+     * while phase=autonomous_running.
+     */
+    _renderAutonomousBadge(header, badge, previousPhase) {
+        if (!badge || !badge.classList.contains('mission-badge-autonomous')) {
+            // Wrong type of badge in place — recreate.
+            if (badge) badge.remove();
+            badge = document.createElement('div');
+            badge.id = 'mission-badge';
+            badge.className = 'mission-badge mission-badge-autonomous';
+            badge.dataset.phase = 'autonomous_running';
+            badge.innerHTML = `
+                <span class="mission-badge-icon" aria-hidden="true">∞</span>
+                <span class="mission-badge-text">
+                    <span class="mission-badge-label">Autonomous</span>
+                    <span class="mission-badge-phase">starting…</span>
+                </span>
+                <button type="button" class="mission-badge-stop"
+                    title="Stop after current iteration completes">Stop</button>
+            `;
+            header.appendChild(badge);
+            const stopBtn = badge.querySelector('.mission-badge-stop');
+            stopBtn.addEventListener('click', () => this._handleAutonomousStopClick());
+        }
+
+        // Re-paint from cached state (set by autonomous_* handlers).
+        this._updateAutonomousBadgeState();
+
+        if (previousPhase && previousPhase !== 'autonomous_running') {
+            badge.classList.remove('mission-badge-pulse');
+            void badge.offsetWidth;
+            badge.classList.add('mission-badge-pulse');
+        }
+    }
+
+    /**
+     * v0.5.0a7 — paint the autonomous-badge text from `_autonomousState`.
+     * Called on every event that mutates the state (badge updates live
+     * even between full re-renders).
+     */
+    _updateAutonomousBadgeState() {
+        const badge = document.getElementById('mission-badge');
+        if (!badge || !badge.classList.contains('mission-badge-autonomous')) return;
+        const phaseEl = badge.querySelector('.mission-badge-phase');
+        if (!phaseEl) return;
+
+        const s = this._autonomousState || {};
+        const parts = [];
+
+        if (typeof s.iterCount === 'number') {
+            parts.push(`iter ${s.iterCount}`);
+        }
+        // Time remaining or elapsed depending on whether we have a budget.
+        if (typeof s.startedAt === 'number') {
+            const elapsed = Math.max(0, (Date.now() / 1000) - s.startedAt);
+            if (s.timeBudgetSeconds && s.timeBudgetSeconds > 0) {
+                const left = Math.max(0, s.timeBudgetSeconds - elapsed);
+                parts.push(`${this._fmtDuration(left)} left`);
+            } else {
+                parts.push(`${this._fmtDuration(elapsed)} elapsed`);
+            }
+        }
+        // Cost / burn-rate from the existing CostTracker state if
+        // available — exposed via getCostsSummary() if wired.
+        const costStr = this._fmtAutonomousCost();
+        if (costStr) parts.push(costStr);
+
+        phaseEl.textContent = parts.join(' · ') || 'starting…';
+    }
+
+    /**
+     * v0.5.0a7 — compact duration (e.g. "1h 23m" / "47m" / "12s").
+     */
+    _fmtDuration(seconds) {
+        seconds = Math.max(0, Math.floor(seconds));
+        if (seconds < 60) return `${seconds}s`;
+        const m = Math.floor(seconds / 60);
+        if (m < 60) return `${m}m`;
+        const h = Math.floor(m / 60);
+        return `${h}h ${m % 60}m`;
+    }
+
+    /**
+     * v0.5.0a7 — format the cost / burn-rate for the autonomous badge.
+     * Reads from the chat-header's existing cost display if present;
+     * empty string when cost tracking isn't wired up yet for this run.
+     */
+    _fmtAutonomousCost() {
+        // CostTracker integration is best-effort here. If the existing
+        // chat-header cost element holds a recent total, we surface it
+        // alongside burn-rate. Otherwise return empty.
+        const costEl = document.querySelector('.chat-cost, .cost-display');
+        if (!costEl) return '';
+        const txt = (costEl.textContent || '').trim();
+        if (!txt || /^\$0(\.0+)?$/.test(txt)) return '';
+        return txt;
+    }
+
+    /**
+     * v0.5.0a7 — Stop-button click on the autonomous badge.
+     * Confirms before stopping so a fat-finger doesn't kill an
+     * in-flight run.
+     */
+    _handleAutonomousStopClick() {
+        const s = this._autonomousState || {};
+        if (!s.intentId) return;
+        const ok = confirm(
+            'Stop the autonomous mission after the current iteration ' +
+            'completes? In-flight tool calls will finish first; the ' +
+            'roadmap state will be saved.'
+        );
+        if (!ok) return;
+        this.send({
+            command: 'autonomous_mission_stop',
+            intent_id: s.intentId,
+        });
+        // Optimistic UI: dim the stop button + relabel so the user
+        // sees their click landed. The actual phase transition fires
+        // when the daemon emits autonomous_mission_paused.
+        const stopBtn = document.querySelector('.mission-badge-stop');
+        if (stopBtn) {
+            stopBtn.disabled = true;
+            stopBtn.textContent = 'Stopping…';
         }
     }
 
@@ -1381,6 +1856,18 @@ class ResonantApp {
                 <div class="mission-composer-path-hint" id="mission-composer-path-hint"></div>
                 <textarea class="mission-composer-input" rows="4"
                     placeholder="Add a /export command that exports the current chat to markdown…"></textarea>
+                <label class="mission-composer-autonomous-row" for="mission-composer-autonomous">
+                    <input type="checkbox" id="mission-composer-autonomous"
+                        class="mission-composer-autonomous-toggle">
+                    <span class="mission-composer-autonomous-label">
+                        <span class="mission-composer-autonomous-icon" aria-hidden="true">∞</span>
+                        Run autonomously
+                    </span>
+                    <span class="mission-composer-autonomous-hint">
+                        Rigorous grill (10–25 questions, binary acceptance criteria) → multi-iteration
+                        autonomous loop. I'll ask for a time budget before launching.
+                    </span>
+                </label>
                 <div class="mission-composer-actions">
                     <span class="mission-composer-shortcut">
                         <kbd>${submitHintKey}</kbd> <kbd>Enter</kbd> to start
@@ -1429,12 +1916,24 @@ class ResonantApp {
 
         const textarea = overlay.querySelector('textarea');
         const startBtn = overlay.querySelector('.mission-composer-start');
+        const autonomousToggle = overlay.querySelector('#mission-composer-autonomous');
         // A2 fix — backdrop click discards work. If the textarea has
         // substantial input, treat backdrop click as a no-op so a
         // fat-finger doesn't lose the user's typed feature description.
         // The Cancel button and Esc still dismiss intentionally.
         const SUBSTANTIAL_INPUT_THRESHOLD = 20;  // chars
         const close = () => overlay.remove();
+
+        // v0.5.0a7 — Start button label tracks the autonomous toggle
+        // so the user knows which flow they're committing to before
+        // they hit it.
+        const updateStartLabel = () => {
+            startBtn.textContent = autonomousToggle.checked
+                ? '∞ Start autonomous mission'
+                : 'Start mission';
+        };
+        updateStartLabel();
+        autonomousToggle.addEventListener('change', updateStartLabel);
 
         textarea.addEventListener('input', () => {
             startBtn.disabled = textarea.value.trim().length === 0;
@@ -1476,10 +1975,15 @@ class ResonantApp {
             // path that differs from currentCwd triggers a project switch
             // before the session is created.
             const chosenPath = pathInput.value.trim();
+            // v0.5.0a7 — capture the autonomous-flow opt-in. Backend
+            // uses this to switch the grill prompt into rigorous mode
+            // and stash mission_state.autonomous so the spec card later
+            // renders the right CTA.
+            const autonomous = autonomousToggle.checked;
             startBtn.disabled = true;
             startBtn.textContent = 'Starting…';
             close();
-            this.startMission(feature, chosenPath);
+            this.startMission(feature, chosenPath, { autonomous });
         });
 
         setTimeout(() => textarea.focus(), 50);
@@ -1499,35 +2003,211 @@ class ResonantApp {
         // shouldn't stack buttons.
         if (target.querySelector('.mission-build-action')) return;
 
-        const wrap = document.createElement('div');
-        wrap.className = 'mission-build-action';
-        wrap.innerHTML = `
-            <button type="button" class="mission-build-btn" title="Hand this spec to the planner">
-                <span class="mission-build-icon" aria-hidden="true">▸</span>
-                <span class="mission-build-label">Build this roadmap</span>
-            </button>
-            <span class="mission-build-hint">Spec captured. Click to dispatch the planner with the full spec.</span>
-        `;
-        wrap.querySelector('.mission-build-btn').addEventListener('click', () => {
-            // Tier-1 fix #1: hand the FULL spec markdown over, not just
-            // the refined-intent paragraph — the planner needs the
-            // assumptions / scope / acceptance criteria too. Backend
-            // owns the intent_start + phase transition.
-            this.send({
-                command: 'mission_dispatch_roadmap',
-                session_id: sessionId,
-                spec_markdown: specMd,
-                refined_intent: refined,
+        // v0.5.0a7 — branch on mission_state.autonomous. The backend
+        // sets that flag on mission_start when the composer toggle was
+        // on; the rigorous grill produces a typed-criteria spec with
+        // a `**Time budget:**` line. We render different CTAs for
+        // each flow so the user knows which loop they're committing
+        // to (one-shot planner vs hours of autonomous iteration).
+        const isAutonomous = this._currentMissionIsAutonomous();
+        if (isAutonomous) {
+            const card = this._buildAutonomousBuildCard(sessionId, specMd, refined);
+            target.appendChild(card);
+        } else {
+            const wrap = document.createElement('div');
+            wrap.className = 'mission-build-action';
+            wrap.innerHTML = `
+                <button type="button" class="mission-build-btn" title="Hand this spec to the planner">
+                    <span class="mission-build-icon" aria-hidden="true">▸</span>
+                    <span class="mission-build-label">Build this roadmap</span>
+                </button>
+                <span class="mission-build-hint">Spec captured. Click to dispatch the planner with the full spec.</span>
+            `;
+            wrap.querySelector('.mission-build-btn').addEventListener('click', () => {
+                // Tier-1 fix #1: hand the FULL spec markdown over, not
+                // just the refined-intent paragraph — the planner
+                // needs the assumptions / scope / acceptance criteria
+                // too. Backend owns the intent_start + phase
+                // transition.
+                this.send({
+                    command: 'mission_dispatch_roadmap',
+                    session_id: sessionId,
+                    spec_markdown: specMd,
+                    refined_intent: refined,
+                });
+                const btn = wrap.querySelector('.mission-build-btn');
+                btn.disabled = true;
+                btn.querySelector('.mission-build-label').textContent = 'Roadmap dispatched';
+                // Surface the planner UI proactively so the user sees
+                // the graph populate as it builds.
+                this.openPlanTab(true);
             });
-            const btn = wrap.querySelector('.mission-build-btn');
-            btn.disabled = true;
-            btn.querySelector('.mission-build-label').textContent = 'Roadmap dispatched';
-            // Surface the planner UI proactively so the user sees the
-            // graph populate as it builds.
+            target.appendChild(wrap);
+        }
+        this.scrollToBottom();
+    }
+
+    /**
+     * v0.5.0a7 — does the current Mission session have the
+     * autonomous flag set? Reads mission_state from the loaded
+     * SessionRecord first, falls back to the in-flight start flag
+     * we stashed in `startMission`.
+     */
+    _currentMissionIsAutonomous() {
+        if (this._pendingMissionAutonomous) return true;
+        const sessions = this.sessions || [];
+        const cur = sessions.find((s) => s && s.id === this.currentSessionId);
+        if (!cur || !cur.mission_state) return false;
+        return Boolean(cur.mission_state.autonomous);
+    }
+
+    /**
+     * v0.5.0a7 — extract `**Time budget:** <label>` from the spec
+     * markdown so the budget UI can pre-fill the model's
+     * recommendation. Empty string when absent (e.g. legacy or
+     * non-rigorous spec).
+     */
+    _extractTimeBudget(specMd) {
+        if (!specMd) return '';
+        const m = specMd.match(/\*\*Time budget:\*\*\s*(.+?)\s*$/im);
+        return m ? m[1].trim() : '';
+    }
+
+    /**
+     * v0.5.0a7 — render the spec-card with the budget confirmation
+     * presets. User picks a preset (or accepts the model's recommend-
+     * ation pre-filled), then clicks "∞ Build autonomously" to fire
+     * mission_dispatch_autonomous.
+     */
+    _buildAutonomousBuildCard(sessionId, specMd, refined) {
+        const recommended = this._extractTimeBudget(specMd) || '4h';
+        const wrap = document.createElement('div');
+        wrap.className = 'mission-build-action mission-autonomous-card';
+
+        // Budget preset buttons. The labels match what the rigorous
+        // grill is told to produce (§11.5 of the design doc).
+        const presets = [
+            { label: '1h', sub: 'lunch break' },
+            { label: '4h', sub: '' },
+            { label: '6h', sub: '' },
+            { label: '8h', sub: '' },
+            { label: '12h', sub: '' },
+            { label: '24h', sub: '' },
+            { label: '48h', sub: '' },
+            { label: 'Full auto', sub: 'no time cap' },
+        ];
+
+        const presetHTML = presets.map((p) => `
+            <button type="button"
+                class="mission-budget-preset"
+                data-budget="${p.label}"
+                ${p.label.toLowerCase() === recommended.toLowerCase() ? 'data-default="1"' : ''}>
+                <span class="mission-budget-preset-label">${p.label}</span>
+                ${p.sub ? `<span class="mission-budget-preset-sub">${p.sub}</span>` : ''}
+            </button>
+        `).join('');
+
+        wrap.innerHTML = `
+            <div class="mission-autonomous-head">
+                <span class="mission-autonomous-icon" aria-hidden="true">∞</span>
+                <span class="mission-autonomous-title">Autonomous Mission</span>
+            </div>
+            <p class="mission-autonomous-blurb">
+                Acceptance criteria from the spec drive the convergence check. The mission stops
+                when ALL criteria are met (regardless of budget remaining), the budget runs out,
+                or you click Stop. <strong>Pick a time budget:</strong>
+            </p>
+            <div class="mission-budget-presets">${presetHTML}</div>
+            <div class="mission-autonomous-actions">
+                <span class="mission-autonomous-budget-label">
+                    Selected: <strong class="mission-autonomous-budget-display">${recommended}</strong>
+                </span>
+                <button type="button" class="mission-build-btn mission-build-btn-autonomous">
+                    <span class="mission-build-icon" aria-hidden="true">∞</span>
+                    <span class="mission-build-label">Build autonomously</span>
+                </button>
+            </div>
+            <p class="mission-autonomous-fullauto-note" style="display: none;">
+                Full auto skips the time ceiling. Mission stops only on convergence, blocking,
+                or your Stop click. A 100-iteration cap is always enforced as a defensive backstop.
+            </p>
+        `;
+
+        // Wire preset selection. Default selection from the spec's
+        // `**Time budget:**` line (or "4h" if absent).
+        let chosen = recommended;
+        const presetButtons = wrap.querySelectorAll('.mission-budget-preset');
+        const budgetDisplay = wrap.querySelector('.mission-autonomous-budget-display');
+        const fullAutoNote = wrap.querySelector('.mission-autonomous-fullauto-note');
+        const updateSelection = (label) => {
+            chosen = label;
+            budgetDisplay.textContent = label;
+            presetButtons.forEach((b) => {
+                b.classList.toggle(
+                    'mission-budget-preset-selected',
+                    b.dataset.budget.toLowerCase() === label.toLowerCase(),
+                );
+            });
+            fullAutoNote.style.display = /full/i.test(label) ? 'block' : 'none';
+        };
+        presetButtons.forEach((b) => {
+            b.addEventListener('click', () => updateSelection(b.dataset.budget));
+            if (b.dataset.default === '1') {
+                updateSelection(b.dataset.budget);
+            }
+        });
+        // Defensive — if no preset matched the recommendation, default to 4h.
+        if (!wrap.querySelector('.mission-budget-preset-selected')) {
+            updateSelection('4h');
+        }
+
+        const buildBtn = wrap.querySelector('.mission-build-btn-autonomous');
+        buildBtn.addEventListener('click', () => {
+            // The chosen budget is included in the spec the daemon
+            // reads — overwrite the `**Time budget:**` line in the
+            // spec markdown so the user's pick wins over the model's
+            // recommendation.
+            const finalSpec = this._patchTimeBudget(specMd, chosen);
+            this.send({
+                command: 'mission_dispatch_autonomous',
+                session_id: sessionId,
+                spec_markdown: finalSpec,
+                refined_intent: refined,
+                time_budget: chosen,
+            });
+            buildBtn.disabled = true;
+            buildBtn.querySelector('.mission-build-label').textContent = 'Daemon dispatched';
+            presetButtons.forEach((b) => { b.disabled = true; });
             this.openPlanTab(true);
         });
-        target.appendChild(wrap);
-        this.scrollToBottom();
+
+        return wrap;
+    }
+
+    /**
+     * v0.5.0a7 — overwrite (or insert) the `**Time budget:** <X>`
+     * line in a spec block so the user's pick replaces the model's
+     * recommendation before the spec hits the autonomous daemon.
+     */
+    _patchTimeBudget(specMd, label) {
+        if (!specMd) return specMd;
+        if (/\*\*Time budget:\*\*/i.test(specMd)) {
+            return specMd.replace(
+                /\*\*Time budget:\*\*\s*.+?\s*$/im,
+                `**Time budget:** ${label}`,
+            );
+        }
+        // No existing line — insert before **Acceptance criteria:**
+        // (which the rigorous grill always emits) so the daemon picks
+        // it up cleanly. Falls through to a plain append if neither
+        // anchor exists.
+        if (/\*\*Acceptance criteria:\*\*/i.test(specMd)) {
+            return specMd.replace(
+                /(\*\*Acceptance criteria:\*\*)/i,
+                `**Time budget:** ${label}\n\n$1`,
+            );
+        }
+        return `${specMd}\n\n**Time budget:** ${label}\n`;
     }
 
     setRunning(running) {
@@ -2106,6 +2786,33 @@ class ResonantApp {
                 break;
             case 'mission_exited':
                 this.handleMissionExited(event);
+                break;
+            // v0.5.0a7 — autonomous-mission events from
+            // AutonomousMissionDaemon. See docs/long-running-agents-
+            // phase-2-implementation.md §4.5 for the contract.
+            case 'autonomous_mission_started':
+                this.handleAutonomousMissionStarted(event);
+                break;
+            case 'autonomous_iteration_started':
+                this.handleAutonomousIterationStarted(event);
+                break;
+            case 'autonomous_iteration_complete':
+                this.handleAutonomousIterationComplete(event);
+                break;
+            case 'autonomous_iteration_failed':
+                this.handleAutonomousIterationFailed(event);
+                break;
+            case 'autonomous_reflection':
+                this.handleAutonomousReflection(event);
+                break;
+            case 'autonomous_mission_complete':
+                this.handleAutonomousMissionEnded(event, true);
+                break;
+            case 'autonomous_mission_paused':
+                this.handleAutonomousMissionEnded(event, false);
+                break;
+            case 'autonomous_mission_failed':
+                this.handleAutonomousMissionFailed(event);
                 break;
             case 'await_user':
                 // v0.3.5 — agent paused with `await_user` tool, asking

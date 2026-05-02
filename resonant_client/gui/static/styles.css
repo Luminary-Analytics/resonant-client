@@ -7330,3 +7330,520 @@ body {
     color: var(--muted);
     text-transform: lowercase;
 }
+
+/* ─────────────────────────────────────────────────────────────────
+   Autonomous Mission (v0.5.0a7)
+   - Composer toggle: "∞ Run autonomously"
+   - Spec-card budget UI: presets + Build autonomously CTA
+   - Header badge: rich autonomous variant with iter / time / cost
+   - In-chat iteration cards, reflection cards, mission banners
+   ──────────────────────────────────────────────────────────────── */
+
+/* ── Composer: autonomous toggle ────────────────────────────── */
+
+.mission-composer-autonomous-row {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto;
+    gap: 4px 10px;
+    margin: 8px 0 4px;
+    padding: 10px 12px;
+    border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--brand) 6%, transparent);
+    cursor: pointer;
+    align-items: center;
+    user-select: none;
+}
+
+.mission-composer-autonomous-row:hover {
+    background: color-mix(in srgb, var(--brand) 10%, transparent);
+}
+
+.mission-composer-autonomous-toggle {
+    grid-row: 1;
+    grid-column: 1;
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: var(--brand);
+}
+
+.mission-composer-autonomous-label {
+    grid-row: 1;
+    grid-column: 2;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.mission-composer-autonomous-icon {
+    font-size: 18px;
+    line-height: 1;
+    color: var(--brand);
+}
+
+.mission-composer-autonomous-hint {
+    grid-row: 2;
+    grid-column: 2;
+    font-size: 11.5px;
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+/* ── Spec card: ∞ Build autonomously + budget presets ──────── */
+
+.mission-autonomous-card {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 14px 16px;
+    border: 1px solid color-mix(in srgb, var(--brand) 40%, transparent);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--brand) 5%, var(--bg-secondary, transparent));
+}
+
+.mission-autonomous-head {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.mission-autonomous-icon {
+    font-size: 20px;
+    color: var(--brand);
+    line-height: 1;
+}
+
+.mission-autonomous-title {
+    font-size: 14px;
+    letter-spacing: 0.2px;
+}
+
+.mission-autonomous-blurb {
+    margin: 0;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--muted);
+}
+
+.mission-budget-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.mission-budget-preset {
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    padding: 6px 10px;
+    background: var(--bg, #1a1a1a);
+    color: var(--text);
+    border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+    border-radius: 7px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 12px;
+    transition: background-color var(--duration-fast) ease,
+                border-color var(--duration-fast) ease;
+}
+
+.mission-budget-preset:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--brand) 14%, var(--bg, #1a1a1a));
+    border-color: color-mix(in srgb, var(--brand) 50%, transparent);
+}
+
+.mission-budget-preset-selected {
+    background: color-mix(in srgb, var(--brand) 22%, var(--bg, #1a1a1a)) !important;
+    border-color: var(--brand) !important;
+    box-shadow: 0 0 0 1px var(--brand) inset;
+}
+
+.mission-budget-preset:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+}
+
+.mission-budget-preset-label {
+    font-weight: 600;
+    line-height: 1.1;
+}
+
+.mission-budget-preset-sub {
+    font-size: 10px;
+    color: var(--muted);
+    line-height: 1.1;
+}
+
+.mission-autonomous-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 4px;
+}
+
+.mission-autonomous-budget-label {
+    font-size: 12px;
+    color: var(--muted);
+}
+
+.mission-autonomous-budget-display {
+    color: var(--brand);
+}
+
+.mission-build-btn-autonomous {
+    background: color-mix(in srgb, var(--brand) 60%, var(--bg, #1a1a1a));
+    border-color: var(--brand);
+}
+
+.mission-build-btn-autonomous:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--brand) 75%, var(--bg, #1a1a1a));
+}
+
+.mission-autonomous-fullauto-note {
+    margin: 4px 0 0;
+    font-size: 11.5px;
+    color: var(--warn, #d4a017);
+    font-style: italic;
+}
+
+/* ── Chat-header: ∞ Autonomous badge ────────────────────────── */
+
+.mission-badge-autonomous {
+    background: color-mix(in srgb, var(--brand) 26%, transparent);
+    border-color: var(--brand);
+    padding-right: 4px;
+    cursor: default;
+}
+
+.mission-badge-autonomous .mission-badge-icon {
+    font-size: 16px;
+    color: var(--brand);
+}
+
+.mission-badge-autonomous .mission-badge-phase {
+    text-transform: none;
+    letter-spacing: 0.15px;
+}
+
+.mission-badge-stop {
+    margin-left: 4px;
+    padding: 2px 8px;
+    background: color-mix(in srgb, var(--err) 70%, transparent);
+    color: #fff;
+    border: 1px solid color-mix(in srgb, var(--err) 80%, transparent);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease;
+}
+
+.mission-badge-stop:hover:not(:disabled) {
+    background: var(--err);
+}
+
+.mission-badge-stop:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.mission-badge[data-phase="autonomous_running"] {
+    border-color: var(--brand);
+}
+
+/* ── In-chat: iteration card ────────────────────────────────── */
+
+.autonomous-iter-card {
+    margin: 10px 0;
+    padding: 10px 14px;
+    background: var(--bg-secondary, color-mix(in srgb, var(--text) 4%, transparent));
+    border: 1px solid color-mix(in srgb, var(--brand) 25%, transparent);
+    border-left: 3px solid var(--brand);
+    border-radius: 6px;
+    font-size: 13px;
+    animation: collapsed-group-enter 0.2s ease-out;
+}
+
+.autonomous-iter-head {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+}
+
+.autonomous-iter-icon {
+    color: var(--brand);
+    font-size: 15px;
+}
+
+.autonomous-iter-spinner {
+    width: 10px;
+    height: 10px;
+    border: 1.5px solid color-mix(in srgb, var(--brand) 35%, transparent);
+    border-top-color: var(--brand);
+    border-radius: 50%;
+    margin-left: 4px;
+    animation: terminal-spin 0.8s linear infinite;
+}
+
+.autonomous-iter-body {
+    color: var(--muted);
+    line-height: 1.5;
+}
+
+.autonomous-iter-action {
+    color: var(--text);
+}
+
+.autonomous-iter-item-id {
+    background: color-mix(in srgb, var(--brand) 18%, transparent);
+    color: var(--brand);
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.autonomous-iter-item-title {
+    color: var(--text);
+}
+
+.autonomous-iter-footer {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.autonomous-iter-status {
+    font-weight: 600;
+}
+
+.autonomous-iter-status-ok {
+    color: var(--ok);
+}
+
+.autonomous-iter-status-fail {
+    color: var(--err);
+}
+
+.autonomous-iter-duration {
+    color: var(--muted);
+    font-size: 11px;
+    margin-left: auto;
+}
+
+.autonomous-iter-error {
+    color: var(--err);
+    font-size: 12px;
+}
+
+.autonomous-iter-card-complete {
+    border-left-color: var(--ok);
+}
+
+.autonomous-iter-card-failed {
+    border-left-color: var(--err);
+}
+
+/* ── In-chat: reflection card (full-pass result) ─────────────── */
+
+.autonomous-reflect-card {
+    margin: 14px 0;
+    padding: 12px 16px;
+    background: color-mix(in srgb, var(--brand) 8%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
+    border-left: 3px solid var(--brand);
+    border-radius: 8px;
+    animation: collapsed-group-enter 0.22s ease-out;
+}
+
+.autonomous-reflect-card.autonomous-reflect-verdict-satisfied {
+    border-color: var(--ok);
+    border-left-color: var(--ok);
+    background: color-mix(in srgb, var(--ok) 8%, var(--bg-secondary, transparent));
+}
+
+.autonomous-reflect-card.autonomous-reflect-verdict-blocked {
+    border-color: var(--warn, #d4a017);
+    border-left-color: var(--warn, #d4a017);
+}
+
+.autonomous-reflect-head {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+}
+
+.autonomous-reflect-icon {
+    color: var(--brand);
+    font-size: 16px;
+}
+
+.autonomous-reflect-label {
+    font-size: 13px;
+}
+
+.autonomous-reflect-verdict {
+    margin-left: auto;
+    padding: 2px 8px;
+    background: color-mix(in srgb, var(--brand) 25%, transparent);
+    color: var(--brand);
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+}
+
+.autonomous-reflect-verdict-satisfied .autonomous-reflect-verdict {
+    background: color-mix(in srgb, var(--ok) 28%, transparent);
+    color: var(--ok);
+}
+
+.autonomous-reflect-verdict-blocked .autonomous-reflect-verdict {
+    background: color-mix(in srgb, var(--warn, #d4a017) 30%, transparent);
+    color: var(--warn, #d4a017);
+}
+
+.autonomous-reflect-body {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--muted);
+}
+
+.autonomous-reflect-acceptance {
+    color: var(--text);
+}
+
+.autonomous-reflect-acceptance strong {
+    color: var(--brand);
+}
+
+.autonomous-reflect-tally {
+    font-family: var(--mono, ui-monospace, monospace);
+    font-size: 11.5px;
+    color: var(--muted);
+}
+
+.autonomous-reflect-summary {
+    color: var(--text);
+    font-style: italic;
+    border-left: 2px solid color-mix(in srgb, var(--brand) 35%, transparent);
+    padding-left: 10px;
+    margin: 4px 0;
+}
+
+.autonomous-reflect-section {
+    margin-top: 4px;
+}
+
+.autonomous-reflect-section-title {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-bottom: 2px;
+}
+
+.autonomous-reflect-list {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 12px;
+    color: var(--text);
+}
+
+.autonomous-reflect-list li {
+    margin: 2px 0;
+}
+
+/* ── In-chat: terminal banners (start / complete / paused / failed) ── */
+
+.autonomous-banner {
+    margin: 16px 0;
+    padding: 14px 18px;
+    background: color-mix(in srgb, var(--brand) 12%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--brand) 50%, transparent);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    animation: collapsed-group-enter 0.22s ease-out;
+}
+
+.autonomous-banner-icon {
+    font-size: 28px;
+    line-height: 1;
+    color: var(--brand);
+    width: 36px;
+    text-align: center;
+}
+
+.autonomous-banner-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.autonomous-banner-title {
+    font-weight: 700;
+    color: var(--text);
+    font-size: 14px;
+}
+
+.autonomous-banner-sub {
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.autonomous-banner-start {
+    border-color: var(--brand);
+}
+
+.autonomous-banner-complete {
+    background: color-mix(in srgb, var(--ok) 14%, var(--bg-secondary, transparent));
+    border-color: var(--ok);
+}
+
+.autonomous-banner-complete .autonomous-banner-icon {
+    color: var(--ok);
+}
+
+.autonomous-banner-paused {
+    background: color-mix(in srgb, var(--warn, #d4a017) 12%, var(--bg-secondary, transparent));
+    border-color: var(--warn, #d4a017);
+}
+
+.autonomous-banner-paused .autonomous-banner-icon {
+    color: var(--warn, #d4a017);
+}
+
+.autonomous-banner-failed {
+    background: color-mix(in srgb, var(--err) 14%, var(--bg-secondary, transparent));
+    border-color: var(--err);
+}
+
+.autonomous-banner-failed .autonomous-banner-icon {
+    color: var(--err);
+}

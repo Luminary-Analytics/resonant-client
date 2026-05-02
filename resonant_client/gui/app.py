@@ -5817,6 +5817,14 @@ async def websocket_endpoint(ws: WebSocket):
                 # spec-extraction gate trips correctly on the upcoming
                 # text.done events.
                 record.start_mission(feature)
+                # v0.5.0a7 — opt-in to the rigorous-grill flow when the
+                # user toggled "∞ Run autonomously" in the composer. The
+                # flag is captured in mission_state so the spec card
+                # later knows whether to render "Build this roadmap" or
+                # "∞ Build autonomously".
+                autonomous_flag = bool(msg.get("autonomous"))
+                if autonomous_flag and record.mission_state is not None:
+                    record.mission_state["autonomous"] = True
                 # Title from the feature, not the long grill prompt.
                 title = feature if len(feature) <= 60 else feature[:57] + "..."
                 record.title = title
@@ -5855,6 +5863,17 @@ async def websocket_endpoint(ws: WebSocket):
                 fed_text = format_grill_first_message(
                     feature,
                     project_path=state.project.project_path,
+                    autonomous=autonomous_flag,
+                    # v0.5.0a7 — pessimistic default. We don't probe
+                    # Ollama for the configured vision model here (the
+                    # /api/tags hit would slow down mission start);
+                    # leaves the rigorous-grill prompt to assume vision
+                    # IS available, which is the optimistic case. If
+                    # the user's vision model isn't pulled, REFLECT's
+                    # graceful-degradation handles it (errored
+                    # CheckResult per [vision] criterion). Future work:
+                    # cache backend probe results for fast lookup.
+                    vision_available=True,
                 )
                 display_text = feature  # what shows in chat as the user msg
 

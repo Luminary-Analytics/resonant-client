@@ -373,7 +373,14 @@ class LocalSpecialistRunner:
         verdict = ""
         findings: list[str] = []
 
-        if node.specialization == NodeSpecialization.PLAN:
+        # v0.5.1a3 — PLAN_DEEP shares the JSON-subgoals output schema
+        # with PLAN, so it goes through the same parser. Without this,
+        # PLAN_DEEP responses would never have their subgoals extracted
+        # and the walker would think every pro autonomous mission is
+        # un-decomposable.
+        if node.specialization in (
+            NodeSpecialization.PLAN, NodeSpecialization.PLAN_DEEP,
+        ):
             subgoals, parse_ok = self._parse_subgoals(full_text)
             if not parse_ok:
                 # Parse failed → soft ceiling at 0.5; the walker should still trust

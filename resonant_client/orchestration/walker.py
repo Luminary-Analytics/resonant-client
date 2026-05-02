@@ -104,6 +104,37 @@ class SpecialistResult:
 SpecialistRunner = Callable[[PlanNode, PlanGraph], SpecialistResult]
 
 
+# Both planner specializations share the same JSON-subgoals output
+# schema and same expansion path. Keep this tuple in sync if a third
+# planner variant is added in the future.
+_PLANNER_SPECS = frozenset({
+    NodeSpecialization.PLAN,
+    NodeSpecialization.PLAN_DEEP,
+})
+
+
+# v0.5.1a3 — when a planner returns no parseable subgoals and the
+# walker re-dispatches, the new node's goal gets this prefix. The
+# planner sees the hint AND the original goal so it can correct
+# course on the second attempt. The prefix is also how we recognize
+# retry nodes when we walk back to the original (counter keying).
+_PLANNER_RETRY_PREFIX = (
+    "[RETRY: your previous attempt did not emit a parseable JSON "
+    "envelope. Re-read the FORMAT REMINDER section of your prompt "
+    "and emit `{\"subgoals\": [...]}` as your final output, in a "
+    "fenced ```json block.]\n\n"
+)
+
+
+def _strip_retry_prefix(goal: str) -> str:
+    """Remove the planner retry hint to recover the original goal."""
+    if not goal:
+        return goal
+    if goal.startswith(_PLANNER_RETRY_PREFIX):
+        return goal[len(_PLANNER_RETRY_PREFIX):]
+    return goal
+
+
 # ── The walker itself ───────────────────────────────────────────────────
 
 
@@ -121,12 +152,20 @@ class GraphWalker:
         cancel_event: Optional[threading.Event] = None,
         max_total_nodes: int = 200,
         max_repair_attempts: int = 2,
+        max_planner_retries: int = 1,
     ):
         self.runner = runner
         self.on_event = on_event or (lambda ev: None)
         self.cancel_event = cancel_event or threading.Event()
         self.max_total_nodes = max_total_nodes
         self.max_repair_attempts = max_repair_attempts
+        # v0.5.1a3 — when a PLAN / PLAN_DEEP node returns no
+        # parseable subgoals, retry once with a hint-prefixed
+        # sibling. Without this, the walker silently no-ops the
+        # whole plan-graph (Pro's failure mode in v0.5.0 GA smoke).
+        self.max_planner_retries = max_planner_retries
+        # Per-node retry count, keyed by the ORIGINAL planner node id.
+        self._planner_retries: dict[str, int] = {}
 
     # ── Public driver ──────────────────────────────────────────────────
 
@@ -211,9 +250,18 @@ class GraphWalker:
 
         # ── Post-execution decisions ──────────────────────────────────
 
-        # 1. `plan` specialist returned subgoals → expand them as children
-        if node.specialization == NodeSpecialization.PLAN and result.subgoals:
-            self._expand_subgoals(graph, node, result.subgoals)
+        # 1. Planner specialist (PLAN or PLAN_DEEP) returned subgoals
+        #    → expand them as children. If the planner returned
+        #    nothing parseable AND we haven't retried yet, spawn a
+        #    sibling planner with a JSON-envelope reminder. This
+        #    catches the v0.5.0 GA pro failure mode where the model
+        #    emitted `<tool_call>` text instead of a JSON envelope
+        #    and the walker silently no-op'd the whole plan-graph.
+        if node.specialization in _PLANNER_SPECS:
+            if result.subgoals:
+                self._expand_subgoals(graph, node, result.subgoals)
+            else:
+                self._maybe_retry_planner(graph, node)
 
         # 2. `verify` specialist with a non-pass verdict → spawn `repair`
         if node.specialization == NodeSpecialization.VERIFY:
@@ -272,6 +320,70 @@ class GraphWalker:
                 "added": added,
                 "reason": "planner expanded subgoals",
             }))
+
+    def _maybe_retry_planner(self, graph: PlanGraph, planner_node: PlanNode) -> None:
+        """v0.5.1a3 — when a planner returned no parseable subgoals,
+        spawn a sibling planner with a JSON-envelope reminder. Caps
+        retries at `self.max_planner_retries` so we don't loop
+        forever on a fundamentally-broken planner.
+
+        The sibling node's GOAL is the original goal plus a hint
+        prefix calling out the parse failure. This works for both
+        PLAN and PLAN_DEEP — the prompts themselves stay generic;
+        the per-attempt context comes from the goal.
+
+        We trace retries by pointing each sibling back to the
+        ORIGINAL planner via `parent_id` (siblings share parent).
+        Counter is keyed on the original node id.
+        """
+        # Find the "original" planner — walk back through any prior
+        # retry siblings to the first one (root of the retry chain).
+        # In practice the chain depth is ≤ max_planner_retries.
+        original_id = planner_node.id
+        # If this node was itself spawned as a retry, point back to
+        # the original via the data field we stash below.
+        retry_marker = (planner_node.goal or "").startswith(_PLANNER_RETRY_PREFIX)
+        if retry_marker:
+            # Find the source node — its id is recorded in our
+            # tracking dict's keys; we walk siblings to find the
+            # one that matches the suffix-stripped goal.
+            stripped_goal = _strip_retry_prefix(planner_node.goal)
+            for n in graph.nodes.values():
+                if (n.id != planner_node.id
+                        and n.specialization in _PLANNER_SPECS
+                        and n.goal == stripped_goal):
+                    original_id = n.id
+                    break
+
+        attempts = self._planner_retries.get(original_id, 0)
+        if attempts >= self.max_planner_retries:
+            logger.info(
+                "Planner %s exhausted %d retry attempts; giving up",
+                original_id, self.max_planner_retries,
+            )
+            return
+
+        self._planner_retries[original_id] = attempts + 1
+        retry_id = new_node_id()
+        # Strip any pre-existing retry prefix from the previous
+        # planner's goal so we don't stack hints across attempts.
+        original_goal_text = _strip_retry_prefix(planner_node.goal or "")
+        retry_node = PlanNode(
+            id=retry_id,
+            intent_id=graph.intent_id,
+            goal=_PLANNER_RETRY_PREFIX + original_goal_text,
+            specialization=planner_node.specialization,
+            parent_id=planner_node.parent_id,
+            depends_on=list(planner_node.depends_on),
+        )
+        graph.add_node(retry_node)
+        self.on_event(WalkerEvent(kind="plan.rewrite", node_id=planner_node.id, payload={
+            "added": [retry_id],
+            "reason": (
+                f"planner retry {attempts + 1}/{self.max_planner_retries} — "
+                f"previous attempt didn't emit parseable JSON subgoals"
+            ),
+        }))
 
     def _spawn_verify_sibling(self, graph: PlanGraph, node: PlanNode) -> None:
         verify = PlanNode(

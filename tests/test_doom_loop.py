@@ -367,3 +367,92 @@ class TestCountReadOnlyChurn:
         # write" patterns falsely trip; too high and stuck specialists
         # waste budget. 14 gives ~5-7 file reads + a few greps headroom.
         assert 8 <= CHURN_LIMIT <= 24
+
+
+# ── v0.4.9 (T2.4) — per-model cycle-guard thresholds ─────────────────
+#
+# DeepSeek pro is more deliberate; the default 3-in-12 cycle threshold
+# and 14 churn limit flagged legitimate "retry with intentional
+# variation" patterns. Pro gets bumps to 4 / 20; flash and everything
+# else stay at the conservative defaults.
+
+
+class TestCycleWindowRepeatPerModel:
+    def test_default_when_no_model(self):
+        from resonant_client.engine.session import cycle_window_repeat_for_model
+        assert cycle_window_repeat_for_model(None) == CYCLE_WINDOW_REPEAT
+        assert cycle_window_repeat_for_model("") == CYCLE_WINDOW_REPEAT
+
+    def test_flash_keeps_default(self):
+        from resonant_client.engine.session import cycle_window_repeat_for_model
+        # Flash burns tokens fast — keep the conservative threshold.
+        assert cycle_window_repeat_for_model("deepseek-v4-flash:cloud") == CYCLE_WINDOW_REPEAT
+
+    def test_pro_gets_higher_tolerance(self):
+        from resonant_client.engine.session import cycle_window_repeat_for_model
+        assert cycle_window_repeat_for_model("deepseek-v4-pro:cloud") == 4
+
+    def test_pro_match_is_case_insensitive(self):
+        from resonant_client.engine.session import cycle_window_repeat_for_model
+        assert cycle_window_repeat_for_model("DeepSeek-V4-Pro:CLOUD") == 4
+
+    def test_unknown_pro_variant_falls_back_via_family(self):
+        # Future "deepseek-v5-pro:cloud" should still pick up the higher
+        # tolerance via the family-substring fallback.
+        from resonant_client.engine.session import cycle_window_repeat_for_model
+        assert cycle_window_repeat_for_model("deepseek-v5-pro:cloud") == 4
+
+    def test_unknown_model_uses_default(self):
+        from resonant_client.engine.session import cycle_window_repeat_for_model
+        assert cycle_window_repeat_for_model("llama3:70b") == CYCLE_WINDOW_REPEAT
+        assert cycle_window_repeat_for_model("qwen2.5-coder:32b") == CYCLE_WINDOW_REPEAT
+
+
+class TestChurnLimitPerModel:
+    def test_default_when_no_model(self):
+        from resonant_client.engine.session import churn_limit_for_model
+        assert churn_limit_for_model(None) == CHURN_LIMIT
+
+    def test_flash_keeps_default(self):
+        from resonant_client.engine.session import churn_limit_for_model
+        assert churn_limit_for_model("deepseek-v4-flash:cloud") == CHURN_LIMIT
+
+    def test_pro_gets_higher_tolerance(self):
+        from resonant_client.engine.session import churn_limit_for_model
+        assert churn_limit_for_model("deepseek-v4-pro:cloud") == 20
+
+    def test_pro_threshold_is_meaningfully_higher(self):
+        # The whole point — pro needs more headroom. Pin the relative
+        # ordering even if absolute values change.
+        from resonant_client.engine.session import churn_limit_for_model
+        pro = churn_limit_for_model("deepseek-v4-pro:cloud")
+        flash = churn_limit_for_model("deepseek-v4-flash:cloud")
+        assert pro > flash
+
+    def test_unknown_model_uses_default(self):
+        from resonant_client.engine.session import churn_limit_for_model
+        assert churn_limit_for_model("llama3:70b") == CHURN_LIMIT
+
+
+class TestRelativeThresholds:
+    def test_pro_cycle_is_strictly_higher_than_default(self):
+        # The whole point of T2.4: pro's cycle threshold > default.
+        from resonant_client.engine.session import cycle_window_repeat_for_model
+        assert cycle_window_repeat_for_model("deepseek-v4-pro:cloud") > CYCLE_WINDOW_REPEAT
+
+    def test_pro_churn_is_strictly_higher_than_default(self):
+        from resonant_client.engine.session import churn_limit_for_model
+        assert churn_limit_for_model("deepseek-v4-pro:cloud") > CHURN_LIMIT
+
+    def test_thresholds_stay_sane(self):
+        # Defensive bounds — if a future bump goes wild, this catches it.
+        # Cycle threshold should never exceed half the window (would
+        # essentially disable the guard); churn shouldn't exceed 30
+        # (legitimate explore-then-write rarely needs more).
+        from resonant_client.engine.session import (
+            cycle_window_repeat_for_model,
+            churn_limit_for_model,
+            CYCLE_WINDOW,
+        )
+        assert cycle_window_repeat_for_model("deepseek-v4-pro:cloud") <= CYCLE_WINDOW // 2
+        assert churn_limit_for_model("deepseek-v4-pro:cloud") <= 30

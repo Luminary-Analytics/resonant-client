@@ -57,6 +57,64 @@ READ_ONLY_TOOLS = frozenset({"glob", "grep", "file_read"})
 WRITE_TOOLS = frozenset({"file_write", "file_edit", "file_replace"})
 CHURN_LIMIT = 14   # generous — gives room for "explore THEN write" patterns
 
+# v0.4.9 (T2.4) — per-model overrides for the cycle-guard thresholds.
+# DeepSeek pro is more deliberate (longer thinking pauses between
+# tools, often retries the same probe with intentional small variations
+# while reasoning); the default 3-in-12 window flagged legitimate work.
+# Flash is faster and burns tokens, so the default 3-in-12 stays.
+# Other models fall through to the defaults.
+#
+# Same logic for CHURN_LIMIT — pro takes a more thorough exploration
+# pass before committing, so the default 14 was too aggressive.
+_CYCLE_REPEAT_OVERRIDES: dict[str, int] = {
+    "deepseek-v4-pro:cloud": 4,    # more tolerance for deliberate retries
+    # flash + generic deepseek + everything else → CYCLE_WINDOW_REPEAT (3)
+}
+
+_CHURN_LIMIT_OVERRIDES: dict[str, int] = {
+    "deepseek-v4-pro:cloud": 20,   # room for thorough pre-write exploration
+    # flash + generic deepseek + everything else → CHURN_LIMIT (14)
+}
+
+
+def cycle_window_repeat_for_model(model_name: str | None) -> int:
+    """Return the cycle-window repeat threshold for `model_name`.
+
+    Match strategy:
+      1. Exact case-insensitive match against `_CYCLE_REPEAT_OVERRIDES`
+      2. Family-fallback heuristic for deepseek-pro variants
+      3. Default to `CYCLE_WINDOW_REPEAT` (3)
+
+    Higher = more tolerant. Pro gets 4 (allows up to 3 legitimate retries
+    of the same probe before tripping); flash and everything else stay
+    at the conservative 3.
+    """
+    if not model_name:
+        return CYCLE_WINDOW_REPEAT
+    lower = model_name.lower()
+    if lower in _CYCLE_REPEAT_OVERRIDES:
+        return _CYCLE_REPEAT_OVERRIDES[lower]
+    if "deepseek" in lower and "pro" in lower:
+        return _CYCLE_REPEAT_OVERRIDES["deepseek-v4-pro:cloud"]
+    return CYCLE_WINDOW_REPEAT
+
+
+def churn_limit_for_model(model_name: str | None) -> int:
+    """Return the read-only-churn limit for `model_name`.
+
+    Same matching strategy as `cycle_window_repeat_for_model`. Higher =
+    more tolerance for "explore extensively, then write" patterns.
+    Pro gets 20; flash and everything else stay at 14.
+    """
+    if not model_name:
+        return CHURN_LIMIT
+    lower = model_name.lower()
+    if lower in _CHURN_LIMIT_OVERRIDES:
+        return _CHURN_LIMIT_OVERRIDES[lower]
+    if "deepseek" in lower and "pro" in lower:
+        return _CHURN_LIMIT_OVERRIDES["deepseek-v4-pro:cloud"]
+    return CHURN_LIMIT
+
 
 def _count_trailing_identical_tool_calls(history: list) -> int:
     """How many of the most recent tool calls (within the current turn) are identical."""
@@ -1152,10 +1210,20 @@ class Session:
             # by varying findstr filters and target dirs). If any single
             # signature appears 3× inside the last 12 calls, abort.
             if has_tool_calls:
+                # v0.4.9 (T2.4) — per-model thresholds. Pro gets more
+                # tolerance (legitimate "retry with intentional small
+                # variation" while reasoning); flash + everything else
+                # keep the default tighter thresholds.
+                _model_for_guards = (
+                    getattr(self.backend, "model", None) if self.backend else None
+                )
+                _cycle_repeat_threshold = cycle_window_repeat_for_model(_model_for_guards)
+                _churn_threshold = churn_limit_for_model(_model_for_guards)
+
                 wrep_count, wrep_tool, wrep_args = _windowed_cycle_repeat(
                     self.conversation_history, window=CYCLE_WINDOW
                 )
-                if wrep_count >= CYCLE_WINDOW_REPEAT:
+                if wrep_count >= _cycle_repeat_threshold:
                     args_repr = wrep_args if len(wrep_args) <= 80 else wrep_args[:77] + "..."
                     yield make_event(
                         EngineEvent.ERROR,
@@ -1176,7 +1244,7 @@ class Session:
                 # are uncertain so they don't increment, which preserves
                 # legitimate "explore → mkdir → write" patterns.
                 churn = _count_read_only_churn(self.conversation_history)
-                if churn >= CHURN_LIMIT:
+                if churn >= _churn_threshold:
                     yield make_event(
                         EngineEvent.ERROR,
                         message=(

@@ -121,12 +121,23 @@ class CheckResult:
 @dataclass
 class BashRunner:
     """Wraps subprocess for [bash] criteria. Stub for tests by
-    constructing with a custom `_run` callback."""
+    constructing with a custom `_run` callback.
+
+    v0.5.1a4 — on Windows, `shell=True` defaults to `cmd.exe` which
+    doesn't have POSIX tools like `wc`, `find`, `grep`. Real specs
+    routinely use these (the v0.5.0 GA smoke's `wc -l <
+    wordcount.py` failed for exactly this reason). When `bash` is
+    on PATH (Git Bash ships with most Windows Python installs) we
+    use it; otherwise we fall back to the platform default.
+    """
     timeout_seconds: float = 60.0
     cwd: Optional[str] = None
     # Override hook for tests. Production leaves None; .run() uses
     # subprocess. Tests inject `_run=lambda cmd, **kw: (rc, out, err)`.
     _run: Optional[Callable[..., tuple[int, str, str]]] = None
+    # Override hook for tests that want to pin shell-detection
+    # behavior. Production leaves None; .run() uses _detect_bash().
+    _bash_path: Optional[str] = None
 
     def run(self, command: str) -> tuple[int, str, str]:
         """Returns (returncode, stdout, stderr). Never raises on
@@ -134,24 +145,80 @@ class BashRunner:
         if self._run is not None:
             return self._run(command, cwd=self.cwd, timeout=self.timeout_seconds)
         try:
-            # shell=True so the criterion can use pipes / && / etc.
-            # The grill prompt is responsible for keeping commands
-            # safe; the engine's existing autonomy.check_floor and
-            # PathSandbox apply downstream.
-            proc = subprocess.run(
-                command,
-                shell=True,
-                cwd=self.cwd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_seconds,
-                check=False,
-            )
+            # v0.5.1a4 — prefer bash on Windows so POSIX commands
+            # (`wc`, `find`, `grep` etc.) work portably. On macOS /
+            # Linux the default shell IS bash-compatible so this is
+            # a no-op there.
+            bash_path = self._bash_path
+            if bash_path is None:
+                bash_path = _detect_bash()
+
+            if bash_path:
+                # Run `bash -c <command>`. The criterion's command
+                # string flows through bash's own parser, which
+                # handles redirects (`<`), pipes, and quoting the
+                # same way on Windows-with-Git-Bash and Linux/macOS.
+                proc = subprocess.run(
+                    [bash_path, "-c", command],
+                    cwd=self.cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                    check=False,
+                )
+            else:
+                # Platform default shell. On Linux/macOS this is bash
+                # / zsh anyway; on Windows it's cmd.exe with the
+                # known POSIX-tool gap.
+                proc = subprocess.run(
+                    command,
+                    shell=True,
+                    cwd=self.cwd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout_seconds,
+                    check=False,
+                )
             return proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:
             return 124, exc.stdout or "", f"timeout after {self.timeout_seconds}s"
         except Exception as exc:
             return 127, "", f"subprocess error: {exc}"
+
+
+# Module-level cache for the bash detection — `shutil.which` is
+# cheap but we'd call it on every criterion otherwise.
+_BASH_PATH_CACHE: Optional[str] = None
+_BASH_PATH_CACHED = False
+
+
+def _detect_bash() -> Optional[str]:
+    """Return the absolute path to `bash` if it's on PATH, else None.
+
+    Cached per-process. On Windows this typically finds Git Bash's
+    `C:\\Program Files\\Git\\bin\\bash.exe`. On macOS / Linux it
+    finds the system bash at `/bin/bash` or `/usr/bin/bash`.
+
+    None means: fall back to the platform default shell — which on
+    Windows is `cmd.exe` (limited, no POSIX tools) and elsewhere is
+    typically a bash-compatible shell.
+    """
+    global _BASH_PATH_CACHE, _BASH_PATH_CACHED
+    if _BASH_PATH_CACHED:
+        return _BASH_PATH_CACHE
+    import shutil
+    _BASH_PATH_CACHE = shutil.which("bash")
+    _BASH_PATH_CACHED = True
+    return _BASH_PATH_CACHE
+
+
+def _reset_bash_detection_cache() -> None:
+    """Test helper — forget any cached bash detection. Tests that
+    swap PATH or stub `shutil.which` should call this between
+    runs."""
+    global _BASH_PATH_CACHE, _BASH_PATH_CACHED
+    _BASH_PATH_CACHE = None
+    _BASH_PATH_CACHED = False
 
 
 # ── Bash command extraction ──────────────────────────────────────────

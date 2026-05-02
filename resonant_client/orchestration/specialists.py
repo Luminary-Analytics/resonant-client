@@ -426,6 +426,86 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
         max_steps=8,
         confidence_threshold=0.6,
     ),
+
+    # v0.5.1a2 — PLAN_DEEP. Same JSON output schema as PLAN, but the
+    # prompt explicitly invites a research-first flow before
+    # decomposition. Built for deepseek-v4-pro:cloud which the v0.5.0
+    # GA smoke showed consistently fails the "emit JSON immediately"
+    # contract — pro wants to read the codebase first, and the strict
+    # PLAN prompt treated that as malformed output. PLAN_DEEP makes
+    # the exploration explicit, with the JSON envelope as the
+    # required FINAL phase.
+    #
+    # Tier mapping in `gui/autonomous_session.PLANNER_BY_TIER`:
+    #   flash → PLAN (snappy, decomposes immediately)
+    #   pro   → PLAN_DEEP (research-first, deliberate)
+    #
+    # See docs/v0.5.0-smoke-results-step2c.md §3 for the diagnosis
+    # this profile addresses.
+    NodeSpecialization.PLAN_DEEP: SpecialistProfile(
+        name="plan_deep",
+        description=(
+            "Research-first planner. Explore the codebase, then decompose. "
+            "Output is a JSON plan, not code or files."
+        ),
+        system_block=(
+            "You are a DEEP PLANNER. Your job has TWO PHASES:\n\n"
+            "─── PHASE 1: EXPLORE (encouraged) ───\n\n"
+            "Read the 2-6 files most relevant to the goal. Use `file_read`, "
+            "`glob`, `grep` to understand:\n"
+            "- What code already exists in the relevant area\n"
+            "- The codebase's conventions (file layout, naming, patterns)\n"
+            "- Any constraints from `RESONANT.md` / `AGENTS.md`\n"
+            "- Existing tests that the new code should match\n\n"
+            "Spend up to 6-10 tool calls on exploration. Don't try to read "
+            "everything; the implementer will read more as it works.\n\n"
+            "Use `## Exploration` (or similar) as a heading to organize your "
+            "notes. Brief is fine — bullet points listing what you found.\n\n"
+            "─── PHASE 2: PLAN (required) ───\n\n"
+            "Decompose the goal into 2-6 concrete subgoals based on what "
+            "you found in Phase 1. Each subgoal is one specialist's job.\n\n"
+            "End your response with a single fenced JSON code block in "
+            "this exact shape:\n\n"
+            "```json\n"
+            "{\n"
+            '  "subgoals": [\n'
+            '    {"goal": "...", "specialization": "implement"},\n'
+            '    {"goal": "...", "specialization": "verify", "depends_on": [0]}\n'
+            "  ]\n"
+            "}\n"
+            "```\n\n"
+            "Allowed `specialization` values: explore, implement, verify, "
+            "repair, research, plan. Use `depends_on` indices to express "
+            "dependencies on earlier subgoals.\n\n"
+            "─── CRITICAL CONTRAST WITH `bash` / `file_edit` ───\n\n"
+            "You DO NOT have `bash`, `file_edit`, or `file_write`. Tools you "
+            "DO have (`file_read`, `glob`, `grep`, `await_user` + browser "
+            "read tools) are for CONTEXT-GATHERING ONLY. Never emit a "
+            "`<tool_call>` block as your final output — that's the "
+            "implementer's job. Your final output is the JSON envelope.\n\n"
+            "─── ESCAPE HATCH: `await_user` ───\n\n"
+            "If after exploration the goal is STILL ambiguous (the codebase "
+            "context didn't resolve a real architectural choice), call "
+            "`await_user` BEFORE emitting the plan. One focused question is "
+            "cheaper than three rounds of plan revision.\n\n"
+            "─── FORMAT REMINDER (the parser is strict) ───\n\n"
+            "Your final output MUST end with one fenced JSON block:\n"
+            "- Exactly the shape above\n"
+            "- Strict JSON: double-quoted keys + strings, no trailing commas, "
+            "no comments, no single quotes\n"
+            "- Wrapped in ```json ... ``` fence\n"
+            "- Goes LAST — exploration notes BEFORE, JSON LAST\n\n"
+            "If your exploration didn't surface anything plan-changing, "
+            "still emit the JSON — a brief Phase 1 ('I read X, Y; codebase "
+            "conventions are clear; proceeding') is fine. The JSON is "
+            "mandatory."
+        ),
+        tool_allowlist=READ_ONLY_TOOLS | _AWAIT_USER,
+        # 16 vs PLAN's 8 — exploration phase needs the headroom. Cycle
+        # guards (windowed signature dedup) still backstop runaways.
+        max_steps=16,
+        confidence_threshold=0.6,
+    ),
 }
 
 

@@ -629,6 +629,7 @@ def build_autonomous_mission_hooks(
     daemon_stop_event: threading.Event,
     on_session_event: Optional[Callable[[dict], None]] = None,
     image_provider: Optional[Callable[[], Optional[bytes]]] = None,
+    planner_specialization: Optional[str] = None,
 ) -> DaemonHooks:
     """Top-level constructor — wires every hook to a real
     implementation.
@@ -641,6 +642,12 @@ def build_autonomous_mission_hooks(
        — the daemon's own `_stop_event` is the real signal; this
        parameter is the same Event passed in so the dispatch wait
        loop can exit promptly on user-stop.
+
+    `planner_specialization` (v0.5.1a2) routes each sub-mission's
+    root planner node to a specific specialist. None falls through
+    to `IntentService`'s default (`PLAN`). The autonomous-session
+    helper passes `PLAN_DEEP` for pro-tier missions per
+    `gui.autonomous_session.PLANNER_BY_TIER`.
     """
 
     def dispatch_item(item: RoadmapItem) -> str:
@@ -652,7 +659,10 @@ def build_autonomous_mission_hooks(
         goal_text = item.title.strip()
         if item.description.strip():
             goal_text = f"{goal_text}\n\n{item.description.strip()}"
-        intent_id = intent_service.start_intent(goal_text)
+        intent_id = intent_service.start_intent(
+            goal_text,
+            planner_specialization=planner_specialization,
+        )
         # Watch BEFORE we hand the handle back to the daemon, so a
         # very-fast intent that completes between dispatch and wait
         # doesn't lose its terminal event.

@@ -36,8 +36,36 @@ from ..gui import roadmap as roadmap_module
 from ..gui.roadmap import Roadmap
 from ..orchestration.grill_me import extract_spec
 from ..orchestration.intent_service import IntentService
+from ..orchestration.plan_graph import NodeSpecialization
 
 logger = logging.getLogger(__name__)
+
+
+# ── Planner-tier mapping (v0.5.1a2) ────────────────────────────────────
+
+
+# Different DeepSeek tiers behave differently on the planner role.
+# v0.5.0 GA smoke (docs/v0.5.0-smoke-results-step2c.md) showed:
+#   flash → emits clean JSON immediately, decomposes well from spec
+#   pro   → wants to read the codebase first; the strict PLAN prompt
+#           treats that exploration as malformed output
+# So we route each tier to the planner spec it's wired for. PLAN is
+# the snappy "decompose immediately" specialist; PLAN_DEEP is the
+# research-first variant that gives pro room to explore before
+# emitting the JSON envelope.
+#
+# Match is by exact model_id. Unrecognized models fall back to PLAN
+# (the tighter contract — safer default).
+PLANNER_BY_TIER: dict[str, str] = {
+    "deepseek-v4-flash:cloud": NodeSpecialization.PLAN,
+    "deepseek-v4-pro:cloud": NodeSpecialization.PLAN_DEEP,
+}
+
+
+def planner_for_model(model_id: str) -> str:
+    """Return the planner specialization to use for the given Ollama
+    model id. Falls back to `PLAN` for unknown models."""
+    return PLANNER_BY_TIER.get(model_id or "", NodeSpecialization.PLAN)
 
 
 # ── Time-budget parsing ─────────────────────────────────────────────────
@@ -286,6 +314,16 @@ def start_autonomous_mission(
     # the same Event into both the tracker and the daemon.
     daemon_stop_event = threading.Event()
 
+    # v0.5.1a2 — pick the planner specialist that suits the model
+    # tier. Pro gets PLAN_DEEP (research-first); flash + unknown
+    # tiers get PLAN (decompose-immediately). See PLANNER_BY_TIER.
+    model_id = getattr(state.backend, "model", "") or ""
+    planner_spec = planner_for_model(model_id)
+    logger.info(
+        "Autonomous mission %s using planner=%s for model=%s",
+        intent_id, planner_spec, model_id,
+    )
+
     hooks = build_autonomous_mission_hooks(
         intent_service=intent_service,
         dispatch_tracker=tracker,
@@ -297,6 +335,7 @@ def start_autonomous_mission(
         daemon_stop_event=daemon_stop_event,
         on_session_event=on_event,
         image_provider=image_provider,
+        planner_specialization=planner_spec,
     )
 
     config = AutonomousMissionConfig(

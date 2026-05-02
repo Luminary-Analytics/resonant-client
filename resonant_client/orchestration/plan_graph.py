@@ -45,8 +45,17 @@ class NodeSpecialization:
     # refs, decides continue/satisfied/blocked. Only specialist with
     # write access to roadmap.md.
     REFLECT = "reflect"
+    # v0.5.1a2 — PLAN_DEEP is for models that prefer to research the
+    # codebase BEFORE decomposing (deepseek-v4-pro:cloud). Same JSON
+    # output schema as PLAN; larger step budget; prompt explicitly
+    # encourages exploration first then synthesis. Found via the
+    # v0.5.0 GA smoke that pro fails the strict-immediate-emit
+    # contract of PLAN. PLAN remains the default for flash-tier
+    # models that decompose immediately. See `gui/autonomous_session.PLANNER_BY_TIER`.
+    PLAN_DEEP = "plan_deep"
 
-    ALL = frozenset({EXPLORE, IMPLEMENT, VERIFY, REPAIR, RESEARCH, PLAN, REFLECT})
+    ALL = frozenset({EXPLORE, IMPLEMENT, VERIFY, REPAIR, RESEARCH,
+                     PLAN, REFLECT, PLAN_DEEP})
 
 
 # ── Plan node ────────────────────────────────────────────────────────────

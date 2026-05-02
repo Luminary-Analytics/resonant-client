@@ -95,22 +95,37 @@ class IntentService:
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
-    def start_intent(self, text: str) -> str:
+    def start_intent(
+        self, text: str, *, planner_specialization: Optional[str] = None,
+    ) -> str:
         """Bootstrap a fresh plan-graph from `text` and start a worker thread.
 
         The initial graph holds one root `plan` node whose goal is the user's
         text. The walker runs it; the planner specialist returns subgoals; the
         walker expands them. No two-phase awkwardness.
+
+        v0.5.1a2 — `planner_specialization` overrides the default
+        `NodeSpecialization.PLAN` for the root node. Used by the
+        autonomous-mission daemon to route pro-tier sub-missions to
+        `PLAN_DEEP` (research-first) instead. None falls through to
+        `PLAN` for backwards compatibility with the regular Mission
+        flow.
         """
         text = (text or "").strip()
         if not text:
             raise ValueError("intent text cannot be empty")
+        spec = planner_specialization or NodeSpecialization.PLAN
+        if spec not in NodeSpecialization.ALL:
+            raise ValueError(
+                f"unknown planner specialization {spec!r}; "
+                f"expected one of {sorted(NodeSpecialization.ALL)}"
+            )
         graph = PlanGraph.new(text)
         root = PlanNode(
             id=new_node_id(),
             intent_id=graph.intent_id,
             goal=text,
-            specialization=NodeSpecialization.PLAN,
+            specialization=spec,
         )
         graph.add_node(root)
         save_graph(graph, self.project_path)

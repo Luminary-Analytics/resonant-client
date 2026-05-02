@@ -21,6 +21,8 @@ import pytest
 
 from resonant_client.gui import roadmap as roadmap_module
 from resonant_client.gui.autonomous_session import (
+    _seed_item_from_intent,
+    _smart_title,
     build_roadmap_from_spec,
     cleanup_finished_daemons,
     get_autonomous_daemon,
@@ -243,6 +245,96 @@ class _StubAppState:
         if on_event is not None:
             self._intent_service.on_event = on_event
         return self._intent_service
+
+
+# ── Title extraction (v0.5.1a1 fix) ────────────────────────────────────
+
+
+class TestSmartTitle:
+    """Pin _smart_title's behavior on the cases that motivated the
+    v0.5.1a1 fix. The regression: v0.5.0's `intent.split(".", 1)[0]`
+    broke any intent containing a filename like `wordcount.py` because
+    it split inside the filename. Pro's planner explicitly flagged it
+    in the GA smoke ("the goal is cut off")."""
+
+    def test_filename_period_is_not_a_sentence_boundary(self):
+        # The ORIGINAL bug: this exact intent from the GA smoke.
+        intent = "Build a Python CLI utility `wordcount.py` at the project root."
+        title = _smart_title(intent, max_len=80)
+        # Critical: the title must include `wordcount.py`, not stop
+        # at the period inside the filename.
+        assert "wordcount" in title
+        assert "project root" in title or "project" in title
+        # Must NOT be the broken "Build a Python CLI utility `wordcount"
+        assert not title.endswith("`wordcount")
+
+    def test_version_number_periods_handled(self):
+        intent = "Upgrade httpx from 0.27.0 to 0.28.1 in pyproject.toml."
+        title = _smart_title(intent, max_len=80)
+        assert "0.27.0" in title
+        assert "0.28.1" in title
+
+    def test_abbreviation_periods_handled(self):
+        intent = "Add a logger module that uses e.g. structlog or stdlib logging. Configure via env var."
+        # First "sentence" should NOT end at "e.g." — the regex requires
+        # a capital letter after the period for it to be a sentence
+        # break.
+        title = _smart_title(intent, max_len=120)
+        assert "e.g." in title
+        assert "stdlib" in title  # full first sentence preserved
+
+    def test_real_sentence_boundary_used_when_short(self):
+        intent = "Add the dark-mode toggle. Use CSS variables. Persist via localStorage."
+        title = _smart_title(intent, max_len=80)
+        # First sentence is short enough — use it as-is.
+        assert title == "Add the dark-mode toggle"
+
+    def test_long_intent_truncates_on_word_boundary(self):
+        intent = (
+            "Build a comprehensive end-to-end testing framework with "
+            "screenshot diffing, network request mocking, and "
+            "deterministic time control for the entire app."
+        )
+        title = _smart_title(intent, max_len=60)
+        assert len(title) <= 60
+        # Did not slice mid-word
+        assert not title.endswith("netwo") and not title.endswith("scre")
+
+    def test_empty_intent_returns_default(self):
+        assert _smart_title("", max_len=80) == "Implement the feature"
+        assert _smart_title("   ", max_len=80) == "Implement the feature"
+
+    def test_short_clean_intent_unchanged_except_trailing_punctuation(self):
+        assert _smart_title("Quick fix", max_len=80) == "Quick fix"
+        assert _smart_title("Quick fix.", max_len=80) == "Quick fix"
+        assert _smart_title("Add /export command,", max_len=80) == "Add /export command"
+
+
+class TestSeedItemFromIntent:
+    def test_passes_full_intent_as_description(self):
+        # Even when the title gets truncated/refined, the description
+        # MUST carry the full intent so the implementer's planner has
+        # complete context.
+        intent = (
+            "Build a Python CLI utility `wordcount.py` at the project "
+            "root. It takes a single file path argument and prints "
+            "space-separated <lines> <words> <chars> to stdout."
+        )
+        title, desc = _seed_item_from_intent(intent, "fallback feature")
+        assert desc == intent
+        # Title respects the smart-title rules
+        assert "wordcount" in title
+
+    def test_falls_back_to_feature_when_intent_empty(self):
+        title, desc = _seed_item_from_intent("", "Add /export command")
+        assert "export" in title.lower()
+        assert desc == "Add /export command"
+
+    def test_default_when_both_empty(self):
+        title, desc = _seed_item_from_intent("", "")
+        # Default fallback runs through _smart_title which strips
+        # trailing punctuation.
+        assert title.startswith("Implement the feature")
 
 
 class TestStartStopAutonomousMission:

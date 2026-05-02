@@ -19,6 +19,7 @@ v0.5.0 only runs one at a time per design §3 non-goals).
 from __future__ import annotations
 
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -150,10 +151,24 @@ def build_roadmap_from_spec(
 def _seed_item_from_intent(refined_intent: str, feature: str) -> tuple[str, str]:
     """Pick a (title, description) for the bootstrap Tier 1 item.
 
-    Title is short (≤80 chars) — the first sentence of the refined
-    intent, or the feature description if refined_intent is empty.
-    Description carries the full refined_intent so the implementer
-    has the complete context.
+    Title is short (≤80 chars). Description carries the full
+    refined_intent so the implementer's planner sees the complete
+    context.
+
+    The original v0.5.0 implementation split on the first period to
+    take "the first sentence" as the title — which broke for any
+    intent containing filenames like `wordcount.py` or version
+    numbers (split would happen INSIDE the filename, producing a
+    truncated title like "Build a Python CLI utility `wordcount").
+    Pro's planner specifically called this out in v0.5.0 GA smoke:
+    "the goal is cut off — I can't tell what the utility should do
+    beyond its name." (See `docs/v0.5.0-smoke-results-step2c.md`
+    §4.1.)
+
+    v0.5.1a1 fix: use _smart_title that handles filename / version
+    periods correctly via a sentence-boundary heuristic (period
+    followed by whitespace + capital letter, OR end of string).
+    Falls back to clean word-boundary truncation at 80 chars.
     """
     intent = (refined_intent or "").strip()
     if not intent:
@@ -161,16 +176,54 @@ def _seed_item_from_intent(refined_intent: str, feature: str) -> tuple[str, str]
     if not intent:
         intent = "Implement the feature described in the spec."
 
-    # First sentence (or first 80 chars), stripped of trailing dots.
-    first_sentence = intent.split(".", 1)[0].strip()
-    title = first_sentence[:80] if first_sentence else intent[:80]
-    if not title:
-        title = "Implement the feature"
+    title = _smart_title(intent, max_len=80)
+    return title, intent
 
-    # Description is the full intent; the implementer's planner sees
-    # this as its goal and decomposes from there.
-    description = intent
-    return title, description
+
+# Sentence-boundary regex: a period (or `?` / `!`) followed by
+# whitespace and an uppercase letter, OR end-of-string. This skips
+# periods inside `wordcount.py`, `v1.2.3`, `e.g.`, etc. — those are
+# followed by either a non-space char or a lowercase letter, not the
+# capital-led start of a new sentence.
+_SENTENCE_END_RE = re.compile(r"[.?!]\s+(?=[A-Z])|[.?!]\s*$")
+
+
+def _smart_title(text: str, *, max_len: int = 80) -> str:
+    """Extract a clean title from a multi-sentence intent.
+
+    Strategy (in order):
+    1. If the first sentence (per `_SENTENCE_END_RE`) is ≤ max_len,
+       use it. This handles "Build X. Add Y. Verify Z." cases where
+       the first sentence is the natural title.
+    2. Otherwise truncate at max_len, but PREFER to break on a word
+       boundary so we don't slice mid-token.
+    3. Strip trailing punctuation that would dangle awkwardly.
+
+    The heuristic respects filenames (`wordcount.py`), version
+    numbers (`v1.2.3`), abbreviations (`e.g.`), and other periods
+    that aren't sentence terminators.
+    """
+    text = text.strip()
+    if not text:
+        return "Implement the feature"
+
+    # Try the first sentence first
+    match = _SENTENCE_END_RE.search(text)
+    if match:
+        first_sentence = text[: match.start()].rstrip(".?!").strip()
+        if first_sentence and len(first_sentence) <= max_len:
+            return first_sentence
+
+    # Truncate at max_len with word-boundary preservation
+    if len(text) <= max_len:
+        return text.rstrip(".?!,;:")
+
+    truncated = text[:max_len]
+    # Walk back to the last whitespace if we sliced mid-word.
+    last_space = truncated.rfind(" ")
+    if last_space > max_len * 0.6:  # don't truncate too aggressively
+        truncated = truncated[:last_space]
+    return truncated.rstrip(".?!,;:")
 
 
 # ── Daemon lifecycle ────────────────────────────────────────────────────

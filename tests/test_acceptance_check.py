@@ -74,6 +74,29 @@ class TestParseBashAssertion:
         assert a.mode == "output_gt"
         assert a.expected_value == "5"
 
+    def test_shell_input_redirect_not_parsed_as_lt_operator(self):
+        # v0.5.1a4 regression: `<` inside a shell command (input
+        # redirect) was being mis-matched as the assertion operator.
+        # The trailing `output > 5` (Form B) is the actual operator.
+        # Found in v0.5.1 final smoke when `wc -l < wordcount.py`
+        # silently failed because the parser split it as
+        # `command="wc -l", expected="wordcount.py"`.
+        a = parse_bash_assertion("`wc -l < wordcount.py` output > 5")
+        assert a is not None
+        assert a.command == "wc -l < wordcount.py"
+        assert a.mode == "output_gt"
+        assert a.expected_value == "5"
+
+    def test_shell_output_redirect_not_parsed_as_gt_operator(self):
+        # Same idea for `>`. Filename comparand isn't an integer,
+        # so the tightened regex skips it.
+        a = parse_bash_assertion("`echo hi > /tmp/out.txt` exits 0")
+        assert a is not None
+        # Either exit_zero (preferred) or whatever fallback — the
+        # critical thing is it must NOT be output_gt with
+        # expected_value="/tmp/out.txt"
+        assert a.mode != "output_gt"
+
     def test_no_backticks_returns_none(self):
         # The criterion must contain a backtick-quoted command. Pure
         # prose like "the build works" is rejected — the rigorous

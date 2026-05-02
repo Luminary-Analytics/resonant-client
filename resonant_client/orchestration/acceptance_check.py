@@ -235,8 +235,20 @@ def _reset_bash_detection_cache() -> None:
 # expected output assertion.
 _BACKTICK_CMD_RE = re.compile(r"`([^`]+)`")
 _EQUALS_ASSERTION_RE = re.compile(r"^(.+?)\s*==\s*(.+?)$")
-_LT_ASSERTION_RE = re.compile(r"^(.+?)\s*<\s*(.+?)$")
-_GT_ASSERTION_RE = re.compile(r"^(.+?)\s*>\s*(.+?)$")
+# v0.5.1a4 — Tightened the `<` and `>` patterns to require an
+# INTEGER on the right side. Without this, shell input redirects
+# (e.g. `wc -l < file.py`) were mis-matched as the assertion
+# operator, causing the parser to split the command and treat the
+# filename as a numeric comparand. Found in v0.5.1 final smoke:
+# `wc -l < wordcount.py` was being parsed as
+# `command="wc -l", mode="output_lt", expected="wordcount.py"`
+# → int("wordcount.py") raised → criterion silently failed even
+# though the actual command would have produced 108 > 5 = pass.
+#
+# Legit Form-A usage (`grep -c FIXME src/ < 3`, `git log | wc -l > 5`)
+# always has an integer comparand, so requiring \d+ is safe.
+_LT_ASSERTION_RE = re.compile(r"^(.+?)\s*<\s*(\d+)\s*$")
+_GT_ASSERTION_RE = re.compile(r"^(.+?)\s*>\s*(\d+)\s*$")
 
 # Phrases that indicate "non-zero exit code is the pass condition"
 # — i.e. the command should FAIL for the criterion to pass.

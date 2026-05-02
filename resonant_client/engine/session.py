@@ -606,9 +606,14 @@ class Session:
         })
 
         # ── Context compression ──
-        if should_compress(self.conversation_history):
+        # v0.4.6 (T2.1) — pass `model_name` so the threshold is sized
+        # to the actual model's context window. Pre-T2.1 every model
+        # used the 100K default, which never fired for flash (smaller
+        # window) and was overly conservative for pro (larger window).
+        backend_model = getattr(self.backend, "model", None) if self.backend else None
+        if should_compress(self.conversation_history, model_name=backend_model):
             try:
-                compressed, summary = compress(self, max_tokens=100_000)
+                compressed, summary = compress(self, model_name=backend_model)
                 if summary:
                     old_count = len(self.conversation_history)
                     old_tokens = estimate_tokens(self.conversation_history)

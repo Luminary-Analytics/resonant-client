@@ -17,6 +17,55 @@ CHARS_PER_TOKEN = 4
 DEFAULT_MAX_CONTEXT_TOKENS = 100_000
 KEEP_RECENT_TURNS = 6  # Keep last N user+assistant pairs verbatim
 
+# v0.4.6 (T2.1) — per-tier context budgets for the DeepSeek family
+# (and any other model where the upstream context window differs
+# materially from the generic 100K default). Pre-T2.1 every model
+# used DEFAULT_MAX_CONTEXT_TOKENS = 100_000; flash with its smaller
+# effective context window would hit OOM / truncation BEFORE the
+# compressor ever fired.
+#
+# Each value is the threshold ABOVE which `should_compress` returns
+# True. Keep ~25% headroom below the model's actual context window
+# for the response + tool results.
+#
+# Numbers are conservative best-guesses based on public Ollama docs
+# at the time of writing (2026-05-02). When new DeepSeek tiers ship,
+# add them here. Unknown models fall through to the 100K default,
+# which is the right behavior for both larger-context models (we'd
+# rather not compress unnecessarily) and unknown smaller models
+# (the model itself will tell us via OOM).
+_MODEL_CONTEXT_BUDGETS: dict[str, int] = {
+    "deepseek-v4-flash:cloud": 24_000,    # ~32K window
+    "deepseek-v4:cloud": 48_000,          # generic mid-tier
+    "deepseek-v4-pro:cloud": 96_000,      # ~128K window
+}
+
+
+def model_context_budget(model_name: str | None) -> int:
+    """Return the compress-threshold for `model_name`.
+
+    Match strategy (in order):
+      1. Exact case-insensitive match against `_MODEL_CONTEXT_BUDGETS`
+      2. Family-fallback heuristic: if the model name contains
+         "deepseek" with "flash"/"pro", use that tier's budget
+      3. Default to `DEFAULT_MAX_CONTEXT_TOKENS` (the pre-T2.1 behavior)
+
+    Returns the integer threshold; never raises.
+    """
+    if not model_name:
+        return DEFAULT_MAX_CONTEXT_TOKENS
+    lower = model_name.lower()
+    if lower in _MODEL_CONTEXT_BUDGETS:
+        return _MODEL_CONTEXT_BUDGETS[lower]
+    if "deepseek" in lower:
+        if "flash" in lower:
+            return _MODEL_CONTEXT_BUDGETS["deepseek-v4-flash:cloud"]
+        if "pro" in lower:
+            return _MODEL_CONTEXT_BUDGETS["deepseek-v4-pro:cloud"]
+        # Bare "deepseek" without flash/pro suffix → mid-tier
+        return _MODEL_CONTEXT_BUDGETS["deepseek-v4:cloud"]
+    return DEFAULT_MAX_CONTEXT_TOKENS
+
 
 def estimate_tokens(history: list) -> int:
     """Rough token count estimate from conversation history."""
@@ -32,10 +81,25 @@ def estimate_tokens(history: list) -> int:
     return total_chars // CHARS_PER_TOKEN
 
 
-def should_compress(history: list, max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS) -> bool:
-    """Check if the conversation history needs compression."""
+def should_compress(
+    history: list,
+    max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+    *,
+    model_name: str | None = None,
+) -> bool:
+    """Check if the conversation history needs compression.
+
+    v0.4.6 (T2.1) — added `model_name` keyword. When supplied, the
+    threshold is resolved via `model_context_budget(model_name)`,
+    overriding any explicit `max_tokens` so callers can pass
+    `model_name=self.backend.model` without juggling tier numbers.
+    Backwards compat: callers that pass only `max_tokens` (or
+    neither) keep the pre-T2.1 behavior.
+    """
     if len(history) < KEEP_RECENT_TURNS * 2 + 4:
         return False
+    if model_name is not None:
+        max_tokens = model_context_budget(model_name)
     return estimate_tokens(history) > max_tokens
 
 
@@ -88,13 +152,17 @@ def compress(
     session,
     backend=None,
     max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+    *,
+    model_name: str | None = None,
 ) -> tuple[list, str]:
     """Compress conversation history by summarizing older messages.
 
     Args:
         session: Session object with conversation_history
         backend: Backend to use for summarization (defaults to session.backend)
-        max_tokens: Target max context size
+        max_tokens: Target max context size (overridden by model_name if set)
+        model_name: v0.4.6 (T2.1) — when supplied, the threshold is
+                    resolved per-model via `model_context_budget`.
 
     Returns:
         (new_history, summary_text) — the compressed history and the summary that was generated
@@ -102,7 +170,7 @@ def compress(
     history = session.conversation_history
     backend = backend or session.backend
 
-    if not should_compress(history, max_tokens):
+    if not should_compress(history, max_tokens, model_name=model_name):
         return history, ""
 
     # Split: older messages to summarize, recent to keep

@@ -242,6 +242,14 @@ _STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(\w+)", re.MULTILINE)
 # The em-dash and trailing label are optional; only the tier number is required.
 # NOTE: `(?:—|-)` not `[—-]` — the latter is parsed as a Unicode range
 # (U+2014 down to U+002D) which silently misbehaves.
+# v0.5.0a9 GA prep — `\.\*\*` was REQUIRED for the title-period
+# separator, but REFLECT routinely emits items without the trailing
+# period (`**T2.1 — Fix something**` not `**T2.1 — Fix something.**`).
+# Making the period optional keeps the canonical writer's output
+# (which always emits the period) round-tripping cleanly while
+# accepting model-authored items that omit it. Found in v0.5.0 GA
+# smoke run #5: REFLECT-added items vanished on parse → daemon
+# declared stuck even though the file had pending work.
 _TIER_HEADER_RE = re.compile(r"^### Tier (\d+)(?:\s*(?:—|-)\s*(.+))?\s*$", re.MULTILINE)
 
 # Item line: `- [x] **T1.3 — Title.** Description... *(shipped at `sha`: note)*`
@@ -252,7 +260,14 @@ _TIER_HEADER_RE = re.compile(r"^### Tier (\d+)(?:\s*(?:—|-)\s*(.+))?\s*$", re.
 # that spans two lines because `\s*` matches `\n`. Using `[^\n]*` forbids
 # crossing the boundary.
 _ITEM_LINE_RE = re.compile(
-    r"^-[ \t]*\[([ x])\][ \t]*\*\*(T\d+\.\d+)[ \t]*(?:—|-)[ \t]*(.+?)\.\*\*([^\n]*)$",
+    # `\.?` (was `\.`) — model-authored items via REFLECT routinely
+    # omit the trailing period (`**T2.1 — Fix something**` not
+    # `**T2.1 — Fix something.**`). Making it optional keeps the
+    # canonical writer's output (which always emits the period)
+    # round-tripping cleanly while accepting model-authored items
+    # that drop it. v0.5.0 GA smoke run #5: REFLECT-added items
+    # vanished on parse → daemon mis-detected stuck.
+    r"^-[ \t]*\[([ x])\][ \t]*\*\*(T\d+\.\d+)[ \t]*(?:—|-)[ \t]*(.+?)\.?\*\*([^\n]*)$",
     re.MULTILINE,
 )
 

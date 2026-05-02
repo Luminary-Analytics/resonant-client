@@ -317,6 +317,32 @@ class TestParseEdgeCases:
         assert len(rm.items) == 1
         assert rm.acceptance_criteria == []
 
+    def test_item_title_period_optional(self):
+        # v0.5.0a9 — REFLECT routinely emits items without a trailing
+        # period (`**T2.1 — Fix something**` not `... something.**`).
+        # The parser must accept both forms; the canonical writer
+        # always emits the period for readability. Found in v0.5.0
+        # GA smoke run #5.
+        text = """\
+# Autonomous Mission: x
+
+## Roadmap
+
+### Tier 1
+
+- [ ] **T1.1 — With period.** Description.
+- [ ] **T1.2 — Without period** Description.
+- [x] **T1.3 — Also no period** Already done.
+"""
+        rm = parse(text)
+        ids = {item.id for item in rm.items}
+        assert ids == {"T1.1", "T1.2", "T1.3"}
+        # And titles stripped consistently for both forms
+        titles = {item.id: item.title for item in rm.items}
+        assert "With period" in titles["T1.1"]
+        assert "Without period" in titles["T1.2"]
+        assert "Also no period" in titles["T1.3"]
+
     def test_malformed_item_line_skipped(self):
         # An item line that doesn't match the regex (e.g. missing the
         # `T<n>.<n>` ID) is skipped silently, not an error. This is

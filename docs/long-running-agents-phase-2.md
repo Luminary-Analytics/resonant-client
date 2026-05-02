@@ -1,6 +1,6 @@
 # Long-running agents — Phase 2: Autonomous Mission
 
-**Status:** **alphas a1–a4 shipped (deterministic spine done); a5–a7 + GA pending.** Target: v0.5.0.
+**Status:** **SHIPPED in v0.5.0 (2026-05-02).** All 7 alphas + 2 GA-prep alphas (a8 + a9) + GA tag landed; flash-vs-pro tier guidance characterized in `docs/v0.5.0-smoke-results-step2c.md`. v0.5.1 will revisit pro's planner-output issue and the 6 followup items in the smoke results doc §7.
 **Author / date:** drafted 2026-05-02 by the autonomous-loop overnight run, iterating with the user.
 **Predecessor:** [`docs/long-running-agents.md`](./long-running-agents.md) (Phase 1, shipped in v0.3.x).
 **Implementation status doc:** [`docs/long-running-agents-phase-2-implementation.md`](./long-running-agents-phase-2-implementation.md) — read THAT for the HOW / STATUS / DECISIONS once you've digested this design doc.

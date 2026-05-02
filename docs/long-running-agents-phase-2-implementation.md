@@ -41,8 +41,10 @@ yet — that's v0.5.0 GA.
 | **a4** | REFLECT specialist + run_reflect_pass | `orchestration/specialists.py::REFLECT` + new `orchestration/reflect.py` (~250 lines) + 40 tests + 19-test roguelite integration | ✅ shipped | `v0.5.0a4` |
 | **a5** | Autonomous loop daemon | new `gui/autonomous_loop.py` (~470 lines) + 22 tests | ✅ shipped | `v0.5.0a5` |
 | **a6** | WS protocol + production hooks | new `gui/autonomous_factory.py` + `gui/autonomous_session.py` + WS handlers in `gui/app.py` (+150 lines) + 60 tests | ✅ shipped | `v0.5.0a6` |
-| **a7** | Frontend (composer toggle, spec card, header badge) | `gui/static/app.js` + styling | ⏭️ next | — |
-| **GA** | End-to-end smoke against deepseek-v4-flash + deepseek-v4-pro | (no new code) | ⏳ planned | `v0.5.0` |
+| **a7** | Frontend (composer toggle, spec card, header badge) | `gui/static/app.js` + styling | ✅ shipped | `v0.5.0a7` |
+| **a8** | GA-prep — 5 integration bugs found + fixed via smoke | misc + `scripts/smoke_autonomous_minimal.py` + 2 doc updates | ✅ shipped | `v0.5.0a8` |
+| **a9** | Ollama 503 retry-with-backoff + vision default → qwen3-vl:8b | `backends.py` + 11 retry tests + `acceptance_check.py` | ✅ shipped | `v0.5.0a9` |
+| **GA** | flash-vs-pro tight smoke + tier guidance update | `docs/v0.5.0-smoke-results-step2c.md` + RESONANT.md update | ✅ shipped | **`v0.5.0`** |
 
 **Total tests:** 1361 passing, 2 skipped (was 1185 at start of v0.5.0;
 added 176 across a1–a6).

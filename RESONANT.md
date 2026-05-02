@@ -50,9 +50,25 @@ resonant_client/
 
 - **Ollama** — local LLMs with adaptive tool-calling (native or XML fallback). The canonical default URL is `http://10.0.0.133:11434` (Mac Studio in the user's infra). Override via `OLLAMA_HOST` env or `network.ollama_url` in `~/.resonant/settings.json`.
 
-DeepSeek tier guidance:
-- **`deepseek-v4-flash:cloud`** — flagship default. Fast, sharp grill-style interviews. Best for short missions.
-- **`deepseek-v4-pro:cloud`** — higher quality, slower. Use for multi-specialist work where the planner / evaluator role benefits from more deliberation.
+DeepSeek tier guidance (revised v0.5.0 GA after the side-by-side smoke):
+
+**For Mission flow (one-shot grill + plan-graph dispatch):**
+- `deepseek-v4-flash:cloud` — recommended default. Fast grill interviews
+  (5–15 questions), reliable JSON output for the planner specialist.
+- `deepseek-v4-pro:cloud` — try when flash's grill seems shallow OR for
+  long-form spec rigor. Note: pro can be inconsistent with the planner
+  specialist's strict JSON output (see `docs/v0.5.0-smoke-results-step2c.md`).
+
+**For Autonomous Mission (∞ Run autonomously, v0.5.0+):**
+- `deepseek-v4-flash:cloud` — **strongly recommended.** Verified end-to-end
+  in the v0.5.0 GA smoke; produces clean code in iter 1, REFLECT
+  correctly identifies failures, daemon converges as designed.
+- `deepseek-v4-pro:cloud` — **NOT recommended for v0.5.0.** Pro's
+  planner specialist consistently misinterprets its role on autonomous
+  workloads (emits `<tool_call>` text instead of JSON subgoals → walker
+  accepts malformed plan → implementer never runs → mission stops with
+  "stuck"). Reproducible across multiple runs. v0.5.1 may revisit with
+  prompt tuning.
 
 # Mission flow (v0.3.x architecture)
 

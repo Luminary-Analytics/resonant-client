@@ -4,6 +4,16 @@
 **Author / date:** drafted 2026-05-02 by the autonomous-loop overnight run, iterating with the user.
 **Predecessor:** [`docs/long-running-agents.md`](./long-running-agents.md) (Phase 1, shipped in v0.3.x).
 
+## Design principle: measure twice, cut once
+
+The whole point of a multi-hour autonomous mission is that **what gets delivered EXACTLY matches what the user wanted.** That's not solved by trusting the model's verdict at the end — the model is biased toward "satisfied" because that ends its work. It's solved by:
+
+1. **Measuring twice up front** — the rigorous grill produces typed, executable acceptance criteria with the user's explicit sign-off. Every criterion is something a person could verify, expressed as a check the agent will run.
+2. **Cutting once** — the agent ships the work over hours of autonomous iteration.
+3. **Measuring again before declaring done** — REFLECT runs every typed acceptance check the same way a person would (bash command, browser interaction, screenshot inspection) and only emits `verdict=satisfied` when every non-`[manual]` criterion produces real evidence of passing.
+
+Validation is therefore a **first-class citizen** of Resonant Client, not an afterthought. The grill phase, the roadmap format, and the REFLECT specialist all serve the same goal: making "the mission is complete" mean *measured to be complete*, not *the model thinks so*.
+
 ---
 
 ## 1. Why this exists
@@ -521,29 +531,29 @@ Updated through the design conversation. Resolved questions are kept here with t
 
 10. **[CLOSED] Validation strategy for visual / behavioral acceptance criteria.** Confirmed: typed acceptance criteria with `[bash]` / `[chrome]` / `[vision]` tags. REFLECT validates each via the tagged strategy. Existing engine browser tools (Playwright via `[browser]` extras) handle `[chrome]`. Existing screenshot infra + Ollama vision models handle `[vision]`. **No manual-check escape valve as default — `[manual]` is allowed but discouraged in the rigorous-grill prompt and excluded from convergence.** See §11.2-§11.4 + §7.
 
-11. **[OPEN] Vision model selection for `[vision]` criteria.** Three options: (a) Hardcode `qwen2.5vl:7b` as the default, configurable via Settings → Network; (b) Use whichever vision-capable model the user has pulled (auto-detected); (c) Defer `[vision]` checks entirely to v0.5.1 and ship v0.5.0 with `[bash] + [chrome]` only. Lean toward (c) for v0.5.0 given the scope creep — vision-model integration deserves its own focused release.
+11. **[CLOSED] Vision model selection for `[vision]` criteria.** User chose to ship all 3 validation types in v0.5.0 (validation is first-class). Resolution:
+    - **Settings → Vision model** with a default of `qwen2.5vl:7b` (Ollama vision model, broadly available, Apache-2 licensed)
+    - At mission start, `detect_backends` confirms the configured vision model is in the Ollama model list. If absent, the rigorous grill is told NOT to emit `[vision]` criteria — the budget UI shows a warning ("Vision model `qwen2.5vl:7b` not pulled — `[vision]` checks unavailable. Pull it or use only `[bash]`/`[chrome]` criteria"). User can dismiss or pull the model.
+    - At REFLECT runtime, a `[vision]` criterion routes to the configured model; failure emits a `[vision]` criterion with `passed: false, evidence: "vision model unavailable: <reason>"` rather than crashing the run.
+    - Future: per-criterion model override (e.g. `[vision:llava-next-13b]`) is non-goal for v0.5.0 but the schema reserves it.
 
 ## 14. Scope estimate
 
-**v0.5.0 (foundation, `[bash]` + `[chrome]` validation):**
+**v0.5.0 (foundation — all three validation types):**
 - New `gui/autonomous_loop.py` (~350 lines: daemon class, threading, stopping-rule logic, resume-from-restart)
-- New `orchestration/specialists.py::REFLECT` profile (~200 lines including the rigorous prompt, typed-validation logic for `[bash]` and `[chrome]`, structured-output schema)
-- New `gui/roadmap.py` (~350 lines: parser, writer, conflict resolution, typed-acceptance-criteria tracking with checkbox state)
-- New `orchestration/acceptance_check.py` (~250 lines: dispatchers for `[bash]` and `[chrome]` strategies, evidence capture, idempotency)
-- Rigorous-grill prompt extension in `orchestration/grill_me.py` (~120 lines: the additional questions + binary-criteria rule + type-tag instruction + budget question)
-- WS event additions + frontend handlers (~200 lines spread across `app.py` + `app.js`)
+- New `orchestration/specialists.py::REFLECT` profile (~250 lines: rigorous prompt, typed-validation logic for all three types, structured-output schema with per-criterion evidence)
+- New `gui/roadmap.py` (~400 lines: parser, writer, conflict resolution, typed-acceptance-criteria tracking with checkbox state, file locking)
+- New `orchestration/acceptance_check.py` (~400 lines: dispatchers for `[bash]`, `[chrome]`, `[vision]` strategies; evidence capture; idempotency; vision-model availability detection)
+- Vision-model integration (~150 lines: Ollama vision-API wrapper, prompt-and-parse for "does this match", configurable default `qwen2.5vl:7b`)
+- Rigorous-grill prompt extension in `orchestration/grill_me.py` (~150 lines: the additional questions + binary-criteria rule + type-tag instruction + budget question + vision-availability gate)
+- Settings: `vision.default_model` field; vision-availability check in `detect_backends`
+- WS event additions + frontend handlers (~250 lines spread across `app.py` + `app.js`)
 - Composer UI changes: autonomous toggle (~30 lines)
 - Spec-card budget confirmation card with presets + "Full auto" handling (~120 lines)
 - Chat-header autonomous badge + stop button + cost/burn-rate display (~80 lines)
-- Tests (~700 lines covering daemon lifecycle, roadmap parser, REFLECT prompt content, typed-acceptance-criteria validation including `[bash]` evidence capture and `[chrome]` Playwright drive, stopping rules, resume-from-restart)
+- Tests (~900 lines covering daemon lifecycle, roadmap parser, REFLECT prompt content, typed-acceptance-criteria validation for all three strategies including stub vision model, stopping rules, resume-from-restart, the "vision model not pulled" graceful-degradation path)
 
-Total: roughly **2,400 lines of new code + tests**, 5-7 days of focused work. Defers `[vision]` to v0.5.1.
-
-**v0.5.1 (`[vision]` validation):**
-- Vision-model integration (~200 lines: model selection, Ollama vision-API wrapper, prompt for "does this match")
-- `acceptance_check.py` extension for `[vision]` strategy (~100 lines)
-- Tests (~150 lines: synthetic screenshots, stub vision model, edge cases)
-- Total: ~450 lines, 1-2 days.
+Total: roughly **3,000 lines of new code + tests**, 7-10 days of focused work. All three validation types ship together because validation IS the product — the design doesn't make sense without `[vision]` for native desktop apps and image features.
 
 **v0.5.x (refinement):**
 - Roadmap rendering in the sidebar (T3.x scope from the v0.4 roadmap)
@@ -558,14 +568,14 @@ Total: roughly **2,400 lines of new code + tests**, 5-7 days of focused work. De
 ## 15. Recommended morning sequence (when implementation starts)
 
 1. **Walk through this doc with the user** — final pushback before any code.
-2. **Build `gui/roadmap.py` first.** Pure data layer: parse the typed-acceptance-criteria format, write checkbox updates, conflict resolution. Easy to unit-test, no threading, no WS. Lands as v0.5.0a1.
-3. **Build `orchestration/acceptance_check.py`.** Dispatchers for `[bash]` and `[chrome]` strategies. Evidence capture. Idempotency (running the same check twice produces the same result). Mock the underlying tools so the unit tests don't need a live Playwright instance. Lands as v0.5.0a2.
-4. **Extend `orchestration/grill_me.py` with the rigorous-grill mode.** Add the autonomous-aware prompt extension, the binary-criteria rule, the type-tag instruction, the budget question. Tests pin the prompt invariants. Lands as v0.5.0a3.
-5. **Build `orchestration/specialists.py::REFLECT`.** Wire it to `acceptance_check.py`. Two trigger modes (item-mark + full pass). Lands as v0.5.0a4.
-6. **Build `gui/autonomous_loop.py`.** Mock the dispatch + reflect to keep the daemon test surface small. Threading, stopping-rule logic, resume-from-restart. Lands as v0.5.0a5.
-7. **Wire WS protocol.** New events, command handlers in `app.py`. Lands as v0.5.0a6.
-8. **Frontend.** Composer toggle, spec-card budget confirmation, chat-header badge with cost/burn-rate, stop button, in-chat iteration messages. Lands as v0.5.0a7.
-9. **End-to-end smoke** against `ollama:deepseek-v4-flash:cloud` with a small scoped feature including at least one `[chrome]` acceptance criterion ("scaffold a tiny webpage with a counter button; the counter increments on click"). Watch one full run hit real convergence — the agent literally clicks the button via Playwright and confirms the counter increased. Lands as v0.5.0.
+2. **Build `gui/roadmap.py`.** Pure data layer: parse the typed-acceptance-criteria format, write checkbox updates, file locking, conflict resolution. Easy to unit-test, no threading, no WS, no model. Lands as **v0.5.0a1**.
+3. **Build `orchestration/acceptance_check.py`.** Dispatchers for `[bash]`, `[chrome]`, `[vision]` strategies. Evidence capture. Idempotency. Vision-model availability detection. Mock the underlying tools so the unit tests don't need a live Playwright/Ollama. Lands as **v0.5.0a2**.
+4. **Extend `orchestration/grill_me.py` with the rigorous-grill mode.** Autonomous-aware prompt extension, binary-criteria rule, type-tag instruction, budget question, vision-availability gate. Tests pin prompt invariants. Lands as **v0.5.0a3**.
+5. **Build `orchestration/specialists.py::REFLECT`.** Wire to `acceptance_check.py`. Two trigger modes (item-mark + full pass). Lands as **v0.5.0a4**.
+6. **Build `gui/autonomous_loop.py`.** Mock the dispatch + reflect to keep daemon test surface small. Threading, stopping rules, resume-from-restart. Lands as **v0.5.0a5**.
+7. **Wire WS protocol.** New events, command handlers in `app.py`. Lands as **v0.5.0a6**.
+8. **Frontend.** Composer toggle, spec-card budget confirmation, chat-header badge with cost/burn-rate, stop button, in-chat iteration messages, `[vision]`-availability warning. Lands as **v0.5.0a7**.
+9. **End-to-end smoke** against `ollama:deepseek-v4-flash:cloud` with a small scoped feature including at least one criterion of EACH type — `[bash]` (build passes), `[chrome]` (counter button click increments), `[vision]` (the rendered counter is centered and readable). Watch one full run hit real convergence. Lands as **v0.5.0**.
 
 Each `a*` step is a separate commit, tagged for testing. Treat v0.5.0 itself as the GA after the smoke is green.
 

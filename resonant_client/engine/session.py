@@ -538,6 +538,7 @@ class Session:
         user_msg: str,
         on_permission: Optional[Callable] = None,
         on_choice: Optional[Callable] = None,
+        on_user_input: Optional[Callable] = None,
         images: Optional[list[tuple[bytes, str]]] = None,
     ) -> Iterator[dict]:
         """
@@ -551,6 +552,10 @@ class Session:
                           If None, uses self.auto_approve
             on_choice: Callback(options) -> str for choice selection
                       If None, selects first option
+            on_user_input: Callback(question, options) -> str for the
+                          await_user tool. Synchronous — caller blocks
+                          on a threading.Event until the GUI replies.
+                          If None, await_user returns "(no user available)".
             images: Optional list of (image_bytes, media_type) for multimodal input
         """
         # Build user message content (multimodal or text-only)
@@ -890,6 +895,49 @@ class Session:
                 if fn_name == "task":
                     # Task tool — spawn a sub-agent session
                     yield from self._execute_task(fn_args, call_id, fn_args_str)
+                elif fn_name == "await_user":
+                    # v0.3.5 — pause and ask the user. Synchronously
+                    # waits via the on_user_input callback. The GUI
+                    # path is wired in app.py: WS event "await_user"
+                    # → modal in app.js → user_input WS command →
+                    # threading.Event released → callback returns →
+                    # this branch resumes with the answer as the tool
+                    # result text. If no callback was wired (CLI mode,
+                    # tests), we return a sentinel and let the agent
+                    # decide how to proceed.
+                    import time as _time
+                    awu_start = _time.time()
+                    question = fn_args.get("question") or ""
+                    options = fn_args.get("options") or []
+                    if on_user_input:
+                        try:
+                            answer = on_user_input(question, options)
+                        except Exception as exc:
+                            logger.exception("on_user_input callback raised")
+                            answer = f"(error obtaining user input: {exc})"
+                    else:
+                        answer = "(no user available — proceed with your best judgment)"
+                    awu_elapsed = _time.time() - awu_start
+                    from .tools import ToolResult
+                    awu_result = ToolResult(
+                        output=str(answer or ""),
+                        is_error=False,
+                        elapsed=awu_elapsed,
+                    )
+                    yield make_event(EngineEvent.TOOL_RESULT,
+                                    name=fn_name, call_id=call_id,
+                                    output=awu_result.output, is_error=False,
+                                    elapsed=awu_elapsed, metadata={"question": question},
+                                    denied=False)
+                    self.conversation_history.append({
+                        "role": "tool_call", "name": fn_name,
+                        "arguments": fn_args_str, "call_id": call_id,
+                        "content": f"Called {fn_name}",
+                    })
+                    self.conversation_history.append({
+                        "role": "tool_result", "call_id": call_id,
+                        "content": awu_result.output,
+                    })
                 elif fn_name.startswith("mcp_") and hasattr(self, '_mcp_manager') and self._mcp_manager:
                     # MCP tool — route to MCP server
                     import time as _time

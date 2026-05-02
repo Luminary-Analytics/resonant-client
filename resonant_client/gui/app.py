@@ -120,6 +120,12 @@ class AppState:
         self.permission_result = [True]
         self.choice_response = threading.Event()
         self.choice_result = [""]
+        # v0.3.5 — await_user tool flow. The agent's on_user_input
+        # callback (defined in `_run_session_streaming`) sets the event
+        # and reads the result. The `user_input` WS command from the
+        # GUI publishes the user's reply.
+        self.user_input_response = threading.Event()
+        self.user_input_result = [""]
         # Project / session manager
         self.project = ProjectManager()
         self._first_message_sent = False
@@ -6985,6 +6991,15 @@ async def websocket_endpoint(ws: WebSocket):
                 state.choice_result[0] = msg.get("selected", "")
                 state.choice_response.set()
 
+            elif command == "user_input":
+                # v0.3.5 — reply path for the await_user tool. The agent
+                # is blocked inside `on_user_input` waiting for this
+                # event. The empty-string sentinel is "user closed the
+                # modal without answering" — agent receives empty and
+                # decides what to do with it.
+                state.user_input_result[0] = msg.get("response", "")
+                state.user_input_response.set()
+
             # ── Settings ────────────────────────────────────
             elif command == "get_settings":
                 await ws.send_json({"event": "settings", "data": state.settings.get_masked()})
@@ -7188,12 +7203,35 @@ async def _run_session_streaming(
                 state.choice_response.clear()
                 return state.choice_result[0]
 
+    def on_user_input(question, options):
+        """v0.3.5 — push await_user request, block until reply.
+        Mirrors on_permission's polling loop so cancellation still
+        bumps us out (otherwise the agent would hang the UI when the
+        user closes a mission with an open prompt).
+        """
+        # Reset before signalling so a stale value from a prior
+        # await_user can't leak into this one.
+        state.user_input_response.clear()
+        state.user_input_result[0] = ""
+        event_queue.put({
+            "event": "await_user",
+            "question": question or "",
+            "options": list(options or []),
+        })
+        while True:
+            if session.cancel_requested or state.cancel_requested.is_set():
+                return ""
+            if state.user_input_response.wait(timeout=0.1):
+                state.user_input_response.clear()
+                return state.user_input_result[0]
+
     def _engine_thread():
         try:
             for event in session.run(
                 user_msg,
                 on_permission=on_permission if not session.auto_approve else None,
                 on_choice=on_choice,
+                on_user_input=on_user_input,
                 images=images,
             ):
                 event_queue.put(event)

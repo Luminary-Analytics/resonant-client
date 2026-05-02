@@ -22,17 +22,25 @@ from .plan_graph import NodeSpecialization
 # ── Tool allowlists per specialization ──────────────────────────────────
 
 
+# v0.3.5 — `await_user` is universally available to specialists. The
+# whole point of the tool is to escape from situations the cycle guards
+# would catch otherwise; restricting it to one specialization would
+# undermine the failure-mode coverage. It's read-only effectively (just
+# pauses the session), so it's safe in every allowlist.
+_AWAIT_USER = frozenset({"await_user"})
+
+
 # Tools that an `implement` specialist gets. We intentionally don't include
 # `task` here — sub-agent recursion is the orchestrator's job, not a specialist's.
-ALL_EDIT_TOOLS = READ_ONLY_TOOLS | FILE_WRITE_TOOLS | EXEC_TOOLS
+ALL_EDIT_TOOLS = READ_ONLY_TOOLS | FILE_WRITE_TOOLS | EXEC_TOOLS | _AWAIT_USER
 
 # Web fetching for `research` — tighter than the full edit set, no shell.
-RESEARCH_TOOLS = READ_ONLY_TOOLS | frozenset({
+RESEARCH_TOOLS = READ_ONLY_TOOLS | _AWAIT_USER | frozenset({
     "browser_navigate", "browser_click", "browser_type",
 })
 
 # Tools that `verify` is allowed to call. Reads + bash for tests, no edits.
-VERIFY_TOOLS = READ_ONLY_TOOLS | frozenset({"bash"})
+VERIFY_TOOLS = READ_ONLY_TOOLS | _AWAIT_USER | frozenset({"bash"})
 
 
 # ── Specialist profile ──────────────────────────────────────────────────
@@ -70,7 +78,7 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "paths, key function/class names, observed behavior or constraints, "
             "and anything the implementer needs to know."
         ),
-        tool_allowlist=READ_ONLY_TOOLS,
+        tool_allowlist=READ_ONLY_TOOLS | _AWAIT_USER,
         max_steps=8,
         confidence_threshold=0.7,
     ),
@@ -83,7 +91,20 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "and nothing more. Don't refactor unrelated code, don't add features that "
             "weren't asked for, don't introduce abstractions for hypothetical future "
             "use. When you finish, summarize what files you touched and the diff "
-            "shape — the verifier needs to know what to check."
+            "shape — the verifier needs to know what to check.\n\n"
+            # v0.3.5 — close the Bug #25 architectural gap. When an
+            # implementer scaffolds into a project subdirectory (web/,
+            # apps/api/, etc.), siblings need to inherit that working
+            # directory or they re-discover the layout from scratch.
+            "**If you scaffold or write files into a project subdirectory** "
+            "(e.g. `web/`, `apps/api/`, `services/auth/`), declare it on its "
+            "own line in your final summary using exactly this format:\n\n"
+            "    Working subdir: <relative/path>\n\n"
+            "Sibling specialists will inherit that as their effective working "
+            "directory and won't need to re-discover where you put things. "
+            "Use a forward-slash path relative to the project root. Do NOT "
+            "use absolute paths or `..` traversal. If you wrote files only "
+            "at the project root, omit the declaration entirely."
         ),
         tool_allowlist=ALL_EDIT_TOOLS,
         # v0.3.3 — bumped from 24 to 50. The two new cycle guards in
@@ -164,7 +185,7 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "attempt to do the work yourself. Use file_read / glob / grep first "
             "if you need to understand the codebase before planning."
         ),
-        tool_allowlist=READ_ONLY_TOOLS,
+        tool_allowlist=READ_ONLY_TOOLS | _AWAIT_USER,
         max_steps=8,
         confidence_threshold=0.6,
     ),

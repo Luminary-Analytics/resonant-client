@@ -6175,6 +6175,118 @@ body {
     text-align: left;
 }
 
+/* v0.3.5 — `await_user` tool prompt. Inline in the chat (not modal) so
+   the question reads as part of the conversation flow. Distinct
+   styling (warm border, slight tint) so the user notices their turn
+   without context-switching to a modal.
+
+   Disabled state (`.await-user-answered`) dims the whole block once
+   the user replies — visual confirmation that the answer was sent. */
+.await-user-prompt {
+    margin: 14px 0;
+    padding: 14px 16px;
+    background: color-mix(in srgb, #d97706 6%, var(--bg-panel));
+    border: 1px solid color-mix(in srgb, #d97706 35%, var(--border));
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.await-user-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11.5px;
+    font-weight: 600;
+    color: color-mix(in srgb, #d97706 80%, var(--text));
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+}
+
+.await-user-icon {
+    font-size: 14px;
+    line-height: 1;
+}
+
+.await-user-question {
+    font-size: 13.5px;
+    color: var(--text);
+    margin-bottom: 10px;
+    white-space: pre-wrap;
+}
+
+.await-user-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+
+.await-user-chip {
+    padding: 5px 12px;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    color: var(--text);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background var(--duration-fast), border-color var(--duration-fast);
+}
+
+.await-user-chip:hover {
+    background: var(--bg-hover);
+    border-color: var(--brand);
+}
+
+.await-user-input-row {
+    display: flex;
+    gap: 8px;
+}
+
+.await-user-input {
+    flex: 1 1 auto;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    line-height: 1.4;
+    padding: 8px 10px;
+    resize: vertical;
+    min-height: 36px;
+    box-sizing: border-box;
+    transition: border-color var(--duration-fast) ease;
+}
+
+.await-user-input:focus {
+    outline: none;
+    border-color: var(--brand);
+}
+
+.await-user-send {
+    flex: 0 0 auto;
+    padding: 0 16px;
+    background: var(--brand);
+    border: 1px solid var(--brand);
+    border-radius: 6px;
+    color: white;
+    font: inherit;
+    font-size: 12.5px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: opacity var(--duration-fast);
+}
+
+.await-user-send:hover { opacity: 0.85; }
+
+.await-user-answered {
+    opacity: 0.55;
+}
+
 /* v0.3.4 — Help → Save Diagnostics confirmation toast. Inline in the
    chat panel so the user definitely sees it; auto-dismiss isn't worth
    the risk of missing the path. */

@@ -65,6 +65,15 @@ class PlanNode:
     depends_on: list[str] = field(default_factory=list)
     skill_id: Optional[str] = None
     agent_session_id: Optional[str] = None
+    # v0.3.5 — when an implementer scaffolds files into a project subdir
+    # (e.g. `web/`, `apps/api/`), the runner records that here so sibling
+    # nodes inherit it as their effective `project_path`. Closes the
+    # last architectural gap from Bug #25 — pre-v0.3.5, sibling
+    # specialists started at the project root and had to re-discover
+    # their predecessor's scaffold layout (the scavenger hunt).
+    # Always a path *relative* to the intent's project root; never
+    # absolute. Empty string is treated identically to None.
+    working_subdir: Optional[str] = None
     result: Optional[dict] = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)

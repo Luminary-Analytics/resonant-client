@@ -185,6 +185,45 @@ AGENT_TOOLS = [
             }
         }
     },
+    # v0.3.5 — `await_user` lets the agent ask the human a focused question
+    # when stuck rather than burning steps on speculative searches. Pairs
+    # with the cycle guards from v0.3.3: when the model would be about to
+    # cycle through `dir`/`glob` variations searching for context, it can
+    # instead call await_user("Where is the API code located? frontend/api
+    # or backend/api?") and get a concrete answer in one step.
+    {
+        "type": "function",
+        "function": {
+            "name": "await_user",
+            "description": (
+                "Pause and ask the user a focused question when you genuinely "
+                "need information you can't find by reading code. Use this "
+                "INSTEAD of cycling through speculative searches. Examples of "
+                "good uses: clarifying ambiguous requirements ('should the "
+                "export include or exclude tool calls?'), choosing between "
+                "valid implementation paths ('use sqlite or just JSON?'), "
+                "asking where to put new files when conventions are unclear. "
+                "Do NOT use for things you can answer yourself by reading code "
+                "(file paths, API shapes, existing function names). The user's "
+                "answer is returned as the tool result."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": "A specific, focused question. Bad: 'what should I do next'. Good: 'should the /export command include tool-call activity, or only user/assistant messages?'"
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional quick-reply choices. When provided, the user sees them as one-click chips. Keep to 2-5 options. Omit for free-text questions."
+                    },
+                },
+                "required": ["question"]
+            }
+        }
+    },
     # ── Browser tools (Playwright) ──────────────────────────────────
     {
         "type": "function",

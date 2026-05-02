@@ -2105,6 +2105,14 @@ class ResonantApp {
             case 'mission_exited':
                 this.handleMissionExited(event);
                 break;
+            case 'await_user':
+                // v0.3.5 — agent paused with `await_user` tool, asking
+                // a focused question. Render an inline prompt with
+                // optional quick-reply chips; the user's reply goes
+                // back via the `user_input` WS command and unblocks
+                // the agent.
+                this.handleAwaitUser(event);
+                break;
             case 'tool_permission':
                 this.handleToolPermission(event);
                 break;
@@ -5876,6 +5884,81 @@ class ResonantApp {
         if (options.length > 0) {
             this.send({ command: 'choice_select', selected: options[0] });
         }
+    }
+
+    // ── await_user (v0.3.5) ─────────────────────────────────────
+
+    /**
+     * Render an inline prompt for the agent's `await_user` tool. The
+     * agent is blocked on the backend's `state.user_input_response`
+     * threading.Event; replying via the `user_input` command unblocks
+     * it. We render *inline in the chat* (not as a modal overlay) so
+     * the question reads as part of the conversation flow — modals
+     * yank focus and feel adversarial here. Quick-reply chips appear
+     * when the tool was called with options; otherwise a plain
+     * textarea with a Send button.
+     */
+    handleAwaitUser(event) {
+        const question = (event && event.question) || '';
+        const options = Array.isArray(event && event.options) ? event.options : [];
+        if (!question) return;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'await-user-prompt';
+
+        // Chips for options. Plain textarea + Send for free-text.
+        const chipsHTML = options.length > 0
+            ? `<div class="await-user-chips">${
+                options.map(o => `<button type="button" class="await-user-chip">${this.escapeHtml(o)}</button>`).join('')
+              }</div>`
+            : '';
+
+        wrap.innerHTML = `
+            <div class="await-user-header">
+                <span class="await-user-icon" aria-hidden="true">❓</span>
+                <span class="await-user-label">Agent needs your input</span>
+            </div>
+            <div class="await-user-question">${this.escapeHtml(question)}</div>
+            ${chipsHTML}
+            <div class="await-user-input-row">
+                <textarea class="await-user-input" rows="2"
+                    placeholder="${options.length > 0 ? 'Or type a different answer…' : 'Type your answer…'}"></textarea>
+                <button type="button" class="await-user-send">Send</button>
+            </div>
+        `;
+
+        const reply = (text) => {
+            // One-shot — disable the whole prompt after answering so
+            // the user can't accidentally double-send. The backend
+            // immediately resumes; we don't need an "answer received"
+            // animation.
+            wrap.classList.add('await-user-answered');
+            wrap.querySelectorAll('button, textarea').forEach(el => el.disabled = true);
+            const textarea = wrap.querySelector('.await-user-input');
+            if (textarea && text !== textarea.value) textarea.value = text;
+            this.send({ command: 'user_input', response: text });
+        };
+
+        wrap.querySelectorAll('.await-user-chip').forEach(btn => {
+            btn.addEventListener('click', () => reply(btn.textContent || ''));
+        });
+
+        const textarea = wrap.querySelector('.await-user-input');
+        const sendBtn = wrap.querySelector('.await-user-send');
+        sendBtn.addEventListener('click', () => {
+            const v = textarea.value.trim();
+            if (v) reply(v);
+        });
+        textarea.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                e.preventDefault();
+                sendBtn.click();
+            }
+        });
+
+        this.chatMessages.appendChild(wrap);
+        this.scrollToBottom();
+        setTimeout(() => textarea.focus(), 100);
     }
 
     // ── DOM Helpers ─────────────────────────────────────────────

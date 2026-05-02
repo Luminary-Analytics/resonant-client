@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import threading
 import time
@@ -38,6 +39,51 @@ from .specialists import (
 from .walker import SpecialistResult
 
 logger = logging.getLogger(__name__)
+
+
+# v0.3.5 — `Working subdir:` declaration parser. Implementer specialists
+# write a final summary; if they scaffolded files into a subdirectory,
+# they declare it here so siblings inherit the path. The format is taught
+# in the implement specialist's system_block (see specialists.py). Format:
+#
+#   Working subdir: web/
+#   Working subdir: apps/api
+#
+# Rejected: absolute paths (`/foo`, `C:\foo`), parent traversal (`..`),
+# and empty values. We coerce backslashes to forward slashes for
+# cross-platform consistency.
+_WORKING_SUBDIR_RE = re.compile(
+    r"^\s*working\s+subdir\s*:\s*(.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _extract_working_subdir(text: str) -> Optional[str]:
+    """Pull a `Working subdir: <path>` declaration from a specialist's
+    summary. Returns the relative path (forward-slashes, no leading or
+    trailing slash) or None if no valid declaration is present.
+    """
+    if not text:
+        return None
+    match = _WORKING_SUBDIR_RE.search(text)
+    if not match:
+        return None
+    val = match.group(1).strip()
+    # Strip wrapping quotes / backticks the model often adds.
+    val = val.strip("`'\"")
+    if not val:
+        return None
+    # Reject absolute paths and obvious garbage.
+    if val.startswith(("/", "\\")):
+        return None
+    if len(val) >= 2 and val[1] == ":":  # Windows drive letter
+        return None
+    parts = val.replace("\\", "/").split("/")
+    if any(p in ("..", "") for p in parts if p):
+        # `web/../web` etc. — refuse rather than pretend to handle.
+        return None
+    normalized = "/".join(p for p in parts if p)
+    return normalized or None
 
 
 # ── Confidence model ────────────────────────────────────────────────────
@@ -158,6 +204,41 @@ class LocalSpecialistRunner:
 
     def _run_node(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
         profile = get_specialist(node.specialization)
+
+        # v0.3.5 — inherit `working_subdir` from completed deps. If a
+        # parent implementer scaffolded into `<root>/web/`, this child
+        # specialist runs there too instead of starting back at the
+        # project root and re-discovering the layout. Explicit subdir
+        # already on the node (set by some other code path) wins; only
+        # falls back to dep-chain inheritance when unset.
+        if not node.working_subdir:
+            for dep_id in node.depends_on:
+                dep = graph.nodes.get(dep_id)
+                if dep and dep.working_subdir:
+                    node.working_subdir = dep.working_subdir
+                    break
+
+        # Resolve the effective working directory. project_path stays
+        # the intent root; the session's project_path is rooted there
+        # plus any inherited subdir. Sandbox + tool dispatch already
+        # treat session.project_path as the trust root.
+        effective_path = self.project_path
+        if node.working_subdir:
+            try:
+                effective_path = os.path.normpath(
+                    os.path.join(self.project_path, node.working_subdir)
+                )
+            except (TypeError, ValueError):
+                # Defensive — if the subdir somehow has weird types,
+                # fall back to the project root. Better to be slightly
+                # off than crash the runner.
+                effective_path = self.project_path
+                logger.warning(
+                    "working_subdir join failed for node %s subdir=%r",
+                    node.id,
+                    node.working_subdir,
+                )
+
         system_prompt = assemble_system_prompt(
             specialization=node.specialization,
             node_goal=node.goal,
@@ -175,12 +256,30 @@ class LocalSpecialistRunner:
             project_instructions=system_prompt,
             cancel_event=self.cancel_event,
         )
-        session.project_path = self.project_path
+        session.project_path = effective_path
         # Hand the settings through so autonomy.check_floor can pick up custom
         # protected branches / budget cap / external paths during tool dispatch.
         session._settings_ref = self.settings
 
-        return self._drive_session(session, node, graph)
+        result = self._drive_session(session, node, graph)
+
+        # v0.3.5 — record any newly-declared `Working subdir:` from the
+        # specialist's summary. An implementer that scaffolds into a
+        # fresh subdir announces it here; siblings will inherit it via
+        # the dep-chain walk above on their next dispatch. We only
+        # *upgrade* (set if unset, or replace with a more-specific
+        # nested path); we never clear an inherited path.
+        declared = _extract_working_subdir(result.summary or "")
+        if declared:
+            if not node.working_subdir or declared != node.working_subdir:
+                # Only adopt if it's a strict refinement of what we
+                # had, or the first declaration. This guards against
+                # an implementer accidentally re-declaring the parent's
+                # broader path as if it were a new pivot.
+                if not node.working_subdir or declared.startswith(node.working_subdir + "/"):
+                    node.working_subdir = declared
+
+        return result
 
     def _drive_session(
         self,
@@ -314,6 +413,20 @@ class LocalSpecialistRunner:
         if not node.depends_on:
             return ""
         lines: list[str] = []
+        # v0.3.5 — surface inherited working_subdir at the top of the
+        # context so the specialist sees it before anything else. Even
+        # though session.project_path is already pointed there, telling
+        # the model "you're working inside `web/`" prevents path
+        # confusion in tool args and makes the summary less ambiguous
+        # ("relative to what?") for downstream specialists.
+        if node.working_subdir:
+            lines.append(
+                f"Working directory: a previous specialist scaffolded into "
+                f"`{node.working_subdir}/`. Your tools (file_read, glob, file_write, "
+                f"bash) all run inside that subdir — you don't need to prefix paths "
+                f"with `{node.working_subdir}/`."
+            )
+            lines.append("")
         for dep_id in node.depends_on:
             dep = graph.nodes.get(dep_id)
             if not dep or not isinstance(dep.result, dict):

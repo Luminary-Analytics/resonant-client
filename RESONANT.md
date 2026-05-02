@@ -91,8 +91,17 @@ DeepSeek tier guidance:
 - **`ARCHITECTURE.md`** — module-by-module deep dive
 - **`docs/long-running-agents.md`** — Mission flow design doc (Phase 1)
 - **`docs/long-running-agents-phase-1-review.md`** — postmortem on the v0.3.x mission iterations
+- **`docs/long-running-agents-phase-2.md`** — Autonomous Mission design doc (Phase 2 / v0.5.0). The WHY and WHAT.
+- **`docs/long-running-agents-phase-2-implementation.md`** — Autonomous Mission implementation guide. The HOW, STATUS, and DECISIONS made during a1–a4. **Start here if you're picking up v0.5.0 work after a context reset.**
 - **`docs/mission-cross-model-test-plan.md`** — Chrome MCP E2E test plans + per-model verdicts (now historical — v0.4.0 collapsed to single model family)
 - **`docs/v0.4.0-cut.md`** — what was removed and why (read this if you wonder why a backend module is missing)
-- **`docs/v0.4.x-deepseek-harness-roadmap.md`** — backlog of deepseek-specific optimizations queued for v0.4.x
+- **`docs/v0.4.x-deepseek-harness-roadmap.md`** — backlog of deepseek-specific optimizations (Tier 1 + Tier 2 done; Tier 3 deferred to v0.5.x)
 
-If you're an LLM continuing this work after a context reset, **read `RESONANT.md` first, then `docs/v0.4.x-deepseek-harness-roadmap.md`** to know what's next.
+If you're an LLM continuing this work after a context reset, the reading order is:
+
+1. **`RESONANT.md`** (this file) — overall conventions
+2. **`docs/long-running-agents-phase-2-implementation.md`** — current implementation status + ADRs + module map
+3. **`docs/long-running-agents-phase-2.md`** — design doc the implementation is realizing
+4. The tests: `tests/test_roadmap.py`, `tests/test_acceptance_check.py`, `tests/test_grill_me_rigorous.py`, `tests/test_reflect.py`, `tests/test_roguelite_integration.py`
+
+If you're working on v0.5.0a5 specifically (the autonomous loop daemon), §6.1 + §7.3 of the implementation guide is your starting point.

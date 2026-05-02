@@ -1,8 +1,11 @@
 # Long-running agents — Phase 2: Autonomous Mission
 
-**Status:** design doc, pre-implementation. Target: v0.5.0.
+**Status:** **alphas a1–a4 shipped (deterministic spine done); a5–a7 + GA pending.** Target: v0.5.0.
 **Author / date:** drafted 2026-05-02 by the autonomous-loop overnight run, iterating with the user.
 **Predecessor:** [`docs/long-running-agents.md`](./long-running-agents.md) (Phase 1, shipped in v0.3.x).
+**Implementation status doc:** [`docs/long-running-agents-phase-2-implementation.md`](./long-running-agents-phase-2-implementation.md) — read THAT for the HOW / STATUS / DECISIONS once you've digested this design doc.
+
+> **TL;DR for the impatient:** this doc is the WHY and WHAT. It captures the product/UX decisions, the architecture, and the open questions, frozen at design time. As of `v0.5.0a4`, the deterministic spine (roadmap data layer, acceptance dispatchers, rigorous-grill prompt + parsers, REFLECT specialist + `run_reflect_pass`) is built and tested end-to-end. The autonomous loop daemon (a5), WS protocol additions (a6), and frontend (a7) are still TBD. See the implementation guide linked above for HOW the design materializes in code, decisions made along the way, and what to read first if you're picking this up cold.
 
 ## Design principle: measure twice, cut once
 

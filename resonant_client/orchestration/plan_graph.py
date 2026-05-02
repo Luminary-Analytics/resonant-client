@@ -40,8 +40,13 @@ class NodeSpecialization:
     REPAIR = "repair"
     RESEARCH = "research"
     PLAN = "plan"
+    # v0.5.0a4 — REFLECT keeps the autonomous-mission roadmap honest:
+    # validates typed acceptance criteria, marks items done with commit
+    # refs, decides continue/satisfied/blocked. Only specialist with
+    # write access to roadmap.md.
+    REFLECT = "reflect"
 
-    ALL = frozenset({EXPLORE, IMPLEMENT, VERIFY, REPAIR, RESEARCH, PLAN})
+    ALL = frozenset({EXPLORE, IMPLEMENT, VERIFY, REPAIR, RESEARCH, PLAN, REFLECT})
 
 
 # ── Plan node ────────────────────────────────────────────────────────────

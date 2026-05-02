@@ -17,7 +17,7 @@ import threading
 from typing import Optional
 
 from ..events import EngineEvent, ClientCommand, make_event
-from ..backends import create_backend, OllamaBackend, ClaudeBackend, OpenAIBackend
+from ..backends import create_backend, OllamaBackend
 from .session import Session
 
 logger = logging.getLogger(__name__)

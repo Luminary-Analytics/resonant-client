@@ -42,13 +42,7 @@ from .network_defaults import (
     resolve_remote_engine_ws_url,
     resolve_resonant_api_url,
 )
-from .backends import (
-    create_backend,
-    OllamaBackend,
-    ResonantBackend,
-    ClaudeBackend,
-    OpenAIBackend,
-)
+from .backends import create_backend, OllamaBackend
 from .engine import Session
 from .engine.tools import AGENT_TOOLS, get_tool_icon
 
@@ -1003,17 +997,12 @@ _BACKEND_LABELS = {
 
 def _detect_backends(api_url: str, ollama_url: str, lmstudio_url: str = None) -> dict:
     """Probe all backends and return what's available."""
+    # v0.4.0 — Ollama-only TUI. Anthropic / OpenAI / LM Studio /
+    # Resonant Engine detection paths were cut. Use the GUI for the
+    # full Ollama experience; the TUI keeps the simple Ollama path
+    # for headless CLI sessions.
     import httpx
-    available = {}
-
-    try:
-        resp = httpx.get(f"{api_url}/health", timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        if data.get("status") == "ready":
-            available["resonant"] = {"url": api_url, "health": data}
-    except Exception:
-        pass
+    available: dict = {}
 
     try:
         resp = httpx.get(f"{ollama_url}/api/tags", timeout=5)
@@ -1025,38 +1014,6 @@ def _detect_backends(api_url: str, ollama_url: str, lmstudio_url: str = None) ->
             available["ollama"] = {"url": ollama_url, "models": models}
     except Exception:
         pass
-
-    # LM Studio (OpenAI-compatible API)
-    if lmstudio_url:
-        try:
-            # LM Studio serves /v1/models (or /models if base_url already has /v1)
-            probe_url = lmstudio_url.rstrip("/")
-            models_endpoint = f"{probe_url}/models" if probe_url.endswith("/v1") else f"{probe_url}/v1/models"
-            base_url = f"{probe_url}" if probe_url.endswith("/v1") else f"{probe_url}/v1"
-            resp = httpx.get(models_endpoint, timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            models = [m["id"] for m in data.get("data", [])]
-            if models:
-                available["lmstudio"] = {"base_url": base_url, "models": models}
-        except Exception:
-            pass
-
-    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if anthropic_key:
-        try:
-            import anthropic  # noqa: F401
-            available["claude"] = {"api_key": anthropic_key, "models": ClaudeBackend.MODELS}
-        except ImportError:
-            pass
-
-    openai_key = os.environ.get("OPENAI_API_KEY", "")
-    if openai_key:
-        try:
-            import openai  # noqa: F401
-            available["openai"] = {"api_key": openai_key, "models": OpenAIBackend.MODELS}
-        except ImportError:
-            pass
 
     return available
 
@@ -1611,28 +1568,9 @@ Examples:
                             console.print(f"  [{C_DIM}]Keeping {be.model}[/{C_DIM}]")
                     else:
                         console.print(f"  [{C_ERR}]{G_CROSS} Could not list models[/{C_ERR}]")
-                elif isinstance(be, ClaudeBackend):
-                    models = be.list_models()
-                    new_model = _select_model_interactive(models, current=be.model)
-                    if new_model != be.model:
-                        new_be = create_backend("claude", api_key=be.api_key, model=new_model)
-                        session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
-                        health_info = new_be.health()
-                        console.print(f"  [{C_OK}]{G_CHECK} Switched to {new_model} · conversation cleared[/{C_OK}]")
-                    else:
-                        console.print(f"  [{C_DIM}]Keeping {be.model}[/{C_DIM}]")
-                elif isinstance(be, OpenAIBackend):
-                    models = be.list_models()
-                    new_model = _select_model_interactive(models, current=be.model)
-                    if new_model != be.model:
-                        new_be = create_backend("openai", api_key=be.api_key, model=new_model)
-                        session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
-                        health_info = new_be.health()
-                        console.print(f"  [{C_OK}]{G_CHECK} Switched to {new_model} · conversation cleared[/{C_OK}]")
-                    else:
-                        console.print(f"  [{C_DIM}]Keeping {be.model}[/{C_DIM}]")
-                elif isinstance(be, ResonantBackend):
-                    console.print(f"  [{C_DIM}]Resonant Engine uses its own model — use /backend to switch[/{C_DIM}]")
+                # v0.4.0 — Claude / OpenAI / Resonant Engine branches cut.
+                # Only Ollama is supported; the OllamaBackend branch above
+                # handles every case.
 
             elif cmd == "/backend":
                 new_available = _detect_backends(api_url, ollama_url, lmstudio_url)

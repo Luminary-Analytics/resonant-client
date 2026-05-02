@@ -84,9 +84,12 @@ class BackendSpec:
     def create_backend(self, settings=None):
         backend_type = self.backend_type
 
-        if backend_type == "resonant":
-            return create_backend("resonant", url=self.url)
-
+        # v0.4.0 — Ollama is the only supported backend. The factory
+        # in `backends.create_backend` raises a friendly ValueError
+        # for any other backend_type that points the user at the
+        # right upstream tool (Claude Code, Codex). Old BackendSpec
+        # JSONs that still hold `claude` / `openai` / etc. will hit
+        # that error here and the welcome wizard will redirect.
         if backend_type == "ollama":
             return create_backend(
                 "ollama",
@@ -95,45 +98,8 @@ class BackendSpec:
                 thinking=self.thinking_mode or None,
             )
 
-        if backend_type == "mlx":
-            return create_backend("mlx", model=self.model, local_root=self.local_root)
-
-        if backend_type == "claude":
-            return create_backend(
-                "claude",
-                api_key=self.resolve_api_key(settings),
-                model=self.model,
-            )
-
-        if backend_type == "openai":
-            return create_backend(
-                "openai",
-                api_key=self.resolve_api_key(settings),
-                model=self.model,
-            )
-
-        if backend_type == "lmstudio":
-            api_key = self.resolve_api_key(settings) or "lm-studio"
-            return create_backend(
-                "lmstudio",
-                api_key=api_key,
-                model=self.model,
-                base_url=self.base_url,
-            )
-
-        if backend_type == "claude-code":
-            return create_backend(
-                "claude-code",
-                model=self.model,
-                cwd=self.cwd,
-                permission_mode=self.permission_mode or "bypassPermissions",
-            )
-
-        if backend_type == "codex":
-            return create_backend(
-                "codex",
-                model=self.model,
-                cwd=self.cwd,
-            )
-
-        raise ValueError(f"Unknown backend: {backend_type}")
+        raise ValueError(
+            f"Backend '{backend_type}' is not supported in v0.4.0. "
+            f"Resonant Client is now Ollama-native. For Anthropic "
+            f"models, use Claude Code; for OpenAI models, use Codex."
+        )

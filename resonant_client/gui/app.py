@@ -32,12 +32,9 @@ from starlette.templating import Jinja2Templates
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..events import EngineEvent, make_event
-from ..backends import (
-    ClaudeBackend, OpenAIBackend,
-    ClaudeCodeBackend, CodexBackend, MLXBackend, _find_cli,
-)
+from ..backends import OllamaBackend, create_backend
 from ..engine import Session, AGENT_TOOLS
-from ..network_defaults import resolve_resonant_api_url
+from ..network_defaults import resolve_resonant_api_url, resolve_ollama_url
 from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
@@ -3266,48 +3263,26 @@ class AppState:
         session_role: str,
         reason: str = "",
     ) -> tuple[str, str]:
-        normalized_role = self.normalize_session_role("code", session_role)
-        lowered_reason = reason.lower()
+        """v0.4.0 — harness teacher escalation no longer has a frontier
+        CLI to escalate to (Claude Code / Codex were cut). Always
+        return the current Ollama backend with a stronger model than
+        the running one when available — `deepseek-v4-pro:cloud` if
+        the user has it, otherwise the running model is the ceiling.
+        """
         if not self.available_backends:
             self.detect_backends()
-        codex_cli = _find_cli("codex")
-        claude_cli = _find_cli("claude")
-        forced_provider = str(os.environ.get("RESONANT_HARNESS_TEACHER_PROVIDER", "") or "").strip()
-        forced_model = str(os.environ.get("RESONANT_HARNESS_TEACHER_MODEL", "") or "").strip()
-
-        if forced_provider:
-            if forced_provider == "codex" and codex_cli:
-                return forced_provider, forced_model or "gpt-5.4"
-            if forced_provider == "claude" and claude_cli:
-                return forced_provider, forced_model or "claude-opus-4-6"
-            raise ValueError(f"Forced harness teacher provider '{forced_provider}' is not available")
-
-        prefer_claude = normalized_role == "evaluator" or "blocked" in lowered_reason or "verdict" in lowered_reason
-        providers: list[tuple[str, str]] = []
-        if prefer_claude:
-            providers.extend(
-                [
-                    ("claude", "claude-opus-4-6"),
-                    ("codex", "gpt-5.4-mini"),
-                    ("codex", "gpt-5.4"),
-                ]
-            )
-        else:
-            providers.extend(
-                [
-                    ("codex", "gpt-5.4-mini"),
-                    ("codex", "gpt-5.4"),
-                    ("claude", "claude-opus-4-6"),
-                ]
-            )
-
-        for provider, model in providers:
-            if provider == "codex" and codex_cli:
-                return provider, model
-            if provider == "claude" and claude_cli:
-                return provider, model
-
-        raise ValueError("No teacher CLI is available for harness escalation")
+        ollama_models = self.available_backends.get("ollama", {}).get("models", [])
+        # Prefer pro-class models for escalation if present.
+        for stronger in ("deepseek-v4-pro:cloud", "deepseek-v4:cloud"):
+            if stronger in ollama_models:
+                return "ollama", stronger
+        # Fall back to whatever the running backend is using.
+        running_model = getattr(self.backend, "model", "") if self.backend else ""
+        if running_model:
+            return "ollama", running_model
+        if ollama_models:
+            return "ollama", ollama_models[0]
+        raise ValueError("No Ollama models available for harness escalation")
 
     def wrap_user_message_for_harness(
         self,
@@ -4417,177 +4392,42 @@ class AppState:
         return session
 
     def detect_backends(self):
-        """Detect available backends with parallel network checks."""
+        """v0.4.0 — Ollama-only detection. Single network probe to the
+        configured Ollama URL (Mac Studio at 10.0.0.133 by default per
+        the user's infra; falls back to whatever `ollama_url` resolves
+        to). Returns `{"ollama": {url, models}}` on success or `{}`
+        when Ollama isn't reachable — the welcome screen reads the
+        empty dict and renders the Ollama setup wizard.
+        """
         import httpx
-        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         self.refresh_network_defaults()
-        api_url = self.api_url
         ollama_url = self.ollama_url
-        available = {}
+        available: dict = {}
 
-        # Short connect timeout so unreachable hosts don't block startup
+        # Short connect timeout so an unreachable host doesn't block
+        # startup — the wizard handles the unreachable case explicitly.
         _timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=4.0)
 
-        # ── Parallel network checks ──────────────────────────────────
-        def _check_resonant():
-            try:
-                resp = httpx.get(f"{api_url}/health", timeout=_timeout)
-                resp.raise_for_status()
-                data = resp.json()
-                if data.get("status") == "ready":
-                    return "resonant", {"url": api_url, "health": data}
-            except Exception:
-                pass
-            return None, None
-
-        def _check_ollama():
-            try:
-                resp = httpx.get(f"{ollama_url}/api/tags", timeout=_timeout)
-                resp.raise_for_status()
-                data = resp.json()
-                models = [m["name"] for m in data.get("models", [])
-                          if not any(kw in m["name"].lower()
-                                     for kw in ("embed", "bert", "bge", "nomic"))]
-                # Append cloud models that aren't already pulled locally
-                from ..backends import OllamaBackend
-                local_set = {m.lower() for m in models}
-                for cloud in OllamaBackend.CLOUD_MODELS:
-                    if cloud.lower() not in local_set:
-                        models.append(cloud)
-                if models:
-                    return "ollama", {"url": ollama_url, "models": models}
-            except Exception:
-                pass
-            return None, None
-
-        def _check_lmstudio_url(url):
-            """Check a single LM Studio URL candidate."""
-            try:
-                resp = httpx.get(f"{url}/models", timeout=_timeout)
-                resp.raise_for_status()
-                data = resp.json()
-                models = [m["id"] for m in data.get("data", [])]
-                if models:
-                    return url, models
-            except Exception:
-                pass
-            return None, None
-
-        def _check_lmstudio():
-            lmstudio_url = os.environ.get("LMSTUDIO_URL", "").rstrip("/")
-            if lmstudio_url:
-                url, models = _check_lmstudio_url(lmstudio_url)
-                if url:
-                    self.lmstudio_url = url
-                    return "lmstudio", {"url": url, "models": models}
-                return None, None
-            # Try candidates in parallel
-            candidates = [c for c in [self.lmstudio_url, "http://10.0.0.133:1234/v1", "http://localhost:1234/v1"] if c]
-            with ThreadPoolExecutor(max_workers=len(candidates)) as p:
-                futs = {p.submit(_check_lmstudio_url, c): c for c in candidates}
-                for fut in as_completed(futs):
-                    url, models = fut.result()
-                    if url:
-                        self.lmstudio_url = url
-                        return "lmstudio", {"url": url, "models": models}
-            return None, None
-
-        # Run network checks in parallel
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            futures = [pool.submit(fn) for fn in [_check_resonant, _check_ollama, _check_lmstudio]]
-            for f in as_completed(futures):
-                key, val = f.result()
-                if key:
-                    available[key] = val
-
-        # ── Local / API-key checks (instant) ─────────────────────────
-        anthropic_key, anthropic_source, anthropic_env, anthropic_setting = self._api_key_details(
-            "anthropic", "ANTHROPIC_API_KEY"
-        )
-        if anthropic_key:
-            try:
-                import anthropic  # noqa: F401
-                available["claude"] = {
-                    "models": ClaudeBackend.MODELS,
-                    "api_key_source": anthropic_source,
-                    "api_key_env": anthropic_env,
-                    "api_key_setting": anthropic_setting,
-                }
-            except ImportError:
-                pass
-
-        openai_key, openai_source, openai_env, openai_setting = self._api_key_details(
-            "openai", "OPENAI_API_KEY"
-        )
-        if openai_key:
-            try:
-                import openai  # noqa: F401
-                available["openai"] = {
-                    "models": OpenAIBackend.MODELS,
-                    "api_key_source": openai_source,
-                    "api_key_env": openai_env,
-                    "api_key_setting": openai_setting,
-                }
-            except ImportError:
-                pass
-
-        # Claude Code CLI
-        if _find_cli("claude"):
-            try:
-                import subprocess as _sp
-                result = _sp.run(
-                    [_find_cli("claude"), "--version"],
-                    capture_output=True, text=True, timeout=5,
-                    shell=(sys.platform == "win32"),
-                )
-                if result.returncode == 0:
-                    available["claude-code"] = {
-                        "models": list(ClaudeCodeBackend.MODELS),
-                        "model_labels": ClaudeCodeBackend.MODEL_LABELS,
-                        "permission_mode": (
-                            self.backend_spec.permission_mode
-                            if self.backend_spec and self.backend_spec.backend_type == "claude-code"
-                            else "bypassPermissions"
-                        ),
-                    }
-            except Exception:
-                pass
-
-        # Codex CLI
-        if _find_cli("codex"):
-            try:
-                import subprocess as _sp
-                result = _sp.run(
-                    [_find_cli("codex"), "--version"],
-                    capture_output=True, text=True, timeout=5,
-                    shell=(sys.platform == "win32"),
-                )
-                if result.returncode == 0:
-                    available["codex"] = {
-                        "models": list(CodexBackend.MODELS),
-                        "model_labels": CodexBackend.MODEL_LABELS,
-                    }
-            except Exception:
-                pass
-
-        # Local MLX stack from LocalCodingModel repo
-        mlx_root = os.environ.get("LOCAL_CODING_MODEL_ROOT", "/Users/richbellantoni/Repos/LocalCodingModel")
-        mlx_python = Path(mlx_root) / ".venv" / "bin" / "python"
-        mlx_adapter_root = Path(mlx_root) / "outputs" / "adapters"
-        if mlx_python.exists() and mlx_adapter_root.exists():
-            available["mlx"] = {
-                "models": list(MLXBackend.MODELS),
-                "local_root": mlx_root,
-            }
-
-        # Append Ollama cloud models that aren't already in the local list
-        if "ollama" in available:
-            from ..backends import OllamaBackend
-            existing = {m.lower() for m in available["ollama"].get("models", [])}
-            for cloud_model in OllamaBackend.CLOUD_MODELS:
-                if cloud_model.lower() not in existing:
-                    available["ollama"]["models"].append(cloud_model)
+        try:
+            resp = httpx.get(f"{ollama_url}/api/tags", timeout=_timeout)
+            resp.raise_for_status()
+            data = resp.json()
+            # Filter out non-chat models (embeddings, rerankers).
+            models = [m["name"] for m in data.get("models", [])
+                      if not any(kw in m["name"].lower()
+                                 for kw in ("embed", "bert", "bge", "nomic"))]
+            # Append cloud models that aren't already pulled locally so
+            # the user sees them as options even on a fresh Ollama.
+            local_set = {m.lower() for m in models}
+            for cloud in OllamaBackend.CLOUD_MODELS:
+                if cloud.lower() not in local_set:
+                    models.append(cloud)
+            if models:
+                available["ollama"] = {"url": ollama_url, "models": models}
+        except Exception:
+            # Non-fatal — empty available means "show the Ollama wizard."
+            pass
 
         self.available_backends = available
         return available
@@ -4598,78 +4438,63 @@ class AppState:
         session_role: str,
         project_path: Optional[str] = None,
     ) -> tuple[str, str]:
+        """v0.4.0 — single-backend (Ollama). All harness roles share the
+        same backend; only the *model* varies based on role + the user's
+        forced overrides via `RESONANT_HARNESS_<ROLE>_MODEL`. Cut the
+        whole multi-backend preference walk that existed pre-v0.4.0
+        — there's only one backend now.
+
+        Default model selection:
+        - planner / evaluator → `deepseek-v4-pro:cloud` if available
+          (more deliberate, better reasoning) else flash
+        - generator → `deepseek-v4-flash:cloud` (faster turnaround)
+        - falls through to whatever the running backend is using or
+          the first available Ollama model
+        """
         if not self.available_backends:
             self.detect_backends()
-
         project_path = os.path.normpath(project_path or self.project.project_path)
-        # Ollama-first: deepseek-v4-flash on the Mac Studio is the flagship.
-        # Cloud backends are fallbacks for when Ollama isn't reachable.
-        preferences = {
-            "planner": ["ollama", "lmstudio", "claude-code", "codex", "openai", "claude", "mlx"],
-            "generator": ["ollama", "lmstudio", "mlx", "claude-code", "codex", "openai", "claude"],
-            "evaluator": ["ollama", "lmstudio", "claude-code", "codex", "claude", "openai", "mlx"],
-        }
-        preferred_mlx_model_by_role = {
-            "planner": "fast-14b",
-            "generator": "adapter-router",
-            "evaluator": "fast-14b",
-        }
+
+        info = self.available_backends.get("ollama")
+        if not info:
+            raise ValueError(
+                "No Ollama backend available — start Ollama (or fix the URL) "
+                "before running a harness role."
+            )
+        models = list(info.get("models") or [])
+
         role_env = session_role.upper()
-        forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_BACKEND", "") or "").strip()
         forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_MODEL", "") or "").strip()
 
-        if session_role == "generator" and forced_backend and self._harness_generator_needs_frontier_repair(project_path):
-            forced_backend = ""
-            forced_model = ""
-
-        if forced_backend:
-            info = self.available_backends.get(forced_backend)
-            if not info:
-                raise ValueError(
-                    f"Forced harness backend '{forced_backend}' for role '{session_role}' is not available"
-                )
-            models = list(info.get("models") or [])
-            preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
-            if forced_model:
-                model = forced_model
-            elif forced_backend == "mlx" and preferred_mlx_model in models:
-                model = preferred_mlx_model
-            else:
-                model = models[0] if models else ""
-            spec = self.build_backend_spec(forced_backend, model=model or None, project_path=project_path)
+        if forced_model:
+            spec = self.build_backend_spec("ollama", model=forced_model, project_path=project_path)
             return spec.backend_type, spec.model
 
-        if session_role == "generator" and self._harness_generator_needs_frontier_repair(project_path):
-            preferences = {
-                **preferences,
-                "generator": ["claude-code", "codex", "mlx", "openai", "claude", "ollama", "lmstudio"],
-            }
+        # Role-specific model preference order.
+        role_preference = {
+            "planner": ["deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"],
+            "evaluator": ["deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"],
+            "generator": ["deepseek-v4-flash:cloud", "deepseek-v4-pro:cloud"],
+        }.get(session_role, ["deepseek-v4-flash:cloud"])
 
-        # Flagship Ollama model — first choice when Ollama is the picked backend.
-        ollama_flagship = "deepseek-v4-flash:cloud"
+        chosen_model = ""
+        # Honor the running backend's model first if it's still in the list.
+        if (self.backend_spec and self.backend_spec.backend_type == "ollama"
+                and self.backend_spec.model in models):
+            chosen_model = self.backend_spec.model
+        else:
+            for candidate in role_preference:
+                if candidate in models:
+                    chosen_model = candidate
+                    break
+            if not chosen_model and models:
+                chosen_model = models[0]
 
-        for backend_type in preferences.get(session_role, preferences["generator"]):
-            info = self.available_backends.get(backend_type)
-            if not info:
-                continue
-            models = list(info.get("models") or [])
-            preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
-            if self.backend_spec and self.backend_spec.backend_type == backend_type and self.backend_spec.model:
-                model = self.backend_spec.model
-            elif backend_type == "ollama" and ollama_flagship in models:
-                model = ollama_flagship
-            elif session_role == "generator" and backend_type == "claude-code" and self._harness_generator_needs_frontier_repair(project_path):
-                model = "sonnet" if "sonnet" in models else (models[0] if models else "")
-            elif session_role == "generator" and backend_type == "codex" and self._harness_generator_needs_frontier_repair(project_path):
-                model = "gpt-5.4" if "gpt-5.4" in models else (models[0] if models else "")
-            elif backend_type == "mlx" and preferred_mlx_model in models:
-                model = preferred_mlx_model
-            else:
-                model = models[0] if models else ""
-            spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
-            return spec.backend_type, spec.model
+        if not chosen_model:
+            raise ValueError(f"No model available for harness role '{session_role}'")
 
-        raise ValueError(f"No available backend for harness role '{session_role}'")
+        spec = self.build_backend_spec("ollama", model=chosen_model, project_path=project_path)
+        return spec.backend_type, spec.model
 
     def _harness_generator_needs_frontier_repair(self, project_path: Optional[str] = None) -> bool:
         project_path = os.path.normpath(project_path or self.project.project_path)
@@ -4727,62 +4552,43 @@ class AppState:
         failed_backend: str = "",
         project_path: Optional[str] = None,
     ) -> tuple[str, str]:
+        """v0.4.0 — single-backend means cross-backend retry is gone.
+        Retry uses the *other* deepseek model: pro→flash if pro failed,
+        flash→pro if flash failed. Returns ("", "") when no retry
+        candidate exists (e.g. only one model available, or env override
+        disables it).
+        """
         if not self.available_backends:
             self.detect_backends()
-
         project_path = os.path.normpath(project_path or self.project.project_path)
         role_env = session_role.upper()
         forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_BACKEND", "") or "").strip()
         forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_MODEL", "") or "").strip()
         if forced_backend.lower() in {"disabled", "none", "off", "false", "no"}:
             return "", ""
-        repair_needed = session_role == "generator" and self._harness_generator_needs_frontier_repair(project_path)
 
-        if forced_backend and not repair_needed:
-            info = self.available_backends.get(forced_backend)
-            if not info:
-                raise ValueError(
-                    f"Forced harness retry backend '{forced_backend}' for role '{session_role}' is not available"
-                )
-            models = list(info.get("models") or [])
-            model = forced_model or (models[0] if models else "")
-            spec = self.build_backend_spec(forced_backend, model=model or None, project_path=project_path)
+        info = self.available_backends.get("ollama")
+        if not info:
+            return "", ""
+        models = list(info.get("models") or [])
+
+        # Honor explicit override.
+        if forced_model:
+            spec = self.build_backend_spec("ollama", model=forced_model, project_path=project_path)
             return spec.backend_type, spec.model
 
-        retry_preferences = {
-            "planner": ["codex", "claude-code", "openai", "claude", "mlx", "ollama", "lmstudio"],
-            "generator": ["codex", "claude-code", "mlx", "openai", "claude", "ollama", "lmstudio"],
-            "evaluator": ["claude-code", "claude", "codex", "openai", "mlx", "ollama", "lmstudio"],
-        }
-        preferred_mlx_model_by_role = {
-            "planner": "fast-14b",
-            "generator": "adapter-router",
-            "evaluator": "fast-14b",
-        }
-        if repair_needed:
-            retry_preferences = {
-                **retry_preferences,
-                "generator": ["claude-code", "codex", "mlx", "openai", "claude", "ollama", "lmstudio"],
-            }
-
-        for backend_type in retry_preferences.get(session_role, retry_preferences["evaluator"]):
-            if backend_type == failed_backend:
-                continue
-            info = self.available_backends.get(backend_type)
-            if not info:
-                continue
-            models = list(info.get("models") or [])
-            preferred_mlx_model = preferred_mlx_model_by_role.get(session_role, "adapter-router")
-            if backend_type == "claude-code" and repair_needed:
-                model = "sonnet" if "sonnet" in models else (models[0] if models else "")
-            elif backend_type == "codex" and repair_needed and "gpt-5.4" in models:
-                model = "gpt-5.4"
-            elif backend_type == "mlx" and preferred_mlx_model in models:
-                model = preferred_mlx_model
-            else:
-                model = models[0] if models else ""
-            spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
-            return spec.backend_type, spec.model
+        # Pick the OTHER deepseek tier as the retry. If the failed run
+        # was on flash, escalate to pro; if it was on pro, fall back to
+        # flash for a faster second pass.
+        running_model = getattr(self.backend, "model", "") if self.backend else ""
+        retry_pairs = [
+            ("deepseek-v4-flash:cloud", "deepseek-v4-pro:cloud"),
+            ("deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"),
+        ]
+        for primary, retry in retry_pairs:
+            if running_model == primary and retry in models:
+                spec = self.build_backend_spec("ollama", model=retry, project_path=project_path)
+                return spec.backend_type, spec.model
 
         return "", ""
 
@@ -4949,44 +4755,10 @@ class AppState:
             allowed_tools = None
             max_tokens_override = None
 
-        if backend_type == "resonant":
-            spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
-            backend = spec.create_backend(self.settings)
-            if hasattr(backend, "prepare_harness_step"):
-                payload = backend.prepare_harness_step(
-                    project_path=project_path,
-                    session_mode="code",
-                    session_role=session_role,
-                    objective="",
-                    execute=True,
-                    prompt_override=effective_prompt,
-                )
-                execution_result = dict(payload.get("execution_result") or {})
-                return {
-                    "result": str(
-                        execution_result.get("result")
-                        or execution_result.get("assistant_text")
-                        or ""
-                    ),
-                    "assistant_text": str(
-                        execution_result.get("assistant_text")
-                        or execution_result.get("result")
-                        or ""
-                    ),
-                    "error": str(execution_result.get("error") or payload.get("error") or ""),
-                    "steps": int(execution_result.get("steps") or 0),
-                    "display_events": list(execution_result.get("display_events") or []),
-                    "backend_type": str(execution_result.get("backend_type") or backend_type),
-                    "model": str(execution_result.get("model") or getattr(backend, "model", model or "")),
-                    "timed_out": bool(execution_result.get("timed_out")),
-                    "artifact_only": bool(execution_result.get("artifact_only")),
-                    "evaluation_mode": str(execution_result.get("evaluation_mode") or ""),
-                    "role_mode": str(execution_result.get("role_mode") or ""),
-                    "prechecked": bool(execution_result.get("prechecked")),
-                    "summary_after": execution_result.get("summary_after"),
-                    "remote": True,
-                }
-
+        # v0.4.0 — pre-cut, this branch routed Resonant Engine harness
+        # cycles through `backend.prepare_harness_step` for remote
+        # execution. With ResonantBackend gone, every harness role runs
+        # the local session loop below.
         session, spec = self.build_harness_role_session(
             project_path=project_path,
             session_role=session_role,
@@ -5281,42 +5053,30 @@ class AppState:
             spec = BackendSpec.from_dict(self.backend_spec.to_dict(include_sensitive=True))
             if model:
                 spec.model = model
-            if backend_type in {"claude-code", "codex"}:
-                spec.cwd = project_path
             return spec
 
-        info = self.available_backends.get(backend_type)
+        # v0.4.0 — Ollama is the only supported backend. Reject anything
+        # else with a message that points the user at the right tool
+        # rather than silently failing.
+        if backend_type != "ollama":
+            raise ValueError(
+                f"Backend '{backend_type}' is not supported in v0.4.0. "
+                f"Resonant Client is now Ollama-native. For Anthropic models, "
+                f"use Claude Code; for OpenAI models, use Codex."
+            )
+
+        info = self.available_backends.get("ollama")
         if not info:
-            raise ValueError(f"Backend '{backend_type}' not available")
+            raise ValueError(
+                "Ollama is not reachable. Check the URL in Settings → Network "
+                "(default Mac Studio: http://10.0.0.133:11434) and that "
+                "`ollama serve` is running."
+            )
 
         models = info.get("models") or []
         selected_model = model or (models[0] if models else "")
-        spec = BackendSpec(backend_type=backend_type, model=selected_model)
-
-        if backend_type == "resonant":
-            spec.url = info.get("url", "")
-        elif backend_type == "ollama":
-            spec.url = info.get("url", "")
-        elif backend_type == "claude":
-            spec.api_key_source = info.get("api_key_source", "")
-            spec.api_key_env = info.get("api_key_env", "")
-            spec.api_key_setting = info.get("api_key_setting", "")
-        elif backend_type == "openai":
-            spec.api_key_source = info.get("api_key_source", "")
-            spec.api_key_env = info.get("api_key_env", "")
-            spec.api_key_setting = info.get("api_key_setting", "")
-        elif backend_type == "lmstudio":
-            spec.base_url = info.get("url", "")
-            spec.api_key = "lm-studio"
-            spec.api_key_source = "literal"
-        elif backend_type == "mlx":
-            spec.local_root = info.get("local_root", "")
-        elif backend_type == "claude-code":
-            spec.cwd = project_path
-            spec.permission_mode = info.get("permission_mode", "bypassPermissions")
-        elif backend_type == "codex":
-            spec.cwd = project_path
-
+        spec = BackendSpec(backend_type="ollama", model=selected_model)
+        spec.url = info.get("url", "")
         return spec
 
     def build_session(
@@ -5485,7 +5245,10 @@ class AppState:
     # ignore the conversation_history list we pass to .stream(). When the
     # user swaps TO one of these mid-conversation, they need a heads-up
     # that history won't carry over.
-    CLI_WRAPPED_BACKENDS = {"claude-code", "codex"}
+    # v0.4.0 — kept as empty set for compatibility with existing call sites
+    # (one branch in switch_model checks it). Pre-v0.4.0 this held the set
+    # of backends whose CLI sessions ignored our conversation_history.
+    CLI_WRAPPED_BACKENDS: set = set()
 
     def swap_backend(
         self,
@@ -5568,7 +5331,7 @@ class AppState:
 
         if (
             self.backend_spec and
-            self.backend_spec.backend_type in {"resonant", "ollama", "claude", "openai", "lmstudio", "mlx"} and
+            self.backend_spec.backend_type == "ollama" and
             section in {"api_keys", "engram", "general", "network"}
         ):
             try:
@@ -5581,17 +5344,12 @@ class AppState:
         return self.settings.get_masked()
 
     def refresh_network_defaults(self):
+        # v0.4.0 — single Ollama URL resolution chain (env → settings →
+        # Mac Studio default at 10.0.0.133). See `resolve_ollama_url`
+        # for why localhost is NOT a silent fallback.
         settings_data = self.settings.get_all()
         self.api_url = resolve_resonant_api_url(settings_data=settings_data)
-        self.ollama_url = (
-            str(
-                os.environ.get(
-                    "OLLAMA_URL",
-                    os.environ.get("OLLAMA_HOST", "http://10.0.0.133:11434"),
-                )
-                or ""
-            ).rstrip("/")
-        )
+        self.ollama_url = resolve_ollama_url(settings_data=settings_data)
         self.lmstudio_url = str(os.environ.get("LMSTUDIO_URL", "") or "").rstrip("/")
 
     def update_setting_value(
@@ -6866,6 +6624,16 @@ async def websocket_endpoint(ws: WebSocket):
                         await ws.send_json({"event": "intent.restore_ack",
                                             "intent_id": msg.get("intent_id", ""),
                                             "ok": ok})
+
+            elif command == "redetect_backends":
+                # v0.4.0 — fired by the welcome-screen Ollama wizard
+                # after the user updates the URL. Re-probes Ollama and
+                # ships a fresh init payload so the wizard either
+                # shows the model picker (success) or stays put with
+                # a fresh diagnostic (still unreachable).
+                state.refresh_network_defaults()
+                await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
+                await ws.send_json(state.get_init_data())
 
             elif command == "set_project":
                 project_path = msg.get("path", "").strip()

@@ -10,6 +10,14 @@ from typing import Any, Mapping
 _SETTINGS_PATH = Path.home() / ".resonant" / "settings.json"
 _DEFAULT_RESONANT_API_URL = "http://localhost:8000"
 _DEFAULT_REMOTE_ENGINE_WS_URL = "ws://localhost:8765"
+# v0.4.0 — Mac Studio at 10.0.0.133 hosts Ollama in the canonical
+# Resonant deployment (per the user's infra). The fallback below it is
+# the localhost path for users running Ollama on the same box. The
+# welcome-screen wizard prompts for a custom URL when neither
+# responds. Override via OLLAMA_HOST env or `network.ollama_url`
+# in `~/.resonant/settings.json`.
+_DEFAULT_OLLAMA_URL_PRIMARY = "http://10.0.0.133:11434"
+_DEFAULT_OLLAMA_URL_FALLBACK = "http://localhost:11434"
 
 
 def _load_settings(path: Path | None = None) -> dict[str, Any]:
@@ -70,6 +78,40 @@ def resolve_resonant_api_url(
             settings_data=settings_data,
         ).strip()
         or _DEFAULT_RESONANT_API_URL
+    ).rstrip("/")
+
+
+def resolve_ollama_url(
+    explicit: str | None = None,
+    *,
+    settings_data: Mapping[str, Any] | None = None,
+) -> str:
+    """v0.4.0 — resolve the Ollama base URL.
+
+    Resolution order:
+      1. `explicit` argument (e.g. CLI flag).
+      2. `OLLAMA_HOST` env var (Ollama's own convention).
+      3. `network.ollama_url` in settings.json.
+      4. Mac Studio default (`http://10.0.0.133:11434`) — see the
+         module-level comment for why this is the primary default
+         rather than localhost.
+
+    The fallback to localhost is intentionally NOT in this function:
+    `detect_backends` probes the resolved URL once, and if that
+    fails, the welcome-screen wizard takes over and prompts the user
+    for the right URL. Silent-fallback-to-localhost would mask the
+    real "Ollama isn't where you think it is" misconfiguration.
+    """
+    return (
+        str(explicit or "").strip()
+        or str(os.environ.get("OLLAMA_HOST", "") or "").strip()
+        or _get_setting(
+            "network",
+            "ollama_url",
+            _DEFAULT_OLLAMA_URL_PRIMARY,
+            settings_data=settings_data,
+        ).strip()
+        or _DEFAULT_OLLAMA_URL_PRIMARY
     ).rstrip("/")
 
 

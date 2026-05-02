@@ -35,13 +35,22 @@ DEFAULTS = {
         "autonomy_external_paths": [],   # empty → use the defaults from autonomy.py
     },
     "network": {
+        # v0.4.0 — Mac Studio at 10.0.0.133 is the canonical Ollama
+        # host per the user's infra; left empty by default so a fresh
+        # install probes the env / network defaults rather than
+        # hard-coding a private IP. Welcome-screen wizard prompts for
+        # the URL on first run when Ollama isn't reachable.
+        "ollama_url": "",
+        # Pre-v0.4.0 fields kept here as empty strings for migration
+        # safety — older settings.json files won't crash on load.
         "resonant_api_url": "",
         "remote_engine_ws_url": "",
     },
-    "api_keys": {
-        "anthropic": "",
-        "openai": "",
-    },
+    # v0.4.0 — kept as empty dict to preserve schema compatibility
+    # with older settings.json files. Anthropic / OpenAI key fields
+    # were removed from the Settings UI; the field stays so a stored
+    # `api_keys: {}` from any version loads without a migration step.
+    "api_keys": {},
     "hooks": [],
     "mcp_servers": {},
     "keyboard_shortcuts": {},

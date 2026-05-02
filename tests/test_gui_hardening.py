@@ -37,65 +37,27 @@ def _load_app_module(monkeypatch, cwd: Path):
     return importlib.reload(app_module)
 
 
+# v0.4.0 — collapsed multi-backend parametrization to Ollama-only.
+# Pre-v0.4.0 this exercised resonant / claude / openai / lmstudio /
+# claude-code / codex paths; those are gone. The remaining test
+# verifies the Ollama path still wires through correctly.
 @pytest.mark.parametrize(
     ("spec", "settings_data", "env", "expected_args", "expected_kwargs"),
     [
         (
-            BackendSpec(backend_type="resonant", url="http://engine"),
-            {},
-            {},
-            ("resonant",),
-            {"url": "http://engine"},
-        ),
-        (
             BackendSpec(
-                backend_type="claude",
-                model="claude-sonnet",
-                api_key_source="settings",
-                api_key_setting="anthropic",
-            ),
-            {"api_keys": {"anthropic": "settings-key"}},
-            {},
-            ("claude",),
-            {"api_key": "settings-key", "model": "claude-sonnet"},
-        ),
-        (
-            BackendSpec(
-                backend_type="openai",
-                model="gpt-4o",
-                api_key_source="env",
-                api_key_env="OPENAI_API_KEY",
-            ),
-            {},
-            {"OPENAI_API_KEY": "env-key"},
-            ("openai",),
-            {"api_key": "env-key", "model": "gpt-4o"},
-        ),
-        (
-            BackendSpec(backend_type="lmstudio", model="local-model", base_url="http://lm/v1"),
-            {},
-            {},
-            ("lmstudio",),
-            {"api_key": "lm-studio", "model": "local-model", "base_url": "http://lm/v1"},
-        ),
-        (
-            BackendSpec(
-                backend_type="claude-code",
-                model="sonnet",
-                cwd="D:/repo",
-                permission_mode="acceptEdits",
+                backend_type="ollama",
+                url="http://10.0.0.133:11434",
+                model="deepseek-v4-flash:cloud",
             ),
             {},
             {},
-            ("claude-code",),
-            {"model": "sonnet", "cwd": "D:/repo", "permission_mode": "acceptEdits"},
-        ),
-        (
-            BackendSpec(backend_type="codex", model="gpt-5", cwd="D:/repo"),
-            {},
-            {},
-            ("codex",),
-            {"model": "gpt-5", "cwd": "D:/repo"},
+            ("ollama",),
+            {
+                "url": "http://10.0.0.133:11434",
+                "model": "deepseek-v4-flash:cloud",
+                "thinking": None,
+            },
         ),
     ],
 )

@@ -1321,10 +1321,10 @@ class ResonantApp {
         // fallback. The chosen path is only applied on Start, not Cancel.
         this._missionComposerPath = (this.currentCwd || '').replace(/\\/g, '/');
 
-        // v0.3.2 — surface a backend health hint up-front. Cross-model
-        // testing showed Codex/GPT-5.2 stalls past the typical Mission
-        // grill cadence and Qwen3 drifts off the spec format. Steer the
-        // user toward Sonnet (gold standard) before they invest typing.
+        // v0.4.0 — Ollama-only model hints. The original v0.3.2 codex /
+        // claude-code recommendations are gone (those backends were cut).
+        // Model-specific advice now centers on the deepseek tier choice
+        // and known quirks of other open models on Ollama.
         const modelVal = (this.modelSelector && this.modelSelector.value) || '';
         const backendType = modelVal.indexOf(':') > 0 ? modelVal.substring(0, modelVal.indexOf(':')) : '';
         const modelName = modelVal.indexOf(':') > 0 ? modelVal.substring(modelVal.indexOf(':') + 1) : '';
@@ -1333,14 +1333,7 @@ class ResonantApp {
             modelHintHTML = `
                 <div class="mission-composer-hint mission-composer-hint-warn">
                     <span aria-hidden="true">⚠</span>
-                    Pick a model first — the Mission needs a backend to run the interview.
-                </div>`;
-        } else if (backendType === 'codex') {
-            modelHintHTML = `
-                <div class="mission-composer-hint mission-composer-hint-warn">
-                    <span aria-hidden="true">⏳</span>
-                    Codex tends to be slow for the Mission interview.
-                    <strong>claude-code:sonnet</strong> is the most reliable choice if you have it.
+                    Pick a model first — the Mission needs Ollama to run the interview.
                 </div>`;
         } else if (backendType === 'ollama' && /qwen/i.test(modelName)) {
             modelHintHTML = `
@@ -1348,7 +1341,16 @@ class ResonantApp {
                     <span aria-hidden="true">ℹ</span>
                     Heads up: Qwen sometimes formats the spec loosely. If the
                     "Build this roadmap" button doesn't appear, exit and retry,
-                    or switch to <strong>claude-code:sonnet</strong>.
+                    or switch to <strong>deepseek-v4-pro:cloud</strong> for more
+                    reliable spec emission.
+                </div>`;
+        } else if (backendType === 'ollama' && /deepseek-v4-flash/i.test(modelName)) {
+            modelHintHTML = `
+                <div class="mission-composer-hint mission-composer-hint-info">
+                    <span aria-hidden="true">⚡</span>
+                    Flash is fast — great for short missions. For multi-specialist
+                    work, <strong>deepseek-v4-pro:cloud</strong> usually produces a
+                    more thorough spec.
                 </div>`;
         }
 
@@ -2527,123 +2529,163 @@ class ResonantApp {
         this.showNewSessionSetup();
     }
 
+    /**
+     * v0.4.0 — Ollama-only welcome flow. Two states:
+     *   1. Ollama reachable + has models → flat model picker (deepseek
+     *      flagship pinned to top).
+     *   2. Ollama unreachable / empty → setup wizard with URL config,
+     *      install link, "pull a model" hint.
+     * Pre-v0.4.0 this rendered cards for Anthropic / OpenAI / Claude
+     * Code / Codex / LM Studio / MLX — all cut.
+     */
     showBackendSelector(backends) {
         const list = document.getElementById('backend-list');
+        const label = document.querySelector('.backend-label');
         list.innerHTML = '';
 
-        const label = document.querySelector('.backend-label');
-        const keys = Object.keys(backends);
-        if (keys.length === 0) {
-            label.textContent = 'No backends found. Start Ollama, set ANTHROPIC_API_KEY, or set OPENAI_API_KEY.';
+        const ollamaInfo = backends && backends.ollama;
+        if (!ollamaInfo) {
+            this._renderOllamaSetupWizard(list, label);
             return;
         }
 
-        label.textContent = 'Select a backend';
-
-        const backendLabels = {
-            resonant: 'Resonant Engine',
-            mlx: 'MLX Local',
-            ollama: 'Ollama',
-            claude: 'Claude',
-            openai: 'OpenAI',
-            lmstudio: 'LM Studio',
-            'claude-code': 'Claude Code',
-            codex: 'Codex',
-        };
-
-        const backendIcons = {
-            'claude-code': '⌘',
-            codex: '>_',
-            resonant: '◈',
-            mlx: '◉',
-            ollama: '🦙',
-            claude: '◆',
-            openai: '◎',
-            lmstudio: '⬡',
-        };
-
-        const backendDescs = {
-            'claude-code': 'CLI agent',
-            codex: 'CLI agent',
-            resonant: 'Cognitive engine',
-            mlx: 'Routed local adapters',
-            ollama: 'Local models',
-            claude: 'Anthropic API',
-            openai: 'OpenAI API',
-            lmstudio: 'Local server',
-        };
-
-        // Group backends by category
-        const groups = [
-            { label: 'Agents', keys: ['claude-code', 'codex', 'resonant'] },
-            { label: 'Cloud APIs', keys: ['claude', 'openai'] },
-            { label: 'Local', keys: ['mlx', 'ollama', 'lmstudio'] },
-        ];
-        const preferred = this._getPreferredBackendSelection(backends);
-
-        for (const group of groups) {
-            const available = group.keys.filter(k => backends[k]);
-            if (available.length === 0) continue;
-
-            const section = document.createElement('div');
-            section.className = 'backend-group';
-
-            const groupLabel = document.createElement('div');
-            groupLabel.className = 'backend-group-label';
-            groupLabel.textContent = group.label;
-            section.appendChild(groupLabel);
-
-            const cardsContainer = document.createElement('div');
-            cardsContainer.className = 'backend-group-cards' + (available.length === 1 ? ' single' : '');
-
-            for (const key of available) {
-                const info = backends[key];
-                const card = document.createElement('div');
-                card.className = 'backend-card';
-                card.dataset.backend = key;
-
-                const modelCount = info.models ? info.models.length : 0;
-                const detail = backendDescs[key] || (info.patterns
-                    ? info.patterns.toLocaleString() + ' patterns'
-                    : modelCount + (modelCount === 1 ? ' model' : ' models'));
-                const isPreferred = preferred && preferred.backend === key;
-
-                // Status pills — visible signal of "is this ready to use".
-                const pills = [];
-                if (isPreferred) pills.push('<span class="backend-pill backend-pill-rec">Recommended</span>');
-                if (modelCount > 0) {
-                    pills.push(`<span class="backend-pill backend-pill-ok">\u2713 ${modelCount} model${modelCount === 1 ? '' : 's'}</span>`);
-                } else if (info.patterns) {
-                    pills.push('<span class="backend-pill backend-pill-ok">\u2713 Available</span>');
-                } else {
-                    pills.push('<span class="backend-pill backend-pill-warn">No models</span>');
-                }
-
-                card.innerHTML = `
-                    <div class="backend-card-icon">${backendIcons[key] || '●'}</div>
-                    <div class="backend-card-info">
-                        <div class="backend-card-name">${backendLabels[key] || key}</div>
-                        <div class="backend-card-detail">${detail}</div>
-                        <div class="backend-card-pills">${pills.join('')}</div>
-                    </div>
-                    <div class="backend-card-dot"></div>
-                `;
-
-                card.addEventListener('click', () => {
-                    if (info.models && info.models.length > 1) {
-                        this.showModelPicker(key, info.models, cardsContainer, card, info.model_labels);
-                    } else {
-                        const model = info.models ? info.models[0] : '';
-                        this.selectBackend(key, model);
-                    }
-                });
-
-                cardsContainer.appendChild(card);
-            }
-
-            section.appendChild(cardsContainer);
-            list.appendChild(section);
+        const models = Array.isArray(ollamaInfo.models) ? ollamaInfo.models.slice() : [];
+        if (models.length === 0) {
+            this._renderOllamaSetupWizard(list, label, {
+                reason: 'connected-but-empty',
+                url: ollamaInfo.url,
+            });
+            return;
         }
+
+        label.textContent = 'Pick a model';
+
+        // Pin DeepSeek flagship variants to the top.
+        const flagshipOrder = [
+            'deepseek-v4-pro:cloud',
+            'deepseek-v4-flash:cloud',
+            'deepseek-v4:cloud',
+        ];
+        const pinned = flagshipOrder.filter(m => models.includes(m));
+        const others = models.filter(m => !pinned.includes(m));
+        const ordered = [...pinned, ...others];
+
+        const card = document.createElement('div');
+        card.className = 'backend-group-cards single';
+
+        for (const model of ordered) {
+            const isFlagship = flagshipOrder.includes(model);
+            const row = document.createElement('div');
+            row.className = 'backend-card';
+            row.dataset.backend = 'ollama';
+            row.dataset.model = model;
+            const pills = [];
+            if (isFlagship) pills.push('<span class="backend-pill backend-pill-rec">Flagship</span>');
+            if (model.endsWith(':cloud')) pills.push('<span class="backend-pill backend-pill-ok">Cloud</span>');
+            else pills.push('<span class="backend-pill backend-pill-ok">Local</span>');
+            row.innerHTML = `
+                <div class="backend-card-icon">🦙</div>
+                <div class="backend-card-info">
+                    <div class="backend-card-name">${this.escapeHtml(model)}</div>
+                    <div class="backend-card-detail">${this.escapeHtml(ollamaInfo.url || 'Ollama')}</div>
+                    <div class="backend-card-pills">${pills.join('')}</div>
+                </div>
+                <div class="backend-card-dot"></div>
+            `;
+            row.addEventListener('click', () => {
+                this.selectBackend('ollama', model);
+            });
+            card.appendChild(row);
+        }
+        list.appendChild(card);
+    }
+
+    /**
+     * v0.4.0 — Ollama setup wizard. URL field persists via
+     * `update_settings` and triggers a re-detect, so the user never
+     * has to leave the window to get unstuck.
+     */
+    _renderOllamaSetupWizard(list, label, opts = {}) {
+        const reason = opts.reason || 'unreachable';
+        const triedUrl = opts.url
+            || (this.settings && this.settings.network && this.settings.network.ollama_url)
+            || 'http://10.0.0.133:11434';
+
+        label.textContent = 'Set up Ollama';
+
+        const headline = reason === 'connected-but-empty'
+            ? 'Ollama is reachable but no models are pulled yet.'
+            : 'Resonant needs Ollama. We couldn\'t reach it.';
+
+        const wizard = document.createElement('div');
+        wizard.className = 'ollama-wizard';
+        wizard.innerHTML = `
+            <div class="ollama-wizard-headline">
+                <span class="ollama-wizard-icon" aria-hidden="true">🦙</span>
+                <span>${this.escapeHtml(headline)}</span>
+            </div>
+            <p class="ollama-wizard-blurb">
+                Resonant Client v0.4.0 is purpose-built for DeepSeek (and other
+                open-source models) running through Ollama. If you want
+                Anthropic models, reach for <strong>Claude Code</strong>; for
+                OpenAI, reach for <strong>Codex</strong>.
+            </p>
+
+            <div class="ollama-wizard-step">
+                <div class="ollama-wizard-step-title">1. Ollama URL</div>
+                <div class="ollama-wizard-row">
+                    <input type="text" class="ollama-wizard-url" value="${this.escapeHtml(triedUrl)}"
+                        placeholder="http://10.0.0.133:11434" spellcheck="false" autocomplete="off">
+                    <button type="button" class="ollama-wizard-test">Test</button>
+                </div>
+                <div class="ollama-wizard-hint" id="ollama-wizard-hint">
+                    Default: <code>http://10.0.0.133:11434</code> (Mac Studio).
+                    Override via <code>OLLAMA_HOST</code> env or fill above.
+                </div>
+            </div>
+
+            <div class="ollama-wizard-step">
+                <div class="ollama-wizard-step-title">2. Install Ollama (if you haven't)</div>
+                <div class="ollama-wizard-cmd">
+                    <a href="https://ollama.com/download" target="_blank" rel="noopener">Download from ollama.com</a>
+                    &middot; then run <code>ollama serve</code>
+                </div>
+            </div>
+
+            <div class="ollama-wizard-step">
+                <div class="ollama-wizard-step-title">3. Pull DeepSeek</div>
+                <div class="ollama-wizard-cmd">
+                    <code>ollama pull deepseek-v4-flash:cloud</code>
+                    <span class="ollama-wizard-cmd-note">— flagship, fast</span>
+                </div>
+                <div class="ollama-wizard-cmd">
+                    <code>ollama pull deepseek-v4-pro:cloud</code>
+                    <span class="ollama-wizard-cmd-note">— higher quality, slower</span>
+                </div>
+            </div>
+        `;
+
+        wizard.querySelector('.ollama-wizard-test').addEventListener('click', () => {
+            const newUrl = wizard.querySelector('.ollama-wizard-url').value.trim();
+            const hint = wizard.querySelector('#ollama-wizard-hint');
+            if (!newUrl) {
+                hint.textContent = '⚠ URL is empty.';
+                hint.className = 'ollama-wizard-hint ollama-wizard-hint-warn';
+                return;
+            }
+            hint.textContent = `Saving and probing ${newUrl}…`;
+            hint.className = 'ollama-wizard-hint';
+            this.send({
+                command: 'update_settings',
+                section: 'network',
+                values: { ollama_url: newUrl },
+            });
+            setTimeout(() => {
+                this.send({ command: 'redetect_backends' });
+            }, 400);
+        });
+
+        list.appendChild(wizard);
     }
 
     showModelPicker(backendType, models, container, card, modelLabels) {
@@ -2853,59 +2895,34 @@ class ResonantApp {
     }
 
     _getModelGroups() {
-        // Categorize backends into display groups
+        // v0.4.0 — single backend, single group. Old multi-backend
+        // grouping (Local / Subscriptions / APIs) is gone.
         return {
-            local: {
-                label: 'Local',
-                backends: ['mlx', 'ollama', 'lmstudio', 'resonant'],
-            },
-            subscriptions: {
-                label: 'Subscriptions',
-                backends: ['claude-code', 'codex'],
-            },
-            apis: {
-                label: 'APIs',
-                backends: ['claude', 'openai'],
+            ollama: {
+                label: 'Ollama',
+                backends: ['ollama'],
             },
         };
     }
 
     _getBackendLabels() {
-        return {
-            'claude-code': 'Claude Code',
-            codex: 'Codex',
-            resonant: 'Resonant',
-            mlx: 'MLX Local',
-            ollama: 'Ollama',
-            claude: 'Anthropic API',
-            openai: 'OpenAI API',
-            lmstudio: 'LM Studio',
-        };
+        return { ollama: 'Ollama' };
     }
 
     _getPreferredBackendSelection(backends) {
-        const configuredBackend = this.settings?.general?.default_backend || '';
+        // v0.4.0 — Ollama-only. Pick the configured default model if
+        // it's pulled, otherwise the first deepseek flagship variant
+        // we can find, otherwise the first available model.
+        if (!backends?.ollama?.models?.length) return null;
+        const models = backends.ollama.models;
         const configuredModel = this.settings?.general?.default_model || '';
-        if (configuredBackend && backends?.[configuredBackend]?.models?.length > 0) {
-            const models = backends[configuredBackend].models;
-            const preferredModel = configuredModel && models.includes(configuredModel)
-                ? configuredModel
-                : models[0];
-            return { backend: configuredBackend, model: preferredModel };
+        if (configuredModel && models.includes(configuredModel)) {
+            return { backend: 'ollama', model: configuredModel };
         }
-        if (backends?.mlx?.models?.length > 0) {
-            const preferredModel = backends.mlx.models.includes('adapter-router')
-                ? 'adapter-router'
-                : backends.mlx.models[0];
-            return { backend: 'mlx', model: preferredModel };
+        for (const flagship of ['deepseek-v4-flash:cloud', 'deepseek-v4-pro:cloud', 'deepseek-v4:cloud']) {
+            if (models.includes(flagship)) return { backend: 'ollama', model: flagship };
         }
-        if (backends?.ollama?.models?.length > 0) {
-            return { backend: 'ollama', model: backends.ollama.models[0] };
-        }
-        if (backends?.lmstudio?.models?.length > 0) {
-            return { backend: 'lmstudio', model: backends.lmstudio.models[0] };
-        }
-        return null;
+        return { backend: 'ollama', model: models[0] };
     }
 
     _populateSelectWithGroupedModels(selectEl, backends, currentBackend, currentModel) {
@@ -4622,17 +4639,13 @@ class ResonantApp {
             {
                 id: 'general', title: 'General', open: true,
                 fields: [
+                    // v0.4.0 — single backend; the Auto option is the
+                    // only sensible value. Kept the select for schema
+                    // compatibility with older settings.json.
                     { key: 'default_backend', label: 'Default backend', type: 'select',
                       options: [
-                          { value: '', label: 'Auto' },
-                          { value: 'resonant', label: 'Resonant Engine' },
-                          { value: 'mlx', label: 'MLX Local' },
                           { value: 'ollama', label: 'Ollama' },
-                          { value: 'lmstudio', label: 'LM Studio' },
-                          { value: 'claude-code', label: 'Claude Code' },
-                          { value: 'codex', label: 'Codex' },
-                          { value: 'claude', label: 'Anthropic API' },
-                          { value: 'openai', label: 'OpenAI API' },
+                          { value: '', label: 'Auto' },
                       ]
                     },
                     { key: 'default_model', label: 'Default model', type: 'text',
@@ -4684,7 +4697,6 @@ class ResonantApp {
                 id: 'local_backends', title: 'Local Backends (Ollama / LM Studio)', open: false,
                 fields: [
                     { key: 'ollama_host', label: 'Ollama host (OLLAMA_HOST)', type: 'text' },
-                    { key: 'lmstudio_url', label: 'LM Studio URL (LMSTUDIO_URL)', type: 'text' },
                     { key: 'ollama_num_ctx', label: 'Ollama context window (num_ctx)', type: 'number' },
                     { key: 'ollama_keep_alive', label: 'Ollama keep-alive duration', type: 'text' },
                 ]
@@ -4692,17 +4704,15 @@ class ResonantApp {
             {
                 id: 'network', title: 'Network',
                 fields: [
-                    { key: 'resonant_api_url', label: 'Resonant API URL', type: 'text' },
-                    { key: 'remote_engine_ws_url', label: 'Remote engine WebSocket URL', type: 'text' },
+                    // v0.4.0 — Ollama is the only backend. Default Mac Studio
+                    // location is 10.0.0.133:11434; leave blank to use the
+                    // OLLAMA_HOST env var or auto-detect.
+                    { key: 'ollama_url', label: 'Ollama URL (e.g. http://10.0.0.133:11434)', type: 'text' },
                 ]
             },
-            {
-                id: 'api_keys', title: 'API Keys',
-                fields: [
-                    { key: 'anthropic', label: 'Anthropic API Key', type: 'password' },
-                    { key: 'openai', label: 'OpenAI API Key', type: 'password' },
-                ]
-            },
+            // v0.4.0 — `api_keys` section dropped (Anthropic / OpenAI
+            // backends were cut). Settings still loads old JSONs that
+            // had this section; the runtime just ignores them.
             {
                 id: 'cost_tracking', title: 'Cost Tracking',
                 fields: [

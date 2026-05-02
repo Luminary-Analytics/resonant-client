@@ -394,6 +394,13 @@ class Session:
         self._test_feedback_cache: dict[str, str] = {}
         # Per-turn flag: did we already inject the corrective doom-loop nudge?
         self._doom_loop_nudged: bool = False
+        # v0.4.11 (T2.6) — same one-shot pattern for the windowed cycle
+        # guard. When the windowed signature multiset hits one less than
+        # the hard-stop threshold, inject a one-time "call await_user
+        # instead" nudge BEFORE the hard-stop fires. The nudge gives the
+        # agent one turn to pivot — call await_user, switch tools, or
+        # summarize what it has — before the cycle guard kills the run.
+        self._windowed_cycle_nudged: bool = False
 
     @property
     def is_subagent(self) -> bool:
@@ -640,6 +647,8 @@ class Session:
         last_tool_used = None
         # One corrective nudge per turn before the doom-loop hard-stop fires.
         self._doom_loop_nudged = False
+        # v0.4.11 (T2.6) — same per-turn reset for the windowed-cycle nudge.
+        self._windowed_cycle_nudged = False
 
         if self.cancel_requested:
             yield from self._cancelled_events(total_start, 0)
@@ -1223,16 +1232,24 @@ class Session:
                 wrep_count, wrep_tool, wrep_args = _windowed_cycle_repeat(
                     self.conversation_history, window=CYCLE_WINDOW
                 )
-                if wrep_count >= _cycle_repeat_threshold:
+                # v0.4.11 (T2.6) — two-stage windowed guard:
+                # - Hard-stop fires when count hits threshold AND we
+                #   already injected the await_user nudge on a prior
+                #   turn (nudge was ignored — kill the run).
+                # - Otherwise, the post-tool-call block below injects
+                #   a one-shot await_user nudge into the next user
+                #   message, giving the agent a turn to pivot.
+                if wrep_count >= _cycle_repeat_threshold and self._windowed_cycle_nudged:
                     args_repr = wrep_args if len(wrep_args) <= 80 else wrep_args[:77] + "..."
                     yield make_event(
                         EngineEvent.ERROR,
                         message=(
                             f"Stopped: `{wrep_tool}` with args `{args_repr}` was "
                             f"called {wrep_count} times in the last {CYCLE_WINDOW} "
-                            f"steps. The agent is cycling through the same probes "
-                            f"instead of moving forward. Try a different request "
-                            f"or switch to a stronger model."
+                            f"steps despite a prior nudge to call `await_user`. "
+                            f"The agent is stuck. Try rephrasing your request, "
+                            f"giving more concrete context, or switching to a "
+                            f"stronger model."
                         ),
                     )
                     yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
@@ -1285,6 +1302,32 @@ class Session:
                         f"user. Do NOT call `{tool_name}` again with these arguments."
                     )
                     self._doom_loop_nudged = True
+                # v0.4.11 (T2.6) — windowed-cycle nudge. The strict
+                # doom-loop nudge above only catches back-to-back
+                # identical calls; the windowed variant catches the
+                # looser "varying probes for the same thing" pattern.
+                # Trigger one notch below the hard-stop threshold so
+                # the agent gets ONE turn to pivot before the kill.
+                # Doom-loop nudge wins if both fire on the same turn —
+                # no need to stack messages.
+                elif (
+                    wrep_count >= max(2, _cycle_repeat_threshold - 1)
+                    and not self._windowed_cycle_nudged
+                    and not self._doom_loop_nudged
+                ):
+                    args_repr = wrep_args if len(wrep_args) <= 60 else wrep_args[:57] + "..."
+                    current_msg = (
+                        f"You've called `{wrep_tool}` with args `{args_repr}` "
+                        f"{wrep_count} times in the last {CYCLE_WINDOW} steps "
+                        f"(varying details slightly each time). You're cycling "
+                        f"through probes instead of converging. STOP and call "
+                        f"`await_user` with a focused question — what specifically "
+                        f"are you trying to find? — OR summarize what you've "
+                        f"learned so far and answer the user. If you call "
+                        f"`{wrep_tool}` once more with similar args, the run "
+                        f"will be hard-stopped."
+                    )
+                    self._windowed_cycle_nudged = True
                 else:
                     current_msg = "Continue based on the tool results above."
                 continue

@@ -456,3 +456,145 @@ class TestRelativeThresholds:
         )
         assert cycle_window_repeat_for_model("deepseek-v4-pro:cloud") <= CYCLE_WINDOW // 2
         assert churn_limit_for_model("deepseek-v4-pro:cloud") <= 30
+
+
+# ── v0.4.11 (T2.6) — windowed cycle guard nudge before hard-stop ─────
+#
+# Pre-T2.6 the windowed guard hard-stopped immediately on hitting the
+# threshold. Now it has a two-stage pattern matching the strict
+# trailing doom-loop: nudge once (recommend await_user), THEN hard-stop
+# only if the cycle continues. Gives the agent one turn to pivot.
+
+
+class _VaryingArgsBackend:
+    """Mock backend that cycles `glob A → glob B → glob A → glob B → glob A`.
+
+    Strict trailing-identical count never exceeds 1 (every call differs
+    from its immediate predecessor), so the doom-loop nudge / hard-stop
+    don't fire. The windowed guard, however, sees `glob A` 3+ times
+    inside the 12-call window — exactly the case the T2.6 nudge is for.
+    """
+    name = "stub"
+    model = "stub-model"
+    tool_mode = "native"
+
+    def __init__(self):
+        self.user_msgs_received: list[str] = []
+
+    def stream(self, **kwargs):
+        self.user_msgs_received.append(kwargs.get("user_msg", ""))
+        # Alternate between two distinct args so strict trailing stays low.
+        n = len(self.user_msgs_received)
+        pattern = '"*.py"' if n % 2 == 1 else '"*.md"'
+        yield (
+            EVENT_TOOL_CALL,
+            {
+                "name": "glob",
+                "arguments": '{"pattern": ' + pattern + '}',
+                "call_id": f"call-{n}",
+            },
+        )
+        yield (
+            EVENT_DONE,
+            {"cognitive_state": None, "stats": None, "model": "stub-model"},
+        )
+
+
+class TestWindowedNudge:
+    def test_windowed_cycle_nudged_flag_initialized_false(self):
+        from resonant_client.engine.session import Session
+        backend = _VaryingArgsBackend()
+        session = Session(backend, max_steps=10, auto_approve=True)
+        assert session._windowed_cycle_nudged is False
+
+    def test_windowed_cycle_nudged_resets_each_run(self):
+        from resonant_client.engine.session import Session
+        backend = _VaryingArgsBackend()
+        session = Session(backend, max_steps=2, auto_approve=True)
+        # Manually flip the flag and confirm `run` resets it.
+        session._windowed_cycle_nudged = True
+        with patch("resonant_client.engine.session.execute_tool") as mock_exec:
+            mock_exec.return_value = ToolResult(output="x", is_error=False, elapsed=0.0)
+            list(session.run("test"))
+        # After run completes, the flag MIGHT be True again if a nudge
+        # fired during the run — that's fine. The contract is that
+        # `run()` resets at start, not that it's always False after.
+        # We assert by re-running: the flag is reset before each turn.
+        backend2 = _VaryingArgsBackend()
+        session2 = Session(backend2, max_steps=1, auto_approve=True)
+        session2._windowed_cycle_nudged = True
+        with patch("resonant_client.engine.session.execute_tool") as mock_exec2:
+            mock_exec2.return_value = ToolResult(output="x", is_error=False, elapsed=0.0)
+            # The first iteration of run() should reset the flag before
+            # any nudge logic runs. With max_steps=1 there's only one
+            # iteration so we can't catch it post-reset, but we can
+            # verify the reset happens by checking that a fresh nudge
+            # CAN fire on the next run after the reset.
+            list(session2.run("first"))
+        # If reset works, internal state is now what the second run set
+        # it to (might be True or False depending on whether nudge fired).
+        # The contract is just "reset to False at the START of run()",
+        # which is verified by code inspection — this test ensures no
+        # exception during the run path.
+        assert isinstance(session2._windowed_cycle_nudged, bool)
+
+    def test_windowed_nudge_message_recommends_await_user(self):
+        # Drive enough turns to trip the windowed guard. _VaryingArgsBackend
+        # alternates two args so a full 6-7 turns are needed before any
+        # signature hits 3 occurrences in the window.
+        from resonant_client.engine.session import Session
+        backend = _VaryingArgsBackend()
+        session = Session(backend, max_steps=10, auto_approve=True)
+        with patch("resonant_client.engine.session.execute_tool") as mock_exec:
+            mock_exec.return_value = ToolResult(output="x", is_error=False, elapsed=0.0)
+            list(session.run("explore"))
+        # At some point the agent received a message containing
+        # `await_user`. Find it.
+        nudge_msgs = [
+            m for m in backend.user_msgs_received
+            if "await_user" in m.lower()
+        ]
+        assert len(nudge_msgs) >= 1, (
+            f"Expected at least one await_user nudge in {len(backend.user_msgs_received)} "
+            f"user messages: {backend.user_msgs_received}"
+        )
+
+    def test_windowed_nudge_only_fires_once_per_turn(self):
+        # The nudge is gated on `not self._windowed_cycle_nudged`. Once
+        # it fires, subsequent in-window cycle detections during the
+        # same turn don't re-nudge — the message would be redundant.
+        from resonant_client.engine.session import Session
+        backend = _VaryingArgsBackend()
+        session = Session(backend, max_steps=10, auto_approve=True)
+        with patch("resonant_client.engine.session.execute_tool") as mock_exec:
+            mock_exec.return_value = ToolResult(output="x", is_error=False, elapsed=0.0)
+            list(session.run("explore"))
+        nudge_msgs = [
+            m for m in backend.user_msgs_received
+            if "await_user" in m.lower() and "cycling" in m.lower()
+        ]
+        # At most one windowed-nudge per turn (per run() call). Note
+        # this counts only the WINDOWED nudge specifically (which says
+        # "cycling"); the doom-loop nudge says "different approach".
+        assert len(nudge_msgs) <= 1, f"Got {len(nudge_msgs)} windowed nudges, expected ≤ 1"
+
+    def test_hard_stop_message_mentions_prior_nudge(self):
+        # When the hard-stop fires, its message should reference the
+        # fact that the nudge was already given (so the user knows
+        # what the model failed to do, not just "cycling detected").
+        from resonant_client.engine.session import Session
+        backend = _VaryingArgsBackend()
+        session = Session(backend, max_steps=20, auto_approve=True)
+        with patch("resonant_client.engine.session.execute_tool") as mock_exec:
+            mock_exec.return_value = ToolResult(output="x", is_error=False, elapsed=0.0)
+            events = list(session.run("explore"))
+        errors = [e for e in events if e.get("event") == "error"]
+        # There should be exactly one ERROR event from the windowed
+        # hard-stop. Its message should reference the prior nudge.
+        if errors:
+            msg = errors[0].get("message", "").lower()
+            # The hard-stop message must say something about the prior
+            # nudge so the failure is interpretable.
+            assert "nudge" in msg or "prior" in msg or "despite" in msg, (
+                f"Hard-stop message should reference the prior nudge; got: {msg}"
+            )

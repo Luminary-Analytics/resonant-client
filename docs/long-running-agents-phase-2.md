@@ -21,11 +21,11 @@ The pattern was demonstrated empirically in the v0.4.x overnight autonomous run 
 
 ## 2. Naming
 
-User confirmed **"Autonomous Mission"**. Surface treatment:
-- New toggle in the composer next to "Start mission": **"🌙 Run autonomously"** (the moon glyph is suggestive without being precious — the mode runs while you're away).
-- When active, the composer shows a time-budget picker (1h / 4h / overnight / custom). Default: 4h.
-- The chat header on an active autonomous mission shows a small badge: `🌙 Autonomous · 1h 23m left · iter 4`.
-- The "Build this roadmap" CTA on the spec card becomes "🌙 Build autonomously" when the toggle is on.
+User confirmed **"Autonomous Mission"** with the **∞** glyph (suggests "keeps going on its own without supervision"; less twee than a moon). Surface treatment:
+- New toggle in the composer next to "Start mission": **"∞ Run autonomously"**.
+- The actual time budget is asked DURING the grill, not at composer-time (see §11 below). The composer toggle just opts the mission INTO the autonomous flow.
+- The chat header on an active autonomous mission shows a small badge: `∞ Autonomous · 1h 23m left · iter 4`. For full-auto runs (no time budget) the elapsed-time replaces the countdown: `∞ Autonomous · 1h 47m elapsed · iter 4`.
+- The "Build this roadmap" CTA on the spec card becomes "∞ Build autonomously" when the toggle is on, with the budget pre-filled from the grill spec but user-overridable.
 
 ## 3. Goals and non-goals
 
@@ -48,16 +48,16 @@ User confirmed **"Autonomous Mission"**. Surface treatment:
 
 What the user does:
 1. Opens a project, clicks 🎯 Mission.
-2. Toggles **🌙 Run autonomously** in the composer. Picks a time budget. Types the feature description.
-3. Hits Start. The grill phase runs as today (one focused question at a time).
-4. When the spec lands, clicks **🌙 Build autonomously**. The autonomous loop begins.
+2. Toggles **∞ Run autonomously** in the composer. Types the feature description (no time budget here yet — that's a grill question).
+3. Hits Start. The grill phase runs as today (one focused question at a time) PLUS one new question near the end about time budget (see §11).
+4. When the spec lands with a recommended budget baked in, clicks **∞ Build autonomously**. A confirmation card lets the user override the budget before starting the loop. Defaults to whatever the model recommended.
 5. Watches mid-run progress in the chat (each iteration logs a summary message: "Iteration 3 complete — shipped T1.5, marked T2.1 in progress"). Walks away.
 6. Comes back. Reads the handoff document the agent emits at the end. If the goal is met, opens the resulting commits + diff in their tool of choice. If not, decides whether to extend the budget or hand off the remaining work to themselves.
 
 What the user sees during the run (visible in the chat panel):
-- Each iteration: "🌙 Iteration N · picked item: ..." → tool calls (collapsed in groups, like today) → "✓ Iteration N complete — shipped to commit `<sha>`. Marked `<item-id>` done."
-- After every K iterations or when the roadmap empties: a "🌙 Reflection" message — short summary of what's done, what's pending, what new items the agent added.
-- At the end (time budget exhausted, convergence, or user stop): a "🌙 Mission complete" or "🌙 Mission paused" message with a link to the handoff doc.
+- Each iteration: "∞ Iteration N · picked item: ..." → tool calls (collapsed in groups, like today) → "✓ Iteration N complete — shipped to commit `<sha>`. Marked `<item-id>` done."
+- After every K iterations or when the roadmap empties: a "∞ Reflection" message — short summary of what's done, what's pending, what new items the agent added.
+- At the end (time budget exhausted, convergence, or user stop): a "∞ Mission complete" or "∞ Mission paused" message with a link to the handoff doc.
 
 ## 5. Architecture
 
@@ -281,11 +281,14 @@ Each event carries the `intent_id`, current `iter_count`, and a `roadmap_snapsho
 Per user-confirmed scope:
 
 1. **User stop** — chat-header "Stop autonomous mission" button → daemon.stop("user_stop"). Emits `autonomous_mission_paused`.
-2. **Time budget hit** — at the top of each iteration, check `time.time() - started_at >= time_budget_seconds`. Emits `autonomous_mission_complete` with `reason="time_budget_exhausted"`. **Always the hard ceiling — never auto-extends in v0.5.0.**
-3. **Convergence** — full-REFLECT verdict is `satisfied`. Emits `autonomous_mission_complete`.
-4. **Hard block** — full-REFLECT verdict is `blocked` AND the loop has tried `await_user` once already this run. Emits `autonomous_mission_paused`.
-5. **Cycle / pytest break** — if a sub-mission breaks pytest and the next iteration also breaks pytest, daemon.stop("pytest_broken"). The user will see the failures and decide.
-6. **Repeated failures** — if 3 consecutive iterations end with the sub-mission's REFLECT marking the item BLOCKED, daemon.stop("blocked"). Don't keep grinding.
+2. **Time budget hit** — at the top of each iteration, check `time.time() - started_at >= time_budget_seconds`. Emits `autonomous_mission_complete` with `reason="time_budget_exhausted"`. **Always the hard ceiling — never auto-extends in v0.5.0.** Skipped entirely for **full-auto** runs (where `time_budget_seconds is None`).
+3. **Iteration cap** — every autonomous mission has a hard ceiling of `MAX_ITERATIONS = 100` regardless of time budget or full-auto setting. Defensive backstop against a daemon that somehow keeps extending the roadmap forever. A user who legitimately needs more than 100 iterations should run a follow-up mission against the same project.
+4. **Convergence** — full-REFLECT verdict is `satisfied`. Emits `autonomous_mission_complete`.
+5. **Hard block** — full-REFLECT verdict is `blocked` AND the loop has tried `await_user` once already this run. Emits `autonomous_mission_paused`.
+6. **Cycle / pytest break** — if the post-iteration check fails twice consecutively, daemon.stop("check_failed"). The user will see the failures and decide.
+7. **Repeated failures** — if 3 consecutive iterations end with the sub-mission's REFLECT marking the item BLOCKED, daemon.stop("blocked"). Don't keep grinding.
+
+For **full-auto** missions (no time budget set), rules 2 and 3 invert in priority: the iteration cap is the ONLY hard ceiling, and rules 4-7 do all the real work. Full-auto is the right choice for "I'll watch the chat occasionally and stop it myself" use cases; it should NOT be the default.
 
 When the daemon stops, it emits a **handoff document** as the final reflection summary in `roadmap.md`. The handoff includes: tally of shipped items, list of pending items, list of blocked items with reasons, recommended next session.
 
@@ -301,33 +304,103 @@ When the daemon stops, it emits a **handoff document** as the final reflection s
 
 ### 10.1 Composer
 
-- New toggle below the textarea: **🌙 Run autonomously**. When OFF: existing one-shot Mission flow.
-- When ON: a budget picker appears: `1h | 4h | 8h | overnight (12h) | custom`. Default: 4h.
+- New toggle below the textarea: **∞ Run autonomously**. When OFF: existing one-shot Mission flow.
+- When ON: subtitle reads "I'll ask for a time budget after we've nailed the spec." No budget picker here — that's a grill question (see §11).
 - The "Start mission" button text becomes "Start autonomous mission".
 
 ### 10.2 Spec card (after grill phase)
 
 When the spec lands AND the autonomous toggle was on at composer-start:
-- "Build this roadmap" button is replaced by **"🌙 Build autonomously"**.
-- A subtitle clarifies: "This mission will run for ~4 hours, picking items off the roadmap, shipping commits, reflecting on progress, and adding new items as needed. You can stop it anytime."
+- "Build this roadmap" button becomes **"∞ Build autonomously"**.
+- The card shows a budget confirmation block, pre-filled from the grill spec's recommendation. Presets as buttons:
+  `1h (lunch break)` `4h` `6h` `8h` `12h` `24h` `48h` `Full auto (no time cap)`
+  Plus a custom-minutes input for power users.
+- A subtitle clarifies: "Acceptance criteria from the spec drive the convergence check. The mission stops when ALL criteria are met (regardless of budget remaining), the budget runs out, or you click Stop."
+- A second subtitle (only shown for "Full auto"): "Full auto skips the time ceiling. The mission stops only on convergence, blocking, or your Stop click — but a 100-iteration cap is always enforced as a defensive backstop."
 
 ### 10.3 Chat header (during autonomous run)
 
-- The mission badge gets a moon glyph and live counter: `🌙 Autonomous · 1h 23m left · iter 4`.
-- A **Stop** button appears next to it.
+- The mission badge shows the live status:
+  - With budget: `∞ Autonomous · 1h 23m left · iter 4 · $0.34 (~$0.85/h)`
+  - Full auto: `∞ Autonomous · 1h 47m elapsed · iter 4 · $0.34 (~$0.85/h)`
+- Cost + burn rate use the existing v0.3.x cost-tracking infrastructure. `$/h` is computed as `current_total / hours_elapsed` and recomputed each iteration.
+- A **Stop** button sits next to the badge. Clicking it confirms via a small popover ("Stop after current iteration completes? In-flight tool calls will finish first").
 
 ### 10.4 Plan-graph view
 
 - The existing plan-graph view extends to show the roadmap as a top-level structure: tier sections, items with checkboxes, expand-to-see the underlying plan-graph for each shipped item.
+- Acceptance criteria from the spec render as a separate pinned section ("Acceptance criteria · 3/7 met") — the user gets visual signal of how close to convergence the mission is, independent of how many roadmap items remain.
 
 ### 10.5 Mid-run messages in chat
 
-- **Iteration start:** "🌙 Iteration 4 — picked T1.3: Add the export-to-markdown handler."
-- **Iteration complete:** "🌙 Shipped at `abc123f`. Marked T1.3 done."
-- **Reflection:** styled card with the structured fields (completed, added, blocked, verdict, summary).
-- **Mission complete:** big "🌙 Autonomous mission complete" banner with a "View handoff document" CTA.
+- **Iteration start:** "∞ Iteration 4 — picked T1.3: Add the export-to-markdown handler."
+- **Iteration complete:** "∞ Shipped at `abc123f`. Marked T1.3 done. Acceptance: 3/7 met."
+- **Reflection:** styled card with the structured fields (completed, added, blocked, verdict, summary, **acceptance-criteria delta**).
+- **Mission complete:** big "∞ Autonomous mission complete · 7/7 acceptance criteria met" banner with a "View handoff document" CTA.
 
-## 11. Persistence and replay
+## 11. The grill→budget flow
+
+Per user direction: **the grill phase should be deep and rigorous when feeding into autonomous mode**, because the acceptance criteria it produces are the convergence ground truth — REFLECT only emits `verdict=satisfied` when all criteria are met. The grill prompt and structure both change when the autonomous toggle is on at composer-start.
+
+### 11.1 Two grill modes
+
+**Standard grill (autonomous OFF, current behavior):**
+- 5–15 substantive questions, one at a time
+- Final spec block as today
+- Acceptance criteria section is OPTIONAL and often vague ("the feature works as expected")
+- This is unchanged in v0.5.0
+
+**Rigorous grill (autonomous ON, new):**
+- 10–25 substantive questions, one at a time
+- Same decision-tree structure (scope → users → data → integrations → constraints → acceptance → risks) but the model is told to push HARDER on acceptance criteria specifically
+- Each acceptance-criteria bullet must be **measurable and binary** (the agent can check it as pass / fail without judgment calls). "The feature works" → rejected; "Running `npm run build` exits 0 and produces a `dist/` folder containing `index.html`" → accepted.
+- Final spec block adds a `**Time budget:**` line with the model's recommendation
+- New rule: the model is told it CANNOT emit the spec until it has at least 4 binary acceptance-criteria bullets. If the user says "we have enough" before that, the model asks one more question.
+
+### 11.2 Spec block additions for autonomous missions
+
+In addition to the existing `## Final spec` sections, an autonomous mission's spec includes:
+
+```markdown
+**Time budget:** 4h
+*(My recommendation. Adjustable in the next step.)*
+
+**Acceptance criteria:** *(must all be true at convergence; checked by REFLECT)*
+- [ ] `npm install` exits 0 with no peer-dependency errors
+- [ ] `npm run dev` serves the canvas and shows the green circle at canvas center
+- [ ] `npm run build` exits 0 and produces `dist/index.html` and `dist/assets/`
+- [ ] `npx tsc --noEmit` exits 0 (strict mode passes)
+- [ ] Exactly 6 source files in the repo (`package.json`, `tsconfig.json`,
+       `vite.config.ts`, `index.html`, `src/main.ts`, `src/scenes/BootScene.ts`)
+- [ ] No `any` types in any TS file (`grep -rn "any" src/` returns 0)
+- [ ] The repo's git log shows incremental commits (no single mega-commit)
+```
+
+Notice the `[ ]` checkboxes — REFLECT marks them `[x]` as it confirms each criterion. A criterion stays `[ ]` until REFLECT can prove it (typically via a `bash` command whose output it inspects). Convergence = every checkbox is `[x]`.
+
+### 11.3 The budget question itself
+
+Inserted into the rigorous-grill decision tree near the end (after acceptance criteria, before risks). Concrete example:
+
+> **Question:** Based on the scope above (6 files, ~150 lines of code, no third-party assets needed), I'd estimate this needs ~1–2 hours of agent work. How long should I run autonomously? My recommendation: **4 hours** — gives buffer for one round of revisions if the verifier flags anything.
+>
+> **My recommendation:** 4h.
+>
+> Options: `1h (lunch break)` · `4h` · `6h` · `8h` · `12h` · `24h` · `48h` · `Full auto`
+
+The user can answer with the preset name, a custom number ("3h"), or "full auto". The grill records the answer in the spec block as `**Time budget:** 4h`.
+
+### 11.4 Why ground convergence in acceptance criteria
+
+This was the user's pushback on open question #6 (now closed). Without it, `verdict=satisfied` is just the model's opinion — and the model is biased toward "satisfied" because that ends its work. With acceptance-criteria-as-ground-truth:
+
+- The model emits a deterministic, executable check per bullet during the rigorous grill.
+- REFLECT runs each check via `bash` and reads the output; it cannot fake a `[x]` because the runner validates that the criterion was actually run + the output matches.
+- The convergence signal becomes a real measurement, not a mood.
+
+Trade: the rigorous grill takes longer (more questions, more push). For a 5-minute fix the user might find this excessive. Mitigation: the autonomous toggle is opt-in; users who want a quick one-shot don't see the rigorous grill at all.
+
+## 12. Persistence and replay
 
 The autonomous mission lives at:
 - `<project>/.resonant/roadmap-<intent_id>.md` — the source of truth, user-readable
@@ -337,34 +410,42 @@ The autonomous mission lives at:
 
 The diagnostics ZIP (v0.3.4) automatically includes the roadmap.md and iterations/*.json files when present.
 
-## 12. Open questions / TBD
+## 13. Open questions / TBD
 
-These are the questions I'd expect to surface during implementation. Resolving them now would shorten the v0.5.0 cycle.
+Updated through the design conversation. Resolved questions are kept here with their answers for the implementation team.
 
-1. **REFLECT-only-on-explicit-tools or REFLECT-from-conversation-history?** The cheaper path is "read the conversation history of the last K iterations and synthesize" — no extra tool calls. The more thorough path is "REFLECT runs `git log`, `git diff`, reads roadmap.md, runs the test suite to confirm green." First-pass: cheap path with a `git log`-only sanity check on commit refs.
+1. **[OPEN] REFLECT-only-on-explicit-tools or REFLECT-from-conversation-history?** The cheaper path is "read the conversation history of the last K iterations and synthesize" — no extra tool calls. The more thorough path is "REFLECT runs `git log`, `git diff`, reads roadmap.md, runs each acceptance-criteria check via bash to confirm." Given §11.4 (acceptance criteria are ground truth), the thorough path is mandatory for the convergence-check pass; the cheap path is fine for the per-item mark-done passes. **Resolution: full pass uses real bash checks; mark-done passes can synthesize.**
 
-2. **Multiple parallel autonomous missions per project.** Non-goal for v0.5.0 but the architecture should NOT preclude it. Decision: each daemon is keyed by `intent_id`, AppState holds a `dict[str, AutonomousMissionDaemon]`. v0.5.0 enforces one-at-a-time at the UI layer; v0.6.0+ relaxes.
+2. **[DEFER] Multiple parallel autonomous missions per project.** Non-goal for v0.5.0 but the architecture should NOT preclude it. Each daemon is keyed by `intent_id`, AppState holds a `dict[str, AutonomousMissionDaemon]`. v0.5.0 enforces one-at-a-time at the UI layer; v0.6.0+ relaxes.
 
-3. **Time-budget UX when the user is *almost* done.** If the budget expires with one item left in the roadmap, the daemon should NOT auto-extend — but it COULD emit a chat message: "🌙 Time budget expired. One item left (T1.7). Resume for ~10 more minutes?" with a Resume button. v0.5.0 ships without auto-prompt — too much risk of nag-fatigue. v0.5.x adds it once we have data.
+3. **[DEFER] Time-budget UX when the user is *almost* done.** If the budget expires with one item left in the roadmap, the daemon should NOT auto-extend — but it COULD emit a chat message offering "Resume for ~10 more minutes?" with a button. v0.5.0 ships without auto-prompt; v0.5.x adds it once we have real-mission data.
 
-4. **Roadmap rendering in the existing sidebar.** Today the sidebar groups sessions by project + missions. An autonomous mission's roadmap could render as an expandable item under the Mission row. Defer to v0.5.1 — the in-chat iteration messages are enough for v0.5.0.
+4. **[DEFER] Roadmap rendering in the existing sidebar.** v0.5.0 ships with in-chat iteration messages only; v0.5.1 adds the sidebar checklist.
 
-5. **Per-iteration commit signing / `--allow-empty` policy.** If REFLECT marks an item done that didn't actually produce a commit (e.g. a "rename a variable" task that the implementer somehow no-op'd), should we allow `git commit --allow-empty` to keep the audit trail? Probably yes; flag it in the iteration log as `<empty>`.
+5. **[OPEN] Per-iteration commit signing / `--allow-empty` policy.** If REFLECT marks an item done that didn't actually produce a commit (e.g. a "rename a variable" task that the implementer no-op'd), should we allow `git commit --allow-empty` to keep the audit trail? Lean yes; flag it in the iteration log as `<empty>`. Open: who chooses — REFLECT, the loop daemon, or always-on?
 
-6. **The grill spec's "Acceptance criteria" section as the convergence ground truth.** REFLECT's `verdict == "satisfied"` should be backed by something more concrete than the model's opinion. Idea: REFLECT explicitly checks each acceptance-criteria bullet and returns `verdict = "satisfied"` only when ALL are checked. Defer concrete shape to implementation but pin this as the design intent.
+6. **[CLOSED] Acceptance criteria as convergence ground truth.** Confirmed by user. See §11.4. REFLECT's `verdict=satisfied` is gated on every acceptance-criteria checkbox being `[x]`, with each `[x]` validated by an actual bash check whose output the runner inspects. The model can't fake convergence.
 
-## 13. Scope estimate
+7. **[CLOSED] Glyph and budget UX.** Confirmed: ∞ glyph, budget asked during grill (not at composer time), with presets `1h | 4h | 6h | 8h | 12h | 24h | 48h | Full auto`. Composer toggle is just opt-in to the autonomous flow.
+
+8. **[CLOSED] Should the grill itself change in autonomous mode?** Confirmed: yes. The "rigorous grill" mode is more thorough specifically because acceptance criteria are the convergence ground truth — soft criteria → no real convergence signal → mission either runs to budget exhaust or relies on the model's mood. See §11.1 + §11.4.
+
+9. **[CLOSED] Cost / burn-rate display.** Confirmed: yes. Chat-header badge shows `$total ($/h burn rate)` alongside the time + iteration counters. Reuses the v0.3.x cost-tracking infrastructure.
+
+## 14. Scope estimate
 
 **v0.5.0 (foundation):**
-- New `gui/autonomous_loop.py` (~300 lines: daemon class, threading, stopping-rule logic)
-- New `orchestration/specialists.py::REFLECT` profile (~100 lines including prompt)
-- New `gui/roadmap.py` (~250 lines: parser, writer, conflict resolution)
-- WS event additions + frontend handlers (~150 lines spread across `app.py` + `app.js`)
-- Composer UI changes: autonomous toggle, budget picker, run-autonomously CTA (~80 lines)
-- Chat-header autonomous badge + stop button (~50 lines)
-- Tests (~400 lines covering daemon lifecycle, roadmap parser, REFLECT prompt content, stopping rules, resume-from-restart)
+- New `gui/autonomous_loop.py` (~350 lines: daemon class, threading, stopping-rule logic, resume-from-restart)
+- New `orchestration/specialists.py::REFLECT` profile (~150 lines including the rigorous prompt + acceptance-criteria validation logic)
+- New `gui/roadmap.py` (~300 lines: parser, writer, conflict resolution, acceptance-criteria checkbox tracking)
+- Rigorous-grill prompt extension in `orchestration/grill_me.py` (~80 lines: the additional questions + binary-criteria rule + budget question)
+- WS event additions + frontend handlers (~200 lines spread across `app.py` + `app.js`)
+- Composer UI changes: autonomous toggle (~30 lines)
+- Spec-card budget confirmation card with presets + "Full auto" handling (~120 lines)
+- Chat-header autonomous badge + stop button + cost/burn-rate display (~80 lines)
+- Tests (~500 lines covering daemon lifecycle, roadmap parser, REFLECT prompt content, acceptance-criteria validation, stopping rules, resume-from-restart)
 
-Total: roughly **1,300 lines of new code + tests**, 3-5 days of focused work. Not autonomous-loop-friendly because it touches Mission flow architecture, has real human-design moments (the UI calls), and needs real-mission validation.
+Total: roughly **1,800 lines of new code + tests**, 4-6 days of focused work. Not autonomous-loop-friendly because it touches Mission flow architecture, has real human-design moments (the UI calls), and needs real-mission validation against `ollama:deepseek-v4-flash:cloud`.
 
 **v0.5.x (refinement):**
 - Roadmap rendering in the sidebar (T3.x scope from the v0.4 roadmap)
@@ -376,26 +457,31 @@ Total: roughly **1,300 lines of new code + tests**, 3-5 days of focused work. No
 - A roadmap that spans multiple missions for sustained multi-day work
 - "Pin" autonomous missions across machines via git-tracked roadmaps
 
-## 14. Recommended morning sequence (when implementation starts)
+## 15. Recommended morning sequence (when implementation starts)
 
-1. **Walk through this doc with the user** — get pushback on naming, the budget defaults, the moon glyph, anything.
-2. **Lock the roadmap format spec** — open question 1 (REFLECT depth), question 6 (acceptance-criteria convergence).
-3. **Build `gui/roadmap.py` first.** Pure data layer, easy to unit-test, no threading, no WS. Lands as v0.5.0a1.
-4. **Build `gui/autonomous_loop.py` second.** Mock the dispatch + reflect to keep the daemon test surface small. Lands as v0.5.0a2.
-5. **Wire `orchestration/specialists.py::REFLECT` and the WS protocol.** Lands as v0.5.0a3.
-6. **Frontend toggle + chat-header badge.** Lands as v0.5.0a4.
-7. **End-to-end smoke against `ollama:deepseek-v4-flash:cloud`** with a small scoped feature ("scaffold a tiny Python CLI"). Lands as v0.5.0.
+1. **Walk through this doc with the user** — final pushback before any code.
+2. **Build `gui/roadmap.py` first.** Pure data layer: parse, write, validate, acceptance-criteria checkbox tracking, conflict resolution. Easy to unit-test, no threading, no WS. Lands as v0.5.0a1.
+3. **Extend `orchestration/grill_me.py` with the rigorous-grill mode.** Add the autonomous-aware prompt extension, the binary-criteria rule, the budget question. Tests pin the prompt invariants. Lands as v0.5.0a2.
+4. **Build `orchestration/specialists.py::REFLECT`.** Two trigger modes (item-mark + full pass). Acceptance-criteria validation logic. Lands as v0.5.0a3.
+5. **Build `gui/autonomous_loop.py`.** Mock the dispatch + reflect to keep the daemon test surface small. Threading, stopping-rule logic, resume-from-restart. Lands as v0.5.0a4.
+6. **Wire WS protocol.** New events, command handlers in `app.py`. Lands as v0.5.0a5.
+7. **Frontend.** Composer toggle, spec-card budget confirmation, chat-header badge with cost/burn-rate, stop button, in-chat iteration messages. Lands as v0.5.0a6.
+8. **End-to-end smoke** against `ollama:deepseek-v4-flash:cloud` with a small scoped feature ("scaffold a tiny Python CLI with two acceptance criteria"). Watch one full run hit convergence cleanly. Lands as v0.5.0.
 
 Each `a*` step is a separate commit, tagged for testing. Treat v0.5.0 itself as the GA after the smoke is green.
 
-## 15. Success criteria
+## 16. Success criteria
 
 - A user can launch an autonomous mission, walk away, and come back to a complete handoff document.
 - The roadmap.md is human-readable mid-run; you can see what's done and what's pending without opening the app.
+- The acceptance-criteria checkboxes track real, measured progress — you can scan them mid-run and see what's *demonstrably* working vs what's still pending.
+- **Convergence (`verdict=satisfied`) is real, not a model mood.** Every `[x]` next to an acceptance criterion was set because REFLECT ran a bash check and the output matched. The runner validates this — the model can't fake it.
 - Stopping the mission mid-run leaves a clean state (no half-shipped commits, no dangling daemons).
 - Restarting the server preserves the mission state — Resume just works.
 - An empty roadmap that REFLECT can't fill (because the goal is met) cleanly emits `mission_complete` rather than spinning.
 - The cycle guards (v0.3.3) and per-model thresholds (v0.4.9) keep working inside each iteration's sub-mission.
-- A repeat of the v0.4.x overnight run could in principle be expressed AS an autonomous mission ("ship every item in this roadmap doc, time budget 6h"), proving the pattern matches what we did manually.
+- The chat-header cost / burn-rate stays accurate to within ±5% of the actual API spend (confirmed against the v0.3.x cost-tracking infrastructure).
+- The rigorous grill produces measurable, binary acceptance criteria — auditing a sample of grill outputs shows ≥80% of bullets are testable via a single bash command. Soft "the feature works" criteria should be ≤20%.
+- A repeat of the v0.4.x overnight run could in principle be expressed AS an autonomous mission ("ship every item in this roadmap doc, time budget 6h, acceptance: pytest passes + each tier item has a commit"), proving the pattern matches what we did manually.
 
 That last criterion is the test: if v0.5.0 can replicate the overnight run as a feature instead of as ad-hoc scaffolding, we've codified the pattern correctly.

@@ -374,10 +374,24 @@ class AutonomousMissionDaemon:
                         # `continue` verdict with no new items + an
                         # empty roadmap means we're stuck: no work to
                         # do, criteria still red, and nobody is
-                        # adding items. Don't infinite-loop — stop
-                        # with a clear reason so the user can either
-                        # extend the roadmap or fix the criteria.
-                        if not full.added_items:
+                        # adding items.
+                        #
+                        # v0.5.0 GA prep — re-load the roadmap from
+                        # disk and check `next_unchecked_item` rather
+                        # than trusting `full.added_items`. The
+                        # REFLECT model can add items two ways:
+                        # (1) via the JSON envelope's `added` field
+                        # (the daemon's add_items loop applies these
+                        # to the roadmap), and (2) via direct
+                        # `file_edit` to roadmap.md. Path 2 won't
+                        # show up in `outcome.added_items` but WILL
+                        # appear in the roadmap on disk. Found in
+                        # v0.5.0 GA smoke run #3 — model used
+                        # file_edit directly and the daemon then
+                        # mis-detected stuck. ADR 15 in the impl
+                        # guide.
+                        rm_post = self._load_roadmap()
+                        if rm_post.next_unchecked_item() is None:
                             self._emit_stop(
                                 "stuck",
                                 "roadmap empty but acceptance criteria "
@@ -680,6 +694,55 @@ class AutonomousMissionDaemon:
         # had better agree. Re-load from disk because the model may
         # have written checkbox flips via file_edit.
         rm_after = self._load_roadmap()
+
+        # v0.5.0 GA prep — apply `added` items from REFLECT's JSON
+        # verdict to the roadmap. The model can also write items via
+        # `file_edit` directly; we don't preempt that, but if the
+        # JSON envelope lists items the model didn't actually edit
+        # in (the common case), we add them here so the next
+        # iteration has work to do. Without this, REFLECT's add-
+        # items signal got lost and the daemon loop stuck on iter 1
+        # — found in the v0.5.0 GA smoke. ADR 14 in the impl guide.
+        added_count = 0
+        for item_dict in outcome.added_items or []:
+            if not isinstance(item_dict, dict):
+                continue
+            tier = item_dict.get("tier") or 1
+            try:
+                tier = int(tier)
+            except (TypeError, ValueError):
+                tier = 1
+            title = (item_dict.get("title") or "").strip()
+            description = (item_dict.get("description") or "").strip()
+            if not title:
+                continue
+            try:
+                roadmap_module.add_item(
+                    rm_after,
+                    tier=tier,
+                    title=title,
+                    description=description,
+                    source_iter=self._iter_count,
+                )
+                added_count += 1
+            except Exception:
+                logger.debug(
+                    "add_item raised for added entry %r",
+                    item_dict, exc_info=True,
+                )
+        if added_count:
+            try:
+                roadmap_module.save(rm_after, self.config.roadmap_path)
+            except Exception:
+                logger.warning(
+                    "Failed to persist roadmap after applying %d added items",
+                    added_count, exc_info=True,
+                )
+            logger.info(
+                "REFLECT added %d follow-up items to the roadmap "
+                "for iter %s+", added_count, self._iter_count + 1,
+            )
+
         if outcome.verdict == "satisfied" and not rm_after.is_converged():
             logger.warning(
                 "REFLECT verdict=satisfied but roadmap.is_converged()=False; "

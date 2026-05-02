@@ -96,6 +96,16 @@ def build_roadmap_from_spec(
     doesn't contain a parseable `## Final spec` block OR the
     parsed criteria list is empty (a misconfigured spec — the
     daemon would refuse to run anyway).
+
+    Bootstraps a single Tier 1 item from the refined_intent (or the
+    feature description as a fallback) so the daemon has at least
+    one thing to dispatch on its first iteration. The Phase-1 plan-
+    graph runner inside that sub-mission decomposes further; REFLECT
+    can add follow-up items via the `added` field of its JSON
+    verdict if the work needs to grow. (See ADR 12 in the impl
+    guide — alternative would be running PLAN up front to split
+    the intent into multiple items, but that doubles the cold-start
+    latency for missions that converge in 1–3 iterations.)
     """
     parsed = extract_spec(spec_markdown)
     if parsed is None:
@@ -121,10 +131,46 @@ def build_roadmap_from_spec(
         acceptance_criteria=list(parsed.acceptance_criteria),
     )
 
+    # v0.5.0 GA prep — bootstrap T1.1 from the refined_intent so
+    # the daemon has work to do on iter 1. Without this, an empty
+    # roadmap collides with the "stuck" stopping rule (ADR 10) on
+    # the very first reflect pass: criteria fail (because nothing's
+    # been built yet), no items added, daemon stops with stuck.
+    seed_title, seed_desc = _seed_item_from_intent(parsed.refined_intent, feature)
+    roadmap_module.add_item(
+        rm, tier=1, title=seed_title, description=seed_desc,
+    )
+
     path = roadmap_module.default_path(project_path, intent_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     roadmap_module.save(rm, path)
     return rm, path
+
+
+def _seed_item_from_intent(refined_intent: str, feature: str) -> tuple[str, str]:
+    """Pick a (title, description) for the bootstrap Tier 1 item.
+
+    Title is short (≤80 chars) — the first sentence of the refined
+    intent, or the feature description if refined_intent is empty.
+    Description carries the full refined_intent so the implementer
+    has the complete context.
+    """
+    intent = (refined_intent or "").strip()
+    if not intent:
+        intent = (feature or "").strip()
+    if not intent:
+        intent = "Implement the feature described in the spec."
+
+    # First sentence (or first 80 chars), stripped of trailing dots.
+    first_sentence = intent.split(".", 1)[0].strip()
+    title = first_sentence[:80] if first_sentence else intent[:80]
+    if not title:
+        title = "Implement the feature"
+
+    # Description is the full intent; the implementer's planner sees
+    # this as its goal and decomposes from there.
+    description = intent
+    return title, description
 
 
 # ── Daemon lifecycle ────────────────────────────────────────────────────

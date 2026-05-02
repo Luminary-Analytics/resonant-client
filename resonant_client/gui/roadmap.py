@@ -224,8 +224,18 @@ class Roadmap:
 
 _HEADER_RE = re.compile(r"^# Autonomous Mission:\s*(.*)\s*$", re.MULTILINE)
 _INTENT_RE = re.compile(r"^\*\*Intent ID:\*\*\s*(.+?)\s*$", re.MULTILINE)
-_STARTED_RE = re.compile(r"^\*\*Started:\*\*\s*(.+?)\s*$", re.MULTILINE)
-_BUDGET_RE = re.compile(r"^\*\*Time budget:\*\*\s*(.+?)\s*$", re.MULTILINE)
+# `[ \t]*` not `\s*` — `\s` matches `\r` and `\n`, so on Windows
+# (CRLF line endings) the greedy `\s*` after `**Started:**` gobbles
+# the trailing space + `\r\n` + the next line, producing
+# `started_iso="**Time budget:** 1h"`. The save() then emits
+# `**Started:** **Time budget:** 1h` on a single line — and a
+# duplicate `**Time budget:**` follows from the proper line. Found
+# in the first v0.5.0 GA smoke run; restricting horizontal whitespace
+# only (`[ \t]*`) keeps the regex bounded to its own line. Also
+# `(.*?)` not `(.+?)` so empty values (no started_iso yet) round-trip
+# cleanly through load+save.
+_STARTED_RE = re.compile(r"^\*\*Started:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+_BUDGET_RE = re.compile(r"^\*\*Time budget:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 _STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(\w+)", re.MULTILINE)
 
 # Tier section header: `### Tier 1 — initial decomposition` etc.

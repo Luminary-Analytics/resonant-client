@@ -229,10 +229,18 @@ def parse_bash_assertion(criterion_text: str) -> Optional[BashAssertion]:
     """Extract a `BashAssertion` from a criterion's prose.
 
     The grill prompt is told to produce one of these shapes:
-      * `<command>` — pass iff exit 0 (most common)
-      * `! <command>` — pass iff exit != 0 (negation)
-      * `<command> == <value>` — pass iff stdout matches
-      * `<command> < N` / `<command> > N` — numeric comparisons
+      * `` `<command>` `` — pass iff exit 0 (most common)
+      * `` ! `<command>` `` — pass iff exit != 0 (negation; `!`
+        prefix INSIDE the backticks)
+      * `` `<command>` exits 0 `` / `` `<command>` exit 0 `` —
+        explicit exit-zero (default semantics; verbose form)
+      * `` `<command>` exits N `` / `` `<command>` exit N `` —
+        non-zero exit for any N != 0 → exit_nonzero
+      * `` `<command>` output == <value> `` — pass iff stdout
+        equals (suffix prose AFTER the backtick); also accepts
+        `` `<command> == <value>` `` with the operator inside
+      * `` `<command>` output > N `` / `` `<command>` output < N ``
+        — numeric comparisons; also accepts inside backticks
 
     Picks the LONGEST single-backtick block in the text. Real
     criteria often have multiple backtick blocks: prose mentions
@@ -255,7 +263,23 @@ def parse_bash_assertion(criterion_text: str) -> Optional[BashAssertion]:
     longest = max(matches, key=lambda m: len(m.group(1)))
     raw = longest.group(1).strip()
 
-    # Numeric / equality comparisons trump exit-code checks.
+    # Negated check: `! <command>` (literal prefix). Wins over any
+    # trailing prose: if the user writes `` `! grep ...` exits 0 ``,
+    # the `!` is a parser-level inversion hint — we run `grep` (not
+    # `! grep`) and the assertion is "grep exit != 0". The trailing
+    # "exits 0" reads as the FULL `! grep` pipeline's exit code from
+    # a human's POV, which corresponds to mode=exit_nonzero on the
+    # bare command. The negation phrases ("not", "no") are NOT shell
+    # syntax — they're hints; the grill prompt tells the model to
+    # use literal `!` as the prefix when it wants exit-nonzero
+    # semantics.
+    if raw.startswith("! "):
+        return BashAssertion(command=raw[2:].strip(), mode="exit_nonzero")
+
+    # Form A: operator INSIDE the backticks
+    # (`<cmd> == <val>` / `<cmd> < N` / `<cmd> > N`).
+    # This was the original v0.5.0a2 form; we keep it for backwards
+    # compat.
     for op_re, mode in (
         (_EQUALS_ASSERTION_RE, "output_eq"),
         (_LT_ASSERTION_RE, "output_lt"),
@@ -269,15 +293,59 @@ def parse_bash_assertion(criterion_text: str) -> Optional[BashAssertion]:
                 expected_value=m.group(2).strip(),
             )
 
-    # Negated check: `! <command>` (literal prefix). The negation
-    # phrases ("not", "no") are NOT shell syntax — they're hints in
-    # the prose around the criterion. The grill prompt tells the
-    # model to use literal `!` as the prefix when it wants
-    # exit-nonzero semantics.
-    if raw.startswith("! "):
-        return BashAssertion(command=raw[2:].strip(), mode="exit_nonzero")
+    # Form B (v0.5.0 GA prep) — operator AFTER the backtick block,
+    # in the trailing prose. Found during the first GA smoke: the
+    # bootstrap-roguelite-style `` `find src -type f | wc -l` output
+    # == 6 `` was being parsed as exit_zero only (the `output == 6`
+    # was ignored), so the criterion silently passed when the file
+    # count was wrong. The design doc's spec example uses this form
+    # too — the parser was the lagging piece.
+    trailing = criterion_text[longest.end():].strip()
+    if trailing:
+        suffix_match = _SUFFIX_ASSERTION_RE.match(trailing)
+        if suffix_match:
+            op = suffix_match.group(1)
+            value = suffix_match.group(2).strip()
+            # Strip surrounding quotes from the value (model often
+            # quotes string values for clarity).
+            if (len(value) >= 2 and
+                value[0] == value[-1] and value[0] in ('"', "'")):
+                value = value[1:-1]
+            mode = {
+                "==": "output_eq",
+                "<": "output_lt",
+                ">": "output_gt",
+            }[op]
+            return BashAssertion(command=raw, mode=mode, expected_value=value)
+        # Form C — `` `<cmd>` exits N `` / `` `<cmd>` exit N ``.
+        # Maps N=0 → exit_zero, N!=0 → exit_nonzero.
+        exits_match = _SUFFIX_EXIT_RE.match(trailing)
+        if exits_match:
+            code = int(exits_match.group(1))
+            return BashAssertion(
+                command=raw,
+                mode="exit_zero" if code == 0 else "exit_nonzero",
+            )
 
     return BashAssertion(command=raw, mode="exit_zero")
+
+
+# Suffix forms that come AFTER the backtick block. Optional leading
+# verbose words ("output", "stdout") then the operator + value.
+# Examples:
+#   "output == 6"
+#   "output == hello world"
+#   "stdout > 100"
+#   "== 6"  (no leading word)
+_SUFFIX_ASSERTION_RE = re.compile(
+    r"^(?:output|stdout|result)?\s*(==|<|>)\s*(.+?)\s*$",
+    re.IGNORECASE,
+)
+# `` `<cmd>` exits 0 `` / `` `<cmd>` exit 1 ``.
+_SUFFIX_EXIT_RE = re.compile(
+    r"^exits?\s+(\d+)\s*$",
+    re.IGNORECASE,
+)
 
 
 def run_bash_check(

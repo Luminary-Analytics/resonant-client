@@ -133,13 +133,32 @@ class ReflectPassResult:
         return sum(1 for _, r in self.vision_results if bool(r.error))
 
     def needs_model_session(self) -> bool:
-        """True iff any `[chrome]` criterion still needs validation,
-        OR the roadmap has manual items the daemon should surface in
-        a handoff. False means the daemon can mechanically declare
-        `satisfied` (if `converged`) or `blocked` (if not) without
-        spinning up the REFLECT model session at all — saves tokens
-        for trivially-converged missions."""
-        return bool(self.chrome_pending) or bool(self.manual_pending)
+        """True iff REFLECT's model session needs to run.
+
+        Three trigger conditions:
+        1. Any `[chrome]` criterion still needs validation — the
+           model must drive the browser itself.
+        2. Any `[manual]` criterion exists — surfaced in the handoff.
+        3. **Deterministic failures exist** (`[bash]` or `[vision]`
+           failed) — REFLECT should consider adding follow-up
+           roadmap items so the next iteration has work to do.
+           Without this, a pure-bash spec with a failure goes
+           straight to "stuck" on the next loop (no chrome pending
+           → daemon declares continue → empty roadmap → no items
+           added → stop). Discovered in the first v0.5.0 GA smoke
+           run; ADR 13 in the impl guide.
+
+        False means the daemon can mechanically declare `satisfied`
+        (if `converged`) without burning a model dispatch — the
+        cost optimization is preserved for the all-passes case.
+        """
+        if self.chrome_pending:
+            return True
+        if self.manual_pending:
+            return True
+        if self.bash_failed > 0 or self.vision_failed > 0:
+            return True
+        return False
 
 
 # ── Public entrypoint ───────────────────────────────────────────────────

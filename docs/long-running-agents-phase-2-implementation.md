@@ -45,6 +45,7 @@ yet — that's v0.5.0 GA.
 | **a8** | GA-prep — 5 integration bugs found + fixed via smoke | misc + `scripts/smoke_autonomous_minimal.py` + 2 doc updates | ✅ shipped | `v0.5.0a8` |
 | **a9** | Ollama 503 retry-with-backoff + vision default → qwen3-vl:8b | `backends.py` + 11 retry tests + `acceptance_check.py` | ✅ shipped | `v0.5.0a9` |
 | **GA** | flash-vs-pro tight smoke + tier guidance update | `docs/v0.5.0-smoke-results-step2c.md` + RESONANT.md update | ✅ shipped | **`v0.5.0`** |
+| **v0.5.1** | smart title + PLAN_DEEP + walker retry + bash-on-Windows + parser tightening | 4 alphas (a1–a4) + 2 follow-up patches + `docs/v0.5.1-smoke-results.md`. Both tiers now converge end-to-end on the wordcount smoke. | ✅ shipped | **`v0.5.1`** |
 
 **Total tests:** 1361 passing, 2 skipped (was 1185 at start of v0.5.0;
 added 176 across a1–a6).

@@ -181,32 +181,76 @@ A new node specialization in `orchestration/specialists.py`:
 ```python
 NodeSpecialization.REFLECT: SpecialistProfile(
     name="reflect",
-    description="Review autonomous-mission progress. Mark items done. Add new items if needed. Emit structured verdict.",
+    description="Review autonomous-mission progress. Validate acceptance criteria via bash / chrome / vision. Mark items done. Add new items if needed. Emit structured verdict.",
     system_block=(
         "You are the REFLECT specialist for an autonomous mission. Your job is "
-        "to keep the roadmap honest: mark items as complete with their commit "
-        "refs, identify items that should be added based on what shipped, and "
-        "emit a structured verdict that drives the loop daemon's next move.\n\n"
-        ...
+        "to keep the roadmap honest: validate each typed acceptance criterion, "
+        "mark items as complete with their commit refs, identify items that "
+        "should be added based on what shipped, and emit a structured verdict.\n\n"
+        "For each acceptance criterion in the spec, run the check tagged in "
+        "the criterion:\n"
+        "- `[bash] <command>` → run via `bash` tool; pass = exit 0 (or as "
+        "  specified in the criterion text)\n"
+        "- `[chrome] <interaction + assertion>` → use `browser_navigate`, "
+        "  `browser_click`, `browser_type`, `browser_js`, `browser_screenshot` "
+        "  to drive the UI and check the assertion\n"
+        "- `[vision] <visual claim>` → take a screenshot via "
+        "  `browser_screenshot` (web) or `computer_screenshot` (desktop), "
+        "  pass it to a vision-capable model, ask the question literally\n"
+        "- `[manual] <description>` → SKIP. List in handoff. Doesn't gate "
+        "  convergence.\n\n"
+        "Run each check ONCE, capture the result, mark the checkbox. DO NOT "
+        "loop on a failing check — it stays `[ ]` and the criterion is "
+        "reported as still-pending in the verdict.\n\n"
         "End your response with a fenced JSON code block:\n\n"
         "```json\n"
         "{\n"
         '  "completed": [{"id": "T1.2", "commit_sha": "abc123f", "note": "..."}, ...],\n'
+        '  "acceptance_results": [\n'
+        '    {"criterion": "npm install exits 0", "type": "bash",\n'
+        '     "passed": true, "evidence": "exit_code=0, stdout truncated"},\n'
+        '    {"criterion": "Click theme toggle, body bg becomes dark",\n'
+        '     "type": "chrome", "passed": true,\n'
+        '     "evidence": "getComputedStyle returned rgb(26,26,46)"},\n'
+        '    {"criterion": "Single green circle on dark navy", "type": "vision",\n'
+        '     "passed": true,\n'
+        '     "evidence": "vision model answered: yes, one circle visible"}\n'
+        '  ],\n'
         '  "added": [{"id": "T2.1", "tier": 2, "title": "...", "description": "..."}],\n'
         '  "blocked": [{"id": "T1.4", "reason": "needs schema decision"}],\n'
         '  "verdict": "continue" | "satisfied" | "blocked",\n'
         '  "summary": "<one-paragraph user-facing summary>",\n'
         '  "estimated_remaining_minutes": <int>\n'
         "}\n"
-        "```\n"
+        "```\n\n"
+        "Verdict rules:\n"
+        "- `satisfied` requires EVERY non-`[manual]` acceptance criterion has\n"
+        "  `passed: true`. Even one `passed: false` blocks `satisfied`.\n"
+        "- `blocked` if you tried `await_user` once already this run AND the\n"
+        "  user response didn't unblock progress.\n"
+        "- `continue` otherwise — the loop will pick the next item or call\n"
+        "  you again after more iterations.\n"
     ),
-    tool_allowlist=READ_ONLY_TOOLS | _AWAIT_USER | frozenset({"file_edit"}),
-    max_steps=12,
+    tool_allowlist=(
+        READ_ONLY_TOOLS
+        | _AWAIT_USER
+        | frozenset({
+            "file_edit",            # write roadmap.md
+            "bash",                 # [bash] checks
+            "browser_navigate",     # [chrome] checks
+            "browser_click",
+            "browser_type",
+            "browser_screenshot",   # for [vision] checks via web
+            "browser_js",
+            "computer_screenshot",  # for [vision] checks via desktop
+        })
+    ),
+    max_steps=20,  # generous — multiple acceptance checks may need real interaction
     confidence_threshold=0.7,
 ),
 ```
 
-Note `file_edit` is allowed — REFLECT directly edits `roadmap.md`. That's the one specialist that needs write access to the roadmap; everyone else reads.
+REFLECT's allowlist is intentionally broader than VERIFY's. VERIFY is read-only (its job is "check the implementer's claims"); REFLECT does the same plus owns the roadmap (writes via `file_edit`) and drives real UI interactions for `[chrome]` / `[vision]` checks. The only specialist with write access to `roadmap.md` is REFLECT — everyone else treats it as read-only context.
 
 REFLECT runs in two trigger modes:
 - **Item-mark mode** (after every successful item): minimal pass, mark item done with commit ref.
@@ -357,28 +401,70 @@ Per user direction: **the grill phase should be deep and rigorous when feeding i
 - Final spec block adds a `**Time budget:**` line with the model's recommendation
 - New rule: the model is told it CANNOT emit the spec until it has at least 4 binary acceptance-criteria bullets. If the user says "we have enough" before that, the model asks one more question.
 
-### 11.2 Spec block additions for autonomous missions
+### 11.2 Spec block additions for autonomous missions — typed acceptance criteria
 
-In addition to the existing `## Final spec` sections, an autonomous mission's spec includes:
+In addition to the existing `## Final spec` sections, an autonomous mission's spec includes a `**Time budget:**` line plus a typed acceptance-criteria list. **Each criterion is tagged with the validation strategy REFLECT will use to check it.** Three types are supported in v0.5.0:
+
+- **`[bash]`** — runs a shell command, checks exit code or output. Cheapest. Right for builds, type checks, file existence, grep results.
+- **`[chrome]`** — uses the engine's existing browser tools (`browser_navigate` / `browser_click` / `browser_type` / `browser_screenshot` / `browser_js`) to drive a real Chromium instance. Right for any feature that produces a webpage or web app. The criterion specifies the URL, interaction sequence, and the assertion (DOM state, computed style, screenshot pixel pattern).
+- **`[vision]`** — takes a screenshot (browser via Playwright OR desktop via `mss`) and asks a vision-capable model "does this match X?". Right for features whose output is visual but not easily DOM-scriptable: native desktop apps, image generation, layout fidelity. Falls back to the bundled vision model (Ollama: `qwen2.5vl:7b` or similar; configurable in Settings → Network).
+
+Concrete example (the bootstrap-roguelite mission spec):
 
 ```markdown
 **Time budget:** 4h
 *(My recommendation. Adjustable in the next step.)*
 
-**Acceptance criteria:** *(must all be true at convergence; checked by REFLECT)*
-- [ ] `npm install` exits 0 with no peer-dependency errors
-- [ ] `npm run dev` serves the canvas and shows the green circle at canvas center
-- [ ] `npm run build` exits 0 and produces `dist/index.html` and `dist/assets/`
-- [ ] `npx tsc --noEmit` exits 0 (strict mode passes)
-- [ ] Exactly 6 source files in the repo (`package.json`, `tsconfig.json`,
-       `vite.config.ts`, `index.html`, `src/main.ts`, `src/scenes/BootScene.ts`)
-- [ ] No `any` types in any TS file (`grep -rn "any" src/` returns 0)
-- [ ] The repo's git log shows incremental commits (no single mega-commit)
+**Acceptance criteria:** *(must all be true at convergence; REFLECT validates each
+one using its tagged strategy. Model can't fake them — runner verifies the check
+actually ran and the output matches.)*
+
+- [ ] `[bash]` `npm install` exits 0 with no peer-dependency errors
+- [ ] `[bash]` `npm run build` exits 0 and produces `dist/index.html`
+- [ ] `[bash]` `npx tsc --noEmit` exits 0 (strict mode passes)
+- [ ] `[bash]` Exactly 6 source files (`find src -type f | wc -l == 4`)
+- [ ] `[bash]` No `any` types: `! grep -rn ": any" src/`
+- [ ] `[chrome]` `npm run dev`; navigate to http://localhost:3000;
+      verify the canvas element exists AND its first 100×100 pixel sample
+      from the center is pure green (RGB 0±5, 255±5, 153±5)
+- [ ] `[chrome]` On the same page, `document.querySelector("canvas").width === 800`
+      and `.height === 600`
+- [ ] `[vision]` Open the dev server screenshot; verify "a single green
+      circle on a dark navy background, no other shapes visible"
 ```
 
-Notice the `[ ]` checkboxes — REFLECT marks them `[x]` as it confirms each criterion. A criterion stays `[ ]` until REFLECT can prove it (typically via a `bash` command whose output it inspects). Convergence = every checkbox is `[x]`.
+Notice the `[ ]` checkboxes — REFLECT marks them `[x]` as it confirms each criterion. A criterion stays `[ ]` until REFLECT validates it via the tagged check.
 
-### 11.3 The budget question itself
+### 11.3 Why typed validation, not "the model decides if it works"
+
+This was the user's pushback (better than my "manual-check escape valve" first draft). Without typed validation:
+- Visual / behavioral features can't have measurable acceptance criteria → convergence is the model's mood
+- The escape valve ("`[manual-check]` items don't gate convergence") meant half of features couldn't actually converge
+
+With typed validation:
+- `[bash]` works for builds, type checks, file shape, grep patterns — about half of typical mission acceptance criteria
+- `[chrome]` works for anything that lives in a browser — webapps, dashboards, dev servers. **REFLECT validates the same way a person would: open the page, click the toggle, check that the background is actually dark.**
+- `[vision]` works for native desktop apps and any "does this LOOK right?" check — REFLECT takes a screenshot and asks a vision model "is the dark-mode toggle on AND the background actually dark?"
+
+The model can't fake any of these — the runner verifies that:
+1. The check actually ran (audit log shows the bash exec / browser navigation / screenshot)
+2. The output / pixels / vision-model verdict matched the criterion
+
+If the criterion can't be expressed as `[bash]` or `[chrome]` or `[vision]`, the rigorous grill rejects it and asks the user to refine. The user CAN add a `[manual]` criterion as a final escape (the design keeps that affordance for true edge cases) but the rigorous grill discourages it — anything `[manual]` is excluded from convergence and listed in the handoff doc as "user must verify."
+
+### 11.4 The infrastructure is already there
+
+Worth noting: nothing in §11.2-11.3 requires NEW runtime infrastructure. The engine already has:
+- `bash` tool — for `[bash]` checks
+- `browser_navigate`, `browser_click`, `browser_type`, `browser_screenshot`, `browser_js`, `browser_read` — for `[chrome]` checks (Playwright via `[browser]` extras, already shipped)
+- `computer_screenshot` and Pillow — for `[vision]` checks (already in `[desktop]` extras)
+- Ollama's vision-capable models (e.g. `qwen2.5vl:7b`) — for `[vision]` checks
+
+The work in v0.5.0 is exposing these to REFLECT (expanding its `tool_allowlist`), giving it the prompt-level guidance to USE them for typed validation, and adding the criterion parser that routes each `[type]`-tagged bullet to the right strategy.
+
+### 11.5 The budget question itself
+
+### 11.6 The budget question itself
 
 Inserted into the rigorous-grill decision tree near the end (after acceptance criteria, before risks). Concrete example:
 
@@ -390,13 +476,14 @@ Inserted into the rigorous-grill decision tree near the end (after acceptance cr
 
 The user can answer with the preset name, a custom number ("3h"), or "full auto". The grill records the answer in the spec block as `**Time budget:** 4h`.
 
-### 11.4 Why ground convergence in acceptance criteria
+### 11.7 Why ground convergence in acceptance criteria
 
-This was the user's pushback on open question #6 (now closed). Without it, `verdict=satisfied` is just the model's opinion — and the model is biased toward "satisfied" because that ends its work. With acceptance-criteria-as-ground-truth:
+This was the user's pushback on open question #6 (now closed). Without it, `verdict=satisfied` is just the model's opinion — and the model is biased toward "satisfied" because that ends its work. With typed-acceptance-criteria-as-ground-truth:
 
-- The model emits a deterministic, executable check per bullet during the rigorous grill.
-- REFLECT runs each check via `bash` and reads the output; it cannot fake a `[x]` because the runner validates that the criterion was actually run + the output matches.
+- The model emits a deterministic, executable check per bullet during the rigorous grill (with a `[bash]` / `[chrome]` / `[vision]` type tag).
+- REFLECT runs each check via the tagged strategy and reads the output; it cannot fake a `[x]` because the runner validates that the criterion was actually run + the output matches.
 - The convergence signal becomes a real measurement, not a mood.
+- **Visual / behavioral features that bash can't check now have first-class validation.** Dark-mode toggle? `[chrome]` opens the page, clicks the toggle, checks `getComputedStyle(document.body).backgroundColor`. Screenshot fidelity? `[vision]` asks the model. The agent validates the same way a person would.
 
 Trade: the rigorous grill takes longer (more questions, more push). For a 5-minute fix the user might find this excessive. Mitigation: the autonomous toggle is opt-in; users who want a quick one-shot don't see the rigorous grill at all.
 
@@ -432,20 +519,31 @@ Updated through the design conversation. Resolved questions are kept here with t
 
 9. **[CLOSED] Cost / burn-rate display.** Confirmed: yes. Chat-header badge shows `$total ($/h burn rate)` alongside the time + iteration counters. Reuses the v0.3.x cost-tracking infrastructure.
 
+10. **[CLOSED] Validation strategy for visual / behavioral acceptance criteria.** Confirmed: typed acceptance criteria with `[bash]` / `[chrome]` / `[vision]` tags. REFLECT validates each via the tagged strategy. Existing engine browser tools (Playwright via `[browser]` extras) handle `[chrome]`. Existing screenshot infra + Ollama vision models handle `[vision]`. **No manual-check escape valve as default — `[manual]` is allowed but discouraged in the rigorous-grill prompt and excluded from convergence.** See §11.2-§11.4 + §7.
+
+11. **[OPEN] Vision model selection for `[vision]` criteria.** Three options: (a) Hardcode `qwen2.5vl:7b` as the default, configurable via Settings → Network; (b) Use whichever vision-capable model the user has pulled (auto-detected); (c) Defer `[vision]` checks entirely to v0.5.1 and ship v0.5.0 with `[bash] + [chrome]` only. Lean toward (c) for v0.5.0 given the scope creep — vision-model integration deserves its own focused release.
+
 ## 14. Scope estimate
 
-**v0.5.0 (foundation):**
+**v0.5.0 (foundation, `[bash]` + `[chrome]` validation):**
 - New `gui/autonomous_loop.py` (~350 lines: daemon class, threading, stopping-rule logic, resume-from-restart)
-- New `orchestration/specialists.py::REFLECT` profile (~150 lines including the rigorous prompt + acceptance-criteria validation logic)
-- New `gui/roadmap.py` (~300 lines: parser, writer, conflict resolution, acceptance-criteria checkbox tracking)
-- Rigorous-grill prompt extension in `orchestration/grill_me.py` (~80 lines: the additional questions + binary-criteria rule + budget question)
+- New `orchestration/specialists.py::REFLECT` profile (~200 lines including the rigorous prompt, typed-validation logic for `[bash]` and `[chrome]`, structured-output schema)
+- New `gui/roadmap.py` (~350 lines: parser, writer, conflict resolution, typed-acceptance-criteria tracking with checkbox state)
+- New `orchestration/acceptance_check.py` (~250 lines: dispatchers for `[bash]` and `[chrome]` strategies, evidence capture, idempotency)
+- Rigorous-grill prompt extension in `orchestration/grill_me.py` (~120 lines: the additional questions + binary-criteria rule + type-tag instruction + budget question)
 - WS event additions + frontend handlers (~200 lines spread across `app.py` + `app.js`)
 - Composer UI changes: autonomous toggle (~30 lines)
 - Spec-card budget confirmation card with presets + "Full auto" handling (~120 lines)
 - Chat-header autonomous badge + stop button + cost/burn-rate display (~80 lines)
-- Tests (~500 lines covering daemon lifecycle, roadmap parser, REFLECT prompt content, acceptance-criteria validation, stopping rules, resume-from-restart)
+- Tests (~700 lines covering daemon lifecycle, roadmap parser, REFLECT prompt content, typed-acceptance-criteria validation including `[bash]` evidence capture and `[chrome]` Playwright drive, stopping rules, resume-from-restart)
 
-Total: roughly **1,800 lines of new code + tests**, 4-6 days of focused work. Not autonomous-loop-friendly because it touches Mission flow architecture, has real human-design moments (the UI calls), and needs real-mission validation against `ollama:deepseek-v4-flash:cloud`.
+Total: roughly **2,400 lines of new code + tests**, 5-7 days of focused work. Defers `[vision]` to v0.5.1.
+
+**v0.5.1 (`[vision]` validation):**
+- Vision-model integration (~200 lines: model selection, Ollama vision-API wrapper, prompt for "does this match")
+- `acceptance_check.py` extension for `[vision]` strategy (~100 lines)
+- Tests (~150 lines: synthetic screenshots, stub vision model, edge cases)
+- Total: ~450 lines, 1-2 days.
 
 **v0.5.x (refinement):**
 - Roadmap rendering in the sidebar (T3.x scope from the v0.4 roadmap)
@@ -460,13 +558,14 @@ Total: roughly **1,800 lines of new code + tests**, 4-6 days of focused work. No
 ## 15. Recommended morning sequence (when implementation starts)
 
 1. **Walk through this doc with the user** — final pushback before any code.
-2. **Build `gui/roadmap.py` first.** Pure data layer: parse, write, validate, acceptance-criteria checkbox tracking, conflict resolution. Easy to unit-test, no threading, no WS. Lands as v0.5.0a1.
-3. **Extend `orchestration/grill_me.py` with the rigorous-grill mode.** Add the autonomous-aware prompt extension, the binary-criteria rule, the budget question. Tests pin the prompt invariants. Lands as v0.5.0a2.
-4. **Build `orchestration/specialists.py::REFLECT`.** Two trigger modes (item-mark + full pass). Acceptance-criteria validation logic. Lands as v0.5.0a3.
-5. **Build `gui/autonomous_loop.py`.** Mock the dispatch + reflect to keep the daemon test surface small. Threading, stopping-rule logic, resume-from-restart. Lands as v0.5.0a4.
-6. **Wire WS protocol.** New events, command handlers in `app.py`. Lands as v0.5.0a5.
-7. **Frontend.** Composer toggle, spec-card budget confirmation, chat-header badge with cost/burn-rate, stop button, in-chat iteration messages. Lands as v0.5.0a6.
-8. **End-to-end smoke** against `ollama:deepseek-v4-flash:cloud` with a small scoped feature ("scaffold a tiny Python CLI with two acceptance criteria"). Watch one full run hit convergence cleanly. Lands as v0.5.0.
+2. **Build `gui/roadmap.py` first.** Pure data layer: parse the typed-acceptance-criteria format, write checkbox updates, conflict resolution. Easy to unit-test, no threading, no WS. Lands as v0.5.0a1.
+3. **Build `orchestration/acceptance_check.py`.** Dispatchers for `[bash]` and `[chrome]` strategies. Evidence capture. Idempotency (running the same check twice produces the same result). Mock the underlying tools so the unit tests don't need a live Playwright instance. Lands as v0.5.0a2.
+4. **Extend `orchestration/grill_me.py` with the rigorous-grill mode.** Add the autonomous-aware prompt extension, the binary-criteria rule, the type-tag instruction, the budget question. Tests pin the prompt invariants. Lands as v0.5.0a3.
+5. **Build `orchestration/specialists.py::REFLECT`.** Wire it to `acceptance_check.py`. Two trigger modes (item-mark + full pass). Lands as v0.5.0a4.
+6. **Build `gui/autonomous_loop.py`.** Mock the dispatch + reflect to keep the daemon test surface small. Threading, stopping-rule logic, resume-from-restart. Lands as v0.5.0a5.
+7. **Wire WS protocol.** New events, command handlers in `app.py`. Lands as v0.5.0a6.
+8. **Frontend.** Composer toggle, spec-card budget confirmation, chat-header badge with cost/burn-rate, stop button, in-chat iteration messages. Lands as v0.5.0a7.
+9. **End-to-end smoke** against `ollama:deepseek-v4-flash:cloud` with a small scoped feature including at least one `[chrome]` acceptance criterion ("scaffold a tiny webpage with a counter button; the counter increments on click"). Watch one full run hit real convergence — the agent literally clicks the button via Playwright and confirms the counter increased. Lands as v0.5.0.
 
 Each `a*` step is a separate commit, tagged for testing. Treat v0.5.0 itself as the GA after the smoke is green.
 
@@ -475,13 +574,15 @@ Each `a*` step is a separate commit, tagged for testing. Treat v0.5.0 itself as 
 - A user can launch an autonomous mission, walk away, and come back to a complete handoff document.
 - The roadmap.md is human-readable mid-run; you can see what's done and what's pending without opening the app.
 - The acceptance-criteria checkboxes track real, measured progress — you can scan them mid-run and see what's *demonstrably* working vs what's still pending.
-- **Convergence (`verdict=satisfied`) is real, not a model mood.** Every `[x]` next to an acceptance criterion was set because REFLECT ran a bash check and the output matched. The runner validates this — the model can't fake it.
+- **Convergence (`verdict=satisfied`) is real, not a model mood.** Every `[x]` was set because REFLECT ran the criterion's tagged check (`[bash]` / `[chrome]` / `[vision]`) and the output matched. The runner validates this — the model can't fake it.
+- **Visual / behavioral features have first-class validation.** A "dark mode toggle works" criterion translates to a `[chrome]` check that opens the page, clicks the toggle, and verifies the body's computed background color. The agent validates the same way a person would.
 - Stopping the mission mid-run leaves a clean state (no half-shipped commits, no dangling daemons).
 - Restarting the server preserves the mission state — Resume just works.
 - An empty roadmap that REFLECT can't fill (because the goal is met) cleanly emits `mission_complete` rather than spinning.
 - The cycle guards (v0.3.3) and per-model thresholds (v0.4.9) keep working inside each iteration's sub-mission.
 - The chat-header cost / burn-rate stays accurate to within ±5% of the actual API spend (confirmed against the v0.3.x cost-tracking infrastructure).
-- The rigorous grill produces measurable, binary acceptance criteria — auditing a sample of grill outputs shows ≥80% of bullets are testable via a single bash command. Soft "the feature works" criteria should be ≤20%.
-- A repeat of the v0.4.x overnight run could in principle be expressed AS an autonomous mission ("ship every item in this roadmap doc, time budget 6h, acceptance: pytest passes + each tier item has a commit"), proving the pattern matches what we did manually.
+- The rigorous grill produces well-typed acceptance criteria — auditing a sample of grill outputs shows ≥90% of bullets have a `[bash]` / `[chrome]` / `[vision]` tag. `[manual]` bullets should be rare (≤10%) and obviously appropriate when present.
+- The end-to-end smoke against `ollama:deepseek-v4-flash:cloud` produces a working scaffold + a clicked-and-verified UI element (the counter test) in one autonomous run.
+- A repeat of the v0.4.x overnight run could in principle be expressed AS an autonomous mission ("ship every item in this roadmap doc, time budget 6h, acceptance: `[bash] pytest -q` exits 0 + `[bash] git log --oneline | wc -l >= 5` after each tier"), proving the pattern matches what we did manually.
 
 That last criterion is the test: if v0.5.0 can replicate the overnight run as a feature instead of as ad-hoc scaffolding, we've codified the pattern correctly.

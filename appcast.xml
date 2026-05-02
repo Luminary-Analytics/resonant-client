@@ -6,6 +6,14 @@
         <description>Auto-update channel for Resonant Client</description>
         <language>en</language>
         <item>
+            <title>Version 0.4.3</title>
+            <pubDate>Sat, 02 May 2026 06:07:49 +0000</pubDate>
+            <sparkle:version>0.4.3</sparkle:version>
+            <sparkle:shortVersionString>0.4.3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.3/resonant-setup-0.4.3.exe" sparkle:version="0.4.3" sparkle:shortVersionString="0.4.3" length="23042589" type="application/octet-stream" sparkle:edSignature="MF6zEXDeEfWzhbx4bXxS+GQr+2XMFVxZs5QAHExYA0AWtNiHPUWE5D0BbllC5GevQO9RtsHfU3Y7Q7XlGOSfBA==" />
+        </item>
+        <item>
             <title>Version 0.4.2</title>
             <pubDate>Sat, 02 May 2026 05:32:16 +0000</pubDate>
             <sparkle:version>0.4.2</sparkle:version>

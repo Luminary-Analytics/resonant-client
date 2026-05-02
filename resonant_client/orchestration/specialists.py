@@ -76,7 +76,24 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "the next specialist — if you don't summarize, downstream work fails.\n\n"
             "End your response with a 3-6 line summary covering: relevant file "
             "paths, key function/class names, observed behavior or constraints, "
-            "and anything the implementer needs to know."
+            "and anything the implementer needs to know.\n\n"
+            # v0.4.10 (T2.5) — await_user is universally available
+            # but rarely called. The specialist needs to know when to
+            # prefer it over more searching.
+            "─── ESCAPE HATCH: `await_user` ───\n\n"
+            "If you've made 5+ tool calls and you still don't have a clear "
+            "picture (the codebase is ambiguous, multiple plausible files match, "
+            "the goal itself is under-specified), STOP exploring and call "
+            "`await_user` with a focused question. Examples:\n"
+            "- Good: `await_user(\"I see auth code in both /web/auth/ and "
+            "/services/identity/. Which one is the live path?\")`\n"
+            "- Good: `await_user(\"The goal mentions 'the export feature' but "
+            "I see /export/ and /shared/exports/. Which?\")`\n"
+            "- Bad: `await_user(\"What should I do next?\")` — too vague\n"
+            "- Bad: calling await_user before trying any reads at all\n\n"
+            "One good question is faster and cheaper than 10 more grep calls. "
+            "The cycle guard (engine/session.py) will hard-stop you anyway "
+            "around the 12-call mark — better to ask first."
         ),
         tool_allowlist=READ_ONLY_TOOLS | _AWAIT_USER,
         max_steps=8,
@@ -104,7 +121,28 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "directory and won't need to re-discover where you put things. "
             "Use a forward-slash path relative to the project root. Do NOT "
             "use absolute paths or `..` traversal. If you wrote files only "
-            "at the project root, omit the declaration entirely."
+            "at the project root, omit the declaration entirely.\n\n"
+            # v0.4.10 (T2.5) — await_user discoverability for implementers.
+            # Implementers run with full edit + exec tools and a 50-step
+            # budget; they can burn a lot of tokens guessing at ambiguous
+            # requirements. One focused question to the user is much
+            # cheaper.
+            "─── ESCAPE HATCH: `await_user` ───\n\n"
+            "If you hit a real ambiguity in the goal — two valid implementations "
+            "of the same requirement, missing details that could go either way, "
+            "a naming or location choice that the user clearly cares about — "
+            "STOP and call `await_user` with a focused question. Examples:\n"
+            "- Good: `await_user(\"Should /export include tool-call activity, or "
+            "only user/assistant messages?\")`\n"
+            "- Good: `await_user(\"Use sqlite or just JSON for the local cache?\", "
+            "options=[\"sqlite\", \"json\"])`\n"
+            "- Good: `await_user(\"Where should the new module live? "
+            "src/utils/ or src/core/?\")`\n"
+            "- Bad: `await_user(\"Should I keep going?\")` — vague status check\n"
+            "- Bad: asking about something you can answer by reading 1-2 files\n\n"
+            "Use `await_user` for choices the USER cares about. Use file_read / "
+            "glob / grep for things the CODE will tell you. The cycle guard "
+            "will hard-stop you around 12 repeated probes — asking is faster."
         ),
         tool_allowlist=ALL_EDIT_TOOLS,
         # v0.3.3 — bumped from 24 to 50. The two new cycle guards in
@@ -214,6 +252,17 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "to be emitted as a JSON plan with at least one subgoal — DO NOT "
             "attempt to do the work yourself. Use file_read / glob / grep first "
             "if you need to understand the codebase before planning.\n\n"
+            # v0.4.10 (T2.5) — await_user discoverability for the planner.
+            # When the goal itself is ambiguous, asking before decomposing
+            # produces a much better plan than guessing at scope.
+            "─── ESCAPE HATCH: `await_user` ───\n\n"
+            "If the goal as written is genuinely ambiguous (the user could "
+            "reasonably mean two different things, the scope is unclear, or a "
+            "naming / placement decision could go either way), call "
+            "`await_user` with a focused question BEFORE decomposing. A good "
+            "plan built from a clear goal beats a thorough plan built from "
+            "guesses. Reserve `await_user` for choices the USER cares about; "
+            "use file_read / glob / grep for things the CODE will tell you.\n\n"
             # v0.4.8 (T2.3) — DeepSeek tuning. Both flash and pro tend to
             # explain themselves at length and occasionally drop the JSON
             # envelope at the end (the structured-output bit gets buried

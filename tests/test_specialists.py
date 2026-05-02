@@ -203,3 +203,76 @@ class TestVerifyPromptStructured:
         # the prompt restructure — verify is read-only by design.
         block = get_specialist(NodeSpecialization.VERIFY).system_block
         assert "may NOT edit" in block or "may not edit" in block.lower()
+
+
+# ── v0.4.10 (T2.5) — await_user discoverability invariants ───────────
+#
+# `await_user` is universally allowed but rarely called by specialists
+# unless the prompt teaches them when. T2.5 added an "ESCAPE HATCH"
+# block to explore / implement / plan prompts. These tests pin the
+# block's presence + the good/bad-use guidance so a future prompt
+# refactor can't silently drop it.
+
+
+class TestAwaitUserDiscoverability:
+    def test_explore_mentions_await_user_escape_hatch(self):
+        block = get_specialist(NodeSpecialization.EXPLORE).system_block
+        assert "ESCAPE HATCH" in block
+        assert "await_user" in block
+
+    def test_implement_mentions_await_user_escape_hatch(self):
+        block = get_specialist(NodeSpecialization.IMPLEMENT).system_block
+        assert "ESCAPE HATCH" in block
+        assert "await_user" in block
+
+    def test_plan_mentions_await_user_escape_hatch(self):
+        block = get_specialist(NodeSpecialization.PLAN).system_block
+        assert "ESCAPE HATCH" in block
+        assert "await_user" in block
+
+    def test_explore_gives_concrete_trigger(self):
+        # The block must give a quantitative trigger condition. Without
+        # it, the model has no signal for WHEN to escape.
+        block = get_specialist(NodeSpecialization.EXPLORE).system_block.lower()
+        # Trigger phrases that say "after N tool calls" or similar.
+        assert "5+ tool calls" in block or "5 tool calls" in block
+
+    def test_explore_distinguishes_good_vs_bad_use(self):
+        # Concrete examples are what makes the difference between "tool
+        # exists" and "tool gets called." Both good and bad examples
+        # should be present.
+        block = get_specialist(NodeSpecialization.EXPLORE).system_block.lower()
+        assert "good:" in block and "bad:" in block
+
+    def test_implement_distinguishes_good_vs_bad_use(self):
+        block = get_specialist(NodeSpecialization.IMPLEMENT).system_block.lower()
+        assert "good:" in block and "bad:" in block
+
+    def test_implement_clarifies_user_vs_code_questions(self):
+        # The key insight: ask user when the USER cares; read code when
+        # the CODE will tell you. Pin this distinction.
+        block = get_specialist(NodeSpecialization.IMPLEMENT).system_block.lower()
+        assert "user cares" in block or "code will tell" in block
+
+    def test_plan_recommends_asking_before_decomposing(self):
+        # For the planner the right time to ask is BEFORE the JSON plan
+        # gets generated — guesses at scope produce bad plans.
+        block = get_specialist(NodeSpecialization.PLAN).system_block.lower()
+        assert "before decomposing" in block
+
+    def test_plan_escape_hatch_lands_before_format_reminder(self):
+        # The FORMAT REMINDER must stay LAST (DeepSeek attends to recent
+        # tokens for structured output). The ESCAPE HATCH should be
+        # before it but still in the last half of the prompt.
+        block = get_specialist(NodeSpecialization.PLAN).system_block
+        escape_idx = block.find("ESCAPE HATCH")
+        format_idx = block.find("FORMAT REMINDER")
+        assert escape_idx > 0 and format_idx > 0
+        assert escape_idx < format_idx, "ESCAPE HATCH must come before FORMAT REMINDER"
+
+    def test_verify_does_not_get_escape_hatch(self):
+        # Verify is a check role; its escape mechanism is the `blocked`
+        # verdict, not await_user. Adding the escape-hatch block here
+        # would dilute the verify-as-check semantics.
+        block = get_specialist(NodeSpecialization.VERIFY).system_block
+        assert "ESCAPE HATCH" not in block

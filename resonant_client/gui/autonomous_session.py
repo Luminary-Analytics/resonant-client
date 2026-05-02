@@ -220,12 +220,17 @@ def _smart_title(text: str, *, max_len: int = 80) -> str:
     """Extract a clean title from a multi-sentence intent.
 
     Strategy (in order):
-    1. If the first sentence (per `_SENTENCE_END_RE`) is ≤ max_len,
+    1. Collapse internal whitespace (newlines + tabs → single space)
+       so the title fits on one line of markdown. The roadmap's
+       item-line regex is single-line; a newline in the title would
+       split the item across two lines and make it unparseable
+       (v0.5.1a1 regression discovered during pro smoke).
+    2. If the first sentence (per `_SENTENCE_END_RE`) is ≤ max_len,
        use it. This handles "Build X. Add Y. Verify Z." cases where
        the first sentence is the natural title.
-    2. Otherwise truncate at max_len, but PREFER to break on a word
+    3. Otherwise truncate at max_len, but PREFER to break on a word
        boundary so we don't slice mid-token.
-    3. Strip trailing punctuation that would dangle awkwardly.
+    4. Strip trailing punctuation that would dangle awkwardly.
 
     The heuristic respects filenames (`wordcount.py`), version
     numbers (`v1.2.3`), abbreviations (`e.g.`), and other periods
@@ -234,6 +239,12 @@ def _smart_title(text: str, *, max_len: int = 80) -> str:
     text = text.strip()
     if not text:
         return "Implement the feature"
+
+    # Collapse internal whitespace BEFORE looking for sentence
+    # boundaries. Multi-line intents would otherwise produce a
+    # title with embedded `\n`, which breaks the single-line
+    # roadmap item parser.
+    text = re.sub(r"\s+", " ", text)
 
     # Try the first sentence first
     match = _SENTENCE_END_RE.search(text)

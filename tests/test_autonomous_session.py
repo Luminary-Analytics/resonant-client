@@ -304,6 +304,24 @@ class TestSmartTitle:
         assert _smart_title("", max_len=80) == "Implement the feature"
         assert _smart_title("   ", max_len=80) == "Implement the feature"
 
+    def test_multiline_intent_collapses_to_single_line_title(self):
+        # v0.5.1a2 GA-prep regression: an intent that spans multiple
+        # lines (real grill-spec output is wrapped) was producing a
+        # title with embedded newlines, which broke the single-line
+        # roadmap item parser silently — the bootstrapped T1.1 didn't
+        # show up in the parsed roadmap and the daemon went straight
+        # to "stuck" on the first iteration.
+        intent = (
+            "Build a Python CLI utility `wordcount.py` at the\n"
+            "project root. It takes a single file path argument."
+        )
+        title = _smart_title(intent, max_len=120)
+        assert "\n" not in title, f"newline in title: {title!r}"
+        assert "\t" not in title, f"tab in title: {title!r}"
+        # Confirm the actual content survived — no info loss
+        assert "wordcount" in title
+        assert "project root" in title
+
     def test_short_clean_intent_unchanged_except_trailing_punctuation(self):
         assert _smart_title("Quick fix", max_len=80) == "Quick fix"
         assert _smart_title("Quick fix.", max_len=80) == "Quick fix"

@@ -18,11 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.network_defaults import (
-    resolve_ollama_url,
-    resolve_remote_engine_ws_url,
-    resolve_resonant_api_url,
-)
+from resonant_client.network_defaults import resolve_ollama_url
 
 
 # ── resolve_ollama_url ──────────────────────────────────────────────────
@@ -127,17 +123,7 @@ class TestResolveOllamaUrlMalformedSettings:
         assert result.startswith("http")
 
 
-# ── Other resolvers — quick smoke ───────────────────────────────────────
-
-
-class TestOtherResolvers:
-    def test_resolve_resonant_api_url_default(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_API", raising=False)
-        url = resolve_resonant_api_url(settings_data={})
-        assert url == "http://localhost:8000"
-
-    def test_resolve_remote_engine_ws_url_default(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_ENGINE_WS_URL", raising=False)
-        monkeypatch.delenv("RESONANT_REMOTE_ENGINE_WS_URL", raising=False)
-        url = resolve_remote_engine_ws_url(settings_data={})
-        assert url == "ws://localhost:8765"
+# v0.4.4 (T1.4) — `TestOtherResolvers` deleted. Pre-v0.4.4 it smoke-
+# tested `resolve_resonant_api_url` and `resolve_remote_engine_ws_url`
+# (defaults `http://localhost:8000` and `ws://localhost:8765`). Both
+# resolvers were removed when ResonantBackend left the codebase.

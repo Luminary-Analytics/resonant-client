@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import Any, Mapping
 
 _SETTINGS_PATH = Path.home() / ".resonant" / "settings.json"
-_DEFAULT_RESONANT_API_URL = "http://localhost:8000"
-_DEFAULT_REMOTE_ENGINE_WS_URL = "ws://localhost:8765"
 # v0.4.0 — Mac Studio at 10.0.0.133 hosts Ollama in the canonical
 # Resonant deployment (per the user's infra). The fallback below it is
 # the localhost path for users running Ollama on the same box. The
@@ -63,24 +61,6 @@ def get_default_model(*, settings_data: Mapping[str, Any] | None = None) -> str:
     )
 
 
-def resolve_resonant_api_url(
-    explicit: str | None = None,
-    *,
-    settings_data: Mapping[str, Any] | None = None,
-) -> str:
-    return (
-        str(explicit or "").strip()
-        or str(os.environ.get("RESONANT_API", "") or "").strip()
-        or _get_setting(
-            "network",
-            "resonant_api_url",
-            _DEFAULT_RESONANT_API_URL,
-            settings_data=settings_data,
-        ).strip()
-        or _DEFAULT_RESONANT_API_URL
-    ).rstrip("/")
-
-
 def resolve_ollama_url(
     explicit: str | None = None,
     *,
@@ -115,20 +95,8 @@ def resolve_ollama_url(
     ).rstrip("/")
 
 
-def resolve_remote_engine_ws_url(
-    explicit: str | None = None,
-    *,
-    settings_data: Mapping[str, Any] | None = None,
-) -> str:
-    return (
-        str(explicit or "").strip()
-        or str(os.environ.get("RESONANT_ENGINE_WS_URL", "") or "").strip()
-        or str(os.environ.get("RESONANT_REMOTE_ENGINE_WS_URL", "") or "").strip()
-        or _get_setting(
-            "network",
-            "remote_engine_ws_url",
-            _DEFAULT_REMOTE_ENGINE_WS_URL,
-            settings_data=settings_data,
-        ).strip()
-        or _DEFAULT_REMOTE_ENGINE_WS_URL
-    )
+# v0.4.4 (T1.4) — `resolve_resonant_api_url` and
+# `resolve_remote_engine_ws_url` were removed in this release.
+# ResonantBackend was cut in v0.4.0 and these resolvers had no other
+# call sites. If a future feature needs a generic "what's the
+# Resonant API URL" lookup, copy the pattern from `resolve_ollama_url`.

@@ -36,12 +36,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
 from .events import EngineEvent, make_event
-from .network_defaults import (
-    get_default_backend,
-    get_default_model,
-    resolve_remote_engine_ws_url,
-    resolve_resonant_api_url,
-)
+from .network_defaults import get_default_backend, get_default_model
 from .backends import create_backend, OllamaBackend
 from .engine import Session
 from .engine.tools import AGENT_TOOLS, get_tool_icon
@@ -1262,22 +1257,17 @@ Examples:
     serve_parser.add_argument("--host", type=str, default="0.0.0.0")
     serve_parser.add_argument("--port", type=int, default=8765)
 
-    # Connect mode
-    connect_parser = subparsers.add_parser("connect", help="Connect to remote engine")
-    connect_parser.add_argument(
-        "url",
-        nargs="?",
-        type=str,
-        help="WebSocket URL (ws://host:port). Defaults to saved network.remote_engine_ws_url or RESONANT_ENGINE_WS_URL.",
-    )
+    # v0.4.4 (T1.4) — `connect` subcommand removed; it tunneled into a
+    # remote Resonant Engine via WebSocket, which the v0.4.0 cut took
+    # out. Pre-v0.4.4 callers using `resonant connect <ws_url>` will
+    # see argparse fail with "invalid choice"; the message is clearer
+    # than a silent fallthrough.
 
     # Common args (for embedded and serve modes)
-    parser.add_argument("--backend", type=str, choices=["ollama", "resonant", "claude", "openai", "lmstudio", "auto"], default="auto")
+    parser.add_argument("--backend", type=str, choices=["ollama", "auto"], default="auto",
+                        help="Backend (Ollama-only since v0.4.0)")
     parser.add_argument("--model", type=str, default=None)
-    parser.add_argument("--api", type=str, default=None)
     parser.add_argument("--ollama-url", type=str, default=None)
-    parser.add_argument("--lmstudio-url", type=str, default=None,
-                        help="LM Studio API URL (e.g. http://192.168.1.50:1234/v1)")
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--max-steps", type=int, default=25)
@@ -1292,33 +1282,21 @@ Examples:
     if args.dir:
         os.chdir(args.dir)
 
-    # ── Connect mode ──
-    if args.mode == "connect":
-        run_remote(resolve_remote_engine_ws_url(args.url))
-        return
+    # ── Resolve URL and detect Ollama ──
+    ollama_url = (args.ollama_url or os.environ.get("OLLAMA_HOST", "http://10.0.0.133:11434")).rstrip("/")
 
-    # ── Resolve URLs and detect backends ──
-    api_url = resolve_resonant_api_url(args.api)
-    ollama_url = (args.ollama_url or os.environ.get("OLLAMA_URL", os.environ.get("OLLAMA_HOST", "http://10.0.0.133:11434"))).rstrip("/")
-    lmstudio_url = (args.lmstudio_url or os.environ.get("LMSTUDIO_URL"))
-
-    console.print(f"\n  [{C_DIM}]{G_THINK} Scanning backends[/{C_DIM}]")
-    available = _detect_backends(api_url, ollama_url, lmstudio_url)
+    console.print(f"\n  [{C_DIM}]{G_THINK} Scanning Ollama[/{C_DIM}]")
+    available = _detect_backends(None, ollama_url, None)
 
     if not available:
         console.print()
-        console.print(f"  [{C_ERR}]{G_CROSS} No backends found[/{C_ERR}]")
+        console.print(f"  [{C_ERR}]{G_CROSS} Ollama not reachable[/{C_ERR}]")
         console.print(f"  [{C_BORDER}]{G_DASH * 50}[/{C_BORDER}]")
-        console.print(f"  [{C_DIM}]Checked:[/{C_DIM}]")
-        console.print(f"    [{C_DIM}]Resonant Engine  {api_url}[/{C_DIM}]")
-        console.print(f"    [{C_DIM}]Ollama           {ollama_url}[/{C_DIM}]")
-        if lmstudio_url:
-            console.print(f"    [{C_DIM}]LM Studio        {lmstudio_url}[/{C_DIM}]")
+        console.print(f"    [{C_DIM}]Checked: {ollama_url}[/{C_DIM}]")
         console.print()
-        console.print(f"  [{C_DIM}]Start a backend or specify URLs:[/{C_DIM}]")
-        console.print(f"    [{C_TEXT}]resonant --api http://<host>:8000[/{C_TEXT}]")
+        console.print(f"  [{C_DIM}]Start Ollama or specify a different URL:[/{C_DIM}]")
+        console.print(f"    [{C_TEXT}]ollama serve  # then re-run resonant[/{C_TEXT}]")
         console.print(f"    [{C_TEXT}]resonant --ollama-url http://<host>:11434[/{C_TEXT}]")
-        console.print(f"    [{C_TEXT}]resonant --lmstudio-url http://<host>:1234[/{C_TEXT}]")
         console.print()
         return
 
@@ -1573,7 +1551,7 @@ Examples:
                 # handles every case.
 
             elif cmd == "/backend":
-                new_available = _detect_backends(api_url, ollama_url, lmstudio_url)
+                new_available = _detect_backends(None, ollama_url, None)
                 if not new_available:
                     console.print(f"  [{C_ERR}]{G_CROSS} No backends available[/{C_ERR}]")
                 else:

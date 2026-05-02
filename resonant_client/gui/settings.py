@@ -41,10 +41,10 @@ DEFAULTS = {
         # hard-coding a private IP. Welcome-screen wizard prompts for
         # the URL on first run when Ollama isn't reachable.
         "ollama_url": "",
-        # Pre-v0.4.0 fields kept here as empty strings for migration
-        # safety — older settings.json files won't crash on load.
-        "resonant_api_url": "",
-        "remote_engine_ws_url": "",
+        # v0.4.4 (T1.4) — `resonant_api_url` and `remote_engine_ws_url`
+        # were dropped here. Pre-v0.4.0 settings.json files that still
+        # carry those keys load fine — Python dict tolerance ignores
+        # unknown keys; nothing reads them anymore.
     },
     # v0.4.0 — kept as empty dict to preserve schema compatibility
     # with older settings.json files. Anthropic / OpenAI key fields

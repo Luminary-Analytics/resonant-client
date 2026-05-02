@@ -34,7 +34,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..events import EngineEvent, make_event
 from ..backends import OllamaBackend, create_backend
 from ..engine import Session, AGENT_TOOLS
-from ..network_defaults import resolve_resonant_api_url, resolve_ollama_url
+from ..network_defaults import resolve_ollama_url
 from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
@@ -107,9 +107,12 @@ class AppState:
         self.backend = None
         self.backend_spec: Optional[BackendSpec] = None
         self.session: Optional[Session] = None
-        self.api_url = ""
+        # v0.4.4 (T1.4) — `api_url` (Resonant Engine remote) and
+        # `lmstudio_url` (LM Studio probe) were retired. Both backends
+        # were cut in v0.4.0 but the AppState fields lingered as dead
+        # state. Only `ollama_url` survives (set by
+        # `refresh_network_defaults` from the resolution chain).
         self.ollama_url = ""
-        self.lmstudio_url = ""
         self.active_thread: Optional[threading.Thread] = None
         self.cancel_requested = threading.Event()
         # Permission / choice flow
@@ -5347,10 +5350,11 @@ class AppState:
         # v0.4.0 — single Ollama URL resolution chain (env → settings →
         # Mac Studio default at 10.0.0.133). See `resolve_ollama_url`
         # for why localhost is NOT a silent fallback.
+        # v0.4.4 (T1.4) — `api_url` (Resonant Engine remote) and
+        # `lmstudio_url` (LM Studio) resolutions retired with their
+        # backends.
         settings_data = self.settings.get_all()
-        self.api_url = resolve_resonant_api_url(settings_data=settings_data)
         self.ollama_url = resolve_ollama_url(settings_data=settings_data)
-        self.lmstudio_url = str(os.environ.get("LMSTUDIO_URL", "") or "").rstrip("/")
 
     def update_setting_value(
         self,

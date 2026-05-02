@@ -25,9 +25,11 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+
+from ..gui.roadmap import AcceptanceCriterion
 
 
 # ── The prompt ──────────────────────────────────────────────────────────
@@ -125,6 +127,120 @@ Begin now with your first question.
 """
 
 
+# ── Rigorous-mode addendum (Autonomous Mission) ────────────────────────
+#
+# Appended to the base prompt when `autonomous=True` is passed to
+# `format_grill_first_message`. The autonomous loop runs unattended for
+# hours against this spec, so the cost of a vague spec is much higher
+# than in an interactive session. We trade extra grilling time up front
+# for a roadmap with binary, type-tagged acceptance criteria and a
+# committed time budget. "Measure twice, cut once."
+
+_RIGOROUS_GRILL_ADDITIONS = """
+
+## Autonomous Mission addendum (rigorous mode)
+
+This is an **Autonomous Mission**: when the spec is accepted, the model
+will run unattended for hours against this spec. The user is going to
+bed / lunch / a meeting. If the spec is wrong, the model will *converge
+on the wrong thing* — and discover that fact only when the user wakes
+up. Measure twice, cut once.
+
+So: grill harder than you would for an interactive session.
+
+### Extra rules for rigorous mode
+
+R1. **Question count is 10–25, not 5–15.** Don't stop at "I think I get
+    it" — autonomous runs are expensive to redo. If you find yourself
+    ready to emit a spec after 6 questions, that's a signal to dig in
+    harder on edge cases, failure modes, and what "done" actually means.
+
+R2. **Acceptance criteria must be binary and type-tagged.** Each
+    criterion you include in the spec MUST be:
+    - **Binary**: pass or fail, nothing in between. "It feels snappy"
+      is not binary. "p95 search latency under 200ms when measured by
+      `bash` against the loaded fixture" is binary.
+    - **Type-tagged**: prefix every criterion with one of these tags
+      so the runtime knows how to validate it:
+      - `[bash]` — runnable shell assertion (exit code or output
+        comparison). Wrap the command itself in inline backticks.
+        Examples:
+          - `` - `[bash]` `pytest tests/test_foo.py` exits 0 ``
+          - `` - `[bash]` `wc -l < src/foo.py` output < 200 ``
+      - `[chrome]` — visible/clickable behaviour in a browser, checked
+        via Chrome MCP. Example:
+          - `` - `[chrome]` Settings page shows a "Vision model" dropdown with at least one option ``
+      - `[vision]` — visual property a human would eyeball, checked via
+        a vision model screenshot pass. Example:
+          - `` - `[vision]` After toggling dark mode, the page background renders near-black, not just an inverted icon ``
+      - `[manual]` — only when no automation is feasible. Use sparingly;
+        prefer the others. The runtime will skip these and surface them
+        to the user at the end.
+
+R3. **Minimum of 4 binary acceptance criteria.** A spec with one or two
+    gives the autonomous loop almost no signal — it'll declare "done"
+    the moment the easiest one passes. If you can't think of 4, you
+    haven't grilled enough. Try to cover: happy path, the most likely
+    failure mode, a regression guard for adjacent code, and a
+    UX/visual check if there is a UI surface.
+
+R4. **Ask for a time budget near the end.** Once scope is roughly
+    settled, ask the user how long the autonomous run should be allowed
+    to take. Recommend a value based on scope. Format the question
+    like:
+        Question: How long should the autonomous run be allowed to go?
+        My recommendation: 4h. Options: 1h, 4h, 6h, 8h, 12h, 24h, 48h,
+        full auto.
+    Capture the answer verbatim in the spec under `**Time budget:**`.
+
+R5. **Don't pad the spec.** If you genuinely can't think of a fourth
+    binary criterion after grilling, *stop and ask the user* — "I'm
+    stuck thinking of a fourth measurable criterion for this. What
+    would tell you, definitively, that this is done?" — rather than
+    inventing a vague one to hit the count.
+
+### Spec-format additions for rigorous mode
+
+The spec block must include one new subsection, `**Time budget:**`,
+after `**Out of scope:**` and before `**Technical constraints:**`:
+
+```
+**Out of scope:**
+- ...
+
+**Time budget:** <one of: 1h, 4h, 6h, 8h, 12h, 24h, 48h, full auto>
+
+**Technical constraints:**
+- ...
+```
+
+…and `**Acceptance criteria:**` items use the type-tag format above
+(at least 4 entries, each prefixed with one of `[bash]` / `[chrome]` /
+`[vision]` / `[manual]` in inline backticks):
+
+```
+**Acceptance criteria:**
+- `[bash]` `pytest tests/test_settings.py` exits 0
+- `[bash]` `grep -c 'data-theme' static/styles.css` output > 5
+- `[chrome]` Settings page shows a "Theme" dropdown with Light and Dark options
+- `[vision]` After selecting Dark, the page background renders near-black
+```
+
+Aim for at least one `[bash]` criterion (cheapest to run repeatedly)
+and at least one `[chrome]` or `[vision]` if the change touches
+anything visible.
+"""
+
+_VISION_UNAVAILABLE_NOTE = """
+
+**Vision model unavailable on this machine.** Do NOT emit any
+`[vision]` acceptance criteria — the runtime can't validate them on
+this host. Use `[chrome]` for any visible-behaviour check (it can
+fall back to DOM-based assertions) or `[manual]` only as a last
+resort.
+"""
+
+
 # Backwards-compat alias — older test imports referenced this name.
 GRILL_ME_PROMPT = _GRILL_ME_BASE_PROMPT
 
@@ -147,6 +263,10 @@ class ExtractedSpec:
 
     raw: str          # The full markdown spec, header included
     refined_intent: str   # Just the **Refined intent:** paragraph (best-effort)
+    # Rigorous-mode (Autonomous Mission) extras. Empty / [] for
+    # standard interactive specs that don't include them.
+    time_budget: str = ""
+    acceptance_criteria: list[AcceptanceCriterion] = field(default_factory=list)
 
 
 def extract_spec(message_text: str) -> Optional[ExtractedSpec]:
@@ -170,7 +290,14 @@ def extract_spec(message_text: str) -> Optional[ExtractedSpec]:
     spec_block = message_text[match.start():].strip()
 
     refined_intent = _extract_refined_intent(spec_block)
-    return ExtractedSpec(raw=spec_block, refined_intent=refined_intent)
+    time_budget = extract_time_budget(spec_block)
+    acceptance_criteria = extract_acceptance_criteria(spec_block)
+    return ExtractedSpec(
+        raw=spec_block,
+        refined_intent=refined_intent,
+        time_budget=time_budget,
+        acceptance_criteria=acceptance_criteria,
+    )
 
 
 _REFINED_INTENT_RE = re.compile(
@@ -207,6 +334,70 @@ def _extract_refined_intent(spec_block: str) -> str:
     return " ".join(after_header)
 
 
+# ── Rigorous-mode parsers (Autonomous Mission) ─────────────────────────
+#
+# The rigorous spec format adds `**Time budget:**` and switches
+# `**Acceptance criteria:**` to typed, inline-backtick-prefixed entries
+# like `` - `[bash]` `pytest ...` exits 0 ``. These regexes pull those
+# fields out for the planner / autonomous loop. They are intentionally
+# strict — the prompt is explicit about format, and a silent mis-parse
+# at hand-off time would let the autonomous loop run with no
+# convergence ground truth. Strict regex → empty list → loud failure
+# is preferable to fuzzy matching.
+
+_SPEC_CRITERION_RE = re.compile(
+    r"^-\s+`\[(bash|chrome|vision|manual)\]`\s+(.+?)\s*$",
+    re.MULTILINE,
+)
+
+
+def extract_acceptance_criteria(spec_block: str) -> list[AcceptanceCriterion]:
+    """Pull typed acceptance criteria out of the **Acceptance criteria:**
+    subsection of a spec block.
+
+    Returns an empty list if the section is missing, or if it exists but
+    contains no lines matching the typed-tag format. Callers (e.g. the
+    autonomous-loop bootstrap) can treat an empty list as a hard failure.
+    """
+    # Slice from `**Acceptance criteria:**` to the next bold subsection
+    # (or end-of-block) so we don't accidentally pick up criterion-shaped
+    # lines from elsewhere in the spec.
+    section_match = re.search(
+        r"\*\*Acceptance criteria:\*\*\s*\n(.*?)(?=\n\*\*[A-Za-z]|\Z)",
+        spec_block,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not section_match:
+        return []
+    section = section_match.group(1)
+
+    criteria: list[AcceptanceCriterion] = []
+    for type_tag, text in _SPEC_CRITERION_RE.findall(section):
+        criteria.append(
+            AcceptanceCriterion(type=type_tag, text=text.strip())
+        )
+    return criteria
+
+
+_TIME_BUDGET_RE = re.compile(
+    r"\*\*Time budget:\*\*\s*(.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def extract_time_budget(spec_block: str) -> str:
+    """Pull the **Time budget:** value out of a rigorous-mode spec block.
+
+    Returns "" when absent (standard interactive specs don't include
+    this subsection). Caller decides whether an empty value is OK
+    (interactive) or a fatal misformat (autonomous handoff).
+    """
+    match = _TIME_BUDGET_RE.search(spec_block)
+    if not match:
+        return ""
+    return match.group(1).strip()
+
+
 def _read_project_context(project_path: Optional[str]) -> str:
     """Pull a short "what this codebase is" blurb from RESONANT.md or
     AGENTS.md so the grilling model doesn't make wrong assumptions about
@@ -237,12 +428,29 @@ def _read_project_context(project_path: Optional[str]) -> str:
 def format_grill_first_message(
     feature_description: str,
     project_path: Optional[str] = None,
+    *,
+    autonomous: bool = False,
+    vision_available: bool = True,
 ) -> str:
     """Build the first user message that kicks off a Mission's grill phase.
 
     Combines: the interviewer prompt + a project-context block (so the
     model doesn't invent wrong assumptions about what kind of app this
     is — Tier-1 fix #4) + the user's seed description.
+
+    When ``autonomous=True``, the rigorous-mode addendum is appended so
+    the model:
+    - Asks 10–25 questions instead of 5–15.
+    - Demands binary, type-tagged acceptance criteria
+      (`[bash]` / `[chrome]` / `[vision]` / `[manual]`).
+    - Requires ≥4 binary criteria.
+    - Asks the user for a time budget near the end and emits it as
+      `**Time budget:**`.
+
+    When ``vision_available=False`` (and autonomous is on), an extra
+    note instructs the model not to emit `[vision]` criteria — the
+    runtime can't validate them on this host without a vision model.
+    The flag is a no-op in standard mode.
     """
     seed = (feature_description or "").strip()
     if not seed:
@@ -264,8 +472,14 @@ def format_grill_first_message(
             "with the `glob` tool before assuming what kind of app this is.\n"
         )
 
+    prompt = _GRILL_ME_BASE_PROMPT
+    if autonomous:
+        prompt = prompt + _RIGOROUS_GRILL_ADDITIONS
+        if not vision_available:
+            prompt = prompt + _VISION_UNAVAILABLE_NOTE
+
     return (
-        _GRILL_ME_BASE_PROMPT
+        prompt
         + context_block
         + "\n---\n\nThe feature/product the user wants you to grill them about:\n\n"
         + seed

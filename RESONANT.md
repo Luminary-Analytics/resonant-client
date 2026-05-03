@@ -50,31 +50,31 @@ resonant_client/
 
 - **Ollama** — local LLMs with adaptive tool-calling (native or XML fallback). The canonical default URL is `http://10.0.0.133:11434` (Mac Studio in the user's infra). Override via `OLLAMA_HOST` env or `network.ollama_url` in `~/.resonant/settings.json`.
 
-DeepSeek tier guidance (revised v0.5.1 — both tiers now usable for
-autonomous missions; see `docs/v0.5.1-smoke-results.md`):
+DeepSeek tier guidance (revised v0.5.2 — pro is now the default;
+see `docs/v0.5.1-smoke-results.md` for the data behind the choice):
+
+**Default (v0.5.2+):** `deepseek-v4-pro:cloud`. Pro is wired for
+both Mission and Autonomous Mission flows via the auto-routing
+introduced in v0.5.1 (PLANNER_BY_TIER → PLAN_DEEP for pro). Users
+can switch to flash via the chat-header model dropdown or via
+Settings → general → default_model.
 
 **For Mission flow (one-shot grill + plan-graph dispatch):**
-- `deepseek-v4-flash:cloud` — recommended default. Fast grill interviews
-  (5–15 questions), reliable JSON output for the planner specialist.
-- `deepseek-v4-pro:cloud` — recommended when the spec is complex (multi-
-  file refactor, large codebase context needed, integration work) OR
-  when you want a thorough rigorous grill (10–25 questions per the
-  autonomous flow). v0.5.1 added the auto-routing so pro uses
-  `PLAN_DEEP` (research-first planner) instead of `PLAN`, which lets
-  pro's deliberation work WITH the orchestrator instead of against it.
+- `deepseek-v4-pro:cloud` — **recommended default.** Thorough grill
+  (10-25 question rigorous mode for autonomous; 5-15 for standard),
+  PLAN_DEEP planner reads codebase context before decomposing.
+- `deepseek-v4-flash:cloud` — fall back to flash for very simple
+  specs (1-2 criteria, single function) where pro's deliberation
+  is overhead. Also useful when iterating on a spec / running
+  multiple short missions back-to-back.
 
 **For Autonomous Mission (∞ Run autonomously, v0.5.1+):**
-- `deepseek-v4-flash:cloud` — **recommended for greenfield work.**
-  Single-module specs, fresh modules, scaffolds. Snappy planner +
-  decisive implementer. v0.5.1 GA smoke: 1 iter, 340s wall-clock,
-  satisfied verdict.
-- `deepseek-v4-pro:cloud` — **recommended for context-heavy work.**
-  Multi-file refactors, integration tasks, anywhere the planner needs
-  to read the existing codebase before decomposing. The autonomous
-  daemon auto-routes pro to `PLAN_DEEP` (research-first) — no manual
-  config required. v0.5.1 GA smoke: 1 iter, 135s wall-clock (FASTER
-  than flash on this workload because the deeper planning phase
-  produced a tighter implementer goal), satisfied verdict.
+- `deepseek-v4-pro:cloud` — **recommended default.** v0.5.1 GA smoke:
+  1 iter, 135s wall-clock (FASTER than flash on the wordcount spec
+  because PLAN_DEEP produced a tighter implementer goal). Especially
+  good for context-heavy work (multi-file refactors, integrations).
+- `deepseek-v4-flash:cloud` — fall back for greenfield work where
+  there's no codebase to read. v0.5.1 GA smoke: 1 iter, 340s.
 
 **Walker auto-retry (v0.5.1+):** when ANY planner returns
 unparseable output (no JSON envelope), the walker spawns a retry

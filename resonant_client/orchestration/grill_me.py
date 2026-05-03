@@ -154,9 +154,15 @@ R1. **Question count is 10–25, not 5–15.** Don't stop at "I think I get
     it" — autonomous runs are expensive to redo. If you find yourself
     ready to emit a spec after 6 questions, that's a signal to dig in
     harder on edge cases, failure modes, and what "done" actually means.
+    **At least 3 of your questions must probe edge cases or failure
+    modes** (not just happy-path scoping). Examples:
+    - "What should happen when the input file is empty?"
+    - "What's the expected error message when the user passes an
+      invalid argument?"
+    - "How should this handle UTF-8 vs Windows-1252 encoded inputs?"
 
-R2. **Acceptance criteria must be binary and type-tagged.** Each
-    criterion you include in the spec MUST be:
+R2. **Acceptance criteria must be binary, type-tagged, AND test
+    BEHAVIOR (not just existence).** Each criterion MUST be:
     - **Binary**: pass or fail, nothing in between. "It feels snappy"
       is not binary. "p95 search latency under 200ms when measured by
       `bash` against the loaded fixture" is binary.
@@ -177,14 +183,51 @@ R2. **Acceptance criteria must be binary and type-tagged.** Each
         prefer the others. The runtime will skip these and surface them
         to the user at the end.
 
-R3. **Minimum of 4 binary acceptance criteria.** A spec with one or two
-    gives the autonomous loop almost no signal — it'll declare "done"
-    the moment the easiest one passes. If you can't think of 4, you
-    haven't grilled enough. Try to cover: happy path, the most likely
-    failure mode, a regression guard for adjacent code, and a
-    UX/visual check if there is a UI surface.
+    **Critical: prefer criteria that test BEHAVIOR over criteria that
+    test EXISTENCE.** Bad: `` `[bash]` `python wc.py foo.txt` exits 0 ``
+    (only proves the script runs without crashing). Good:
+    `` `[bash]` `python wc.py foo.txt` output == "2 6 30 foo.txt"  ``
+    (proves the OUTPUT is correct given a known input). The first kind
+    is satisfied by a script that prints "hello" — the second isn't.
 
-R4. **Ask for a time budget near the end.** Once scope is roughly
+R3. **Minimum of 4 binary acceptance criteria covering 4 distinct
+    aspects.** A spec with one or two gives the autonomous loop almost
+    no signal — it'll declare "done" the moment the easiest one
+    passes. The 4-criterion floor should map to:
+    1. **Happy path with concrete output** — a known input maps to a
+       specific expected output. Pin the actual values.
+    2. **Error / edge-case behavior** — what happens for
+       invalid/missing/empty input? Pin the expected error or behavior.
+    3. **Code-quality or constraint check** — `tsc --noEmit`, `! grep
+       'TODO'`, line-count cap, no-banned-imports, etc.
+    4. **Regression guard or integration check** — runs the broader
+       test suite, hits the dev server, validates a [chrome] or
+       [vision] surface if applicable.
+    If you only have happy-path criteria, the implementer might ship
+    something that "works once" but fails on the second input. Don't
+    let that happen.
+
+R4. **Probe for concrete output examples.** For any feature that
+    produces output (CLI prints, API responses, file writes, UI
+    text), ask: "When the user runs/triggers X with INPUT Y, what
+    EXACTLY should they see?" Pin both the input AND the output
+    verbatim. Vague "it should print the count" → specific "it should
+    print `2 4 22 example.txt` for a 2-line file with 4 words and 22
+    chars." This is what makes Form-A `output == X` criteria possible.
+
+R5. **Greenfield vs refactor — ask early.** One of your first 3
+    questions should establish whether this is:
+    - **Greenfield** — new file(s), no existing code to integrate
+      with. Implementer can decide structure freely.
+    - **Refactor / extension** — modifies existing code. Implementer
+      must respect existing conventions, dependencies, tests.
+    This affects the autonomous loop's planner-selection downstream
+    (refactor work benefits from a research-first planner). Capture
+    the answer in the spec under `**Key assumptions:**` as e.g.
+    `Greenfield (no existing code touched)` or `Extends
+    src/foo/bar.py`.
+
+R6. **Ask for a time budget near the end.** Once scope is roughly
     settled, ask the user how long the autonomous run should be allowed
     to take. Recommend a value based on scope. Format the question
     like:
@@ -193,11 +236,18 @@ R4. **Ask for a time budget near the end.** Once scope is roughly
         full auto.
     Capture the answer verbatim in the spec under `**Time budget:**`.
 
-R5. **Don't pad the spec.** If you genuinely can't think of a fourth
+R7. **Don't pad the spec.** If you genuinely can't think of a fourth
     binary criterion after grilling, *stop and ask the user* — "I'm
     stuck thinking of a fourth measurable criterion for this. What
     would tell you, definitively, that this is done?" — rather than
     inventing a vague one to hit the count.
+
+R8. **Question style: 1-2 sentences, not paragraphs.** Each question
+    must be tight enough that the user can answer in one sitting.
+    Long, multi-part questions invite vague multi-part answers. If
+    you find yourself wanting to ask three things at once, ask the
+    most important ONE thing and follow up with the others on
+    subsequent turns.
 
 ### Spec-format additions for rigorous mode
 

@@ -161,6 +161,93 @@ class TestRigorousPromptInvariants:
         assert "10–25" not in std
 
 
+class TestRigorousPromptSharpening:
+    """v0.5.2 — pin the sharpening rules added after the v0.5.1 GA
+    smoke. The wordcount mission revealed that criteria were
+    silently testing existence ("does it run?") instead of behavior
+    ("does it produce the right output?"), so both flash and pro
+    "passed" with non-equivalent outputs that wouldn't have
+    satisfied a rigorous user. The sharpened prompt:
+    - Explicitly demands behavior-testing criteria over existence
+    - Requires concrete input/output examples for any output-producing
+      feature
+    - Splits the 4-criterion floor into 4 DISTINCT aspect categories
+    - Adds an edge-case-probing minimum
+    - Asks for greenfield-vs-refactor distinction up front
+    - Caps question style to 1-2 sentences
+    """
+
+    def _rigorous(self) -> str:
+        return format_grill_first_message("build a thing", autonomous=True)
+
+    def test_demands_behavior_over_existence(self):
+        # The headline sharpening rule.
+        rigorous = self._rigorous()
+        lower = rigorous.lower()
+        assert "behavior" in lower
+        # Plus contrasted with existence
+        assert "existence" in lower
+
+    def test_includes_good_vs_bad_criterion_examples(self):
+        # The prompt needs to show concrete examples of weak criteria
+        # (passes-by-existence) vs strong criteria (tests output).
+        rigorous = self._rigorous()
+        # `output ==` is the key form for behavior tests
+        assert "output ==" in rigorous
+
+    def test_splits_four_criteria_into_distinct_aspects(self):
+        rigorous = self._rigorous()
+        lower = rigorous.lower()
+        # The 4 aspects from R3 (sharpened):
+        # 1. Happy path with concrete output
+        # 2. Error / edge-case behavior
+        # 3. Code-quality or constraint check
+        # 4. Regression guard or integration check
+        assert "happy path" in lower
+        assert "edge" in lower or "error" in lower
+        assert "constraint" in lower or "code-quality" in lower or \
+               "regression" in lower
+
+    def test_edge_case_probing_minimum(self):
+        # R1 (sharpened) — at least 3 questions probe edge cases / failure modes
+        rigorous = self._rigorous()
+        lower = rigorous.lower()
+        assert "edge case" in lower or "failure mode" in lower
+        # Concrete examples — what should happen when input is empty,
+        # invalid, etc.
+        assert "empty" in lower or "invalid" in lower
+
+    def test_greenfield_vs_refactor_question_required(self):
+        # R5 (NEW) — affects planner-selection downstream
+        rigorous = self._rigorous()
+        lower = rigorous.lower()
+        assert "greenfield" in lower
+        assert "refactor" in lower or "extension" in lower or "extends" in lower
+
+    def test_concrete_output_example_probing(self):
+        # R4 (NEW) — for any feature that produces output
+        rigorous = self._rigorous()
+        # The pattern: "input X → output Y" — ask for concrete examples
+        lower = rigorous.lower()
+        assert "concrete" in lower or "example" in lower
+        # And mentions the specific INPUT → OUTPUT pattern
+        assert "input" in lower
+
+    def test_question_style_1_to_2_sentences(self):
+        # R8 (NEW) — keep questions tight
+        rigorous = self._rigorous()
+        lower = rigorous.lower()
+        assert "1-2 sentences" in lower or "tight" in lower or \
+               "one sitting" in lower
+
+    def test_question_count_target_increased_to_three_edge_case_minimum(self):
+        # The "at least 3 of your questions must probe edge cases /
+        # failure modes" rule
+        rigorous = self._rigorous()
+        # Pin the digit; allow either form
+        assert "at least 3" in rigorous.lower() or "3 of your" in rigorous.lower()
+
+
 # ── Vision-availability gate ────────────────────────────────────────────
 
 

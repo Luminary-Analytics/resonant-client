@@ -53,11 +53,22 @@ def get_default_backend(*, settings_data: Mapping[str, Any] | None = None) -> st
 
 
 def get_default_model(*, settings_data: Mapping[str, Any] | None = None) -> str:
-    # deepseek-v4-flash on Ollama is the flagship.
+    # v0.5.2 — switched default from deepseek-v4-flash:cloud to
+    # deepseek-v4-pro:cloud after the v0.5.1 GA smoke showed pro
+    # converges on autonomous missions FASTER than flash (135s vs
+    # 340s on the wordcount spec) when paired with the PLAN_DEEP
+    # specialist. Pro's deeper planning produces tighter implementer
+    # subgoals, and total mission time drops despite per-call
+    # latency being higher. See docs/v0.5.1-smoke-results.md for the
+    # data and `RESONANT.md` for tier guidance.
+    #
+    # Users who want flash for quick one-shot work can still pick it
+    # in the model dropdown (the autonomous daemon auto-routes the
+    # planner regardless of which tier the user picks).
     return (
         str(os.environ.get("RESONANT_DEFAULT_MODEL", "") or "").strip()
-        or _get_setting("general", "default_model", "deepseek-v4-flash:cloud", settings_data=settings_data).strip()
-        or "deepseek-v4-flash:cloud"
+        or _get_setting("general", "default_model", "deepseek-v4-pro:cloud", settings_data=settings_data).strip()
+        or "deepseek-v4-pro:cloud"
     )
 
 

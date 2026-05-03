@@ -204,7 +204,10 @@ class AppState:
             current_model = str(self.settings.get("general", "default_model", "") or "").strip()
             if not current_model and current_backend in ("", "ollama"):
                 try:
-                    self.settings.set("general", "default_model", "deepseek-v4-flash:cloud")
+                    # v0.5.2 — pro is now the default for new users.
+                    # Tracks `network_defaults.get_default_model()`
+                    # and the v0.5.1 GA smoke results.
+                    self.settings.set("general", "default_model", "deepseek-v4-pro:cloud")
                 except Exception:
                     pass
         except Exception:

@@ -191,6 +191,7 @@ def run_smoke(
     project_path: Optional[Path] = None,
     backend: Any = None,
     intent_id: Optional[str] = None,
+    inject_planner_failure: bool = False,
 ) -> SmokeResult:
     """Run one smoke against a real Ollama backend. Returns a SmokeResult.
 
@@ -229,6 +230,18 @@ def run_smoke(
             backend_type="ollama",
             model=model_id,
             url=resolve_ollama_url(),
+        )
+
+    # v0.5.4a2 — wrap the backend in FlakyPlannerBackend if requested.
+    # First planner call gets corrupted; walker should spawn a retry
+    # sibling and the second (uninterrupted) call recovers. A satisfied
+    # mission with this flag set proves the live retry path works.
+    if inject_planner_failure:
+        from .flaky import FlakyPlannerBackend
+        backend = FlakyPlannerBackend(backend, fail_first_n_planner_calls=1)
+        logger.info(
+            "FlakyPlannerBackend enabled — first planner call will be "
+            "corrupted to exercise walker retry (v0.5.1a3) end-to-end."
         )
 
     if intent_id is None:

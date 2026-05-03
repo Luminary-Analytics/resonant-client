@@ -16,6 +16,7 @@ import pytest
 from resonant_client.smoke import (
     MODELS,
     SPECS,
+    FlakyPlannerBackend,
     SmokeResult,
     VarianceReport,
     get_spec,
@@ -23,6 +24,10 @@ from resonant_client.smoke import (
     summarize_runs,
 )
 from resonant_client.smoke.cli import build_parser
+from resonant_client.smoke.flaky import (
+    _MALFORMED_PLANNER_RESPONSE,
+    _PLANNER_PROMPT_SIGNATURES,
+)
 from resonant_client.smoke.variance import _median, _stddev
 
 
@@ -308,3 +313,207 @@ class TestCLIParser:
             "--out", str(target),
         ])
         assert args.out == str(target)
+
+    def test_run_inject_planner_failure_flag_default_false(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["run", "--spec", "minimal", "--model", "flash"]
+        )
+        assert args.inject_planner_failure is False
+
+    def test_run_inject_planner_failure_flag_set(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "run", "--spec", "minimal", "--model", "flash",
+            "--inject-planner-failure",
+        ])
+        assert args.inject_planner_failure is True
+
+
+# ── v0.5.4a2: FlakyPlannerBackend wrapper ───────────────────────────────
+
+
+class _StubBackend:
+    """Minimal backend stub. Records every `.stream(...)` call so we
+    can assert which ones the wrapper forwarded vs. intercepted."""
+
+    def __init__(self, name="stub", model="stub-model", responses=None):
+        self.name = name
+        self.model = model
+        self.handles_tools = True
+        self.calls: list[dict] = []
+        # Default response: a parseable JSON envelope so non-intercepted
+        # planner calls "succeed" from the parser's POV.
+        self._responses = responses or [(
+            "text", {"content": '{"subgoals":[{"goal":"do","specialization":"implement"}]}'}
+        )]
+
+    def stream(self, *, user_msg, conversation_history, instructions,
+               tools, max_tokens=4096, cancel_event=None):
+        self.calls.append({
+            "user_msg": user_msg,
+            "instructions": instructions,
+            "tools_count": len(tools or []),
+        })
+        for ev in self._responses:
+            yield ev
+        yield ("done", {"finish_reason": "stop"})
+
+
+_PLAN_PROMPT = (
+    "You are a PLANNER. Your ONLY output is a JSON plan.\n"
+    "..."
+)
+_DEEP_PLAN_PROMPT = (
+    "You are a DEEP PLANNER. Your job has TWO PHASES:\n"
+    "..."
+)
+_NON_PLANNER_PROMPT = (
+    "You are an IMPLEMENT specialist. Make the change."
+)
+
+
+class TestFlakyPlannerBackend:
+    """Wrapper for live walker-retry validation. The wrapper itself is
+    pure plumbing — these tests pin the intercept logic so a refactor
+    can't accidentally break the live retry test scenario."""
+
+    def test_passthrough_for_non_planner_call(self):
+        inner = _StubBackend()
+        wrapped = FlakyPlannerBackend(inner)
+        events = list(wrapped.stream(
+            user_msg="anything",
+            conversation_history=[],
+            instructions=_NON_PLANNER_PROMPT,
+            tools=[],
+        ))
+        # Inner backend was called once with the original instructions.
+        assert len(inner.calls) == 1
+        assert inner.calls[0]["instructions"] == _NON_PLANNER_PROMPT
+        # Counts: not a planner call → no increment.
+        assert wrapped.planner_call_count == 0
+        assert wrapped.intercepted_count == 0
+        # Stream surfaced the inner's events.
+        text_events = [e for e in events if e[0] == "text"]
+        assert text_events  # something came through
+
+    def test_intercepts_first_planner_call(self):
+        inner = _StubBackend()
+        wrapped = FlakyPlannerBackend(inner, fail_first_n_planner_calls=1)
+        events = list(wrapped.stream(
+            user_msg="goal",
+            conversation_history=[],
+            instructions=_PLAN_PROMPT,
+            tools=[],
+        ))
+        # Inner backend was NOT called — the intercept short-circuits.
+        assert inner.calls == []
+        assert wrapped.planner_call_count == 1
+        assert wrapped.intercepted_count == 1
+        # The malformed response was yielded.
+        text_events = [e for e in events if e[0] == "text"]
+        assert len(text_events) == 1
+        assert text_events[0][1]["content"] == _MALFORMED_PLANNER_RESPONSE
+        # Done event still emitted so the consumer doesn't hang.
+        done_events = [e for e in events if e[0] == "done"]
+        assert len(done_events) == 1
+
+    def test_second_planner_call_passes_through(self):
+        # fail_first_n=1 means call #1 corrupted, call #2+ forwarded.
+        inner = _StubBackend()
+        wrapped = FlakyPlannerBackend(inner, fail_first_n_planner_calls=1)
+        # First call: intercepted.
+        list(wrapped.stream(
+            user_msg="g1", conversation_history=[],
+            instructions=_PLAN_PROMPT, tools=[],
+        ))
+        # Second call: forwarded.
+        list(wrapped.stream(
+            user_msg="g2", conversation_history=[],
+            instructions=_PLAN_PROMPT, tools=[],
+        ))
+        assert wrapped.planner_call_count == 2
+        assert wrapped.intercepted_count == 1
+        # Inner saw exactly one call (the second one).
+        assert len(inner.calls) == 1
+        assert inner.calls[0]["user_msg"] == "g2"
+
+    def test_intercepts_plan_deep_too(self):
+        # The wrapper recognizes both PLAN and PLAN_DEEP signatures.
+        inner = _StubBackend()
+        wrapped = FlakyPlannerBackend(inner, fail_first_n_planner_calls=1)
+        list(wrapped.stream(
+            user_msg="g", conversation_history=[],
+            instructions=_DEEP_PLAN_PROMPT, tools=[],
+        ))
+        assert wrapped.intercepted_count == 1
+        assert inner.calls == []
+
+    def test_zero_failures_is_passthrough(self):
+        # fail_first_n=0 means the wrapper never intercepts — useful
+        # for sanity-checking the wrapper has no side effect when off.
+        inner = _StubBackend()
+        wrapped = FlakyPlannerBackend(inner, fail_first_n_planner_calls=0)
+        list(wrapped.stream(
+            user_msg="g", conversation_history=[],
+            instructions=_PLAN_PROMPT, tools=[],
+        ))
+        assert wrapped.intercepted_count == 0
+        assert len(inner.calls) == 1
+
+    def test_negative_fail_n_raises(self):
+        inner = _StubBackend()
+        with pytest.raises(ValueError, match=">= 0"):
+            FlakyPlannerBackend(inner, fail_first_n_planner_calls=-1)
+
+    def test_fail_n_greater_than_one_intercepts_multiple(self):
+        inner = _StubBackend()
+        wrapped = FlakyPlannerBackend(inner, fail_first_n_planner_calls=2)
+        # First two planner calls intercepted; third forwarded.
+        for i in range(3):
+            list(wrapped.stream(
+                user_msg=f"g{i}", conversation_history=[],
+                instructions=_PLAN_PROMPT, tools=[],
+            ))
+        assert wrapped.intercepted_count == 2
+        assert wrapped.planner_call_count == 3
+        assert len(inner.calls) == 1  # only the 3rd one made it through
+
+    def test_passthrough_attributes(self):
+        # Wrapper exposes inner backend's identity for telemetry.
+        inner = _StubBackend(name="ollama", model="deepseek-v4-pro:cloud")
+        wrapped = FlakyPlannerBackend(inner)
+        assert wrapped.name == "ollama"
+        assert wrapped.model == "deepseek-v4-pro:cloud"
+        assert wrapped.handles_tools is True
+
+    def test_unknown_attribute_forwards_to_inner(self):
+        # __getattr__ delegation — unknown attrs (e.g. telemetry methods)
+        # transparently reach the inner backend. Pin the behavior so a
+        # refactor can't silently break this.
+        class _BackendWithExtra(_StubBackend):
+            def get_runtime_telemetry(self):
+                return {"loaded_model": "test"}
+
+        wrapped = FlakyPlannerBackend(_BackendWithExtra())
+        assert wrapped.get_runtime_telemetry() == {"loaded_model": "test"}
+
+    def test_planner_signatures_match_specialist_prompts(self):
+        # Defensive: the signatures we sniff for must actually appear in
+        # the real PLAN / PLAN_DEEP prompts. If specialists.py changes
+        # the role-identifier wording, this fails loud rather than
+        # silently disabling the intercept.
+        from resonant_client.orchestration.specialists import SPECIALISTS
+        from resonant_client.orchestration.plan_graph import NodeSpecialization
+        plan = SPECIALISTS[NodeSpecialization.PLAN].system_block
+        plan_deep = SPECIALISTS[NodeSpecialization.PLAN_DEEP].system_block
+        # PLAN: "You are a PLANNER" should match.
+        assert any(sig in plan for sig in _PLANNER_PROMPT_SIGNATURES), (
+            f"None of {_PLANNER_PROMPT_SIGNATURES} matched PLAN prompt; "
+            "FlakyPlannerBackend would no-op on PLAN calls."
+        )
+        # PLAN_DEEP: "You are a DEEP PLANNER" should match.
+        assert any(sig in plan_deep for sig in _PLANNER_PROMPT_SIGNATURES), (
+            f"None of {_PLANNER_PROMPT_SIGNATURES} matched PLAN_DEEP prompt; "
+            "FlakyPlannerBackend would no-op on PLAN_DEEP calls."
+        )

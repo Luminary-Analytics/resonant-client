@@ -89,10 +89,15 @@ def _print_run_result(result: SmokeResult) -> None:
 
 def _cmd_run(args: argparse.Namespace) -> int:
     _print_run_header(args.spec, args.model)
+    if args.inject_planner_failure:
+        print("  ⚠ --inject-planner-failure: first planner call will be")
+        print("    corrupted; walker should spawn one retry to recover.")
+        print()
     result = run_smoke(
         spec_name=args.spec,
         model_label=args.model,
         smoke_timeout_minutes=args.timeout_minutes,
+        inject_planner_failure=args.inject_planner_failure,
     )
     _print_run_result(result)
 
@@ -201,6 +206,12 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Outer harness deadline (default: 25)")
     sub_run.add_argument("--out", default=None,
                          help="Path to write the JSON run record (default: smoke-runs/...)")
+    sub_run.add_argument(
+        "--inject-planner-failure", action="store_true",
+        help=("Wrap the backend so the first planner call returns malformed "
+              "output. Walker should auto-retry once (v0.5.1a3) and recover. "
+              "Use this to validate the retry path — convergence proves it works."),
+    )
     sub_run.set_defaults(func=_cmd_run)
 
     sub_var = sub.add_parser(

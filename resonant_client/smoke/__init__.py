@@ -24,6 +24,7 @@ broader autonomous-mission architecture this harness exercises.
 from .specs import SPECS, SmokeSpec, get_spec, list_spec_names
 from .runner import SmokeResult, run_smoke, MODELS
 from .variance import VarianceReport, run_variance, summarize_runs
+from .flaky import FlakyPlannerBackend
 
 __all__ = [
     "SPECS",
@@ -36,4 +37,5 @@ __all__ = [
     "VarianceReport",
     "run_variance",
     "summarize_runs",
+    "FlakyPlannerBackend",
 ]

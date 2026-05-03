@@ -1111,6 +1111,11 @@ class ResonantApp {
                 () => this._updateAutonomousBadgeState(), 1000,
             );
         }
+        // v0.5.3a3 — mission just started; sidebar inspector should
+        // surface its initial state. Roadmap may not be fully written
+        // yet on the first iteration — the inspector renders a
+        // graceful "Bootstrapping…" placeholder if so.
+        this._requestAutonomousMissionRoadmap();
     }
 
     handleAutonomousIterationStarted(event) {
@@ -1125,6 +1130,9 @@ class ResonantApp {
         s.iterCount = (event && event.iter_count) || s.iterCount;
         this._updateAutonomousBadgeState();
         this._upgradeIterationCardToComplete(event);
+        // v0.5.3a3 — REFLECT may have ticked criteria off + appended
+        // an iteration log entry; sidebar inspector should re-fetch.
+        this._requestAutonomousMissionRoadmap();
     }
 
     handleAutonomousIterationFailed(event) {
@@ -1132,6 +1140,7 @@ class ResonantApp {
         s.iterCount = (event && event.iter_count) || s.iterCount;
         this._updateAutonomousBadgeState();
         this._upgradeIterationCardToFailed(event);
+        this._requestAutonomousMissionRoadmap();
     }
 
     handleAutonomousReflection(event) {
@@ -1142,6 +1151,9 @@ class ResonantApp {
         s.lastReflection = event;
         this._updateAutonomousBadgeState();
         this._renderReflectionCard(event);
+        // REFLECT just ran — the persisted roadmap is freshly mutated
+        // (criteria flipped, items checked, log entry appended).
+        this._requestAutonomousMissionRoadmap();
     }
 
     handleAutonomousMissionEnded(event, isComplete) {
@@ -1300,6 +1312,159 @@ class ResonantApp {
             o => (o.intent_id || '') !== intentId
         );
         this._renderAutonomousOrphansBanner();
+    }
+
+    /**
+     * v0.5.3a3 — Sidebar roadmap inspector. The frontend keeps the
+     * latest roadmap snapshot per intent_id and re-renders the inline
+     * inspector whenever the data refreshes. The backend re-parses
+     * roadmap.md on every request — we never trust a cached copy
+     * because REFLECT mutates the file asynchronously.
+     */
+    handleAutonomousMissionRoadmap(event) {
+        if (!event || !event.intent_id) return;
+        if (!this._autonomousRoadmaps) this._autonomousRoadmaps = {};
+        this._autonomousRoadmaps[event.intent_id] = event;
+        this._renderAutonomousRoadmapInspector();
+    }
+
+    /**
+     * Request a fresh roadmap snapshot for the current session's
+     * autonomous mission. Safe to call when no autonomous mission is
+     * active (no-op). Used as a "refresh trigger" hooked into the
+     * autonomous_* events that change roadmap state.
+     */
+    _requestAutonomousMissionRoadmap(intentId) {
+        const id = intentId || this._currentAutonomousIntentId();
+        if (!id) return;
+        this.send({ command: 'autonomous_mission_roadmap', intent_id: id });
+    }
+
+    _currentAutonomousIntentId() {
+        const sess = this._currentSessionSummary();
+        const ms = sess?.mission_state || {};
+        if (ms.phase !== 'autonomous_running') return '';
+        return ms.intent_id || '';
+    }
+
+    _renderAutonomousRoadmapInspector() {
+        const inspector = document.getElementById('autonomous-roadmap-inspector');
+        if (!inspector) return;
+        const intentId = this._currentAutonomousIntentId();
+        if (!intentId) {
+            inspector.hidden = true;
+            inspector.innerHTML = '';
+            return;
+        }
+        const data = this._autonomousRoadmaps && this._autonomousRoadmaps[intentId];
+        if (!data) {
+            // We have an active autonomous mission but no snapshot yet —
+            // fire one off and show a placeholder.
+            this._requestAutonomousMissionRoadmap(intentId);
+            inspector.hidden = false;
+            inspector.innerHTML = `
+                <div class="arm-inspector-header">
+                    <span class="arm-inspector-icon" aria-hidden="true">∞</span>
+                    <span class="arm-inspector-title">Loading roadmap…</span>
+                </div>
+            `;
+            return;
+        }
+        if (data.roadmap_exists === false) {
+            // The mission hasn't persisted its roadmap yet (very early
+            // in the run, or the daemon failed before the first save).
+            // Show a minimal placeholder rather than hiding entirely so
+            // the user knows the mission IS active, just not yet
+            // inspectable.
+            inspector.hidden = false;
+            inspector.innerHTML = `
+                <div class="arm-inspector-header">
+                    <span class="arm-inspector-icon" aria-hidden="true">∞</span>
+                    <span class="arm-inspector-title">Roadmap not yet on disk</span>
+                </div>
+                <div class="arm-inspector-summary">
+                    <span class="arm-inspector-summary-pill">Bootstrapping…</span>
+                </div>
+            `;
+            return;
+        }
+        inspector.hidden = false;
+        inspector.innerHTML = this._renderRoadmapInspectorHTML(data);
+    }
+
+    _renderRoadmapInspectorHTML(data) {
+        const feature = data.feature || '(unnamed mission)';
+        const summary = data.acceptance_summary || {};
+        const passed = summary.passed || 0;
+        const total = summary.total_blocking || 0;
+        const isConverged = data.is_converged === true;
+        const iterCount = typeof data.iteration_count === 'number'
+            ? data.iteration_count : 0;
+
+        const summaryPill = isConverged
+            ? `<span class="arm-inspector-summary-pill arm-pill-converged">${passed}/${total} met · converged</span>`
+            : `<span class="arm-inspector-summary-pill">${passed}/${total} criteria met</span>`;
+
+        const criteria = Array.isArray(summary.criteria) ? summary.criteria : [];
+        const criteriaHTML = criteria.map(c => {
+            let statusIcon, statusClass;
+            if (c.is_blocking === false) {
+                // Manual criterion — advisory, not a gate.
+                statusIcon = '○';
+                statusClass = 'arm-status-manual';
+            } else if (c.passed === true) {
+                statusIcon = '✓';
+                statusClass = 'arm-status-pass';
+            } else if (c.passed === false) {
+                statusIcon = '✗';
+                statusClass = 'arm-status-fail';
+            } else {
+                statusIcon = '·';
+                statusClass = 'arm-status-pending';
+            }
+            return `
+                <li class="arm-criterion">
+                    <span class="arm-criterion-status ${statusClass}">${statusIcon}</span>
+                    <span class="arm-criterion-text">
+                        <span class="arm-criterion-type">[${this.escapeHtml(c.type || '')}]</span>${this.escapeHtml(c.text || '')}
+                    </span>
+                </li>
+            `;
+        }).join('');
+
+        const nextItem = data.next_item;
+        const nextItemHTML = nextItem
+            ? `
+                <div class="arm-next-item">
+                    <span class="arm-next-item-label">Next: ${this.escapeHtml(nextItem.id || '')}</span>
+                    <span>${this.escapeHtml(nextItem.title || '')}</span>
+                </div>
+            `
+            : '';
+
+        const reflection = (data.reflection_summary || '').trim();
+        const reflectionHTML = reflection
+            ? `
+                <div class="arm-reflection">
+                    <span class="arm-reflection-label">Latest reflection</span>
+                    ${this.escapeHtml(reflection)}
+                </div>
+            `
+            : '';
+
+        return `
+            <div class="arm-inspector-header">
+                <span class="arm-inspector-icon" aria-hidden="true">∞</span>
+                <span class="arm-inspector-title" title="${this.escapeHtml(feature)}">${this.escapeHtml(feature)}</span>
+            </div>
+            <div class="arm-inspector-summary">
+                ${summaryPill}
+                <span>iter ${iterCount}</span>
+            </div>
+            ${criteriaHTML ? `<ul class="arm-criteria-list">${criteriaHTML}</ul>` : ''}
+            ${nextItemHTML}
+            ${reflectionHTML}
+        `;
     }
 
     /**
@@ -1599,6 +1764,11 @@ class ResonantApp {
         }
         this._refreshMissionBadge(active ? phase : '', seed);
         this._refreshPastMissionIndicator(past ? phase : '', seed);
+        // v0.5.3a3 — refresh the sidebar roadmap inspector. When the
+        // current session is in autonomous_running phase, this both
+        // ensures the inspector is visible AND triggers a fetch if we
+        // don't have a snapshot yet. Hidden cleanly otherwise.
+        this._renderAutonomousRoadmapInspector();
 
         // Clear the pending feature once the real session arrives so we
         // don't keep showing it on stale switches.
@@ -2953,6 +3123,11 @@ class ResonantApp {
             // happy path; banner hides itself.
             case 'autonomous_orphans':
                 this.handleAutonomousOrphans(event);
+                break;
+            // v0.5.3a3 — sidebar roadmap inspector data. Sent in
+            // response to an `autonomous_mission_roadmap` command.
+            case 'autonomous_mission_roadmap':
+                this.handleAutonomousMissionRoadmap(event);
                 break;
             case 'await_user':
                 // v0.3.5 — agent paused with `await_user` tool, asking

@@ -388,6 +388,69 @@ def resume_autonomous_mission(
     )
 
 
+def build_roadmap_inspector_payload(
+    *, intent_id: str, roadmap: Roadmap, roadmap_path: "Path",
+    reflection_max_chars: int = 600,
+) -> dict:
+    """v0.5.3a3 — Marshal a Roadmap into the dict the sidebar inspector
+    consumes. Pure function (no I/O) so the WS handler stays thin and
+    tests can construct + verify payloads directly.
+
+    Trims the reflection summary to `reflection_max_chars` so the
+    sidebar doesn't have to render multi-page narrative — full content
+    lives in roadmap.md anyway.
+
+    Acceptance criteria are emitted in their canonical order with
+    `passed` (None/True/False), `is_blocking` (False for `[manual]`),
+    and the type tag preserved. The frontend uses `is_blocking` to
+    distinguish convergence-gating criteria from advisory ones.
+    """
+    next_item = roadmap.next_unchecked_item()
+    passed_count, total_blocking = roadmap.acceptance_summary()
+    reflection = (roadmap.reflection_summary or "").strip()
+    if reflection_max_chars and len(reflection) > reflection_max_chars:
+        reflection = reflection[:reflection_max_chars].rstrip() + "…"
+
+    return {
+        "intent_id": intent_id,
+        "roadmap_exists": True,
+        "roadmap_path": str(roadmap_path),
+        "feature": roadmap.feature,
+        "status": roadmap.status,
+        "time_budget_label": roadmap.time_budget_label,
+        "started_iso": roadmap.started_iso,
+        "is_converged": roadmap.is_converged(),
+        "acceptance_summary": {
+            "passed": passed_count,
+            "total_blocking": total_blocking,
+            "criteria": [
+                {
+                    "type": c.type,
+                    "text": c.text,
+                    "passed": c.passed,
+                    "is_blocking": c.is_blocking,
+                }
+                for c in roadmap.acceptance_criteria
+            ],
+        },
+        "items": [
+            {
+                "id": it.id,
+                "tier": it.tier,
+                "title": it.title,
+                "checked": it.checked,
+            }
+            for it in roadmap.items
+        ],
+        "next_item": (
+            {"id": next_item.id, "title": next_item.title}
+            if next_item else None
+        ),
+        "iteration_count": len(roadmap.iteration_log),
+        "reflection_summary": reflection,
+    }
+
+
 def find_orphaned_autonomous_missions(state: Any) -> list[dict]:
     """v0.5.3a1 — scan the project's sessions for missions in
     `autonomous_running` phase that have NO live daemon. These are

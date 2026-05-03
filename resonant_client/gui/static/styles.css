@@ -7944,3 +7944,162 @@ body {
     opacity: 0.55;
     cursor: not-allowed;
 }
+
+/* ── v0.5.3a3: Sidebar autonomous-mission roadmap inspector ────────── */
+
+.autonomous-roadmap-inspector {
+    margin: 4px 8px 8px 8px;
+    padding: 10px 12px;
+    background: color-mix(in srgb, var(--brand) 8%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--brand) 30%, transparent);
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 12px;
+}
+
+.autonomous-roadmap-inspector[hidden] {
+    display: none;
+}
+
+.arm-inspector-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text);
+    font-weight: 600;
+}
+
+.arm-inspector-icon {
+    font-size: 14px;
+    color: var(--brand);
+    line-height: 1;
+}
+
+.arm-inspector-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12.5px;
+}
+
+.arm-inspector-summary {
+    display: flex;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.arm-inspector-summary-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--brand) 15%, transparent);
+    color: var(--text);
+    font-weight: 500;
+}
+
+.arm-inspector-summary-pill.arm-pill-converged {
+    background: color-mix(in srgb, var(--ok, #2ea44f) 18%, transparent);
+    color: var(--ok, #2ea44f);
+}
+
+.arm-criteria-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.arm-criterion {
+    display: flex;
+    gap: 6px;
+    align-items: flex-start;
+    padding: 3px 0;
+    font-size: 11.5px;
+    line-height: 1.4;
+    color: var(--text);
+}
+
+.arm-criterion-status {
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+    line-height: 1.4;
+    font-weight: 700;
+}
+
+.arm-criterion-status.arm-status-pass {
+    color: var(--ok, #2ea44f);
+}
+
+.arm-criterion-status.arm-status-fail {
+    color: var(--err, #d92626);
+}
+
+.arm-criterion-status.arm-status-pending {
+    color: var(--muted);
+}
+
+.arm-criterion-status.arm-status-manual {
+    color: var(--brand);
+}
+
+.arm-criterion-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text);
+}
+
+.arm-criterion-type {
+    color: var(--muted);
+    font-size: 10.5px;
+    margin-right: 4px;
+    font-family: monospace;
+}
+
+.arm-next-item {
+    padding: 6px 8px;
+    background: color-mix(in srgb, var(--text) 4%, transparent);
+    border-radius: 4px;
+    font-size: 11.5px;
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.arm-next-item-label {
+    font-size: 10.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.arm-reflection {
+    padding: 6px 8px;
+    background: color-mix(in srgb, var(--text) 3%, transparent);
+    border-left: 2px solid color-mix(in srgb, var(--brand) 50%, transparent);
+    border-radius: 0 4px 4px 0;
+    font-size: 11px;
+    color: var(--muted);
+    line-height: 1.4;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.arm-reflection-label {
+    font-size: 10.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+    display: block;
+}

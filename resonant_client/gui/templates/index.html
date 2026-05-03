@@ -116,6 +116,12 @@
                 <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.2"/><path d="M9 9l3.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
                 <input type="text" placeholder="Search agents..." id="search-input" />
             </div>
+            <!-- v0.5.3a3 — Sidebar roadmap inspector. Hidden when the
+                 current session isn't an autonomous mission. Shows
+                 acceptance-criteria progress, the next unchecked item,
+                 and a trimmed reflection summary so the user can see
+                 mission state at a glance without opening roadmap.md. -->
+            <div id="autonomous-roadmap-inspector" class="autonomous-roadmap-inspector" hidden></div>
             <div id="agent-list" class="agent-list">
                 <div class="agent-empty">No agents yet</div>
             </div>

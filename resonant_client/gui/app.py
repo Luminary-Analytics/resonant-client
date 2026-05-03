@@ -47,6 +47,7 @@ from .runtime import BackendSpec
 from ..harness import EvaluatorReport, HarnessWorkspace, HarnessOrchestrator, HarnessService
 from ..orchestration import IntentService
 from .autonomous_session import (
+    build_roadmap_inspector_payload as _build_roadmap_inspector_payload,
     cleanup_finished_daemons as _cleanup_autonomous_daemons,
     find_orphaned_autonomous_missions as _find_orphaned_autonomous_missions,
     get_autonomous_daemon as _get_autonomous_daemon,
@@ -6166,6 +6167,61 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
                 # Daemon will emit `autonomous_mission_paused` itself;
                 # nothing else to do here.
+
+            elif command == "autonomous_mission_roadmap":
+                # v0.5.3a3 — Sidebar roadmap inspector. Frontend asks
+                # for the parsed roadmap of a specific mission so it
+                # can render acceptance-criteria progress, the next
+                # unchecked item, and the latest reflection summary at
+                # a glance — without having to open the file directly.
+                #
+                # We re-parse the on-disk roadmap on every request
+                # rather than caching: REFLECT mutates the file
+                # asynchronously (advisory file lock around its
+                # writes), so a stale in-memory copy would lie. The
+                # parser is fast enough that this is a non-issue.
+                target_intent = (msg.get("intent_id") or "").strip()
+                if not target_intent and state.project.current_session:
+                    ms = state.project.current_session.mission_state or {}
+                    target_intent = ms.get("intent_id", "")
+                if not target_intent:
+                    await ws.send_json({"event": "error",
+                                        "message": "intent_id required (or active mission)"})
+                    continue
+
+                from .roadmap import default_path as _rm_default_path, load as _rm_load
+                roadmap_path = _rm_default_path(
+                    state.project.project_path, target_intent,
+                )
+                if not roadmap_path.exists():
+                    # Not an error — early in a mission the daemon
+                    # may not have persisted the roadmap yet, or this
+                    # could be a stale request from a closed mission.
+                    # Send an empty payload so the frontend can clear
+                    # its inspector cleanly.
+                    await ws.send_json({
+                        "event": "autonomous_mission_roadmap",
+                        "intent_id": target_intent,
+                        "roadmap_exists": False,
+                        "roadmap_path": str(roadmap_path),
+                    })
+                    continue
+
+                try:
+                    rm = _rm_load(roadmap_path)
+                except Exception as exc:
+                    logger.exception("autonomous_mission_roadmap parse failed")
+                    await ws.send_json({"event": "error",
+                                        "message": f"Could not parse roadmap: {exc}"})
+                    continue
+
+                payload = _build_roadmap_inspector_payload(
+                    intent_id=target_intent,
+                    roadmap=rm,
+                    roadmap_path=roadmap_path,
+                )
+                payload["event"] = "autonomous_mission_roadmap"
+                await ws.send_json(payload)
 
             elif command == "autonomous_orphans_list":
                 # v0.5.3a2 — Frontend asks for a fresh orphan list

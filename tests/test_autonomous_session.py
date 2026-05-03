@@ -24,6 +24,7 @@ from resonant_client.gui.autonomous_session import (
     _seed_item_from_intent,
     _smart_title,
     build_roadmap_from_spec,
+    build_roadmap_inspector_payload,
     cleanup_finished_daemons,
     find_orphaned_autonomous_missions,
     get_autonomous_daemon,
@@ -770,3 +771,179 @@ class TestFindOrphanedAutonomousMissions:
         orphans = find_orphaned_autonomous_missions(state)
         assert len(orphans) == 1
         assert orphans[0]["feature"] == "Counter component (old session)"
+
+
+# ── v0.5.3a3: roadmap inspector payload ────────────────────────────────
+
+
+class TestBuildRoadmapInspectorPayload:
+    """`build_roadmap_inspector_payload` is the data-marshaling layer
+    behind the sidebar inspector. The WS handler is a thin wrapper
+    around it; tests here pin the payload shape + edge-case handling
+    so the frontend's render code can rely on stable field semantics."""
+
+    def _fresh_roadmap_with_one_item_and_criteria(self, tmp_path):
+        rm, path = build_roadmap_from_spec(
+            feature="counter web component",
+            intent_id="inspect-1",
+            spec_markdown=_SPEC_MD,
+            project_path=str(tmp_path),
+        )
+        return rm, path
+
+    def test_includes_top_level_metadata(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        payload = build_roadmap_inspector_payload(
+            intent_id="inspect-1", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["intent_id"] == "inspect-1"
+        assert payload["roadmap_exists"] is True
+        assert payload["roadmap_path"] == str(path)
+        assert payload["feature"] == "counter web component"
+        assert payload["status"] == "running"
+        assert payload["time_budget_label"] == "4h"
+
+    def test_acceptance_summary_initial_state(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # Before any REFLECT pass: 0 passed, 4 total blocking, all
+        # criteria.passed is None, is_blocking is True for all (none
+        # are [manual]).
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        s = payload["acceptance_summary"]
+        assert s["passed"] == 0
+        assert s["total_blocking"] == 4
+        assert len(s["criteria"]) == 4
+        for c in s["criteria"]:
+            assert c["passed"] is None
+            assert c["is_blocking"] is True
+        assert payload["is_converged"] is False
+
+    def test_acceptance_summary_after_partial_pass(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # Mark 2 criteria as passed.
+        rm.acceptance_criteria[0].passed = True
+        rm.acceptance_criteria[1].passed = True
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        s = payload["acceptance_summary"]
+        assert s["passed"] == 2
+        assert s["total_blocking"] == 4
+        assert payload["is_converged"] is False
+        # Per-criterion `passed` booleans round-trip.
+        passed_states = [c["passed"] for c in s["criteria"]]
+        assert passed_states == [True, True, None, None]
+
+    def test_is_converged_when_all_blocking_pass(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        for c in rm.acceptance_criteria:
+            c.passed = True
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["acceptance_summary"]["passed"] == 4
+        assert payload["is_converged"] is True
+
+    def test_manual_criteria_marked_non_blocking(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # Inject a manual criterion. The summary should NOT count it
+        # against `total_blocking` and is_converged should ignore it.
+        from resonant_client.gui.roadmap import AcceptanceCriterion
+        rm.acceptance_criteria.append(
+            AcceptanceCriterion(type="manual", text="Reviewer approval")
+        )
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        s = payload["acceptance_summary"]
+        # 4 blocking + 1 manual = 5 total criteria, 4 blocking total
+        assert s["total_blocking"] == 4
+        assert len(s["criteria"]) == 5
+        manual = s["criteria"][-1]
+        assert manual["type"] == "manual"
+        assert manual["is_blocking"] is False
+
+    def test_items_serialized_with_id_tier_title_checked(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # The bootstrap T1.1 item is already there from build_roadmap_from_spec.
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert len(payload["items"]) == 1
+        item = payload["items"][0]
+        assert item["id"] == "T1.1"
+        assert item["tier"] == 1
+        assert item["checked"] is False
+        assert item["title"]  # non-empty
+
+    def test_next_item_is_first_unchecked(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # Add a second item; check the first; next_item should be the
+        # second (still unchecked).
+        rm.items[0].checked = True
+        roadmap_module.add_item(rm, tier=1, title="Second task", description="")
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["next_item"] is not None
+        assert payload["next_item"]["id"] == "T1.2"
+        assert payload["next_item"]["title"] == "Second task"
+
+    def test_next_item_is_none_when_all_checked(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        rm.items[0].checked = True
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["next_item"] is None
+
+    def test_iteration_count_reflects_log_length(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        roadmap_module.append_iteration_log(
+            rm, iter_num=1, duration_label="2m", note="bootstrap done",
+        )
+        roadmap_module.append_iteration_log(
+            rm, iter_num=2, duration_label="3m", note="reflect pass",
+        )
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["iteration_count"] == 2
+
+    def test_reflection_summary_trimmed_when_too_long(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        rm.reflection_summary = "x" * 1000
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+            reflection_max_chars=200,
+        )
+        # Trimmed text + ellipsis sentinel
+        assert payload["reflection_summary"].endswith("…")
+        assert len(payload["reflection_summary"]) <= 201
+
+    def test_reflection_summary_untrimmed_when_short(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        rm.reflection_summary = "All four criteria green; mission complete."
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["reflection_summary"] == "All four criteria green; mission complete."
+
+    def test_empty_reflection_summary_round_trips(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # Default — never assigned.
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["reflection_summary"] == ""
+
+    def test_reflection_max_chars_zero_disables_trimming(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        rm.reflection_summary = "x" * 5000
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+            reflection_max_chars=0,
+        )
+        assert payload["reflection_summary"] == "x" * 5000

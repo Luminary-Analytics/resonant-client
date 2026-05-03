@@ -127,9 +127,36 @@ Full spec persisted alongside this file as `2026-05-03-resonant-linux-bridge.spe
 Track each iteration here. Sidebar inspector should mirror this in real time
 once the daemon starts — watch how the two diverge if at all.
 
+### Iter 1 — in flight (capturing as it runs)
+
+**Dispatched:** 2026-05-03T20:29:37Z (4h budget, iteration cap 100)
+**Plan-graph after PLAN_DEEP:** 5 IMPLEMENT subgoals (1 RUNNING, 4 PENDING)
+- Scaffold the Tauri v2 + Svelte (RUNNING)
+- 6ddec57ee9ca / 98c6d2f3bc78 / ae97cf181de9 / ef9b800dab15 (PENDING — hash IDs only, no titles visible in plan-graph; they'll resolve once they pick up)
+
+**Real-time observations during iter 1:**
+
+What the agent has DONE so far (visible in the chat trace + on disk):
+1. Searched codebase → confirmed empty greenfield
+2. Ran `git_status` → clean
+3. Wrote `README.md` (86 lines)
+4. Created `index.html`, `package.json`, `svelte.config.js`, `vite.config.js`, `src/main.js`, `src/App.svelte` (90 lines), `src/styles.css`
+5. Created `src-tauri/` Tauri Rust project: `Cargo.toml`, `build.rs`, `src/main.rs`, `src/lib.rs`, `tauri.conf.json`, `gen/`, `icons/`
+6. Vendored `vendor/winetricks` (the bash script we agreed to bundle in Q22)
+7. Ran `npm install` → exit 0 (8.9s)
+8. Ran `cargo check` in src-tauri/ → **exit 101 (73.6s)** — Rust compilation failure
+
+**Bug it found in its own scaffold (mid-iter):** `tauri.conf.json` had `title` at top-level, but Tauri v2 wants it per-window. Model identified this from the cargo error output and is iterating on the fix.
+
+**Bug I spotted that the model also has:** `src-tauri/src/main.rs` calls `resonant_linux_bridge_lib::run()` but the package is named `resonant-linux-bridge` (crate name `resonant_linux_bridge` — no `_lib` suffix). Either Cargo.toml needs `[lib] name = "resonant_linux_bridge_lib"` or main.rs needs to drop the `_lib`. We'll see if model catches both.
+
+**Stray artifact:** A file literally named `-p` exists at the project root — almost certainly a `mkdir -p src` that got tokenized as `mkdir`, `-p`, `src` somewhere; the agent created the file `-p`. Worth noting as a v0.5.6 sanity check ("if a tool creates a file whose name starts with `-`, flag it").
+
+**Iteration table:**
+
 | Iter | Item picked | Duration | Outcome | Verdict | Notes |
 |---|---|---|---|---|---|
-| 1 | T1.1 | _s_ | shipped / failed / stuck | continue | |
+| 1 | T1.1 (full launcher slice as one item) | in flight | _pending_ | _pending_ | npm install ✅, cargo check ✗ (101), iterating on Tauri v2 config + lib name suffix |
 | 2 | | | | | |
 | 3 | | | | | |
 | 4 | | | | | |

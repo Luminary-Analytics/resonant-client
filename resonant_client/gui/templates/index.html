@@ -213,6 +213,11 @@
                             <!-- Mission badge gets injected here when a Mission is active -->
                         </div>
                         <div id="chat-container" class="chat-container">
+                            <!-- v0.5.3a2 — Resume orphaned autonomous missions
+                                 banner. Populated by handleAutonomousOrphans
+                                 in app.js when the server reports interrupted
+                                 missions (server restart / app crash / sleep). -->
+                            <div id="autonomous-orphans-banner" class="autonomous-orphans-banner" hidden></div>
                             <div id="chat-messages" class="chat-messages"></div>
                         </div>
                         <button type="button" id="chat-scroll-end" class="chat-scroll-end" aria-label="Scroll to bottom">Scroll</button>

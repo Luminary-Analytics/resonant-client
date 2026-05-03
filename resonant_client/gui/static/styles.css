@@ -7847,3 +7847,100 @@ body {
 .autonomous-banner-failed .autonomous-banner-icon {
     color: var(--err);
 }
+
+/* ── v0.5.3a2: Resume orphaned autonomous missions banner ──────────── */
+
+.autonomous-orphans-banner {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 8px 12px 0 12px;
+}
+
+.autonomous-orphans-banner[hidden] {
+    display: none;
+}
+
+.autonomous-orphan-card {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 14px;
+    background: color-mix(in srgb, var(--brand) 10%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--brand) 35%, transparent);
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.autonomous-orphan-icon {
+    font-size: 16px;
+    line-height: 1;
+    flex-shrink: 0;
+    color: var(--brand);
+}
+
+.autonomous-orphan-text {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.autonomous-orphan-title {
+    font-weight: 600;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.autonomous-orphan-subtitle {
+    color: var(--muted);
+    font-size: 11.5px;
+}
+
+.autonomous-orphan-actions {
+    display: inline-flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.autonomous-orphan-resume,
+.autonomous-orphan-dismiss {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px 12px;
+    border: 1px solid var(--border, color-mix(in srgb, var(--text) 18%, transparent));
+    border-radius: 999px;
+    font: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    background: var(--bg-secondary, transparent);
+    color: var(--text);
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease,
+                color var(--duration-fast) ease,
+                border-color var(--duration-fast) ease;
+}
+
+.autonomous-orphan-resume {
+    background: var(--brand);
+    color: var(--brand-fg, #fff);
+    border-color: var(--brand);
+}
+
+.autonomous-orphan-resume:hover {
+    background: color-mix(in srgb, var(--brand) 88%, #000);
+}
+
+.autonomous-orphan-dismiss:hover {
+    background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.autonomous-orphan-dismiss[disabled],
+.autonomous-orphan-resume[disabled] {
+    opacity: 0.55;
+    cursor: not-allowed;
+}

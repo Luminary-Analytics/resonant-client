@@ -48,7 +48,9 @@ from ..harness import EvaluatorReport, HarnessWorkspace, HarnessOrchestrator, Ha
 from ..orchestration import IntentService
 from .autonomous_session import (
     cleanup_finished_daemons as _cleanup_autonomous_daemons,
+    find_orphaned_autonomous_missions as _find_orphaned_autonomous_missions,
     get_autonomous_daemon as _get_autonomous_daemon,
+    resume_autonomous_mission as _resume_autonomous_mission,
     start_autonomous_mission as _start_autonomous_mission,
     stop_autonomous_mission as _stop_autonomous_mission,
 )
@@ -5433,6 +5435,11 @@ class AppState:
             "harness_cycles": self.harness_orchestrator.list_runs(),
             "harness_enabled": self.harness_enabled(),
             "harness_migration_notice": getattr(self, "_last_migration_notice", "") or "",
+            # v0.5.3a2 — Resume orphaned autonomous missions. Sessions
+            # in `autonomous_running` phase whose daemon isn't currently
+            # registered (server restart / crash / sleep). Frontend
+            # surfaces a "Resume" affordance per orphan.
+            "autonomous_orphans": _find_orphaned_autonomous_missions(self),
         }
 
 
@@ -6159,6 +6166,146 @@ async def websocket_endpoint(ws: WebSocket):
                     continue
                 # Daemon will emit `autonomous_mission_paused` itself;
                 # nothing else to do here.
+
+            elif command == "autonomous_orphans_list":
+                # v0.5.3a2 — Frontend asks for a fresh orphan list
+                # (e.g. after dismissing one or after a long idle).
+                # `init` already includes the same field on connect /
+                # session-switch refresh; this command exists so the
+                # frontend doesn't have to round-trip the full init
+                # payload to refresh the banner.
+                await ws.send_json({
+                    "event": "autonomous_orphans",
+                    "orphans": _find_orphaned_autonomous_missions(state),
+                })
+
+            elif command == "autonomous_mission_resume":
+                # v0.5.3a2 — User clicked "Resume" on an orphaned
+                # autonomous mission. The daemon for this intent_id
+                # was interrupted (server restart / crash / sleep);
+                # the roadmap is still on disk. We:
+                #   1. Switch to the orphan's session if a session_id
+                #      is provided (so the chat header / sidebar /
+                #      composer all key to the right session).
+                #   2. Call `_resume_autonomous_mission` which loads
+                #      the persisted roadmap and spawns a fresh daemon
+                #      preserving any progress already made.
+                #   3. Re-emit `mission_phase_changed` to confirm the
+                #      session is now back in `autonomous_running`.
+                #   4. Refresh sessions + orphans so the banner clears.
+                target_intent = (msg.get("intent_id") or "").strip()
+                if not target_intent:
+                    await ws.send_json({"event": "error",
+                                        "message": "intent_id required for resume"})
+                    continue
+
+                # Optional: switch to the originating session first so
+                # the daemon's events land in the right chat. The
+                # frontend SHOULD pass session_id but we tolerate its
+                # absence (resume by intent_id alone — events will go
+                # to the current session, which is wrong-but-recoverable).
+                session_id = (msg.get("session_id") or "").strip()
+                if session_id and (
+                    not state.project.current_session
+                    or state.project.current_session.id != session_id
+                ):
+                    record = state.project.load_session(session_id)
+                    if record is None:
+                        await ws.send_json({"event": "error",
+                                            "message": f"Session {session_id} not found for resume"})
+                        continue
+                    # Recreate the backend so this session has a model
+                    # to dispatch to. Mirrors the switch_session flow
+                    # above (kept narrow — no display-event replay
+                    # since the chat will be re-emitting live events).
+                    try:
+                        backend_type = record.backend_type
+                        model = record.model
+                        if backend_type:
+                            await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: state.create_backend(
+                                    backend_type,
+                                    model or None,
+                                    session_mode="code",
+                                    session_role=record.session_role or "generator",
+                                ),
+                            )
+                        if state.session and record.conversation_history:
+                            state.session.conversation_history = record.conversation_history
+                        state._first_message_sent = record.message_count > 0
+                    except Exception as exc:
+                        logger.exception("autonomous_mission_resume backend recreate failed")
+                        await ws.send_json({"event": "error",
+                                            "message": f"Resume failed (backend recreate): {exc}"})
+                        continue
+
+                # Drop any finished daemons so the registry doesn't
+                # stall the resume on a dead-but-registered entry.
+                _cleanup_autonomous_daemons(state)
+
+                # Wire the daemon's events into THIS websocket — same
+                # forwarder pattern as mission_dispatch_autonomous.
+                def _emit_resume(payload: dict, _ws=ws,
+                                 _loop=asyncio.get_running_loop()):
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            _ws.send_json(payload), _loop,
+                        )
+                    except Exception:
+                        logger.debug("autonomous resume emit raised", exc_info=True)
+
+                try:
+                    _resume_autonomous_mission(
+                        state=state,
+                        intent_id=target_intent,
+                        on_event=_emit_resume,
+                    )
+                except ValueError as exc:
+                    # No roadmap on disk OR roadmap has no criteria.
+                    # User-facing: explain so they know whether to
+                    # re-dispatch or accept the loss.
+                    await ws.send_json({"event": "error",
+                                        "message": f"Resume failed: {exc}"})
+                    continue
+                except RuntimeError as exc:
+                    # Already running — defensively, this means the
+                    # frontend's orphan list was stale. Refresh it.
+                    await ws.send_json({"event": "error",
+                                        "message": f"Resume failed: {exc}"})
+                    await ws.send_json({
+                        "event": "autonomous_orphans",
+                        "orphans": _find_orphaned_autonomous_missions(state),
+                    })
+                    continue
+                except Exception as exc:
+                    logger.exception("autonomous_mission_resume failed")
+                    await ws.send_json({"event": "error",
+                                        "message": f"Resume failed: {exc}"})
+                    continue
+
+                # Phase is already `autonomous_running` on the session
+                # (that's why it appeared as an orphan). Re-emit so the
+                # frontend's mission badge wakes up and the orphan
+                # banner clears for this entry.
+                if state.project.current_session:
+                    await ws.send_json({
+                        "event": "mission_phase_changed",
+                        "session_id": state.project.current_session.id,
+                        "phase": "autonomous_running",
+                        "intent_id": target_intent,
+                        "resumed": True,
+                    })
+                await ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": state.project.list_sessions(),
+                    "all_sessions": state.project.list_all_sessions(),
+                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
+                })
+                await ws.send_json({
+                    "event": "autonomous_orphans",
+                    "orphans": _find_orphaned_autonomous_missions(state),
+                })
 
             elif command == "list_project_files":
                 # Pi-style `@file` autocomplete: front-end caches a file list

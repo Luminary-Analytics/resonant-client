@@ -1170,6 +1170,139 @@ class ResonantApp {
     }
 
     /**
+     * v0.5.3a2 — Render the "resume orphaned autonomous missions"
+     * banner. Triggered by the `autonomous_orphans` WS event AND by
+     * the `autonomous_orphans` field included in `init` payloads.
+     *
+     * An orphan is a session whose `mission_state.phase` is
+     * `autonomous_running` but whose intent_id has no live daemon
+     * (server restart / app crash / laptop sleep killed it). The
+     * roadmap is still on disk; clicking Resume picks up where the
+     * mission left off, preserving any progress already made.
+     *
+     * Banner is hidden when the orphan list is empty (the steady-
+     * state happy path).
+     */
+    handleAutonomousOrphans(event) {
+        const orphans = (event && Array.isArray(event.orphans)) ? event.orphans : [];
+        this._autonomousOrphans = orphans;
+        this._renderAutonomousOrphansBanner();
+    }
+
+    _renderAutonomousOrphansBanner() {
+        const banner = document.getElementById('autonomous-orphans-banner');
+        if (!banner) return;
+        const orphans = this._autonomousOrphans || [];
+        if (!orphans.length) {
+            banner.hidden = true;
+            banner.innerHTML = '';
+            return;
+        }
+        banner.hidden = false;
+        banner.innerHTML = orphans.map(o => this._renderOrphanCardHTML(o)).join('');
+        // Wire click handlers per card. We build the inner HTML as
+        // strings (cleaner) and attach listeners after — this is the
+        // pattern the rest of the file uses for dynamically-rendered
+        // session cards.
+        banner.querySelectorAll('.autonomous-orphan-resume').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const intentId = btn.dataset.intentId || '';
+                const sessionId = btn.dataset.sessionId || '';
+                this._handleResumeOrphanClick(intentId, sessionId, btn);
+            });
+        });
+        banner.querySelectorAll('.autonomous-orphan-dismiss').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const intentId = btn.dataset.intentId || '';
+                this._handleDismissOrphanClick(intentId);
+            });
+        });
+    }
+
+    _renderOrphanCardHTML(orphan) {
+        const intentId = orphan.intent_id || '';
+        const sessionId = orphan.session_id || '';
+        const feature = orphan.feature || '(unnamed mission)';
+        const startedAt = typeof orphan.autonomous_started_at === 'number'
+            ? orphan.autonomous_started_at : null;
+        const ageLabel = startedAt
+            ? this._formatAutonomousAge(Date.now() / 1000 - startedAt)
+            : '';
+        const roadmapMissing = orphan.roadmap_exists === false;
+        const subtitleParts = [];
+        if (ageLabel) subtitleParts.push(`Started ${ageLabel} ago`);
+        if (roadmapMissing) subtitleParts.push('roadmap.md missing — resume will fail');
+        const subtitle = subtitleParts.join(' · ');
+
+        // Mark the resume button disabled if the roadmap is gone — the
+        // server will reject anyway, but disabling it up front saves the
+        // round trip and tells the user why.
+        const resumeAttrs = roadmapMissing
+            ? 'disabled aria-disabled="true" title="Roadmap file is missing — cannot resume"'
+            : 'title="Resume this mission from where it stopped"';
+
+        return `
+            <div class="autonomous-orphan-card" data-intent-id="${this.escapeHtml(intentId)}">
+                <span class="autonomous-orphan-icon" aria-hidden="true">∞</span>
+                <div class="autonomous-orphan-text">
+                    <span class="autonomous-orphan-title">${this.escapeHtml(feature)}</span>
+                    ${subtitle ? `<span class="autonomous-orphan-subtitle">${this.escapeHtml(subtitle)}</span>` : ''}
+                </div>
+                <div class="autonomous-orphan-actions">
+                    <button type="button" class="autonomous-orphan-resume"
+                            data-intent-id="${this.escapeHtml(intentId)}"
+                            data-session-id="${this.escapeHtml(sessionId)}"
+                            ${resumeAttrs}>Resume</button>
+                    <button type="button" class="autonomous-orphan-dismiss"
+                            data-intent-id="${this.escapeHtml(intentId)}"
+                            title="Hide this — does NOT stop the mission's session record">Dismiss</button>
+                </div>
+            </div>
+        `;
+    }
+
+    _formatAutonomousAge(seconds) {
+        if (!Number.isFinite(seconds) || seconds < 0) return '';
+        if (seconds < 60) return `${Math.round(seconds)}s`;
+        if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+        if (seconds < 86400) return `${Math.round(seconds / 360) / 10}h`;
+        return `${Math.round(seconds / 8640) / 10}d`;
+    }
+
+    _handleResumeOrphanClick(intentId, sessionId, btn) {
+        if (!intentId) return;
+        // Disable the buttons in this card so a double-click doesn't
+        // race two resume requests through. The server rejects the
+        // second one (RuntimeError "already running"), but the UX is
+        // cleaner if we don't even send it.
+        const card = btn ? btn.closest('.autonomous-orphan-card') : null;
+        if (card) {
+            card.querySelectorAll('button').forEach(b => { b.disabled = true; });
+            const resumeBtn = card.querySelector('.autonomous-orphan-resume');
+            if (resumeBtn) resumeBtn.textContent = 'Resuming…';
+        }
+        this.send({
+            command: 'autonomous_mission_resume',
+            intent_id: intentId,
+            session_id: sessionId || undefined,
+        });
+    }
+
+    _handleDismissOrphanClick(intentId) {
+        // Local-only dismissal — does NOT modify the session record on
+        // disk. The orphan reappears on next page reload / connect.
+        // This is by design: dismiss is a "not now" action, not a
+        // "permanently forget about this".
+        if (!Array.isArray(this._autonomousOrphans)) return;
+        this._autonomousOrphans = this._autonomousOrphans.filter(
+            o => (o.intent_id || '') !== intentId
+        );
+        this._renderAutonomousOrphansBanner();
+    }
+
+    /**
      * Render an iteration card in the chat panel. Stays in
      * "in-progress" state (spinner + "iter N — picked T1.x") until
      * the matching `iteration_complete` / `_failed` event upgrades
@@ -2814,6 +2947,13 @@ class ResonantApp {
             case 'autonomous_mission_failed':
                 this.handleAutonomousMissionFailed(event);
                 break;
+            // v0.5.3a2 — orphan list refresh from server. Sent both
+            // automatically (via init / after resume) and on demand
+            // (`autonomous_orphans_list` command). Empty array is the
+            // happy path; banner hides itself.
+            case 'autonomous_orphans':
+                this.handleAutonomousOrphans(event);
+                break;
             case 'await_user':
                 // v0.3.5 — agent paused with `await_user` tool, asking
                 // a focused question. Render an inline prompt with
@@ -3207,6 +3347,13 @@ class ResonantApp {
             this.applySessionRoleUI(current_session_role || this.currentSessionRole || 'generator');
             this.sessionRole = current_session_role || this.sessionRole;
             this.renderFilteredSessions();
+        }
+
+        // v0.5.3a2 — Resume orphaned autonomous missions. Server sends
+        // the orphan list as part of init (and again on session-switch
+        // refresh). Render the banner if any are present.
+        if (Array.isArray(event.autonomous_orphans)) {
+            this.handleAutonomousOrphans({ orphans: event.autonomous_orphans });
         }
 
         if (current_backend) {

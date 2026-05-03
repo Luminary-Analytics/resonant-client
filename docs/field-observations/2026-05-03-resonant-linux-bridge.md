@@ -218,13 +218,41 @@ daemon actually produced.
 
 ## Phase 5: Post-mortem — what should v0.5.6 do about this?
 
-Fill in after the run. Each row maps an observation to concrete v0.5.6 work.
+Mission stopped manually after the daemon hit `verdict=stuck` mid-iter-2.
+Despite "stuck", the agent built ~3,900 lines of substantive Rust + Svelte
+in ~2h wall time:
+- 5 Rust modules (`lib.rs` 313, `pipeline.rs` 889, `recipe.rs` 412, `state.rs` 347, `wine_runtime.rs` 292 = 2,253 lines)
+- 11 Svelte components (1,638 lines: AppCatalog, AppDetail, AppTile, ContextMenu, FailureModal, IconAvatar, InstallModal, LaunchLogs, SetupWizard, ToastContainer, UninstallDialog)
+- 10 recipe YAMLs (real catalog: 7-zip, audacity, everything-search, foxit-reader, irfanview, keepass, mpc-hc, notepad-plus-plus, putty, winmerge)
+- Vendored winetricks
+- 3/6 acceptance criteria green (cargo build, cargo test, cargo run --help)
 
-| Observation | Severity | Proposed v0.5.6 work |
-|---|---|---|
-| | | |
-| | | |
-| | | |
+The 2 FAIL criteria were both **path-mismatch artifacts**, not code bugs:
+- `npm run build --prefix src/` — but `package.json` is at root (correct Vite/Tauri convention)
+- `recipes/` at root — but agent put them at `src-tauri/recipes/` (correct embedded-resources convention)
+
+The 6th criterion (schema validator) never ran because it depends on the recipes-exist check.
+
+| # | Observation | Severity | Proposed v0.5.6 work |
+|---|---|---|---|
+| 1 | **Upstream Ollama 503 retries are invisible in the GUI.** Backend retries transparently; user sees `thinking N s` counter climbing with no signal whether stalled or in retry. | high | Wire `WARNING:resonant_client.backends:Ollama 503...retrying` log lines into a `status_msg` WS event surfaced as inline status: "Backend rate-limited, retrying (attempt 2/4)…". |
+| 2 | **Spec generation truncated mid-sentence**, no Acceptance criteria emitted, but the autonomous-mission dispatch card rendered anyway with Build button enabled — clicking would have hit `extract_spec()` with a ValueError. | high | Backend should gate the dispatch-card emission on a spec-validity check (presence of `## Final spec` block + ≥1 typed acceptance criterion). If the spec is incomplete, render a "Spec incomplete — ask the model to continue" banner instead of the Build card. |
+| 3 | **Project-switch dead end in browser mode.** "Open another project" triggers a native folder picker that hangs; status message points users to a workspace-folder-input field that's only visible on the welcome screen. | medium | Add an in-page text-input fallback for `set_project` that's accessible from the dropdown. |
+| 4 | **Defaults flip is first-launch-only.** New project switched to flash, not the v0.5.2 pro default. | low | Apply the configured `default_model` on every project switch, not only on first launch. |
+| 5 | **Iter counter desync.** Chat-header autonomous badge counts live (in-flight) iter; sidebar inspector counts COMPLETED iters via the iteration_log. Both correct but visually disagree. | low | Either (a) align both UIs to the same metric, or (b) label the badge "iter N (in flight)" vs the inspector's "iter N completed" so the relationship is explicit. |
+| 6 | **State desync after `verdict=stuck`.** Frontend `app._autonomousState.lastVerdict = "stuck"` but session.mission_state.phase still `autonomous_running` AND roadmap.md `**Status:** running`. The autonomous mission badge disappeared from the GUI but session record + roadmap weren't updated. | high | When daemon reaches `stuck`, ensure the daemon's `stop()` path commits the phase transition + roadmap status atomically before clearing the GUI badge. The GUI vs disk vs JS-state divergence here is exactly the "is the mission alive?" confusion users will hit. |
+| 7 | **Long-running mission pins the renderer.** After ~2h of accumulated chat content (388 messages) Chrome's `Page.captureScreenshot` started timing out. The DOM is too large. | medium | Virtualize the chat-message list past N messages, or fold older iterations into a collapsed "Iter N transcript" group. |
+| 8 | **Tool-call argument tokenization can create stray files.** Mid-iter, a file literally named `-p` appeared at the project root (almost certainly from a `mkdir -p src` call where the agent tokenized `mkdir`, `-p`, `src` as three separate args to the wrong tool). Agent self-cleaned later. | low | Validate file_write / shell tool args: reject filenames starting with `-` unless explicitly escaped. |
+| 9 | **REFLECT correctly diagnosed criteria failures with annotation.** When npm build failed, REFLECT updated the criterion line in roadmap.md with the actual Vite error ("semicolon-prefixed path resolution bug"). When recipes-count failed, it noted "actual recipes live at src-tauri/recipes/". This is excellent behavior — surfaces the diagnosis, doesn't just show pass/fail. | n/a (positive) | Document this as the gold-standard REFLECT pattern; verify the daemon doesn't regress here. |
+| 10 | **Path-mismatch criteria deadlock.** When the spec's `[bash]` criterion has the wrong path (e.g. `recipes/` vs `src-tauri/recipes/`), REFLECT can flip the criterion to `[FAIL]` but cannot autonomously decide whether to (a) move the file to match the criterion or (b) edit the criterion to match the file. The daemon goes "stuck" rather than picking. | medium | For path-only mismatches where REFLECT detects the file IS present at a different location, surface a structured `human-decision-required` event with explicit options: "move file to criterion-path / update criterion to actual path / both / neither". |
+| 11 | **The dispatch card stays visible after click.** After clicking "Build autonomously" the card persists in the chat, with the button just relabeled "Daemon dispatched" (greyed). It's not a real problem but it's visual clutter for the rest of the run. | low | Collapse the dispatch card to a one-line "✓ Mission dispatched at HH:MM:SS · Stop" affordance once the daemon is live. |
+| 12 | **Grill quality is exceptional and consistent.** All 27 questions rated 5/5. Pattern: acknowledge previous answer (1 line) → bridge with motivation → frame as a/b/c options → recommend with rationale → invite override. Active scope-narrowing emerged at Q5b (synthesis-confirmation rather than a new question). | n/a (positive) | Codify this pattern into the rigorous-grill prompt's R1+ as the EXEMPLAR — the addendum's "demand behavior-testing criteria" rule already implies it but doesn't show. |
+
+---
+
+### Net assessment
+
+This was a stress test of every part of the system on an ambitious-greenfield prompt and **the system held up well**. The grill produced a publishable spec. The autonomous loop scaffolded a real Tauri+Svelte launcher with a substantial Rust install pipeline + 11 React-quality Svelte components + 10 curated recipes — in 2 hours, on a host where it couldn't even run the resulting binary. The "stuck" verdict was the result of REFLECT honestly reporting two path-mismatches between the spec author's expectations and the agent's reasonable structural choices, not any kind of code regression. v0.5.6 backlog has 12 concrete items ranked by severity.
 
 ---
 
@@ -241,6 +269,6 @@ Fill in after the run. Each row maps an observation to concrete v0.5.6 work.
 
 Three sentences max. What did we learn?
 
-1.
-2.
-3.
+1. **The grill is excellent.** 27 questions, all 5/5 quality, with a consistent acknowledge-bridge-options-recommend-invite-override pattern that aggressively narrowed scope from "open-source Linux distro" to "Tauri+Svelte launcher for Ubuntu" in the first question. The grill alone justifies the autonomous-mission feature.
+2. **The autonomous loop produces real implementation under stress** — ~3,900 lines of substantive code (5 Rust modules with a 889-line install pipeline, 11 production-quality Svelte components, 10 curated recipes) in ~2h of wall time on a Windows host that couldn't even execute the resulting binary; despite hitting `verdict=stuck`, the work shipped is genuinely useful and resumable.
+3. **Three high-severity v0.5.6 fixes emerged** that have nothing to do with model quality and everything to do with state management: (a) Ollama 503 retries are invisible, (b) the dispatch card renders before the spec is parseable, (c) when the daemon reaches `stuck`, the GUI/session/roadmap state diverges. All three are concrete, narrow, and pure backend work.

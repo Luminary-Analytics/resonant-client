@@ -156,8 +156,8 @@ What the agent has DONE so far (visible in the chat trace + on disk):
 
 | Iter | Item picked | Duration | Outcome | Verdict | Notes |
 |---|---|---|---|---|---|
-| 1 | T1.1 (full launcher slice as one item) | in flight | _pending_ | _pending_ | npm install ✅, cargo check ✗ (101), iterating on Tauri v2 config + lib name suffix |
-| 2 | | | | | |
+| 1 | T1.1 (full launcher slice as one item) | **44m** | shipped | continue | Tauri+Svelte scaffold + 10 recipes + Rust modules. Self-corrected: `tauri.conf.json` title placement, `_lib` suffix mismatch, stray `-p` file. **3/6 criteria green** (cargo build/test/--help). **2/6 FAIL**: `npm run build --prefix src/` (path wrong — package.json at root), recipes-count check (recipes at `src-tauri/recipes/` not root `recipes/`). 1 criterion (schema validator) not yet validated. T1.1 commit: `224f43b32d`. |
+| 2 | _in flight_ | | | | |
 | 3 | | | | | |
 | 4 | | | | | |
 | 5 | | | | | |

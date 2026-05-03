@@ -36,6 +36,17 @@ const COLLAPSIBLE_TOOLS = new Set([
 
 const BLOCK_TOOLS = new Set(['bash', 'file_write', 'file_edit', 'browser_js']);
 
+// v0.5.4a4 — phases that should activate the sidebar roadmap inspector.
+// Originally `autonomous_running` only (v0.5.3a3); extended to include
+// terminal phases so users can review the final state of completed /
+// paused / failed missions without opening roadmap.md.
+const _AUTONOMOUS_PHASES = new Set([
+    'autonomous_running',
+    'autonomous_complete',
+    'autonomous_paused',
+    'autonomous_failed',
+]);
+
 const MAX_OUTPUT_LINES = 5;
 
 function getToolInfo(name) {
@@ -1170,6 +1181,12 @@ class ResonantApp {
         this._refreshMissionBadge(newPhase, '');
 
         this._renderAutonomousBanner(isComplete ? 'complete' : 'paused', event);
+        // v0.5.4a4 — refresh inspector once more so it shows the final
+        // criteria state. The session's `mission_state.phase` may not
+        // have transitioned yet (depends on whether the server has
+        // emitted sessions_updated); _renderAutonomousRoadmapInspector
+        // re-checks the phase and either keeps showing or hides.
+        this._requestAutonomousMissionRoadmap();
     }
 
     handleAutonomousMissionFailed(event) {
@@ -1179,6 +1196,7 @@ class ResonantApp {
         }
         this._refreshMissionBadge('autonomous_paused', '');
         this._renderAutonomousBanner('failed', event);
+        this._requestAutonomousMissionRoadmap();
     }
 
     /**
@@ -1341,10 +1359,21 @@ class ResonantApp {
     }
 
     _currentAutonomousIntentId() {
+        // v0.5.4a4 — also surface intent_id for terminal autonomous
+        // phases (complete / paused / failed) so the inspector can
+        // render the FINAL roadmap state, not just live-running ones.
+        // The reader can revisit a finished mission and see which
+        // criteria passed without opening roadmap.md.
         const sess = this._currentSessionSummary();
         const ms = sess?.mission_state || {};
-        if (ms.phase !== 'autonomous_running') return '';
+        if (!_AUTONOMOUS_PHASES.has(ms.phase)) return '';
         return ms.intent_id || '';
+    }
+
+    _currentAutonomousPhase() {
+        const sess = this._currentSessionSummary();
+        const ms = sess?.mission_state || {};
+        return _AUTONOMOUS_PHASES.has(ms.phase) ? ms.phase : '';
     }
 
     _renderAutonomousRoadmapInspector() {
@@ -1400,6 +1429,12 @@ class ResonantApp {
         const isConverged = data.is_converged === true;
         const iterCount = typeof data.iteration_count === 'number'
             ? data.iteration_count : 0;
+        // v0.5.4a4 — terminal phase markers. Rendered as a small badge
+        // next to the feature title so the user can tell at a glance
+        // whether they're looking at a live mission or a finished one.
+        const phase = this._currentAutonomousPhase();
+        const phaseBadge = this._renderInspectorPhaseBadge(phase);
+        const isTerminal = phase && phase !== 'autonomous_running';
 
         const summaryPill = isConverged
             ? `<span class="arm-inspector-summary-pill arm-pill-converged">${passed}/${total} met · converged</span>`
@@ -1433,7 +1468,11 @@ class ResonantApp {
         }).join('');
 
         const nextItem = data.next_item;
-        const nextItemHTML = nextItem
+        // v0.5.4a4 — hide "Next item" for terminal-phase missions.
+        // Showing the unchecked item that the user "should do next"
+        // is misleading when the mission is paused / failed / done;
+        // there's no "next" — the daemon stopped.
+        const nextItemHTML = (nextItem && !isTerminal)
             ? `
                 <div class="arm-next-item">
                     <span class="arm-next-item-label">Next: ${this.escapeHtml(nextItem.id || '')}</span>
@@ -1456,6 +1495,7 @@ class ResonantApp {
             <div class="arm-inspector-header">
                 <span class="arm-inspector-icon" aria-hidden="true">∞</span>
                 <span class="arm-inspector-title" title="${this.escapeHtml(feature)}">${this.escapeHtml(feature)}</span>
+                ${phaseBadge}
             </div>
             <div class="arm-inspector-summary">
                 ${summaryPill}
@@ -1465,6 +1505,23 @@ class ResonantApp {
             ${nextItemHTML}
             ${reflectionHTML}
         `;
+    }
+
+    _renderInspectorPhaseBadge(phase) {
+        // v0.5.4a4 — small status pill that sits next to the feature
+        // title. Live (autonomous_running) gets no badge — the inspector
+        // being visible is signal enough. Terminal phases get a colored
+        // badge so the user instantly sees the final state.
+        switch (phase) {
+            case 'autonomous_complete':
+                return `<span class="arm-phase-badge arm-phase-complete" title="Mission converged">complete</span>`;
+            case 'autonomous_paused':
+                return `<span class="arm-phase-badge arm-phase-paused" title="Mission paused (user stop / budget / stuck)">paused</span>`;
+            case 'autonomous_failed':
+                return `<span class="arm-phase-badge arm-phase-failed" title="Mission ended in failure">failed</span>`;
+            default:
+                return '';
+        }
     }
 
     /**

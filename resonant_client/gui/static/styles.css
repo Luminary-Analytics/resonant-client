@@ -8103,3 +8103,36 @@ body {
     margin-bottom: 2px;
     display: block;
 }
+
+/* ── v0.5.4a4: Inspector phase badges (terminal phases only) ──────── */
+
+.arm-phase-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 8px;
+    border-radius: 999px;
+    font-size: 10.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    flex-shrink: 0;
+    margin-left: auto;
+}
+
+.arm-phase-complete {
+    background: color-mix(in srgb, var(--ok, #2ea44f) 20%, transparent);
+    color: var(--ok, #2ea44f);
+    border: 1px solid color-mix(in srgb, var(--ok, #2ea44f) 50%, transparent);
+}
+
+.arm-phase-paused {
+    background: color-mix(in srgb, var(--warn, #d4a017) 18%, transparent);
+    color: var(--warn, #d4a017);
+    border: 1px solid color-mix(in srgb, var(--warn, #d4a017) 50%, transparent);
+}
+
+.arm-phase-failed {
+    background: color-mix(in srgb, var(--err, #d92626) 18%, transparent);
+    color: var(--err, #d92626);
+    border: 1px solid color-mix(in srgb, var(--err, #d92626) 50%, transparent);
+}

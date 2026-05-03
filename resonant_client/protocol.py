@@ -150,8 +150,18 @@ def parse_tool_calls(text: str) -> tuple:
     """
     Parse <tool_call>...</tool_call> blocks from model output.
 
-    Also handles models that omit the closing </tool_call> tag
-    (e.g. GLM-4) by falling back to <tool_call> followed by JSON.
+    Supports four formats:
+    1. **Bare-tag form** (most models):
+       `<tool_call>{"name": "X", "arguments": {...}}</tool_call>`
+    2. **Bare-tag, no closing tag** (e.g. GLM-4):
+       `<tool_call>{"name": "X", "arguments": {...}}`
+    3. **Attribute form** (e.g. deepseek-v4-pro:cloud — found in
+       v0.5.2 variance smoke):
+       `<tool_call name="X">{"path":..., "content":...}</tool_call>`
+       — name is an XML attribute; the body IS the arguments object
+       directly (not wrapped in `{"name":..., "arguments":...}`).
+    4. **GLM XML args form**:
+       `<tool_call><name>X</name><arg_key>K</arg_key>...</tool_call>`
 
     Returns (plain_text, list_of_tool_calls) where each tool call is
     {"name": str, "arguments": str (JSON)}.
@@ -159,13 +169,18 @@ def parse_tool_calls(text: str) -> tuple:
     # Strip <think> blocks first (chain-of-thought reasoning)
     text = strip_think_tags(text)
 
-    # Try closed tags first: <tool_call>...</tool_call>
-    pattern_closed = r'<tool_call>\s*(.*?)\s*</tool_call>'
-    matches = list(re.finditer(pattern_closed, text, re.DOTALL))
+    # v0.5.2a2 — unified pattern that captures the optional `name`
+    # attribute. Matches forms 1 and 3 in one pass.
+    pattern_with_attr = (
+        r'<tool_call(?:\s+name="([^"]+)")?\s*>\s*(.*?)\s*</tool_call>'
+    )
+    matches = list(re.finditer(pattern_with_attr, text, re.DOTALL))
 
-    # Fallback: <tool_call> followed by JSON (no closing tag)
+    # Fallback: open tag with no closing (form 2), bare or with attr.
     if not matches:
-        pattern_open = r'<tool_call>\s*(\{.*?\})\s*(?:</tool_call>|$)'
+        pattern_open = (
+            r'<tool_call(?:\s+name="([^"]+)")?\s*>\s*(\{.*?\})\s*(?:</tool_call>|$)'
+        )
         matches = list(re.finditer(pattern_open, text, re.DOTALL))
 
     if not matches:
@@ -173,18 +188,43 @@ def parse_tool_calls(text: str) -> tuple:
 
     tool_calls = []
     for match in matches:
-        raw = match.group(1).strip()
+        name_attr = match.group(1)  # may be None for forms 1, 2, 4
+        raw = match.group(2).strip()
         parsed = _try_parse_tool_json(raw)
-        if parsed:
-            name = parsed.get("name", "")
-            args = parsed.get("arguments", {})
-            if isinstance(args, dict):
-                args_str = json.dumps(args)
+        if parsed and isinstance(parsed, dict):
+            # Discriminate between forms 1/2 (body has name + arguments)
+            # and form 3 (body is the arguments object directly, name
+            # comes from the attribute).
+            if "name" in parsed and "arguments" in parsed and not name_attr:
+                # Form 1 / 2 — body wraps the call.
+                name = parsed.get("name", "")
+                args = parsed.get("arguments", {})
+            elif name_attr:
+                # Form 3 — pro variant. Name from attribute, body IS
+                # the args object. This was the v0.5.2a2 GA-blocking
+                # bug: without this branch, pro's implementer
+                # silently emitted <tool_call name="file_write">{...}
+                # as TEXT and the daemon went stuck.
+                name = name_attr
+                args = parsed
+            elif "name" in parsed and "arguments" in parsed:
+                # Defensive — both attr AND body name present (some
+                # models hedge). Prefer the attribute since it's the
+                # explicit choice.
+                name = name_attr or parsed.get("name", "")
+                args = parsed.get("arguments", {})
             else:
-                args_str = str(args)
+                # Body is a JSON object but neither form fits — log
+                # and skip rather than mis-routing.
+                logger.warning(
+                    "tool_call body is JSON but doesn't match name+args "
+                    "or name-attr form: %s", raw[:200],
+                )
+                continue
+            args_str = json.dumps(args) if isinstance(args, dict) else str(args)
             tool_calls.append({"name": name, "arguments": args_str})
         else:
-            # Fallback: try XML-style args from GLM
+            # Fallback: try XML-style args from GLM (form 4)
             # e.g. <arg_key>pattern</arg_key><arg_value>*/</arg_value>...
             xml_name = re.search(r'<name>(.*?)</name>', raw)
             xml_args = re.findall(r'<arg_key>(.*?)</arg_key>\s*<arg_value>(.*?)</arg_value>', raw, re.DOTALL)
@@ -192,10 +232,28 @@ def parse_tool_calls(text: str) -> tuple:
                 name = xml_name.group(1).strip()
                 args = {k.strip(): v.strip() for k, v in xml_args}
                 tool_calls.append({"name": name, "arguments": json.dumps(args)})
+            elif name_attr:
+                # Form 3 fallback when body isn't valid JSON — last
+                # resort: use the attribute name with empty args. The
+                # downstream tool dispatcher will surface the bad-args
+                # error to the caller cleanly rather than silently
+                # losing the call.
+                logger.warning(
+                    "tool_call has name=%r attr but body isn't JSON: %s",
+                    name_attr, raw[:200],
+                )
+                tool_calls.append({"name": name_attr, "arguments": "{}"})
             else:
                 logger.warning("Failed to parse tool call JSON: %s", raw)
 
-    # Remove all tool_call blocks (closed and open) from plain text
-    plain = re.sub(r'<tool_call>.*?</tool_call>', '', text, flags=re.DOTALL)
-    plain = re.sub(r'<tool_call>\s*\{.*', '', plain, flags=re.DOTALL)
+    # Remove all tool_call blocks (closed and open, with or without
+    # the `name="X"` attribute) from plain text.
+    plain = re.sub(
+        r'<tool_call(?:\s+name="[^"]+")?\s*>.*?</tool_call>',
+        '', text, flags=re.DOTALL,
+    )
+    plain = re.sub(
+        r'<tool_call(?:\s+name="[^"]+")?\s*>\s*\{.*',
+        '', plain, flags=re.DOTALL,
+    )
     return plain.strip(), tool_calls

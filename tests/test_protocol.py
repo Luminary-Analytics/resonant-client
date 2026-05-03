@@ -527,6 +527,112 @@ class TestParseToolCalls:
         assert calls == []
         assert "Failed to parse" in caplog.text
 
+    # ── v0.5.2a2: attribute-form (pro variant) ────────────────────
+
+    def test_attribute_form_simple(self):
+        """Pro emits `<tool_call name="X">{args}</tool_call>` — name
+        as XML attribute, body IS the args object directly. Found in
+        v0.5.2 variance smoke after the GA tag."""
+        text = (
+            '<tool_call name="file_write">\n'
+            '{"path": "/tmp/foo.py", "content": "hi"}\n'
+            '</tool_call>'
+        )
+        _, calls = parse_tool_calls(text)
+        assert len(calls) == 1
+        assert calls[0]["name"] == "file_write"
+        # args parses back to the original object
+        import json
+        assert json.loads(calls[0]["arguments"]) == {
+            "path": "/tmp/foo.py", "content": "hi"
+        }
+
+    def test_attribute_form_multiple_calls(self):
+        text = (
+            '<tool_call name="file_read">\n'
+            '{"path": "a.py"}\n'
+            '</tool_call>\n'
+            '<tool_call name="file_write">\n'
+            '{"path": "b.py", "content": "x"}\n'
+            '</tool_call>'
+        )
+        _, calls = parse_tool_calls(text)
+        assert len(calls) == 2
+        assert calls[0]["name"] == "file_read"
+        assert calls[1]["name"] == "file_write"
+
+    def test_attribute_form_with_windows_paths(self):
+        # Pro's actual output from the v0.5.2 variance smoke had
+        # backslash-escaped Windows paths.
+        text = (
+            '<tool_call name="file_write">\n'
+            '{"path": "C:\\\\Users\\\\smoke\\\\proj\\\\wordcount.py", '
+            '"content": "import sys\\nprint(sys.argv)"}\n'
+            '</tool_call>'
+        )
+        _, calls = parse_tool_calls(text)
+        assert len(calls) == 1
+        assert calls[0]["name"] == "file_write"
+
+    def test_attribute_form_open_tag_no_closing(self):
+        # Defensive: pro might also drop the closing tag like GLM-4
+        # does. The fallback open-tag pattern should catch both
+        # bare and attr forms.
+        text = (
+            '<tool_call name="glob">\n'
+            '{"pattern": "**/*.py"}'
+        )
+        _, calls = parse_tool_calls(text)
+        assert len(calls) == 1
+        assert calls[0]["name"] == "glob"
+
+    def test_bare_form_still_works_when_attr_form_added(self):
+        """Regression: the existing bare-tag form must still parse
+        correctly. Both flash + most other models use this form."""
+        text = (
+            '<tool_call>\n'
+            '{"name": "file_read", "arguments": {"path": "x.py"}}\n'
+            '</tool_call>'
+        )
+        _, calls = parse_tool_calls(text)
+        assert len(calls) == 1
+        assert calls[0]["name"] == "file_read"
+
+    def test_attribute_form_strips_block_from_plain_text(self):
+        """The leading prose stays; the tool_call block (including
+        its `name="X"` attribute) is stripped from `plain`."""
+        text = (
+            'I will write the file now.\n'
+            '<tool_call name="file_write">\n'
+            '{"path": "x.py", "content": "y"}\n'
+            '</tool_call>\n'
+            'Done.'
+        )
+        plain, calls = parse_tool_calls(text)
+        assert len(calls) == 1
+        assert "I will write the file now" in plain
+        assert "Done" in plain
+        # No leftover XML in plain
+        assert "<tool_call" not in plain
+        assert "</tool_call>" not in plain
+
+    def test_attribute_form_with_invalid_json_body_logs_and_extracts_name(self):
+        """If the body isn't valid JSON, we still surface the
+        attribute name (with empty args) so the dispatcher can log a
+        clear "bad args for X" error rather than silently losing
+        the call."""
+        text = (
+            '<tool_call name="file_write">\n'
+            'not valid json {{{ broken\n'
+            '</tool_call>'
+        )
+        _, calls = parse_tool_calls(text)
+        # We get the call back with empty args — the tool dispatcher
+        # will surface the bad-args error to the user.
+        assert len(calls) == 1
+        assert calls[0]["name"] == "file_write"
+        assert calls[0]["arguments"] == "{}"
+
     @pytest.mark.adversarial
     def test_think_block_containing_tool_call_text(self):
         """A <tool_call> inside <think> should be stripped, not parsed."""

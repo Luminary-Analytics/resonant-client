@@ -55,12 +55,33 @@ class TestParseBashAssertion:
         assert a.command == "grep -rn ': any' src/"
         assert a.mode == "exit_nonzero"
 
-    def test_equals_assertion(self):
-        a = parse_bash_assertion("`find src -type f | wc -l == 4`")
+    def test_equals_assertion_via_form_b_trailing_prose(self):
+        # v0.5.2a4 — Form A `==` was DROPPED to avoid mis-matching
+        # `==` inside command text (Python `assert x==y`, bash
+        # conditionals, etc.). The trailing-prose form is now the
+        # only way to assert output equality.
+        a = parse_bash_assertion("`find src -type f | wc -l` output == 4")
         assert a is not None
         assert a.command == "find src -type f | wc -l"
         assert a.mode == "output_eq"
         assert a.expected_value == "4"
+
+    def test_form_a_equals_inside_backticks_no_longer_matches_command(self):
+        # v0.5.2a4 regression guard. The exact failing criterion from
+        # the GA roguelite smoke: `==True` inside a Python expression
+        # used to mis-match Form A's `_EQUALS_ASSERTION_RE` and
+        # produce a malformed BashAssertion. Now Form A skips `==`
+        # entirely and the trailing `output == ok` (Form B) wins.
+        criterion = (
+            r"""`cat tsconfig.json | python -c "assert c['strict']==True" """
+            r"""&& echo ok` output == ok"""
+        )
+        a = parse_bash_assertion(criterion)
+        assert a is not None
+        assert a.mode == "output_eq"
+        # The command preserves the embedded ==True without splitting
+        assert "==True" in a.command
+        assert a.expected_value == "ok"
 
     def test_lt_assertion(self):
         a = parse_bash_assertion("`grep -c FIXME src/main.py < 3`")
@@ -241,9 +262,11 @@ class TestRunBashCheck:
         assert result.passed is False
 
     def test_output_equality(self):
+        # v0.5.2a4 — Form A `==` was dropped; use Form B trailing
+        # prose. `output == X` after the backticks.
         criterion = AcceptanceCriterion(
             type="bash",
-            text="Exactly four files: `find src -type f | wc -l == 4`",
+            text="Exactly four files: `find src -type f | wc -l` output == 4",
         )
         result = run_bash_check(criterion, runner=_stub_runner(rc=0, stdout="4\n"))
         assert result.passed is True
@@ -251,7 +274,7 @@ class TestRunBashCheck:
     def test_output_equality_mismatch(self):
         criterion = AcceptanceCriterion(
             type="bash",
-            text="`wc -l < src/main.py == 100`",
+            text="`wc -l < src/main.py` output == 100",
         )
         result = run_bash_check(criterion, runner=_stub_runner(rc=0, stdout="50"))
         assert result.passed is False

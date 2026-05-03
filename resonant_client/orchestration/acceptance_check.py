@@ -356,11 +356,25 @@ def parse_bash_assertion(criterion_text: str) -> Optional[BashAssertion]:
         return BashAssertion(command=raw[2:].strip(), mode="exit_nonzero")
 
     # Form A: operator INSIDE the backticks
-    # (`<cmd> == <val>` / `<cmd> < N` / `<cmd> > N`).
-    # This was the original v0.5.0a2 form; we keep it for backwards
-    # compat.
+    # (`<cmd> < N` / `<cmd> > N`). Numeric comparisons only.
+    #
+    # `==` was DROPPED in v0.5.2a4. Real-world criteria contain
+    # `==` inside the command text (Python `assert x == y`, bash
+    # `[[ "$a" == "$b" ]]`, etc.), and Form A `_EQUALS_ASSERTION_RE`
+    # would mis-match the first `==` it found, splitting the
+    # command at the wrong point. Found in the v0.5.2 GA roguelite
+    # smoke: a tsconfig-strict-check criterion of the form
+    # ``cat tsconfig.json | python -c "...assert c[...]['strict']==True" && echo ok` output == ok``
+    # was being parsed as
+    # `command="cat ... assert c[...]", expected="True ... && echo ok"`
+    # → command malformed → criterion silently failed.
+    #
+    # Form B (trailing `output == X` AFTER the backticks) covers
+    # all real Form-A `==` use cases without the syntax conflict.
+    # `<` and `>` stay because they're tightened to require `\d+`
+    # (per v0.5.1a4) which excludes Python/shell quotes by
+    # construction.
     for op_re, mode in (
-        (_EQUALS_ASSERTION_RE, "output_eq"),
         (_LT_ASSERTION_RE, "output_lt"),
         (_GT_ASSERTION_RE, "output_gt"),
     ):

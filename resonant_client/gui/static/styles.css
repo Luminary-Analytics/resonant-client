@@ -8136,3 +8136,116 @@ body {
     color: var(--err, #d92626);
     border: 1px solid color-mix(in srgb, var(--err, #d92626) 50%, transparent);
 }
+
+/* ── v0.5.5a2: Sidebar mission browser ────────────────────────────── */
+
+.autonomous-mission-browser {
+    margin: 4px 8px 8px 8px;
+    padding: 8px 10px;
+    background: var(--bg-secondary, transparent);
+    border: 1px solid var(--border, color-mix(in srgb, var(--text) 12%, transparent));
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+}
+
+.autonomous-mission-browser[hidden] {
+    display: none;
+}
+
+.amb-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: var(--muted);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 2px 0 4px 0;
+    font-weight: 600;
+}
+
+.amb-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.amb-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 5px;
+    cursor: pointer;
+    background: transparent;
+    border: 1px solid transparent;
+    transition: background-color var(--duration-fast) ease;
+    text-align: left;
+    font: inherit;
+    width: 100%;
+    color: var(--text);
+}
+
+.amb-item:hover {
+    background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.amb-item.amb-item-current {
+    background: color-mix(in srgb, var(--brand) 12%, transparent);
+    border-color: color-mix(in srgb, var(--brand) 35%, transparent);
+}
+
+.amb-item-phase-icon {
+    font-size: 13px;
+    line-height: 1;
+    flex-shrink: 0;
+    width: 14px;
+    text-align: center;
+}
+
+.amb-item-phase-icon.amb-phase-running {
+    color: var(--brand);
+}
+
+.amb-item-phase-icon.amb-phase-complete {
+    color: var(--ok, #2ea44f);
+}
+
+.amb-item-phase-icon.amb-phase-paused {
+    color: var(--warn, #d4a017);
+}
+
+.amb-item-phase-icon.amb-phase-failed {
+    color: var(--err, #d92626);
+}
+
+.amb-item-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 11.5px;
+}
+
+.amb-item-age {
+    color: var(--muted);
+    font-size: 10.5px;
+    flex-shrink: 0;
+}
+
+.amb-orphan-flag {
+    background: color-mix(in srgb, var(--warn, #d4a017) 18%, transparent);
+    color: var(--warn, #d4a017);
+    padding: 0 5px;
+    border-radius: 3px;
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    margin-left: 4px;
+}

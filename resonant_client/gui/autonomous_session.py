@@ -446,6 +446,86 @@ def build_roadmap_inspector_payload(
     }
 
 
+# v0.5.5a2 — phases the mission browser surfaces. autonomous_running
+# obviously, plus the three terminal phases so the user can browse
+# completed / paused / failed missions without going through the orphan
+# banner. Sessions in `drafting` / `planning_dispatched` / etc are
+# Mission-flow (Phase 1) and excluded.
+_AUTONOMOUS_BROWSER_PHASES: frozenset[str] = frozenset({
+    "autonomous_running",
+    "autonomous_complete",
+    "autonomous_paused",
+    "autonomous_failed",
+})
+
+
+def list_autonomous_missions(state: Any) -> list[dict]:
+    """v0.5.5a2 — return every autonomous mission for the project, not
+    just orphans. Used by the sidebar mission browser so the user can
+    see all running + terminal missions at a glance and switch between
+    them.
+
+    Each dict carries enough metadata to render a one-line entry +
+    drive a click-to-switch interaction:
+    - session_id, intent_id, feature
+    - phase (autonomous_running / _complete / _paused / _failed)
+    - autonomous_started_at (epoch float, may be missing)
+    - is_live (bool — True if a daemon is currently registered AND
+      running for this intent_id; False for terminal-phase missions
+      and orphans)
+    - is_orphan (bool — True iff phase=running AND no live daemon;
+      same definition as `find_orphaned_autonomous_missions`)
+    - roadmap_path / roadmap_exists
+
+    Sorted newest-first by `autonomous_started_at` so recently-run
+    missions appear at the top.
+    """
+    if not getattr(state, "project", None):
+        return []
+    daemons_dict = getattr(state, "_autonomous_daemons", None) or {}
+    live_intent_ids = {
+        intent_id for intent_id, d in daemons_dict.items() if d.is_running()
+    }
+
+    out: list[dict] = []
+    sessions = state.project.list_all_sessions() if hasattr(
+        state.project, "list_all_sessions",
+    ) else []
+    for sess in sessions:
+        ms = sess.get("mission_state") if isinstance(sess, dict) else None
+        if not ms:
+            continue
+        phase = ms.get("phase")
+        if phase not in _AUTONOMOUS_BROWSER_PHASES:
+            continue
+        intent_id = ms.get("intent_id", "")
+        if not intent_id:
+            continue
+        roadmap_path = roadmap_module.default_path(
+            state.project.project_path, intent_id,
+        )
+        is_live = intent_id in live_intent_ids
+        is_orphan = (phase == "autonomous_running") and not is_live
+        out.append({
+            "session_id": sess.get("id", ""),
+            "intent_id": intent_id,
+            "feature": ms.get("seed_feature", "") or sess.get("title", ""),
+            "phase": phase,
+            "autonomous_started_at": ms.get("autonomous_started_at"),
+            "is_live": is_live,
+            "is_orphan": is_orphan,
+            "roadmap_path": str(roadmap_path),
+            "roadmap_exists": roadmap_path.exists(),
+        })
+    # Sort by start time, newest first. Missing timestamps go to the
+    # end so a malformed mission record doesn't bury good entries.
+    out.sort(
+        key=lambda m: m.get("autonomous_started_at") or 0.0,
+        reverse=True,
+    )
+    return out
+
+
 def find_orphaned_autonomous_missions(state: Any) -> list[dict]:
     """v0.5.3a1 — scan the project's sessions for missions in
     `autonomous_running` phase that have NO live daemon. These are

@@ -1127,6 +1127,9 @@ class ResonantApp {
         // yet on the first iteration — the inspector renders a
         // graceful "Bootstrapping…" placeholder if so.
         this._requestAutonomousMissionRoadmap();
+        // v0.5.5a2 — new mission appeared; refresh the browser so
+        // the user sees it in the list.
+        this._requestAutonomousMissionsList();
     }
 
     handleAutonomousIterationStarted(event) {
@@ -1187,6 +1190,9 @@ class ResonantApp {
         // emitted sessions_updated); _renderAutonomousRoadmapInspector
         // re-checks the phase and either keeps showing or hides.
         this._requestAutonomousMissionRoadmap();
+        // v0.5.5a2 — mission just transitioned to a terminal phase;
+        // mission browser should re-render with the new phase icon.
+        this._requestAutonomousMissionsList();
     }
 
     handleAutonomousMissionFailed(event) {
@@ -1197,6 +1203,7 @@ class ResonantApp {
         this._refreshMissionBadge('autonomous_paused', '');
         this._renderAutonomousBanner('failed', event);
         this._requestAutonomousMissionRoadmap();
+        this._requestAutonomousMissionsList();
     }
 
     /**
@@ -1330,6 +1337,114 @@ class ResonantApp {
             o => (o.intent_id || '') !== intentId
         );
         this._renderAutonomousOrphansBanner();
+    }
+
+    /**
+     * v0.5.5a2 — Sidebar mission browser. Lists every autonomous
+     * mission for the project (running + complete + paused + failed),
+     * each row clickable to switch to that session. Hidden when no
+     * autonomous missions exist (steady state for a fresh project).
+     */
+    handleAutonomousMissions(event) {
+        const missions = (event && Array.isArray(event.missions))
+            ? event.missions : [];
+        this._autonomousMissions = missions;
+        this._renderAutonomousMissionBrowser();
+    }
+
+    _renderAutonomousMissionBrowser() {
+        const root = document.getElementById('autonomous-mission-browser');
+        if (!root) return;
+        const missions = this._autonomousMissions || [];
+        if (!missions.length) {
+            root.hidden = true;
+            root.innerHTML = '';
+            return;
+        }
+        root.hidden = false;
+        const itemsHTML = missions.map(m => this._renderMissionBrowserItem(m)).join('');
+        root.innerHTML = `
+            <div class="amb-header">
+                <span>Missions (${missions.length})</span>
+            </div>
+            <div class="amb-list">${itemsHTML}</div>
+        `;
+        root.querySelectorAll('.amb-item').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const sessionId = btn.dataset.sessionId || '';
+                if (sessionId) this._handleMissionBrowserClick(sessionId);
+            });
+        });
+    }
+
+    _renderMissionBrowserItem(mission) {
+        const sessionId = mission.session_id || '';
+        const intentId = mission.intent_id || '';
+        const phase = mission.phase || '';
+        const feature = mission.feature || '(unnamed mission)';
+        const isCurrent = sessionId === this.currentSessionId;
+        const startedAt = typeof mission.autonomous_started_at === 'number'
+            ? mission.autonomous_started_at : null;
+        const ageLabel = startedAt
+            ? this._formatAutonomousAge(Date.now() / 1000 - startedAt)
+            : '';
+
+        // Phase icon: ∞ live, ✓ complete, ⏸ paused, ✗ failed.
+        let icon, iconClass;
+        switch (phase) {
+            case 'autonomous_running':
+                icon = '∞'; iconClass = 'amb-phase-running'; break;
+            case 'autonomous_complete':
+                icon = '✓'; iconClass = 'amb-phase-complete'; break;
+            case 'autonomous_paused':
+                icon = '⏸'; iconClass = 'amb-phase-paused'; break;
+            case 'autonomous_failed':
+                icon = '✗'; iconClass = 'amb-phase-failed'; break;
+            default:
+                icon = '·'; iconClass = '';
+        }
+
+        // The orphan flag distinguishes "running" sessions whose
+        // daemon is dead — clicking still switches to the session,
+        // but the user knows they need to resume.
+        const orphanFlag = mission.is_orphan
+            ? `<span class="amb-orphan-flag" title="No live daemon — resume from the banner">orphan</span>`
+            : '';
+
+        const currentClass = isCurrent ? ' amb-item-current' : '';
+        const ageHTML = ageLabel
+            ? `<span class="amb-item-age">${this.escapeHtml(ageLabel)}</span>`
+            : '';
+
+        return `
+            <button type="button" class="amb-item${currentClass}"
+                    data-session-id="${this.escapeHtml(sessionId)}"
+                    data-intent-id="${this.escapeHtml(intentId)}"
+                    title="${this.escapeHtml(feature)} (${phase})">
+                <span class="amb-item-phase-icon ${iconClass}" aria-hidden="true">${icon}</span>
+                <span class="amb-item-text">${this.escapeHtml(feature)}${orphanFlag}</span>
+                ${ageHTML}
+            </button>
+        `;
+    }
+
+    _handleMissionBrowserClick(sessionId) {
+        // Use the existing session-switch path so backend recreates
+        // the backend + emits session_loaded (which triggers the
+        // inspector refresh via _syncMissionUI). Same code path as
+        // clicking a regular session in the agent list.
+        if (!sessionId || sessionId === this.currentSessionId) return;
+        this.send({ command: 'switch_session', session_id: sessionId });
+    }
+
+    /**
+     * Convenience — request a fresh mission-browser snapshot. Used
+     * when an autonomous_* event arrives that may have changed the
+     * mission roster (started, ended, failed).
+     */
+    _requestAutonomousMissionsList() {
+        this.send({ command: 'autonomous_missions_list' });
     }
 
     /**
@@ -1826,6 +1941,9 @@ class ResonantApp {
         // ensures the inspector is visible AND triggers a fetch if we
         // don't have a snapshot yet. Hidden cleanly otherwise.
         this._renderAutonomousRoadmapInspector();
+        // v0.5.5a2 — re-render mission browser so the "current"
+        // highlight follows the active session as the user switches.
+        this._renderAutonomousMissionBrowser();
 
         // Clear the pending feature once the real session arrives so we
         // don't keep showing it on stale switches.
@@ -3186,6 +3304,11 @@ class ResonantApp {
             case 'autonomous_mission_roadmap':
                 this.handleAutonomousMissionRoadmap(event);
                 break;
+            // v0.5.5a2 — sidebar mission browser refresh. Sent on
+            // init AND in response to `autonomous_missions_list`.
+            case 'autonomous_missions':
+                this.handleAutonomousMissions(event);
+                break;
             case 'await_user':
                 // v0.3.5 — agent paused with `await_user` tool, asking
                 // a focused question. Render an inline prompt with
@@ -3586,6 +3709,12 @@ class ResonantApp {
         // refresh). Render the banner if any are present.
         if (Array.isArray(event.autonomous_orphans)) {
             this.handleAutonomousOrphans({ orphans: event.autonomous_orphans });
+        }
+
+        // v0.5.5a2 — Sidebar mission browser. Server includes the full
+        // list (running + complete + paused + failed) on init.
+        if (Array.isArray(event.autonomous_missions)) {
+            this.handleAutonomousMissions({ missions: event.autonomous_missions });
         }
 
         if (current_backend) {

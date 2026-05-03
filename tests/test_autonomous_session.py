@@ -28,6 +28,7 @@ from resonant_client.gui.autonomous_session import (
     cleanup_finished_daemons,
     find_orphaned_autonomous_missions,
     get_autonomous_daemon,
+    list_autonomous_missions,
     parse_time_budget,
     resume_autonomous_mission,
     start_autonomous_mission,
@@ -947,3 +948,194 @@ class TestBuildRoadmapInspectorPayload:
             reflection_max_chars=0,
         )
         assert payload["reflection_summary"] == "x" * 5000
+
+
+# ── v0.5.5a2: list_autonomous_missions ─────────────────────────────────
+
+
+class TestListAutonomousMissions:
+    """`list_autonomous_missions` returns ALL autonomous missions for
+    a project — running, complete, paused, failed — sorted newest-first.
+    Powers the sidebar mission browser. Distinct from
+    `find_orphaned_autonomous_missions` which only returns running-with-
+    no-daemon."""
+
+    def test_returns_empty_when_no_project(self):
+        state = _StubAppState(project=None)  # type: ignore[arg-type]
+        assert list_autonomous_missions(state) == []
+
+    def test_returns_empty_when_no_sessions(self, tmp_path):
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=[]))
+        assert list_autonomous_missions(state) == []
+
+    def test_excludes_non_autonomous_phases(self, tmp_path):
+        # Mission flow (Phase 1): drafting / planning_dispatched are
+        # NOT autonomous. The browser should only show autonomous
+        # missions.
+        sessions = [
+            {"id": "s1", "title": "drafting",
+             "mission_state": {"phase": "drafting", "intent_id": "i1"}},
+            {"id": "s2", "title": "planning",
+             "mission_state": {"phase": "planning_dispatched", "intent_id": "i2"}},
+            {"id": "s3", "title": "regular chat", "mission_state": None},
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        assert list_autonomous_missions(state) == []
+
+    def test_includes_all_four_autonomous_phases(self, tmp_path):
+        sessions = [
+            {"id": "s-running", "title": "live",
+             "mission_state": {"phase": "autonomous_running",
+                               "intent_id": "i-running",
+                               "seed_feature": "live mission",
+                               "autonomous_started_at": 1000.0}},
+            {"id": "s-complete", "title": "done",
+             "mission_state": {"phase": "autonomous_complete",
+                               "intent_id": "i-complete",
+                               "seed_feature": "done mission",
+                               "autonomous_started_at": 900.0}},
+            {"id": "s-paused", "title": "paused",
+             "mission_state": {"phase": "autonomous_paused",
+                               "intent_id": "i-paused",
+                               "seed_feature": "paused mission",
+                               "autonomous_started_at": 800.0}},
+            {"id": "s-failed", "title": "failed",
+             "mission_state": {"phase": "autonomous_failed",
+                               "intent_id": "i-failed",
+                               "seed_feature": "failed mission",
+                               "autonomous_started_at": 700.0}},
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        missions = list_autonomous_missions(state)
+        assert len(missions) == 4
+        phases = {m["phase"] for m in missions}
+        assert phases == {
+            "autonomous_running", "autonomous_complete",
+            "autonomous_paused", "autonomous_failed",
+        }
+
+    def test_sorted_newest_first_by_started_at(self, tmp_path):
+        # 3 missions with timestamps 100/300/200 → expect order 300/200/100.
+        sessions = [
+            {"id": f"s{ts}", "title": f"m{ts}",
+             "mission_state": {"phase": "autonomous_complete",
+                               "intent_id": f"i{ts}",
+                               "autonomous_started_at": float(ts)}}
+            for ts in (100, 300, 200)
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        missions = list_autonomous_missions(state)
+        assert [m["intent_id"] for m in missions] == ["i300", "i200", "i100"]
+
+    def test_missing_started_at_sorts_to_end(self, tmp_path):
+        # A mission with no autonomous_started_at sorts to the end —
+        # malformed records don't bury good entries.
+        sessions = [
+            {"id": "s-with-ts", "title": "good",
+             "mission_state": {"phase": "autonomous_complete",
+                               "intent_id": "i-good",
+                               "autonomous_started_at": 100.0}},
+            {"id": "s-no-ts", "title": "no-ts",
+             "mission_state": {"phase": "autonomous_complete",
+                               "intent_id": "i-no-ts"}},  # missing
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        missions = list_autonomous_missions(state)
+        assert missions[0]["intent_id"] == "i-good"
+        assert missions[-1]["intent_id"] == "i-no-ts"
+
+    def test_is_live_flag_reflects_daemon_registry(self, tmp_path):
+        # Spawn a real daemon for one mission; mark another as
+        # autonomous_running but with no daemon (orphan).
+        sessions = [
+            {"id": "s-live", "title": "live",
+             "mission_state": {"phase": "autonomous_running",
+                               "intent_id": "auto-live",
+                               "seed_feature": "live"}},
+            {"id": "s-orphan", "title": "orphan",
+             "mission_state": {"phase": "autonomous_running",
+                               "intent_id": "auto-orphan",
+                               "seed_feature": "orphan"}},
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        daemon = start_autonomous_mission(
+            state=state,
+            intent_id="auto-live",
+            feature="live",
+            spec_markdown=_SPEC_MD,
+            on_event=lambda ev: None,
+        )
+        try:
+            missions = list_autonomous_missions(state)
+            by_intent = {m["intent_id"]: m for m in missions}
+            assert by_intent["auto-live"]["is_live"] is True
+            assert by_intent["auto-live"]["is_orphan"] is False
+            assert by_intent["auto-orphan"]["is_live"] is False
+            assert by_intent["auto-orphan"]["is_orphan"] is True
+        finally:
+            daemon.stop()
+            daemon.join(timeout=3.0)
+
+    def test_terminal_phase_is_never_orphan(self, tmp_path):
+        # Even with no live daemon, an autonomous_complete session
+        # is NOT an orphan — orphan only applies to running phase.
+        sessions = [{
+            "id": "s", "title": "done",
+            "mission_state": {
+                "phase": "autonomous_complete",
+                "intent_id": "i-done",
+                "seed_feature": "done",
+            },
+        }]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        missions = list_autonomous_missions(state)
+        assert len(missions) == 1
+        assert missions[0]["is_orphan"] is False
+        assert missions[0]["is_live"] is False
+
+    def test_skips_session_with_missing_intent_id(self, tmp_path):
+        # Defensive — malformed mission_state shouldn't crash.
+        sessions = [{
+            "id": "s", "title": "broken",
+            "mission_state": {"phase": "autonomous_running"},  # no intent_id
+        }]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        assert list_autonomous_missions(state) == []
+
+    def test_falls_back_to_session_title_when_seed_feature_missing(self, tmp_path):
+        sessions = [{
+            "id": "s", "title": "Counter component (old)",
+            "mission_state": {
+                "phase": "autonomous_complete",
+                "intent_id": "i-old",
+                # no seed_feature
+            },
+        }]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        missions = list_autonomous_missions(state)
+        assert len(missions) == 1
+        assert missions[0]["feature"] == "Counter component (old)"
+
+    def test_includes_roadmap_existence_flag(self, tmp_path):
+        # Build a roadmap on disk for one intent_id; leave the other
+        # with no roadmap. Both should appear in the list with
+        # different `roadmap_exists` values.
+        rm, _ = build_roadmap_from_spec(
+            feature="x",
+            intent_id="i-with-roadmap",
+            spec_markdown=_SPEC_MD,
+            project_path=str(tmp_path),
+        )
+        sessions = [
+            {"id": "s1", "title": "with",
+             "mission_state": {"phase": "autonomous_complete",
+                               "intent_id": "i-with-roadmap"}},
+            {"id": "s2", "title": "without",
+             "mission_state": {"phase": "autonomous_complete",
+                               "intent_id": "i-without-roadmap"}},
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        missions = list_autonomous_missions(state)
+        by_intent = {m["intent_id"]: m for m in missions}
+        assert by_intent["i-with-roadmap"]["roadmap_exists"] is True
+        assert by_intent["i-without-roadmap"]["roadmap_exists"] is False

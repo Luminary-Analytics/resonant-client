@@ -51,6 +51,7 @@ from .autonomous_session import (
     cleanup_finished_daemons as _cleanup_autonomous_daemons,
     find_orphaned_autonomous_missions as _find_orphaned_autonomous_missions,
     get_autonomous_daemon as _get_autonomous_daemon,
+    list_autonomous_missions as _list_autonomous_missions,
     resume_autonomous_mission as _resume_autonomous_mission,
     start_autonomous_mission as _start_autonomous_mission,
     stop_autonomous_mission as _stop_autonomous_mission,
@@ -5441,6 +5442,11 @@ class AppState:
             # registered (server restart / crash / sleep). Frontend
             # surfaces a "Resume" affordance per orphan.
             "autonomous_orphans": _find_orphaned_autonomous_missions(self),
+            # v0.5.5a2 — every autonomous mission for the project,
+            # not just orphans. Powers the sidebar mission browser.
+            # Includes running + complete + paused + failed, sorted
+            # newest-first by autonomous_started_at.
+            "autonomous_missions": _list_autonomous_missions(self),
         }
 
 
@@ -6233,6 +6239,16 @@ async def websocket_endpoint(ws: WebSocket):
                 await ws.send_json({
                     "event": "autonomous_orphans",
                     "orphans": _find_orphaned_autonomous_missions(state),
+                })
+
+            elif command == "autonomous_missions_list":
+                # v0.5.5a2 — Frontend refreshes the sidebar mission
+                # browser. `init` includes the same field on connect;
+                # this command lets the frontend pull a fresh snapshot
+                # without a full init round-trip.
+                await ws.send_json({
+                    "event": "autonomous_missions",
+                    "missions": _list_autonomous_missions(state),
                 })
 
             elif command == "autonomous_mission_resume":

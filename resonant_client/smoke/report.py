@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .baseline import BaselineDiff
 from .runner import SmokeResult
 from .variance import VarianceReport
 
@@ -98,11 +99,18 @@ def render_run_markdown(result: SmokeResult) -> str:
 # ── Variance report ────────────────────────────────────────────────────
 
 
-def render_variance_markdown(report: VarianceReport) -> str:
+def render_variance_markdown(
+    report: VarianceReport,
+    *,
+    baseline_diff: Optional[BaselineDiff] = None,
+) -> str:
     """Render a multi-run VarianceReport as a markdown summary.
 
     Includes:
     - Headline: convergence rate as `K of N`
+    - Optional "Diff vs baseline" block when `baseline_diff` is supplied.
+      Surfaces convergence-rate delta, timing deltas, and the
+      regression / improvement narratives.
     - Stat rollup: total-elapsed median/min/max/stddev, pooled iter
       duration median + stddev
     - Stop-reason histogram
@@ -128,6 +136,12 @@ def render_variance_markdown(report: VarianceReport) -> str:
     if report.failed_count:
         lines.append(f"- {report.failed_count} non-converging non-timeout failures")
     lines.append("")
+
+    # v0.5.5a1 — diff vs baseline (when supplied). Comes before the
+    # absolute timing tables because it's the headline question:
+    # "did this change make things better, worse, or about the same?"
+    if baseline_diff is not None:
+        lines.append(_render_baseline_diff_section(baseline_diff))
 
     # Timing rollup
     lines.append("## Timing")
@@ -172,3 +186,70 @@ def render_variance_markdown(report: VarianceReport) -> str:
         lines.append("")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_baseline_diff_section(diff: BaselineDiff) -> str:
+    """Markdown block: "## Diff vs baseline" + headline + table +
+    regression / improvement narratives. Used as a sub-section of the
+    full variance markdown."""
+    sigil = "✗" if diff.has_regressions else (
+        "✅" if diff.improvements else "·"
+    )
+    label = "regression" if diff.has_regressions else (
+        "improvement" if diff.improvements else "no significant change"
+    )
+    lines: list[str] = []
+    lines.append("## Diff vs baseline")
+    lines.append("")
+    lines.append(
+        f"**{sigil} {label}** — comparing current (n={diff.current_n}) "
+        f"against baseline (n={diff.baseline_n})"
+    )
+    lines.append("")
+    lines.append("| Metric | Baseline | Current | Δ |")
+    lines.append("|---|---|---|---|")
+    rate_delta = diff.delta_convergence_rate * 100
+    lines.append(
+        f"| Convergence rate | "
+        f"{diff.baseline_convergence_rate * 100:.0f}% | "
+        f"{diff.current_convergence_rate * 100:.0f}% | "
+        f"{rate_delta:+.0f}pp |"
+    )
+    lines.append(
+        f"| Total elapsed (median) | "
+        f"{_fmt_duration(diff.baseline_total_elapsed_median)} | "
+        f"{_fmt_duration(diff.current_total_elapsed_median)} | "
+        f"{_fmt_signed_duration(diff.delta_total_elapsed_median)} |"
+    )
+    lines.append(
+        f"| Iter duration (median) | "
+        f"{_fmt_duration(diff.baseline_iter_duration_median)} | "
+        f"{_fmt_duration(diff.current_iter_duration_median)} | "
+        f"{_fmt_signed_duration(diff.delta_iter_duration_median)} |"
+    )
+    lines.append("")
+    if diff.regressions:
+        lines.append("**Regressions:**")
+        for r in diff.regressions:
+            lines.append(f"- ⚠ {r}")
+        lines.append("")
+    if diff.improvements:
+        lines.append("**Improvements:**")
+        for imp in diff.improvements:
+            lines.append(f"- ✅ {imp}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _fmt_signed_duration(seconds: Optional[float]) -> str:
+    """Compact signed duration (`+45.0s`, `-1.2m`, `-`). Used by
+    diff tables where the sign is meaningful."""
+    if seconds is None or not isinstance(seconds, (int, float)):
+        return "-"
+    sign = "+" if seconds >= 0 else "-"
+    abs_v = abs(seconds)
+    if abs_v < 60:
+        return f"{sign}{abs_v:.1f}s"
+    if abs_v < 3600:
+        return f"{sign}{abs_v / 60:.1f}m"
+    return f"{sign}{abs_v / 3600:.2f}h"

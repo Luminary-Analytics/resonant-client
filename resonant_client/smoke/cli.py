@@ -25,6 +25,13 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .baseline import (
+    baseline_path,
+    diff_against_baseline,
+    list_baselines,
+    load_baseline,
+    save_baseline,
+)
 from .report import render_run_markdown, render_variance_markdown
 from .runner import MODELS, SmokeResult, run_smoke
 from .specs import SPECS, get_spec, list_spec_names
@@ -177,6 +184,39 @@ def _cmd_variance(args: argparse.Namespace) -> int:
     )
     _print_variance_report(report)
 
+    # v0.5.5a1 — optional baseline diff. When `--diff-baseline` is set
+    # and a baseline exists for this (spec, model), compute the delta;
+    # the markdown report includes it as a "Diff vs baseline" section.
+    # We also print the regression / improvement narratives to stdout
+    # so the diff is visible without opening the .md file.
+    diff = None
+    if args.diff_baseline:
+        project_root = Path.cwd()
+        baseline_data = load_baseline(
+            project_path=project_root,
+            spec=args.spec,
+            model=args.model,
+        )
+        if baseline_data is None:
+            print()
+            print(f"  ⚠ --diff-baseline: no baseline found at "
+                  f"{baseline_path(project_root, args.spec, args.model)}")
+            print(f"    Run `resonant-smoke baseline set --spec {args.spec} "
+                  f"--model {args.model} --from <variance.json>` first.")
+        else:
+            diff = diff_against_baseline(current=report, baseline=baseline_data)
+            print()
+            print(f"  Diff vs baseline (n={diff.baseline_n}):")
+            print(f"    convergence: {diff.baseline_convergence_rate * 100:.0f}% "
+                  f"→ {diff.current_convergence_rate * 100:.0f}% "
+                  f"({diff.delta_convergence_rate * 100:+.0f}pp)")
+            for r in diff.regressions:
+                print(f"    ⚠ {r}")
+            for imp in diff.improvements:
+                print(f"    ✅ {imp}")
+            if not diff.regressions and not diff.improvements:
+                print("    (no significant change)")
+
     out_path = Path(args.out) if args.out else _default_record_path(
         f"variance-{args.spec}-{args.model}-n{args.n}"
     )
@@ -187,12 +227,128 @@ def _cmd_variance(args: argparse.Namespace) -> int:
     # v0.5.4a3 — markdown report next to the JSON.
     md_path = Path(args.report) if args.report else out_path.with_suffix(".md")
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    md_path.write_text(render_variance_markdown(report), encoding="utf-8")
+    md_path.write_text(
+        render_variance_markdown(report, baseline_diff=diff), encoding="utf-8",
+    )
     print(f"  → markdown: {md_path}")
 
     # Convergence-rate gating: variance is "passing" iff every run
-    # converged. Anything less is a real signal — flag with non-zero.
-    return 0 if report.convergence_rate >= 1.0 else 1
+    # converged AND there are no regressions vs baseline.
+    converged = report.convergence_rate >= 1.0
+    no_regressions = (diff is None) or not diff.has_regressions
+    return 0 if (converged and no_regressions) else 1
+
+
+# ── baseline ───────────────────────────────────────────────────────────
+
+
+def _cmd_baseline_set(args: argparse.Namespace) -> int:
+    """Promote a variance JSON to the baseline for its (spec, model).
+
+    Loads the source JSON, reconstructs enough of the VarianceReport
+    to call save_baseline (which only persists the to_dict form
+    anyway). If the source spec/model don't match the flags, refuse.
+    """
+    src = Path(args.source)
+    if not src.is_file():
+        print(f"✗ Source file not found: {src}")
+        return 1
+    try:
+        data = json.loads(src.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"✗ Could not read source: {exc}")
+        return 1
+    src_spec = data.get("spec_name", "")
+    src_model = data.get("model_label", "")
+    if args.spec != src_spec or args.model != src_model:
+        print(
+            f"✗ Source variance is for ({src_spec}, {src_model}) but flags "
+            f"specified ({args.spec}, {args.model}). Refusing to baseline "
+            "across mismatched (spec, model)."
+        )
+        return 1
+
+    project_root = Path.cwd()
+    target = baseline_path(project_root, args.spec, args.model)
+    if target.exists() and not args.force:
+        print(
+            f"✗ Baseline already exists at {target}. Pass --force to "
+            "overwrite, or `baseline rm` first."
+        )
+        return 1
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    rate_pct = int(round(float(data.get("convergence_rate", 0.0)) * 100))
+    n = data.get("n", 0)
+    print(f"✅ Baseline set: {target}")
+    print(f"   spec={args.spec} model={args.model} n={n} convergence={rate_pct}%")
+    return 0
+
+
+def _cmd_baseline_list(args: argparse.Namespace) -> int:
+    project_root = Path.cwd()
+    baselines = list_baselines(project_root)
+    if not baselines:
+        print(f"No baselines under {project_root / '.resonant' / 'smoke-baselines'}")
+        return 0
+    print(f"Baselines (under {project_root / '.resonant' / 'smoke-baselines'}):")
+    print()
+    print(f"  {'spec':<14} {'model':<8} {'n':>3}  {'rate':>5}  {'median':<10}  path")
+    print(f"  {'-' * 14} {'-' * 8} {'-' * 3}  {'-' * 5}  {'-' * 10}  ----")
+    for b in baselines:
+        rate = f"{int(round(b['convergence_rate'] * 100))}%"
+        median = (f"{b['total_elapsed_seconds_median']:.1f}s"
+                  if b['total_elapsed_seconds_median'] is not None else "-")
+        print(
+            f"  {b['spec']:<14} {b['model']:<8} {b['n']:>3}  "
+            f"{rate:>5}  {median:<10}  {b['path']}"
+        )
+    return 0
+
+
+def _cmd_baseline_show(args: argparse.Namespace) -> int:
+    project_root = Path.cwd()
+    data = load_baseline(
+        project_path=project_root, spec=args.spec, model=args.model,
+    )
+    if data is None:
+        print(
+            f"No baseline for ({args.spec}, {args.model}) under "
+            f"{project_root / '.resonant' / 'smoke-baselines'}"
+        )
+        return 1
+    # Print the headline + timing rollup, NOT the full per-run array
+    # (that's what `cat` is for).
+    rate = float(data.get("convergence_rate", 0.0))
+    n = data.get("n", 0)
+    converged = data.get("converged_count", 0)
+    print(f"Baseline — {args.spec} × {args.model} × n={n}")
+    print(f"  convergence: {converged}/{n} ({int(round(rate * 100))}%)")
+    total = data.get("total_elapsed_seconds") or {}
+    if total.get("median") is not None:
+        print(
+            f"  total elapsed:  median={total.get('median'):.1f}s "
+            f"min={total.get('min', 0):.1f}s max={total.get('max', 0):.1f}s "
+            f"stddev={total.get('stddev', 0):.1f}s"
+        )
+    iter_d = data.get("iter_duration_seconds") or {}
+    if iter_d.get("median") is not None:
+        print(
+            f"  iter duration:  median={iter_d.get('median'):.1f}s "
+            f"stddev={iter_d.get('stddev', 0):.1f}s"
+        )
+    return 0
+
+
+def _cmd_baseline_rm(args: argparse.Namespace) -> int:
+    project_root = Path.cwd()
+    target = baseline_path(project_root, args.spec, args.model)
+    if not target.exists():
+        print(f"No baseline at {target}")
+        return 1
+    target.unlink()
+    print(f"✅ Removed baseline: {target}")
+    return 0
 
 
 # ── parser + main ──────────────────────────────────────────────────────
@@ -253,7 +409,50 @@ def build_parser() -> argparse.ArgumentParser:
         help=("Path to write the markdown summary (default: same path as "
               "--out with .md suffix). Always emitted; flag overrides location."),
     )
+    sub_var.add_argument(
+        "--diff-baseline", action="store_true",
+        help=("Compare against the persisted baseline for this (spec, model). "
+              "Exit non-zero if any regressions surface. Set baselines via "
+              "`resonant-smoke baseline set`."),
+    )
     sub_var.set_defaults(func=_cmd_variance)
+
+    # ── baseline subcommand tree (v0.5.5a1) ──────────────────────
+    sub_baseline = sub.add_parser(
+        "baseline",
+        help="Manage smoke-run baselines (set / list / show / rm).",
+    )
+    baseline_sub = sub_baseline.add_subparsers(dest="baseline_cmd", required=True)
+
+    bl_set = baseline_sub.add_parser(
+        "set", help="Promote a variance JSON to the baseline.",
+    )
+    bl_set.add_argument("--spec", choices=spec_choices, required=True)
+    bl_set.add_argument("--model", choices=model_choices, required=True)
+    bl_set.add_argument("--from", dest="source", required=True,
+                        help="Path to the variance JSON to promote.")
+    bl_set.add_argument("--force", action="store_true",
+                        help="Overwrite an existing baseline.")
+    bl_set.set_defaults(func=_cmd_baseline_set)
+
+    bl_list = baseline_sub.add_parser(
+        "list", help="Show all baselines under the project.",
+    )
+    bl_list.set_defaults(func=_cmd_baseline_list)
+
+    bl_show = baseline_sub.add_parser(
+        "show", help="Print the rolled-up stats for a (spec, model) baseline.",
+    )
+    bl_show.add_argument("--spec", choices=spec_choices, required=True)
+    bl_show.add_argument("--model", choices=model_choices, required=True)
+    bl_show.set_defaults(func=_cmd_baseline_show)
+
+    bl_rm = baseline_sub.add_parser(
+        "rm", help="Delete a baseline.",
+    )
+    bl_rm.add_argument("--spec", choices=spec_choices, required=True)
+    bl_rm.add_argument("--model", choices=model_choices, required=True)
+    bl_rm.set_defaults(func=_cmd_baseline_rm)
 
     return parser
 

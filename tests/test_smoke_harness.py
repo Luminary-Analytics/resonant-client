@@ -718,3 +718,344 @@ class TestCLIReportFlag:
             "--report", str(target),
         ])
         assert args.report == str(target)
+
+
+# ── v0.5.5a1: baseline + variance diff ─────────────────────────────────
+
+
+from resonant_client.smoke import (
+    BaselineDiff,
+    baseline_path,
+    diff_against_baseline,
+    list_baselines,
+    load_baseline,
+    save_baseline,
+)
+from resonant_client.smoke.baseline import (
+    _is_improvement,
+    _is_regression,
+    _safe_subtract,
+)
+
+
+def _three_satisfied_runs(model="pro", total_elapsed_seq=(120.0, 140.0, 130.0),
+                          iter_each=(60.0, 60.0)) -> VarianceReport:
+    runs = [
+        _make_result(verdict="satisfied", total_elapsed=t,
+                     iter_durations=list(iter_each), model=model)
+        for t in total_elapsed_seq
+    ]
+    return summarize_runs(runs)
+
+
+class TestBaselineDiskIO:
+    def test_save_and_load_round_trip(self, tmp_path):
+        report = _three_satisfied_runs()
+        target = save_baseline(report, project_path=tmp_path)
+        # Path follows the canonical .resonant/smoke-baselines layout.
+        assert target == baseline_path(tmp_path, report.spec_name, report.model_label)
+        assert target.exists()
+        loaded = load_baseline(
+            project_path=tmp_path, spec=report.spec_name, model=report.model_label,
+        )
+        assert loaded is not None
+        assert loaded["spec_name"] == report.spec_name
+        assert loaded["model_label"] == report.model_label
+        assert loaded["n"] == 3
+
+    def test_load_returns_none_when_missing(self, tmp_path):
+        loaded = load_baseline(
+            project_path=tmp_path, spec="wordcount", model="pro",
+        )
+        assert loaded is None
+
+    def test_save_overwrites_existing(self, tmp_path):
+        # First save: 3 runs.
+        save_baseline(_three_satisfied_runs(), project_path=tmp_path)
+        # Second save: 5 runs — should replace.
+        new = _three_satisfied_runs(total_elapsed_seq=(100.0, 110.0, 120.0, 130.0, 140.0))
+        save_baseline(new, project_path=tmp_path)
+        loaded = load_baseline(
+            project_path=tmp_path, spec=new.spec_name, model=new.model_label,
+        )
+        assert loaded["n"] == 5
+
+    def test_list_baselines_empty_directory(self, tmp_path):
+        assert list_baselines(tmp_path) == []
+
+    def test_list_baselines_returns_summaries(self, tmp_path):
+        save_baseline(_three_satisfied_runs(), project_path=tmp_path)
+        save_baseline(
+            _three_satisfied_runs(model="flash"),
+            project_path=tmp_path,
+        )
+        rows = list_baselines(tmp_path)
+        assert len(rows) == 2
+        models = {r["model"] for r in rows}
+        assert models == {"pro", "flash"}
+        for r in rows:
+            assert r["spec"] == "wordcount"
+            assert r["n"] == 3
+            assert r["convergence_rate"] == 1.0
+            assert r["total_elapsed_seconds_median"] == 130.0
+            assert "path" in r
+
+    def test_list_baselines_skips_unparseable_files(self, tmp_path):
+        # A .json file under the baseline dir that ISN'T valid JSON
+        # should be skipped, not crash. Forward-compat with future
+        # schema versions / hand-edited files.
+        (tmp_path / ".resonant" / "smoke-baselines").mkdir(parents=True)
+        (tmp_path / ".resonant" / "smoke-baselines" / "broken.json").write_text(
+            "not json", encoding="utf-8",
+        )
+        save_baseline(_three_satisfied_runs(), project_path=tmp_path)
+        rows = list_baselines(tmp_path)
+        # Only the valid baseline shows; the broken file is silently dropped.
+        assert len(rows) == 1
+        assert rows[0]["spec"] == "wordcount"
+
+
+class TestDiffStatistics:
+    def test_safe_subtract_handles_none(self):
+        assert _safe_subtract(None, 10.0) is None
+        assert _safe_subtract(10.0, None) is None
+        assert _safe_subtract(None, None) is None
+
+    def test_safe_subtract_arithmetic(self):
+        assert _safe_subtract(150.0, 100.0) == 50.0
+        assert _safe_subtract(100.0, 150.0) == -50.0
+
+    def test_is_regression_requires_both_thresholds(self):
+        # 5s absolute: too small even if it's 50% relative.
+        assert _is_regression(delta=5.0, baseline=10.0) is False
+        # 15s absolute, 15% relative: relative bar fails.
+        assert _is_regression(delta=15.0, baseline=100.0) is False
+        # 25s absolute, 25% relative: both bars cross.
+        assert _is_regression(delta=25.0, baseline=100.0) is True
+
+    def test_is_regression_negative_delta_is_not_regression(self):
+        # Faster than baseline — never a regression.
+        assert _is_regression(delta=-50.0, baseline=100.0) is False
+
+    def test_is_improvement_mirrors_regression(self):
+        # 25s faster than 100s baseline → 25% speedup → improvement.
+        assert _is_improvement(delta=-25.0, baseline=100.0) is True
+        # Slower → not an improvement.
+        assert _is_improvement(delta=25.0, baseline=100.0) is False
+
+
+class TestDiffAgainstBaseline:
+    def _baseline_dict(self, **overrides):
+        # Stable shape — what `VarianceReport.to_dict` produces.
+        base = {
+            "spec_name": "wordcount",
+            "model_label": "pro",
+            "n": 3,
+            "convergence_rate": 1.0,
+            "total_elapsed_seconds": {"median": 130.0, "min": 120.0,
+                                      "max": 140.0, "stddev": 8.0},
+            "iter_duration_seconds": {"median": 60.0, "stddev": 5.0,
+                                      "sample_size": 6},
+        }
+        base.update(overrides)
+        return base
+
+    def test_no_change_no_regressions_no_improvements(self):
+        baseline = self._baseline_dict()
+        # Current matches baseline exactly.
+        current = _three_satisfied_runs()
+        diff = diff_against_baseline(current=current, baseline=baseline)
+        assert diff.delta_convergence_rate == 0.0
+        assert diff.regressions == []
+        assert diff.improvements == []
+        assert diff.has_regressions is False
+
+    def test_convergence_drop_is_always_a_regression(self):
+        # ANY drop in convergence is a regression (no relative threshold).
+        baseline = self._baseline_dict(convergence_rate=1.0)
+        runs = [
+            _make_result(verdict="satisfied"),
+            _make_result(verdict="paused", stop_reason="stuck"),
+            _make_result(verdict="satisfied"),
+        ]
+        current = summarize_runs(runs)
+        diff = diff_against_baseline(current=current, baseline=baseline)
+        assert diff.has_regressions is True
+        assert any("Convergence rate" in r for r in diff.regressions)
+
+    def test_timing_regression_only_above_thresholds(self):
+        # Baseline median 100s, current 130s: 30% relative, 30s absolute → regression.
+        baseline = self._baseline_dict(
+            total_elapsed_seconds={"median": 100.0, "min": 100.0,
+                                   "max": 100.0, "stddev": 0.0},
+        )
+        current = _three_satisfied_runs(total_elapsed_seq=(130.0, 130.0, 130.0))
+        diff = diff_against_baseline(current=current, baseline=baseline)
+        assert diff.has_regressions is True
+        assert any("Total-elapsed median grew" in r for r in diff.regressions)
+
+    def test_small_timing_change_no_regression(self):
+        # Baseline 100s, current 105s: 5% relative — below threshold.
+        baseline = self._baseline_dict(
+            total_elapsed_seconds={"median": 100.0, "min": 100.0,
+                                   "max": 100.0, "stddev": 0.0},
+        )
+        current = _three_satisfied_runs(total_elapsed_seq=(105.0, 105.0, 105.0))
+        diff = diff_against_baseline(current=current, baseline=baseline)
+        assert diff.regressions == []
+
+    def test_speedup_recorded_as_improvement(self):
+        # Baseline 200s, current 100s: 50% faster → improvement.
+        baseline = self._baseline_dict(
+            total_elapsed_seconds={"median": 200.0, "min": 200.0,
+                                   "max": 200.0, "stddev": 0.0},
+        )
+        current = _three_satisfied_runs(total_elapsed_seq=(100.0, 100.0, 100.0))
+        diff = diff_against_baseline(current=current, baseline=baseline)
+        assert any("Total-elapsed median dropped" in i for i in diff.improvements)
+
+    def test_mismatched_spec_raises(self):
+        # Baseline (wordcount, pro) vs current (roguelite, pro): refuse.
+        baseline = self._baseline_dict(spec_name="roguelite")
+        current = _three_satisfied_runs()  # spec=wordcount
+        with pytest.raises(ValueError, match="Baseline mismatch"):
+            diff_against_baseline(current=current, baseline=baseline)
+
+    def test_mismatched_model_raises(self):
+        baseline = self._baseline_dict(model_label="flash")
+        current = _three_satisfied_runs()  # model=pro
+        with pytest.raises(ValueError, match="Baseline mismatch"):
+            diff_against_baseline(current=current, baseline=baseline)
+
+    def test_to_dict_round_trips_via_json(self):
+        baseline = self._baseline_dict()
+        current = _three_satisfied_runs(total_elapsed_seq=(150.0, 160.0, 170.0))
+        diff = diff_against_baseline(current=current, baseline=baseline)
+        d = diff.to_dict()
+        json.dumps(d)  # serializable
+        assert d["spec_name"] == "wordcount"
+        assert d["delta_total_elapsed_median"] is not None
+
+
+class TestBaselineMarkdownIntegration:
+    def _baseline_dict(self):
+        return {
+            "spec_name": "wordcount", "model_label": "pro", "n": 3,
+            "convergence_rate": 1.0,
+            "total_elapsed_seconds": {"median": 100.0, "min": 100.0,
+                                      "max": 100.0, "stddev": 0.0},
+            "iter_duration_seconds": {"median": 50.0, "stddev": 0.0,
+                                      "sample_size": 6},
+        }
+
+    def test_variance_md_includes_diff_section_when_provided(self):
+        current = _three_satisfied_runs()
+        diff = diff_against_baseline(
+            current=current, baseline=self._baseline_dict(),
+        )
+        md = render_variance_markdown(current, baseline_diff=diff)
+        assert "## Diff vs baseline" in md
+
+    def test_variance_md_omits_diff_when_not_provided(self):
+        current = _three_satisfied_runs()
+        md = render_variance_markdown(current)
+        assert "## Diff vs baseline" not in md
+
+    def test_variance_md_diff_table_has_all_three_metric_rows(self):
+        current = _three_satisfied_runs()
+        diff = diff_against_baseline(
+            current=current, baseline=self._baseline_dict(),
+        )
+        md = render_variance_markdown(current, baseline_diff=diff)
+        assert "Convergence rate" in md
+        assert "Total elapsed (median)" in md
+        assert "Iter duration (median)" in md
+
+    def test_variance_md_lists_regression_narrative(self):
+        # Force a regression: baseline 100s, current 200s.
+        current = _three_satisfied_runs(total_elapsed_seq=(200.0, 200.0, 200.0))
+        diff = diff_against_baseline(
+            current=current, baseline=self._baseline_dict(),
+        )
+        md = render_variance_markdown(current, baseline_diff=diff)
+        assert "Regressions:" in md
+        assert "⚠" in md
+
+    def test_variance_md_lists_improvement_narrative(self):
+        # Baseline 200s, current 100s — symmetric speedup case.
+        baseline = self._baseline_dict()
+        baseline["total_elapsed_seconds"] = {
+            "median": 200.0, "min": 200.0, "max": 200.0, "stddev": 0.0,
+        }
+        current = _three_satisfied_runs(total_elapsed_seq=(100.0, 100.0, 100.0))
+        diff = diff_against_baseline(current=current, baseline=baseline)
+        md = render_variance_markdown(current, baseline_diff=diff)
+        assert "Improvements:" in md
+
+
+class TestBaselineCLIParser:
+    def test_baseline_set_requires_spec_model_source(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["baseline", "set"])
+        with pytest.raises(SystemExit):
+            parser.parse_args(["baseline", "set", "--spec", "wordcount"])
+        with pytest.raises(SystemExit):
+            parser.parse_args(["baseline", "set", "--spec", "wordcount",
+                               "--model", "pro"])
+
+    def test_baseline_set_full(self, tmp_path):
+        parser = build_parser()
+        src = tmp_path / "v.json"
+        args = parser.parse_args([
+            "baseline", "set", "--spec", "wordcount", "--model", "pro",
+            "--from", str(src),
+        ])
+        assert args.spec == "wordcount"
+        assert args.model == "pro"
+        assert args.source == str(src)
+        assert args.force is False
+
+    def test_baseline_set_force_flag(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "baseline", "set", "--spec", "wordcount", "--model", "pro",
+            "--from", "/tmp/v.json", "--force",
+        ])
+        assert args.force is True
+
+    def test_baseline_list_takes_no_args(self):
+        parser = build_parser()
+        args = parser.parse_args(["baseline", "list"])
+        assert args.baseline_cmd == "list"
+
+    def test_baseline_show_full(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["baseline", "show", "--spec", "minimal", "--model", "flash"]
+        )
+        assert args.spec == "minimal"
+        assert args.model == "flash"
+
+    def test_baseline_rm_full(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["baseline", "rm", "--spec", "minimal", "--model", "flash"]
+        )
+        assert args.spec == "minimal"
+        assert args.model == "flash"
+
+    def test_variance_diff_baseline_flag_default(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["variance", "--spec", "minimal", "--model", "flash"]
+        )
+        assert args.diff_baseline is False
+
+    def test_variance_diff_baseline_flag_set(self):
+        parser = build_parser()
+        args = parser.parse_args([
+            "variance", "--spec", "minimal", "--model", "flash",
+            "--diff-baseline",
+        ])
+        assert args.diff_baseline is True

@@ -26,6 +26,14 @@ from .runner import SmokeResult, run_smoke, MODELS
 from .variance import VarianceReport, run_variance, summarize_runs
 from .flaky import FlakyPlannerBackend
 from .report import render_run_markdown, render_variance_markdown
+from .baseline import (
+    BaselineDiff,
+    baseline_path,
+    diff_against_baseline,
+    list_baselines,
+    load_baseline,
+    save_baseline,
+)
 
 __all__ = [
     "SPECS",
@@ -41,4 +49,10 @@ __all__ = [
     "FlakyPlannerBackend",
     "render_run_markdown",
     "render_variance_markdown",
+    "BaselineDiff",
+    "baseline_path",
+    "diff_against_baseline",
+    "list_baselines",
+    "load_baseline",
+    "save_baseline",
 ]

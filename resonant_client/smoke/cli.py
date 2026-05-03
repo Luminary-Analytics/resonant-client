@@ -32,6 +32,14 @@ from .baseline import (
     load_baseline,
     save_baseline,
 )
+from .ci import (
+    DEFAULT_CI_SPECS,
+    CISpecResult,
+    CISuiteResult,
+    parse_specs_arg,
+    render_ci_markdown,
+    run_ci_suite,
+)
 from .report import render_run_markdown, render_variance_markdown
 from .runner import MODELS, SmokeResult, run_smoke
 from .specs import SPECS, get_spec, list_spec_names
@@ -340,6 +348,78 @@ def _cmd_baseline_show(args: argparse.Namespace) -> int:
     return 0
 
 
+# ── ci ──────────────────────────────────────────────────────────────────
+
+
+def _cmd_ci(args: argparse.Namespace) -> int:
+    """Run a curated suite of specs against a model. Designed for
+    cron / GitHub Actions: stable specs, predictable runtime, machine-
+    readable artifacts, exit code maps to convergence + regression
+    state."""
+    try:
+        spec_names = parse_specs_arg(args.specs) if args.specs else list(DEFAULT_CI_SPECS)
+    except ValueError as exc:
+        print(f"✗ {exc}")
+        return 2
+
+    print("=" * 70)
+    print(f"CI SUITE — model={args.model} specs={','.join(spec_names)} n={args.n}")
+    if args.diff_baseline:
+        print("  --diff-baseline: any baseline regression fails the suite")
+    print("=" * 70)
+    print()
+
+    def _on_spec_complete(spec_name: str, spec_result: CISpecResult) -> None:
+        if spec_result.passed:
+            sigil = "✅"
+            label = "PASS"
+        elif spec_result.has_regressions:
+            sigil = "⚠"
+            label = "REGRESSED"
+        else:
+            sigil = "✗"
+            label = "FAIL"
+        v = spec_result.variance
+        print(
+            f"  {sigil} {spec_name:<14} {label:<10} "
+            f"converged={v.converged_count}/{v.n} "
+            f"median={v.total_elapsed_seconds_median or 0:.0f}s"
+        )
+        if spec_result.has_regressions:
+            for reg in spec_result.baseline_diff.regressions:
+                print(f"      ⚠ {reg}")
+
+    result = run_ci_suite(
+        model_label=args.model,
+        spec_names=spec_names,
+        n=args.n,
+        smoke_timeout_minutes=args.timeout_minutes,
+        diff_baseline=args.diff_baseline,
+        on_spec_complete=_on_spec_complete,
+    )
+
+    print()
+    print("-" * 70)
+    overall = "✅ PASS" if result.all_passed else "✗ FAIL"
+    print(f"{overall} — {result.passing_count}/{len(result.spec_results)} specs passed")
+    print(f"  total elapsed: {result.total_elapsed_seconds:.1f}s")
+    print(f"  exit code:     {result.exit_code()}")
+
+    out_path = Path(args.out) if args.out else _default_record_path(
+        f"ci-{args.model}"
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
+    print(f"  → record: {out_path}")
+
+    md_path = Path(args.report) if args.report else out_path.with_suffix(".md")
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(render_ci_markdown(result), encoding="utf-8")
+    print(f"  → markdown: {md_path}")
+
+    return result.exit_code()
+
+
 def _cmd_baseline_rm(args: argparse.Namespace) -> int:
     project_root = Path.cwd()
     target = baseline_path(project_root, args.spec, args.model)
@@ -453,6 +533,37 @@ def build_parser() -> argparse.ArgumentParser:
     bl_rm.add_argument("--spec", choices=spec_choices, required=True)
     bl_rm.add_argument("--model", choices=model_choices, required=True)
     bl_rm.set_defaults(func=_cmd_baseline_rm)
+
+    # ── ci subcommand (v0.5.5a3) ─────────────────────────────────
+    sub_ci = sub.add_parser(
+        "ci",
+        help="Run a curated suite for CI / cron environments.",
+    )
+    sub_ci.add_argument("--model", choices=model_choices, required=True)
+    sub_ci.add_argument(
+        "--specs", default=None,
+        help=("Comma-separated spec names to run "
+              f"(default: {','.join(DEFAULT_CI_SPECS)})"),
+    )
+    sub_ci.add_argument(
+        "--n", type=int, default=1,
+        help=("Runs per spec (default: 1 for fast smoke; bump to 3 for "
+              "ship-readiness gating)"),
+    )
+    sub_ci.add_argument(
+        "--timeout-minutes", type=int, default=25,
+        help="Per-run outer deadline (default: 25)",
+    )
+    sub_ci.add_argument(
+        "--diff-baseline", action="store_true",
+        help=("For each spec, compare against its baseline. Any regression "
+              "fails the suite (in addition to non-convergence)."),
+    )
+    sub_ci.add_argument("--out", default=None,
+                        help="Path to write the JSON suite record (default: smoke-runs/...)")
+    sub_ci.add_argument("--report", default=None,
+                        help="Path to write the markdown summary (default: same as --out with .md)")
+    sub_ci.set_defaults(func=_cmd_ci)
 
     return parser
 

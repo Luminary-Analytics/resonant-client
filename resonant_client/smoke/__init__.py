@@ -34,6 +34,13 @@ from .baseline import (
     load_baseline,
     save_baseline,
 )
+from .ci import (
+    DEFAULT_CI_SPECS,
+    CISpecResult,
+    CISuiteResult,
+    parse_specs_arg,
+    render_ci_markdown,
+)
 
 __all__ = [
     "SPECS",
@@ -55,4 +62,9 @@ __all__ = [
     "list_baselines",
     "load_baseline",
     "save_baseline",
+    "CISpecResult",
+    "CISuiteResult",
+    "DEFAULT_CI_SPECS",
+    "parse_specs_arg",
+    "render_ci_markdown",
 ]

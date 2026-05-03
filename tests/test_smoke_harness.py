@@ -1059,3 +1059,298 @@ class TestBaselineCLIParser:
             "--diff-baseline",
         ])
         assert args.diff_baseline is True
+
+
+# ── v0.5.5a3: ci subcommand ────────────────────────────────────────────
+
+
+from resonant_client.smoke import (
+    DEFAULT_CI_SPECS,
+    CISpecResult,
+    CISuiteResult,
+    parse_specs_arg,
+    render_ci_markdown,
+)
+
+
+class TestParseSpecsArg:
+    def test_single_spec(self):
+        assert parse_specs_arg("minimal") == ["minimal"]
+
+    def test_multiple_specs(self):
+        assert parse_specs_arg("minimal,wordcount") == ["minimal", "wordcount"]
+
+    def test_strips_whitespace(self):
+        assert parse_specs_arg("  minimal , wordcount  ") == ["minimal", "wordcount"]
+
+    def test_empty_string_raises(self):
+        with pytest.raises(ValueError, match="at least one"):
+            parse_specs_arg("")
+
+    def test_only_commas_raises(self):
+        with pytest.raises(ValueError, match="at least one"):
+            parse_specs_arg(",,")
+
+    def test_unknown_spec_raises_with_valid_list(self):
+        with pytest.raises(ValueError, match="Unknown spec") as exc_info:
+            parse_specs_arg("not-a-real-spec")
+        # Helpful: the error lists what IS valid.
+        for name in DEFAULT_CI_SPECS:
+            assert name in str(exc_info.value)
+
+
+class TestCISpecResult:
+    def _passing_variance(self):
+        return summarize_runs([
+            _make_result(verdict="satisfied"),
+            _make_result(verdict="satisfied"),
+        ])
+
+    def _failing_variance(self):
+        return summarize_runs([
+            _make_result(verdict="paused", stop_reason="stuck"),
+            _make_result(verdict="satisfied"),
+        ])
+
+    def test_passing_when_converged_no_diff(self):
+        r = CISpecResult(spec_name="x", variance=self._passing_variance())
+        assert r.converged is True
+        assert r.has_regressions is False
+        assert r.passed is True
+
+    def test_failing_when_not_converged(self):
+        r = CISpecResult(spec_name="x", variance=self._failing_variance())
+        assert r.converged is False
+        assert r.passed is False
+
+    def test_failing_when_converged_but_baseline_regression(self):
+        # Construct a BaselineDiff with regressions populated.
+        from resonant_client.smoke import BaselineDiff
+        diff = BaselineDiff(
+            spec_name="x", model_label="pro",
+            baseline_n=3, current_n=3,
+            regressions=["something got slower"],
+        )
+        r = CISpecResult(
+            spec_name="x", variance=self._passing_variance(), baseline_diff=diff,
+        )
+        assert r.converged is True
+        assert r.has_regressions is True
+        assert r.passed is False  # regression flips it to fail
+
+    def test_skipped_spec_passes_trivially(self):
+        # Skipped specs don't fail the suite — same as a missing entry.
+        r = CISpecResult(
+            spec_name="x", variance=self._passing_variance(),
+            skipped=True, skipped_reason="not in --specs filter",
+        )
+        assert r.passed is True
+
+    def test_to_dict_round_trips_via_json(self):
+        r = CISpecResult(spec_name="x", variance=self._passing_variance())
+        json.dumps(r.to_dict())  # serializable
+
+
+class TestCISuiteResult:
+    def _suite_with_results(self, *spec_results) -> CISuiteResult:
+        return CISuiteResult(
+            model_label="pro", model_id="deepseek-v4-pro:cloud",
+            started_at_epoch=1714600000.0,
+            total_elapsed_seconds=120.0,
+            spec_results=list(spec_results),
+        )
+
+    def _passing_spec(self, name="minimal"):
+        return CISpecResult(
+            spec_name=name,
+            variance=summarize_runs([_make_result(verdict="satisfied")]),
+        )
+
+    def _failing_spec(self, name="wordcount"):
+        return CISpecResult(
+            spec_name=name,
+            variance=summarize_runs([_make_result(verdict="paused", stop_reason="stuck")]),
+        )
+
+    def test_all_passed_true_when_all_pass(self):
+        suite = self._suite_with_results(self._passing_spec("minimal"),
+                                         self._passing_spec("wordcount"))
+        assert suite.all_passed is True
+        assert suite.passing_count == 2
+        assert suite.exit_code() == 0
+
+    def test_all_passed_false_when_any_fail(self):
+        suite = self._suite_with_results(self._passing_spec("minimal"),
+                                         self._failing_spec("wordcount"))
+        assert suite.all_passed is False
+        assert suite.passing_count == 1
+        assert suite.exit_code() == 1
+
+    def test_has_any_regression_propagates(self):
+        from resonant_client.smoke import BaselineDiff
+        diff = BaselineDiff(
+            spec_name="wordcount", model_label="pro",
+            baseline_n=3, current_n=3,
+            regressions=["slower"],
+        )
+        regressed = CISpecResult(
+            spec_name="wordcount",
+            variance=summarize_runs([_make_result(verdict="satisfied")]),
+            baseline_diff=diff,
+        )
+        suite = self._suite_with_results(self._passing_spec("minimal"), regressed)
+        assert suite.has_any_regression is True
+        # Regression alone fails the suite — even with convergence.
+        assert suite.exit_code() == 1
+
+    def test_to_dict_round_trips_via_json(self):
+        suite = self._suite_with_results(self._passing_spec(),
+                                         self._failing_spec())
+        d = suite.to_dict()
+        json.dumps(d)
+        assert d["spec_count"] == 2
+        assert d["passing_count"] == 1
+        assert d["all_passed"] is False
+        assert d["exit_code"] == 1
+
+
+class TestRenderCIMarkdown:
+    def _ok_suite(self):
+        return CISuiteResult(
+            model_label="pro", model_id="deepseek-v4-pro:cloud",
+            started_at_epoch=1714600000.0,
+            total_elapsed_seconds=120.0,
+            spec_results=[
+                CISpecResult(
+                    spec_name="minimal",
+                    variance=summarize_runs([
+                        _make_result(verdict="satisfied", total_elapsed=60.0),
+                    ]),
+                ),
+                CISpecResult(
+                    spec_name="wordcount",
+                    variance=summarize_runs([
+                        _make_result(verdict="satisfied", total_elapsed=140.0),
+                    ]),
+                ),
+            ],
+        )
+
+    def test_passing_headline_includes_check(self):
+        md = render_ci_markdown(self._ok_suite())
+        assert "✅" in md
+        assert "2 of 2 specs passed" in md
+        assert md.startswith("# CI suite")
+
+    def test_failing_headline_includes_x(self):
+        suite = self._ok_suite()
+        suite.spec_results.append(CISpecResult(
+            spec_name="roguelite",
+            variance=summarize_runs([
+                _make_result(verdict="paused", stop_reason="stuck"),
+            ]),
+        ))
+        md = render_ci_markdown(suite)
+        assert "✗" in md
+        assert "2 of 3" in md
+
+    def test_per_spec_table_has_one_row_per_spec(self):
+        md = render_ci_markdown(self._ok_suite())
+        assert "## Specs" in md
+        assert "| `minimal` |" in md
+        assert "| `wordcount` |" in md
+
+    def test_diff_section_only_when_baselines_diff(self):
+        # No baseline diffs → no "Baseline diffs" section.
+        md = render_ci_markdown(self._ok_suite())
+        assert "## Baseline diffs" not in md
+
+        # Inject a diff with a regression.
+        from resonant_client.smoke import BaselineDiff
+        suite = self._ok_suite()
+        suite.spec_results[0].baseline_diff = BaselineDiff(
+            spec_name="minimal", model_label="pro",
+            baseline_n=3, current_n=1,
+            regressions=["Total-elapsed median grew by 30s"],
+        )
+        md = render_ci_markdown(suite)
+        assert "## Baseline diffs" in md
+        assert "minimal" in md
+        assert "30s" in md
+
+    def test_skipped_spec_renders_with_skip_marker(self):
+        suite = self._ok_suite()
+        suite.spec_results.append(CISpecResult(
+            spec_name="roguelite",
+            variance=summarize_runs([_make_result(verdict="satisfied")]),
+            skipped=True, skipped_reason="too slow for CI",
+        ))
+        md = render_ci_markdown(suite)
+        assert "⏭" in md or "skipped" in md.lower()
+
+
+class TestCICLIParser:
+    def test_ci_requires_model(self):
+        parser = build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["ci"])
+
+    def test_ci_default_specs_is_none_in_args(self):
+        # Default is determined inside _cmd_ci (uses DEFAULT_CI_SPECS
+        # when args.specs is None). Assert the arg defaults to None
+        # so that branch fires.
+        parser = build_parser()
+        args = parser.parse_args(["ci", "--model", "pro"])
+        assert args.specs is None
+        assert args.n == 1
+        assert args.timeout_minutes == 25
+        assert args.diff_baseline is False
+
+    def test_ci_specs_csv(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["ci", "--model", "pro", "--specs", "minimal,wordcount"]
+        )
+        assert args.specs == "minimal,wordcount"
+
+    def test_ci_n_override(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["ci", "--model", "pro", "--n", "3"]
+        )
+        assert args.n == 3
+
+    def test_ci_diff_baseline_flag(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["ci", "--model", "pro", "--diff-baseline"]
+        )
+        assert args.diff_baseline is True
+
+    def test_ci_out_and_report_paths(self, tmp_path):
+        parser = build_parser()
+        out = tmp_path / "ci.json"
+        rep = tmp_path / "ci.md"
+        args = parser.parse_args([
+            "ci", "--model", "pro", "--out", str(out), "--report", str(rep),
+        ])
+        assert args.out == str(out)
+        assert args.report == str(rep)
+
+
+class TestDefaultCISpecs:
+    def test_minimal_in_default_suite(self):
+        assert "minimal" in DEFAULT_CI_SPECS
+
+    def test_wordcount_in_default_suite(self):
+        assert "wordcount" in DEFAULT_CI_SPECS
+
+    def test_roguelite_NOT_in_default_suite(self):
+        # Too slow for CI by design — opt in via --specs.
+        assert "roguelite" not in DEFAULT_CI_SPECS
+
+    def test_all_default_specs_are_real_specs(self):
+        from resonant_client.smoke import list_spec_names
+        valid = set(list_spec_names())
+        for name in DEFAULT_CI_SPECS:
+            assert name in valid

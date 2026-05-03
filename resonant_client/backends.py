@@ -374,7 +374,7 @@ class OllamaBackend:
         "command-r", "command-r-plus",
         "gemma2", "gemma3", "gemma4",
         "phi4", "phi4-mini",
-        "deepseek-r1", "deepseek-v3.2", "deepseek-v4-flash", "deepseek-v4",
+        "deepseek-r1", "deepseek-v3.2", "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4",
         # Ollama cloud models (routed, tool-capable)
         "minimax-m2", "minimax-m2.5", "minimax-m2.7",
         "nemotron-3-super", "nemotron-3-nano",
@@ -446,6 +446,17 @@ class OllamaBackend:
             )
             if resp.status_code == 200:
                 info = resp.json()
+                # v0.5.2a3 — check `capabilities` array FIRST. Cloud
+                # models (`*:cloud`) typically have an empty template
+                # field but DO declare capabilities. Falling through
+                # to the template check left pro on text-mode and
+                # the daemon was relying on our XML parser instead
+                # of native tool calls.
+                caps = info.get("capabilities", []) or []
+                if isinstance(caps, list) and "tools" in caps:
+                    OllamaBackend._tool_support_cache[self.model] = True
+                    logger.info(f"Tool support for {self.model}: True (capabilities)")
+                    return True
                 template = info.get("template", "")
                 # Models with tool support typically have {{.Tools}} in their template
                 if "{{.Tools}}" in template or "{{ .Tools }}" in template:
@@ -457,6 +468,9 @@ class OllamaBackend:
                     OllamaBackend._tool_support_cache[self.model] = False
                     logger.info(f"Tool support for {self.model}: False (no tools in template)")
                     return False
+                # Empty template AND no tools-capability — defer to probe.
+                if not template and (not isinstance(caps, list) or "tools" not in caps):
+                    pass  # fall through to probe below
         except Exception as e:
             logger.debug(f"Could not check model info for {self.model}: {e}")
 

@@ -502,6 +502,16 @@ class TestDetectToolSupportKnownModels:
         # .lower() is called so this should match
         assert backend._detect_tool_support() is True
 
+    @pytest.mark.unit
+    def test_deepseek_v4_pro_recognized_as_tool_capable(self):
+        """v0.5.2a2 fix — pro had been missing from KNOWN_TOOL_SUPPORT,
+        which meant it fell through to /api/show, where the cloud
+        model's empty template + missing-capabilities-check made it
+        report False. Pro then went to text-mode and the parser
+        couldn't keep up with its XML format variation."""
+        backend = _make_backend("deepseek-v4-pro:cloud")
+        assert backend._detect_tool_support() is True
+
 
 class TestDetectToolSupportCaching:
 

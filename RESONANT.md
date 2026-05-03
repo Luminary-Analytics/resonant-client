@@ -54,10 +54,11 @@ DeepSeek tier guidance (revised v0.5.2 — pro is now the default;
 see `docs/v0.5.1-smoke-results.md` for the data behind the choice):
 
 **Default (v0.5.2+):** `deepseek-v4-pro:cloud`. Pro is wired for
-both Mission and Autonomous Mission flows via the auto-routing
-introduced in v0.5.1 (PLANNER_BY_TIER → PLAN_DEEP for pro). Users
-can switch to flash via the chat-header model dropdown or via
-Settings → general → default_model.
+both Mission and Autonomous Mission flows. v0.5.4a1 simplified
+the planner routing: PLAN_DEEP is now the unconditional default
+for autonomous missions (was per-tier-routed via PLANNER_BY_TIER
+in v0.5.1-v0.5.3). Users can switch to flash via the chat-header
+model dropdown or via Settings → general → default_model.
 
 **For Mission flow (one-shot grill + plan-graph dispatch):**
 - `deepseek-v4-pro:cloud` — **recommended default.** Thorough grill

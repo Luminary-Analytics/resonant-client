@@ -36,8 +36,9 @@ logger = logging.getLogger(__name__)
 
 # Short labels → Ollama model ids. Add entries here as new tiers ship.
 # The label is what the CLI accepts (`--model pro`); the id is what
-# `create_backend` wants. PLANNER_BY_TIER in autonomous_session.py
-# already routes per-id; the label layer is just user-facing sugar.
+# `create_backend` wants. v0.5.4a1: PLANNER_BY_TIER routing was
+# removed, so adding a new model here is sufficient — the autonomous
+# stack uses PLAN_DEEP for all of them.
 MODELS: dict[str, str] = {
     "flash": "deepseek-v4-flash:cloud",
     "pro": "deepseek-v4-pro:cloud",

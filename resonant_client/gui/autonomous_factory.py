@@ -646,8 +646,9 @@ def build_autonomous_mission_hooks(
     `planner_specialization` (v0.5.1a2) routes each sub-mission's
     root planner node to a specific specialist. None falls through
     to `IntentService`'s default (`PLAN`). The autonomous-session
-    helper passes `PLAN_DEEP` for pro-tier missions per
-    `gui.autonomous_session.PLANNER_BY_TIER`.
+    helper passes `PLAN_DEEP` unconditionally as of v0.5.4a1; the
+    previous per-tier routing (`PLANNER_BY_TIER`) was a footgun for
+    new models that defaulted to PLAN without anyone noticing.
     """
 
     def dispatch_item(item: RoadmapItem) -> str:

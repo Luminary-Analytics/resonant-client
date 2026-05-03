@@ -41,31 +41,26 @@ from ..orchestration.plan_graph import NodeSpecialization
 logger = logging.getLogger(__name__)
 
 
-# ── Planner-tier mapping (v0.5.1a2) ────────────────────────────────────
+# ── Planner specialization (v0.5.4a1: PLAN_DEEP unconditionally) ──────
 
 
-# Different DeepSeek tiers behave differently on the planner role.
-# v0.5.0 GA smoke (docs/v0.5.0-smoke-results-step2c.md) showed:
-#   flash → emits clean JSON immediately, decomposes well from spec
-#   pro   → wants to read the codebase first; the strict PLAN prompt
-#           treats that exploration as malformed output
-# So we route each tier to the planner spec it's wired for. PLAN is
-# the snappy "decompose immediately" specialist; PLAN_DEEP is the
-# research-first variant that gives pro room to explore before
-# emitting the JSON envelope.
+# v0.5.1a2 introduced PLANNER_BY_TIER, a per-tier routing dict that
+# sent flash to PLAN and pro to PLAN_DEEP. The motivation was real:
+# pro fails the strict "emit JSON immediately" contract of PLAN.
 #
-# Match is by exact model_id. Unrecognized models fall back to PLAN
-# (the tighter contract — safer default).
-PLANNER_BY_TIER: dict[str, str] = {
-    "deepseek-v4-flash:cloud": NodeSpecialization.PLAN,
-    "deepseek-v4-pro:cloud": NodeSpecialization.PLAN_DEEP,
-}
-
-
-def planner_for_model(model_id: str) -> str:
-    """Return the planner specialization to use for the given Ollama
-    model id. Falls back to `PLAN` for unknown models."""
-    return PLANNER_BY_TIER.get(model_id or "", NodeSpecialization.PLAN)
+# v0.5.4a1 removes the routing because:
+# 1. Pro is the default tier (v0.5.2). The fallback case (unmapped
+#    model → PLAN) was a footgun: any new model defaulted to the
+#    wrong planner without anyone noticing until a smoke failed.
+# 2. PLAN_DEEP is a strict superset of PLAN — its Phase 2 IS the
+#    PLAN prompt. Flash benefits from the optional Phase 1 too;
+#    skipping exploration is allowed but never required.
+# 3. Adding new models (kimi-k2.6, glm-5.1, minimax-m2.7) no longer
+#    requires editing this routing dict; they all just work.
+#
+# Callers can still override via `planner_specialization=` on the
+# autonomous-factory hook builder if a specific spec is wanted.
+_DEFAULT_PLANNER_SPEC: str = NodeSpecialization.PLAN_DEEP
 
 
 # ── Time-budget parsing ─────────────────────────────────────────────────
@@ -518,9 +513,11 @@ def _spawn_autonomous_daemon(
     `resume_autonomous_mission` (existing roadmap on disk).
 
     Builds production hooks, wires the IntentService combined
-    callback, picks the planner via `planner_for_model`, constructs
-    + starts the daemon, registers on AppState. The roadmap is
-    assumed to already be persisted to disk — caller's job.
+    callback, hardcodes PLAN_DEEP as the planner spec (v0.5.4a1
+    consolidation — was per-tier-routed via PLANNER_BY_TIER), and
+    constructs + starts the daemon, registers on AppState. The
+    roadmap is assumed to already be persisted to disk — caller's
+    job.
     """
     # Prep the dispatch tracker — must be ready BEFORE we wire
     # IntentService.on_event so we don't lose any terminal events.
@@ -546,11 +543,11 @@ def _spawn_autonomous_daemon(
     # the same Event into both the tracker and the daemon.
     daemon_stop_event = threading.Event()
 
-    # v0.5.1a2 — pick the planner specialist that suits the model
-    # tier. Pro gets PLAN_DEEP (research-first); flash + unknown
-    # tiers get PLAN (decompose-immediately). See PLANNER_BY_TIER.
+    # v0.5.4a1 — always use PLAN_DEEP. The previous per-tier routing
+    # (PLANNER_BY_TIER) was a footgun for new models; PLAN_DEEP is a
+    # strict superset of PLAN so flash works fine under it too.
     model_id = getattr(state.backend, "model", "") or ""
-    planner_spec = planner_for_model(model_id)
+    planner_spec = _DEFAULT_PLANNER_SPEC
     logger.info(
         "Autonomous mission %s using planner=%s for model=%s",
         intent_id, planner_spec, model_id,

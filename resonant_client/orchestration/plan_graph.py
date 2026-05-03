@@ -50,8 +50,12 @@ class NodeSpecialization:
     # output schema as PLAN; larger step budget; prompt explicitly
     # encourages exploration first then synthesis. Found via the
     # v0.5.0 GA smoke that pro fails the strict-immediate-emit
-    # contract of PLAN. PLAN remains the default for flash-tier
-    # models that decompose immediately. See `gui/autonomous_session.PLANNER_BY_TIER`.
+    # contract of PLAN.
+    # v0.5.4a1: PLAN_DEEP is now the unconditional default for
+    # autonomous missions (the per-tier PLANNER_BY_TIER routing was
+    # removed — too fragile for new models). PLAN is still used by
+    # IntentService for non-autonomous flows that prefer the strict
+    # contract.
     PLAN_DEEP = "plan_deep"
 
     ALL = frozenset({EXPLORE, IMPLEMENT, VERIFY, REPAIR, RESEARCH,

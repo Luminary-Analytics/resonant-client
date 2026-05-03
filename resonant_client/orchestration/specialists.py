@@ -436,9 +436,12 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
     # the exploration explicit, with the JSON envelope as the
     # required FINAL phase.
     #
-    # Tier mapping in `gui/autonomous_session.PLANNER_BY_TIER`:
-    #   flash → PLAN (snappy, decomposes immediately)
-    #   pro   → PLAN_DEEP (research-first, deliberate)
+    # v0.5.4a1: PLAN_DEEP is the unconditional default for autonomous
+    # missions. The previous per-tier routing (PLANNER_BY_TIER) was
+    # removed because (a) PLAN_DEEP is a strict superset of PLAN and
+    # (b) new models defaulting to PLAN was a silent footgun. PLAN is
+    # still available for non-autonomous IntentService callers who
+    # prefer the strict-immediate-emit contract.
     #
     # See docs/v0.5.0-smoke-results-step2c.md §3 for the diagnosis
     # this profile addresses.

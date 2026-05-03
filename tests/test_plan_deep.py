@@ -1,4 +1,5 @@
-"""Tests for v0.5.1a2 — PLAN_DEEP specialist + tier mapping.
+"""Tests for v0.5.1a2 PLAN_DEEP specialist + v0.5.4a1 unconditional
+default.
 
 PLAN_DEEP is the research-first planner introduced to make
 deepseek-v4-pro:cloud usable for autonomous missions. The v0.5.0
@@ -8,17 +9,20 @@ first, and the strict prompt treated that exploration as malformed
 output. PLAN_DEEP makes the exploration explicit, with the JSON
 envelope as the required FINAL phase.
 
+v0.5.4a1: the per-tier `PLANNER_BY_TIER` routing was removed.
+Autonomous missions now use PLAN_DEEP unconditionally (it's a
+strict superset of PLAN, so flash works fine under it too, and
+adding new models no longer requires editing a routing dict).
+
 These tests pin:
 - PLAN_DEEP is registered in the specialist registry with the
   right tool allowlist + step budget
 - The prompt explicitly invites exploration BEFORE the JSON
   envelope (matching pro's instinctive flow)
 - The prompt still REQUIRES the JSON envelope as final output
-- PLANNER_BY_TIER maps flash → PLAN, pro → PLAN_DEEP
-- Unknown models fall back to PLAN (safer default)
+- The autonomous-session module exposes `_DEFAULT_PLANNER_SPEC`
+  pinned to PLAN_DEEP
 - IntentService.start_intent accepts the planner override
-- The autonomous-session helper passes the right planner via
-  the factory
 """
 from __future__ import annotations
 
@@ -27,10 +31,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from resonant_client.gui.autonomous_session import (
-    PLANNER_BY_TIER,
-    planner_for_model,
-)
+from resonant_client.gui.autonomous_session import _DEFAULT_PLANNER_SPEC
 from resonant_client.orchestration.plan_graph import NodeSpecialization
 from resonant_client.orchestration.specialists import (
     SPECIALISTS,
@@ -136,26 +137,28 @@ class TestPlanDeepPromptInvariants:
         assert "trailing comma" in lower or "single quote" in lower or "strict" in lower
 
 
-# ── PLANNER_BY_TIER + planner_for_model ────────────────────────────────
+# ── v0.5.4a1: unconditional PLAN_DEEP default ──────────────────────────
 
 
-class TestPlannerByTier:
-    def test_flash_maps_to_plan(self):
-        assert PLANNER_BY_TIER["deepseek-v4-flash:cloud"] == NodeSpecialization.PLAN
+class TestDefaultPlannerSpec:
+    """v0.5.4a1 removed the PLANNER_BY_TIER routing dict. Pin the
+    new default so a casual change can't silently regress to PLAN
+    for autonomous missions."""
 
-    def test_pro_maps_to_plan_deep(self):
-        assert PLANNER_BY_TIER["deepseek-v4-pro:cloud"] == NodeSpecialization.PLAN_DEEP
+    def test_default_planner_spec_is_plan_deep(self):
+        # The constant other modules import to wire the planner.
+        assert _DEFAULT_PLANNER_SPEC == NodeSpecialization.PLAN_DEEP
 
-    def test_planner_for_model_returns_mapped_planner(self):
-        assert planner_for_model("deepseek-v4-flash:cloud") == NodeSpecialization.PLAN
-        assert planner_for_model("deepseek-v4-pro:cloud") == NodeSpecialization.PLAN_DEEP
+    def test_default_planner_spec_is_a_real_specialization(self):
+        assert _DEFAULT_PLANNER_SPEC in NodeSpecialization.ALL
 
-    def test_unknown_model_falls_back_to_plan(self):
-        # Safer default — strict contract over loose contract for
-        # models we haven't characterized yet.
-        assert planner_for_model("kimi-k2.6:cloud") == NodeSpecialization.PLAN
-        assert planner_for_model("") == NodeSpecialization.PLAN
-        assert planner_for_model("totally-fake:1234") == NodeSpecialization.PLAN
+    def test_planner_by_tier_no_longer_exported(self):
+        # If anyone re-adds the routing under the old name, this fails.
+        # Keeping the test prevents accidental resurrection — search
+        # for the symbol on import.
+        import resonant_client.gui.autonomous_session as mod
+        assert not hasattr(mod, "PLANNER_BY_TIER")
+        assert not hasattr(mod, "planner_for_model")
 
 
 # ── IntentService.start_intent override plumbing ───────────────────────

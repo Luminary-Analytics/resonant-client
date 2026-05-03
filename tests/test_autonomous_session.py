@@ -25,8 +25,10 @@ from resonant_client.gui.autonomous_session import (
     _smart_title,
     build_roadmap_from_spec,
     cleanup_finished_daemons,
+    find_orphaned_autonomous_missions,
     get_autonomous_daemon,
     parse_time_budget,
+    resume_autonomous_mission,
     start_autonomous_mission,
     stop_autonomous_mission,
 )
@@ -194,8 +196,14 @@ class TestBuildRoadmapFromSpec:
 
 
 class _StubProject:
-    def __init__(self, project_path: str):
+    def __init__(self, project_path: str, sessions: Optional[list[dict]] = None):
         self.project_path = project_path
+        self._sessions = sessions or []
+
+    def list_all_sessions(self) -> list[dict]:
+        # Return a defensive copy so tests can't mutate the backing
+        # store via the returned list.
+        return list(self._sessions)
 
 
 class _StubIntentService:
@@ -437,3 +445,328 @@ class TestStartStopAutonomousMission:
                 spec_markdown=_SPEC_MD_NO_CRITERIA,
                 on_event=lambda ev: None,
             )
+
+
+# ── v0.5.3a1: resume + orphan detection ────────────────────────────────
+
+
+class TestResumeAutonomousMission:
+    """`resume_autonomous_mission` is the recovery path for missions
+    interrupted by a server restart, app crash, or laptop sleep. It
+    loads the EXISTING roadmap from disk so any progress already made
+    (checked items, validated criteria, iteration log) is preserved —
+    in contrast to `start_autonomous_mission`, which builds a fresh
+    roadmap from a spec."""
+
+    def test_raises_when_no_roadmap_on_disk(self, tmp_path):
+        # No roadmap file exists at the expected path → resume should
+        # fail loudly. The original mission either never persisted its
+        # roadmap or the project root changed.
+        state = _StubAppState(project=_StubProject(str(tmp_path)))
+        with pytest.raises(ValueError, match="no roadmap"):
+            resume_autonomous_mission(
+                state=state,
+                intent_id="never-existed",
+                on_event=lambda ev: None,
+            )
+
+    def test_raises_when_roadmap_has_no_acceptance_criteria(self, tmp_path):
+        # Hand-crafted misconfigured roadmap on disk with no criteria.
+        # Resume should refuse rather than spawn a daemon that would
+        # immediately stop with `misconfigured`.
+        path = roadmap_module.default_path(str(tmp_path), "no-criteria")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        rm = roadmap_module.Roadmap(
+            feature="empty mission",
+            intent_id="no-criteria",
+            status="running",
+        )
+        roadmap_module.add_item(rm, tier=1, title="Do something", description="")
+        roadmap_module.save(rm, path)
+
+        state = _StubAppState(project=_StubProject(str(tmp_path)))
+        with pytest.raises(ValueError, match="no acceptance criteria"):
+            resume_autonomous_mission(
+                state=state,
+                intent_id="no-criteria",
+                on_event=lambda ev: None,
+            )
+
+    def test_raises_when_daemon_already_running(self, tmp_path):
+        # Bootstrap a roadmap via start_autonomous_mission so a live
+        # daemon exists, then try to resume the same intent_id. Should
+        # raise RuntimeError — double-spawn would be a logic bug.
+        state = _StubAppState(project=_StubProject(str(tmp_path)))
+        daemon = start_autonomous_mission(
+            state=state,
+            intent_id="auto-1",
+            feature="counter",
+            spec_markdown=_SPEC_MD,
+            on_event=lambda ev: None,
+        )
+        try:
+            with pytest.raises(RuntimeError, match="already running"):
+                resume_autonomous_mission(
+                    state=state,
+                    intent_id="auto-1",
+                    on_event=lambda ev: None,
+                )
+        finally:
+            daemon.stop()
+            daemon.join(timeout=3.0)
+
+    def test_resume_after_finished_daemon_works(self, tmp_path):
+        # If the previous daemon already exited (server restart between
+        # iterations), resume should succeed even though the registry
+        # still has the old daemon entry. Only LIVE daemons block resume.
+        state = _StubAppState(project=_StubProject(str(tmp_path)))
+        first = start_autonomous_mission(
+            state=state,
+            intent_id="auto-1",
+            feature="counter",
+            spec_markdown=_SPEC_MD,
+            on_event=lambda ev: None,
+        )
+        first.stop()
+        first.join(timeout=3.0)
+        assert not first.is_running()
+
+        # The dead daemon is still in state._autonomous_daemons; resume
+        # should overwrite it with a new live one rather than refuse.
+        second = resume_autonomous_mission(
+            state=state,
+            intent_id="auto-1",
+            on_event=lambda ev: None,
+        )
+        try:
+            assert second is not first
+            assert get_autonomous_daemon(state, "auto-1") is second
+        finally:
+            second.stop()
+            second.join(timeout=3.0)
+
+    def test_resume_loads_existing_roadmap_preserving_state(self, tmp_path):
+        # Build a roadmap, then mark T1.1 checked + add an iteration log
+        # entry to simulate "the mission had made progress before the
+        # server restarted". After resume, the on-disk roadmap should
+        # STILL show that progress — resume must not overwrite it.
+        rm, path = build_roadmap_from_spec(
+            feature="counter",
+            intent_id="auto-1",
+            spec_markdown=_SPEC_MD,
+            project_path=str(tmp_path),
+        )
+        # Simulate progress: mark the bootstrapped item complete.
+        rm.items[0].checked = True
+        rm.items[0].commit_sha = "abc1234"
+        rm.items[0].note = "shipped before restart"
+        roadmap_module.append_iteration_log(
+            rm, iter_num=1, duration_label="2m",
+            note="bootstrap shipped",
+            item_id=rm.items[0].id, commit_sha="abc1234",
+        )
+        # Mark one criterion as passed too.
+        rm.acceptance_criteria[0].passed = True
+        rm.acceptance_criteria[0].evidence = "build exited 0"
+        roadmap_module.save(rm, path)
+
+        # Now resume — daemon should pick up the existing roadmap.
+        state = _StubAppState(project=_StubProject(str(tmp_path)))
+        daemon = resume_autonomous_mission(
+            state=state,
+            intent_id="auto-1",
+            on_event=lambda ev: None,
+        )
+        try:
+            assert get_autonomous_daemon(state, "auto-1") is daemon
+
+            # The on-disk roadmap should still reflect the pre-resume
+            # state (resume MUST NOT clobber checked items or evidence).
+            reloaded = roadmap_module.load(path)
+            assert reloaded.items[0].checked is True
+            assert reloaded.items[0].commit_sha == "abc1234"
+            assert reloaded.items[0].note == "shipped before restart"
+            assert len(reloaded.iteration_log) == 1
+            # The first criterion should still be marked passed.
+            passed_count, total = reloaded.acceptance_summary()
+            assert passed_count == 1
+            assert total == 4
+        finally:
+            daemon.stop()
+            daemon.join(timeout=3.0)
+
+
+class TestFindOrphanedAutonomousMissions:
+    """An orphan = a session whose `mission_state.phase` is
+    `autonomous_running` but whose intent_id has NO live daemon in the
+    AppState. These are the missions a "Resume" button should surface."""
+
+    def test_returns_empty_when_no_project(self):
+        state = _StubAppState(project=None)  # type: ignore[arg-type]
+        assert find_orphaned_autonomous_missions(state) == []
+
+    def test_returns_empty_when_no_sessions(self, tmp_path):
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=[]))
+        assert find_orphaned_autonomous_missions(state) == []
+
+    def test_returns_empty_when_no_autonomous_phase_sessions(self, tmp_path):
+        # Sessions exist but none are in autonomous_running phase.
+        sessions = [
+            {"id": "s1", "title": "drafting one",
+             "mission_state": {"phase": "drafting", "intent_id": "i1"}},
+            {"id": "s2", "title": "regular chat", "mission_state": None},
+            {"id": "s3", "title": "complete one",
+             "mission_state": {"phase": "autonomous_complete", "intent_id": "i3"}},
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        assert find_orphaned_autonomous_missions(state) == []
+
+    def test_finds_orphan_with_phase_autonomous_running(self, tmp_path):
+        # The classic case: session says autonomous_running but no live
+        # daemon for that intent_id. Surface it as a resume candidate.
+        sessions = [
+            {
+                "id": "session-abc",
+                "title": "Counter component",
+                "mission_state": {
+                    "phase": "autonomous_running",
+                    "intent_id": "auto-orphan-1",
+                    "seed_feature": "Build a counter web component",
+                    "autonomous_started_at": 1714600000.0,
+                },
+            },
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        orphans = find_orphaned_autonomous_missions(state)
+        assert len(orphans) == 1
+        o = orphans[0]
+        assert o["session_id"] == "session-abc"
+        assert o["intent_id"] == "auto-orphan-1"
+        assert o["feature"] == "Build a counter web component"
+        assert o["autonomous_started_at"] == 1714600000.0
+        # roadmap_path is the canonical default path
+        expected_path = roadmap_module.default_path(str(tmp_path), "auto-orphan-1")
+        assert o["roadmap_path"] == str(expected_path)
+        assert o["roadmap_exists"] is False  # we never wrote it
+
+    def test_orphan_roadmap_exists_flag_reflects_disk(self, tmp_path):
+        # When the roadmap file IS on disk, roadmap_exists should be True
+        # (the typical case — the daemon got far enough to persist).
+        rm, _ = build_roadmap_from_spec(
+            feature="x",
+            intent_id="auto-orphan-2",
+            spec_markdown=_SPEC_MD,
+            project_path=str(tmp_path),
+        )
+        sessions = [{
+            "id": "s",
+            "title": "x",
+            "mission_state": {
+                "phase": "autonomous_running",
+                "intent_id": "auto-orphan-2",
+                "seed_feature": "x",
+            },
+        }]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        orphans = find_orphaned_autonomous_missions(state)
+        assert len(orphans) == 1
+        assert orphans[0]["roadmap_exists"] is True
+
+    def test_excludes_intent_ids_with_live_daemons(self, tmp_path):
+        # Two autonomous_running sessions; one has a live daemon (started
+        # this session), the other doesn't. Only the daemonless one is
+        # an orphan.
+        sessions = [
+            {"id": "s-live", "title": "live one",
+             "mission_state": {
+                 "phase": "autonomous_running",
+                 "intent_id": "auto-1",  # matches the daemon below
+                 "seed_feature": "live",
+             }},
+            {"id": "s-orphan", "title": "orphan one",
+             "mission_state": {
+                 "phase": "autonomous_running",
+                 "intent_id": "auto-2",  # no daemon
+                 "seed_feature": "orphan",
+             }},
+        ]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        # Spin up a real daemon for auto-1 so it's "live".
+        daemon = start_autonomous_mission(
+            state=state,
+            intent_id="auto-1",
+            feature="live",
+            spec_markdown=_SPEC_MD,
+            on_event=lambda ev: None,
+        )
+        try:
+            orphans = find_orphaned_autonomous_missions(state)
+            assert len(orphans) == 1
+            assert orphans[0]["intent_id"] == "auto-2"
+        finally:
+            daemon.stop()
+            daemon.join(timeout=3.0)
+
+    def test_finished_daemon_does_not_protect_session_from_being_orphaned(self, tmp_path):
+        # A daemon that's REGISTERED but not running anymore still leaves
+        # its session in `autonomous_running` phase from the daemon's POV
+        # (the session-state writer hasn't transitioned it). The orphan
+        # check should treat finished daemons as absent → the session
+        # IS an orphan candidate.
+        sessions = [{
+            "id": "s",
+            "title": "x",
+            "mission_state": {
+                "phase": "autonomous_running",
+                "intent_id": "auto-1",
+                "seed_feature": "x",
+            },
+        }]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        daemon = start_autonomous_mission(
+            state=state,
+            intent_id="auto-1",
+            feature="x",
+            spec_markdown=_SPEC_MD,
+            on_event=lambda ev: None,
+        )
+        daemon.stop()
+        daemon.join(timeout=3.0)
+        assert not daemon.is_running()
+        # Even with the dead daemon still in the registry, the session
+        # should still surface as an orphan ready for resume.
+        orphans = find_orphaned_autonomous_missions(state)
+        assert len(orphans) == 1
+        assert orphans[0]["intent_id"] == "auto-1"
+
+    def test_skips_session_with_missing_intent_id(self, tmp_path):
+        # Defensive: a malformed mission_state (no intent_id) should
+        # be silently skipped rather than crashing or emitting a bogus
+        # orphan.
+        sessions = [{
+            "id": "s", "title": "broken",
+            "mission_state": {
+                "phase": "autonomous_running",
+                # intent_id missing
+                "seed_feature": "x",
+            },
+        }]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        assert find_orphaned_autonomous_missions(state) == []
+
+    def test_falls_back_to_session_title_when_seed_feature_missing(self, tmp_path):
+        # Old sessions written before seed_feature was added should
+        # still show a sensible feature label — fall back to the
+        # session title.
+        sessions = [{
+            "id": "s", "title": "Counter component (old session)",
+            "mission_state": {
+                "phase": "autonomous_running",
+                "intent_id": "auto-old",
+                # no seed_feature
+            },
+        }]
+        state = _StubAppState(project=_StubProject(str(tmp_path), sessions=sessions))
+        orphans = find_orphaned_autonomous_missions(state)
+        assert len(orphans) == 1
+        assert orphans[0]["feature"] == "Counter component (old session)"

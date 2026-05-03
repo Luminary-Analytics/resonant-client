@@ -300,7 +300,165 @@ def start_autonomous_mission(
         project_path=state.project.project_path,
         started_iso=started_iso,
     )
+    return _spawn_autonomous_daemon(
+        state=state,
+        intent_id=intent_id,
+        roadmap=rm,
+        roadmap_path=roadmap_path,
+        on_event=on_event,
+        image_provider=image_provider,
+    )
 
+
+def resume_autonomous_mission(
+    *,
+    state: Any,
+    intent_id: str,
+    on_event: Callable[[dict], None],
+    image_provider: Optional[Callable[[], Optional[bytes]]] = None,
+) -> AutonomousMissionDaemon:
+    """v0.5.3a1 — resume an autonomous mission whose daemon was
+    interrupted (server restart, app crash, laptop sleep). Loads the
+    EXISTING roadmap from disk; does NOT re-bootstrap items, so any
+    progress already made (checked items, validated criteria, prior
+    iteration log entries) is preserved.
+
+    Raises:
+    - ValueError if no roadmap exists at the expected path
+    - ValueError if the roadmap has no acceptance criteria (would
+      collide with the daemon's misconfigured-stop rule)
+    - RuntimeError if a live daemon is already registered for this
+      intent_id (don't double-spawn)
+
+    The daemon's first iteration picks up at `next_unchecked_item` —
+    if the original mission was mid-iteration when interrupted, the
+    interrupted item stays unchecked and gets re-dispatched. Phase-1
+    sub-missions are idempotent enough that this is usually fine
+    (the implementer reads the file system, sees what's there, no-ops
+    or refines as needed).
+
+    The time budget timer RESETS on resume — we don't try to back-
+    date it. If a user wants strict budget enforcement, they can
+    pass a smaller budget on resume; otherwise the budget is fresh.
+    """
+    # Reject double-resume.
+    existing = getattr(state, "_autonomous_daemons", None) or {}
+    prior = existing.get(intent_id)
+    if prior is not None and prior.is_running():
+        raise RuntimeError(
+            f"Autonomous mission {intent_id!r} is already running; "
+            f"can't resume what isn't interrupted"
+        )
+
+    roadmap_path = roadmap_module.default_path(
+        state.project.project_path, intent_id,
+    )
+    if not roadmap_path.exists():
+        raise ValueError(
+            f"Cannot resume mission {intent_id!r}: no roadmap at "
+            f"{roadmap_path}. The original mission may not have run "
+            f"long enough to persist its roadmap, or the project root "
+            f"changed since the mission started."
+        )
+
+    rm = roadmap_module.load(roadmap_path)
+    if not rm.has_any_acceptance_criteria():
+        raise ValueError(
+            f"Roadmap at {roadmap_path} has no acceptance criteria; "
+            f"refusing to resume into a state the daemon would "
+            f"immediately stop with `misconfigured`."
+        )
+
+    logger.info(
+        "Resuming autonomous mission %s — roadmap has %d items "
+        "(%d already checked) and %d acceptance criteria",
+        intent_id,
+        len(rm.items),
+        sum(1 for i in rm.items if i.checked),
+        len(rm.acceptance_criteria),
+    )
+
+    return _spawn_autonomous_daemon(
+        state=state,
+        intent_id=intent_id,
+        roadmap=rm,
+        roadmap_path=roadmap_path,
+        on_event=on_event,
+        image_provider=image_provider,
+    )
+
+
+def find_orphaned_autonomous_missions(state: Any) -> list[dict]:
+    """v0.5.3a1 — scan the project's sessions for missions in
+    `autonomous_running` phase that have NO live daemon. These are
+    candidates for resume — the daemon either was never started, or
+    was interrupted by an app restart / crash.
+
+    Returns a list of dicts with the info the caller (WS handler /
+    GUI) needs to surface a "Resume" button:
+    - session_id
+    - intent_id
+    - feature (the seed description)
+    - autonomous_started_at (epoch float, may be missing)
+    - roadmap_path (absolute)
+    - roadmap_exists (bool)
+
+    Empty list when there are no orphans (the common case at
+    steady state).
+    """
+    if not getattr(state, "project", None):
+        return []
+    daemons_dict = getattr(state, "_autonomous_daemons", None) or {}
+    live_intent_ids = {
+        intent_id for intent_id, d in daemons_dict.items() if d.is_running()
+    }
+
+    orphans: list[dict] = []
+    sessions = state.project.list_all_sessions() if hasattr(
+        state.project, "list_all_sessions",
+    ) else []
+    for sess in sessions:
+        ms = sess.get("mission_state") if isinstance(sess, dict) else None
+        if not ms:
+            continue
+        if ms.get("phase") != "autonomous_running":
+            continue
+        intent_id = ms.get("intent_id", "")
+        if not intent_id or intent_id in live_intent_ids:
+            continue
+        roadmap_path = roadmap_module.default_path(
+            state.project.project_path, intent_id,
+        )
+        orphans.append({
+            "session_id": sess.get("id", ""),
+            "intent_id": intent_id,
+            "feature": ms.get("seed_feature", "")
+            or sess.get("title", ""),
+            "autonomous_started_at": ms.get("autonomous_started_at"),
+            "roadmap_path": str(roadmap_path),
+            "roadmap_exists": roadmap_path.exists(),
+        })
+    return orphans
+
+
+def _spawn_autonomous_daemon(
+    *,
+    state: Any,
+    intent_id: str,
+    roadmap: Roadmap,
+    roadmap_path: "Path",
+    on_event: Callable[[dict], None],
+    image_provider: Optional[Callable[[], Optional[bytes]]] = None,
+) -> AutonomousMissionDaemon:
+    """v0.5.3a1 internal — shared spawn path used by both
+    `start_autonomous_mission` (fresh start) and
+    `resume_autonomous_mission` (existing roadmap on disk).
+
+    Builds production hooks, wires the IntentService combined
+    callback, picks the planner via `planner_for_model`, constructs
+    + starts the daemon, registers on AppState. The roadmap is
+    assumed to already be persisted to disk — caller's job.
+    """
     # Prep the dispatch tracker — must be ready BEFORE we wire
     # IntentService.on_event so we don't lose any terminal events.
     tracker = DispatchTracker()
@@ -352,7 +510,7 @@ def start_autonomous_mission(
     config = AutonomousMissionConfig(
         intent_id=intent_id,
         roadmap_path=roadmap_path,
-        time_budget_seconds=parse_time_budget(rm.time_budget_label),
+        time_budget_seconds=parse_time_budget(roadmap.time_budget_label),
     )
     daemon = AutonomousMissionDaemon(
         config=config,

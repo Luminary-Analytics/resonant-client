@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from .report import render_run_markdown, render_variance_markdown
 from .runner import MODELS, SmokeResult, run_smoke
 from .specs import SPECS, get_spec, list_spec_names
 from .variance import VarianceReport, run_variance
@@ -107,6 +108,16 @@ def _cmd_run(args: argparse.Namespace) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
     print(f"  → record: {out_path}")
+
+    # v0.5.4a3 — markdown report. When `--report` is set, write the
+    # human-readable summary to that path. When omitted, write
+    # alongside the JSON with a `.md` suffix so a single CLI run
+    # always produces both artifacts (cheap to emit; useful in PR
+    # descriptions even when the user didn't explicitly ask for it).
+    md_path = Path(args.report) if args.report else out_path.with_suffix(".md")
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(render_run_markdown(result), encoding="utf-8")
+    print(f"  → markdown: {md_path}")
     return 0 if result.is_converged() else 1
 
 
@@ -172,6 +183,13 @@ def _cmd_variance(args: argparse.Namespace) -> int:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
     print(f"\n  → record: {out_path}")
+
+    # v0.5.4a3 — markdown report next to the JSON.
+    md_path = Path(args.report) if args.report else out_path.with_suffix(".md")
+    md_path.parent.mkdir(parents=True, exist_ok=True)
+    md_path.write_text(render_variance_markdown(report), encoding="utf-8")
+    print(f"  → markdown: {md_path}")
+
     # Convergence-rate gating: variance is "passing" iff every run
     # converged. Anything less is a real signal — flag with non-zero.
     return 0 if report.convergence_rate >= 1.0 else 1
@@ -207,6 +225,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub_run.add_argument("--out", default=None,
                          help="Path to write the JSON run record (default: smoke-runs/...)")
     sub_run.add_argument(
+        "--report", default=None,
+        help=("Path to write the markdown summary (default: same path as "
+              "--out with .md suffix). Always emitted; flag overrides location."),
+    )
+    sub_run.add_argument(
         "--inject-planner-failure", action="store_true",
         help=("Wrap the backend so the first planner call returns malformed "
               "output. Walker should auto-retry once (v0.5.1a3) and recover. "
@@ -225,6 +248,11 @@ def build_parser() -> argparse.ArgumentParser:
                          help="Per-run outer deadline (default: 25)")
     sub_var.add_argument("--out", default=None,
                          help="Path to write the JSON variance report (default: smoke-runs/...)")
+    sub_var.add_argument(
+        "--report", default=None,
+        help=("Path to write the markdown summary (default: same path as "
+              "--out with .md suffix). Always emitted; flag overrides location."),
+    )
     sub_var.set_defaults(func=_cmd_variance)
 
     return parser

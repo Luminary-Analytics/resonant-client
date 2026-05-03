@@ -21,6 +21,8 @@ from resonant_client.smoke import (
     VarianceReport,
     get_spec,
     list_spec_names,
+    render_run_markdown,
+    render_variance_markdown,
     summarize_runs,
 )
 from resonant_client.smoke.cli import build_parser
@@ -28,6 +30,7 @@ from resonant_client.smoke.flaky import (
     _MALFORMED_PLANNER_RESPONSE,
     _PLANNER_PROMPT_SIGNATURES,
 )
+from resonant_client.smoke.report import _fmt_duration
 from resonant_client.smoke.variance import _median, _stddev
 
 
@@ -517,3 +520,201 @@ class TestFlakyPlannerBackend:
             f"None of {_PLANNER_PROMPT_SIGNATURES} matched PLAN_DEEP prompt; "
             "FlakyPlannerBackend would no-op on PLAN_DEEP calls."
         )
+
+
+# ── v0.5.4a3: markdown reports ──────────────────────────────────────────
+
+
+class TestFmtDuration:
+    """Pin the duration formatter so the markdown output stays stable
+    across cosmetic refactors."""
+
+    def test_seconds_for_under_60(self):
+        assert _fmt_duration(45.0) == "45.0s"
+
+    def test_minutes_for_under_3600(self):
+        assert _fmt_duration(120.0) == "2.0m"
+
+    def test_hours_for_3600_and_up(self):
+        assert _fmt_duration(7200.0) == "2.00h"
+
+    def test_none_renders_as_dash(self):
+        assert _fmt_duration(None) == "-"
+
+    def test_non_numeric_renders_as_dash(self):
+        # Defensive: a JSON value that arrived as something unexpected
+        # shouldn't crash the formatter.
+        assert _fmt_duration("not a number") == "-"  # type: ignore[arg-type]
+
+
+class TestRenderRunMarkdown:
+    def test_includes_spec_and_model_in_heading(self):
+        r = _make_result(spec="wordcount", model="pro")
+        md = render_run_markdown(r)
+        assert "wordcount" in md
+        assert "pro" in md
+        assert md.startswith("# Smoke run")
+
+    def test_converged_shows_check_mark_status(self):
+        r = _make_result(verdict="satisfied")
+        md = render_run_markdown(r)
+        assert "✅" in md
+        assert "converged" in md
+
+    def test_paused_shows_failure_status(self):
+        r = _make_result(verdict="paused", stop_reason="stuck")
+        md = render_run_markdown(r)
+        assert "✗" in md
+        assert "paused" in md
+
+    def test_timeout_shows_warning_status(self):
+        r = _make_result(verdict="paused", stop_reason="smoke_timeout",
+                         timed_out=True)
+        md = render_run_markdown(r)
+        assert "⚠" in md
+        assert "timed out" in md
+
+    def test_renders_iter_durations_when_present(self):
+        r = _make_result(iter_durations=[60.0, 90.0, 120.0])
+        md = render_run_markdown(r)
+        assert "Iter durations" in md
+        # Each value formatted via _fmt_duration
+        assert "1.0m" in md
+        assert "2.0m" in md
+
+    def test_omits_iter_durations_when_empty(self):
+        r = _make_result(iter_durations=[])
+        md = render_run_markdown(r)
+        assert "Iter durations" not in md
+
+    def test_includes_error_field_only_when_set(self):
+        ok = _make_result()
+        md_ok = render_run_markdown(ok)
+        assert "| Error |" not in md_ok
+
+        broken = _make_result(verdict="failed")
+        broken.error = "RuntimeError: backend offline"
+        md_broken = render_run_markdown(broken)
+        assert "| Error |" in md_broken
+        assert "RuntimeError" in md_broken
+
+    def test_table_has_header_row(self):
+        # Markdown table must include the header + separator rows so
+        # GitHub renders it as a table.
+        r = _make_result()
+        md = render_run_markdown(r)
+        assert "| Field | Value |" in md
+        assert "|---|---|" in md
+
+
+class TestRenderVarianceMarkdown:
+    def _three_run_report(self, **kwargs):
+        runs = [
+            _make_result(verdict="satisfied", total_elapsed=120.0,
+                         iter_durations=[60.0, 60.0]),
+            _make_result(verdict="satisfied", total_elapsed=140.0,
+                         iter_durations=[70.0, 70.0]),
+            _make_result(verdict="satisfied", total_elapsed=130.0,
+                         iter_durations=[65.0, 65.0]),
+        ]
+        for r in runs:
+            for k, v in kwargs.items():
+                setattr(r, k, v)
+        return summarize_runs(runs)
+
+    def test_heading_includes_spec_model_n(self):
+        report = self._three_run_report()
+        md = render_variance_markdown(report)
+        assert "wordcount" in md
+        assert "pro" in md
+        assert "n=3" in md
+
+    def test_full_convergence_shows_check_headline(self):
+        report = self._three_run_report()
+        md = render_variance_markdown(report)
+        assert "✅" in md
+        assert "3 of 3 converged" in md
+        assert "100%" in md
+
+    def test_partial_convergence_shows_warning_headline(self):
+        runs = [
+            _make_result(verdict="satisfied"),
+            _make_result(verdict="paused", stop_reason="stuck"),
+            _make_result(verdict="satisfied"),
+        ]
+        report = summarize_runs(runs)
+        md = render_variance_markdown(report)
+        assert "⚠" in md
+        assert "2 of 3 converged" in md
+        assert "67%" in md
+
+    def test_timing_rollup_present(self):
+        report = self._three_run_report()
+        md = render_variance_markdown(report)
+        assert "## Timing" in md
+        assert "Total elapsed (median)" in md
+        assert "Iter duration (median)" in md
+
+    def test_stop_reason_section_when_any(self):
+        runs = [
+            _make_result(verdict="satisfied"),
+            _make_result(verdict="paused", stop_reason="stuck"),
+        ]
+        report = summarize_runs(runs)
+        md = render_variance_markdown(report)
+        assert "## Stop reasons" in md
+        assert "`stuck`" in md
+
+    def test_per_run_table_has_one_row_per_run(self):
+        report = self._three_run_report()
+        md = render_variance_markdown(report)
+        assert "## Per-run detail" in md
+        # The header row + 3 data rows + 1 separator row → at least 4
+        # `| 1 |`, `| 2 |`, `| 3 |` distinguishes data rows.
+        assert "| 1 |" in md
+        assert "| 2 |" in md
+        assert "| 3 |" in md
+
+    def test_partial_convergence_lists_timed_out_count(self):
+        runs = [
+            _make_result(verdict="satisfied"),
+            _make_result(verdict="paused", stop_reason="smoke_timeout",
+                         timed_out=True),
+        ]
+        report = summarize_runs(runs)
+        md = render_variance_markdown(report)
+        assert "1 timed out" in md
+
+
+class TestCLIReportFlag:
+    def test_run_report_flag_default_is_none(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["run", "--spec", "minimal", "--model", "flash"]
+        )
+        assert args.report is None
+
+    def test_run_report_flag_explicit(self, tmp_path):
+        parser = build_parser()
+        target = tmp_path / "summary.md"
+        args = parser.parse_args([
+            "run", "--spec", "minimal", "--model", "flash",
+            "--report", str(target),
+        ])
+        assert args.report == str(target)
+
+    def test_variance_report_flag_default_is_none(self):
+        parser = build_parser()
+        args = parser.parse_args(
+            ["variance", "--spec", "minimal", "--model", "flash"]
+        )
+        assert args.report is None
+
+    def test_variance_report_flag_explicit(self, tmp_path):
+        parser = build_parser()
+        target = tmp_path / "var.md"
+        args = parser.parse_args([
+            "variance", "--spec", "minimal", "--model", "flash",
+            "--report", str(target),
+        ])
+        assert args.report == str(target)

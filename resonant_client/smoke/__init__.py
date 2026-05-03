@@ -25,6 +25,7 @@ from .specs import SPECS, SmokeSpec, get_spec, list_spec_names
 from .runner import SmokeResult, run_smoke, MODELS
 from .variance import VarianceReport, run_variance, summarize_runs
 from .flaky import FlakyPlannerBackend
+from .report import render_run_markdown, render_variance_markdown
 
 __all__ = [
     "SPECS",
@@ -38,4 +39,6 @@ __all__ = [
     "run_variance",
     "summarize_runs",
     "FlakyPlannerBackend",
+    "render_run_markdown",
+    "render_variance_markdown",
 ]

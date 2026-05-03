@@ -97,18 +97,28 @@ make it opensource on github for everyone.
 
 **Concrete v0.5.6+ candidate:** Wire `WARNING:resonant_client.backends:Ollama 503` log lines into a WS event the GUI can render as an inline status: "Backend rate-limited, retrying (attempt 2/4)…"
 
-### Final spec (paste the spec block once it appears)
+### Final spec (after the truncation-then-continue retry)
 
-```markdown
-<paste the `## Final spec` block the grill produced>
-```
+> ⚠ **Major v0.5.6 finding:** the model's first attempt at the spec was TRUNCATED mid-sentence after the In-scope bullets — no Acceptance criteria, Out of scope, Time budget, Technical constraints, or Open risks. **The autonomous-mission dispatch card rendered anyway**, with budget options + Build button enabled — clicking it would have hit `extract_spec()` and failed with a parser error. I had to manually prompt "please continue and complete the spec" for the model to fill in the remaining sections. Backend-side this needs a "spec validity gate" before exposing the dispatch card.
+
+After the manual continue, the full spec is comprehensive and high-quality:
+
+- 4 key assumptions (named the Windows-dev-host Wine-untestable constraint explicitly)
+- 27 in-scope bullets
+- 9 explicit out-of-scope items (games, cross-distro, remote recipes, Snap/Flatpak, etc.)
+- Time budget: 4h
+- 10 technical constraints (Tauri v2 + Rust backend + Svelte stores, atomic file writes, etc.)
+- 6 `[bash]` acceptance criteria covering: `cargo build`, `cargo test`, `npm run build`, `cargo run --help` panic-free, 10 recipe YAML files exist + parse, every recipe satisfies the schema (required fields + valid compatibility + valid step types)
+- 6 open risks named
+
+Full spec persisted alongside this file as `2026-05-03-resonant-linux-bridge.spec.md`.
 
 **First-pass assessment:**
-- [ ] Acceptance criteria are concrete and testable (≥3 [bash] / [chrome] / [vision])
-- [ ] Time budget is reasonable for the scope (1h / 4h / 24h / full-auto)
-- [ ] In-scope / out-of-scope cleanly separated
-- [ ] Refined intent matches what was actually wanted (not "swallow whole vision")
-- [ ] **Specifically:** does the spec carve out a defensible v0.1 slice, or did it try to encompass the full distro?
+- [x] Acceptance criteria are concrete and testable (≥3 [bash]) — **6 [bash] criteria**, all binary
+- [x] Time budget is reasonable for the scope — **4h** matches the user's ask
+- [x] In-scope / out-of-scope cleanly separated — explicit 9-item out-of-scope list
+- [x] Refined intent matches what was actually wanted — **launcher-only v0.1 slice**, not the full distro vision
+- [x] **Specifically: defensible v0.1 slice** — Tauri+Svelte launcher with one canonical recipe + 9 stubs; games / cross-distro / distro itself all out
 
 ---
 

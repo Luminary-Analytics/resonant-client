@@ -8137,6 +8137,61 @@ body {
     border: 1px solid color-mix(in srgb, var(--err, #d92626) 50%, transparent);
 }
 
+/* ── v0.5.5a4: timing line + copy-roadmap-path button ─────────────── */
+
+.arm-timing {
+    display: flex;
+    gap: 6px;
+    align-items: baseline;
+    color: var(--muted);
+    font-size: 11px;
+    padding: 2px 0;
+}
+
+.arm-timing-label {
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: 10.5px;
+}
+
+.arm-timing-value {
+    color: var(--text);
+    font-weight: 500;
+}
+
+.arm-footer {
+    border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+    padding-top: 6px;
+    margin-top: 2px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.arm-copy-path-btn {
+    background: transparent;
+    border: 1px solid var(--border, color-mix(in srgb, var(--text) 18%, transparent));
+    color: var(--muted);
+    padding: 3px 10px;
+    border-radius: 999px;
+    font: inherit;
+    font-size: 10.5px;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease,
+                color var(--duration-fast) ease,
+                border-color var(--duration-fast) ease;
+}
+
+.arm-copy-path-btn:hover {
+    background: color-mix(in srgb, var(--text) 6%, transparent);
+    color: var(--text);
+}
+
+.arm-copy-path-btn-copied {
+    background: color-mix(in srgb, var(--ok, #2ea44f) 15%, transparent);
+    color: var(--ok, #2ea44f);
+    border-color: color-mix(in srgb, var(--ok, #2ea44f) 40%, transparent);
+}
+
 /* ── v0.5.5a2: Sidebar mission browser ────────────────────────────── */
 
 .autonomous-mission-browser {

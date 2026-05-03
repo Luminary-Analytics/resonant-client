@@ -1534,6 +1534,61 @@ class ResonantApp {
         }
         inspector.hidden = false;
         inspector.innerHTML = this._renderRoadmapInspectorHTML(data);
+        // v0.5.5a4 — wire the copy-path button. Uses navigator.clipboard
+        // (Promise-based; falls back to a status message on failure or
+        // when running outside a secure context).
+        const copyBtn = inspector.querySelector('.arm-copy-path-btn');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const path = copyBtn.dataset.path || '';
+                if (!path) return;
+                this._copyToClipboard(path).then(ok => {
+                    if (ok) {
+                        const orig = copyBtn.textContent;
+                        copyBtn.textContent = 'Copied!';
+                        copyBtn.classList.add('arm-copy-path-btn-copied');
+                        setTimeout(() => {
+                            copyBtn.textContent = orig;
+                            copyBtn.classList.remove('arm-copy-path-btn-copied');
+                        }, 1500);
+                    } else {
+                        this.showStatusMessage(
+                            'Could not copy to clipboard — path: ' + path
+                        );
+                    }
+                });
+            });
+        }
+    }
+
+    /**
+     * v0.5.5a4 — promise-based clipboard write with a graceful fallback
+     * for non-secure contexts (which lack navigator.clipboard). Returns
+     * a Promise<bool> indicating success.
+     */
+    _copyToClipboard(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            return navigator.clipboard.writeText(text)
+                .then(() => true)
+                .catch(() => false);
+        }
+        // Fallback: synchronous selection + execCommand. Older API but
+        // still works in non-secure contexts (e.g. file:// or some
+        // pywebview environments).
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            const ok = document.execCommand('copy');
+            document.body.removeChild(ta);
+            return Promise.resolve(ok);
+        } catch (_e) {
+            return Promise.resolve(false);
+        }
     }
 
     _renderRoadmapInspectorHTML(data) {
@@ -1606,6 +1661,35 @@ class ResonantApp {
             `
             : '';
 
+        // v0.5.5a4 — timing line for terminal-phase missions. Live
+        // missions hide it (the chat-header autonomous badge already
+        // shows live elapsed); terminal missions get "Ran for 3m 12s"
+        // since they're frozen. Also a copy-path footer that lets the
+        // user paste the roadmap.md path into their editor.
+        const elapsedSeconds = (typeof data.elapsed_seconds === 'number')
+            ? data.elapsed_seconds : null;
+        const timingHTML = (isTerminal && elapsedSeconds !== null)
+            ? `
+                <div class="arm-timing">
+                    <span class="arm-timing-label">Ran for</span>
+                    <span class="arm-timing-value">${this.escapeHtml(this._formatAutonomousAge(elapsedSeconds))}</span>
+                </div>
+            `
+            : '';
+
+        const roadmapPath = data.roadmap_path || '';
+        const footerHTML = roadmapPath
+            ? `
+                <div class="arm-footer">
+                    <button type="button" class="arm-copy-path-btn"
+                            data-path="${this.escapeHtml(roadmapPath)}"
+                            title="${this.escapeHtml(roadmapPath)}">
+                        Copy roadmap.md path
+                    </button>
+                </div>
+            `
+            : '';
+
         return `
             <div class="arm-inspector-header">
                 <span class="arm-inspector-icon" aria-hidden="true">∞</span>
@@ -1618,7 +1702,9 @@ class ResonantApp {
             </div>
             ${criteriaHTML ? `<ul class="arm-criteria-list">${criteriaHTML}</ul>` : ''}
             ${nextItemHTML}
+            ${timingHTML}
             ${reflectionHTML}
+            ${footerHTML}
         `;
     }
 

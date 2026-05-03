@@ -399,12 +399,29 @@ def build_roadmap_inspector_payload(
     `passed` (None/True/False), `is_blocking` (False for `[manual]`),
     and the type tag preserved. The frontend uses `is_blocking` to
     distinguish convergence-gating criteria from advisory ones.
+
+    v0.5.5a4: also surfaces `last_iteration_iso` (derived from the
+    most recent iteration log entry) and `elapsed_seconds` (started →
+    last iteration). For terminal-phase missions this gives the GUI
+    enough timing data to render "Ran for 3m 12s" in the inspector
+    header without having to parse roadmap.md client-side.
     """
     next_item = roadmap.next_unchecked_item()
     passed_count, total_blocking = roadmap.acceptance_summary()
     reflection = (roadmap.reflection_summary or "").strip()
     if reflection_max_chars and len(reflection) > reflection_max_chars:
         reflection = reflection[:reflection_max_chars].rstrip() + "…"
+
+    last_iter_iso = ""
+    if roadmap.iteration_log:
+        # Iteration log is append-only chronologically; the last entry
+        # is the most recent timestamp.
+        last_iter_iso = roadmap.iteration_log[-1].timestamp_iso
+
+    elapsed_seconds = _compute_elapsed_seconds(
+        started_iso=roadmap.started_iso,
+        last_iter_iso=last_iter_iso,
+    )
 
     return {
         "intent_id": intent_id,
@@ -414,6 +431,8 @@ def build_roadmap_inspector_payload(
         "status": roadmap.status,
         "time_budget_label": roadmap.time_budget_label,
         "started_iso": roadmap.started_iso,
+        "last_iteration_iso": last_iter_iso,
+        "elapsed_seconds": elapsed_seconds,
         "is_converged": roadmap.is_converged(),
         "acceptance_summary": {
             "passed": passed_count,
@@ -444,6 +463,30 @@ def build_roadmap_inspector_payload(
         "iteration_count": len(roadmap.iteration_log),
         "reflection_summary": reflection,
     }
+
+
+def _compute_elapsed_seconds(
+    *, started_iso: str, last_iter_iso: str,
+) -> Optional[float]:
+    """Best-effort start → last-iteration delta in seconds.
+
+    Returns None if either timestamp is missing or unparseable —
+    rather than guessing or returning 0, surface "we don't know"
+    so the GUI can render "-" instead of misleading data.
+    """
+    if not started_iso or not last_iter_iso:
+        return None
+    try:
+        from datetime import datetime
+        # Roadmap timestamps are ISO 8601 with Z suffix; strip the Z
+        # so fromisoformat (which gained Z support in 3.11 but is
+        # still picky on older runtimes) handles it.
+        start_dt = datetime.fromisoformat(started_iso.rstrip("Z"))
+        end_dt = datetime.fromisoformat(last_iter_iso.rstrip("Z"))
+        delta = (end_dt - start_dt).total_seconds()
+        return delta if delta >= 0 else None
+    except (ValueError, TypeError):
+        return None
 
 
 # v0.5.5a2 — phases the mission browser surfaces. autonomous_running

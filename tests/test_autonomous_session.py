@@ -949,6 +949,90 @@ class TestBuildRoadmapInspectorPayload:
         )
         assert payload["reflection_summary"] == "x" * 5000
 
+    # ── v0.5.5a4: timing fields ────────────────────────────────────
+
+    def test_last_iteration_iso_empty_when_no_log_entries(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # No iteration log entries yet.
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["last_iteration_iso"] == ""
+        assert payload["elapsed_seconds"] is None
+
+    def test_last_iteration_iso_picks_most_recent_log_entry(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # Append two log entries — the second is the "most recent".
+        roadmap_module.append_iteration_log(
+            rm, iter_num=1, duration_label="2m", note="first",
+        )
+        roadmap_module.append_iteration_log(
+            rm, iter_num=2, duration_label="3m", note="second",
+        )
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        # Both entries get the same ISO from time.gmtime() (within
+        # the same second). What matters: it equals the LAST entry's,
+        # not empty.
+        assert payload["last_iteration_iso"] == rm.iteration_log[-1].timestamp_iso
+        assert payload["last_iteration_iso"] != ""
+
+    def test_elapsed_seconds_computed_from_iso_strings(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        # Hand-set start + a synthetic log entry with a known offset.
+        rm.started_iso = "2026-05-03T10:00:00Z"
+        from resonant_client.gui.roadmap import IterationLogEntry
+        rm.iteration_log = [IterationLogEntry(
+            iter_num=1,
+            timestamp_iso="2026-05-03T10:03:30Z",
+            duration_label="3m 30s",
+            kind="shipped",
+            note="x",
+        )]
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        # 3 minutes 30 seconds = 210 seconds.
+        assert payload["elapsed_seconds"] == 210.0
+
+    def test_elapsed_seconds_none_for_unparseable_timestamps(self, tmp_path):
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        rm.started_iso = "not a real timestamp"
+        from resonant_client.gui.roadmap import IterationLogEntry
+        rm.iteration_log = [IterationLogEntry(
+            iter_num=1,
+            timestamp_iso="2026-05-03T10:03:30Z",
+            duration_label="-",
+            kind="shipped",
+            note="x",
+        )]
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        # Best-effort: don't fabricate a number, return None so the
+        # GUI renders "-".
+        assert payload["elapsed_seconds"] is None
+
+    def test_elapsed_seconds_none_when_negative_delta(self, tmp_path):
+        # Defensive: if the iteration timestamp is BEFORE the start
+        # (clock skew? hand-edited file?) treat as unknown rather
+        # than negative.
+        rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
+        rm.started_iso = "2026-05-03T10:00:00Z"
+        from resonant_client.gui.roadmap import IterationLogEntry
+        rm.iteration_log = [IterationLogEntry(
+            iter_num=1,
+            timestamp_iso="2026-05-03T09:00:00Z",  # before start
+            duration_label="-",
+            kind="shipped",
+            note="x",
+        )]
+        payload = build_roadmap_inspector_payload(
+            intent_id="i", roadmap=rm, roadmap_path=path,
+        )
+        assert payload["elapsed_seconds"] is None
+
 
 # ── v0.5.5a2: list_autonomous_missions ─────────────────────────────────
 

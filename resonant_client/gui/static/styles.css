@@ -6628,6 +6628,64 @@ body {
     margin-top: 8px;
 }
 
+/* v0.5.9a2 — per-iter cost + model attribution. Appended to the
+   iter card's footer when autonomous_iteration_cost arrives.
+   Surfaces v0.5.8a1's per-specialist routing (pro for REFLECT,
+   flash for IMPLEMENT, etc.) as a model-by-model breakdown. */
+.autonomous-iter-cost {
+    margin-top: 6px;
+    padding: 5px 10px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 4px 4px;
+    font-size: 11px;
+    color: var(--muted);
+}
+.autonomous-iter-cost-total {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+.autonomous-iter-cost-label {
+    color: var(--dim, var(--muted));
+    text-transform: lowercase;
+}
+.autonomous-iter-cost-value {
+    color: var(--text);
+    font-weight: 500;
+    font-family: var(--font-mono, monospace);
+}
+.autonomous-iter-cost-tokens {
+    margin-left: auto;
+    font-family: var(--font-mono, monospace);
+    color: var(--muted);
+}
+.autonomous-iter-cost-breakdown {
+    margin-top: 4px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.autonomous-iter-cost-model {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+    padding: 2px 6px;
+    background: var(--bg-elem);
+    border-radius: 3px;
+    font-size: 10.5px;
+}
+.autonomous-iter-cost-model code {
+    background: transparent;
+    color: var(--text);
+    padding: 0;
+    font-size: 10.5px;
+}
+.autonomous-iter-cost-model-cost {
+    color: var(--brand);
+    font-family: var(--font-mono, monospace);
+}
+
 .mission-build-hint {
     color: var(--muted);
     font-size: 12px;

@@ -148,6 +148,19 @@ class AppState:
         )
         self.costs = CostTracker()
         self._budget_alert_days: set[str] = set()
+        # v0.5.9a2 — per-iteration cost + model attribution. Updated
+        # from two layers: the chat-stream `status` event handler
+        # records each model's tokens; the autonomous-event forwarder
+        # opens/closes buckets at iteration boundaries. The bucket
+        # close emits an `autonomous_iteration_cost` event the GUI
+        # attaches to the iter card.
+        from .autonomous_iter_cost import AutonomousIterCostTracker
+        self.iter_cost_tracker = AutonomousIterCostTracker()
+        # The autonomous mission whose iteration is currently open.
+        # Set by the autonomous-event forwarder when iter_started
+        # fires, cleared on iter_complete/_failed. Status events
+        # check this before routing tokens to the tracker.
+        self._active_autonomous_intent_id: str = ""
         # Project instructions (RESONANT.md)
         self._project_instructions: str | None = None
         self._ws_ref = None
@@ -5626,16 +5639,79 @@ def _make_autonomous_event_forwarder(
         except Exception:
             logger.debug("autonomous emit raised", exc_info=True)
 
+        kind = payload.get("event", "")
+        intent_id = payload.get("intent_id", "")
+
+        # v0.5.9a2 — open / close / route per-iter cost buckets.
+        # iter_started → open the bucket + mark this intent as the
+        # active one for status routing. iter_complete / _failed →
+        # close the bucket + emit autonomous_iteration_cost with the
+        # accumulated breakdown.
+        try:
+            tracker = getattr(target_state, "iter_cost_tracker", None)
+            if tracker is not None and intent_id:
+                if kind == "autonomous_iteration_started":
+                    iter_count = int(payload.get("iter_count", 0) or 0)
+                    tracker.on_iteration_started(
+                        intent_id, iter_count,
+                        started_at=time.time(),
+                    )
+                    target_state._active_autonomous_intent_id = intent_id
+                elif kind in (
+                    "autonomous_iteration_complete",
+                    "autonomous_iteration_failed",
+                ):
+                    iter_count = int(payload.get("iter_count", 0) or 0)
+                    snap = tracker.on_iteration_finalized(
+                        intent_id, iter_count,
+                        finalized_at=time.time(),
+                    )
+                    if (target_state._active_autonomous_intent_id
+                            == intent_id):
+                        target_state._active_autonomous_intent_id = ""
+                    if snap is not None:
+                        # Emit a separate event so the GUI can
+                        # attach cost data to the iter card without
+                        # the daemon needing to know about cost
+                        # tracking. event-name distinct from the
+                        # iter event itself so old GUIs ignore it.
+                        cost_payload = {
+                            "event": "autonomous_iteration_cost",
+                            "intent_id": intent_id,
+                            **snap.to_payload(),
+                        }
+                        try:
+                            asyncio.run_coroutine_threadsafe(
+                                ws.send_json(cost_payload), loop,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "autonomous_iteration_cost emit raised",
+                                exc_info=True,
+                            )
+        except Exception:
+            logger.exception(
+                "iter_cost_tracker update raised for kind=%s", kind,
+            )
+
         # 2. On terminal events, update session-record phase. The
         # daemon already supplied the target phase as `new_phase` in
         # the payload (v0.5.6a3 contract).
-        kind = payload.get("event", "")
         if kind not in _AUTONOMOUS_TERMINAL_EVENTS:
             return
         new_phase = payload.get("new_phase", "")
         if not new_phase:
             return  # daemon didn't supply — defensive no-op
-        intent_id = payload.get("intent_id", "")
+        # v0.5.9a2 — also reset the cost tracker for this intent so
+        # buckets from this terminal mission don't haunt a future
+        # mission with the same intent_id (extremely unlikely but
+        # cheap to guard against).
+        try:
+            tracker = getattr(target_state, "iter_cost_tracker", None)
+            if tracker is not None and intent_id:
+                tracker.reset_intent(intent_id)
+        except Exception:
+            logger.debug("iter_cost_tracker reset raised", exc_info=True)
         try:
             sess = getattr(target_state, "project", None)
             cur = getattr(sess, "current_session", None) if sess else None
@@ -7712,6 +7788,25 @@ async def _run_session_streaming(
                     cost = state.costs.record_usage(model, in_tok, out_tok)
                     stats["cost_usd"] = round(cost, 6)
                     stats["session_cost_usd"] = state.costs.get_session_cost()["cost_usd"]
+                    # v0.5.9a2 — route this status event into the
+                    # active autonomous mission's per-iter bucket
+                    # if one is open. Sub-mission status events
+                    # carry the SUB intent_id; we route by the
+                    # active autonomous intent (set by the
+                    # autonomous-event forwarder on iter_started).
+                    try:
+                        active_intent = getattr(
+                            state, "_active_autonomous_intent_id", "",
+                        )
+                        if active_intent and state.iter_cost_tracker is not None:
+                            state.iter_cost_tracker.record_status(
+                                active_intent, model, in_tok, out_tok, cost,
+                            )
+                    except Exception:
+                        logger.debug(
+                            "iter_cost_tracker.record_status raised",
+                            exc_info=True,
+                        )
                     budget_alert = state.settings.get("cost_tracking", "budget_alert_usd", None)
                     today = date.today().isoformat()
                     today_cost = state.costs.get_daily_cost(today)["cost_usd"]

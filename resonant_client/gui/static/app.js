@@ -1417,6 +1417,70 @@ class ResonantApp {
     }
 
     /**
+     * v0.5.9a2 — per-iter cost + model attribution. Fires right
+     * after iter_complete / iter_failed; we attach the cost data
+     * to the matching iter card's footer so each iter shows what
+     * it actually cost. The breakdown surfaces v0.5.8a1's per-
+     * specialist routing: pro for REFLECT, flash for IMPLEMENT
+     * appears as two lines under the iter card.
+     */
+    handleAutonomousIterationCost(event) {
+        const iter = (event && event.iter_count) || 0;
+        if (!iter || !this.chatMessages) return;
+        // Find the matching iter card. May be inside a v0.5.8a3
+        // fold wrapper — querySelector descends through both.
+        const card = this.chatMessages.querySelector(
+            `.autonomous-iter-card[data-iter-count="${iter}"]`,
+        );
+        if (!card) return;
+
+        // Don't double-render if a previous cost line is already
+        // there (defensive; in practice each iter fires once).
+        const existing = card.querySelector('.autonomous-iter-cost');
+        if (existing) existing.remove();
+
+        const tokensIn = event.tokens_in || 0;
+        const tokensOut = event.tokens_out || 0;
+        const totalCost = event.cost_usd || 0;
+        const byModel = Array.isArray(event.by_model) ? event.by_model : [];
+
+        const cost = document.createElement('div');
+        cost.className = 'autonomous-iter-cost';
+        // The total + tokens line. Always shown.
+        const totalLine = `
+            <div class="autonomous-iter-cost-total">
+                <span class="autonomous-iter-cost-label">cost</span>
+                <span class="autonomous-iter-cost-value">$${totalCost.toFixed(4)}</span>
+                <span class="autonomous-iter-cost-tokens">${this._fmtTokens(tokensIn)} in / ${this._fmtTokens(tokensOut)} out</span>
+            </div>
+        `;
+        // Per-model breakdown. Only show if 2+ models contributed
+        // (multi-model = the v0.5.8a1 routing case worth surfacing).
+        let breakdownLine = '';
+        if (byModel.length > 1) {
+            const items = byModel.map(m => `
+                <span class="autonomous-iter-cost-model">
+                    <code>${this.escapeHtml(m.model || '')}</code>
+                    <span class="autonomous-iter-cost-model-cost">$${(m.cost_usd || 0).toFixed(4)}</span>
+                </span>
+            `).join('');
+            breakdownLine = `<div class="autonomous-iter-cost-breakdown">${items}</div>`;
+        }
+        cost.innerHTML = totalLine + breakdownLine;
+        card.appendChild(cost);
+    }
+
+    /**
+     * v0.5.9a2 — pretty-print token counts. 12,847 → "12.8k".
+     */
+    _fmtTokens(n) {
+        n = Math.max(0, Math.floor(n || 0));
+        if (n < 1000) return String(n);
+        if (n < 1_000_000) return `${(n / 1000).toFixed(1)}k`;
+        return `${(n / 1_000_000).toFixed(2)}M`;
+    }
+
+    /**
      * v0.5.9a1 — live daemon activity. The daemon transitions
      * through 6+ phases per iteration; this handler stashes the
      * latest phase in `_autonomousState.activity` and updates the
@@ -4007,6 +4071,15 @@ class ResonantApp {
             // sub-mission, parked waiting for them, or just between iters.
             case 'autonomous_activity':
                 this.handleAutonomousActivity(event);
+                break;
+            // v0.5.9a2 — per-iter cost + model attribution. Fires
+            // right after autonomous_iteration_complete /
+            // _failed; carries tokens, cost, by-model breakdown.
+            // Frontend attaches it to the matching iter card so
+            // each iter's footer shows what the iter actually cost
+            // (with v0.5.8a1's per-specialist routing made visible).
+            case 'autonomous_iteration_cost':
+                this.handleAutonomousIterationCost(event);
                 break;
             // v0.5.3a2 — orphan list refresh from server. Sent both
             // automatically (via init / after resume) and on demand

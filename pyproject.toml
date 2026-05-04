@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.5.9a1"
+version = "0.5.9a2"
 description = "Ollama-native agentic coding desktop app — purpose-built for DeepSeek and other open-source local models"
 readme = "README.md"
 license = {text = "Proprietary"}

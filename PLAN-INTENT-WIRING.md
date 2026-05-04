@@ -1,5 +1,7 @@
 # PLAN — Intent Wiring (Live Orchestrator Flow)
 
+> **Foundation cluster (pre-v0.2.0).** Shipped state preserved here for reference. See [ROADMAP.md](ROADMAP.md) → "Post-refocus state (v0.3.x → v0.5.9)" for the capability tracks that built on this foundation.
+>
 > Status: ✅ Shipped · 5 / 5 phases · 815 tests passing (+40 new) · 2026-04-27
 
 ## Shipped (2026-04-27)

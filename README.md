@@ -35,6 +35,26 @@ The product surface is shaped by the deepseek/Ollama path:
 - **`await_user` tool** so the agent can ask focused questions instead of cycling through speculative searches
 - **Spec dispatch** to the planner with the full structured spec, not just a paraphrase
 
+### Autonomous mission daemon (v0.5.x)
+- **Roadmap-driven outer loop** that picks unchecked items, dispatches Phase-1 sub-missions, runs REFLECT every K iters, and exits via 7 priority-ordered stop rules
+- **Resume after interrupt** — server restart / crash / sleep doesn't lose mission progress
+- **Human-in-the-loop forks** — when REFLECT can't autonomously decide (e.g. path-mismatch), the daemon parks and surfaces a structured decision card to the GUI
+- **Per-specialist Ollama routing** — pin pro for REFLECT/PLAN_DEEP, flash for IMPLEMENT/EXPLORE, via `general.specialist_model_overrides` in settings or `RESONANT_SPECIALIST_<NAME>_MODEL` env vars
+- **Pause-after-iter + Stop** — graceful (finish current iter, exit) vs abrupt (cancel in-flight)
+- **Live activity inspector** — header badge shows `running REFLECT · 12s` so you can tell stuck-vs-slow at a glance
+
+### Smoke harness (`resonant-smoke`)
+- `resonant-smoke run --spec wordcount --model pro` — single autonomous run against a bundled spec
+- `resonant-smoke variance --n 5` — per-spec convergence + iter-duration variance
+- `resonant-smoke baseline {set,list,show,rm}` + `--diff-baseline` flag — exit non-zero on regressions
+- `resonant-smoke ci` — curated suite for cron / GitHub Actions
+- 5 bundled specs: `minimal`, `wordcount`, `roguelite`, `jsonlines`, `refactor-py`
+
+### Diagnostics + cost tracking (v0.5.9+)
+- Per-iter cost attribution with per-model breakdown (e.g. pro for REFLECT + flash for IMPLEMENT shown as separate chips)
+- Daily cost tracking with budget alerts
+- **Help → Save Diagnostics ZIP** now bundles `costs.json`, per-iteration metadata files, and `mission-summary.json` index alongside the redacted logs
+
 ### Desktop GUI
 - Frameless native window via pywebview
 - Project picker per mission so the agent always writes where you expect

@@ -38,28 +38,36 @@ These should already be set up. If a prerequisite is missing, see [Setup from sc
 
 ### 1. Bump version
 
-Update `resonant_client/__init__.py`:
+Update `resonant_client/__init__.py` AND `pyproject.toml`:
 
 ```python
-__version__ = "0.2.1"   # was 0.2.0
+# resonant_client/__init__.py
+__version__ = "0.5.11"   # was 0.5.10
 ```
 
-The CI workflow has a sanity check that compares the tag against this value and fails the run if they don't match. Both `pyproject.toml` and `__init__.py` track version, but the CI sanity check reads only `__init__.py` — keep them in sync to avoid drift.
+```toml
+# pyproject.toml
+version = "0.5.11"
+```
+
+The CI workflow has a sanity check that compares the tag against `__init__.py` and fails the run if they don't match. Both files track version; the CI sanity check reads only `__init__.py` — keep them in sync to avoid drift. (The convention since v0.5.x has been to bump both atomically per alpha + GA.)
 
 ### 2. Commit + push to main
 
 ```bash
-git add resonant_client/__init__.py
-git commit -m "chore: bump version to 0.2.1"
+git add resonant_client/__init__.py pyproject.toml
+git commit -m "chore: bump version to 0.5.11"
 git push origin main
 ```
 
 ### 3. Tag + push the tag
 
 ```bash
-git tag v0.2.1
-git push origin v0.2.1
+git tag -a v0.5.11 -m "v0.5.11: <theme>"
+git push origin v0.5.11
 ```
+
+For alpha pre-releases use `v0.5.11a1`, `v0.5.11a2`, etc. — the workflow tag filter (`v*.*.*`) accepts both shapes.
 
 The tag MUST match `v[0-9]+.[0-9]+.[0-9]+` for the workflow's `on.push.tags` filter (`v*.*.*`) to fire.
 
@@ -77,10 +85,10 @@ After the run completes successfully:
 
 ```bash
 # Release exists with installer attached
-gh release view v0.2.1 --repo Luminary-Analytics/resonant-client
+gh release view v0.5.11 --repo Luminary-Analytics/resonant-client
 
 # Appcast updated with new entry
-curl -s https://luminary-analytics.github.io/resonant-client/appcast.xml | grep -A2 "0.2.1"
+curl -s https://luminary-analytics.github.io/resonant-client/appcast.xml | grep -A2 "0.5.11"
 ```
 
 ### 6. (Optional) Smoke-test the installer
@@ -335,13 +343,13 @@ Initial pushes failed because `rbellantoni85` was the active `gh` account but di
 
 ```bash
 # Cut a release
-git tag v0.2.1 && git push origin v0.2.1
+git tag -a v0.5.11 -m "v0.5.11: <theme>" && git push origin v0.5.11
 
 # Watch CI
 gh run watch --repo Luminary-Analytics/resonant-client
 
 # View the release
-gh release view v0.2.1 --repo Luminary-Analytics/resonant-client
+gh release view v0.5.11 --repo Luminary-Analytics/resonant-client
 
 # Verify appcast is updated
 curl -s https://luminary-analytics.github.io/resonant-client/appcast.xml | head -20

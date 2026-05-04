@@ -1,5 +1,7 @@
 # PLAN — Computer-Use Upgrades
 
+> **Foundation cluster (pre-v0.2.0).** Shipped state preserved here for reference. See [ROADMAP.md](ROADMAP.md) → "Post-refocus state (v0.3.x → v0.5.9)" for the capability tracks that built on this foundation.
+>
 > Status: ✅ Shipped · Tasks: 8 / 8 · Last verified: 2026-04-26
 
 ## Objective

@@ -1287,6 +1287,9 @@ class ResonantApp {
         const s = this._ensureAutonomousState(event);
         s.iterCount = (event && event.iter_count) || s.iterCount;
         s.lastVerdict = isComplete ? 'satisfied' : (event && event.stop_reason) || 'paused';
+        // v0.5.9a1 — clear the activity line so the post-run badge
+        // doesn't show "running REFLECT · 8m elapsed" forever.
+        s.activity = null;
 
         // Stop the live-update tick and dismiss the badge.
         if (this._autonomousBadgeTimer) {
@@ -1411,6 +1414,37 @@ class ResonantApp {
             this.chatMessages.appendChild(card);
             this.scrollToBottom?.();
         }
+    }
+
+    /**
+     * v0.5.9a1 — live daemon activity. The daemon transitions
+     * through 6+ phases per iteration; this handler stashes the
+     * latest phase in `_autonomousState.activity` and updates the
+     * badge so the user can see "Currently: reflecting · 12s" in
+     * real time. Solves the "is it stuck or just slow?" diagnostic
+     * during long-running missions.
+     */
+    handleAutonomousActivity(event) {
+        const s = this._ensureAutonomousState(event);
+        // Per-phase fields the daemon emits.
+        s.activity = {
+            phase: (event && event.phase) || '',
+            detail: (event && event.detail) || '',
+            specialist: (event && event.specialist) || '',
+            started_iso: (event && event.started_iso) || '',
+            iter_count: (event && event.iter_count) || s.iterCount,
+        };
+        // Compute a client-side "started_at_epoch" so the periodic
+        // badge re-paint can show "12s" elapsed without re-fetching.
+        if (s.activity.started_iso) {
+            const epoch = Math.floor(
+                new Date(s.activity.started_iso).getTime() / 1000,
+            );
+            if (Number.isFinite(epoch)) {
+                s.activity.started_at = epoch;
+            }
+        }
+        this._updateAutonomousBadgeState();
     }
 
     /**
@@ -2589,7 +2623,49 @@ class ResonantApp {
         const costStr = this._fmtAutonomousCost();
         if (costStr) parts.push(costStr);
 
+        // v0.5.9a1 — live activity. When the daemon emits a phase
+        // transition, the badge surfaces "running REFLECT · 12s" so
+        // the user can tell at a glance what's happening RIGHT NOW
+        // — the killer "is it stuck or just slow" diagnostic for
+        // multi-hour runs.
+        const activityStr = this._fmtAutonomousActivity();
+        if (activityStr) parts.push(activityStr);
+
         phaseEl.textContent = parts.join(' · ') || 'starting…';
+    }
+
+    /**
+     * v0.5.9a1 — short label for the daemon's current phase, with
+     * elapsed time on this phase. Returns "" if no activity has
+     * been received yet.
+     */
+    _fmtAutonomousActivity() {
+        const s = this._autonomousState || {};
+        const a = s.activity;
+        if (!a || !a.phase) return '';
+        // Friendly labels for each phase. Open-vocabulary on the
+        // backend side, but the common cases get a tidy mapping;
+        // unknown phases pass through as-is.
+        const PHASE_LABELS = {
+            picking: 'picking item',
+            dispatching: 'dispatching',
+            waiting_dispatch: 'running sub-mission',
+            reflecting: 'running REFLECT',
+            tick_pause: 'between iters',
+            parked: 'awaiting your decision',
+            idle: '',
+        };
+        const friendly = PHASE_LABELS[a.phase] !== undefined
+            ? PHASE_LABELS[a.phase] : a.phase;
+        if (!friendly) return '';
+        // Elapsed-on-phase, computed client-side from the started_at
+        // epoch so the badge ticks live without re-fetching.
+        let elapsedStr = '';
+        if (typeof a.started_at === 'number') {
+            const elapsed = Math.max(0, (Date.now() / 1000) - a.started_at);
+            elapsedStr = ` ${this._fmtDuration(elapsed)}`;
+        }
+        return `${friendly}${elapsedStr}`;
     }
 
     /**
@@ -3922,6 +3998,15 @@ class ResonantApp {
                 // No-op surface event — confirms the WS round-trip.
                 // The daemon-side `_received` event arrives separately
                 // and is the actual signal that work resumed.
+                break;
+            // v0.5.9a1 — live daemon activity. Fires at every phase
+            // transition (picking → dispatching → waiting_dispatch →
+            // reflecting → tick_pause → parked). The frontend renders
+            // a "Currently: <phase> · <ago>" line so the user can tell
+            // whether the daemon is actively working, blocked on the
+            // sub-mission, parked waiting for them, or just between iters.
+            case 'autonomous_activity':
+                this.handleAutonomousActivity(event);
                 break;
             // v0.5.3a2 — orphan list refresh from server. Sent both
             // automatically (via init / after resume) and on demand

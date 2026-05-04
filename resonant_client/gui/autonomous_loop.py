@@ -273,6 +273,23 @@ class AutonomousMissionDaemon:
         # subsequent passes.
         self._pending_decision_context: str = ""
 
+        # v0.5.9a1 — live-activity tracking. The daemon transitions
+        # through a small set of phases during one iteration (picking
+        # an item → dispatching → waiting → reflecting → tick-pause)
+        # plus the parked phase for human-decision-required. Each
+        # transition emits `autonomous_activity` so the GUI can show
+        # "what is the daemon doing RIGHT NOW" — the killer
+        # diagnostic for "is it stuck or just slow" during long runs.
+        # `_activity` is also surfaced via state_snapshot for tests
+        # and anything that polls.
+        self._activity: dict = {
+            "phase": "idle",       # idle/picking/dispatching/waiting_dispatch/reflecting/parked/tick_pause
+            "detail": "",          # short context line
+            "specialist": "",      # if applicable (e.g. "reflect" while reflecting)
+            "started_iso": "",     # when this phase started
+            "iter_count": 0,
+        }
+
     # ── Public API ────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -398,6 +415,7 @@ class AutonomousMissionDaemon:
                 time.time() - self._started_at
                 if self._started_at else 0.0
             )
+            activity_copy = dict(self._activity)
             return {
                 "intent_id": self.config.intent_id,
                 "iter_count": self._iter_count,
@@ -408,7 +426,52 @@ class AutonomousMissionDaemon:
                 "check_failed_streak": self._check_failed_streak,
                 "is_running": self.is_running(),
                 "stop_reason": self._stop_reason,
+                # v0.5.9a1 — live activity (phase + detail + specialist
+                # + started_iso) so polling clients can render the
+                # "what's the daemon doing right now" line.
+                "activity": activity_copy,
             }
+
+    def _set_activity(
+        self,
+        phase: str,
+        *,
+        detail: str = "",
+        specialist: str = "",
+        emit: bool = True,
+    ) -> None:
+        """v0.5.9a1 — record the current phase + emit an
+        `autonomous_activity` event so the GUI's live-activity panel
+        updates. Thread-safe; safe to call from the daemon thread or
+        any callback the daemon owns.
+
+        `phase`: one of "idle", "picking", "dispatching",
+        "waiting_dispatch", "reflecting", "parked", "tick_pause", or
+        any future label. Open-vocabulary on purpose — the GUI
+        renders whatever string we send + a colored dot.
+
+        `detail`: one-line free-form context (e.g. "T1.2 — first
+        scaffold item", or "blocked-streak 2/3").
+
+        `specialist`: when applicable, the NodeSpecialization.value
+        (e.g. "reflect", "implement"). Empty for daemon-internal
+        phases like tick_pause.
+
+        Set `emit=False` to update internal state without firing an
+        event (e.g. when batching multiple updates within one phase).
+        """
+        started_iso = _now_iso()
+        with self._lock:
+            self._activity = {
+                "phase": phase,
+                "detail": detail,
+                "specialist": specialist,
+                "started_iso": started_iso,
+                "iter_count": self._iter_count,
+            }
+            payload = dict(self._activity)
+        if emit:
+            self._emit("autonomous_activity", payload)
 
     # ── Iteration loop (runs in the daemon thread) ────────────────
 
@@ -434,6 +497,10 @@ class AutonomousMissionDaemon:
                     self._emit_stop(*stop)
                     return
 
+                # v0.5.9a1 — activity tick: top of iteration.
+                self._set_activity("picking",
+                    detail="loading roadmap + selecting next item")
+
                 rm = self._load_roadmap()
 
                 # Misconfiguration: no acceptance criteria means
@@ -452,6 +519,9 @@ class AutonomousMissionDaemon:
                 # items.
                 item = rm.next_unchecked_item()
                 if item is None:
+                    self._set_activity("reflecting",
+                        detail="roadmap empty — checking convergence",
+                        specialist="reflect")
                     full = self._run_full_reflect(rm)
                     if full.verdict == "satisfied":
                         self._emit_stop(
@@ -515,6 +585,9 @@ class AutonomousMissionDaemon:
 
                 # Full reflect every K iterations.
                 if self._iter_count % self.config.full_reflect_cadence == 0:
+                    self._set_activity("reflecting",
+                        detail=f"full REFLECT pass after iter {self._iter_count}",
+                        specialist="reflect")
                     rm = self._load_roadmap()
                     full = self._run_full_reflect(rm)
                     if full.verdict == "satisfied":
@@ -534,6 +607,11 @@ class AutonomousMissionDaemon:
                     else:
                         self._blocked_streak = 0
 
+                # v0.5.9a1 — between iterations, brief pause so the
+                # GUI sees the "tick" phase rather than thinking the
+                # daemon is stuck on the previous specialist.
+                self._set_activity("tick_pause",
+                    detail=f"between iter {self._iter_count} and {self._iter_count + 1}")
                 self._tick_pause_or_stop()
 
         except Exception as exc:
@@ -604,6 +682,12 @@ class AutonomousMissionDaemon:
             "item_title": item.title,
         })
 
+        # v0.5.9a1 — dispatching phase. Brief; the next phase
+        # transition (waiting_dispatch) fires immediately after.
+        self._set_activity("dispatching",
+            detail=f"{item.id}: {item.title[:60]}",
+            specialist="implement")
+
         try:
             handle = self.hooks.dispatch_item(item)
         except Exception as exc:
@@ -618,6 +702,14 @@ class AutonomousMissionDaemon:
 
         with self._lock:
             self._in_flight_handle = handle
+
+        # v0.5.9a1 — actively waiting on the sub-mission. The
+        # IntentService's tool calls flow to the GUI via on_session_event
+        # (separate stream); this activity-line is the daemon's own
+        # "still here, blocked on wait_for_dispatch" heartbeat.
+        self._set_activity("waiting_dispatch",
+            detail=f"{item.id}: sub-mission running",
+            specialist="implement")
 
         try:
             outcome = self.hooks.wait_for_dispatch(handle)
@@ -807,6 +899,15 @@ class AutonomousMissionDaemon:
                     "iter_count": self._iter_count,
                     "request": outcome.decision_request,
                 })
+                # v0.5.9a1 — parked phase. The daemon is intentionally
+                # blocked here waiting for the user; this differs from
+                # waiting_dispatch (waiting on the sub-mission) and
+                # tick_pause (between iterations). The GUI distinguishes
+                # all three so the user can tell at a glance whether
+                # THEY are the bottleneck.
+                self._set_activity("parked",
+                    detail=outcome.decision_request.get("question", "")[:80],
+                    specialist="reflect")
                 proceeded = self._wait_for_decision()
                 if not proceeded:
                     # Daemon being torn down. Return the outcome as-is;

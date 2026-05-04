@@ -7997,6 +7997,30 @@ body {
     cursor: not-allowed;
 }
 
+/* v0.5.9a4 — Pause button. Sits to the LEFT of Stop. Yellow-warn
+   styling so it reads as the lighter, graceful affordance vs Stop's
+   red. */
+.mission-badge-pause {
+    margin-left: 4px;
+    padding: 2px 8px;
+    background: color-mix(in srgb, var(--warn, #d4a017) 60%, transparent);
+    color: #fff;
+    border: 1px solid color-mix(in srgb, var(--warn, #d4a017) 80%, transparent);
+    border-radius: 999px;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) ease;
+}
+.mission-badge-pause:hover:not(:disabled) {
+    background: var(--warn, #d4a017);
+}
+.mission-badge-pause:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
 .mission-badge[data-phase="autonomous_running"] {
     border-color: var(--brand);
 }

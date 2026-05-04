@@ -6475,6 +6475,51 @@ async def websocket_endpoint(ws: WebSocket):
                 # Daemon will emit `autonomous_mission_paused` itself;
                 # nothing else to do here.
 
+            elif command == "autonomous_mission_pause":
+                # v0.5.9a4 — pause-after-current-iter. Distinct from
+                # autonomous_mission_stop which cancels in-flight.
+                # Daemon completes the current iter + reflection,
+                # then exits with stop_reason="user_pause". UX: lets
+                # the user "stop after this completes" without losing
+                # the iter's work.
+                target_intent = (msg.get("intent_id") or "").strip()
+                if not target_intent and state.project.current_session:
+                    ms = state.project.current_session.mission_state or {}
+                    target_intent = ms.get("intent_id", "")
+                if not target_intent:
+                    await ws.send_json({
+                        "event": "error",
+                        "message": "intent_id required (or active mission)",
+                    })
+                    continue
+                daemon = _get_autonomous_daemon(state, target_intent)
+                if daemon is None:
+                    await ws.send_json({
+                        "event": "error",
+                        "message": (
+                            f"No active autonomous daemon for intent "
+                            f"{target_intent}"
+                        ),
+                    })
+                    continue
+                try:
+                    daemon.pause_after_iter("user clicked Pause")
+                except Exception as exc:
+                    logger.exception("pause_after_iter raised")
+                    await ws.send_json({
+                        "event": "error",
+                        "message": f"Failed to schedule pause: {exc}",
+                    })
+                    continue
+                # Acknowledge so the GUI can flip the badge state to
+                # "pausing — finishing current iter…". Daemon emits
+                # autonomous_mission_paused once the current iter
+                # completes.
+                await ws.send_json({
+                    "event": "autonomous_pause_scheduled",
+                    "intent_id": target_intent,
+                })
+
             elif command == "autonomous_mission_decision":
                 # v0.5.8a2 — User picked an option on the
                 # human-decision-required card. Look up the daemon by

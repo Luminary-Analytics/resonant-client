@@ -2653,18 +2653,28 @@ class ResonantApp {
             badge.id = 'mission-badge';
             badge.className = 'mission-badge mission-badge-autonomous';
             badge.dataset.phase = 'autonomous_running';
+            // v0.5.9a4 — Pause + Stop are now separate affordances.
+            // Pause = graceful "finish current iter then stop", no
+            // tool calls cancelled mid-flight. Stop = abrupt cancel.
+            // Pause is the lighter touch users want for "I just
+            // need to look at this before continuing"; Stop is for
+            // "kill it now".
             badge.innerHTML = `
                 <span class="mission-badge-icon" aria-hidden="true">∞</span>
                 <span class="mission-badge-text">
                     <span class="mission-badge-label">Autonomous</span>
                     <span class="mission-badge-phase">starting…</span>
                 </span>
+                <button type="button" class="mission-badge-pause"
+                    title="Finish the current iteration then pause cleanly">Pause</button>
                 <button type="button" class="mission-badge-stop"
-                    title="Stop after current iteration completes">Stop</button>
+                    title="Stop now — cancels any in-flight tool calls">Stop</button>
             `;
             header.appendChild(badge);
             const stopBtn = badge.querySelector('.mission-badge-stop');
             stopBtn.addEventListener('click', () => this._handleAutonomousStopClick());
+            const pauseBtn = badge.querySelector('.mission-badge-pause');
+            pauseBtn.addEventListener('click', () => this._handleAutonomousPauseClick());
         }
 
         // Re-paint from cached state (set by autonomous_* handlers).
@@ -2799,10 +2809,12 @@ class ResonantApp {
     _handleAutonomousStopClick() {
         const s = this._autonomousState || {};
         if (!s.intentId) return;
+        // v0.5.9a4 — clarified copy: Stop is the abrupt one. Pause
+        // is the graceful affordance for the lighter touch.
         const ok = confirm(
-            'Stop the autonomous mission after the current iteration ' +
-            'completes? In-flight tool calls will finish first; the ' +
-            'roadmap state will be saved.'
+            'Stop the autonomous mission NOW? In-flight tool calls ' +
+            'will be cancelled. For a graceful "finish current iter ' +
+            'then stop", click Pause instead.'
         );
         if (!ok) return;
         this.send({
@@ -2816,6 +2828,36 @@ class ResonantApp {
         if (stopBtn) {
             stopBtn.disabled = true;
             stopBtn.textContent = 'Stopping…';
+        }
+        const pauseBtn = document.querySelector('.mission-badge-pause');
+        if (pauseBtn) pauseBtn.disabled = true;
+    }
+
+    /**
+     * v0.5.9a4 — graceful pause. Distinct from Stop. The daemon
+     * completes the current iteration + reflection cycle then
+     * exits. Useful for "I want to look at what just shipped
+     * before continuing" without losing the in-flight work.
+     */
+    _handleAutonomousPauseClick() {
+        const s = this._autonomousState || {};
+        if (!s.intentId) return;
+        const ok = confirm(
+            'Pause after the current iteration completes? In-flight ' +
+            'tool calls will finish naturally; the daemon stops at ' +
+            'the next safe point. You can resume from the orphan ' +
+            'banner.'
+        );
+        if (!ok) return;
+        this.send({
+            command: 'autonomous_mission_pause',
+            intent_id: s.intentId,
+        });
+        // Optimistic UI.
+        const pauseBtn = document.querySelector('.mission-badge-pause');
+        if (pauseBtn) {
+            pauseBtn.disabled = true;
+            pauseBtn.textContent = 'Pausing…';
         }
     }
 

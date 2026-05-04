@@ -252,6 +252,16 @@ class AutonomousMissionDaemon:
         self._stop_reason: str = ""
         self._stop_message: str = ""
 
+        # v0.5.9a4 — pause-after-current-iter. Distinct from `stop()`
+        # which cancels mid-flight. When set, the next call to
+        # `_check_stop_rules` (at the TOP of the next iteration)
+        # returns ("user_pause", message) so the daemon exits
+        # cleanly AFTER the current iter completes its dispatch +
+        # reflection. UX: lets the user "stop after this completes"
+        # without losing the work-in-progress.
+        self._pause_after_iter: bool = False
+        self._pause_message: str = ""
+
         # Iteration state (read by tests + emitted in events).
         self._iter_count = 0
         self._started_at: float = 0.0
@@ -337,6 +347,26 @@ class AutonomousMissionDaemon:
         # If the daemon was parked waiting on a decision, wake the
         # wait-loop so it can observe the stop and exit cleanly.
         self._decision_event.set()
+
+    def pause_after_iter(self, message: str = "user paused") -> None:
+        """v0.5.9a4 — request a graceful pause AFTER the current iter
+        completes. Distinct from `stop()` which cancels in-flight.
+
+        Sets `_pause_after_iter=True`; the next top-of-loop stop-rule
+        check returns ("user_pause", message). The current iter
+        finishes its dispatch + reflection; the daemon exits cleanly
+        after that.
+
+        Lower priority than user_stop, time_budget, iteration_cap so
+        a pause request doesn't override a more urgent stop rule.
+
+        Thread-safe; safe to call multiple times (only the first
+        message wins; subsequent calls are no-ops).
+        """
+        with self._lock:
+            if not self._pause_after_iter:
+                self._pause_after_iter = True
+                self._pause_message = message or "user paused"
 
     def provide_decision(
         self, option_id: str, response_text: str = "",
@@ -660,6 +690,15 @@ class AutonomousMissionDaemon:
                 f"{self._iter_count} iterations ≥ cap "
                 f"{self.config.max_iterations}",
             )
+
+        # 4. v0.5.9a4 — user-requested pause-after-iter. Lower
+        # priority than the above three so a more-urgent stop wins.
+        # Fires at the TOP of the iteration that follows the pause
+        # request, so the iteration in progress when pause was
+        # called completes naturally first.
+        with self._lock:
+            if self._pause_after_iter:
+                return ("user_pause", self._pause_message or "user paused")
 
         return None
 

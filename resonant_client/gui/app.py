@@ -5090,10 +5090,48 @@ class AppState:
             )
 
         models = info.get("models") or []
-        selected_model = model or (models[0] if models else "")
+        selected_model = model or self._resolve_default_model(models)
         spec = BackendSpec(backend_type="ollama", model=selected_model)
         spec.url = info.get("url", "")
         return spec
+
+    def _resolve_default_model(self, models: list[str]) -> str:
+        """v0.5.7a1 — when no explicit model is supplied, honor the
+        user-configured `general.default_model` setting if it's
+        present in the detected models list (case-insensitive).
+        Falls through to the previous behavior (first detected
+        model) when the configured value is missing or unavailable.
+
+        Linux-bridge field-observation #4: project switches were
+        landing on `models[0]` (typically deepseek-v4-flash by
+        Ollama's tag ordering) instead of the user's pinned
+        `deepseek-v4-pro:cloud` default. The `apply_safe_default_backend`
+        path only sets `default_model` once on first launch, so the
+        setting was correct — it just wasn't being read at session-
+        construction time.
+        """
+        if not models:
+            return ""
+        try:
+            configured = str(
+                self.settings.get("general", "default_model", "") or ""
+            ).strip()
+        except Exception:
+            configured = ""
+        if not configured:
+            return models[0]
+        # Case-insensitive lookup so `Deepseek-V4-Pro:Cloud` etc. don't
+        # silently miss. Return the canonical form from the models list
+        # so the spec carries the exact tag Ollama returned.
+        configured_lower = configured.lower()
+        for m in models:
+            if m.lower() == configured_lower:
+                return m
+        # Configured model isn't currently available (not pulled, not
+        # in CLOUD_MODELS, etc.). Fall back to first detected so the
+        # session can still spin up — silent fallback matches the
+        # pre-v0.5.7 behavior so we don't introduce a new failure mode.
+        return models[0]
 
     def build_session(
         self,

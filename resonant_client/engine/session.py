@@ -22,6 +22,7 @@ from ..backends import (
     EVENT_TOOL_CALL,
     EVENT_DONE,
     EVENT_ERROR,
+    EVENT_BACKEND_STATUS,
 )
 from ..events import EngineEvent, make_event
 from .tools import AGENT_TOOLS, execute_tool, get_tool_icon
@@ -797,6 +798,15 @@ class Session:
                                         total_elapsed=time.time() - total_start,
                                         total_steps=exec_step)
                         return
+
+                    elif event_type == EVENT_BACKEND_STATUS:
+                        # v0.5.6a1 — backend-emitted operational status
+                        # (e.g. transparent 503 retry on Ollama Cloud).
+                        # Forward verbatim so downstream (autonomous-
+                        # mission daemon, GUI) can surface "still
+                        # alive, retrying" rather than leaving users
+                        # staring at a stalled "thinking" counter.
+                        yield make_event(EngineEvent.BACKEND_STATUS, **data)
 
             except KeyboardInterrupt:
                 self.cancel()

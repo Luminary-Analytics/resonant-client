@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import patch, MagicMock
 
 from resonant_client.backends import (
+    EVENT_BACKEND_STATUS,
     _convert_tools_for_ollama,
     _detect_json_tool_calls,
     _detect_text_tool_calls,
@@ -844,3 +845,165 @@ class TestWithConftestFixtures:
         # mock_ollama_backend uses llama3.1:8b
         result = mock_ollama_backend._detect_tool_support()
         assert result is True
+
+
+# ── v0.5.6a1: Backend status surfacing for Ollama 503 retries ─────────
+
+
+class TestOpenChatStreamWithRetryNotify:
+    """`_open_chat_stream_with_retry` accepts a `notify_retry` callback
+    that fires once per retry attempt with a structured payload. The
+    callback's role is to let the engine layer surface "still alive,
+    retrying" status events to the GUI — without this hook, retries
+    are completely silent and users assume the daemon hung.
+
+    Tests stub the httpx layer to deterministically trigger 503 → 200
+    sequences without any network."""
+
+    @pytest.fixture
+    def backend(self):
+        return OllamaBackend("http://stub", "llama3.1:8b")
+
+    def _make_response(self, status_code, body=""):
+        """A minimal stand-in for httpx's Response inside a context."""
+        resp = MagicMock()
+        resp.status_code = status_code
+        resp.read = MagicMock(return_value=body.encode())
+        # `with client.stream(...) as resp:` exits cleanly
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=resp)
+        cm.__exit__ = MagicMock(return_value=None)
+        return cm
+
+    def _make_client_stub(self, responses):
+        """Build an httpx.Client stand-in that yields a queued response
+        per call to `.stream(...)`. Each `responses` entry is a (status,
+        body) tuple."""
+        responses_iter = iter(responses)
+        client = MagicMock()
+
+        def _stream(method, url, **kwargs):
+            status, body = next(responses_iter)
+            return self._make_response(status, body)
+
+        client.stream = _stream
+        return client
+
+    def _patch_client_factory(self, sequence):
+        """Patch httpx.Client so each constructor call returns a stub
+        backed by ONE response (which httpx in real life would emit
+        sequentially — we mimic by constructing fresh each time)."""
+        sequence_iter = iter(sequence)
+
+        def _factory(*args, **kwargs):
+            status, body = next(sequence_iter)
+            return self._make_client_stub([(status, body)])
+
+        return patch("httpx.Client", side_effect=_factory)
+
+    @pytest.mark.unit
+    def test_no_retry_no_notify(self, backend):
+        """200 OK on first try → notify_retry is never called."""
+        notify_calls = []
+        with self._patch_client_factory([(200, '{"ok":true}')]), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            with backend._open_chat_stream_with_retry(
+                payload={}, stream_timeout=None, cancel_event=None,
+                notify_retry=notify_calls.append,
+            ) as (client, resp):
+                assert resp.status_code == 200
+        assert notify_calls == []
+
+    @pytest.mark.unit
+    def test_503_then_200_emits_one_retry_notify(self, backend):
+        """503 → 200 sequence: notify fires exactly once with the 503
+        details. Final yielded response is the 200."""
+        notify_calls = []
+        with self._patch_client_factory([
+            (503, '{"error":"Server overloaded"}'),
+            (200, '{"ok":true}'),
+        ]), patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            with backend._open_chat_stream_with_retry(
+                payload={}, stream_timeout=None, cancel_event=None,
+                notify_retry=notify_calls.append,
+            ) as (client, resp):
+                assert resp.status_code == 200
+        assert len(notify_calls) == 1
+        ev = notify_calls[0]
+        assert ev["kind"] == "ollama_retry"
+        assert ev["status_code"] == 503
+        assert ev["attempt"] == 1
+        assert ev["max"] >= 2  # at least 1 retry + first attempt
+        assert ev["model"] == "llama3.1:8b"
+        assert ev["backoff_seconds"] > 0
+        assert "Server overloaded" in ev["body_preview"]
+
+    @pytest.mark.unit
+    def test_consecutive_5xx_emit_multiple_retry_notifies(self, backend):
+        """503 → 502 → 200 sequence: notify fires twice, with the
+        attempt counter advancing each time."""
+        notify_calls = []
+        with self._patch_client_factory([
+            (503, "overloaded"),
+            (502, "bad gateway"),
+            (200, '{"ok":true}'),
+        ]), patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            with backend._open_chat_stream_with_retry(
+                payload={}, stream_timeout=None, cancel_event=None,
+                notify_retry=notify_calls.append,
+            ) as (client, resp):
+                assert resp.status_code == 200
+        assert len(notify_calls) == 2
+        assert notify_calls[0]["status_code"] == 503
+        assert notify_calls[0]["attempt"] == 1
+        assert notify_calls[1]["status_code"] == 502
+        assert notify_calls[1]["attempt"] == 2
+        # Backoff should grow (exponential)
+        assert notify_calls[1]["backoff_seconds"] > notify_calls[0]["backoff_seconds"]
+
+    @pytest.mark.unit
+    def test_notify_callback_exception_does_not_break_retry(self, backend):
+        """A misbehaving notify_retry must not break the retry loop —
+        the GUI is downstream of the backend, not the other way round."""
+        def bad_notify(_):
+            raise RuntimeError("GUI crashed")
+
+        with self._patch_client_factory([
+            (503, "overloaded"),
+            (200, '{"ok":true}'),
+        ]), patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            with backend._open_chat_stream_with_retry(
+                payload={}, stream_timeout=None, cancel_event=None,
+                notify_retry=bad_notify,
+            ) as (client, resp):
+                assert resp.status_code == 200
+
+    @pytest.mark.unit
+    def test_notify_retry_optional(self, backend):
+        """Passing notify_retry=None (the default) must work — old
+        callers that didn't know about the parameter shouldn't break."""
+        with self._patch_client_factory([
+            (503, "overloaded"),
+            (200, '{"ok":true}'),
+        ]), patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            with backend._open_chat_stream_with_retry(
+                payload={}, stream_timeout=None, cancel_event=None,
+            ) as (client, resp):
+                assert resp.status_code == 200
+
+
+class TestBackendStatusEventConstant:
+    """Pin the event-type constant + the payload shape contract so a
+    rename or refactor downstream of this fix doesn't silently break the
+    GUI handler."""
+
+    @pytest.mark.unit
+    def test_event_constant_value(self):
+        # Backend yields tuples like (event_type, data); the consumer
+        # in engine/session.py compares against EVENT_BACKEND_STATUS.
+        assert EVENT_BACKEND_STATUS == "backend.status"
+
+    @pytest.mark.unit
+    def test_engine_event_alias_matches(self):
+        from resonant_client.events import EngineEvent
+        assert EngineEvent.BACKEND_STATUS.value == "backend.status"

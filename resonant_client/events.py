@@ -57,6 +57,17 @@ class EngineEvent(str, Enum):
     STATUS = "status"                         # Model info, token counts, timing
     ERROR = "error"                           # Error occurred
 
+    # v0.5.6a1 — backend-level operational status (recoverable
+    # conditions the user wants to know about). Distinct from ERROR
+    # which is terminal. Payload mirrors backends.EVENT_BACKEND_STATUS:
+    # `{"kind": "ollama_retry", "status_code": ..., "attempt": ...,
+    #   "max": ..., "model": ..., "backoff_seconds": ...,
+    #   "body_preview": ...}`. Surfaces upstream 503 retries the
+    # backend handles transparently so the GUI can show "Backend
+    # rate-limited, retrying" instead of leaving users staring at a
+    # rising "thinking N s" counter wondering if anything is alive.
+    BACKEND_STATUS = "backend.status"
+
     # Choices (model asks user to pick)
     CHOICES = "choices"                       # Model presented options
 

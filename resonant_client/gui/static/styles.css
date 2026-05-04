@@ -8304,3 +8304,48 @@ body {
     text-transform: uppercase;
     margin-left: 4px;
 }
+
+/* ── v0.5.6a1: Backend operational status banner ──────────────────── */
+
+.backend-status-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 12px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    transition: opacity var(--duration-slow, 0.3s) ease;
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+
+.backend-status-banner-fading {
+    opacity: 0;
+}
+
+.backend-status-retry {
+    background: color-mix(in srgb, var(--warn, #d4a017) 12%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--warn, #d4a017) 35%, transparent);
+    color: var(--text);
+}
+
+.backend-status-icon {
+    font-size: 14px;
+    line-height: 1;
+    flex-shrink: 0;
+    color: var(--warn, #d4a017);
+}
+
+.backend-status-text {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.backend-status-attempt {
+    color: var(--muted);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}

@@ -28,6 +28,14 @@ EVENT_TEXT_DELTA = "text.delta"           # {"delta": "..."}
 EVENT_TOOL_CALL = "tool_call"             # {"name": ..., "arguments": ..., "call_id": ...}
 EVENT_DONE = "done"                       # {"cognitive_state": ... or None, "stats": ...}
 EVENT_ERROR = "error"                     # {"message": "..."}
+# v0.5.6a1 — backend self-reports operational status (retries, slow
+# upstream, throttling). Distinct from EVENT_ERROR (terminal) — these
+# are recoverable conditions the user wants to know about so a slow
+# response feels like "still working" rather than "stalled".
+# Payload shape: {"kind": "...", **kind_specific_fields}
+#   kind="ollama_retry": {"status_code", "attempt", "max", "model",
+#                          "backoff_seconds", "body_preview"}
+EVENT_BACKEND_STATUS = "backend.status"
 
 
 def _convert_tools_for_ollama(tools: list) -> list:
@@ -636,6 +644,7 @@ class OllamaBackend:
         payload: dict,
         stream_timeout,
         cancel_event,
+        notify_retry=None,
     ):
         """Context manager that opens a streaming POST to /api/chat,
         retrying on transient 5xx responses (especially Ollama
@@ -649,6 +658,14 @@ class OllamaBackend:
         yields the `(client, response)` pair so the caller's existing
         rich-error path can read the body and raise its descriptive
         HTTPStatusError.
+
+        v0.5.6a1: `notify_retry` is an optional callback invoked just
+        before each backoff sleep. Receives a dict describing the retry
+        — the caller (typically `stream()`) buffers these so the engine
+        layer can surface them as `EVENT_BACKEND_STATUS` events. Without
+        this, retries are silent: the GUI's "thinking N s" counter just
+        keeps climbing during an upstream 503 storm with no signal that
+        the backend is alive and retrying.
 
         Cleanup of both the client and the underlying stream is
         handled by this context manager — the caller doesn't need
@@ -679,6 +696,26 @@ class OllamaBackend:
                             _OLLAMA_MAX_RETRIES + 1, self.model,
                             backoff, body_preview,
                         )
+                        # v0.5.6a1 — surface the retry to the engine
+                        # layer so it can emit a status event the GUI
+                        # renders inline. Defensive: a callback raise
+                        # must not break the retry path.
+                        if notify_retry is not None:
+                            try:
+                                notify_retry({
+                                    "kind": "ollama_retry",
+                                    "status_code": resp.status_code,
+                                    "attempt": attempt + 1,
+                                    "max": _OLLAMA_MAX_RETRIES + 1,
+                                    "model": self.model,
+                                    "backoff_seconds": backoff,
+                                    "body_preview": body_preview,
+                                })
+                            except Exception:
+                                logger.debug(
+                                    "notify_retry callback raised; ignoring",
+                                    exc_info=True,
+                                )
                         # Fall through to retry; client closes via
                         # the outer try's finally.
                         retry_after_close = True
@@ -880,9 +917,22 @@ class OllamaBackend:
             # (ref: ...)") with exponential backoff. The retry only
             # fires BEFORE we start consuming chunks (status-check
             # phase) — once streaming begins we're committed.
+            # v0.5.6a1 — buffer retry events so we can yield them
+            # as EVENT_BACKEND_STATUS before the response chunks.
+            # Without this the GUI's "thinking N s" counter has no
+            # signal that an upstream 503 storm is being silently
+            # weathered — users assumed the daemon hung.
+            _pending_status: list[Tuple[str, dict]] = []
             with self._open_chat_stream_with_retry(
                 payload, stream_timeout, cancel_event,
+                notify_retry=lambda p: _pending_status.append(
+                    (EVENT_BACKEND_STATUS, p),
+                ),
             ) as (client, resp):
+                # Drain any retry events accumulated during open
+                # before we touch the stream itself.
+                while _pending_status:
+                    yield _pending_status.pop(0)
                 if client is None:
                     # cancel_event fired during a backoff sleep
                     return

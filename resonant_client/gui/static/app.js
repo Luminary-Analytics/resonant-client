@@ -3395,6 +3395,13 @@ class ResonantApp {
             case 'autonomous_missions':
                 this.handleAutonomousMissions(event);
                 break;
+            // v0.5.6a1 — backend self-reports operational status (Ollama
+            // 503 retries, etc). Distinct from `error` (terminal); the
+            // user wants to know "still alive, retrying" rather than
+            // staring at a stalled "thinking N s" counter.
+            case 'backend.status':
+                this.handleBackendStatus(event);
+                break;
             case 'await_user':
                 // v0.3.5 — agent paused with `await_user` tool, asking
                 // a focused question. Render an inline prompt with
@@ -7871,6 +7878,68 @@ class ResonantApp {
         el.textContent = message;
         this.chatMessages.appendChild(el);
         this.scrollToBottom();
+    }
+
+    /**
+     * v0.5.6a1 — render a dedicated banner for backend operational
+     * status (e.g. Ollama 503 retry). Different from showStatusMessage
+     * because:
+     *   1. It shows ABOVE the in-flight "thinking" indicator so it's
+     *      contextually attached to "why is this taking so long"
+     *   2. It auto-fades after backoff_seconds + grace so the user
+     *      gets the signal but it doesn't pollute the chat indefinitely
+     *   3. Distinct visual treatment (warning yellow) so users know
+     *      this isn't a terminal error
+     *
+     * Without this banner the user sees only a "thinking 90 s" counter
+     * during a 503 retry storm — same as a real hang. Visible signal
+     * is the difference between "Backend is alive, just busy" and
+     * "Should I cancel and try again?"
+     */
+    handleBackendStatus(event) {
+        if (!event || !event.kind) return;
+        if (event.kind === 'ollama_retry') {
+            this._renderOllamaRetryBanner(event);
+        }
+        // Future kinds get their own renderers; swallow unknown kinds
+        // silently rather than confuse the user with unfamiliar text.
+    }
+
+    _renderOllamaRetryBanner(event) {
+        if (!this.chatMessages) return;
+        const attempt = event.attempt || 1;
+        const max = event.max || 4;
+        const status = event.status_code || 0;
+        const backoff = typeof event.backoff_seconds === 'number'
+            ? event.backoff_seconds : 1.5;
+
+        // Phrase the message based on the actual upstream status.
+        // 503 is the common case (cloud overloaded); 502/504 are
+        // gateway errors that look the same to the user.
+        const reason = (status === 503)
+            ? 'rate-limited (HTTP 503)'
+            : `transient ${status} error`;
+
+        const banner = document.createElement('div');
+        banner.className = 'backend-status-banner backend-status-retry';
+        banner.innerHTML = `
+            <span class="backend-status-icon" aria-hidden="true">⚠</span>
+            <span class="backend-status-text">
+                Backend ${this.escapeHtml(reason)} — retrying in ${backoff.toFixed(1)}s
+                <span class="backend-status-attempt">attempt ${attempt}/${max}</span>
+            </span>
+        `;
+        this.chatMessages.appendChild(banner);
+        this.scrollToBottom();
+
+        // Fade out after the backoff completes + 1.5s grace so the
+        // user catches it. We don't remove it instantly because the
+        // user may have scrolled away; better to leave a fading trace.
+        const fadeAfterMs = (backoff + 1.5) * 1000;
+        setTimeout(() => {
+            banner.classList.add('backend-status-banner-fading');
+            setTimeout(() => banner.remove(), 400);
+        }, fadeAfterMs);
     }
 
     /**

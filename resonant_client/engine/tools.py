@@ -64,6 +64,10 @@ AGENT_TOOLS = [
                     "content": {
                         "type": "string",
                         "description": "The complete file content to write"
+                    },
+                    "allow_leading_dash": {
+                        "type": "boolean",
+                        "description": "Set to true ONLY when you genuinely want a filename or directory whose name starts with '-'. Default: false. Without this flag, paths whose basename or any segment begins with '-' are rejected as a foot-gun guard (e.g. tokenization slips where 'mkdir -p src' becomes three args)."
                     }
                 },
                 "required": ["path", "content"]
@@ -106,6 +110,10 @@ AGENT_TOOLS = [
                     "new_text": {
                         "type": "string",
                         "description": "The replacement text"
+                    },
+                    "allow_leading_dash": {
+                        "type": "boolean",
+                        "description": "Set to true ONLY when you genuinely want a filename or directory whose name starts with '-'. Default: false."
                     }
                 },
                 "required": ["path", "old_text", "new_text"]
@@ -1519,9 +1527,57 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
         )
 
 
+def _validate_write_path(fpath: str, allow_leading_dash: bool) -> str:
+    """v0.5.7a3 — reject writes whose path basename starts with `-`
+    unless the caller explicitly opts in via `allow_leading_dash=true`.
+
+    Linux-bridge field-observation #8: a file literally named `-p`
+    appeared at the project root mid-iteration, almost certainly from
+    a tokenization slip where `mkdir -p src` got split into three
+    separate args `mkdir`, `-p`, `src` and `-p` landed in the path
+    field of the wrong tool. Files with leading-dash names are also
+    a known foot-gun for shell command-line parsers (a later
+    `rm <pattern>` may misinterpret the file as a flag).
+
+    Returns "" on validation success; a non-empty error message
+    when the path is rejected.
+    """
+    if allow_leading_dash:
+        return ""
+    if not fpath:
+        return ""
+    # Check the basename and every intermediate path segment. A
+    # tokenization slip can land `-` anywhere in the path, not just
+    # the last component (e.g. `-p/foo.txt` would create a directory
+    # named `-p`).
+    parts = Path(fpath).parts
+    for seg in parts:
+        # Skip Windows drive specs like 'C:\\' which surface as 'C:'
+        # plus the separator. Drive specs end with `:`.
+        if seg.endswith(":") or seg in (".", ".."):
+            continue
+        if seg.startswith("-"):
+            return (
+                f"Refusing to write to '{fpath}': path segment "
+                f"'{seg}' starts with '-' which is almost always a "
+                f"tokenization slip (e.g. shell flag mistakenly "
+                f"routed into a path argument). If you genuinely "
+                f"need this filename, retry with allow_leading_dash=true."
+            )
+    return ""
+
+
 def _exec_file_write(args: dict, start: float) -> ToolResult:
     fpath = args.get("path", "")
     content = args.get("content", "")
+    allow_dash = bool(args.get("allow_leading_dash", False))
+    err = _validate_write_path(fpath, allow_dash)
+    if err:
+        return ToolResult(
+            f"Error: {err}",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
     path = Path(fpath)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
@@ -1562,6 +1618,14 @@ def _exec_file_edit(args: dict, start: float) -> ToolResult:
     fpath = args.get("path", "")
     old_text = args.get("old_text", "")
     new_text = args.get("new_text", "")
+    allow_dash = bool(args.get("allow_leading_dash", False))
+    err = _validate_write_path(fpath, allow_dash)
+    if err:
+        return ToolResult(
+            f"Error: {err}",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
     path = Path(fpath)
 
     if not path.exists():

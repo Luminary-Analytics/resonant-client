@@ -7079,6 +7079,25 @@ async def websocket_endpoint(ws: WebSocket):
                 # has no idea whether it worked).
                 await ws.send_json({"event": "status_msg", "message": "Opening folder picker..."})
 
+                # v0.5.6a4 — fast-path browser mode (no pywebview window
+                # attached) directly to the in-page modal text input.
+                # Linux-bridge field-observation #3: the previous tkinter
+                # fallback opened a Tk window that was hidden behind the
+                # browser, looked hung, and gave no escape hatch. The
+                # frontend's `_promptForProjectPath` modal is now wired
+                # to handle `folder_picker_unavailable` in-place without
+                # abandoning the user's session.
+                if _webview_window is None:
+                    await ws.send_json({
+                        "event": "folder_picker_unavailable",
+                        "message": (
+                            "Native folder picker isn't available in "
+                            "browser mode — type the project path "
+                            "directly."
+                        ),
+                    })
+                    continue
+
                 def _pick_folder():
                     global _webview_window
                     if _webview_window:
@@ -7092,7 +7111,10 @@ async def websocket_endpoint(ws: WebSocket):
                         except Exception as e:
                             logger.warning(f"pywebview folder dialog failed: {e}")
                         return None
-                    # Fallback: tkinter (only when pywebview is not available)
+                    # Defensive: shouldn't reach here (the v0.5.6a4
+                    # fast-path above catches no-window). Kept as a
+                    # belt-and-suspenders fallback in case some future
+                    # codepath sets _webview_window mid-call.
                     try:
                         import tkinter as tk
                         from tkinter import filedialog

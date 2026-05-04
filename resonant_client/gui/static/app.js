@@ -917,6 +917,94 @@ class ResonantApp {
     }
 
     /**
+     * v0.5.6a4 — Modal text-input fallback for project-path entry when
+     * the native folder picker is unavailable (browser mode, missing
+     * pywebview/tkinter, locked-down kiosk, etc.). Linux-bridge field-
+     * observation #3: clicking the project switcher hung indefinitely
+     * in browser mode and the user had to drop into devtools and run
+     * `app.send({command:'set_project',path:'...'})` by hand.
+     *
+     * The modal:
+     *   - pre-fills with the current cwd so the common case is "tweak
+     *     the trailing folder name" rather than "type the whole path"
+     *   - accepts Enter to submit, Esc / backdrop-click to cancel
+     *   - on submit, calls back with the trimmed path so the caller
+     *     can route to selectProjectFolder / mission composer / etc.
+     *
+     * `consumer` is a freeform label shown in the modal header so the
+     * user knows what they're picking a folder for ("Switch project",
+     * "Pick mission folder", etc.). The callback receives the chosen
+     * path; modal auto-closes on success.
+     */
+    _promptForProjectPath(consumer, onPick) {
+        const existing = document.getElementById('project-path-modal');
+        if (existing) existing.remove();
+        const modal = document.createElement('div');
+        modal.id = 'project-path-modal';
+        modal.className = 'snapshot-list-modal';  // reuse existing overlay styles
+        const cur = (this.currentCwd || '').replace(/\\/g, '/');
+        const label = consumer || 'Switch project';
+        modal.innerHTML = `
+            <div class="snap-modal-card project-path-card">
+                <div class="snap-modal-header">
+                    <span>${this.escapeHtml(label)}</span>
+                    <button class="snap-modal-close" id="project-path-close">&times;</button>
+                </div>
+                <div class="snap-modal-body">
+                    <div class="project-path-hint">
+                        Native folder picker is unavailable here. Type or
+                        paste an absolute folder path:
+                    </div>
+                    <input id="project-path-input" type="text"
+                           class="project-path-input"
+                           placeholder="C:\\Repos\\my-project or /Users/me/code/my-project"
+                           value="${this.escapeHtml(cur)}" />
+                    <div class="project-path-actions">
+                        <button class="project-path-cancel">Cancel</button>
+                        <button class="project-path-open">Open</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+
+        const input = modal.querySelector('#project-path-input');
+        const openBtn = modal.querySelector('.project-path-open');
+        const cancelBtn = modal.querySelector('.project-path-cancel');
+        const closeBtn = modal.querySelector('#project-path-close');
+
+        const close = () => modal.remove();
+        const submit = () => {
+            const path = (input.value || '').trim();
+            if (!path) {
+                input.focus();
+                input.classList.add('project-path-input-error');
+                return;
+            }
+            close();
+            try { onPick(path); } catch (e) { /* swallow */ }
+        };
+
+        openBtn.addEventListener('click', submit);
+        cancelBtn.addEventListener('click', close);
+        closeBtn.addEventListener('click', close);
+        modal.addEventListener('click', (e) => { if (e.target === modal) close(); });
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') submit();
+            else if (e.key === 'Escape') close();
+            else input.classList.remove('project-path-input-error');
+        });
+        // Highlight the trailing path segment so the most-likely edit
+        // (typing a new folder name on the end) is one keystroke away.
+        input.focus();
+        const slashIdx = Math.max(cur.lastIndexOf('/'), cur.lastIndexOf('\\'));
+        if (slashIdx >= 0 && slashIdx < cur.length - 1) {
+            input.setSelectionRange(slashIdx + 1, cur.length);
+        } else {
+            input.select();
+        }
+    }
+
+    /**
      * Send the user text as an intent — kicks off the orchestrator pipeline,
      * not a one-shot Session.run. The plan-graph viz auto-opens; status events
      * land in the chat as small status messages.
@@ -1971,9 +2059,30 @@ class ResonantApp {
             : `Project: ${path}\nClick to switch.`;
         if (!btn._wired) {
             btn._wired = true;
-            btn.addEventListener('click', () => {
+            btn.addEventListener('click', (e) => {
                 this._pendingFolderPickConsumer = null;  // global project switch
+                // v0.5.6a4 — Shift-click bypasses the native picker
+                // and goes straight to the text-input modal. For users
+                // who already know the picker won't work in their
+                // environment (browser mode, kiosk, etc.) this avoids
+                // the picker-fails-then-modal-appears round-trip.
+                if (e.shiftKey) {
+                    this._promptForProjectPath('Switch project', (path) => {
+                        this.selectProjectFolder(path);
+                    });
+                    return;
+                }
                 this.send({ command: 'folder_dialog' });
+            });
+            // Right-click also opens the text-input modal (discoverable
+            // alternative for users without a Shift key, e.g. some
+            // tablet keyboards).
+            btn.addEventListener('contextmenu', (e) => {
+                e.preventDefault();
+                this._pendingFolderPickConsumer = null;
+                this._promptForProjectPath('Switch project', (path) => {
+                    this.selectProjectFolder(path);
+                });
             });
         }
     }
@@ -3740,10 +3849,34 @@ class ResonantApp {
                 }
                 break;
             case 'folder_picker_unavailable':
-                // No native picker (typically browser-only mode) \u2014 redirect the user
-                // to the welcome screen's text input so the click isn't a dead end.
-                this.showStatusMessage(event.message || 'Folder picker unavailable. Type a path in the welcome screen.');
-                this.showNewSessionSetup();
+                // v0.5.6a4 \u2014 replace the old "kick the user to the
+                // welcome screen" fallback with an in-place modal text
+                // input. Linux-bridge field-observation #3: bouncing
+                // back to showNewSessionSetup() abandoned the user's
+                // current session and was a dead end in browser mode.
+                // Route the typed path through the same consumer
+                // dispatcher the native folder_picked handler uses, so
+                // mission-composer pickers stay scoped to the composer.
+                {
+                    const consumer = this._pendingFolderPickConsumer;
+                    const label = consumer === 'mission'
+                        ? 'Pick mission folder'
+                        : 'Switch project';
+                    if (event.message) this.showStatusMessage(event.message);
+                    this._promptForProjectPath(label, (path) => {
+                        if (consumer === 'mission') {
+                            this._pendingFolderPickConsumer = null;
+                            const pathInput = document.getElementById('mission-composer-path');
+                            if (pathInput) {
+                                pathInput.value = path;
+                                pathInput.dispatchEvent(new Event('input'));
+                                pathInput.focus();
+                            }
+                            return;
+                        }
+                        this.selectProjectFolder(path);
+                    });
+                }
                 break;
             case 'ollama_probe_result':
                 // v0.4.3 (T1.3) — real-time feedback for the Ollama
@@ -9185,6 +9318,23 @@ class ResonantApp {
                 this.send({ command: 'folder_dialog' });
             });
             recentSection.appendChild(chooseItem);
+
+            // v0.5.6a4 — explicit "type a path" affordance so users
+            // who already know the picker won't work in their setup
+            // (browser mode, headless, kiosk) don't have to wait for
+            // the picker to fail before getting the modal text input.
+            const typeItem = document.createElement('div');
+            typeItem.className = 'recent-project-item';
+            typeItem.innerHTML = `
+                <span class="proj-icon" style="font-size:12px">&#9000;</span>
+                <div style="flex:1"><div class="proj-name">Type a folder path…</div></div>
+            `;
+            typeItem.addEventListener('click', () => {
+                this._promptForProjectPath('Switch project', (path) => {
+                    this.selectProjectFolder(path);
+                });
+            });
+            recentSection.appendChild(typeItem);
         }
 
         input.focus();

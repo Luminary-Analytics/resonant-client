@@ -1218,6 +1218,53 @@ body {
 .snap-restore:hover { background: var(--brand); color: var(--bg); border-color: var(--brand); }
 .snap-empty { padding: 16px; color: var(--dim); text-align: center; font-style: italic; }
 
+/* v0.5.6a4 — Project-path text-input modal (folder picker fallback) */
+.project-path-card { min-width: 480px; }
+.project-path-hint {
+    padding: 12px 14px 8px;
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.project-path-input {
+    width: calc(100% - 24px);
+    margin: 0 12px 12px;
+    padding: 8px 10px;
+    background: var(--bg-elem);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+    outline: none;
+    box-sizing: border-box;
+}
+.project-path-input:focus { border-color: var(--brand); }
+.project-path-input-error { border-color: var(--err, #d33); }
+.project-path-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+    padding: 8px 12px 14px;
+}
+.project-path-cancel,
+.project-path-open {
+    background: var(--bg-elem);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 5px 14px;
+    border-radius: var(--radius-xs);
+    font-size: 12px;
+    cursor: pointer;
+}
+.project-path-cancel:hover { background: var(--bg-hover); }
+.project-path-open {
+    background: var(--brand);
+    color: var(--bg);
+    border-color: var(--brand);
+}
+.project-path-open:hover { filter: brightness(1.1); }
+
 /* Tab badge for the Plan tab */
 .preview-tab-badge {
     background: var(--brand);

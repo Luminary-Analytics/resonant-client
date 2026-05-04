@@ -25,6 +25,13 @@ pytest-cache-files-*/
 # Resonant runtime
 .resonant/
 
+# Claude Code local state (machine-specific)
+.claude/settings.local.json
+.claude/*.lock
+
+# Smoke harness output records at repo root (run-to-run drift; not baselines)
+/smoke-*.json
+
 # OS
 .DS_Store
 Thumbs.db

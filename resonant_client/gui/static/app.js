@@ -2244,6 +2244,10 @@ class ResonantApp {
     _renderReflectionCard(event) {
         if (!this.chatMessages) return;
         const verdict = (event && event.verdict) || 'continue';
+        const modelVerdict = (event && event.model_verdict) || verdict;
+        const overridden = !!(event && event.verdict_overridden);
+        const overrideReason = (event && event.override_reason) || '';
+        const unpassed = (event && event.unpassed_criteria) || [];
         const summary = (event && event.summary) || '';
         const accept = (event && event.acceptance_summary) || { passed: 0, total: 0 };
         const tally = (event && event.pass_tally) || {};
@@ -2288,8 +2292,34 @@ class ResonantApp {
                 </ul>
             </div>` : '';
 
+        // v0.5.9a3 — verdict-override provenance. When the daemon
+        // downgraded `satisfied` → `continue` because the roadmap
+        // didn't actually agree, surface that as a structured
+        // "model said X / daemon said Y" badge with the unpassed
+        // criteria list. The user shouldn't have to parse the
+        // summary prose to figure out why the model's claim got
+        // overridden.
+        const overrideHTML = overridden ? `
+            <div class="autonomous-reflect-override">
+                <div class="autonomous-reflect-override-head">
+                    <span class="autonomous-reflect-override-icon" aria-hidden="true">!</span>
+                    <span class="autonomous-reflect-override-title">Daemon override</span>
+                </div>
+                <div class="autonomous-reflect-override-line">
+                    Model said <code>${this.escapeHtml(modelVerdict)}</code> · daemon downgraded to <code>${this.escapeHtml(verdict)}</code>
+                </div>
+                ${overrideReason ? `<div class="autonomous-reflect-override-reason">${this.escapeHtml(overrideReason)}</div>` : ''}
+                ${unpassed.length ? `
+                    <div class="autonomous-reflect-override-criteria">
+                        <div class="autonomous-reflect-override-criteria-title">Unpassed criteria:</div>
+                        <ul>${unpassed.map(c => `<li>${this.escapeHtml(c)}</li>`).join('')}</ul>
+                    </div>
+                ` : ''}
+            </div>` : '';
+
         const card = document.createElement('div');
         card.className = `autonomous-reflect-card ${verdictClass}`;
+        if (overridden) card.classList.add('autonomous-reflect-card-overridden');
         card.innerHTML = `
             <div class="autonomous-reflect-head">
                 <span class="autonomous-reflect-icon" aria-hidden="true">∞</span>
@@ -2297,6 +2327,7 @@ class ResonantApp {
                 <span class="autonomous-reflect-verdict">${this.escapeHtml(verdict)}</span>
             </div>
             <div class="autonomous-reflect-body">
+                ${overrideHTML}
                 <div class="autonomous-reflect-acceptance">
                     Acceptance: <strong>${accept.passed}/${accept.total}</strong> blocking criteria passed
                 </div>

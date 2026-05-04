@@ -1037,6 +1037,17 @@ class AutonomousMissionDaemon:
                 "for iter %s+", added_count, self._iter_count + 1,
             )
 
+        # v0.5.9a3 — track verdict provenance. The model's claim is
+        # captured BEFORE the cross-check overrides it; the override
+        # reason is structured (not just embedded in the summary
+        # string) so the GUI can render a distinct "model said X /
+        # daemon said Y" badge instead of relying on prose parsing.
+        model_verdict = outcome.verdict
+        verdict_overridden = False
+        override_reason = ""
+        # List of unpassed criteria for the override-reason payload.
+        unpassed_criteria: list[str] = []
+
         if outcome.verdict == "satisfied" and not rm_after.is_converged():
             logger.warning(
                 "REFLECT verdict=satisfied but roadmap.is_converged()=False; "
@@ -1044,6 +1055,20 @@ class AutonomousMissionDaemon:
                 "mis-judged a chrome criterion.)"
             )
             outcome.verdict = "continue"
+            verdict_overridden = True
+            # Build a structured reason. Pin the actual unpassed
+            # criteria so the user can see WHICH ones blocked.
+            for c in rm_after.acceptance_criteria:
+                if c.is_blocking and c.passed is not True:
+                    label = f"[{c.type}] {c.text}"
+                    if c.evidence:
+                        label += f" — {c.evidence[:80]}"
+                    unpassed_criteria.append(label[:200])
+            override_reason = (
+                f"Model claimed `satisfied` but {len(unpassed_criteria)} "
+                f"blocking criteri{'on' if len(unpassed_criteria) == 1 else 'a'} "
+                f"still unpassed. Verdict downgraded to `continue`."
+            )
             outcome.summary += (
                 "  [Daemon override: model claimed satisfied but at least "
                 "one acceptance criterion is not yet passed.]"
@@ -1057,6 +1082,11 @@ class AutonomousMissionDaemon:
         self._emit("autonomous_reflection", {
             "iter_count": self._iter_count,
             "verdict": outcome.verdict,
+            # v0.5.9a3 — structured provenance.
+            "model_verdict": model_verdict,
+            "verdict_overridden": verdict_overridden,
+            "override_reason": override_reason,
+            "unpassed_criteria": unpassed_criteria,
             "added": outcome.added_items,
             "blocked": outcome.blocked_items,
             "manual_pending": outcome.manual_pending,

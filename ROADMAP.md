@@ -71,8 +71,9 @@ After the v0.4.0 hard cut to Ollama-only (Anthropic / OpenAI / Claude-Code / Cod
 | v0.5.7 | 2026-05-04 | Field-finding backlog burn-down (a1–a5) | [release notes](docs/v0.5.7-release-notes.md) |
 | v0.5.8 | 2026-05-04 | Per-specialist routing + decision-request + iter folding + smoke specs | [release notes](docs/v0.5.8-release-notes.md) |
 | v0.5.9 | 2026-05-04 | QoL + observability (activity / cost / override / pause / diagnostics) | [release notes](docs/v0.5.9-release-notes.md) |
+| v0.5.10 | 2026-05-04 | Ground truth — ROADMAP refresh + cross-feature tests + smoke hardening | [release notes](docs/v0.5.10-release-notes.md) |
 
-Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790/2 (v0.5.9).
+Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823/2 (v0.5.10).
 
 ### Linux-bridge field-observation backlog: COMPLETE
 

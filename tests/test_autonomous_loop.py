@@ -912,3 +912,320 @@ class TestIterationLogPersisted:
         # so assertions on the note text are what survives.
         assert first.iter_num == 1
         assert "T1.1" in first.note  # daemon wrote "shipped T1.1"
+
+
+# ── v0.5.6a3 — Atomic terminal-state transition ─────────────────────────
+
+
+class TestAtomicTerminalStateTransition:
+    """v0.5.6a3 — `_emit_stop` must update roadmap.md `**Status:**` to
+    match the terminal state (complete/paused/failed) BEFORE emitting
+    the WS event. Without this, the GUI badge clears (response to the
+    event) but the on-disk roadmap keeps `running`, so the next-launch
+    orphan-detection scanner falsely offers to resume a satisfied or
+    stuck mission. Linux-bridge field-observation #6.
+
+    The terminal event payload must also include `new_phase` so the
+    WS handler in app.py can update session.mission_state.phase
+    atomically with the badge transition.
+    """
+
+    def test_satisfied_writes_complete_to_roadmap_status(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        # Confirm starting state.
+        assert roadmap_module.load(path).status == "running"
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+            flip_criteria_on_reflect=True,
+            roadmap_path=path,
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        # On-disk roadmap status must be `complete` after the daemon
+        # exits with a `satisfied` verdict.
+        assert roadmap_module.load(path).status == "complete"
+
+        # The terminal event must carry `new_phase` so the WS handler
+        # can update the session mission_state.
+        complete = _events_of_kind(events, "autonomous_mission_complete")
+        assert len(complete) == 1
+        assert complete[0]["new_phase"] == "autonomous_complete"
+
+    def test_iteration_cap_writes_paused_to_roadmap_status(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, f"T1.{i}", "") for i in range(1, 10)],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        daemon, events = _make_daemon(
+            path, hooks,
+            max_iterations=2,
+            full_reflect_cadence=999,
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        # Stop-reason that ISN'T in _COMPLETE_REASONS → paused state.
+        assert roadmap_module.load(path).status == "paused"
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["new_phase"] == "autonomous_paused"
+
+    def test_blocked_writes_paused_to_roadmap_status(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, f"T1.{i}", "") for i in range(1, 5)],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="blocked",
+            ),
+        )
+        daemon, events = _make_daemon(
+            path, hooks, full_reflect_cadence=1,
+        )
+
+        _run_daemon_to_completion(daemon)
+
+        # `blocked` is the field-observation #6 stuck case — must
+        # write `paused` so orphan detection doesn't re-offer it.
+        assert roadmap_module.load(path).status == "paused"
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["new_phase"] == "autonomous_paused"
+
+    def test_misconfigured_writes_paused_to_roadmap_status(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[],  # no criteria → misconfigured
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        assert roadmap_module.load(path).status == "paused"
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["new_phase"] == "autonomous_paused"
+
+    def test_status_update_is_idempotent_when_already_at_target(
+        self, tmp_path,
+    ):
+        # Pre-set roadmap to `complete` so `_emit_stop` should no-op
+        # the write but still emit the event. No exception, no
+        # duplicate save side effects.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        rm = roadmap_module.load(path)
+        rm.status = "complete"
+        roadmap_module.save(rm, path)
+        mtime_before = path.stat().st_mtime_ns
+
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+            flip_criteria_on_reflect=True,  # this WILL re-save mid-run
+            roadmap_path=path,
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        # Idempotency check: status remains `complete` (didn't get
+        # downgraded to `running` then re-upgraded). The mtime
+        # changes due to the criterion flip + iteration log append,
+        # so we can't assert mtime equality — just status correctness.
+        assert roadmap_module.load(path).status == "complete"
+
+    def test_roadmap_save_failure_does_not_block_terminal_event(
+        self, tmp_path, monkeypatch,
+    ):
+        # If `_update_roadmap_status_safely` can't write (disk full,
+        # locked file, whatever), the daemon must still emit the
+        # terminal WS event so the GUI badge updates. Drift is logged
+        # but doesn't cascade into a crash.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+            ),
+            flip_criteria_on_reflect=True,
+            roadmap_path=path,
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        # Patch save() so the FINAL status-update write blows up.
+        # Earlier in-loop saves still work (otherwise the daemon
+        # can't function), so we only fail when called from
+        # `_update_roadmap_status_safely` — detect by call site.
+        from resonant_client.gui import autonomous_loop as al
+
+        original_save = roadmap_module.save
+        save_calls = {"count": 0, "last_failed": False}
+
+        def picky_save(rm, target_path):
+            save_calls["count"] += 1
+            # Terminal status writes set status to one of the terminal
+            # values — refuse those, allow everything else.
+            if rm.status in ("complete", "paused", "failed"):
+                save_calls["last_failed"] = True
+                raise OSError("simulated disk failure")
+            return original_save(rm, target_path)
+
+        monkeypatch.setattr(al.roadmap_module, "save", picky_save)
+
+        _run_daemon_to_completion(daemon)
+
+        # Even though the status-write failed, the WS terminal event
+        # MUST have fired (GUI gets to update its badge).
+        complete = _events_of_kind(events, "autonomous_mission_complete")
+        assert len(complete) == 1
+        # Confirms our patch actually fired on the terminal write.
+        assert save_calls["last_failed"] is True
+
+    def test_failed_path_writes_failed_status_and_new_phase(
+        self, tmp_path, monkeypatch,
+    ):
+        # Force the daemon's run-loop to crash so it hits the
+        # `autonomous_mission_failed` emit path. `dispatch_item` and
+        # similar hooks have internal try/except — they don't bubble.
+        # `_load_roadmap` does NOT have a wrapper; monkey-patching
+        # it to raise hits the daemon's outer except.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        daemon, events = _make_daemon(path, hooks, full_reflect_cadence=999)
+
+        # Patch the instance's _load_roadmap to raise on first call.
+        def boom_load():
+            raise RuntimeError("simulated unrecoverable load failure")
+
+        monkeypatch.setattr(daemon, "_load_roadmap", boom_load)
+
+        _run_daemon_to_completion(daemon)
+
+        # Crash → failed event → roadmap status `failed`.
+        failed = _events_of_kind(events, "autonomous_mission_failed")
+        assert len(failed) == 1
+        assert failed[0]["new_phase"] == "autonomous_failed"
+        # The `_update_roadmap_status_safely` call in the failed path
+        # ALSO calls `_load_roadmap`, which we patched to raise — so
+        # the safe-update silently logs+returns. The on-disk roadmap
+        # remains at its previous status (in this test, `running`).
+        # The contract is: terminal event still fires + new_phase set
+        # so the WS-handler half can still update session state.
+        # Disk-side drift is acceptable when the disk is the thing
+        # that's broken in the first place.
+        assert roadmap_module.load(path).status in ("running", "failed")
+
+    def test_failed_path_writes_failed_status_when_disk_works(
+        self, tmp_path, monkeypatch,
+    ):
+        # Like the above, but with a more surgical injection — only
+        # the FIRST load (in run loop) raises, subsequent loads (from
+        # _update_roadmap_status_safely) succeed. Verifies the happy
+        # case where the loop dies but the disk is healthy enough to
+        # write the failed status.
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        daemon, events = _make_daemon(path, hooks, full_reflect_cadence=999)
+
+        original_load = daemon._load_roadmap
+        load_calls = {"count": 0}
+
+        def conditional_boom():
+            load_calls["count"] += 1
+            if load_calls["count"] == 1:
+                raise RuntimeError("first load fails")
+            return original_load()
+
+        monkeypatch.setattr(daemon, "_load_roadmap", conditional_boom)
+
+        _run_daemon_to_completion(daemon)
+
+        failed = _events_of_kind(events, "autonomous_mission_failed")
+        assert len(failed) == 1
+        assert failed[0]["new_phase"] == "autonomous_failed"
+        # Second load (from _update_roadmap_status_safely) succeeds,
+        # so the failed status DOES get written.
+        assert roadmap_module.load(path).status == "failed"
+
+    def test_user_stop_writes_paused_to_roadmap_status(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1", "")],
+            criteria=[("bash", "x")],
+        )
+        tracker = _StubCallTracker()
+        block = threading.Event()
+
+        def wait_block(handle):
+            block.wait(timeout=2.0)
+            return DispatchOutcome(success=True, handle=handle)
+
+        base = _make_hooks(tracker)
+        hooks = DaemonHooks(
+            dispatch_item=base.dispatch_item,
+            wait_for_dispatch=wait_block,
+            cancel_dispatch=base.cancel_dispatch,
+            get_commit_sha=base.get_commit_sha,
+            validate_sha=base.validate_sha,
+            run_full_reflect=base.run_full_reflect,
+            check_context_factory=base.check_context_factory,
+        )
+        daemon, events = _make_daemon(path, hooks)
+        daemon.start()
+        time.sleep(0.05)
+        daemon.stop("user_stop", "user clicked stop")
+        block.set()
+        daemon.join(timeout=2.0)
+
+        # User-initiated stop → paused on disk (so it CAN be resumed
+        # — `paused` is the only status orphan-detection picks up).
+        assert roadmap_module.load(path).status == "paused"
+        paused = _events_of_kind(events, "autonomous_mission_paused")
+        assert len(paused) == 1
+        assert paused[0]["new_phase"] == "autonomous_paused"

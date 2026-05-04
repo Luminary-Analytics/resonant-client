@@ -23,7 +23,7 @@ import difflib
 from pathlib import Path
 import uuid
 from datetime import date, datetime
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from starlette.applications import Starlette
 from starlette.routing import Route, WebSocketRoute, Mount
@@ -5453,6 +5453,100 @@ class AppState:
 state = AppState()
 
 
+# ── Autonomous-event forwarding helper (v0.5.6a3) ─────────────────────
+
+
+# Set of WS event kinds that signal the daemon hit a terminal state.
+# The forwarder intercepts these to update session.mission_state.phase
+# in lock-step with the GUI badge transition. Without this update the
+# session record stays in `autonomous_running` after the daemon stops,
+# which makes the orphan-detection scanner falsely offer to resume a
+# satisfied/stuck mission on the next app launch (linux-bridge
+# field-observation #6).
+_AUTONOMOUS_TERMINAL_EVENTS: frozenset[str] = frozenset({
+    "autonomous_mission_complete",
+    "autonomous_mission_paused",
+    "autonomous_mission_failed",
+})
+
+
+def _make_autonomous_event_forwarder(
+    target_state: Any, ws: "WebSocket", loop,
+) -> Callable[[dict], None]:
+    """Build a callback that forwards every daemon event to the WS
+    AND, on terminal events, updates session.mission_state.phase +
+    emits sessions_updated so the sidebar / orphan-list / inspector
+    all converge on the new state atomically.
+
+    Daemon-side roadmap.md status update happens FIRST inside
+    `AutonomousMissionDaemon._emit_stop` / failed path (v0.5.6a3); this
+    forwarder closes the loop on the session-record side so:
+      1. roadmap.md `**Status:**` ← reflects terminal state (daemon)
+      2. session.mission_state.phase ← reflects terminal state (here)
+      3. GUI badge ← reflects terminal state (frontend on event)
+    All three converge before the next user action can observe drift.
+    """
+
+    def _forward(payload: dict) -> None:
+        # 1. Forward to WS first so the GUI gets the event ASAP.
+        try:
+            asyncio.run_coroutine_threadsafe(ws.send_json(payload), loop)
+        except Exception:
+            logger.debug("autonomous emit raised", exc_info=True)
+
+        # 2. On terminal events, update session-record phase. The
+        # daemon already supplied the target phase as `new_phase` in
+        # the payload (v0.5.6a3 contract).
+        kind = payload.get("event", "")
+        if kind not in _AUTONOMOUS_TERMINAL_EVENTS:
+            return
+        new_phase = payload.get("new_phase", "")
+        if not new_phase:
+            return  # daemon didn't supply — defensive no-op
+        intent_id = payload.get("intent_id", "")
+        try:
+            sess = getattr(target_state, "project", None)
+            cur = getattr(sess, "current_session", None) if sess else None
+            ms = getattr(cur, "mission_state", None) if cur else None
+            # Only update if this terminal event is for the current
+            # session's mission — otherwise we'd corrupt a different
+            # session's state.
+            if not ms or ms.get("intent_id") != intent_id:
+                return
+            cur.advance_mission_phase(new_phase)
+            cur.save()
+        except Exception:
+            logger.exception(
+                "autonomous terminal-event session-phase update failed "
+                "(intent=%s, new_phase=%s)",
+                intent_id, new_phase,
+            )
+            return
+
+        # 3. Emit sessions_updated so sidebar + orphan list + browser
+        # all reconcile against the new phase.
+        try:
+            asyncio.run_coroutine_threadsafe(
+                ws.send_json({
+                    "event": "sessions_updated",
+                    "sessions": target_state.project.list_sessions(),
+                    "all_sessions": target_state.project.list_all_sessions(),
+                    "current_session_id": (
+                        target_state.project.current_session.id
+                        if target_state.project.current_session else ""
+                    ),
+                }),
+                loop,
+            )
+        except Exception:
+            logger.debug(
+                "sessions_updated emit after terminal event raised",
+                exc_info=True,
+            )
+
+    return _forward
+
+
 # ── WebSocket Handler ─────────────────────────────────────────────────
 
 async def websocket_endpoint(ws: WebSocket):
@@ -6087,14 +6181,13 @@ async def websocket_endpoint(ws: WebSocket):
                 # Forward daemon events into the WS chat stream so the
                 # frontend can render iteration cards / reflection
                 # summaries / mission complete banners.
-                def _emit_autonomous(payload: dict, _ws=ws,
-                                     _loop=asyncio.get_running_loop()):
-                    try:
-                        asyncio.run_coroutine_threadsafe(
-                            _ws.send_json(payload), _loop,
-                        )
-                    except Exception:
-                        logger.debug("autonomous emit raised", exc_info=True)
+                # v0.5.6a3 — also intercept terminal events to update
+                # session.mission_state.phase atomically with the badge
+                # transition (linux-bridge field-observation #6: GUI /
+                # session / roadmap diverged when daemon hit `stuck`).
+                _emit_autonomous = _make_autonomous_event_forwarder(
+                    state, ws, asyncio.get_running_loop(),
+                )
 
                 # The intent_id for the umbrella autonomous mission —
                 # NOT the per-iteration sub-intent ids. We use a fresh
@@ -6318,14 +6411,13 @@ async def websocket_endpoint(ws: WebSocket):
 
                 # Wire the daemon's events into THIS websocket — same
                 # forwarder pattern as mission_dispatch_autonomous.
-                def _emit_resume(payload: dict, _ws=ws,
-                                 _loop=asyncio.get_running_loop()):
-                    try:
-                        asyncio.run_coroutine_threadsafe(
-                            _ws.send_json(payload), _loop,
-                        )
-                    except Exception:
-                        logger.debug("autonomous resume emit raised", exc_info=True)
+                # v0.5.6a3 — resume uses the same terminal-event
+                # interception as the fresh-dispatch path so the
+                # session-phase update happens regardless of how the
+                # daemon was launched.
+                _emit_resume = _make_autonomous_event_forwarder(
+                    state, ws, asyncio.get_running_loop(),
+                )
 
                 try:
                     _resume_autonomous_mission(

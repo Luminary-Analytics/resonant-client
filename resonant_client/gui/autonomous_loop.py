@@ -443,10 +443,15 @@ class AutonomousMissionDaemon:
                 "Autonomous mission daemon crashed for intent %s",
                 self.config.intent_id,
             )
+            # v0.5.6a3 — same atomicity guarantee as _emit_stop: write
+            # roadmap.md status + emit the terminal event with new_phase
+            # so the WS handler can update session state in lock-step.
+            self._update_roadmap_status_safely("failed")
             self._emit("autonomous_mission_failed", {
                 "iter_count": self._iter_count,
                 "error": str(exc),
                 "elapsed_seconds": time.time() - self._started_at,
+                "new_phase": "autonomous_failed",
             })
 
     # ── Stop-rule evaluation ──────────────────────────────────────
@@ -822,15 +827,33 @@ class AutonomousMissionDaemon:
     def _emit_stop(self, reason: str, message: str) -> None:
         """Final event emission before the loop exits. Picks
         `mission_complete` for `satisfied`, `mission_paused` for
-        everything else."""
+        everything else.
+
+        v0.5.6a3 — also updates the on-disk roadmap status to match
+        the terminal state BEFORE emitting the WS event. Without this
+        the GUI's autonomous badge clears (response to the WS event)
+        but the roadmap.md keeps `**Status:** running`. After app
+        restart the orphan-detection scanner sees a "running" mission
+        with no live daemon and offers to resume — which is wrong for
+        a stuck/satisfied mission. Linux-bridge field-observation #6.
+        """
         with self._lock:
             self._stop_reason = self._stop_reason or reason
             self._stop_message = self._stop_message or message
         is_complete = reason in _COMPLETE_REASONS
+        new_status = "complete" if is_complete else "paused"
+        self._update_roadmap_status_safely(new_status)
         kind = (
             "autonomous_mission_complete"
             if is_complete
             else "autonomous_mission_paused"
+        )
+        # v0.5.6a3 — include `new_phase` in the payload so the WS
+        # handler in app.py can update session.mission_state.phase
+        # atomically with the badge transition. Without this the
+        # session record stays in `autonomous_running` forever.
+        new_phase = (
+            "autonomous_complete" if is_complete else "autonomous_paused"
         )
         self._emit(kind, {
             "iter_count": self._iter_count,
@@ -838,7 +861,27 @@ class AutonomousMissionDaemon:
             "stop_message": message,
             "elapsed_seconds": time.time() - self._started_at,
             "final_verdict": self._verdict,
+            "new_phase": new_phase,
         })
+
+    def _update_roadmap_status_safely(self, new_status: str) -> None:
+        """v0.5.6a3 — load the roadmap, set its status field, persist.
+        Best-effort: a write failure here doesn't block the daemon's
+        terminal event (the GUI badge update happens regardless), but
+        does log loudly so the orphan-detection drift is debuggable.
+        """
+        try:
+            rm = self._load_roadmap()
+            if rm.status == new_status:
+                return  # idempotent — already at target state
+            rm.status = new_status
+            roadmap_module.save(rm, self.config.roadmap_path)
+        except Exception:
+            logger.exception(
+                "Failed to update roadmap status to %r for intent %s; "
+                "GUI/disk state will diverge until next save",
+                new_status, self.config.intent_id,
+            )
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────

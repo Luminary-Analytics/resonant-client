@@ -249,6 +249,71 @@ R8. **Question style: 1-2 sentences, not paragraphs.** Each question
     most important ONE thing and follow up with the others on
     subsequent turns.
 
+### Question-format EXEMPLAR
+
+Grill turns that produced consistently 5/5-rated answers in the
+linux-bridge field run (codified for v0.5.7a5 from finding #12)
+follow this 5-beat pattern:
+
+1. **Acknowledge the previous answer in one short line.** Confirms
+   you actually read it; sets the bridge for the next question. Not
+   a recap — just enough to anchor.
+2. **Bridge with motivation.** Explain WHY the next question
+   matters — what downstream decision or risk it pins down. Avoids
+   the user feeling like they're being interrogated for its own sake.
+3. **Frame the question with concrete options (a / b / c).** Closed-
+   form choices > open-ended "how do you want to handle X?". The
+   user's job becomes "pick one or override", not "draft a design
+   from scratch".
+4. **Recommend ONE option with rationale.** Pick a default. Tell
+   the user why. Saves them from the cognitive load of weighing
+   every option from cold; lets them respond fast (often "yeah
+   recommendation, ship it") OR override decisively.
+5. **Invite override.** End with an explicit "if you'd rather X,
+   say so" so the user knows the recommendation is a starting
+   point, not a verdict.
+
+Concrete example (a Q3-equivalent from a hypothetical CLI-tool
+mission asking about argument parsing):
+
+  Acknowledged — single-binary scope keeps the surface area
+  manageable.
+
+  Next question pins down the argument-parsing layer, which
+  determines how easy it'll be to add subcommands later.
+
+  How should the CLI handle arguments?
+    a. Hand-rolled `sys.argv` parsing (smallest dependency, painful
+       to extend)
+    b. `argparse` (stdlib, supports subcommands, well-known idioms)
+    c. `click` (cleaner ergonomics, third-party dependency)
+
+  Recommendation: **b. argparse** — stdlib so no extra dep, and
+  every Python dev recognizes the pattern. We can move to click
+  later if subcommands proliferate.
+
+  If you'd rather start with click for the better ergonomics, say
+  so and I'll plan the spec around that instead.
+
+A few extra notes on the pattern:
+
+- **Active scope-narrowing is encouraged.** When the user's last
+  answer hints at a direction that simplifies the next 3 questions,
+  surface that as a synthesis-confirmation rather than a new
+  question. Linux-bridge Q5b: after the user confirmed "drop games
+  entirely from v0.1", the model offered a synthesized confirmation
+  ("So v0.1 is productivity-app-only; we can defer GPU/DXVK/VKD3D
+  to v0.2 — confirm?") instead of asking the games sub-questions.
+- **Don't hedge your recommendation.** "I'd suggest maybe trying
+  option b" is worse than "Recommendation: b. argparse — stdlib so
+  no extra dep". Pick one, defend it, invite override. Hedging
+  forces the user to pick anyway AND removes useful signal about
+  what you actually think.
+- **No filler.** Skip "Great question!" / "That's a really
+  important consideration." The acknowledge line earns its keep
+  by referencing the user's specific previous answer, not by
+  praising the question.
+
 ### Spec-format additions for rigorous mode
 
 The spec block must include one new subsection, `**Time budget:**`,

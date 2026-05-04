@@ -248,6 +248,48 @@ class TestRigorousPromptSharpening:
         assert "at least 3" in rigorous.lower() or "3 of your" in rigorous.lower()
 
 
+class TestRigorousQuestionExemplar:
+    """v0.5.7a5 — pin the question-format exemplar codified from
+    linux-bridge field-observation #12. The 5-beat pattern
+    (acknowledge → bridge → options → recommend → invite override)
+    drove all 27 grill questions in the linux-bridge run to a
+    consistent 5/5 rating; we want it to survive prompt edits."""
+
+    def _rigorous(self):
+        return format_grill_first_message("build a thing", autonomous=True)
+
+    def test_exemplar_section_present(self):
+        rigorous = self._rigorous()
+        assert "EXEMPLAR" in rigorous
+
+    def test_acknowledges_5_beat_pattern(self):
+        rigorous = self._rigorous().lower()
+        # All five beats by name
+        for beat in ("acknowledge", "bridge", "options", "recommend", "override"):
+            assert beat in rigorous, f"missing 5-beat keyword: {beat}"
+
+    def test_concrete_example_present(self):
+        # The exemplar must have an actual rendered example so the
+        # model can pattern-match. A bare bullet list of beats isn't
+        # enough — there's a concrete (a/b/c) example with a
+        # recommendation.
+        rigorous = self._rigorous()
+        # Look for the recommendation phrasing the example uses.
+        assert "Recommendation:" in rigorous or "recommendation:" in rigorous.lower()
+
+    def test_active_scope_narrowing_called_out(self):
+        # The synthesis-confirmation pattern (linux-bridge Q5b) is
+        # explicitly named in the exemplar.
+        rigorous = self._rigorous().lower()
+        assert "synthesis-confirmation" in rigorous or "scope-narrowing" in rigorous
+
+    def test_no_filler_rule_present(self):
+        # The exemplar's "skip 'Great question!'" guidance is part
+        # of why the linux-bridge run scored consistently — pin it.
+        rigorous = self._rigorous()
+        assert "filler" in rigorous.lower() or "Great question" in rigorous
+
+
 # ── Vision-availability gate ────────────────────────────────────────────
 
 

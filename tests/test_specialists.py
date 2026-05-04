@@ -276,3 +276,58 @@ class TestAwaitUserDiscoverability:
         # would dilute the verify-as-check semantics.
         block = get_specialist(NodeSpecialization.VERIFY).system_block
         assert "ESCAPE HATCH" not in block
+
+
+class TestReflectFailureAnnotation:
+    """v0.5.7a5 — pin the gold-standard failure-annotation pattern
+    documented from linux-bridge field-observation #9. When a
+    `[chrome]` or `[bash]` criterion fails, REFLECT should append a
+    one-line diagnosis to the criterion line via `file_edit` so the
+    next iteration's planner has the actual error to act on, not
+    just a red checkbox."""
+
+    def _reflect(self):
+        return get_specialist(NodeSpecialization.REFLECT).system_block
+
+    def test_annotate_failures_section_present(self):
+        block = self._reflect()
+        assert "ANNOTATE FAILURES" in block
+
+    def test_section_called_out_as_gold_standard(self):
+        # Phrasing matters here — it's the language the docs use, so
+        # if a refactor renames it the test catches the drift.
+        block = self._reflect()
+        assert "gold-standard" in block
+
+    def test_shows_bad_example_just_unchecked(self):
+        block = self._reflect().lower()
+        # The "bad" pattern (unannotated failure) must be called out
+        # so the model knows what to avoid.
+        assert "bad" in block and "unchecked" in block
+
+    def test_shows_good_example_with_diagnosis(self):
+        block = self._reflect()
+        # The "good" example shows a one-line FAIL diagnosis appended
+        # to a criterion. The trailing italic-marker `*(FAIL: ...)*`
+        # is the file_edit pattern.
+        assert "*(FAIL:" in block
+
+    def test_recommends_root_cause_diagnosis(self):
+        block = self._reflect().lower()
+        # The diagnosis isn't just "what failed" — it should suggest
+        # a probable root cause when the tool output reveals one.
+        assert "root cause" in block
+
+    def test_mentions_field_observation_provenance(self):
+        # Anchoring the rule to the field run helps future readers
+        # understand why this section exists. The reference is
+        # tagged as a v0.5.7a5 codification.
+        block = self._reflect()
+        assert "v0.5.7a5" in block or "linux-bridge" in block
+
+    def test_applies_to_bash_criteria_too(self):
+        # Field observation specifically called out bash AND chrome;
+        # the section must extend to bash criteria where the
+        # deterministic pre-pass left a vague evidence string.
+        block = self._reflect().lower()
+        assert "[bash]" in block and "diagnosis" in block

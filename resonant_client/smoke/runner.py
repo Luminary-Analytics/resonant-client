@@ -118,6 +118,63 @@ class SmokeResult:
 # ── Project-bootstrap helpers ──────────────────────────────────────────
 
 
+def _check_seed_path_format(relpath) -> None:
+    """Cheap pre-tempdir validation of a seed-files key.
+
+    Rejects: empty/non-string, paths that the OS calls absolute,
+    POSIX-rooted paths (`/foo`) which are NOT considered absolute
+    on Windows but still resolve outside the project, and any
+    `..` segment.
+
+    Cross-platform: a POSIX-style absolute path like `/etc/x`
+    isn't classified as absolute by `Path` on Windows, but it
+    resolves to `C:\\etc\\x` when joined with a tempdir under
+    `C:\\Users\\...` — clearly outside the project. Catch it
+    here with the explicit prefix check so the error message is
+    consistent across platforms.
+
+    Raises ValueError on rejection. Returns None on success.
+    """
+    if not relpath or not isinstance(relpath, str):
+        raise ValueError(
+            f"seed_files path must be a non-empty string; got {relpath!r}"
+        )
+    p = Path(relpath)
+    if p.is_absolute() or relpath.startswith(("/", "\\")):
+        raise ValueError(
+            f"seed_files path {relpath!r} is absolute; must be "
+            f"relative to the project root"
+        )
+    if any(part == ".." for part in p.parts):
+        raise ValueError(
+            f"seed_files path {relpath!r} contains '..' segment; "
+            f"must stay inside the project root"
+        )
+
+
+def _validate_seed_path(relpath, project_root: Path) -> Path:
+    """Full validation: cheap checks + post-resolve containment check.
+
+    A spec author typo like `seed_files={"../foo.py": ...}` would
+    silently write outside the smoke project. Defense in depth —
+    bundled specs are trusted, but the cost of this check is tiny
+    and it removes a whole class of footgun.
+
+    Returns the resolved absolute path on success. Raises ValueError
+    with a clear message on rejection.
+    """
+    _check_seed_path_format(relpath)
+    target = (project_root / Path(relpath)).resolve()
+    try:
+        target.relative_to(project_root.resolve())
+    except ValueError:
+        raise ValueError(
+            f"seed_files path {relpath!r} resolves outside the "
+            f"project root ({project_root}); rejecting"
+        )
+    return target
+
+
 def make_fresh_project(
     prefix: str,
     seed_files: dict[str, str] | None = None,
@@ -131,7 +188,19 @@ def make_fresh_project(
     the autonomous loop sees them as pre-existing project state, not
     its own first commit. The seed commit lands AFTER the empty
     initial commit so `git log` shows a clean two-commit baseline.
+
+    v0.5.10a3 — seed_files paths are validated to stay inside the
+    project root. Absolute paths and `..` segments raise ValueError
+    *before* any tempdir is created, so a typo in a spec doesn't
+    leak files into the host filesystem.
     """
+    # Validate paths BEFORE creating the tempdir so a bad spec fails
+    # fast without leaving a dangling tempdir. The full resolve check
+    # runs later against the actual project root.
+    if seed_files:
+        for relpath in seed_files:
+            _check_seed_path_format(relpath)
+
     project = Path(tempfile.mkdtemp(prefix=prefix))
     env = {
         **os.environ,
@@ -148,7 +217,10 @@ def make_fresh_project(
     )
     if seed_files:
         for relpath, content in seed_files.items():
-            target = project / relpath
+            # Re-validate against the resolved project root — this
+            # catches things like `foo/../../bar` that pass the cheap
+            # check but resolve outside.
+            target = _validate_seed_path(relpath, project)
             target.parent.mkdir(parents=True, exist_ok=True)
             # `errors="replace"` is paranoid; spec authors should write
             # ASCII-clean fixtures, but if they don't we want to fail
@@ -164,6 +236,48 @@ def make_fresh_project(
             cwd=project, check=True, capture_output=True, env=env,
         )
     return project
+
+
+# ── Event-stream accumulator (module-level for testability) ───────────
+
+
+def _new_summary() -> dict:
+    """Initialize the per-run summary dict used by the event sink."""
+    return {
+        "iter_started": 0,
+        "iter_complete": 0,
+        "iter_failed": 0,
+        "reflection_count": 0,
+        "iter_durations": [],
+    }
+
+
+def _accumulate_event(payload: dict, summary: dict) -> None:
+    """Update `summary` in place from one daemon event.
+
+    Module-level so the filter behavior (e.g. skipping missing or
+    non-positive durations from `iteration_complete` events) is unit-
+    testable without booting a live mission.
+
+    v0.5.10a3 — `duration_seconds` is now required to be present AND
+    positive to land in `iter_durations`. Pre-fix, a missing key
+    returned 0 from `.get(default=0)` and isinstance passed, so any
+    daemon-event-shape regression that dropped duration_seconds
+    silently filled the durations list with 0.0 entries and biased
+    the `avg_iter_duration_seconds()` rollup downward.
+    """
+    kind = payload.get("event", "")
+    if kind == "autonomous_iteration_started":
+        summary["iter_started"] += 1
+    elif kind == "autonomous_iteration_complete":
+        summary["iter_complete"] += 1
+        dur = payload.get("duration_seconds")
+        if isinstance(dur, (int, float)) and dur > 0:
+            summary["iter_durations"].append(float(dur))
+    elif kind == "autonomous_iteration_failed":
+        summary["iter_failed"] += 1
+    elif kind == "autonomous_reflection":
+        summary["reflection_count"] += 1
 
 
 # ── Stub AppState for the runner ───────────────────────────────────────
@@ -279,27 +393,10 @@ def run_smoke(
 
     state = _StubState(project_path=project_path, backend=backend, settings=None)
 
-    summary = {
-        "iter_started": 0,
-        "iter_complete": 0,
-        "iter_failed": 0,
-        "reflection_count": 0,
-        "iter_durations": [],
-    }
+    summary = _new_summary()
 
     def _on_event(payload: dict) -> None:
-        kind = payload.get("event", "")
-        if kind == "autonomous_iteration_started":
-            summary["iter_started"] += 1
-        elif kind == "autonomous_iteration_complete":
-            summary["iter_complete"] += 1
-            dur = payload.get("duration_seconds", 0)
-            if isinstance(dur, (int, float)):
-                summary["iter_durations"].append(float(dur))
-        elif kind == "autonomous_iteration_failed":
-            summary["iter_failed"] += 1
-        elif kind == "autonomous_reflection":
-            summary["reflection_count"] += 1
+        _accumulate_event(payload, summary)
         if on_event is not None:
             try:
                 on_event(payload)

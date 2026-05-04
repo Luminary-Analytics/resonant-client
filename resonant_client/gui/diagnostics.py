@@ -115,6 +115,11 @@ def _read_redacted(path: Path, *, max_bytes: int = 2 * 1024 * 1024) -> bytes:
 
 LATEST_N_SESSIONS = 20
 LATEST_N_INTENTS = 10
+# v0.5.9a5 — per-intent iteration metadata files. Each iter records
+# a small JSON snapshot; capping to the latest N keeps the bundle
+# from blowing up on missions that ran 100+ iters. The most-recent
+# 30 are usually where the failure is.
+LATEST_N_ITERS_PER_INTENT = 30
 MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MB head-truncated
 
 
@@ -197,6 +202,82 @@ def _collect_recent_intent_audits(projects_dir: Path) -> list[tuple[str, str, Pa
     return [(p, i, a) for _, p, i, a in audits[:LATEST_N_INTENTS]]
 
 
+def _collect_iter_metadata(intent_dir: Path) -> list[Path]:
+    """v0.5.9a5 — return per-iteration metadata files inside an
+    intent's `iterations/` subdir. Each iter has a small JSON file
+    (intent_id, iter_count, model, started/ended_at, verdict, etc.)
+    that turns into a useful timeline when bundled.
+
+    Capped at LATEST_N_ITERS_PER_INTENT to avoid runaway diagnostics
+    bundle size on missions that ran for hundreds of iterations.
+    """
+    iters_dir = intent_dir / "iterations"
+    if not iters_dir.is_dir():
+        return []
+    candidates: list[tuple[float, Path]] = []
+    for child in iters_dir.iterdir():
+        if not child.is_file():
+            continue
+        try:
+            mtime = child.stat().st_mtime
+            if child.stat().st_size == 0:
+                continue
+        except OSError:
+            continue
+        candidates.append((mtime, child))
+    candidates.sort(reverse=True, key=lambda t: t[0])
+    return [p for _, p in candidates[:LATEST_N_ITERS_PER_INTENT]]
+
+
+def _build_mission_summary(
+    intent_audits: list[tuple[str, str, Path]],
+) -> str:
+    """v0.5.9a5 — a small JSON manifest of the included intents, so
+    a triager can see the shape of what's bundled without unzipping
+    everything. Maps each intent's audit entry to size + mtime + iter
+    count + project hash. Helps prioritize which intent to dig into
+    first when several are included."""
+    summary: list[dict] = []
+    for project_hash, intent_id, audit in intent_audits:
+        try:
+            audit_size = audit.stat().st_size
+            audit_mtime = audit.stat().st_mtime
+        except OSError:
+            audit_size = 0
+            audit_mtime = 0.0
+        iter_files = _collect_iter_metadata(audit.parent)
+        # Best-effort: latest iter's mtime tells us when the daemon
+        # last did productive work (vs audit which captures every
+        # tool call, rotating constantly).
+        latest_iter_mtime = 0.0
+        for it in iter_files:
+            try:
+                m = it.stat().st_mtime
+                if m > latest_iter_mtime:
+                    latest_iter_mtime = m
+            except OSError:
+                pass
+        summary.append({
+            "project_hash": project_hash,
+            "intent_id": intent_id,
+            "audit_bytes": audit_size,
+            "audit_mtime_iso": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(audit_mtime),
+            ) if audit_mtime else "",
+            "iter_files_included": len(iter_files),
+            "latest_iter_mtime_iso": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(latest_iter_mtime),
+            ) if latest_iter_mtime else "",
+        })
+    return json.dumps({
+        "schema_version": 1,
+        "intents": summary,
+        "captured_at_iso": time.strftime(
+            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(),
+        ),
+    }, indent=2)
+
+
 def build_diagnostics_zip(
     resonant_dir: Path,
     output_dir: Path,
@@ -225,6 +306,21 @@ def build_diagnostics_zip(
             zf.writestr("logs/resonant-startup.log",
                        _read_redacted(startup_log, max_bytes=MAX_BYTES_PER_FILE))
 
+        # v0.5.9a5 — costs.json. Just dates + numbers (no secrets),
+        # but still pass through redact() as defense-in-depth in case
+        # a future schema adds string fields. Tells the triager
+        # whether the user was hitting their daily budget alert when
+        # the issue happened.
+        costs_path = resonant_dir / "costs.json"
+        if costs_path.is_file():
+            try:
+                zf.writestr(
+                    "costs.json",
+                    _read_redacted(costs_path, max_bytes=MAX_BYTES_PER_FILE),
+                )
+            except OSError:
+                logger.debug("costs.json read failed", exc_info=True)
+
         # Per-session JSONL event logs.
         for session_log in _collect_recent_session_logs(logs_dir):
             try:
@@ -238,9 +334,40 @@ def build_diagnostics_zip(
 
         # Per-intent specialist audit trails — the gold standard for
         # debugging mission failures since they show every tool call.
-        for project_hash, intent_id, audit in _collect_recent_intent_audits(projects_dir):
+        intent_audits = _collect_recent_intent_audits(projects_dir)
+        for project_hash, intent_id, audit in intent_audits:
             arcname = f"intents/{project_hash}/{intent_id}/audit.jsonl"
             zf.writestr(arcname, _read_redacted(audit, max_bytes=MAX_BYTES_PER_FILE))
+            # v0.5.9a5 — also include the per-iteration metadata
+            # snapshots. Each iter's JSON has model, verdict,
+            # duration, item_id; the timeline of these is much more
+            # readable than parsing audit.jsonl by hand. Capped to
+            # LATEST_N_ITERS_PER_INTENT to keep bundle size bounded.
+            for iter_file in _collect_iter_metadata(audit.parent):
+                rel_iter = iter_file.name
+                iter_arc = f"intents/{project_hash}/{intent_id}/iterations/{rel_iter}"
+                try:
+                    zf.writestr(
+                        iter_arc,
+                        _read_redacted(iter_file, max_bytes=MAX_BYTES_PER_FILE),
+                    )
+                except OSError:
+                    logger.debug(
+                        "iter metadata read failed for %s", iter_file,
+                        exc_info=True,
+                    )
+
+        # v0.5.9a5 — mission summary manifest at the root of the
+        # bundle. Quick-reference index of what intents are included,
+        # their byte size, and when they last touched disk. The
+        # triager can read this without unzipping the audit trails.
+        try:
+            zf.writestr(
+                "mission-summary.json",
+                _build_mission_summary(intent_audits),
+            )
+        except Exception:
+            logger.debug("mission-summary build failed", exc_info=True)
 
     return zip_path
 

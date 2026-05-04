@@ -260,3 +260,187 @@ class TestDefaultOutputDir:
         result = default_output_dir()
         assert isinstance(result, Path)
         assert result.is_dir()
+
+
+# ── v0.5.9a5 enrichments ───────────────────────────────────────────────
+
+
+@pytest.fixture
+def enriched_resonant_dir(tmp_path):
+    """Fixture with v0.5.9a5 additions: costs.json + per-iteration
+    metadata under intents/<id>/iterations/."""
+    rd = tmp_path / ".resonant"
+    rd.mkdir()
+    (rd / "settings.json").write_text(
+        '{"general": {}, "theme": "dark"}', encoding="utf-8",
+    )
+    # costs.json — just dates + numbers, no secrets.
+    (rd / "costs.json").write_text(
+        '{"daily": {"2026-05-01": {"input_tokens": 12000, '
+        '"output_tokens": 3000, "cost_usd": 0.45}}}',
+        encoding="utf-8",
+    )
+    logs = rd / "logs"
+    (logs / "2026-05-01").mkdir(parents=True)
+    (logs / "resonant-startup.log").write_text(
+        "INFO startup ok\n", encoding="utf-8",
+    )
+
+    # Intent with iter metadata files.
+    intent_dir = rd / "projects" / "p1" / "intents" / "intent01"
+    intent_dir.mkdir(parents=True)
+    (intent_dir / "audit.jsonl").write_text(
+        '{"kind": "tool_call"}\n', encoding="utf-8",
+    )
+    iters = intent_dir / "iterations"
+    iters.mkdir()
+    (iters / "iter-001.json").write_text(
+        '{"iter": 1, "model": "deepseek-v4-flash:cloud", '
+        '"verdict": "continue", "duration_seconds": 42}',
+        encoding="utf-8",
+    )
+    (iters / "iter-002.json").write_text(
+        '{"iter": 2, "model": "deepseek-v4-pro:cloud", '
+        '"verdict": "satisfied", "duration_seconds": 128}',
+        encoding="utf-8",
+    )
+    return rd
+
+
+class TestDiagnosticsEnrichments:
+    def test_costs_json_included(self, enriched_resonant_dir, tmp_path):
+        zip_path = build_diagnostics_zip(
+            enriched_resonant_dir, tmp_path / "out", version="0.5.9",
+        )
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+            assert "costs.json" in names
+            content = zf.read("costs.json").decode("utf-8")
+        # Token counts + dates round-trip unchanged.
+        assert "12000" in content
+        assert "2026-05-01" in content
+
+    def test_iter_metadata_included(self, enriched_resonant_dir, tmp_path):
+        zip_path = build_diagnostics_zip(
+            enriched_resonant_dir, tmp_path / "out", version="0.5.9",
+        )
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+        # Both iter-001 and iter-002 should be in the bundle under
+        # the right path layout.
+        assert "intents/p1/intent01/iterations/iter-001.json" in names
+        assert "intents/p1/intent01/iterations/iter-002.json" in names
+
+    def test_iter_metadata_content_preserved(
+        self, enriched_resonant_dir, tmp_path,
+    ):
+        zip_path = build_diagnostics_zip(
+            enriched_resonant_dir, tmp_path / "out", version="0.5.9",
+        )
+        with zipfile.ZipFile(zip_path) as zf:
+            iter1 = zf.read(
+                "intents/p1/intent01/iterations/iter-001.json",
+            ).decode("utf-8")
+        # Per-iter model attribution survives the bundle.
+        assert "deepseek-v4-flash:cloud" in iter1
+        assert "continue" in iter1
+
+    def test_mission_summary_json_present(
+        self, enriched_resonant_dir, tmp_path,
+    ):
+        zip_path = build_diagnostics_zip(
+            enriched_resonant_dir, tmp_path / "out", version="0.5.9",
+        )
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+            assert "mission-summary.json" in names
+            summary = json.loads(
+                zf.read("mission-summary.json").decode("utf-8"),
+            )
+        assert summary["schema_version"] == 1
+        assert "captured_at_iso" in summary
+        # The single intent in the fixture should be summarized.
+        assert len(summary["intents"]) == 1
+        intent_entry = summary["intents"][0]
+        assert intent_entry["project_hash"] == "p1"
+        assert intent_entry["intent_id"] == "intent01"
+        assert intent_entry["iter_files_included"] == 2
+
+    def test_no_iter_dir_no_crash(self, sample_resonant_dir, tmp_path):
+        # The pre-v0.5.9a5 fixture has NO iterations/ dir under the
+        # intent. The new code must handle that gracefully — no crash,
+        # zero iter files included, but the rest of the bundle works.
+        zip_path = build_diagnostics_zip(
+            sample_resonant_dir, tmp_path / "out", version="0.5.9",
+        )
+        assert zip_path.exists()
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+            # Audit still present.
+            assert any("audit.jsonl" in n for n in names)
+            # Mission summary present even with zero iter files.
+            assert "mission-summary.json" in names
+            summary = json.loads(
+                zf.read("mission-summary.json").decode("utf-8"),
+            )
+            # Single intent, zero iter files.
+            assert summary["intents"][0]["iter_files_included"] == 0
+
+    def test_no_costs_json_no_crash(self, sample_resonant_dir, tmp_path):
+        # Fixture without costs.json — diagnostics shouldn't crash;
+        # the file just won't be in the bundle.
+        zip_path = build_diagnostics_zip(
+            sample_resonant_dir, tmp_path / "out", version="0.5.9",
+        )
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+        assert "costs.json" not in names
+
+    def test_iter_metadata_capped(self, tmp_path):
+        # Pile of iter files; only LATEST_N_ITERS_PER_INTENT should
+        # be bundled.
+        from resonant_client.gui.diagnostics import LATEST_N_ITERS_PER_INTENT
+        rd = tmp_path / ".resonant"
+        intent_dir = rd / "projects" / "p1" / "intents" / "i1"
+        intent_dir.mkdir(parents=True)
+        (intent_dir / "audit.jsonl").write_text(
+            '{"kind": "x"}\n', encoding="utf-8",
+        )
+        iters = intent_dir / "iterations"
+        iters.mkdir()
+        # Write 50 iters; only the most-recent N are kept.
+        for i in range(50):
+            (iters / f"iter-{i:03d}.json").write_text(
+                f'{{"iter": {i}}}', encoding="utf-8",
+            )
+        zip_path = build_diagnostics_zip(
+            rd, tmp_path / "out", version="0.5.9",
+        )
+        with zipfile.ZipFile(zip_path) as zf:
+            iter_names = [
+                n for n in zf.namelist()
+                if "iterations/iter-" in n
+            ]
+        assert len(iter_names) == LATEST_N_ITERS_PER_INTENT
+
+    def test_empty_iter_files_skipped(self, tmp_path):
+        # 0-byte iter file shouldn't pollute the bundle.
+        rd = tmp_path / ".resonant"
+        intent_dir = rd / "projects" / "p1" / "intents" / "i1"
+        intent_dir.mkdir(parents=True)
+        (intent_dir / "audit.jsonl").write_text(
+            '{"k": "v"}\n', encoding="utf-8",
+        )
+        iters = intent_dir / "iterations"
+        iters.mkdir()
+        (iters / "good.json").write_text(
+            '{"iter": 1}', encoding="utf-8",
+        )
+        (iters / "empty.json").write_text("", encoding="utf-8")
+        zip_path = build_diagnostics_zip(
+            rd, tmp_path / "out", version="0.5.9",
+        )
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+        assert any("good.json" in n for n in names)
+        assert not any("empty.json" in n for n in names)

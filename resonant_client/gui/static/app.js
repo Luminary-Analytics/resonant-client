@@ -1173,6 +1173,15 @@ class ResonantApp {
             this._autonomousState = {
                 intentId: '',
                 iterCount: 0,
+                // v0.5.7a2 — track in-flight state so the header badge
+                // can disambiguate "iter N (running)" from "iter N
+                // completed". Linux-bridge field-observation #5: the
+                // header counted the in-flight iter while the sidebar
+                // inspector counted completed iters, so during iter 5
+                // the header showed "iter 5" and the inspector showed
+                // "iter 4" — both correct under their own definitions
+                // but visually disagreeing.
+                iterInFlight: false,
                 startedAt: 0,
                 timeBudgetSeconds: null,
                 lastVerdict: 'continue',
@@ -1223,6 +1232,10 @@ class ResonantApp {
     handleAutonomousIterationStarted(event) {
         const s = this._ensureAutonomousState(event);
         s.iterCount = (event && event.iter_count) || s.iterCount;
+        // v0.5.7a2 — flag the in-flight iter so the badge can render
+        // "iter N (running)" while the inspector continues to show
+        // the count of COMPLETED iters from the persisted log.
+        s.iterInFlight = true;
         this._updateAutonomousBadgeState();
         this._renderIterationCard(event, /*complete=*/false);
     }
@@ -1230,6 +1243,8 @@ class ResonantApp {
     handleAutonomousIterationComplete(event) {
         const s = this._ensureAutonomousState(event);
         s.iterCount = (event && event.iter_count) || s.iterCount;
+        // v0.5.7a2 — iter shipped; badge converges with inspector.
+        s.iterInFlight = false;
         this._updateAutonomousBadgeState();
         this._upgradeIterationCardToComplete(event);
         // v0.5.3a3 — REFLECT may have ticked criteria off + appended
@@ -1240,6 +1255,12 @@ class ResonantApp {
     handleAutonomousIterationFailed(event) {
         const s = this._ensureAutonomousState(event);
         s.iterCount = (event && event.iter_count) || s.iterCount;
+        // v0.5.7a2 — failed iters don't append to the iteration log
+        // (no SHA to record), so the badge converges with the
+        // inspector at iterCount-1, BUT the badge still shows the
+        // attempted iter number (iterCount). Drop the in-flight flag
+        // so the badge stops advertising "running".
+        s.iterInFlight = false;
         this._updateAutonomousBadgeState();
         this._upgradeIterationCardToFailed(event);
         this._requestAutonomousMissionRoadmap();
@@ -1251,6 +1272,10 @@ class ResonantApp {
         s.lastVerdict = (event && event.verdict) || s.lastVerdict;
         s.acceptanceSummary = (event && event.acceptance_summary) || s.acceptanceSummary;
         s.lastReflection = event;
+        // v0.5.7a2 — REFLECT runs after an iter has completed (or on
+        // an empty roadmap), so by the time we see this event the
+        // iter is no longer "in flight" from the user's POV.
+        s.iterInFlight = false;
         this._updateAutonomousBadgeState();
         this._renderReflectionCard(event);
         // REFLECT just ran — the persisted roadmap is freshly mutated
@@ -1786,7 +1811,7 @@ class ResonantApp {
             </div>
             <div class="arm-inspector-summary">
                 ${summaryPill}
-                <span>iter ${iterCount}</span>
+                <span title="Iterations recorded in roadmap.md (each entry = one shipped sub-mission). The chat-header badge counts the in-flight iter as well, so during a running iter the header may show one ahead.">iter ${iterCount} completed</span>
             </div>
             ${criteriaHTML ? `<ul class="arm-criteria-list">${criteriaHTML}</ul>` : ''}
             ${nextItemHTML}
@@ -2319,7 +2344,16 @@ class ResonantApp {
         const parts = [];
 
         if (typeof s.iterCount === 'number') {
-            parts.push(`iter ${s.iterCount}`);
+            // v0.5.7a2 — qualify "iter N" with "(running)" when the
+            // daemon is mid-iteration, so the user knows the inspector's
+            // "iter N completed" line refers to the previous iter (N-1).
+            // Linux-bridge field-observation #5: badge counted in-flight,
+            // inspector counted completed, both correct but visually
+            // disagreeing.
+            const iterLabel = s.iterInFlight
+                ? `iter ${s.iterCount} (running)`
+                : `iter ${s.iterCount}`;
+            parts.push(iterLabel);
         }
         // Time remaining or elapsed depending on whether we have a budget.
         if (typeof s.startedAt === 'number') {

@@ -6544,6 +6544,90 @@ body {
     font-size: 11.5px;
 }
 
+/* v0.5.8a3 — collapsed iteration block (chat virtualization for
+   long-running missions). When a new iter starts and there are
+   3+ iters in history, the oldest gets wrapped in a <details>
+   element with a one-line summary. Click expands. Linux-bridge
+   field-observation #7. */
+.autonomous-iter-fold {
+    margin: 4px 0;
+}
+.autonomous-iter-fold[open] {
+    margin: 8px 0;
+}
+.autonomous-iter-fold-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 10px;
+    background: color-mix(in srgb, var(--bg-elem) 60%, transparent);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11.5px;
+    color: var(--muted);
+    cursor: pointer;
+    list-style: none;  /* hide native <summary> marker */
+    user-select: none;
+    transition: background 0.12s;
+}
+.autonomous-iter-fold-summary::-webkit-details-marker { display: none; }
+.autonomous-iter-fold-summary:hover {
+    background: var(--bg-hover, color-mix(in srgb, var(--bg-elem) 80%, transparent));
+}
+.autonomous-iter-fold[open] > .autonomous-iter-fold-summary .autonomous-iter-fold-icon {
+    transform: rotate(90deg);
+}
+.autonomous-iter-fold-icon {
+    display: inline-block;
+    transition: transform 0.12s;
+    color: var(--brand);
+    width: 10px;
+}
+.autonomous-iter-fold-label {
+    color: var(--text);
+    font-weight: 500;
+}
+.autonomous-iter-fold-itemid {
+    background: var(--bg-panel);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11px;
+}
+.autonomous-iter-fold-status {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10.5px;
+    background: var(--bg-panel);
+}
+.autonomous-iter-fold-status-shipped {
+    background: color-mix(in srgb, var(--ok, #2a8) 20%, var(--bg-panel));
+    color: var(--ok, #2a8);
+}
+.autonomous-iter-fold-status-failed {
+    background: color-mix(in srgb, var(--err, #c33) 20%, var(--bg-panel));
+    color: var(--err, #c33);
+}
+.autonomous-iter-fold-dur {
+    font-family: var(--font-mono, monospace);
+    color: var(--muted);
+    font-size: 11px;
+}
+.autonomous-iter-fold-hint {
+    margin-left: auto;
+    color: var(--dim, var(--muted));
+    font-size: 10.5px;
+    font-style: italic;
+}
+.autonomous-iter-fold[open] > .autonomous-iter-fold-summary .autonomous-iter-fold-hint {
+    display: none;
+}
+/* Once a folded iter is expanded, restore inner-card spacing. The
+   wrapped iter card was the leading element in the original block,
+   so its own margin/padding is what the expanded view uses. */
+.autonomous-iter-fold[open] > .autonomous-iter-card {
+    margin-top: 8px;
+}
+
 .mission-build-hint {
     color: var(--muted);
     font-size: 12px;

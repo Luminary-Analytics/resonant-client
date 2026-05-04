@@ -1985,6 +1985,110 @@ class ResonantApp {
         `;
         this.chatMessages.appendChild(card);
         this.scrollToBottom();
+
+        // v0.5.8a3 — chat virtualization for long-running missions.
+        // When a new iter starts, fold any iter older than
+        // `currentIter - AUTONOMOUS_KEEP_RECENT_ITERS` into a one-line
+        // collapsible affordance. Linux-bridge field-observation #7:
+        // ~2h of accumulated chat (388 messages) was timing out
+        // Chrome's screenshot capture; the DOM had grown too large
+        // for layout. Folding past iters shrinks the live render
+        // tree to ~3 expanded iters at any time without losing
+        // information (clicking the affordance restores visibility).
+        try {
+            this._foldOlderIterationsIfNeeded(iter);
+        } catch (e) {
+            console.warn('iter virtualization raised', e);
+        }
+    }
+
+    /**
+     * v0.5.8a3 — collapse older iter blocks into one-line affordances.
+     *
+     * Strategy: each iter's block in the DOM is bounded by the iter
+     * card with `data-iter-count=N` on the leading edge and the next
+     * iter card (count=N+1) on the trailing edge. We wrap that block
+     * in a `<details>` element with a one-line summary; the body
+     * stays in the DOM but is hidden until the user clicks to expand.
+     * `<details>` is the right primitive: native browser folding,
+     * keyboard-accessible, no JS state to manage.
+     *
+     * Triggers when the latest iter's count exceeds the keep-recent
+     * window. Idempotent — re-running on already-folded iters is a
+     * no-op (we check for `data-folded`).
+     */
+    _foldOlderIterationsIfNeeded(latestIter) {
+        const KEEP_RECENT = 2;  // 2 most recent iters + live = 3 expanded
+        const cutoff = latestIter - KEEP_RECENT;
+        if (cutoff < 1) return;
+        if (!this.chatMessages) return;
+
+        // Find every iter card whose count is at-or-below cutoff and
+        // hasn't been folded yet.
+        const cards = this.chatMessages.querySelectorAll(
+            '.autonomous-iter-card:not([data-folded="1"])',
+        );
+        for (const card of cards) {
+            const n = parseInt(card.dataset.iterCount || '0', 10);
+            if (!Number.isFinite(n) || n < 1 || n > cutoff) continue;
+            this._foldSingleIterBlock(card, n);
+        }
+    }
+
+    _foldSingleIterBlock(card, iterCount) {
+        // Scan forward from `card` to either the next iter card OR
+        // the end of chatMessages. Collect those siblings into the
+        // fold block. The card itself goes inside the fold so the
+        // entire visual block becomes the affordance.
+        const nodes = [];
+        let cursor = card;
+        while (cursor) {
+            const next = cursor.nextElementSibling;
+            nodes.push(cursor);
+            // Stop when we hit the next iter card.
+            if (next && next.classList && next.classList.contains('autonomous-iter-card')) {
+                break;
+            }
+            cursor = next;
+        }
+        if (!nodes.length) return;
+
+        // Build the <details> wrapper. The summary line surfaces the
+        // most useful one-line digest: iter number, item id, status.
+        const status = card.classList.contains('autonomous-iter-card-failed')
+            ? 'failed'
+            : card.classList.contains('autonomous-iter-card-complete')
+                ? 'shipped'
+                : 'in flight';
+        const itemIdEl = card.querySelector('.autonomous-iter-item-id');
+        const itemId = itemIdEl ? itemIdEl.textContent : '';
+        const durEl = card.querySelector('.autonomous-iter-duration');
+        const dur = durEl ? durEl.textContent : '';
+
+        const wrap = document.createElement('details');
+        wrap.className = 'autonomous-iter-fold';
+        const summary = document.createElement('summary');
+        summary.className = 'autonomous-iter-fold-summary';
+        summary.innerHTML = `
+            <span class="autonomous-iter-fold-icon" aria-hidden="true">▸</span>
+            <span class="autonomous-iter-fold-label">Iter ${iterCount}</span>
+            ${itemId ? `<code class="autonomous-iter-fold-itemid">${this.escapeHtml(itemId)}</code>` : ''}
+            <span class="autonomous-iter-fold-status autonomous-iter-fold-status-${status.replace(/\s+/g, '-')}">${this.escapeHtml(status)}</span>
+            ${dur ? `<span class="autonomous-iter-fold-dur">${this.escapeHtml(dur)}</span>` : ''}
+            <span class="autonomous-iter-fold-hint">click to expand</span>
+        `;
+        wrap.appendChild(summary);
+
+        // Mark the card as folded BEFORE moving so subsequent calls
+        // skip it. The dataset attr survives the move.
+        card.dataset.folded = '1';
+
+        // Insert the wrapper in the card's slot, then move all the
+        // collected nodes inside it.
+        card.parentNode.insertBefore(wrap, card);
+        for (const node of nodes) {
+            wrap.appendChild(node);
+        }
     }
 
     _upgradeIterationCardToComplete(event) {

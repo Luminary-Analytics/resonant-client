@@ -463,3 +463,94 @@ class TestExtractSpecRigorousFields:
         s = ExtractedSpec(raw="x", refined_intent="y")
         assert s.time_budget == ""
         assert s.acceptance_criteria == []
+
+
+class TestExtractSpecTruncationDetection:
+    """v0.5.6a2 — the linux-bridge field-observation run had the model
+    emit a Final-spec block that got cut off mid-sentence after the
+    In-scope bullets, with no `**Acceptance criteria:**` section. The
+    autonomous-mission dispatch card rendered anyway and clicking Build
+    would have hit `extract_spec()` and raised ValueError.
+
+    These tests pin the parser's behavior for truncated-spec cases so
+    the frontend's spec-validity gate (mirror logic in JS) and the
+    backend's `build_roadmap_from_spec` path can both rely on the same
+    semantics: a spec without typed acceptance criteria is invalid."""
+
+    _TRUNCATED_NO_CRITERIA_SECTION = """\
+## Final spec
+
+**Refined intent:** Build a thing.
+
+**Key assumptions:**
+- It's greenfield
+
+**In scope:**
+- Project scaffold
+- Core CLI flags
+- Recipe schema validation at load time: malformed recipes fail at app-load
+"""
+
+    _TRUNCATED_CRITERIA_HEADER_NO_CRITERIA = """\
+## Final spec
+
+**Refined intent:** Build a thing.
+
+**In scope:**
+- Project scaffold
+
+**Acceptance criteria:**
+"""
+
+    _ONLY_HEADING_NO_BODY = """\
+## Final spec
+
+"""
+
+    def test_truncated_no_criteria_section_parses_to_empty_list(self):
+        # No Acceptance criteria heading at all → criteria list is empty.
+        # Caller (build_roadmap_from_spec / frontend gate) is expected
+        # to refuse to dispatch.
+        spec = extract_spec(self._TRUNCATED_NO_CRITERIA_SECTION)
+        assert spec is not None  # the `## Final spec` block is still detected
+        assert spec.acceptance_criteria == []
+
+    def test_criteria_header_but_no_criteria_lines_yields_empty(self):
+        # Header is present, no `- [ ] \`[bash]\`...` lines below.
+        spec = extract_spec(self._TRUNCATED_CRITERIA_HEADER_NO_CRITERIA)
+        assert spec is not None
+        assert spec.acceptance_criteria == []
+
+    def test_only_heading_no_body_returns_spec_with_empty_fields(self):
+        # Bare `## Final spec\n` with nothing else — defensive case.
+        spec = extract_spec(self._ONLY_HEADING_NO_BODY)
+        # Either parses to a spec with everything empty, or returns None.
+        # Either is valid for the dispatch gate; pin whichever the
+        # parser picks so a future refactor must update the gate too.
+        if spec is not None:
+            assert spec.acceptance_criteria == []
+            assert spec.refined_intent == ""
+
+    def test_build_roadmap_from_spec_refuses_truncated_spec(self, tmp_path):
+        # Defensive end-to-end check: the backend's roadmap builder
+        # should refuse a truncated spec with a clear ValueError. This
+        # is the error the user would have seen if they'd clicked the
+        # Build button on the un-gated dispatch card.
+        from resonant_client.gui.autonomous_session import build_roadmap_from_spec
+        with pytest.raises(ValueError, match="no typed acceptance criteria"):
+            build_roadmap_from_spec(
+                feature="x", intent_id="i",
+                spec_markdown=self._TRUNCATED_NO_CRITERIA_SECTION,
+                project_path=str(tmp_path),
+            )
+
+    def test_build_roadmap_from_spec_refuses_no_final_spec_block(self, tmp_path):
+        # Sister case: no `## Final spec` block at all. Different
+        # error message but same outcome (refusal).
+        from resonant_client.gui.autonomous_session import build_roadmap_from_spec
+        with pytest.raises(ValueError, match="Final spec"):
+            build_roadmap_from_spec(
+                feature="x", intent_id="i",
+                spec_markdown="just chat, no spec here",
+                project_path=str(tmp_path),
+            )

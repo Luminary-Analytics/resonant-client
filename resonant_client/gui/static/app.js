@@ -2575,6 +2575,21 @@ class ResonantApp {
         // to (one-shot planner vs hours of autonomous iteration).
         const isAutonomous = this._currentMissionIsAutonomous();
         if (isAutonomous) {
+            // v0.5.6a2 — spec-validity gate. The linux-bridge field-
+            // observation run had the model emit a Final-spec block
+            // that was truncated mid-sentence (no Acceptance criteria
+            // section). The build card rendered anyway with the Build
+            // button enabled — clicking it would have hit the backend
+            // with malformed spec_markdown that fails extract_spec()
+            // with a ValueError. Gate the dispatch card on the spec
+            // actually being parseable + carrying ≥1 typed criterion.
+            const validity = this._validateAutonomousSpec(specMd);
+            if (!validity.ok) {
+                target.appendChild(
+                    this._buildSpecIncompleteCard(sessionId, validity)
+                );
+                return;
+            }
             const card = this._buildAutonomousBuildCard(sessionId, specMd, refined);
             target.appendChild(card);
         } else {
@@ -2623,6 +2638,119 @@ class ResonantApp {
         const cur = sessions.find((s) => s && s.id === this.currentSessionId);
         if (!cur || !cur.mission_state) return false;
         return Boolean(cur.mission_state.autonomous);
+    }
+
+    /**
+     * v0.5.6a2 — gate the autonomous-mission dispatch card on the
+     * spec actually being parseable. The autonomous_session backend
+     * calls `extract_spec()` then enforces a non-empty acceptance-
+     * criteria list before constructing a roadmap; if either check
+     * fails the dispatch raises ValueError. Mirror those gates in
+     * the frontend so we don't render a Build button that's going
+     * to detonate when clicked.
+     *
+     * The two real-world failure modes this catches (both observed
+     * during the linux-bridge field-observation run):
+     *   1. Spec generation truncated mid-sentence — In-scope bullets
+     *      are present but no Acceptance criteria section.
+     *   2. Model emitted a `## Final spec` heading but no body
+     *      (rare; possible on stream interruption).
+     *
+     * Returns: { ok: bool, reason: string, sectionsFound: object }.
+     */
+    _validateAutonomousSpec(specMd) {
+        const md = (specMd || '').trim();
+        const sectionsFound = {
+            finalSpec: /^##\s+Final spec/im.test(md),
+            acceptanceCriteria: /\*\*Acceptance criteria:\*\*/i.test(md),
+            timeBudget: /\*\*Time budget:\*\*/i.test(md),
+        };
+        if (!sectionsFound.finalSpec) {
+            return {
+                ok: false,
+                reason: 'Spec is missing the `## Final spec` heading.',
+                sectionsFound,
+            };
+        }
+        if (!sectionsFound.acceptanceCriteria) {
+            return {
+                ok: false,
+                reason: 'Spec has no `**Acceptance criteria:**` section. The model may have been cut off mid-generation.',
+                sectionsFound,
+            };
+        }
+        // Acceptance criteria section exists — count typed criteria.
+        // Mirror the regex shape `roadmap.py._CRITERION_LINE_RE` uses
+        // (`- [ ] \`[bash|chrome|vision|manual]\` <text>`).
+        const criteriaMatches = md.match(
+            /^-\s*\[[\s x]\]\s*`\[(?:bash|chrome|vision|manual)\]`/gim,
+        );
+        const criteriaCount = criteriaMatches ? criteriaMatches.length : 0;
+        if (criteriaCount === 0) {
+            return {
+                ok: false,
+                reason: 'Spec has the Acceptance criteria heading but no typed criteria (looking for lines like ``- [ ] `[bash]` ...``).',
+                sectionsFound,
+                criteriaCount,
+            };
+        }
+        return {
+            ok: true,
+            reason: '',
+            sectionsFound,
+            criteriaCount,
+        };
+    }
+
+    /**
+     * v0.5.6a2 — render an "incomplete spec" card in place of the
+     * dispatch card. Tells the user what's missing and offers a
+     * "Continue spec" button that asks the model to finish.
+     *
+     * Better than letting the user click Build and hit a backend
+     * ValueError they can't easily understand.
+     */
+    _buildSpecIncompleteCard(sessionId, validity) {
+        const wrap = document.createElement('div');
+        wrap.className = 'mission-build-action mission-spec-incomplete';
+        wrap.innerHTML = `
+            <div class="mission-spec-incomplete-head">
+                <span class="mission-spec-incomplete-icon" aria-hidden="true">⚠</span>
+                <span class="mission-spec-incomplete-title">Spec is incomplete</span>
+            </div>
+            <p class="mission-spec-incomplete-reason">
+                ${this.escapeHtml(validity.reason)}
+            </p>
+            <p class="mission-spec-incomplete-detail">
+                Cannot dispatch the autonomous loop until the spec includes
+                at least one typed acceptance criterion (
+                <code>[bash]</code> / <code>[chrome]</code> / <code>[vision]</code> / <code>[manual]</code>
+                ).
+            </p>
+            <div class="mission-spec-incomplete-actions">
+                <button type="button" class="mission-spec-incomplete-continue">
+                    Ask the model to complete the spec
+                </button>
+            </div>
+        `;
+        const continueBtn = wrap.querySelector('.mission-spec-incomplete-continue');
+        continueBtn.addEventListener('click', () => {
+            // Send a clarifying user message that prompts the model
+            // to fill in the missing sections. Same idea as my manual
+            // intervention during the linux-bridge run; codifying it
+            // here means users don't have to figure out the magic
+            // phrasing themselves.
+            const prompt = "Your spec was incomplete — please continue and emit the remaining sections. I need a `## Final spec` block with at least: **Refined intent**, **In scope**, **Out of scope**, **Time budget**, **Technical constraints**, **Acceptance criteria** (≥4 typed binary criteria using `[bash]` / `[chrome]` / `[vision]` / `[manual]` tags), and **Open risks**. Just continue from where you stopped.";
+            // Reuse the regular composer-submit path so the model
+            // sees this as a normal user message.
+            if (this.userInput) {
+                this.userInput.value = prompt;
+                if (this.sendBtn) this.sendBtn.click();
+            }
+            continueBtn.disabled = true;
+            continueBtn.textContent = 'Asked — waiting for model…';
+        });
+        return wrap;
     }
 
     /**

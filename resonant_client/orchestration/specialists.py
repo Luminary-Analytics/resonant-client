@@ -343,9 +343,51 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             '  "manual_pending": ["<criterion text>", "..."],\n'
             '  "verdict": "continue" | "satisfied" | "blocked",\n'
             '  "summary": "<one-paragraph user-facing summary>",\n'
-            '  "estimated_remaining_minutes": 0\n'
+            '  "estimated_remaining_minutes": 0,\n'
+            '  "decision_request": null\n'
             "}\n"
             "```\n\n"
+            "─── HUMAN-DECISION-REQUIRED (v0.5.8a2) ───\n\n"
+            "When you hit a fork that has TWO equally-valid resolutions "
+            "and you can't pick autonomously (the canonical case is a "
+            "PATH MISMATCH where the file IS present but at a different "
+            "location than the criterion expects), populate "
+            "`decision_request` instead of going straight to `blocked`. "
+            "The daemon will park the loop, surface the question to the "
+            "user as a card with the options you provided, and re-run "
+            "you with the user's choice in the prompt so you can ACT on "
+            "it (file_edit / file_move / etc.). Shape:\n\n"
+            "```json\n"
+            '"decision_request": {\n'
+            '  "question": "<one-line phrasing of the choice the user '
+            'has to make>",\n'
+            '  "options": [\n'
+            '    {"id": "move", "label": "Move file to criterion path", '
+            '"detail": "<one-line explanation>"},\n'
+            '    {"id": "update", "label": "Update criterion to actual '
+            'path", "detail": "..."}\n'
+            "  ],\n"
+            '  "context": "<optional: extra info the user needs to decide>"\n'
+            "}\n"
+            "```\n\n"
+            "Rules for `decision_request`:\n"
+            "- ONLY use it when the choice is genuinely ambiguous — not "
+            "as a substitute for normal decision-making. If you can pick "
+            "based on the spec, the project conventions, or the recent "
+            "iteration log, pick.\n"
+            "- ALWAYS provide ≥2 options with distinct ids. Options "
+            "should be the actual resolutions (not 'wait' or 'ask "
+            "again'); the user picks ONE and you act.\n"
+            "- When the user has already answered (you'll see a "
+            "`## User decision (act on this)` block at the top of your "
+            "next prompt), DO NOT emit another `decision_request` for "
+            "the same question. Apply the choice and emit a normal "
+            "verdict.\n"
+            "- Default value when not asking for a decision: `null`.\n\n"
+            "This is a finer-grained alternative to going `blocked`. "
+            "Reserve `blocked` for cases where there's no actionable "
+            "fork — only an external dependency the user has to "
+            "resolve manually.\n\n"
             "Verdict rules:\n"
             "- `satisfied` requires EVERY non-`[manual]` acceptance "
             "  criterion has `passed=true` in the roadmap. Even one "

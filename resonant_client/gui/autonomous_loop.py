@@ -96,6 +96,25 @@ class FullReflectOutcome:
     `verdict` is the mechanically-cross-checked final verdict. The
     other fields are the parsed JSON envelope from the model session
     (empty when `needs_model_session() == False`).
+
+    v0.5.8a2 — `decision_request` is the structured "human-decision-
+    required" payload REFLECT emits when it can't autonomously pick
+    between two equally-valid resolutions (linux-bridge field-
+    observation #10: path-mismatch where the file IS present at a
+    different location, but REFLECT can't decide whether to move the
+    file or update the criterion). Shape:
+      {
+        "question": "<one-line phrasing of the decision>",
+        "options": [
+          {"id": "move",   "label": "...", "detail": "..."},
+          {"id": "update", "label": "...", "detail": "..."},
+          ...
+        ],
+        "context": "<optional additional info for the user>"
+      }
+    Daemon parks (does NOT terminate) when this is non-None and
+    waits for `provide_decision()`. The user's choice is then folded
+    into the next REFLECT pass's goal text.
     """
     pass_result: ReflectPassResult
     verdict: str = "continue"   # "continue" | "satisfied" | "blocked"
@@ -106,6 +125,7 @@ class FullReflectOutcome:
     summary: str = ""
     estimated_remaining_minutes: int = 0
     error: str = ""
+    decision_request: Optional[dict] = None
 
 
 # ── Hooks (the I/O the daemon needs, injected) ──────────────────────────
@@ -240,6 +260,19 @@ class AutonomousMissionDaemon:
         self._verdict: str = "continue"
         self._in_flight_handle: Any = None
 
+        # v0.5.8a2 — human-decision-required park/resume state.
+        # Daemon parks (does NOT terminate) when REFLECT emits a
+        # well-formed `decision_request`. The user's response unblocks
+        # the loop via `provide_decision()`; the choice is folded into
+        # the next REFLECT pass's goal text so the model can act on it
+        # (e.g. file_edit the criterion, file_move the source file).
+        self._decision_event = threading.Event()
+        self._decision_response: dict = {}
+        # Carries the decision context forward into the next REFLECT
+        # call. Cleared after one use so old decisions don't pollute
+        # subsequent passes.
+        self._pending_decision_context: str = ""
+
     # ── Public API ────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -284,6 +317,71 @@ class AutonomousMissionDaemon:
                     "cancel_dispatch raised; ignoring",
                     exc_info=True,
                 )
+        # If the daemon was parked waiting on a decision, wake the
+        # wait-loop so it can observe the stop and exit cleanly.
+        self._decision_event.set()
+
+    def provide_decision(
+        self, option_id: str, response_text: str = "",
+    ) -> bool:
+        """v0.5.8a2 — supply the user's choice to a parked daemon.
+
+        Returns True if the daemon was actually parked (the call
+        unblocked the wait-loop), False if the daemon wasn't waiting
+        for a decision (race condition: daemon already moved past
+        the park point, or stop was called first).
+
+        `option_id` should match one of the option ids the daemon
+        emitted. `response_text` is optional free-text the user can
+        attach (e.g. "use the criterion-path AND clean up the dupe
+        file"). Both flow into the next REFLECT pass as context.
+
+        Thread-safe. Calling provide_decision twice is harmless —
+        the second call lands after the daemon has already cleared
+        the event for the next park, so it just re-arms the next
+        decision's data prematurely. We swap the response under the
+        lock so a second call doesn't tear the dict.
+        """
+        if not option_id or not isinstance(option_id, str):
+            return False
+        was_parked = not self._decision_event.is_set()
+        with self._lock:
+            self._decision_response = {
+                "option_id": option_id.strip(),
+                "response_text": (response_text or "").strip(),
+                "responded_at_iso": _now_iso(),
+            }
+        self._decision_event.set()
+        return was_parked
+
+    def _wait_for_decision(self) -> bool:
+        """Block until provide_decision() OR stop() is called.
+
+        Returns True if a decision arrived (unblock + proceed), False
+        if the daemon is being torn down (treat as a stop).
+        """
+        # Loop with short timeouts so the stop_event check fires
+        # promptly even when the user takes hours to respond.
+        while True:
+            if self._stop_event.is_set():
+                return False
+            if self._decision_event.wait(timeout=0.5):
+                # Make sure stop didn't race in between the wait
+                # returning and us reading the response.
+                if self._stop_event.is_set():
+                    return False
+                return True
+
+    def _consume_pending_decision(self) -> dict:
+        """Atomic read-and-clear of the latest decision response.
+        Returns an empty dict if nothing's queued. Called by the
+        run-loop after `_wait_for_decision()` returns True."""
+        with self._lock:
+            response = dict(self._decision_response)
+            self._decision_response = {}
+        # Re-arm for the next park.
+        self._decision_event.clear()
+        return response
 
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
@@ -694,6 +792,96 @@ class AutonomousMissionDaemon:
                     error=f"reflect hook raised: {exc}",
                     summary="REFLECT model session failed; continuing",
                 )
+
+            # v0.5.8a2 — park-and-retry on human-decision-required.
+            # If REFLECT emitted a well-formed `decision_request`, we
+            # park the daemon (no terminal transition), surface the
+            # request to the GUI, and wait for the user's choice.
+            # Once provide_decision() unblocks us, we re-run REFLECT
+            # with the user's response folded into the prompt so the
+            # model can ACT on the choice in the same iteration. This
+            # avoids the "stuck-on-path-mismatch" failure mode
+            # observed in the linux-bridge field run (#10).
+            if outcome.decision_request:
+                self._emit("autonomous_human_decision_required", {
+                    "iter_count": self._iter_count,
+                    "request": outcome.decision_request,
+                })
+                proceeded = self._wait_for_decision()
+                if not proceeded:
+                    # Daemon being torn down. Return the outcome as-is;
+                    # the run loop's stop_event check will exit cleanly
+                    # on the next iteration of the outer while-True.
+                    return outcome
+                response = self._consume_pending_decision()
+                # Build a compact context string summarizing the
+                # user's choice. The model sees this verbatim as the
+                # "## User decision (act on this)" block in the next
+                # REFLECT prompt.
+                option_id = response.get("option_id", "")
+                response_text = response.get("response_text", "")
+                context_parts = [
+                    f"User chose option `{option_id}` for the previous "
+                    f"`decision_request`."
+                ]
+                if response_text:
+                    context_parts.append(
+                        f"Additional notes from user: {response_text}"
+                    )
+                context_parts.append(
+                    f"Original question was: "
+                    f"{outcome.decision_request.get('question', '')}"
+                )
+                decision_context = "\n\n".join(context_parts)
+
+                self._emit("autonomous_human_decision_received", {
+                    "iter_count": self._iter_count,
+                    "option_id": option_id,
+                    "responded_at_iso": response.get("responded_at_iso", ""),
+                })
+
+                # Re-run REFLECT with the decision context. We re-use
+                # the SAME pass_result (deterministic checks didn't
+                # change) and the current roadmap state. If the hook
+                # signature doesn't accept the kwarg (older custom
+                # hooks), drop back to the basic call — the user's
+                # choice still got recorded via the event but won't
+                # flow into the next prompt automatically.
+                rm_post_decision = self._load_roadmap()
+                try:
+                    outcome = self.hooks.run_full_reflect(
+                        rm_post_decision, pass_result,
+                        decision_context=decision_context,
+                    )
+                except TypeError:
+                    # Hook is the old 2-arg shape — best-effort retry
+                    # without the kwarg, surface a warning so the user
+                    # knows the decision context was lost.
+                    logger.warning(
+                        "run_full_reflect hook doesn't accept "
+                        "decision_context kwarg; user choice recorded "
+                        "in event log but not folded into prompt"
+                    )
+                    try:
+                        outcome = self.hooks.run_full_reflect(
+                            rm_post_decision, pass_result,
+                        )
+                    except Exception as exc:
+                        logger.exception("run_full_reflect retry raised")
+                        outcome = FullReflectOutcome(
+                            pass_result=pass_result,
+                            verdict="continue",
+                            error=f"reflect hook raised: {exc}",
+                            summary="REFLECT post-decision retry failed",
+                        )
+                except Exception as exc:
+                    logger.exception("run_full_reflect retry raised")
+                    outcome = FullReflectOutcome(
+                        pass_result=pass_result,
+                        verdict="continue",
+                        error=f"reflect hook raised: {exc}",
+                        summary="REFLECT post-decision retry failed",
+                    )
 
         # Cross-check: if the model claimed `satisfied`, the roadmap
         # had better agree. Re-load from disk because the model may

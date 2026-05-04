@@ -1320,6 +1320,121 @@ class ResonantApp {
     }
 
     /**
+     * v0.5.8a2 — REFLECT emitted a decision_request and the daemon
+     * is parked waiting for the user to pick an option. Render an
+     * inline card in the chat with the question, options as
+     * radio-button-equivalent clickable rows, an optional notes
+     * textarea, and a Submit button.
+     *
+     * Linux-bridge field-observation #10: when a [bash] criterion
+     * had a wrong path (e.g. `recipes/` vs `src-tauri/recipes/`),
+     * REFLECT correctly diagnosed the mismatch but couldn't decide
+     * autonomously between (a) move file or (b) update criterion.
+     * Daemon went stuck. This card surfaces the decision so the
+     * user can pick, and the daemon retries REFLECT with the choice
+     * folded into the prompt.
+     */
+    handleAutonomousHumanDecisionRequired(event) {
+        const request = event && event.request;
+        if (!request || !request.options || !request.options.length) {
+            return;
+        }
+        const intentId = (this._autonomousState && this._autonomousState.intentId)
+            || (event && event.intent_id) || '';
+        if (!intentId) {
+            return;
+        }
+        // Track active decision card so we can dismiss / replace it
+        // cleanly (e.g. if the daemon emits a SECOND request in the
+        // same iter). One card at a time per mission.
+        const existing = document.getElementById('autonomous-decision-card');
+        if (existing) existing.remove();
+
+        const card = document.createElement('div');
+        card.id = 'autonomous-decision-card';
+        card.className = 'autonomous-decision-card';
+        card.dataset.intentId = intentId;
+
+        const optsHTML = request.options.map((o, i) => `
+            <label class="autonomous-decision-option" data-id="${this.escapeHtml(o.id || '')}">
+                <input type="radio" name="autonomous-decision-${this.escapeHtml(intentId)}"
+                       value="${this.escapeHtml(o.id || '')}"
+                       ${i === 0 ? 'checked' : ''} />
+                <span class="autonomous-decision-option-label">${this.escapeHtml(o.label || '')}</span>
+                ${o.detail ? `<span class="autonomous-decision-option-detail">${this.escapeHtml(o.detail)}</span>` : ''}
+            </label>
+        `).join('');
+
+        const contextHTML = request.context
+            ? `<div class="autonomous-decision-context">${this.escapeHtml(request.context)}</div>`
+            : '';
+
+        card.innerHTML = `
+            <div class="autonomous-decision-head">
+                <span class="autonomous-decision-icon" aria-hidden="true">⏸</span>
+                <span class="autonomous-decision-title">Mission paused — your decision needed</span>
+            </div>
+            <div class="autonomous-decision-question">${this.escapeHtml(request.question || '')}</div>
+            ${contextHTML}
+            <div class="autonomous-decision-options">${optsHTML}</div>
+            <textarea class="autonomous-decision-notes"
+                      placeholder="Optional notes (e.g. 'use the criterion path AND clean up the dupe')"
+                      rows="2"></textarea>
+            <div class="autonomous-decision-actions">
+                <button type="button" class="autonomous-decision-submit">Apply choice & resume</button>
+            </div>
+        `;
+
+        const submitBtn = card.querySelector('.autonomous-decision-submit');
+        submitBtn.addEventListener('click', () => {
+            const checked = card.querySelector('input[type=radio]:checked');
+            const optionId = checked ? checked.value : '';
+            if (!optionId) return;
+            const notes = (card.querySelector('.autonomous-decision-notes').value || '').trim();
+            this.send({
+                command: 'autonomous_mission_decision',
+                intent_id: intentId,
+                option_id: optionId,
+                response_text: notes,
+            });
+            // Optimistic UI: disable the controls + flip the title
+            // so the user sees their click landed. The daemon's
+            // `autonomous_human_decision_received` event later
+            // converts the card into a chip via the receive handler.
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Sending…';
+            card.querySelectorAll('input[type=radio]').forEach(i => { i.disabled = true; });
+            card.querySelector('.autonomous-decision-notes').disabled = true;
+        });
+
+        if (this.chatMessages) {
+            this.chatMessages.appendChild(card);
+            this.scrollToBottom?.();
+        }
+    }
+
+    /**
+     * v0.5.8a2 — daemon picked up the decision and is retrying
+     * REFLECT. Convert the active card into a one-line "resolved"
+     * chip so the chat retains a marker of the user's choice.
+     */
+    handleAutonomousHumanDecisionReceived(event) {
+        const card = document.getElementById('autonomous-decision-card');
+        if (!card) return;
+        const optionId = (event && event.option_id) || '';
+        const time = new Date();
+        const hh = String(time.getHours()).padStart(2, '0');
+        const mm = String(time.getMinutes()).padStart(2, '0');
+        const chip = document.createElement('div');
+        chip.className = 'autonomous-decision-chip';
+        chip.innerHTML = `
+            <span class="autonomous-decision-chip-icon" aria-hidden="true">✓</span>
+            <span>Decision applied at ${hh}:${mm} — option <code>${this.escapeHtml(optionId)}</code></span>
+        `;
+        card.replaceWith(chip);
+    }
+
+    /**
      * v0.5.3a2 — Render the "resume orphaned autonomous missions"
      * banner. Triggered by the `autonomous_orphans` WS event AND by
      * the `autonomous_orphans` field included in `init` payloads.
@@ -3687,6 +3802,22 @@ class ResonantApp {
                 break;
             case 'autonomous_mission_failed':
                 this.handleAutonomousMissionFailed(event);
+                break;
+            // v0.5.8a2 — REFLECT emitted a decision_request; the
+            // daemon is parked waiting for the user's pick. Render an
+            // inline card with the options + a Submit button. Once the
+            // user picks, the daemon retries REFLECT with the choice
+            // folded into the prompt.
+            case 'autonomous_human_decision_required':
+                this.handleAutonomousHumanDecisionRequired(event);
+                break;
+            case 'autonomous_human_decision_received':
+                this.handleAutonomousHumanDecisionReceived(event);
+                break;
+            case 'autonomous_decision_dispatched':
+                // No-op surface event — confirms the WS round-trip.
+                // The daemon-side `_received` event arrives separately
+                // and is the actual signal that work resumed.
                 break;
             // v0.5.3a2 — orphan list refresh from server. Sent both
             // automatically (via init / after resume) and on demand

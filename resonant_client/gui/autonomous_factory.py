@@ -260,6 +260,7 @@ def build_reflect_goal(
     pass_result: ReflectPassResult,
     *,
     roadmap_path: Optional[str] = None,
+    decision_context: str = "",
 ) -> str:
     """Produce the goal string for the REFLECT specialist's full-pass
     invocation.
@@ -272,12 +273,32 @@ def build_reflect_goal(
     - The list of [chrome] criteria the model must validate
     - The list of [manual] criteria to surface in the handoff
     - A reminder that the JSON envelope is required at the end
+    - v0.5.8a2: optional `decision_context` recording the user's
+      response to a previous `decision_request` so the model knows
+      to ACT on the choice instead of asking again.
 
     Pure function — easy to test without a backend.
     """
     lines = ["mode: full"]
     if roadmap_path:
         lines.append(f"roadmap_path: {roadmap_path}")
+    if decision_context:
+        # Top-of-prompt placement so the model definitely sees it
+        # before getting into the criteria walk. The model is
+        # expected to act on the user's choice via file_edit /
+        # bash / etc. and emit a normal verdict (NOT another
+        # decision_request) on this pass.
+        lines.append("")
+        lines.append("## User decision (act on this)")
+        lines.append("")
+        lines.append(decision_context.strip())
+        lines.append("")
+        lines.append(
+            "Apply the user's choice via `file_edit` / `bash` / "
+            "the appropriate tool, then emit your normal verdict. "
+            "Do NOT emit another `decision_request` for the same "
+            "question — the user has already answered."
+        )
     lines.append("")
     lines.append("## Acceptance criteria status (post-deterministic-pass)")
     lines.append("")
@@ -393,7 +414,56 @@ def parse_reflect_verdict(text: str) -> dict:
     parsed.setdefault("manual_pending", [])
     parsed.setdefault("summary", "")
     parsed.setdefault("estimated_remaining_minutes", 0)
+    # v0.5.8a2 — optional structured human-decision-required payload.
+    # When present (and well-formed), the daemon parks instead of
+    # treating the verdict as terminal. Validated lazily — the daemon
+    # checks for question + at least one option before parking.
+    parsed.setdefault("decision_request", None)
     return parsed
+
+
+def validate_decision_request(payload: Any) -> Optional[dict]:
+    """v0.5.8a2 — sanity-check a `decision_request` from a REFLECT
+    JSON envelope. Returns the cleaned dict if it has the minimum
+    required shape (question + at least one option with id+label),
+    or None if the payload is malformed/missing/empty.
+
+    The daemon uses this to decide whether to park: an ill-formed
+    decision_request means the model tried to ask but didn't follow
+    the schema, so we treat it as "no decision requested" and let
+    the verdict path proceed normally.
+    """
+    if not isinstance(payload, dict):
+        return None
+    question = str(payload.get("question") or "").strip()
+    if not question:
+        return None
+    raw_options = payload.get("options")
+    if not isinstance(raw_options, list) or not raw_options:
+        return None
+    cleaned_options: list[dict] = []
+    seen_ids: set[str] = set()
+    for opt in raw_options:
+        if not isinstance(opt, dict):
+            continue
+        opt_id = str(opt.get("id") or "").strip()
+        opt_label = str(opt.get("label") or "").strip()
+        if not opt_id or not opt_label or opt_id in seen_ids:
+            continue
+        seen_ids.add(opt_id)
+        opt_detail = str(opt.get("detail") or "").strip()
+        cleaned_options.append({
+            "id": opt_id,
+            "label": opt_label,
+            "detail": opt_detail,
+        })
+    if not cleaned_options:
+        return None
+    return {
+        "question": question,
+        "options": cleaned_options,
+        "context": str(payload.get("context") or "").strip(),
+    }
 
 
 def _last_balanced_json_block(text: str) -> Optional[str]:
@@ -478,7 +548,7 @@ def make_reflect_runner(
     cancel_event: Optional[threading.Event] = None,
     on_session_event: Optional[Callable[[dict], None]] = None,
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
-) -> Callable[[Roadmap, ReflectPassResult], FullReflectOutcome]:
+) -> Callable[..., FullReflectOutcome]:
     """Build a callable suitable for `DaemonHooks.run_full_reflect`.
 
     Each invocation builds a one-node PlanGraph with
@@ -489,6 +559,11 @@ def make_reflect_runner(
     `run_reflect_pass`'s job, called by the daemon BEFORE this
     runner. By the time we get here, the roadmap on disk already
     has [bash]/[vision] criteria marked passed/failed.
+
+    v0.5.8a2: the returned callable accepts an optional
+    `decision_context: str = ""` kwarg. When non-empty, it's threaded
+    into the REFLECT prompt via `build_reflect_goal` so the model can
+    act on the user's response to a previous decision_request.
     """
     runner = LocalSpecialistRunner(
         backend=backend,
@@ -504,6 +579,8 @@ def make_reflect_runner(
     def _run_reflect(
         roadmap: Roadmap,
         pass_result: ReflectPassResult,
+        *,
+        decision_context: str = "",
     ) -> FullReflectOutcome:
         graph = PlanGraph.new("autonomous mission reflect pass")
         node = PlanNode(
@@ -511,6 +588,7 @@ def make_reflect_runner(
             intent_id=graph.intent_id,
             goal=build_reflect_goal(
                 roadmap, pass_result, roadmap_path=roadmap_path,
+                decision_context=decision_context,
             ),
             specialization=NodeSpecialization.REFLECT,
         )
@@ -536,6 +614,13 @@ def make_reflect_runner(
             )
 
         verdict_dict = parse_reflect_verdict(result.summary or "")
+        # v0.5.8a2 — extract + validate the optional decision_request.
+        # Malformed payloads are silently dropped (decision_request=None)
+        # so the daemon's verdict path proceeds normally rather than
+        # parking on garbage.
+        decision_request = validate_decision_request(
+            verdict_dict.get("decision_request"),
+        )
         return FullReflectOutcome(
             pass_result=pass_result,
             verdict=str(verdict_dict.get("verdict", "continue")),
@@ -548,6 +633,7 @@ def make_reflect_runner(
                 verdict_dict.get("estimated_remaining_minutes", 0) or 0
             ),
             error=str(verdict_dict.get("_parse_error", "")),
+            decision_request=decision_request,
         )
 
     return _run_reflect

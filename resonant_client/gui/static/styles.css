@@ -6414,6 +6414,136 @@ body {
     border-color: var(--err, #c33);
 }
 
+/* v0.5.8a2 — autonomous human-decision-required card. Rendered in
+   the chat when REFLECT emits a decision_request and the daemon is
+   parked waiting for the user's pick. Linux-bridge field-observation
+   #10. */
+.autonomous-decision-card {
+    margin: 12px 0;
+    padding: 12px 14px;
+    background: color-mix(in srgb, var(--warn, #d4a017) 8%, var(--bg-elem));
+    border: 1px solid color-mix(in srgb, var(--warn, #d4a017) 35%, var(--border));
+    border-left: 3px solid var(--warn, #d4a017);
+    border-radius: 6px;
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+.autonomous-decision-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+.autonomous-decision-icon {
+    color: var(--warn, #d4a017);
+    font-size: 14px;
+}
+.autonomous-decision-title {
+    font-weight: 600;
+    font-size: 13px;
+    color: var(--text);
+}
+.autonomous-decision-question {
+    font-size: 13px;
+    color: var(--text);
+    margin-bottom: 6px;
+}
+.autonomous-decision-context {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 10px;
+    padding: 6px 8px;
+    background: var(--bg-panel);
+    border-radius: 4px;
+    border-left: 2px solid var(--border);
+}
+.autonomous-decision-options {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 10px;
+}
+.autonomous-decision-option {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-column-gap: 8px;
+    align-items: start;
+    padding: 8px 10px;
+    background: var(--bg-elem);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: border-color 0.12s;
+}
+.autonomous-decision-option:hover { border-color: var(--brand); }
+.autonomous-decision-option input[type=radio] {
+    margin: 2px 0 0 0;
+}
+.autonomous-decision-option-label {
+    font-weight: 500;
+    color: var(--text);
+}
+.autonomous-decision-option-detail {
+    grid-column: 2;
+    color: var(--muted);
+    font-size: 11.5px;
+    margin-top: 2px;
+}
+.autonomous-decision-notes {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    background: var(--bg-panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font: inherit;
+    font-size: 12px;
+    resize: vertical;
+    margin-bottom: 8px;
+}
+.autonomous-decision-notes:focus { border-color: var(--brand); outline: none; }
+.autonomous-decision-actions {
+    display: flex;
+    justify-content: flex-end;
+}
+.autonomous-decision-submit {
+    background: var(--brand);
+    color: var(--bg);
+    border: 1px solid var(--brand);
+    padding: 6px 14px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.autonomous-decision-submit:hover:not(:disabled) { filter: brightness(1.1); }
+.autonomous-decision-submit:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+.autonomous-decision-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+    padding: 6px 10px;
+    background: color-mix(in srgb, var(--ok, #2a8) 10%, var(--bg-elem));
+    border: 1px solid color-mix(in srgb, var(--ok, #2a8) 30%, var(--border));
+    border-left: 2px solid var(--ok, #2a8);
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text);
+}
+.autonomous-decision-chip-icon {
+    color: var(--ok, #2a8);
+}
+.autonomous-decision-chip code {
+    background: var(--bg-panel);
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: 11.5px;
+}
+
 .mission-build-hint {
     color: var(--muted);
     font-size: 12px;

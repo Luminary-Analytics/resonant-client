@@ -6399,6 +6399,66 @@ async def websocket_endpoint(ws: WebSocket):
                 # Daemon will emit `autonomous_mission_paused` itself;
                 # nothing else to do here.
 
+            elif command == "autonomous_mission_decision":
+                # v0.5.8a2 — User picked an option on the
+                # human-decision-required card. Look up the daemon by
+                # intent_id and call provide_decision() to unblock the
+                # parked REFLECT pass. The daemon will retry REFLECT
+                # with the user's choice folded into the prompt.
+                target_intent = (msg.get("intent_id") or "").strip()
+                option_id = (msg.get("option_id") or "").strip()
+                response_text = (msg.get("response_text") or "").strip()
+                if not target_intent and state.project.current_session:
+                    ms = state.project.current_session.mission_state or {}
+                    target_intent = ms.get("intent_id", "")
+                if not target_intent:
+                    await ws.send_json({
+                        "event": "error",
+                        "message": "intent_id required (or active mission)",
+                    })
+                    continue
+                if not option_id:
+                    await ws.send_json({
+                        "event": "error",
+                        "message": "option_id is required",
+                    })
+                    continue
+                daemon = _get_autonomous_daemon(state, target_intent)
+                if daemon is None:
+                    await ws.send_json({
+                        "event": "error",
+                        "message": (
+                            f"No active autonomous daemon for intent "
+                            f"{target_intent}"
+                        ),
+                    })
+                    continue
+                try:
+                    accepted = daemon.provide_decision(
+                        option_id, response_text,
+                    )
+                except Exception as exc:
+                    logger.exception("provide_decision raised")
+                    await ws.send_json({
+                        "event": "error",
+                        "message": f"Failed to deliver decision: {exc}",
+                    })
+                    continue
+                # Daemon will emit `autonomous_human_decision_received`
+                # asynchronously when it picks up the choice. The
+                # `accepted` boolean tells us whether the daemon was
+                # actually parked (race-window guard); if False, the
+                # daemon may have already unparked itself or been
+                # stopped, but the response is still recorded for the
+                # NEXT park if one happens. Echo the routing decision
+                # back so the GUI can clear the card promptly.
+                await ws.send_json({
+                    "event": "autonomous_decision_dispatched",
+                    "intent_id": target_intent,
+                    "option_id": option_id,
+                    "was_parked": accepted,
+                })
+
             elif command == "autonomous_mission_roadmap":
                 # v0.5.3a3 — Sidebar roadmap inspector. Frontend asks
                 # for the parsed roadmap of a specific mission so it

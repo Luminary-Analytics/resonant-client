@@ -83,6 +83,7 @@ class IntentService:
         project_instructions: str = "",
         settings: Any = None,
         on_event: Optional[Callable[[dict], None]] = None,
+        specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
     ):
         self.project_path = project_path
         self.backend = backend
@@ -90,6 +91,9 @@ class IntentService:
         self.project_instructions = project_instructions or ""
         self.settings = settings
         self.on_event = on_event or (lambda ev: None)
+        # v0.5.8a1 — per-specialist backend routing. See
+        # LocalSpecialistRunner.__init__ for the resolver contract.
+        self.specialist_backend_resolver = specialist_backend_resolver
         self._active: dict[str, _ActiveIntent] = {}
         self._lock = threading.Lock()
 
@@ -146,6 +150,7 @@ class IntentService:
             cancel_event=cancel_event,
             on_session_event=lambda ev: self._forward_session_event(graph.intent_id, ev),
             audit_logger=self._make_audit_logger(graph.intent_id),
+            specialist_backend_resolver=self.specialist_backend_resolver,
         )
         walker = GraphWalker(
             runner=runner,

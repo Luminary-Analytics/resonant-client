@@ -304,6 +304,9 @@ class AppState:
                 project_instructions=(self._project_instructions or ""),
                 settings=self.settings,
                 on_event=on_event or (lambda ev: None),
+                # v0.5.8a1 — wire the per-specialist Ollama model
+                # resolver. None override → default backend.
+                specialist_backend_resolver=self._build_specialist_backend,
             )
             self._intent_service_signature = signature
         elif on_event is not None:
@@ -5132,6 +5135,97 @@ class AppState:
         # session can still spin up — silent fallback matches the
         # pre-v0.5.7 behavior so we don't introduce a new failure mode.
         return models[0]
+
+    def _resolve_specialist_model_override(self, specialization: str) -> str:
+        """v0.5.8a1 — return the configured Ollama model override for a
+        specialist, or "" to fall through to the default backend's model.
+
+        Resolution order:
+          1. `general.specialist_model_overrides[<spec>]` from settings.json
+          2. `RESONANT_SPECIALIST_<NAME>_MODEL` env var (uppercase
+             specialization, e.g. RESONANT_SPECIALIST_REFLECT_MODEL)
+
+        Settings wins over env-var so persistent UI configuration is
+        authoritative. Both empty → "" → caller uses default.
+
+        Spec keys are lowercased NodeSpecialization values: "reflect",
+        "plan_deep", "implement", "explore", "verify", "research",
+        "plan", "repair".
+
+        v0.5.8a1 motivation: linux-bridge run hit `verdict=stuck` on a
+        path-mismatch that a stronger model would arguably resolve. The
+        user can pin `deepseek-v4-pro:cloud` to REFLECT and PLAN_DEEP
+        (the high-leverage "decide" moments) and leave `flash` for the
+        IMPLEMENT/EXPLORE bulk — closing some of the model-capability
+        gap without leaving the local-first positioning.
+        """
+        spec_key = (specialization or "").strip().lower()
+        if not spec_key:
+            return ""
+        # 1. Settings.
+        try:
+            overrides = self.settings.get(
+                "general", "specialist_model_overrides", {},
+            ) or {}
+        except Exception:
+            overrides = {}
+        if isinstance(overrides, dict):
+            v = overrides.get(spec_key, "")
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        # 2. Env var.
+        env_key = f"RESONANT_SPECIALIST_{spec_key.upper()}_MODEL"
+        return str(os.environ.get(env_key, "") or "").strip()
+
+    def _build_specialist_backend(self, specialization: str) -> Optional[Any]:
+        """v0.5.8a1 — production resolver passed to LocalSpecialistRunner.
+        Returns a fresh OllamaBackend with the override model when one
+        is configured for this specialist, OR None to signal "use the
+        runner's default backend".
+
+        We construct a fresh backend per call rather than caching:
+          - OllamaBackend keeps per-instance caches keyed on `model`
+            (tool support, vision support); reusing the class is fine.
+          - The Settings reference, base_url, and thinking_mode are
+            inherited from the active default backend so per-specialist
+            overrides only swap the *model*, not the network or
+            reasoning-effort config.
+          - Fresh-per-call avoids stale-cache bugs when the user
+            changes the override mid-session.
+        """
+        override = self._resolve_specialist_model_override(specialization)
+        if not override:
+            return None
+        # We can only override an Ollama backend (the only supported
+        # backend in v0.4.0+). Defensive: if some future codepath
+        # somehow gets here with a non-Ollama default, fall through to
+        # the default rather than crashing.
+        if not isinstance(self.backend, OllamaBackend):
+            logger.warning(
+                "specialist override requested for %s but default backend "
+                "is %s; falling through",
+                specialization, type(self.backend).__name__,
+            )
+            return None
+        try:
+            # Reuse base_url + thinking from the default backend so
+            # only the model changes. `thinking_mode` is the normalized
+            # form (None / "low" / "med" / "high") that OllamaBackend
+            # accepts back via its constructor.
+            base_url = self.backend.base_url
+            thinking = getattr(self.backend, "thinking_mode", None)
+            return OllamaBackend(
+                base_url=base_url,
+                model=override,
+                thinking=thinking,
+            )
+        except Exception:
+            logger.exception(
+                "failed to build specialist backend for %s (model=%s); "
+                "falling through to default",
+                specialization, override,
+            )
+            return None
 
     def build_session(
         self,

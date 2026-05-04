@@ -172,6 +172,7 @@ class LocalSpecialistRunner:
         cancel_event: Optional[threading.Event] = None,
         on_session_event: Optional[Callable[[dict], None]] = None,
         audit_logger: Optional[Callable[..., None]] = None,
+        specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
     ):
         self.backend = backend
         self.project_path = project_path
@@ -184,6 +185,14 @@ class LocalSpecialistRunner:
         self.on_session_event = on_session_event or (lambda ev: None)
         # Per-tool-call audit hook (Phase 4 wires this).
         self.audit_logger = audit_logger
+        # v0.5.8a1 — per-specialist backend routing. Optional callable
+        # that maps a NodeSpecialization (the string value, e.g. "reflect"
+        # or "plan_deep") to a backend instance. Returns None to fall
+        # through to `self.backend`. Lets the user pin pro for REFLECT/
+        # PLAN_DEEP and flash for IMPLEMENT/EXPLORE without changing the
+        # session-level default. See AppState._build_specialist_backend
+        # for the production wiring.
+        self._specialist_backend_resolver = specialist_backend_resolver
 
     def __call__(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
         if self.cancel_event.is_set():
@@ -201,6 +210,33 @@ class LocalSpecialistRunner:
             )
 
     # ── Internal ───────────────────────────────────────────────────
+
+    def _resolve_backend_for(self, specialization: str) -> Any:
+        """v0.5.8a1 — return the backend to use for this specialist call.
+
+        Behavior:
+          - No resolver configured → default backend
+          - Resolver returns None → default backend
+          - Resolver returns a backend → use it
+          - Resolver raises → log + fall through to default
+
+        We never let a routing failure block a specialist from running.
+        The default backend is always a working option; the resolver is
+        a "smarter model for hard moments" optimization.
+        """
+        if self._specialist_backend_resolver is None:
+            return self.backend
+        try:
+            override = self._specialist_backend_resolver(specialization)
+        except Exception:
+            logger.exception(
+                "specialist_backend_resolver raised for %s; falling back",
+                specialization,
+            )
+            return self.backend
+        if override is None:
+            return self.backend
+        return override
 
     def _run_node(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
         profile = get_specialist(node.specialization)
@@ -248,8 +284,15 @@ class LocalSpecialistRunner:
         )
         allowed = filter_tools_for_specialist(node.specialization, self.all_tools)
 
+        # v0.5.8a1 — per-specialist backend resolution. Defaults to the
+        # runner's default backend; resolver can override per-call (e.g.
+        # pro for REFLECT, flash for IMPLEMENT). Resolution failures are
+        # logged and fall through to the default — never let a missing
+        # override block a specialist from running.
+        backend_for_call = self._resolve_backend_for(node.specialization)
+
         session = Session(
-            backend=self.backend,
+            backend=backend_for_call,
             max_steps=profile.max_steps,
             auto_approve=True,
             allowed_tools=allowed,

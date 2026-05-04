@@ -676,6 +676,12 @@ def _spawn_autonomous_daemon(
         intent_id, planner_spec, model_id,
     )
 
+    # v0.5.8a1 — pass through the per-specialist resolver if AppState
+    # exposes one. Defensive getattr so smoke harnesses and tests that
+    # provide a stub state without `_build_specialist_backend` still
+    # work (the runner treats a missing resolver the same as "always
+    # use default backend").
+    specialist_resolver = getattr(state, "_build_specialist_backend", None)
     hooks = build_autonomous_mission_hooks(
         intent_service=intent_service,
         dispatch_tracker=tracker,
@@ -688,6 +694,7 @@ def _spawn_autonomous_daemon(
         on_session_event=on_event,
         image_provider=image_provider,
         planner_specialization=planner_spec,
+        specialist_backend_resolver=specialist_resolver,
     )
 
     config = AutonomousMissionConfig(

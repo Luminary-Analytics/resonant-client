@@ -477,6 +477,7 @@ def make_reflect_runner(
     roadmap_path: str,
     cancel_event: Optional[threading.Event] = None,
     on_session_event: Optional[Callable[[dict], None]] = None,
+    specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
 ) -> Callable[[Roadmap, ReflectPassResult], FullReflectOutcome]:
     """Build a callable suitable for `DaemonHooks.run_full_reflect`.
 
@@ -497,6 +498,7 @@ def make_reflect_runner(
         settings=settings,
         cancel_event=cancel_event,
         on_session_event=on_session_event,
+        specialist_backend_resolver=specialist_backend_resolver,
     )
 
     def _run_reflect(
@@ -630,6 +632,7 @@ def build_autonomous_mission_hooks(
     on_session_event: Optional[Callable[[dict], None]] = None,
     image_provider: Optional[Callable[[], Optional[bytes]]] = None,
     planner_specialization: Optional[str] = None,
+    specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
 ) -> DaemonHooks:
     """Top-level constructor — wires every hook to a real
     implementation.
@@ -698,6 +701,7 @@ def build_autonomous_mission_hooks(
             roadmap_path=roadmap_path,
             cancel_event=daemon_stop_event,
             on_session_event=on_session_event,
+            specialist_backend_resolver=specialist_backend_resolver,
         ),
         check_context_factory=make_check_context_factory(
             project_path=project_path,

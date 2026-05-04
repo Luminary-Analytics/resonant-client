@@ -3010,13 +3010,52 @@ class ResonantApp {
                 refined_intent: refined,
                 time_budget: chosen,
             });
-            buildBtn.disabled = true;
-            buildBtn.querySelector('.mission-build-label').textContent = 'Daemon dispatched';
-            presetButtons.forEach((b) => { b.disabled = true; });
+            // v0.5.7a4 — collapse the dispatch card into a one-line
+            // confirmation chip after click. Linux-bridge field-
+            // observation #11: keeping the full card around (just
+            // greyed out) was visual clutter for the next 2 hours
+            // of the run. The chip stays in the chat as a permanent
+            // marker of WHEN the daemon was dispatched + what budget,
+            // and exposes a Stop affordance that's still useful.
+            this._collapseDispatchCardToChip(wrap, chosen);
             this.openPlanTab(true);
         });
 
         return wrap;
+    }
+
+    /**
+     * v0.5.7a4 — Replace the in-place dispatch card with a compact
+     * one-line chip so the chat doesn't carry the full card forward
+     * for the rest of the run. The chip records the dispatch
+     * timestamp (so the user can scroll back and see when the
+     * daemon was kicked off) + the chosen budget + a Stop button
+     * that proxies to the existing autonomous-stop flow.
+     */
+    _collapseDispatchCardToChip(card, budget) {
+        if (!card || !card.parentNode) return;
+        const time = new Date();
+        const hh = String(time.getHours()).padStart(2, '0');
+        const mm = String(time.getMinutes()).padStart(2, '0');
+        const ss = String(time.getSeconds()).padStart(2, '0');
+        const chip = document.createElement('div');
+        chip.className = 'mission-dispatch-chip';
+        chip.innerHTML = `
+            <span class="mission-dispatch-chip-icon" aria-hidden="true">∞</span>
+            <span class="mission-dispatch-chip-text">
+                Mission dispatched at ${hh}:${mm}:${ss}
+                <span class="mission-dispatch-chip-budget">· ${this.escapeHtml(budget || '')}</span>
+            </span>
+            <button type="button" class="mission-dispatch-chip-stop" title="Stop the autonomous mission after the current iteration">Stop</button>
+        `;
+        const stopBtn = chip.querySelector('.mission-dispatch-chip-stop');
+        stopBtn.addEventListener('click', () => {
+            // Reuse the existing stop click handler so the confirm
+            // dialog + WS command + UI update all match the badge's
+            // Stop affordance.
+            this._handleAutonomousStopClick();
+        });
+        card.parentNode.replaceChild(chip, card);
     }
 
     /**

@@ -6367,6 +6367,53 @@ body {
     line-height: 1;
 }
 
+/* v0.5.7a4 — collapsed dispatch chip (replaces the full mission-
+   autonomous-card after the user clicks Build autonomously).
+   Compact one-line marker that records WHEN the daemon was kicked
+   off + the chosen budget + a Stop affordance. Linux-bridge field-
+   observation #11. */
+.mission-dispatch-chip {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 10px 0 6px;
+    padding: 6px 10px;
+    background: color-mix(in srgb, var(--bg-elem) 70%, transparent);
+    border: 1px solid color-mix(in srgb, var(--brand) 20%, var(--border));
+    border-left: 2px solid var(--brand);
+    border-radius: 5px;
+    font-size: 12px;
+    color: var(--muted);
+    animation: collapsed-group-enter 0.18s ease-out;
+}
+.mission-dispatch-chip-icon {
+    color: var(--brand);
+    font-size: 13px;
+    line-height: 1;
+}
+.mission-dispatch-chip-text {
+    flex: 1;
+    color: var(--text);
+}
+.mission-dispatch-chip-budget {
+    color: var(--muted);
+    font-size: 11.5px;
+}
+.mission-dispatch-chip-stop {
+    background: var(--bg-elem);
+    border: 1px solid var(--border);
+    color: var(--muted);
+    padding: 2px 9px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+}
+.mission-dispatch-chip-stop:hover {
+    background: var(--err, #c33);
+    color: #fff;
+    border-color: var(--err, #c33);
+}
+
 .mission-build-hint {
     color: var(--muted);
     font-size: 12px;

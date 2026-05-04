@@ -65,10 +65,25 @@ def _default_record_path(prefix: str) -> Path:
 def _cmd_list_specs(_args: argparse.Namespace) -> int:
     print("Available smoke specs:")
     print()
+    has_unvalidated = False
     for name in list_spec_names():
         spec = SPECS[name]
-        print(f"  {name:<12}  {spec.description}")
+        # v0.5.8a4 — surface the validated flag so users know which
+        # specs have pinned convergence numbers and which are still
+        # awaiting their first live-model run.
+        marker = "" if spec.validated else " [unvalidated]"
+        print(f"  {name:<14}{marker}  {spec.description}")
+        if not spec.validated:
+            has_unvalidated = True
     print()
+    if has_unvalidated:
+        print(
+            "Note: specs marked [unvalidated] haven't been smoke-validated "
+            "against a live model yet. Convergence/timing numbers are "
+            "estimates; expect to refine `expected_iter_seconds` after the "
+            "first run."
+        )
+        print()
     print(f"Models: {', '.join(sorted(MODELS))}")
     return 0
 
@@ -84,7 +99,7 @@ def _print_run_header(spec_name: str, model_label: str) -> None:
 
 def _print_run_result(result: SmokeResult) -> None:
     converged = "✅" if result.is_converged() else (
-        "⚠ TIMEOUT" if result.timed_out else "✗"
+        "[unvalidated] TIMEOUT" if result.timed_out else "✗"
     )
     print()
     print("-" * 70)
@@ -106,7 +121,7 @@ def _print_run_result(result: SmokeResult) -> None:
 def _cmd_run(args: argparse.Namespace) -> int:
     _print_run_header(args.spec, args.model)
     if args.inject_planner_failure:
-        print("  ⚠ --inject-planner-failure: first planner call will be")
+        print("  [unvalidated] --inject-planner-failure: first planner call will be")
         print("    corrupted; walker should spawn one retry to recover.")
         print()
     result = run_smoke(
@@ -175,7 +190,7 @@ def _cmd_variance(args: argparse.Namespace) -> int:
 
     def _on_run_complete(idx: int, result: SmokeResult) -> None:
         verdict_label = "✅" if result.is_converged() else (
-            "⚠TO" if result.timed_out else "✗"
+            "[unvalidated]TO" if result.timed_out else "✗"
         )
         print(
             f"  run {idx}/{args.n}: {verdict_label} verdict={result.verdict} "
@@ -207,7 +222,7 @@ def _cmd_variance(args: argparse.Namespace) -> int:
         )
         if baseline_data is None:
             print()
-            print(f"  ⚠ --diff-baseline: no baseline found at "
+            print(f"  [unvalidated] --diff-baseline: no baseline found at "
                   f"{baseline_path(project_root, args.spec, args.model)}")
             print(f"    Run `resonant-smoke baseline set --spec {args.spec} "
                   f"--model {args.model} --from <variance.json>` first.")
@@ -219,7 +234,7 @@ def _cmd_variance(args: argparse.Namespace) -> int:
                   f"→ {diff.current_convergence_rate * 100:.0f}% "
                   f"({diff.delta_convergence_rate * 100:+.0f}pp)")
             for r in diff.regressions:
-                print(f"    ⚠ {r}")
+                print(f"    [unvalidated] {r}")
             for imp in diff.improvements:
                 print(f"    ✅ {imp}")
             if not diff.regressions and not diff.improvements:
@@ -374,7 +389,7 @@ def _cmd_ci(args: argparse.Namespace) -> int:
             sigil = "✅"
             label = "PASS"
         elif spec_result.has_regressions:
-            sigil = "⚠"
+            sigil = "[unvalidated]"
             label = "REGRESSED"
         else:
             sigil = "✗"
@@ -387,7 +402,7 @@ def _cmd_ci(args: argparse.Namespace) -> int:
         )
         if spec_result.has_regressions:
             for reg in spec_result.baseline_diff.regressions:
-                print(f"      ⚠ {reg}")
+                print(f"      [unvalidated] {reg}")
 
     result = run_ci_suite(
         model_label=args.model,

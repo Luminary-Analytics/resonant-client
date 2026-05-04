@@ -118,10 +118,20 @@ class SmokeResult:
 # ── Project-bootstrap helpers ──────────────────────────────────────────
 
 
-def make_fresh_project(prefix: str) -> Path:
+def make_fresh_project(
+    prefix: str,
+    seed_files: dict[str, str] | None = None,
+) -> Path:
     """Create a new tempdir, git init, single empty commit. Returns the
     path. The autonomous mission runs against this clean project so
-    repeated smoke runs don't see each other's artifacts."""
+    repeated smoke runs don't see each other's artifacts.
+
+    v0.5.8a4 — `seed_files` (path → contents) is for refactor-style
+    specs. Files are written + git-committed BEFORE the smoke run so
+    the autonomous loop sees them as pre-existing project state, not
+    its own first commit. The seed commit lands AFTER the empty
+    initial commit so `git log` shows a clean two-commit baseline.
+    """
     project = Path(tempfile.mkdtemp(prefix=prefix))
     env = {
         **os.environ,
@@ -136,6 +146,23 @@ def make_fresh_project(prefix: str) -> Path:
         ["git", "commit", "--allow-empty", "-q", "-m", "initial"],
         cwd=project, check=True, capture_output=True, env=env,
     )
+    if seed_files:
+        for relpath, content in seed_files.items():
+            target = project / relpath
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # `errors="replace"` is paranoid; spec authors should write
+            # ASCII-clean fixtures, but if they don't we want to fail
+            # noisily on the diff — not corrupt the on-disk file.
+            target.write_text(content, encoding="utf-8")
+        # Commit the seed so the autonomous loop's first commit is
+        # `seed: ...` -> seed-baseline; subsequent iterations are
+        # the loop's own work.
+        subprocess.run(["git", "add", "-A"], cwd=project, check=True,
+                       capture_output=True, env=env)
+        subprocess.run(
+            ["git", "commit", "-q", "-m", "smoke seed (pre-existing project state)"],
+            cwd=project, check=True, capture_output=True, env=env,
+        )
     return project
 
 
@@ -219,6 +246,9 @@ def run_smoke(
     if project_path is None:
         project_path = make_fresh_project(
             prefix=f"resonant-{spec.name}-{model_label}-",
+            # v0.5.8a4 — seed pre-existing files for refactor-style
+            # specs (refactor-py); empty for greenfield specs.
+            seed_files=dict(spec.seed_files) if spec.seed_files else None,
         )
 
     if backend is None:

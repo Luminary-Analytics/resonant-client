@@ -5,11 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Resonant</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <!-- Fonts: Inter (UI) + Geist Mono (code) -->
+    <!-- Fonts: Inter (UI). Mono falls through to system-installed
+         Cascadia Code (Windows 10+) / SF Mono (macOS) / Consolas etc.
+         v0.5.12a1 — dropped the Geist Mono CDN link; Chrome's ORB
+         was blocking the response on every load (cosmetic but a real
+         network error in `preview_network --filter failed`). -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-mono/style.min.css">
     <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
     <!-- Markdown rendering -->
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>

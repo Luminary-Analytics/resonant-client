@@ -1,8 +1,27 @@
 """
-WebSocket server for the Resonant Engine.
+WebSocket server for the Resonant Engine — LEGACY.
 
-Allows remote clients (TUI, web, VS Code extension) to connect and
-interact with the engine over WebSocket.
+Allows remote clients to connect and interact with the engine over
+WebSocket. Wired into the TUI's `resonant serve` subcommand.
+
+⚠ **Legacy status (2026-05-04, v0.5.12a2 triage):** the paired
+client side — `resonant connect <ws_url>` — was removed in v0.4.4
+when v0.4.0 cut the multi-backend infrastructure. This server is
+still importable + runnable from `resonant serve`, but there is no
+longer a bundled client that knows how to connect to it. External
+tools implementing the JSON-over-WebSocket protocol (commands:
+`message`, `clear`, `switch_model`, `cancel`) can still drive it,
+but no such tool ships with the project today.
+
+The post-refocus product is GUI-first via `resonant-gui` (a separate
+WebSocket-driven Starlette server in `gui/server.py`); this engine-
+WebSocket server predates that and serves a different audience.
+
+This module had 0% test coverage in the v0.5.11 audit. v0.5.12a2
+adds minimal construction-level coverage so import-level regressions
+(broken refactors, missing dependency) fail loudly rather than
+silently. Full removal of the serve mode is deferred to a strategic
+decision (see ROADMAP.md → "Open work").
 
 Usage:
     resonant serve [--port 8765]

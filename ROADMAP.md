@@ -76,8 +76,9 @@ After the v0.4.0 hard cut to Ollama-only (Anthropic / OpenAI / Claude-Code / Cod
 | v0.5.12 | 2026-05-05 | Findings + legacy + harness — Geist CDN drop, engine/server.py triage, harness/state.py lifecycle | [release notes](docs/v0.5.12-release-notes.md) |
 | v0.5.13 | 2026-05-05 | session.py coverage — small methods + run() branches + module parsers (62%→73%) | [release notes](docs/v0.5.13-release-notes.md) |
 | v0.5.14 | 2026-05-05 | Harness coverage — service.py (15%→69%) + orchestrator.py static helpers (28%→45%) | [release notes](docs/v0.5.14-release-notes.md) |
+| v0.5.15 | 2026-05-05 | build_resume_prompt — harness/service.py finished (69%→100%) | [release notes](docs/v0.5.15-release-notes.md) |
 
-Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983 (v0.5.13) → 2083/2 (v0.5.14).
+Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983 (v0.5.13) → 2083 (v0.5.14) → 2102/2 (v0.5.15).
 
 ### Linux-bridge field-observation backlog: COMPLETE
 

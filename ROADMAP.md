@@ -74,8 +74,9 @@ After the v0.4.0 hard cut to Ollama-only (Anthropic / OpenAI / Claude-Code / Cod
 | v0.5.10 | 2026-05-04 | Ground truth — ROADMAP refresh + cross-feature tests + smoke hardening | [release notes](docs/v0.5.10-release-notes.md) |
 | v0.5.11 | 2026-05-04 | Coverage + clarity — under-tested modules deepened, docs freshened | [release notes](docs/v0.5.11-release-notes.md) |
 | v0.5.12 | 2026-05-05 | Findings + legacy + harness — Geist CDN drop, engine/server.py triage, harness/state.py lifecycle | [release notes](docs/v0.5.12-release-notes.md) |
+| v0.5.13 | 2026-05-05 | session.py coverage — small methods + run() branches + module parsers (62%→73%) | [release notes](docs/v0.5.13-release-notes.md) |
 
-Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931/2 (v0.5.12).
+Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983/2 (v0.5.13).
 
 ### Linux-bridge field-observation backlog: COMPLETE
 

@@ -1,23 +1,24 @@
 # Overnight handoff — 2026-05-05
 
-**Run window:** ~5h autonomous; budget was 8-9h, ended early to land a thorough morning doc.
+**Run window:** ~6h autonomous out of an 8-9h budget; ended cleanly at a coherent stopping point with the deliverables polished.
 **Driving instruction:** "push v0.5.11; bundle findings into the next builds; work autonomously through the next set of things; E2E after every build; review + prep the next round."
 
 ---
 
 ## What shipped overnight
 
-Three coherent minor versions, eight alphas, all green, all pushed to origin. Standing rule from the previous session — "MCP browser preview pass after every alpha+GA before moving on" — applied to every commit. Every preview pass was clean: zero failed network requests, zero console errors, layout intact.
+Four coherent minor versions, nine alphas, all green, all pushed to origin. Standing rule from the previous session — "MCP browser preview pass after every alpha+GA before moving on" — applied to every commit. Every preview pass was clean: zero failed network requests, zero console errors, layout intact.
 
 | Version | Theme | Net tests | Coverage delta |
 |---------|-------|----------:|----------------|
 | [v0.5.12](v0.5.12-release-notes.md) | Findings + legacy + harness | +47 | engine/server.py 0%→24%, harness/state.py 61%→99% |
 | [v0.5.13](v0.5.13-release-notes.md) | engine/session.py coverage | +52 | engine/session.py 62%→73% |
 | [v0.5.14](v0.5.14-release-notes.md) | Harness coverage push | +100 | harness/service.py 15%→69%, harness/orchestrator.py 28%→45% |
+| [v0.5.15](v0.5.15-release-notes.md) | Finish harness/service.py | +19 | harness/service.py 69%→**100%** |
 
-**Test count:** 1884 (v0.5.11) → **2083** (v0.5.14). **+199 net new tests** in the overnight run. Full suite stays green throughout.
+**Test count:** 1884 (v0.5.11) → **2102** (v0.5.15). **+218 net new tests** in the overnight run. Full suite stays green throughout.
 
-**Origin state:** every commit + tag pushed. `git log origin/main..HEAD` is empty. 11 new tags on origin.
+**Origin state:** every commit + tag pushed. `git log origin/main..HEAD` is empty. 13 new tags on origin (4 GAs + 9 alphas).
 
 ## Per-alpha breakdown
 
@@ -36,6 +37,10 @@ Three coherent minor versions, eight alphas, all green, all pushed to origin. St
 
 - **a1 — harness/service.py.** 50 tests. Full coverage of normalize_contract_status (16 alias + role-fallback cases), the static helpers (_truncate_text, _normalize_string_list, _normalize_string_mapping), build_output_contract, build_instructions, get_summary integration. 15% → 69%.
 - **a2 — harness/orchestrator.py static helpers.** 50 tests covering the static classification helpers that drive WHICH role runs next in the planner→generator→evaluator cycle (_choose_next_role state machine, _is_generator_ready_contract, _repairable_generator_failure, _is_retryable_failure, _summary_signature, _should_auto_approve, _completion_message) + dataclass to_dict methods (HarnessCycleStep result-truncation contract). 28% → 45%.
+
+### v0.5.15
+
+- **a1 — build_resume_prompt.** 19 tests covering the long composer that produces the resumed-session system prompt. Chat-mode short-circuit, per-role read order, role-specific task blocks, all seven optional sections (with the 5-entry cap + 180-char evidence truncation), and sprint metadata fallbacks. **harness/service.py is now at 100%.**
 
 ## Findings + observations from the run
 
@@ -98,7 +103,7 @@ Building that harness is a real investment (~half a day) but unlocks 20+ percent
 | 2 | **Strategic decision: remove `resonant serve`?** | Architectural cleanup; legacy with no users | One question to me, ~30min execution |
 | 3 | **Validate unvalidated smoke specs** (`jsonlines`, `refactor-py`) on Mac Studio | Pin convergence numbers; flip `validated=True` | 30-60min, your hands |
 | 4 | **Stub backend.stream() harness** for deeper session.py + orchestrator.py coverage | Unlocks 20+ pts on two central modules | ~half a day autonomous |
-| 5 | `harness/service.py:build_resume_prompt` — the deferred 31% | Push service.py to ~95% | ~30min autonomous |
+| 5 | ~~`harness/service.py:build_resume_prompt`~~ | ~~Push service.py to ~95%~~ | **DONE in v0.5.15a1 — service.py at 100%** |
 | 6 | `engine/mcp.py` (41%) | MCP integration; testable but moderately complex | ~1h autonomous |
 | 7 | `engine/clipboard.py` (30%) / `engine/accessibility.py` (20%) | OS-specific; harder | Variable |
 | 8 | Promote per-specialist routing defaults (P2) | Wait until P0 confirms it helps live | Trivial after P0 |
@@ -114,9 +119,9 @@ Building that harness is a real investment (~half a day) but unlocks 20+ percent
 
 - Working tree: clean
 - Branch: `main`, in sync with origin
-- Test suite: 2083 passed, 2 skipped, ~70s run time
+- Test suite: 2102 passed, 2 skipped, ~70s run time
 - Total tags on local + origin: synced
-- Last commit: `29b5c80` (v0.5.14 GA — harness coverage push)
+- Last commit: `53a479a` (v0.5.15 GA — finish harness/service.py)
 - Memory: standing E2E rule saved as `feedback_post_build_e2e` (applies to future builds automatically — every alpha + GA gets a preview pass before the next alpha starts)
 
 ## My recommendation for first move when you wake up

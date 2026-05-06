@@ -34,6 +34,10 @@ from pathlib import Path
 from typing import Optional
 
 from .bundled_skills import install_bundled_skills
+from .field_observation_ingest import (
+    ingest_field_observation_dir,
+    ingest_field_observation_file,
+)
 from .skill_curator import run_curation
 from .skills import (
     DEFAULT_SCOPE,
@@ -364,6 +368,47 @@ def cmd_demote(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest_field_obs(args: argparse.Namespace) -> int:
+    """v0.6.2a5 — Convert field-observation .md docs into user skills."""
+    p = Path(args.path)
+    if not p.exists():
+        print(f"Path not found: {args.path}", file=sys.stderr)
+        return 1
+
+    if p.is_file():
+        try:
+            r = ingest_field_observation_file(
+                p, force=args.force, dry_run=args.dry_run,
+            )
+        except Exception as exc:
+            print(f"Failed to ingest {p}: {exc}", file=sys.stderr)
+            return 1
+        results = [r]
+    else:
+        results = ingest_field_observation_dir(
+            p, force=args.force, dry_run=args.dry_run,
+        )
+
+    written = sum(1 for r in results if r.written)
+    skipped = sum(1 for r in results if not r.written)
+    if not results:
+        print("No matching .md files found.")
+        return 0
+
+    if args.dry_run:
+        print(f"DRY RUN — would ingest {len(results)} file(s):")
+    else:
+        print(f"Ingested {written} file(s) ({skipped} skipped):")
+    for r in results:
+        marker = "+" if r.written else ("·" if r.skipped_reason == "dry-run" else "=")
+        suffix = ""
+        if not r.written and r.skipped_reason and not r.dry_run:
+            suffix = f"  ({r.skipped_reason})"
+        skill_name = (r.skill.name if r.skill else "(parse failed)")[:60]
+        print(f"  {marker} {r.skill_id:50s} {skill_name}{suffix}")
+    return 0
+
+
 def cmd_curate(args: argparse.Namespace) -> int:
     """Run a curator pass for the project NOW (bypasses rate limit)."""
     if not args.project_path:
@@ -485,6 +530,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Keep the global copy in place (default: archive it)",
     )
 
+    # ingest-field-obs (v0.6.2a5)
+    p_ingest = subparsers.add_parser(
+        "ingest-field-obs",
+        help="Convert field-observations docs into user-provenance skills",
+    )
+    p_ingest.add_argument(
+        "path",
+        help="Single .md file OR directory of field-obs files",
+    )
+    p_ingest.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing skills of the same id (default: skip)",
+    )
+    p_ingest.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be ingested without writing",
+    )
+
     # restore (v0.6.2a4)
     p_restore = subparsers.add_parser(
         "restore",
@@ -573,6 +636,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_demote(args)
         if args.command == "restore":
             return cmd_restore(args)
+        if args.command == "ingest-field-obs":
+            return cmd_ingest_field_obs(args)
         if args.command == "curate":
             return cmd_curate(args)
     except KeyboardInterrupt:

@@ -186,6 +186,13 @@ class DaemonHooks:
     validate_sha: Callable[[str], bool]
     run_full_reflect: Callable[[Roadmap, ReflectPassResult], FullReflectOutcome]
     check_context_factory: Callable[[Roadmap], CheckContext]
+    # v0.6.0 — skills integration. Optional callables (default None);
+    # when wired, the daemon extracts skills at verdict=satisfied and
+    # queues the curator at terminal-state transitions. Tests pass
+    # None to skip; production wraps `extract_skill_from_iter` and
+    # `run_curation` from `orchestration/`.
+    extract_skill_hook: Optional[Callable[..., Any]] = None
+    queue_curation_hook: Optional[Callable[[str], None]] = None
 
 
 # ── Configuration ───────────────────────────────────────────────────────
@@ -1148,6 +1155,48 @@ class AutonomousMissionDaemon:
             "error": outcome.error,
         })
 
+        # v0.6.0 — skill extraction at verdict=satisfied.
+        # Best-effort: any failure inside the hook is swallowed by the
+        # hook itself (`extract_skill_from_iter` catches all). We still
+        # wrap in try/except as defense in depth — the daemon must NEVER
+        # die on a skill-extraction failure.
+        if (
+            self.hooks.extract_skill_hook is not None
+            and outcome.verdict == "satisfied"
+            and not verdict_overridden
+        ):
+            try:
+                # Find the most recently checked item for context.
+                # `checked` is the RoadmapItem's "shipped" boolean,
+                # set by REFLECT when the item passes its criteria.
+                item_title = ""
+                item_description = ""
+                for it in reversed(rm_after.items):
+                    if it.checked:
+                        item_title = it.title
+                        item_description = it.description or ""
+                        break
+                self.hooks.extract_skill_hook(
+                    roadmap_item_title=item_title,
+                    roadmap_item_description=item_description,
+                    iter_count=self._iter_count,
+                    intent_id=self.config.intent_id,
+                    project_path=str(self.config.roadmap_path.parent.parent),
+                    outcome_verdict=outcome.verdict,
+                    outcome_summary=outcome.summary or "",
+                    pass_result_bash_passed=pass_result.bash_passed,
+                    pass_result_bash_failed=pass_result.bash_failed,
+                    pass_result_vision_passed=pass_result.vision_passed,
+                    pass_result_vision_failed=pass_result.vision_failed,
+                    decision_request_resolved=bool(outcome.decision_request),
+                    verdict_overridden=verdict_overridden,
+                )
+            except Exception:
+                logger.warning(
+                    "extract_skill_hook raised; continuing iter loop",
+                    exc_info=True,
+                )
+
         return outcome
 
     # ── Internal helpers ──────────────────────────────────────────
@@ -1221,6 +1270,25 @@ class AutonomousMissionDaemon:
             "final_verdict": self._verdict,
             "new_phase": new_phase,
         })
+
+        # v0.6.0 — queue curator post-GA. Only on satisfied terminal
+        # states ("the mission actually succeeded"). The curator runs
+        # in a background thread inside the hook; the daemon doesn't
+        # block. Best-effort wrt failures.
+        if (
+            self.hooks.queue_curation_hook is not None
+            and is_complete
+            and reason == "satisfied"
+        ):
+            try:
+                self.hooks.queue_curation_hook(
+                    str(self.config.roadmap_path.parent.parent)
+                )
+            except Exception:
+                logger.warning(
+                    "queue_curation_hook raised; daemon shutting down anyway",
+                    exc_info=True,
+                )
 
     def _update_roadmap_status_safely(self, new_status: str) -> None:
         """v0.5.6a3 — load the roadmap, set its status field, persist.

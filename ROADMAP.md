@@ -58,6 +58,7 @@ After the v0.4.0 hard cut to Ollama-only (Anthropic / OpenAI / Claude-Code / Cod
 | 14 | Smoke harness | v0.5.0–v0.5.8 | `resonant-smoke run/variance/baseline/ci`. 5 specs (3 validated, 2 unvalidated). Seed-files mechanism for refactor-style specs (v0.5.8a4). Per-project baselines under `~/.resonant/projects/<hash>/.resonant/smoke-baselines/`. |
 | 15 | GUI evolution | v0.4.x–v0.5.x | Chat + plan-graph + inspector + harness UI + diff review + image attachments + cost tracker + permission modes + mission browser (v0.5.5a2) + orphan banner + decision card (v0.5.8a2) + iter folding (v0.5.8a3) + activity panel (v0.5.9a1) + Pause/Stop affordances (v0.5.9a4). |
 | 16 | Diagnostics + cost tracking | v0.5.9 | Full-fidelity ZIP bundle with redaction. Per-iter cost attribution + per-model split (v0.5.9a2). Daily cost tracking with budget alerts. Mission-summary index (v0.5.9a5). |
+| 17 | Agent self-improvement loop | v0.6.0 | Skill provenance + bundled reference skills (v0.6.0a1). Mission-iter skill extractor with threshold heuristic + agentskills.io output format (v0.6.0a2). Deterministic curator with archive-only / never-delete semantics + REPORT.md (v0.6.0a3). Skill discovery + prompt injection with pinned-always rule + max-skills cap (v0.6.0a4). Wired into autonomous mission daemon via `extract_skill_hook` and `queue_curation_hook` on satisfied verdicts (v0.6.0 GA). Hermes-inspired three-layer pattern: prompt nudges + agent-callable tools + background curator. See [PLAN-SELF-IMPROVEMENT.md](PLAN-SELF-IMPROVEMENT.md) for the design + [docs/skills.md](docs/skills.md) for usage. |
 
 ### Release timeline
 
@@ -80,8 +81,9 @@ After the v0.4.0 hard cut to Ollama-only (Anthropic / OpenAI / Claude-Code / Cod
 | v0.5.16 | 2026-05-06 | Remove `resonant serve` — symmetric with the v0.4.4 `connect` removal | [release notes](docs/v0.5.16-release-notes.md) |
 | v0.5.17 | 2026-05-06 | Stub backend.stream() harness + session.py run() coverage (73%→83%) | [release notes](docs/v0.5.17-release-notes.md) |
 | v0.5.18 | 2026-05-06 | orchestrator.py public lifecycle (45%→72%) — start_cycle, list_runs, get_run, cancel | [release notes](docs/v0.5.18-release-notes.md) |
+| v0.6.0 | 2026-05-06 | Self-improvement loop — provenance + bundled skills + extractor + curator + loader + daemon integration | [release notes](docs/v0.6.0-release-notes.md) |
 
-Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983 (v0.5.13) → 2083 (v0.5.14) → 2102 (v0.5.15) → 2091 (v0.5.16) → 2136 (v0.5.17) → 2154/2 (v0.5.18).
+Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983 (v0.5.13) → 2083 (v0.5.14) → 2102 (v0.5.15) → 2091 (v0.5.16) → 2136 (v0.5.17) → 2154 (v0.5.18) → 2291/2 (v0.6.0).
 
 ### Linux-bridge field-observation backlog: COMPLETE
 

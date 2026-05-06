@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.6.1a1"
+version = "0.6.1a2"
 description = "Ollama-native agentic coding desktop app — purpose-built for DeepSeek and other open-source local models"
 readme = "README.md"
 license = {text = "Proprietary"}
@@ -102,6 +102,7 @@ resonant = "resonant_client.__main__:main"
 resonant-tui = "resonant_client.__main__:main"
 resonant-gui = "resonant_client.gui.server:main"
 resonant-smoke = "resonant_client.smoke.cli:main"
+resonant-skill = "resonant_client.orchestration.skill_cli:main"
 
 [tool.setuptools.packages.find]
 include = ["resonant_client*"]

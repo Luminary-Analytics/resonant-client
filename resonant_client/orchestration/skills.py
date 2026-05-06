@@ -322,6 +322,140 @@ def archive_skill(
     return dest
 
 
+def list_archived_skills(
+    *,
+    scope: Optional[str] = None,
+    project_path: Optional[str | Path] = None,
+) -> list[dict]:
+    """v0.6.2a4 — enumerate skills in the _archive folder.
+
+    Each `archive_skill` move lands at `_skills_root()/_archive/<scope>/
+    <ts>__<id>/` (timestamp prefix, no project sub-hash — global vs
+    project archives are distinguished by `<scope>` only). This walks
+    those directories and returns one row per archived skill.
+
+    Returns dicts (not Skill objects) because we want to expose the
+    archive-only metadata: `archived_at` timestamp, `reason` from the
+    sidecar, `archive_dir` path, plus the loaded `skill` for display.
+
+    Most-recent first, sorted by `archived_at` descending. The
+    `project_path` arg is purely for symmetry with the live-skill
+    listing API; archive entries don't filter by project hash because
+    the archive ts naming makes the dir flat.
+    """
+    out: list[dict] = []
+    archive_root = _skills_root() / "_archive"
+    if not archive_root.exists():
+        return out
+    scopes_to_check = [scope] if scope else list(SKILL_SCOPES)
+    for scope_name in scopes_to_check:
+        sd = archive_root / scope_name
+        if not sd.exists():
+            continue
+        for entry in sorted(sd.iterdir(), reverse=True):
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            ts_str, sep, sid = name.partition("__")
+            if not sep or not sid:
+                # Wrong shape — skip silently. Some test fixtures or
+                # older curator runs may have left non-conforming dirs.
+                continue
+            try:
+                ts = int(ts_str)
+            except ValueError:
+                continue
+            skill_file = entry / "skill.json"
+            if not skill_file.is_file():
+                continue
+            try:
+                data = json.loads(skill_file.read_text(encoding="utf-8"))
+                skill = Skill.from_dict(data)
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("Skipping malformed archive %s: %s", entry, exc)
+                continue
+            reason = ""
+            rfile = entry / "_archive_reason.txt"
+            if rfile.exists():
+                try:
+                    reason = rfile.read_text(
+                        encoding="utf-8", errors="replace",
+                    ).strip()
+                except OSError:
+                    pass
+            out.append({
+                "skill": skill,
+                "archived_at": ts,
+                "archive_dir": entry,
+                "reason": reason,
+                "scope": scope_name,
+            })
+    out.sort(key=lambda e: -e["archived_at"])
+    return out
+
+
+def restore_skill(
+    skill_id: str,
+    *,
+    project_path: Optional[str | Path] = None,
+    force: bool = False,
+) -> Optional[Path]:
+    """v0.6.2a4 — restore the most-recent archive of `skill_id`.
+
+    Inverse of `archive_skill`. Looks up the most recent archive entry
+    matching the id (across scopes), then `os.rename`s the archive dir
+    back to its original `skill_dir(...)` location. Drops the
+    `_archive_reason.txt` sidecar so the restored skill looks identical
+    to one that never went through archive.
+
+    Returns the destination Path on success.
+
+    Returns None if:
+    - No archive of that id exists
+    - A live skill with the same id already exists at the destination
+      (caller can pass `force=True` to overwrite)
+
+    NOTE: this is a destructive ops if `force=True` — the existing live
+    skill is removed before the archive is moved into place. The CLI
+    surface should confirm with the user before passing force=True.
+    """
+    import shutil
+    entries = [
+        e for e in list_archived_skills(project_path=project_path)
+        if e["skill"].id == skill_id
+    ]
+    if not entries:
+        return None
+    entry = entries[0]  # most recent — list is ts-desc
+    skill: Skill = entry["skill"]
+    archive_dir: Path = entry["archive_dir"]
+
+    project_kw = project_path if skill.scope == "project" else None
+    stack_kw = None  # restore doesn't currently support stack-scope skills
+    dest = skill_dir(
+        skill.id, scope=skill.scope,
+        project_path=project_kw, stack_sig=stack_kw,
+    )
+    if dest.exists():
+        if not force:
+            logger.warning(
+                "Refusing to restore %s: live skill exists at %s "
+                "(pass force=True to overwrite)",
+                skill.id, dest,
+            )
+            return None
+        shutil.rmtree(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    archive_dir.rename(dest)
+    reason_file = dest / "_archive_reason.txt"
+    if reason_file.exists():
+        try:
+            reason_file.unlink()
+        except OSError as exc:
+            logger.debug("Failed to drop _archive_reason on restore: %s", exc)
+    return dest
+
+
 def list_skills_filtered(
     *,
     scope: Optional[str] = None,

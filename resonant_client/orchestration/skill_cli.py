@@ -41,10 +41,12 @@ from .skills import (
     Skill,
     archive_skill,
     demote_skill,
+    list_archived_skills,
     list_skills,
     list_skills_filtered,
     load_skill,
     promote_skill,
+    restore_skill,
     set_pinned,
     skill_dir,
 )
@@ -99,7 +101,11 @@ def _format_skill_row(skill: Skill, *, scope_label: str = "") -> str:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    """List skills, with optional filters."""
+    """List skills (live or archived), with optional filters."""
+    # v0.6.2a4 — `--archived` swaps to the _archive listing.
+    if getattr(args, "archived", False):
+        return _cmd_list_archived(args)
+
     scope = args.scope if args.scope != "all" else None
     project_path = args.project_path
 
@@ -126,6 +132,76 @@ def cmd_list(args: argparse.Namespace) -> int:
     print()
     for s in sorted(skills, key=lambda s: (s.scope, s.id)):
         print(_format_skill_row(s))
+    return 0
+
+
+def _cmd_list_archived(args: argparse.Namespace) -> int:
+    """Inner helper for `list --archived`."""
+    scope = args.scope if args.scope != "all" else None
+    entries = list_archived_skills(
+        scope=scope,
+        project_path=args.project_path,
+    )
+    if args.json:
+        print(json.dumps([
+            {
+                "id": e["skill"].id,
+                "scope": e["scope"],
+                "archived_at": e["archived_at"],
+                "reason": e["reason"],
+                "archive_dir": str(e["archive_dir"]),
+                "skill": e["skill"].to_dict(),
+            }
+            for e in entries
+        ], indent=2, ensure_ascii=False))
+        return 0
+    if not entries:
+        print("No archived skills.")
+        return 0
+    import datetime as _dt
+    print(f"Found {len(entries)} archived skill(s):")
+    print()
+    for e in entries:
+        ts = _dt.datetime.fromtimestamp(e["archived_at"]).strftime("%Y-%m-%d %H:%M")
+        s = e["skill"]
+        reason = (e["reason"] or "")[:50]
+        print(
+            f"  [{e['scope']:7s}] {s.id:60s}  "
+            f"archived {ts}  "
+            f"{reason}"
+        )
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    """Restore the most-recent archive of a skill back to live."""
+    dest = restore_skill(
+        args.skill_id,
+        project_path=args.project_path,
+        force=bool(args.force),
+    )
+    if dest is None:
+        # Two failure modes — distinguish via a probe.
+        from .skills import list_archived_skills as _list_arch
+        entries = [
+            e for e in _list_arch(project_path=args.project_path)
+            if e["skill"].id == args.skill_id
+        ]
+        if not entries:
+            print(
+                f"No archive found for `{args.skill_id}`. "
+                f"Use `resonant-skill list --archived` to see candidates.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"Refused: a live skill named `{args.skill_id}` already "
+            f"exists. Pass --force to overwrite it (destructive — "
+            f"the live skill will be removed).",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"Restored {args.skill_id} → {dest}")
     return 0
 
 
@@ -347,6 +423,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include skills that match auto-deprecation thresholds",
     )
     p_list.add_argument("--json", action="store_true", help="Machine-readable output")
+    # v0.6.2a4 — list archived instead of live skills
+    p_list.add_argument(
+        "--archived", action="store_true",
+        help="List skills in the _archive folder (with archived_at + reason)",
+    )
 
     # view
     p_view = subparsers.add_parser("view", help="Show a skill's body")
@@ -402,6 +483,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_demote.add_argument(
         "--keep", action="store_true",
         help="Keep the global copy in place (default: archive it)",
+    )
+
+    # restore (v0.6.2a4)
+    p_restore = subparsers.add_parser(
+        "restore",
+        help="Restore the most-recent archive of a skill",
+    )
+    p_restore.add_argument("skill_id")
+    p_restore.add_argument("--project-path", default=None,
+                           help="Use when the archive is project-scoped")
+    p_restore.add_argument(
+        "--force", action="store_true",
+        help="Overwrite a live skill of the same id (destructive)",
     )
 
     # curate
@@ -477,6 +571,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_promote(args)
         if args.command == "demote":
             return cmd_demote(args)
+        if args.command == "restore":
+            return cmd_restore(args)
         if args.command == "curate":
             return cmd_curate(args)
     except KeyboardInterrupt:

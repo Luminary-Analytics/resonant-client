@@ -79,8 +79,9 @@ After the v0.4.0 hard cut to Ollama-only (Anthropic / OpenAI / Claude-Code / Cod
 | v0.5.15 | 2026-05-05 | build_resume_prompt — harness/service.py finished (69%→100%) | [release notes](docs/v0.5.15-release-notes.md) |
 | v0.5.16 | 2026-05-06 | Remove `resonant serve` — symmetric with the v0.4.4 `connect` removal | [release notes](docs/v0.5.16-release-notes.md) |
 | v0.5.17 | 2026-05-06 | Stub backend.stream() harness + session.py run() coverage (73%→83%) | [release notes](docs/v0.5.17-release-notes.md) |
+| v0.5.18 | 2026-05-06 | orchestrator.py public lifecycle (45%→72%) — start_cycle, list_runs, get_run, cancel | [release notes](docs/v0.5.18-release-notes.md) |
 
-Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983 (v0.5.13) → 2083 (v0.5.14) → 2102 (v0.5.15) → 2091 (v0.5.16) → 2136/2 (v0.5.17).
+Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983 (v0.5.13) → 2083 (v0.5.14) → 2102 (v0.5.15) → 2091 (v0.5.16) → 2136 (v0.5.17) → 2154/2 (v0.5.18).
 
 ### Linux-bridge field-observation backlog: COMPLETE
 

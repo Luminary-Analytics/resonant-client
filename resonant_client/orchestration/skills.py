@@ -349,6 +349,179 @@ def list_skills_filtered(
     return skills
 
 
+def promote_skill(
+    skill_id: str,
+    *,
+    project_path: str | Path,
+    keep_project_copy: bool = False,
+) -> Optional[Skill]:
+    """v0.6.1a3 — elevate a project-scoped skill to global scope.
+
+    The skill is COPIED to the global scope (with scope="global");
+    by default the project copy is left in place so the user can
+    decide whether to archive it. With `keep_project_copy=False` the
+    project-scope copy is archived (NOT deleted) after the global
+    copy lands.
+
+    Refuses to promote `created_by="bundled"` skills — they're
+    already global and protected. Returns the new global-scope
+    Skill on success, None if the source skill doesn't exist or
+    the global-scope id collides with an existing skill (use
+    `force` semantics... no, refuse and let the user resolve).
+    """
+    src = load_skill(skill_id, scope="project", project_path=project_path)
+    if src is None:
+        return None
+    if src.created_by == "bundled":
+        logger.warning(
+            "promote_skill: refusing to promote bundled skill %s "
+            "(bundled skills are already global)", skill_id,
+        )
+        return None
+    # Collision check: refuse to overwrite a global skill with the
+    # same id. The user can pin the global version + archive the
+    # project version manually if they want a "force" path.
+    existing_global = load_skill(skill_id, scope="global")
+    if existing_global is not None:
+        logger.warning(
+            "promote_skill: refusing to promote %s — global skill "
+            "with same id already exists. Archive or rename the "
+            "global copy first.",
+            skill_id,
+        )
+        return None
+
+    # Copy to global. Read the procedure / verification sidecars from
+    # the project source so the global copy carries the same body.
+    project_dir_path = skill_dir(skill_id, scope="project", project_path=project_path)
+    procedure_md = ""
+    verification_md = ""
+    proc_path = project_dir_path / "procedure.md"
+    ver_path = project_dir_path / "verification.md"
+    if proc_path.is_file():
+        procedure_md = proc_path.read_text(encoding="utf-8")
+    if ver_path.is_file():
+        verification_md = ver_path.read_text(encoding="utf-8")
+
+    # The global copy keeps the same provenance + pinned flag — it's
+    # the same skill, just promoted. Reset the success/fail counts
+    # so cross-project usage tracking starts fresh? No — preserve
+    # them; they're informative even if scope changes.
+    promoted = Skill(
+        id=src.id,
+        name=src.name,
+        description=src.description,
+        scope="global",
+        triggers=list(src.triggers),
+        prerequisites=list(src.prerequisites),
+        success_count=src.success_count,
+        fail_count=src.fail_count,
+        last_used_at=src.last_used_at,
+        version=src.version,
+        tokens=list(src.tokens),
+        procedure_steps=list(src.procedure_steps),
+        created_by=src.created_by,
+        pinned=src.pinned,
+    )
+    save_skill(promoted, procedure_md=procedure_md, verification_md=verification_md)
+
+    if not keep_project_copy:
+        # Archive the project copy. Use deprecate_skill (auto-archive
+        # path, project-scoped) since the user-driven promotion is
+        # closer to that path's semantics than to the curator's
+        # archive_skill (which only touches agent-created).
+        try:
+            deprecate_skill(src, project_path=project_path)
+        except Exception:
+            logger.warning(
+                "promote_skill: failed to archive project copy of %s "
+                "after promotion; both copies now exist on disk",
+                skill_id, exc_info=True,
+            )
+
+    return promoted
+
+
+def demote_skill(
+    skill_id: str,
+    *,
+    target_project_path: str | Path,
+    keep_global_copy: bool = False,
+) -> Optional[Skill]:
+    """v0.6.1a3 — opposite of `promote_skill`. Moves a global skill
+    to project scope.
+
+    Useful when a skill turns out to be project-specific and was
+    elevated by mistake. Refuses bundled skills (their provenance
+    is non-negotiable). Returns the new project-scope Skill on
+    success.
+    """
+    src = load_skill(skill_id, scope="global")
+    if src is None:
+        return None
+    if src.created_by == "bundled":
+        logger.warning(
+            "demote_skill: refusing to demote bundled skill %s "
+            "(bundled provenance is non-negotiable)", skill_id,
+        )
+        return None
+    # Collision check.
+    existing_project = load_skill(
+        skill_id, scope="project", project_path=target_project_path,
+    )
+    if existing_project is not None:
+        logger.warning(
+            "demote_skill: refusing to demote %s — project skill "
+            "with same id already exists in %s. Archive or rename first.",
+            skill_id, target_project_path,
+        )
+        return None
+
+    global_dir = skill_dir(skill_id, scope="global")
+    procedure_md = ""
+    verification_md = ""
+    proc_path = global_dir / "procedure.md"
+    ver_path = global_dir / "verification.md"
+    if proc_path.is_file():
+        procedure_md = proc_path.read_text(encoding="utf-8")
+    if ver_path.is_file():
+        verification_md = ver_path.read_text(encoding="utf-8")
+
+    demoted = Skill(
+        id=src.id,
+        name=src.name,
+        description=src.description,
+        scope="project",
+        triggers=list(src.triggers),
+        prerequisites=list(src.prerequisites),
+        success_count=src.success_count,
+        fail_count=src.fail_count,
+        last_used_at=src.last_used_at,
+        version=src.version,
+        tokens=list(src.tokens),
+        procedure_steps=list(src.procedure_steps),
+        created_by=src.created_by,
+        pinned=src.pinned,
+    )
+    save_skill(
+        demoted, procedure_md=procedure_md,
+        verification_md=verification_md,
+        project_path=target_project_path,
+    )
+
+    if not keep_global_copy:
+        try:
+            deprecate_skill(src)  # global scope; no project_path
+        except Exception:
+            logger.warning(
+                "demote_skill: failed to archive global copy of %s "
+                "after demotion; both copies now exist on disk",
+                skill_id, exc_info=True,
+            )
+
+    return demoted
+
+
 def set_pinned(
     skill_id: str,
     pinned: bool,

@@ -113,7 +113,11 @@ class TestParserShape:
 
 class TestListCommand:
     def test_list_empty(self, state_home, capsys):
-        rc = main(["list"])
+        # v0.6.1a3 added auto-install of bundled skills at CLI startup,
+        # so a "fresh" state_home actually has the two bundled skills
+        # after the first list call. Filter them out to test the
+        # "genuinely empty" case.
+        rc = main(["list", "--created-by", "agent"])
         captured = capsys.readouterr()
         assert rc == 0
         assert "No skills" in captured.out

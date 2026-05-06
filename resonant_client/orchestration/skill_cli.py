@@ -33,15 +33,18 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from .bundled_skills import install_bundled_skills
 from .skill_curator import run_curation
 from .skills import (
     DEFAULT_SCOPE,
     SKILL_SCOPES,
     Skill,
     archive_skill,
+    demote_skill,
     list_skills,
     list_skills_filtered,
     load_skill,
+    promote_skill,
     set_pinned,
     skill_dir,
 )
@@ -219,6 +222,72 @@ def cmd_archive(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_promote(args: argparse.Namespace) -> int:
+    """Elevate a project-scoped skill to global scope."""
+    if not args.project_path:
+        print(
+            "promote requires --project-path (the source project the "
+            "skill currently lives under)",
+            file=sys.stderr,
+        )
+        return 1
+    promoted = promote_skill(
+        args.skill_id,
+        project_path=args.project_path,
+        keep_project_copy=args.keep,
+    )
+    if promoted is None:
+        # Most common failure modes: source missing, bundled (refused),
+        # global collision. promote_skill logs each.
+        print(
+            f"Could not promote `{args.skill_id}`. Possible causes:\n"
+            f"  - skill not found in project scope at {args.project_path}\n"
+            f"  - skill is bundled (already global, can't promote)\n"
+            f"  - global skill with same id already exists\n"
+            f"See logs for details.",
+            file=sys.stderr,
+        )
+        return 2
+    where = "kept in place" if args.keep else "archived"
+    print(
+        f"Promoted `{promoted.id}` to global scope. "
+        f"Project copy: {where}."
+    )
+    return 0
+
+
+def cmd_demote(args: argparse.Namespace) -> int:
+    """Move a global-scope skill to project scope."""
+    if not args.project_path:
+        print(
+            "demote requires --project-path (the target project the "
+            "skill should land under)",
+            file=sys.stderr,
+        )
+        return 1
+    demoted = demote_skill(
+        args.skill_id,
+        target_project_path=args.project_path,
+        keep_global_copy=args.keep,
+    )
+    if demoted is None:
+        print(
+            f"Could not demote `{args.skill_id}`. Possible causes:\n"
+            f"  - skill not found in global scope\n"
+            f"  - skill is bundled (provenance non-negotiable)\n"
+            f"  - project skill with same id already exists\n"
+            f"See logs for details.",
+            file=sys.stderr,
+        )
+        return 2
+    where = "kept in place" if args.keep else "archived"
+    print(
+        f"Demoted `{demoted.id}` to project scope at "
+        f"{args.project_path}. Global copy: {where}."
+    )
+    return 0
+
+
 def cmd_curate(args: argparse.Namespace) -> int:
     """Run a curator pass for the project NOW (bypasses rate limit)."""
     if not args.project_path:
@@ -305,6 +374,36 @@ def build_parser() -> argparse.ArgumentParser:
     p_archive.add_argument("--project-path", default=None)
     p_archive.add_argument("--reason", default="")
 
+    # promote (project → global)
+    p_promote = subparsers.add_parser(
+        "promote",
+        help="Elevate a project-scoped skill to global scope",
+    )
+    p_promote.add_argument("skill_id")
+    p_promote.add_argument(
+        "--project-path", required=True,
+        help="Source project path (where the skill currently lives)",
+    )
+    p_promote.add_argument(
+        "--keep", action="store_true",
+        help="Keep the project copy in place (default: archive it)",
+    )
+
+    # demote (global → project)
+    p_demote = subparsers.add_parser(
+        "demote",
+        help="Move a global skill to project scope",
+    )
+    p_demote.add_argument("skill_id")
+    p_demote.add_argument(
+        "--project-path", required=True,
+        help="Target project path (where the skill should land)",
+    )
+    p_demote.add_argument(
+        "--keep", action="store_true",
+        help="Keep the global copy in place (default: archive it)",
+    )
+
     # curate
     p_curate = subparsers.add_parser("curate", help="Run a curator pass now")
     p_curate.add_argument(
@@ -341,6 +440,21 @@ def _ensure_utf8_stdout() -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     _ensure_utf8_stdout()
+    # v0.6.1a3 — auto-install bundled skills on every CLI invocation.
+    # Idempotent: skips skills that already exist on disk. Cheap
+    # enough to run unconditionally (just a stat per bundled skill).
+    # First run materializes the package's reference skills into
+    # ~/.resonant/skills/global/ so `resonant-skill list` shows
+    # them out of the box without an explicit install step.
+    try:
+        install_bundled_skills()
+    except Exception:
+        # Non-fatal: a broken bundled skill shouldn't block CLI use.
+        logger.warning(
+            "install_bundled_skills failed at CLI startup; continuing",
+            exc_info=True,
+        )
+
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -359,6 +473,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             return cmd_unpin(args)
         if args.command == "archive":
             return cmd_archive(args)
+        if args.command == "promote":
+            return cmd_promote(args)
+        if args.command == "demote":
+            return cmd_demote(args)
         if args.command == "curate":
             return cmd_curate(args)
     except KeyboardInterrupt:

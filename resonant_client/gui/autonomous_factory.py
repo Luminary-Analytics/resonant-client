@@ -719,6 +719,8 @@ def build_autonomous_mission_hooks(
     image_provider: Optional[Callable[[], Optional[bytes]]] = None,
     planner_specialization: Optional[str] = None,
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
+    enable_skill_extraction: bool = True,
+    enable_skill_curator: bool = True,
 ) -> DaemonHooks:
     """Top-level constructor — wires every hook to a real
     implementation.
@@ -773,6 +775,69 @@ def build_autonomous_mission_hooks(
         except Exception:
             logger.debug("intent_service.cancel raised", exc_info=True)
 
+    # v0.6.1a1 — wire skill-extraction + curator into the daemon's
+    # optional hooks. Both fire in background threads so the daemon's
+    # main loop (and its terminal-event sequence) isn't blocked while
+    # the model session for extraction OR the deterministic curator
+    # pass run.
+    extract_skill_hook = None
+    if enable_skill_extraction:
+        def _extract_skill(**kwargs: Any) -> None:
+            # Look up the extractor by module attribute at call time
+            # so test patches via `patch("...skill_mission_extraction.
+            # extract_skill_from_iter", ...)` actually take effect.
+            # Closure-captured imports would be locked to the original
+            # binding and immune to the patch.
+            from ..orchestration import skill_mission_extraction as sme
+            try:
+                ctx = sme.IterContext(**kwargs)
+            except TypeError:
+                logger.warning(
+                    "extract_skill_hook called with unexpected kwargs %r; "
+                    "skipping extraction (signature drift?)",
+                    sorted(kwargs.keys()),
+                )
+                return
+            # Run in a daemon thread so a slow extractor doesn't pin
+            # the iter loop. Best-effort: extract_skill_from_iter
+            # already swallows its own exceptions.
+            t = threading.Thread(
+                target=sme.extract_skill_from_iter,
+                args=(ctx,),
+                kwargs={"backend": backend},
+                daemon=True,
+                name=f"skill-extractor-{ctx.intent_id[:8]}-{ctx.iter_count}",
+            )
+            t.start()
+
+        extract_skill_hook = _extract_skill
+
+    queue_curation_hook = None
+    if enable_skill_curator:
+        def _queue_curation(curation_project_path: str) -> None:
+            # Same attribute-access pattern as the extractor — keeps
+            # test patches honest and runtime behavior identical.
+            from ..orchestration import skill_curator as sc
+            try:
+                if not sc.should_run_curation(curation_project_path):
+                    logger.debug(
+                        "skill curator skipped — within rate limit"
+                    )
+                    return
+            except Exception:
+                logger.debug("should_run_curation raised", exc_info=True)
+                return
+
+            t = threading.Thread(
+                target=sc.run_curation,
+                args=(curation_project_path,),
+                daemon=True,
+                name=f"skill-curator-{Path(curation_project_path).name}",
+            )
+            t.start()
+
+        queue_curation_hook = _queue_curation
+
     return DaemonHooks(
         dispatch_item=dispatch_item,
         wait_for_dispatch=wait_for_dispatch,
@@ -794,4 +859,6 @@ def build_autonomous_mission_hooks(
             settings=settings,
             image_provider=image_provider,
         ),
+        extract_skill_hook=extract_skill_hook,
+        queue_curation_hook=queue_curation_hook,
     )

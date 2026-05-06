@@ -38,11 +38,83 @@ def is_extraction_candidate(graph: PlanGraph) -> bool:
     return overall >= MIN_OVERALL_CONFIDENCE
 
 
-def slugify(text: str, *, max_len: int = 60) -> str:
-    """Produce a kebab-case slug from a free-form intent string."""
+# v0.6.2a2 — common verb-article prefixes the field-run surfaced as
+# noise on every auto-extracted skill name. Stripped before the
+# kebab-case slug, so "create-a-foo" → "foo" rather than producing
+# alphabetically-clumped "create-a-…" / "build-a-…" buckets in the
+# skill list. Order matters: longer prefixes first so "set-up-a-"
+# wins over "set-up-".
+_NOISE_PREFIXES: tuple[str, ...] = (
+    "actually-",
+    "bootstrap-a-", "bootstrap-an-",
+    "create-a-", "create-an-",
+    "build-a-", "build-an-",
+    "add-a-", "add-an-",
+    "make-a-", "make-an-",
+    "implement-a-", "implement-an-",
+    "write-a-", "write-an-",
+    "set-up-a-", "set-up-an-",
+    "setup-a-", "setup-an-",
+)
+
+
+def _strip_noise_prefix(slug: str) -> str:
+    """Drop a single leading verb-article noise prefix if present.
+
+    Only one pass — we don't recursively strip, because if both
+    "actually-" and "create-a-" appear, the second strip would
+    arguably remove genuine signal. v0.6.2a2 keeps it conservative.
+
+    A slug that consists ONLY of a noise prefix body (e.g. "create-a"
+    with no following content) collapses to "". The caller handles
+    the empty-result case by returning the "skill" fallback.
+    """
+    for prefix in _NOISE_PREFIXES:
+        if slug.startswith(prefix):
+            return slug[len(prefix):]
+        # Bare prefix-without-trailing-dash case: the slugify pipeline
+        # has already stripped the dash. e.g. "create a" → "create-a"
+        # which doesn't match "create-a-" but is semantically just
+        # the prefix with no body.
+        bare = prefix.rstrip("-")
+        if slug == bare:
+            return ""
+    return slug
+
+
+def slugify(text: str, *, max_len: int = 30, drop_prefixes: bool = True) -> str:
+    """Produce a kebab-case slug from a free-form intent string.
+
+    v0.6.2a2 — improved over the naive `text[:60]` slice the field
+    run found unreadable:
+    - Default max_len reduced from 60 → 30 (single eye-scan width)
+    - Word-boundary truncation: cut at the last `-` <= max_len
+      so we never end mid-word with garbage like "tsc-a" or "the-fil"
+    - Strips common verb-article prefixes ("create-a-", "build-a-",
+      "add-a-", "actually-", …) so similar intents don't all clump
+      under the same alphabetical head
+
+    Example:
+        slugify("Build a Python CLI utility wordcount.py at the project root")
+        → "python-cli-utility-wordcount"
+        (was: "build-a-python-cli-utility-wordcountpy-at-the-project-root-b")
+    """
     cleaned = re.sub(r"[^a-zA-Z0-9\s-]+", "", text).strip().lower()
-    cleaned = re.sub(r"[\s-]+", "-", cleaned)
-    return cleaned[:max_len].strip("-") or "skill"
+    cleaned = re.sub(r"[\s-]+", "-", cleaned).strip("-")
+    if drop_prefixes:
+        cleaned = _strip_noise_prefix(cleaned)
+    if not cleaned:
+        return "skill"
+    if len(cleaned) <= max_len:
+        return cleaned
+    # Word-boundary trunc: cut at the last "-" before max_len. Guard
+    # against pathologically-short cuts when the slug is just one big
+    # word — fall back to the hard slice in that case.
+    cut = cleaned[:max_len]
+    last_dash = cut.rfind("-")
+    if last_dash > max_len // 2:
+        cut = cut[:last_dash]
+    return cut.strip("-") or "skill"
 
 
 def extract_skill(

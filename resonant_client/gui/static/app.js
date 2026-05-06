@@ -4486,6 +4486,28 @@ class ResonantApp {
             case 'rag_stats':
                 this.ragStats = event;
                 break;
+            case 'skill_list':
+                this.skills = event.skills || [];
+                this.renderFilteredSessions();
+                if (this._skillDetailOpenId) {
+                    // Refresh open detail dialog if it's still relevant.
+                    const stillExists = this.skills.some(s => s.id === this._skillDetailOpenId);
+                    if (!stillExists) this.closeSkillDetail();
+                }
+                break;
+            case 'skill_view_data':
+                this.handleSkillViewData(event);
+                break;
+            case 'skill_pin_changed':
+                // No-op — list refresh follows immediately.
+                break;
+            case 'skill_archived':
+                this.showStatusMessage(`Archived skill ${event.skill_id}`);
+                this.closeSkillDetail();
+                break;
+            case 'skill_error':
+                this.showStatusMessage(event.message || 'Skill operation failed', 'error');
+                break;
         }
     }
 
@@ -4587,6 +4609,9 @@ class ResonantApp {
 
         // Fetch git status
         this.requestGitStatus();
+
+        // v0.6.2a3 — Fetch skill list so the Skills sidebar group populates.
+        this.requestSkillList();
 
         if (sessions) {
             this.sessions = sessions;
@@ -9206,6 +9231,150 @@ class ResonantApp {
         this.sessionList.appendChild(wrap);
     }
 
+    // ── v0.6.2a3 — Skills sidebar group + detail dialog ──────────────
+
+    requestSkillList() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ command: 'skill_list' }));
+    }
+
+    /**
+     * Render a "Skills" group in the sidebar — same shape as the Missions
+     * group. Pinned skills float to the top; the rest sort most-recently-
+     * used. Click a row → opens the detail modal.
+     *
+     * Designed to gracefully no-op when no skills exist (the list is
+     * usually empty until the autonomous loop has run a few iters and
+     * the bundled skills auto-install on first CLI use, but a fresh GUI
+     * boot may still see zero skills).
+     */
+    _renderSkillsGroup(skills) {
+        if (!skills || !skills.length) return;
+
+        const wrap = document.createElement('div');
+        wrap.className = 'mission-group skills-group';
+
+        const header = document.createElement('div');
+        header.className = 'mission-group-header';
+        header.innerHTML = `
+            <span class="mission-group-icon" aria-hidden="true">🛠️</span>
+            <span class="mission-group-title">Skills</span>
+            <span class="mission-group-count">${skills.length}</span>
+        `;
+        wrap.appendChild(header);
+
+        const items = document.createElement('div');
+        items.className = 'mission-subsection-items skills-list';
+        for (const s of skills) {
+            items.appendChild(this._createSkillRow(s));
+        }
+        wrap.appendChild(items);
+        this.sessionList.appendChild(wrap);
+    }
+
+    _createSkillRow(s) {
+        const el = document.createElement('div');
+        el.className = 'mission-row skill-row' + (s.pinned ? ' pinned' : '');
+        el.setAttribute('role', 'button');
+        el.setAttribute('tabindex', '0');
+        el.dataset.skillId = s.id;
+
+        const pinMark = s.pinned ? '<span class="skill-row-pin" title="Pinned (curator-exempt)">[PIN]</span>' : '';
+        const scopeChip = `<span class="skill-row-scope skill-scope-${this.escapeHtml(s.scope || 'global')}">${this.escapeHtml(s.scope || 'global')}</span>`;
+        const provChip = `<span class="skill-row-prov skill-prov-${this.escapeHtml(s.created_by || 'agent')}">${this.escapeHtml(s.created_by || 'agent')}</span>`;
+        const desc = (s.description || '').slice(0, 70);
+
+        el.innerHTML = `
+            <div class="mission-row-body skill-row-body">
+                <div class="mission-row-title skill-row-title">${pinMark} ${this.escapeHtml(s.name || s.id)}</div>
+                <div class="mission-row-meta skill-row-meta">${scopeChip} ${provChip} <span class="skill-row-desc">${this.escapeHtml(desc)}</span></div>
+            </div>
+        `;
+        const open = () => this.openSkillDetail(s.id);
+        el.addEventListener('click', open);
+        el.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+        });
+        return el;
+    }
+
+    openSkillDetail(skillId) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this._skillDetailOpenId = skillId;
+        // Show the dialog with a placeholder — fill in once the view data lands.
+        const dialog = document.getElementById('skill-detail-dialog');
+        if (!dialog) return;
+        dialog.style.display = 'flex';
+        document.getElementById('skill-detail-name').textContent = skillId;
+        document.getElementById('skill-detail-meta').textContent = 'Loading…';
+        document.getElementById('skill-detail-description').textContent = '';
+        document.getElementById('skill-detail-procedure').textContent = '';
+        // Wire close + buttons (idempotent — addEventListener with same handler is fine for reopens).
+        if (!this._skillDetailWired) {
+            document.getElementById('skill-detail-close').addEventListener('click', () => this.closeSkillDetail());
+            document.getElementById('skill-detail-pin').addEventListener('click', () => this.toggleSkillPin());
+            document.getElementById('skill-detail-archive').addEventListener('click', () => this.archiveCurrentSkill());
+            this._skillDetailWired = true;
+        }
+        this.ws.send(JSON.stringify({ command: 'skill_view', skill_id: skillId }));
+    }
+
+    closeSkillDetail() {
+        const dialog = document.getElementById('skill-detail-dialog');
+        if (dialog) dialog.style.display = 'none';
+        this._skillDetailOpenId = null;
+        this._skillDetailData = null;
+    }
+
+    handleSkillViewData(event) {
+        if (!event || !event.skill) {
+            if (event && event.error) this.showStatusMessage(event.error, 'error');
+            this.closeSkillDetail();
+            return;
+        }
+        if (event.skill.id !== this._skillDetailOpenId) return;
+        this._skillDetailData = event.skill;
+        const s = event.skill;
+        document.getElementById('skill-detail-name').textContent = s.name || s.id;
+        const meta = [
+            s.scope, s.created_by,
+            s.pinned ? 'pinned' : null,
+            s.deprecated ? 'deprecated' : null,
+            `used ${s.success_count}× (${s.fail_count} fails)`,
+            `v${s.version}`,
+        ].filter(Boolean).join(' · ');
+        document.getElementById('skill-detail-meta').textContent = meta;
+        document.getElementById('skill-detail-description').textContent = s.description || '';
+        document.getElementById('skill-detail-procedure').textContent = s.procedure_md || '(no procedure body)';
+        // Update button labels to reflect current state.
+        const pinBtn = document.getElementById('skill-detail-pin');
+        if (pinBtn) pinBtn.textContent = s.pinned ? 'Unpin' : 'Pin';
+        const archBtn = document.getElementById('skill-detail-archive');
+        if (archBtn) {
+            // Disable archive if refused (bundled / user / pinned).
+            const blocked = s.created_by === 'bundled' || s.created_by === 'user' || s.pinned;
+            archBtn.disabled = !!blocked;
+            archBtn.title = blocked
+                ? `Cannot archive ${s.created_by} or pinned skills`
+                : 'Move this skill to the archive (reversible)';
+        }
+    }
+
+    toggleSkillPin() {
+        if (!this._skillDetailOpenId) return;
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ command: 'skill_pin_toggle', skill_id: this._skillDetailOpenId }));
+        // Refresh the detail view too.
+        this.ws.send(JSON.stringify({ command: 'skill_view', skill_id: this._skillDetailOpenId }));
+    }
+
+    archiveCurrentSkill() {
+        if (!this._skillDetailOpenId) return;
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        if (!confirm('Archive this skill? It will be moved to the archive folder (reversible).')) return;
+        this.ws.send(JSON.stringify({ command: 'skill_archive', skill_id: this._skillDetailOpenId, reason: 'archived via GUI' }));
+    }
+
     _createMissionSubsection(label, missions, defaultExpanded) {
         const sub = document.createElement('div');
         sub.className = 'mission-subsection' + (defaultExpanded ? ' expanded' : '');
@@ -9402,6 +9571,11 @@ class ResonantApp {
 
         if (missions.length > 0) {
             this._renderMissionsGroup(missions);
+        }
+
+        // v0.6.2a3 — Skills group below missions. No-ops when empty.
+        if (this.skills && this.skills.length) {
+            this._renderSkillsGroup(this.skills);
         }
 
         if (!nonMissions.length) {

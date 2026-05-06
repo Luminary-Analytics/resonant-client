@@ -502,6 +502,25 @@
         </div>
     </div>
 
+    <!-- ═══ Skill Detail Dialog (v0.6.2a3) ═══ -->
+    <div id="skill-detail-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Skill detail">
+        <div class="dialog skill-detail-dialog">
+            <div class="dialog-header">
+                <span id="skill-detail-name">Skill</span>
+                <button type="button" id="skill-detail-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <div id="skill-detail-meta" class="skill-detail-meta"></div>
+                <p id="skill-detail-description" class="skill-detail-description"></p>
+                <pre id="skill-detail-procedure" class="skill-detail-procedure"></pre>
+            </div>
+            <div class="dialog-actions">
+                <button type="button" id="skill-detail-pin" class="dialog-btn">Pin</button>
+                <button type="button" id="skill-detail-archive" class="dialog-btn deny">Archive</button>
+            </div>
+        </div>
+    </div>
+
     <!-- ═══ Command Palette ═══ -->
     <div id="command-palette" class="cmd-palette-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Command palette">
         <div class="cmd-palette">

@@ -8899,3 +8899,128 @@ body {
     opacity: 0.55;
     cursor: not-allowed;
 }
+
+/* ── v0.6.2a3 — Skills sidebar group + detail dialog ────────────── */
+
+.skills-group {
+    margin-top: 6px;
+}
+
+.skills-group .mission-group-header {
+    /* Same shape as Missions but without the + add button slot. */
+    padding-right: 12px;
+}
+
+.skill-row {
+    cursor: pointer;
+}
+
+.skill-row.pinned .skill-row-title { font-weight: 600; }
+
+.skill-row-pin {
+    color: var(--brand);
+    font-size: 10px;
+    margin-right: 4px;
+    font-weight: 700;
+}
+
+.skill-row-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+    font-size: 11px;
+    color: var(--muted);
+}
+
+.skill-row-scope,
+.skill-row-prov {
+    padding: 1px 6px;
+    border-radius: 8px;
+    font-size: 10px;
+    border: 1px solid var(--border);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.skill-scope-global  { color: var(--brand); }
+.skill-scope-project { color: var(--text); }
+.skill-scope-stack   { color: var(--muted); }
+
+.skill-prov-bundled  { color: var(--brand); border-color: var(--brand); }
+.skill-prov-user     { color: var(--text); }
+.skill-prov-agent    { color: var(--muted); }
+
+.skill-row-desc {
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.skill-detail-dialog {
+    width: 720px;
+    max-width: 92vw;
+    max-height: 82vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.skill-detail-dialog .dialog-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.dialog-btn-close {
+    background: transparent;
+    border: none;
+    font-size: 22px;
+    color: var(--muted);
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 4px;
+}
+
+.dialog-btn-close:hover { color: var(--text); }
+
+.skill-detail-dialog .dialog-body {
+    overflow: auto;
+    flex: 1;
+}
+
+.skill-detail-meta {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: lowercase;
+    letter-spacing: 0.02em;
+    margin-bottom: 10px;
+}
+
+.skill-detail-description {
+    font-size: 13px;
+    color: var(--text);
+    margin: 0 0 14px 0;
+    line-height: 1.5;
+}
+
+.skill-detail-procedure {
+    background: var(--bg-elem);
+    padding: 12px 14px;
+    border-radius: var(--radius-sm);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 50vh;
+    overflow: auto;
+    margin: 0;
+}
+
+.dialog-btn[disabled] {
+    opacity: 0.45;
+    cursor: not-allowed;
+}

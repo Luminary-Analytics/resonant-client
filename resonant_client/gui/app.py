@@ -7633,6 +7633,59 @@ async def websocket_endpoint(ws: WebSocket):
                 else:
                     await ws.send_json({"event": "rag_stats", "total_files": 0, "is_indexed": False})
 
+            # v0.6.2a3 — Skills GUI surface. Thin wrappers around the
+            # existing skills.py + skill_curator.py public API; same
+            # commands the resonant-skill CLI uses, just over the WS.
+            elif command == "skill_list":
+                await ws.send_json(_skill_list_payload(
+                    project_path=state.project.project_path if state.project else "",
+                    include_deprecated=bool(msg.get("include_deprecated", False)),
+                ))
+
+            elif command == "skill_view":
+                skill_id = (msg.get("skill_id") or "").strip()
+                project_path = state.project.project_path if state.project else ""
+                await ws.send_json(_skill_view_payload(skill_id, project_path=project_path))
+
+            elif command == "skill_pin_toggle":
+                from ..orchestration.skills import load_skill, set_pinned
+                skill_id = (msg.get("skill_id") or "").strip()
+                project_path = state.project.project_path if state.project else ""
+                try:
+                    s = load_skill(skill_id, project_path=project_path)
+                    if s is None:
+                        await ws.send_json({"event": "skill_error", "message": f"skill {skill_id!r} not found"})
+                    else:
+                        new_pinned = not bool(s.pinned)
+                        set_pinned(skill_id, new_pinned, project_path=project_path)
+                        await ws.send_json({"event": "skill_pin_changed", "skill_id": skill_id, "pinned": new_pinned})
+                        await ws.send_json(_skill_list_payload(project_path=project_path))
+                except Exception as exc:
+                    await ws.send_json({"event": "skill_error", "message": f"pin toggle failed: {exc}"})
+
+            elif command == "skill_archive":
+                from ..orchestration.skills import archive_skill, load_skill
+                skill_id = (msg.get("skill_id") or "").strip()
+                reason = (msg.get("reason") or "manual archive via GUI").strip()
+                project_path = state.project.project_path if state.project else ""
+                try:
+                    s = load_skill(skill_id, project_path=project_path)
+                    if s is None:
+                        await ws.send_json({"event": "skill_error", "message": f"skill {skill_id!r} not found"})
+                    elif s.created_by == "bundled":
+                        await ws.send_json({"event": "skill_error", "message": "Refused: bundled skills cannot be archived"})
+                    elif s.created_by == "user":
+                        await ws.send_json({"event": "skill_error", "message": "Refused: user-provenance skills cannot be archived (unpin first)"})
+                    elif s.pinned:
+                        await ws.send_json({"event": "skill_error", "message": "Refused: pinned skills cannot be archived (unpin first)"})
+                    else:
+                        scope_kw = project_path if s.scope == "project" else None
+                        archive_skill(s, project_path=scope_kw, reason=reason)
+                        await ws.send_json({"event": "skill_archived", "skill_id": skill_id})
+                        await ws.send_json(_skill_list_payload(project_path=project_path))
+                except Exception as exc:
+                    await ws.send_json({"event": "skill_error", "message": f"archive failed: {exc}"})
+
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
     except Exception as e:
@@ -7991,6 +8044,103 @@ def _git_quick(action: str, msg: dict) -> dict:
         return {"success": rc == 0, "output": output}
     else:
         return {"success": False, "output": f"Unknown action: {action}"}
+
+
+# ── Skill list/view payload helpers (v0.6.2a3) ───────────────────────
+
+
+def _skill_list_payload(*, project_path: str = "", include_deprecated: bool = False) -> dict:
+    """Build the {event: "skill_list", skills: [...]} message body.
+
+    Pulls every visible skill via `list_skills_filtered`, projects to a
+    JSON-safe shape, and sorts pinned-first then most-recently-used.
+    Used by the Skills sidebar panel.
+    """
+    from ..orchestration.skills import list_skills_filtered
+    skills = list_skills_filtered(
+        project_path=project_path or None,
+        include_deprecated=include_deprecated,
+    )
+    rows: list[dict] = []
+    for s in skills:
+        rows.append({
+            "id": s.id,
+            "name": s.name,
+            "description": s.description or "",
+            "scope": s.scope,
+            "created_by": s.created_by,
+            "pinned": bool(s.pinned),
+            "deprecated": bool(s.is_deprecated()),
+            "success_count": int(s.success_count),
+            "fail_count": int(s.fail_count),
+            "last_used_at": float(s.last_used_at or 0),
+            "version": s.version or "1.0.0",
+        })
+    rows.sort(key=lambda r: (
+        # Pinned first
+        0 if r["pinned"] else 1,
+        # Then most-recently-used
+        -(r["last_used_at"] or 0),
+        # Then alphabetical for stable ordering
+        r["id"],
+    ))
+    return {"event": "skill_list", "skills": rows}
+
+
+def _skill_view_payload(skill_id: str, *, project_path: str = "") -> dict:
+    """Build the {event: "skill_view_data", skill: {...}} body.
+
+    Includes the full procedure_md body so the detail modal can render
+    it without a second round-trip.
+
+    Resolves across scopes (project → global → stack) the same way the
+    `resonant-skill` CLI does, so the GUI can view a project-scoped
+    skill without the caller having to pre-figure-out which scope it
+    lives in.
+    """
+    from ..orchestration.skills import load_skill, skill_dir
+    s: Optional[Any] = None
+    resolved_scope = "global"
+    candidates = []
+    if project_path:
+        candidates.append(("project", {"project_path": project_path}))
+    candidates.append(("global", {}))
+    # stack scope needs a stack_sig — skip for v0.6.2.
+    for scope, kw in candidates:
+        s = load_skill(skill_id, scope=scope, **kw)
+        if s is not None:
+            resolved_scope = scope
+            break
+    if s is None:
+        return {"event": "skill_view_data", "skill": None, "error": f"skill {skill_id!r} not found"}
+    # Find the procedure.md sidecar in the resolved scope.
+    procedure_md = ""
+    try:
+        d = skill_dir(skill_id, scope=resolved_scope,
+                      project_path=project_path or None if resolved_scope == "project" else None)
+        md = d / "procedure.md"
+        if md.exists():
+            procedure_md = md.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        procedure_md = ""
+    return {
+        "event": "skill_view_data",
+        "skill": {
+            "id": s.id,
+            "name": s.name,
+            "description": s.description or "",
+            "scope": s.scope,
+            "created_by": s.created_by,
+            "pinned": bool(s.pinned),
+            "deprecated": bool(s.is_deprecated()),
+            "success_count": int(s.success_count),
+            "fail_count": int(s.fail_count),
+            "last_used_at": float(s.last_used_at or 0),
+            "version": s.version or "1.0.0",
+            "triggers": list(s.triggers or []),
+            "procedure_md": procedure_md,
+        },
+    }
 
 
 # ── Project conventions file helpers ─────────────────────────────────

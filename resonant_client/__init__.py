@@ -1,2 +1,2 @@
 """Resonant Client — Agentic coding TUI/GUI for the Resonant Cognitive Engine."""
-__version__ = "0.5.18"
+__version__ = "0.6.0a1"

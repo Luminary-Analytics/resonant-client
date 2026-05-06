@@ -46,7 +46,13 @@ DEFAULT_SCOPE = "global"
 
 @dataclass
 class Skill:
-    """One reusable procedure."""
+    """One reusable procedure.
+
+    v0.6.0a1 — `created_by` provenance + `pinned` durability fields. The
+    curator only touches `created_by="agent"` skills; `bundled` (shipped
+    with the package) and `user` (manually authored) are off-limits. Pinned
+    skills are exempt from auto-deprecation regardless of provenance.
+    """
     id: str                                  # slug (kebab-case)
     name: str                                # human-readable display name
     description: str                         # one-sentence summary
@@ -59,6 +65,20 @@ class Skill:
     version: str = "1.0.0"
     tokens: list[str] = field(default_factory=list)     # for similarity scoring
     procedure_steps: list[dict] = field(default_factory=list)  # mirrors original PlanNodes
+    # v0.6.0a1 — provenance + pinning.
+    # `created_by`: who/what wrote this skill — gates the curator.
+    #   - "bundled": shipped with the package (off-limits to curator)
+    #   - "agent":   auto-extracted from a successful plan-graph or
+    #                autonomous mission iter (curator-touchable)
+    #   - "user":    manually authored via CLI / GUI (off-limits)
+    # Default "agent" is back-compat with pre-v0.6 saves: those came
+    # from the auto-extractor anyway.
+    created_by: str = "agent"
+    # `pinned`: user-marked durability. Pinned skills are exempt from
+    # auto-deprecation by `is_deprecated` regardless of fail_rate or
+    # unused_days. Curator also leaves them alone except for factual
+    # patches.
+    pinned: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -79,13 +99,32 @@ class Skill:
         max_fail_rate: float = 0.5,
         min_uses_for_fail_rate: int = 10,
     ) -> bool:
-        """Auto-deprecation rules — kept simple and honest about thresholds."""
+        """Auto-deprecation rules — kept simple and honest about thresholds.
+
+        v0.6.0a1 — pinned skills are exempt from auto-deprecation. The
+        user explicitly signaled they want this skill kept alive
+        regardless of usage stats.
+        """
+        if self.pinned:
+            return False
         if self.last_used_at and (time.time() - self.last_used_at) > unused_days * 86400:
             return True
         total = self.success_count + self.fail_count
         if total >= min_uses_for_fail_rate and self.fail_rate() > max_fail_rate:
             return True
         return False
+
+    def is_curator_touchable(self) -> bool:
+        """v0.6.0a1 — provenance gate for the curator.
+
+        The curator (skill_curator.py, added in v0.6.0a3) consolidates
+        and archives skills. It must NEVER touch bundled or user-authored
+        skills — only agent-extracted ones, with two further exemptions:
+          - pinned skills: even agent-created, the user wants them kept
+          - sticky skills: high-success-count skills the curator should
+            consolidate but not archive (handled by curator, not here)
+        """
+        return self.created_by == "agent" and not self.pinned
 
 
 # ── Storage helpers ─────────────────────────────────────────────────────
@@ -223,7 +262,13 @@ def list_skills(
 
 def deprecate_skill(skill: Skill, *, project_path: Optional[str | Path] = None,
                     stack_sig: Optional[str] = None) -> Optional[Path]:
-    """Move a skill folder into `_deprecated/`. Returns the new location."""
+    """Move a skill folder into `_deprecated/`. Returns the new location.
+
+    v0.6.0a1 — kept for back-compat (auto-deprecation of stale/failing
+    skills). Curator-driven archival uses `archive_skill` below — separate
+    semantics + log path so the two pipelines don't overwrite each other's
+    timestamps.
+    """
     src = skill_dir(skill.id, scope=skill.scope, project_path=project_path, stack_sig=stack_sig)
     if not src.exists():
         return None
@@ -232,6 +277,102 @@ def deprecate_skill(skill: Skill, *, project_path: Optional[str | Path] = None,
     dest = dest_root / f"{int(time.time())}__{skill.id}"
     src.rename(dest)
     return dest
+
+
+def archive_skill(
+    skill: Skill,
+    *,
+    project_path: Optional[str | Path] = None,
+    stack_sig: Optional[str] = None,
+    reason: str = "",
+) -> Optional[Path]:
+    """v0.6.0a1 — curator-driven archival. Distinct from `deprecate_skill`:
+
+    - Destination is `_skills_root()/_archive/<scope>/<ts>__<id>/` (NOT
+      `_deprecated/`); separating the directories lets the user audit
+      what the curator did vs what auto-deprecation did.
+    - Refuses to archive non-curator-touchable skills (bundled / user /
+      pinned) — defense in depth in case a misconfigured curator tries.
+    - Writes a `_archive_reason.txt` alongside so `git blame`-equivalent
+      forensics work later.
+
+    Returns the destination path on success, None if the source doesn't
+    exist or the skill isn't archivable.
+    """
+    if not skill.is_curator_touchable():
+        logger.warning(
+            "Refusing to archive non-touchable skill %s (created_by=%s, pinned=%s)",
+            skill.id, skill.created_by, skill.pinned,
+        )
+        return None
+    src = skill_dir(skill.id, scope=skill.scope, project_path=project_path, stack_sig=stack_sig)
+    if not src.exists():
+        return None
+    dest_root = _skills_root() / "_archive" / skill.scope
+    dest_root.mkdir(parents=True, exist_ok=True)
+    dest = dest_root / f"{int(time.time())}__{skill.id}"
+    src.rename(dest)
+    if reason:
+        try:
+            (dest / "_archive_reason.txt").write_text(
+                reason.strip() + "\n", encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.debug("Failed to write archive reason for %s: %s", skill.id, exc)
+    return dest
+
+
+def list_skills_filtered(
+    *,
+    scope: Optional[str] = None,
+    project_path: Optional[str | Path] = None,
+    stack_sig: Optional[str] = None,
+    created_by: Optional[str] = None,
+    pinned: Optional[bool] = None,
+    include_deprecated: bool = False,
+) -> list[Skill]:
+    """v0.6.0a1 — provenance-aware enumeration.
+
+    Wraps `list_skills` with filters on the new `created_by` and
+    `pinned` fields. Used by the curator (`created_by="agent"`,
+    pinned=False) and by CLI listings (e.g. `resonant skill list
+    --pinned`).
+    """
+    skills = list_skills(
+        scope=scope, project_path=project_path, stack_sig=stack_sig,
+        include_deprecated=include_deprecated,
+    )
+    if created_by is not None:
+        skills = [s for s in skills if s.created_by == created_by]
+    if pinned is not None:
+        skills = [s for s in skills if s.pinned == pinned]
+    return skills
+
+
+def set_pinned(
+    skill_id: str,
+    pinned: bool,
+    *,
+    scope: str = DEFAULT_SCOPE,
+    project_path: Optional[str | Path] = None,
+    stack_sig: Optional[str] = None,
+) -> Optional[Skill]:
+    """v0.6.0a1 — pin/unpin a skill.
+
+    Loads, mutates, saves. Returns the updated Skill (or None if the
+    skill doesn't exist). The `procedure.md` and `verification.md`
+    sidecar files aren't rewritten — only `skill.json` updates.
+    """
+    skill = load_skill(
+        skill_id, scope=scope, project_path=project_path, stack_sig=stack_sig,
+    )
+    if skill is None:
+        return None
+    skill.pinned = bool(pinned)
+    save_skill(
+        skill, project_path=project_path, stack_sig=stack_sig,
+    )
+    return skill
 
 
 # ── Similarity matching (token overlap) ─────────────────────────────────

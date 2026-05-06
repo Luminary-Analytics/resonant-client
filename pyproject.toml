@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.5.18"
+version = "0.6.0a1"
 description = "Ollama-native agentic coding desktop app — purpose-built for DeepSeek and other open-source local models"
 readme = "README.md"
 license = {text = "Proprietary"}
@@ -105,3 +105,9 @@ resonant-smoke = "resonant_client.smoke.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["resonant_client*"]
+
+[tool.setuptools.package-data]
+# v0.6.0a1 — bundled skills ship inside the package so importlib.resources
+# can find them in pip / wheel / pyinstaller installs, not just source
+# checkouts.
+"resonant_client.orchestration.bundled_skills" = ["*.md"]

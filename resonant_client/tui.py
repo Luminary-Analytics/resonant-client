@@ -1235,35 +1235,25 @@ def main():
         description="Resonant Code Agent — Agentic Coding TUI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Modes:
-  %(prog)s                                        # Embedded mode (default)
-  %(prog)s serve [--port 8765]                    # Start engine server
-  %(prog)s connect ws://host:port                 # Connect to remote engine
-
 Examples:
   %(prog)s --backend ollama --model llama3.1:70b   # Use specific Ollama model
-  %(prog)s --backend claude                        # Use Claude API
-  %(prog)s --backend openai                        # Use OpenAI API
   %(prog)s --ollama-url http://10.0.0.133:11434   # Ollama on LAN
   %(prog)s --dir ~/projects/myapp                 # Set working directory
 """,
     )
 
-    # Subcommands
-    subparsers = parser.add_subparsers(dest="mode")
-
-    # Serve mode
-    serve_parser = subparsers.add_parser("serve", help="Start engine server")
-    serve_parser.add_argument("--host", type=str, default="0.0.0.0")
-    serve_parser.add_argument("--port", type=int, default=8765)
-
     # v0.4.4 (T1.4) — `connect` subcommand removed; it tunneled into a
     # remote Resonant Engine via WebSocket, which the v0.4.0 cut took
     # out. Pre-v0.4.4 callers using `resonant connect <ws_url>` will
-    # see argparse fail with "invalid choice"; the message is clearer
-    # than a silent fallthrough.
+    # see argparse fail with "unrecognized arguments".
+    #
+    # v0.5.16 — `serve` subcommand removed for symmetry with the v0.4.4
+    # connect-mode removal. The engine WebSocket server (`resonant serve`)
+    # was orphaned post-v0.4.4 — no bundled client knew how to connect to
+    # it. External integrations should use `resonant_client.gui.server`
+    # via `resonant-gui` instead.
 
-    # Common args (for embedded and serve modes)
+    # Common args
     parser.add_argument("--backend", type=str, choices=["ollama", "auto"], default="auto",
                         help="Backend (Ollama-only since v0.4.0)")
     parser.add_argument("--model", type=str, default=None)
@@ -1416,24 +1406,9 @@ Examples:
                                  base_url=lms_info["base_url"])
         health_info = backend.health()
 
-    # ── Serve mode ──
-    if args.mode == "serve":
-        import asyncio
-        from .engine.server import EngineServer
-        server = EngineServer(
-            backend=backend,
-            host=args.host if hasattr(args, 'host') else "0.0.0.0",
-            port=args.port if hasattr(args, 'port') else 8765,
-            max_steps=args.max_steps,
-            max_tokens=args.max_tokens,
-        )
-        try:
-            asyncio.run(server.start())
-        except KeyboardInterrupt:
-            console.print(f"\n  [{C_DIM}]Server stopped[/{C_DIM}]")
-        return
-
-    # ── Embedded mode (default) ──
+    # ── Embedded mode (the only mode post-v0.5.16) ──
+    # `serve` subcommand removed in v0.5.16; `connect` removed in v0.4.4.
+    # External clients should use `resonant_client.gui.server` instead.
     print_banner(backend=backend, health_info=health_info)
 
     session = Session(
@@ -1633,9 +1608,8 @@ Examples:
                 console.print(f"    [{C_TEXT}]/quit[/{C_TEXT}]             [{C_MUTED}]exit[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Architecture[/{C_BRAND2}]")
-                console.print(f"    [{C_TEXT}]resonant[/{C_TEXT}]                  [{C_MUTED}]embedded engine + TUI (default)[/{C_MUTED}]")
-                console.print(f"    [{C_TEXT}]resonant serve[/{C_TEXT}]             [{C_MUTED}]run engine as WebSocket server[/{C_MUTED}]")
-                console.print(f"    [{C_TEXT}]resonant connect ws://...[/{C_TEXT}]  [{C_MUTED}]TUI client → remote engine[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]resonant[/{C_TEXT}]                  [{C_MUTED}]embedded engine + TUI[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]resonant-gui[/{C_TEXT}]              [{C_MUTED}]desktop GUI (recommended)[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Tips[/{C_BRAND2}]")
                 console.print(f'    [{C_MUTED}]Ask naturally — "Build a REST API with auth"[/{C_MUTED}]')

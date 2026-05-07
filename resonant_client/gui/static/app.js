@@ -4804,12 +4804,12 @@ class ResonantApp {
             <div class="ollama-wizard-step">
                 <div class="ollama-wizard-step-title">3. Pull DeepSeek</div>
                 <div class="ollama-wizard-cmd">
-                    <code>ollama pull deepseek-v4-flash:cloud</code>
-                    <span class="ollama-wizard-cmd-note">— flagship, fast</span>
+                    <code>ollama pull deepseek-v4-pro:cloud</code>
+                    <span class="ollama-wizard-cmd-note">— flagship, autonomous-mission default</span>
                 </div>
                 <div class="ollama-wizard-cmd">
-                    <code>ollama pull deepseek-v4-pro:cloud</code>
-                    <span class="ollama-wizard-cmd-note">— higher quality, slower</span>
+                    <code>ollama pull deepseek-v4-flash:cloud</code>
+                    <span class="ollama-wizard-cmd-note">— faster per-call, good for quick chat</span>
                 </div>
             </div>
         `;
@@ -4912,7 +4912,7 @@ class ResonantApp {
             hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code> — found ${count} model${count === 1 ? '' : 's'}.`;
             hint.className = 'ollama-wizard-hint ollama-wizard-hint-ok';
         } else if (ok) {
-            hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code>, but no models pulled yet. Try <code>ollama pull deepseek-v4-flash:cloud</code>.`;
+            hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code>, but no models pulled yet. Try <code>ollama pull deepseek-v4-pro:cloud</code>.`;
             hint.className = 'ollama-wizard-hint ollama-wizard-hint-warn';
         } else {
             hint.innerHTML = `✗ <code>${this.escapeHtml(url)}</code> unreachable. Is <code>ollama serve</code> running on that host?`;
@@ -5009,7 +5009,7 @@ class ResonantApp {
                 <button class="onboarding-dismiss" aria-label="Dismiss" title="Dismiss">&times;</button>
             </div>
             <h3 class="onboarding-title">A laser-focused agentic IDE</h3>
-            <p class="onboarding-sub">Resonant is built around <strong>deepseek-v4-flash on Ollama</strong> &mdash; high-quality coding without sending your code to the cloud.</p>
+            <p class="onboarding-sub">Resonant is built around <strong>deepseek-v4 on Ollama</strong> &mdash; pro for autonomous missions, flash for quick chat. High-quality coding without sending your code to the cloud.</p>
             <ul class="onboarding-list">
                 <li><span class="onboarding-bullet">⚡</span><span><strong>Batch + sub-agents</strong> &mdash; ask the model to fan out reads or spawn isolated investigations</span></li>
                 <li><span class="onboarding-bullet">🔍</span><span><strong>Auto-lint &amp; auto-test on edit</strong> &mdash; toggle in Settings &rarr; General</span></li>
@@ -5152,7 +5152,10 @@ class ResonantApp {
         if (configuredModel && models.includes(configuredModel)) {
             return { backend: 'ollama', model: configuredModel };
         }
-        for (const flagship of ['deepseek-v4-flash:cloud', 'deepseek-v4-pro:cloud', 'deepseek-v4:cloud']) {
+        // v0.6.2 — pro is the autonomous-mission flagship (see
+        // network_defaults.py:get_default_model). Flash is the fast-iter
+        // fallback when pro isn't available.
+        for (const flagship of ['deepseek-v4-pro:cloud', 'deepseek-v4-flash:cloud', 'deepseek-v4:cloud']) {
             if (models.includes(flagship)) return { backend: 'ollama', model: flagship };
         }
         return { backend: 'ollama', model: models[0] };
@@ -6882,8 +6885,8 @@ class ResonantApp {
                       ]
                     },
                     { key: 'default_model', label: 'Default model', type: 'text',
-                      placeholder: 'e.g. deepseek-v4-flash:cloud',
-                      hint: 'Leave blank to use the first model the chosen backend reports.' },
+                      placeholder: 'e.g. deepseek-v4-pro:cloud',
+                      hint: 'Leave blank to use the first model the chosen backend reports. Pro is the v0.6.2 default for autonomous missions; flash is the fast-iter alternative for chat.' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },

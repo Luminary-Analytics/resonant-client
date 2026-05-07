@@ -203,7 +203,8 @@ class AppState:
 
     def _migrate_stale_defaults(self) -> None:
         """
-        After the April-2026 refocus, the flagship is Ollama + deepseek-v4-flash.
+        After the April-2026 refocus, the flagship is Ollama + deepseek-v4-pro
+        for autonomous missions (v0.6.2 — was flash pre-v0.5.2).
         Settings persisted from earlier versions may still pin "default_backend"
         to "resonant" or other backends that the user picked once and forgot
         about. We override only when the saved value points at a now-deprecated

@@ -395,9 +395,14 @@ class OllamaBackend:
         "rnj-1",
     }
 
-    # Cloud models to offer even if not yet pulled locally
-    # deepseek-v4-flash is the flagship — listed first so it surfaces in the picker
+    # Cloud models to offer even if not yet pulled locally.
+    # v0.6.2 — deepseek-v4-pro is the flagship for autonomous missions
+    # (PLAN_DEEP convergence is 2.5× faster than flash on benchmarked
+    # specs — see docs/v0.5.1-smoke-results.md). Listed first so it
+    # surfaces in the picker. Flash kept available for fast one-shot
+    # / chat work.
     CLOUD_MODELS = [
+        "deepseek-v4-pro:cloud",
         "deepseek-v4-flash:cloud",
         "deepseek-v3.2:cloud",
         "minimax-m2.7:cloud",

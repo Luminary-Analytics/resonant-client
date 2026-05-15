@@ -1471,6 +1471,53 @@ class ResonantApp {
     }
 
     /**
+     * v0.6.3a3 — the skill loader (v0.6.3a2) surfaced N skills into
+     * this iter's planner context. Render a chip on the iter card so
+     * the READ side of the self-improvement loop is visible: the
+     * user sees which prior-mission skills fed this iter, and each
+     * skill id is clickable → opens the v0.6.2a3 detail modal.
+     *
+     * Correlation: `skill_context_loaded` carries no iter_count (the
+     * loader runs inside dispatch_item, a layer below the iter
+     * loop). But it fires immediately after `autonomous_iteration_
+     * started` created the card, so the most-recent iter card is the
+     * right target.
+     */
+    handleSkillContextLoaded(event) {
+        if (!this.chatMessages) return;
+        const skillIds = Array.isArray(event && event.skill_ids) ? event.skill_ids : [];
+        if (!skillIds.length) return;
+
+        // Most-recent iter card = the one this skill context belongs to.
+        const cards = this.chatMessages.querySelectorAll('.autonomous-iter-card');
+        const card = cards.length ? cards[cards.length - 1] : null;
+        if (!card) return;
+
+        // Idempotent — don't double-render if the event somehow repeats.
+        const existing = card.querySelector('.autonomous-iter-skills');
+        if (existing) existing.remove();
+
+        const chip = document.createElement('div');
+        chip.className = 'autonomous-iter-skills';
+        const label = document.createElement('span');
+        label.className = 'autonomous-iter-skills-label';
+        label.textContent = `🛠 ${skillIds.length} skill${skillIds.length === 1 ? '' : 's'}`;
+        label.title = 'Skills surfaced into this iteration’s planner context';
+        chip.appendChild(label);
+
+        skillIds.forEach((id, idx) => {
+            const pill = document.createElement('button');
+            pill.type = 'button';
+            pill.className = 'autonomous-iter-skill-pill';
+            pill.textContent = id;
+            pill.title = `View skill: ${id}`;
+            pill.addEventListener('click', () => this.openSkillDetail(id));
+            chip.appendChild(pill);
+        });
+        card.appendChild(chip);
+    }
+
+    /**
      * v0.5.9a2 — pretty-print token counts. 12,847 → "12.8k".
      */
     _fmtTokens(n) {
@@ -4153,6 +4200,14 @@ class ResonantApp {
             // (with v0.5.8a1's per-specialist routing made visible).
             case 'autonomous_iteration_cost':
                 this.handleAutonomousIterationCost(event);
+                break;
+            // v0.6.3a3 — the skill loader surfaced N skills into this
+            // iter's planner context. Render a chip on the iter card
+            // so the self-improvement loop's READ side is visible:
+            // the user can see which prior-mission skills fed this
+            // iter. Fires right after autonomous_iteration_started.
+            case 'skill_context_loaded':
+                this.handleSkillContextLoaded(event);
                 break;
             // v0.5.3a2 — orphan list refresh from server. Sent both
             // automatically (via init / after resume) and on demand

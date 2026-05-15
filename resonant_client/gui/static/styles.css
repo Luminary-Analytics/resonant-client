@@ -6691,6 +6691,42 @@ body {
     font-family: var(--font-mono, monospace);
 }
 
+/* v0.6.3a3 — skill-context chip. The skill loader surfaced N prior-
+   mission skills into this iter's planner context; the chip makes
+   the self-improvement loop's READ side visible. Each pill links to
+   the v0.6.2a3 skill detail modal. */
+.autonomous-iter-skills {
+    margin-top: 6px;
+    padding: 5px 10px;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    border-radius: 0 0 4px 4px;
+    font-size: 11px;
+}
+.autonomous-iter-skills-label {
+    color: var(--muted);
+    font-weight: 500;
+    margin-right: 2px;
+}
+.autonomous-iter-skill-pill {
+    padding: 1px 7px;
+    background: var(--bg-elem);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    font-size: 10.5px;
+    font-family: var(--font-mono, monospace);
+    color: var(--brand);
+    cursor: pointer;
+}
+.autonomous-iter-skill-pill:hover {
+    border-color: var(--brand);
+    background: color-mix(in srgb, var(--brand) 12%, var(--bg-elem));
+}
+
 /* v0.5.9a3 — verdict-override provenance. When daemon downgrades
    the model's `satisfied` claim to `continue` because the roadmap
    doesn't actually agree, surface a structured "model said X /

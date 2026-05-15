@@ -84,8 +84,9 @@ After the v0.4.0 hard cut to Ollama-only (Anthropic / OpenAI / Claude-Code / Cod
 | v0.6.0 | 2026-05-06 | Self-improvement loop — provenance + bundled skills + extractor + curator + loader + daemon integration | [release notes](docs/v0.6.0-release-notes.md) |
 | v0.6.1 | 2026-05-06 | Self-improvement productionization — hook factory + resonant-skill CLI + promote/demote + auto-install | [release notes](docs/v0.6.1-release-notes.md) |
 | v0.6.2 | 2026-05-06 | Self-improvement field-tested — skill name generator + GUI Skills sidebar + archive restore + field-obs ingest | [release notes](docs/v0.6.2-release-notes.md) |
+| v0.6.3 | 2026-05-08 | Self-improvement loop closed — F1 grill Rule 0 + skill loader wired into runtime + iter-card chip; relicensed MIT | [release notes](docs/v0.6.3-release-notes.md) |
 
-Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983 (v0.5.13) → 2083 (v0.5.14) → 2102 (v0.5.15) → 2091 (v0.5.16) → 2136 (v0.5.17) → 2154 (v0.5.18) → 2291 (v0.6.0) → 2350/2 (v0.6.1) → 2445/2 (v0.6.2).
+Test count growth: ~1300 (v0.5.2) → 1652 (v0.5.6) → 1691 (v0.5.7) → 1751 (v0.5.8) → 1790 (v0.5.9) → 1823 (v0.5.10) → 1884 (v0.5.11) → 1931 (v0.5.12) → 1983 (v0.5.13) → 2083 (v0.5.14) → 2102 (v0.5.15) → 2091 (v0.5.16) → 2136 (v0.5.17) → 2154 (v0.5.18) → 2291 (v0.6.0) → 2350/2 (v0.6.1) → 2445/2 (v0.6.2) → 2469/2 (v0.6.3).
 
 ### Linux-bridge field-observation backlog: COMPLETE
 

@@ -161,6 +161,74 @@ class TestRigorousPromptInvariants:
         assert "10–25" not in std
 
 
+class TestRule0InterviewerNotImplementer:
+    """v0.6.3a1 — F1 fix. The v0.6.1 field run found that the grill
+    agent, given a concrete one-shot instruction, would recognize it
+    as "not a feature" and just self-execute the work in the chat
+    session — leaving the mission stuck in `drafting` forever and
+    bypassing the build/verify/skill-extraction loop entirely.
+
+    Rule 0 forbids self-execution and routes one-shot tasks through a
+    minimal spec instead. These tests pin the rule's invariants in
+    BOTH modes (it lives in the shared base prompt).
+    """
+
+    def test_rule0_present_in_standard_mode(self):
+        std = format_grill_first_message("build a thing", autonomous=False)
+        assert "Rule 0" in std
+        assert "INTERVIEWER" in std
+        assert "IMPLEMENTER" in std
+
+    def test_rule0_present_in_rigorous_mode(self):
+        rigorous = format_grill_first_message("build a thing", autonomous=True)
+        assert "Rule 0" in rigorous
+        assert "INTERVIEWER" in rigorous
+
+    def test_rule0_forbids_mutating_tools(self):
+        std = format_grill_first_message("build a thing", autonomous=False)
+        # The rule must explicitly name the tools the agent must not use
+        # to do the work itself.
+        assert "file_edit" in std
+        assert "file_write" in std
+        assert "bash" in std
+
+    def test_rule0_allows_readonly_research_tools(self):
+        std = format_grill_first_message("build a thing", autonomous=False)
+        # Codebase research must still be permitted — the rule should
+        # name the read-only tools as allowed.
+        assert "glob" in std
+        assert "file_read" in std
+        assert "grep" in std
+
+    def test_rule0_covers_concrete_one_shot_path(self):
+        std = format_grill_first_message("build a thing", autonomous=False)
+        # The one-shot path: don't refuse, don't self-execute, emit a
+        # minimal spec.
+        assert "one-shot" in std.lower()
+        assert "minimal" in std.lower()
+
+    def test_rule0_names_the_stuck_drafting_failure_mode(self):
+        std = format_grill_first_message("build a thing", autonomous=False)
+        # The rule should explain WHY self-execution is bad — it dead-
+        # ends the mission in drafting.
+        assert "drafting" in std.lower()
+
+    def test_rigorous_r3_has_one_shot_exception(self):
+        rigorous = format_grill_first_message("build a thing", autonomous=True)
+        # R3's 4-criterion floor must carve out one-shot tasks so it
+        # doesn't contradict Rule 0.
+        assert "Exception" in rigorous
+        # The exception points back at Rule 0.
+        assert rigorous.count("Rule 0") >= 2
+
+    def test_standard_mode_has_no_four_criterion_floor(self):
+        # Sanity: the 4-criterion floor is rigorous-only, so a one-shot
+        # task in standard mode was never blocked by it. Rule 0's
+        # minimal-spec guidance still applies.
+        std = format_grill_first_message("build a thing", autonomous=False)
+        assert "Minimum of 4 binary acceptance criteria" not in std
+
+
 class TestRigorousPromptSharpening:
     """v0.5.2 — pin the sharpening rules added after the v0.5.1 GA
     smoke. The wordcount mission revealed that criteria were

@@ -721,6 +721,7 @@ def build_autonomous_mission_hooks(
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
     enable_skill_extraction: bool = True,
     enable_skill_curator: bool = True,
+    enable_skill_loader: bool = True,
 ) -> DaemonHooks:
     """Top-level constructor — wires every hook to a real
     implementation.
@@ -751,6 +752,45 @@ def build_autonomous_mission_hooks(
         goal_text = item.title.strip()
         if item.description.strip():
             goal_text = f"{goal_text}\n\n{item.description.strip()}"
+
+        # v0.6.3a2 — wire the skill loader into the runtime. This
+        # closes the READ side of the self-improvement loop: skills
+        # extracted from past missions get surfaced into THIS iter's
+        # planner context. Best-effort — a skill-lookup failure must
+        # never break mission dispatch.
+        skill_ids: list[str] = []
+        if enable_skill_loader:
+            try:
+                from ..orchestration.skill_loader import build_skill_context
+                from ..orchestration.skills import mark_skill_surfaced
+                sctx = build_skill_context(goal_text, project_path=project_path)
+                if sctx.block:
+                    goal_text = f"{goal_text}\n\n{sctx.block}"
+                    skill_ids = sctx.skill_ids
+                    # Touch last_used_at so the curator's 90-day
+                    # staleness sweep doesn't rot skills that ARE
+                    # being surfaced every mission. Not a quality
+                    # signal — counts are untouched.
+                    for ls in sctx.loaded:
+                        try:
+                            mark_skill_surfaced(
+                                ls.skill,
+                                project_path=(
+                                    project_path
+                                    if ls.skill.scope == "project" else None
+                                ),
+                            )
+                        except Exception:
+                            logger.debug(
+                                "mark_skill_surfaced raised for %s",
+                                ls.skill.id, exc_info=True,
+                            )
+            except Exception:
+                logger.warning(
+                    "skill loader wiring raised; dispatching without skills",
+                    exc_info=True,
+                )
+
         intent_id = intent_service.start_intent(
             goal_text,
             planner_specialization=planner_specialization,
@@ -759,6 +799,24 @@ def build_autonomous_mission_hooks(
         # very-fast intent that completes between dispatch and wait
         # doesn't lose its terminal event.
         dispatch_tracker.watch(intent_id)
+
+        # v0.6.3a2 — telemetry: surface which skills fed this iter so
+        # the GUI can show an iter-card chip ("referenced N skills").
+        if skill_ids and on_session_event is not None:
+            try:
+                on_session_event({
+                    "event": "skill_context_loaded",
+                    "intent_id": intent_id,
+                    "item_id": item.id,
+                    "skill_ids": skill_ids,
+                    "skill_count": len(skill_ids),
+                })
+            except Exception:
+                logger.debug(
+                    "on_session_event raised for skill_context_loaded",
+                    exc_info=True,
+                )
+
         return intent_id
 
     def wait_for_dispatch(handle: str) -> DispatchOutcome:

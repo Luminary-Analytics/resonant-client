@@ -214,3 +214,58 @@ def loaded_skill_ids(loaded: list[LoadedSkill]) -> list[str]:
     telemetry + asserting test expectations without coupling to
     the formatting."""
     return [ls.skill.id for ls in loaded]
+
+
+@dataclass
+class SkillContext:
+    """v0.6.3a2 — the result of a one-shot skill lookup for a dispatch.
+
+    `block` is the formatted markdown ready to append to a planner's
+    goal text (empty string when nothing matched — callers test
+    `if ctx.block:`). `skill_ids` is the injection-order id list for
+    telemetry / the iter-card chip. `loaded` keeps the full objects
+    so the caller can mark them surfaced.
+    """
+    block: str
+    skill_ids: list[str]
+    loaded: list[LoadedSkill]
+
+
+def build_skill_context(
+    query: str,
+    *,
+    project_path: Optional[str | Path] = None,
+    max_skills: int = DEFAULT_MAX_SKILLS,
+    min_score: float = DEFAULT_MIN_MATCH_SCORE,
+) -> SkillContext:
+    """v0.6.3a2 — match + format in one call, for runtime wiring.
+
+    This is the single entry point the autonomous-mission daemon's
+    `dispatch_item` hook uses: it matches skills against the roadmap
+    item's goal text, formats them into an injectable block, and
+    returns both the block and the id list. The daemon appends
+    `block` to the planner's goal and uses `skill_ids` for the
+    `skill_context_loaded` telemetry event.
+
+    Best-effort by contract: any matcher failure is logged and
+    returns an EMPTY context rather than raising — a skill-lookup
+    failure must never break mission dispatch.
+    """
+    try:
+        loaded = match_skills_for_query(
+            query,
+            project_path=project_path,
+            max_skills=max_skills,
+            min_score=min_score,
+        )
+    except Exception:
+        logger.warning(
+            "build_skill_context: matcher raised; returning empty context",
+            exc_info=True,
+        )
+        return SkillContext(block="", skill_ids=[], loaded=[])
+    return SkillContext(
+        block=format_skills_for_prompt(loaded),
+        skill_ids=loaded_skill_ids(loaded),
+        loaded=loaded,
+    )

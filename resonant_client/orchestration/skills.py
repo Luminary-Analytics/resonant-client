@@ -776,3 +776,32 @@ def record_skill_use(
         project_path=project_path,
         stack_sig=stack_sig,
     )
+
+
+def mark_skill_surfaced(
+    skill: Skill,
+    *,
+    project_path: Optional[str | Path] = None,
+    stack_sig: Optional[str] = None,
+) -> None:
+    """v0.6.3a2 — touch `last_used_at` WITHOUT bumping success/fail.
+
+    Distinct from `record_skill_use`: this records that a skill was
+    *surfaced* into a planner's context (deemed relevant by the
+    matcher), not that it produced a measured good/bad outcome.
+
+    Why the distinction matters: the curator auto-deprecates skills
+    unused for 90 days (`Skill.is_deprecated`). Without a surface
+    signal, every agent-created skill rots out of the library 90 days
+    after extraction even if it's been surfaced into planner context
+    every day — the read side of the self-improvement loop would
+    quietly collapse. But surfacing is NOT a quality signal: a skill
+    can be surfaced and ignored. So we bump only the staleness clock,
+    never the success/fail counts (those need real attribution).
+    """
+    skill.last_used_at = time.time()
+    save_skill(
+        skill,
+        project_path=project_path,
+        stack_sig=stack_sig,
+    )

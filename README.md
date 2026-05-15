@@ -210,3 +210,7 @@ This release narrowed Resonant Client to a single backend (Ollama). The Anthropi
 If you were using a non-Ollama backend through Resonant Client, v0.4.0 is a hard cut — there's no migration path because the upstream tools (Claude Code, Codex) are better at their respective stacks anyway. v0.3.5 remains downloadable on the [Releases page](https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.3.5) if you need the old multi-backend behavior.
 
 LM Studio support may return as a future addition once the Ollama path is fully tuned.
+
+## License
+
+MIT — see [LICENSE](./LICENSE). Resonant Client is open source: an open-source flagship for local-first, self-improving autonomous coding. Contributions welcome.

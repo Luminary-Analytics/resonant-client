@@ -7,10 +7,22 @@ name = "resonant-client"
 version = "0.6.2"
 description = "Ollama-native agentic coding desktop app — purpose-built for DeepSeek and other open-source local models"
 readme = "README.md"
-license = {text = "Proprietary"}
+# v0.6.2 — relicensed Proprietary → MIT. Resonant Client is now an
+# open-source flagship for local-first self-improving autonomous
+# coding. See LICENSE at the repo root.
+license = {text = "MIT"}
 requires-python = ">=3.11"
 authors = [
     {name = "Luminary Analytics"}
+]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Code Generators",
 ]
 
 dependencies = [

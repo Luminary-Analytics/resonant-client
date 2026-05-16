@@ -4,7 +4,19 @@ This document describes every major module, data flow, and extension point in `r
 
 ## Overview
 
-Resonant Client is an **agentic-coding IDE** that connects to multiple LLM backends (Ollama, Claude, OpenAI, LM Studio, Resonant Engine, Codex CLI, Claude Code CLI, MLX). The flagship configuration is **`deepseek-v4-flash:cloud` on Ollama running on the Mac Studio at `10.0.0.133`**; cloud backends are fallbacks.
+Resonant Client is an **Ollama-native agentic-coding desktop app** — an
+open-source flagship (MIT, since v0.6.3) for local-first, self-improving
+autonomous coding. The flagship configuration is **`deepseek-v4-pro:cloud`
+on Ollama running on the Mac Studio at `10.0.0.133`**. `deepseek-v4-pro`
+is the default for autonomous missions (faster convergence); `flash` is
+the fast-iter alternative for quick chat.
+
+> **Single-backend.** The v0.4.0 refocus cut every non-Ollama backend
+> (Anthropic, OpenAI, Claude Code, Codex, Resonant Engine, MLX, LM
+> Studio). Resonant Client is now an Ollama-only client. If you want
+> Anthropic models use Claude Code; for OpenAI use Codex. Some older
+> docs/comments still reference the cut backends — treat this section
+> as authoritative.
 
 It runs as a frameless desktop app (pywebview) or in a browser, providing:
 
@@ -12,11 +24,19 @@ It runs as a frameless desktop app (pywebview) or in a browser, providing:
 - 25+ tools (file ops, bash, browser automation, desktop control, sub-agents, batch)
 - A focused single-mode GUI: Agent + Settings only
 - Project tree, command palette, preview panel, AGENTS.md badge, git badge
+- **Autonomous missions** — a rigorous-grill → roadmap → unattended
+  iter loop with REFLECT verdicts (`orchestration/` + `gui/autonomous_*`)
+- **A self-improvement loop** — skills auto-extracted from successful
+  missions and surfaced back into future ones. This is the project's
+  differentiating feature; see [`docs/self-improvement-loop.md`](docs/self-improvement-loop.md).
 - An optional **sprint workflow** (planner / generator / evaluator with an autonomous orchestrator) — off by default; opt in via Settings → General
 
 **Project conventions:** Resonant reads `AGENTS.md` from the project root (the cross-tool standard adopted by Codex CLI, OpenCode, Cursor, and OpenHands). Legacy `RESONANT.md` and Anthropic's `CLAUDE.md` are also recognized as fallbacks.
 
-**Sprint workflow state** (when enabled) lives at `~/.resonant/projects/<sha1(project_path)[:12]>/harness/`, NOT in the user's repo. Mirrors Claude Code's `~/.claude/projects/<proj>/` pattern. Legacy `.resonant-harness/` folders are migrated transparently on first project load.
+**Per-project state** lives at `~/.resonant/projects/<sha1(project_path)[:12]>/`,
+NOT in the user's repo — plan-graphs, intents, harness state, curator
+state. Skills live at `~/.resonant/skills/`. Mirrors Claude Code's
+`~/.claude/projects/<proj>/` pattern.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -25,20 +45,20 @@ It runs as a frameless desktop app (pywebview) or in a browser, providing:
 │  WebSocket ↕ JSON events                                      │
 ├──────────────────────────────────────────────────────────────┤
 │                      gui/app.py (Starlette)                   │
-│  State management, backend selection, session routing          │
+│  State management, session routing, autonomous-mission wiring  │
 ├──────────────────────────────────────────────────────────────┤
 │                     engine/session.py                          │
 │  Agentic loop: stream → parse → execute tools → repeat        │
 ├──────────────┬───────────────┬────────────────────────────────┤
-│  backends.py │  engine/      │  engine/browser.py             │
-│  Ollama ★    │  tools.py     │  12 Playwright tools           │
-│  Claude      │  bash, file_* │  navigate, click, type, read   │
-│  OpenAI      │  glob, grep   │  screenshot, js, scroll, hover │
-│  LM Studio   │  task (sub)   │  select, wait, back, tabs      │
-│  Cloud models│  batch        │                                │
+│  backends.py │  engine/      │  orchestration/                │
+│  OllamaBackend│  tools.py    │  plan-graph, specialists,       │
+│  (only       │  bash, file_* │  autonomous missions,          │
+│   backend)   │  glob, grep   │  the self-improvement loop      │
+│  + CLOUD_    │  task (sub)   │  (skills / extractor / curator  │
+│   MODELS     │  batch        │   / loader)                    │
 └──────────────┴───────────────┴────────────────────────────────┘
 
-★ Default backend. Mac Studio @ http://10.0.0.133:11434 with deepseek-v4-flash:cloud
+★ Mac Studio @ http://10.0.0.133:11434 with deepseek-v4-pro:cloud
 ```
 
 ## Scope (April 2026 refocus)
@@ -48,38 +68,31 @@ The client is laser-focused on **the Agent (agentic-coding) experience**. Remove
 - **Workspaces / Command Center / Fleet** (`#command-center`, `command_*` WebSocket commands, `command_coordinator`, `command_projects`, `command_tasks`, `org_chart`, fleet worktree isolation)
 - **Automations / Scheduler** (`#schedule-view`, `scheduler.py`, `schedule_*` commands)
 - **Background agents / Dispatch** (`#dispatch-view`, `task_runner.py`, `dispatch*` commands)
+- **All non-Ollama backends** (v0.4.0) — Anthropic, OpenAI, Claude Code, Codex, Resonant Engine, MLX, LM Studio
 
-Everything else (the agentic loop, all 25+ tools, RAG, MCP, harness, sub-agents via the Task tool, browser/computer-use, multi-backend support) is preserved.
+Everything else (the agentic loop, all 25+ tools, RAG, MCP, harness, sub-agents via the Task tool, browser/computer-use, autonomous missions, the self-improvement loop) is preserved.
 
 ## Module Reference
 
 ### `backends.py` — Backend Abstraction
 
-Each backend implements: `stream()`, `health()`, `list_models()`, `classify()`.
+`OllamaBackend` is the **only** backend (v0.4.0 cut the rest). It
+implements `stream()`, `health()`, `list_models()`, `classify()`.
 
 | Class | Protocol | Notes |
 |-------|----------|-------|
-| `OllamaBackend` ★ | HTTP `/api/chat` | Adaptive tool calling (native or text-mode), Mac Studio defaults (32k ctx, 1024 batch, 120m keep-alive), `CLOUD_MODELS` list auto-appended |
-| `OpenAIBackend` | OpenAI SDK | Also used for LM Studio (`base_url` set) |
-| `ClaudeBackend` | Anthropic SDK | Native tool calling |
-| `ClaudeCodeBackend` | CLI subprocess | Wraps `claude` CLI, `handles_tools=True` |
-| `CodexBackend` | CLI subprocess | Wraps `codex` CLI |
-| `ResonantBackend` | SSE `/v1/responses` | Cognitive engine with harness |
-| `MLXBackend` | Local MLX adapter | Apple Silicon optimized |
+| `OllamaBackend` | HTTP `/api/chat` | Adaptive tool calling (native or text-mode), Mac Studio defaults (32k ctx, 1024 batch, 120m keep-alive), `CLOUD_MODELS` list auto-appended |
 
-★ Default backend.
+**Key design rule for Ollama:** All requests to a given `OllamaBackend` instance must use identical `_ollama_options` (num_ctx, num_batch, num_gpu). If any option differs between requests, Ollama unloads and reloads the entire model (30-120s penalty, much worse for large MoE models). Options are set once at init from environment variables.
 
-**Key design rule for Ollama:** All requests to a given `OllamaBackend` instance must use identical `_ollama_options` (num_ctx, num_batch, num_gpu). If any option differs between requests, Ollama unloads and reloads the entire model (30-120s penalty, much worse for 284B MoE models). Options are set once at init from environment variables.
+**Cloud models:** `OllamaBackend.CLOUD_MODELS` lists models routed via Ollama's cloud (`:cloud` tag). The flagship `deepseek-v4-pro:cloud` is listed first (v0.6.2 — pro converges autonomous missions ~2.5× faster than flash; see `docs/v0.5.1-smoke-results.md`). `deepseek-v4-flash:cloud` is second.
 
-**Cloud models:** `OllamaBackend.CLOUD_MODELS` lists models routed via Ollama's cloud (`:cloud` tag). The flagship `deepseek-v4-flash:cloud` is listed first. Current list: deepseek-v4-flash, deepseek-v3.2, minimax-m2.7, minimax-m2.5, nemotron-3-super, kimi-k2.5, glm-5.1, glm-4.7-flash, qwen3.5, gemma4.
-
-**Backend priority** (`select_harness_backend` in `gui/app.py`): All roles default to `ollama` first, then LM Studio, then cloud backends. Override with `RESONANT_HARNESS_<ROLE>_BACKEND` / `RESONANT_HARNESS_<ROLE>_MODEL` env vars.
+**Backend priority** (`select_harness_backend` in `gui/app.py`): there is only one backend; per-harness-role model preference is pro for planner/evaluator, flash for the generator role (a deliberate fast-iter trade-off for the test harness). Override with `RESONANT_HARNESS_<ROLE>_MODEL`.
 
 ### `network_defaults.py` — Default backend/model resolution
 
 - `get_default_backend()` → `RESONANT_DEFAULT_BACKEND` env / `general.default_backend` setting / `"ollama"`
-- `get_default_model()` → `RESONANT_DEFAULT_MODEL` env / `general.default_model` setting / `"deepseek-v4-flash:cloud"`
-- Endpoint helpers (`resolve_resonant_api_url`, `resolve_remote_engine_ws_url`)
+- `get_default_model()` → `RESONANT_DEFAULT_MODEL` env / `general.default_model` setting / `"deepseek-v4-pro:cloud"` (v0.5.2 — switched from flash after the v0.5.1 GA smoke)
 
 ### `events.py` — Event Protocol
 
@@ -147,6 +160,44 @@ Four modes: `ask` (approve everything), `auto-edit` (files OK, shell asks), `pla
 - `SHELL_TOOLS`: bash
 - Everything else: requires explicit permission in non-bypass modes
 
+### `orchestration/` — Autonomous Missions & the Self-Improvement Loop
+
+The `orchestration/` package is the autonomous-coding subsystem. It is
+the largest body of new work since the April refocus and is **not**
+optional scaffolding — it is the project's differentiating capability.
+
+**Five AI-native primitives** (`orchestration/__init__.py`):
+
+1. **Intent** — a durable user goal, mutable as understanding grows
+2. **Plan-graph** — a DAG of nodes (`plan_graph.py`): goal / status /
+   confidence / dependencies
+3. **Specialist** — per-node agent specialization (`specialists.py`):
+   explore / plan / plan_deep / implement / verify / repair / research
+4. **Reflection** — continuous confidence signals + auto-spawned
+   verify/repair (`reflect.py`)
+5. **Skill** — reusable verified procedures auto-extracted from
+   successful runs (`skills.py` + the loop modules below)
+
+**Autonomous missions.** A mission is: rigorous grill (`grill_me.py`)
+→ structured spec → roadmap (`gui/roadmap.py`) → an unattended iter
+loop (`gui/autonomous_loop.py`) that dispatches each roadmap item as a
+Phase-1 sub-mission and runs REFLECT to decide `satisfied` / `continue`
+/ `stuck`. `gui/autonomous_factory.py` wires the daemon's injectable
+`DaemonHooks`. State persists under `~/.resonant/projects/<hash>/`.
+
+**The self-improvement loop.** Skills are auto-extracted from
+successful missions, curated by a background pass, and surfaced back
+into future missions' planner context. Provenance (`created_by`) gates
+what the curator may touch; pinning gates auto-deprecation. This is
+documented in full in **[`docs/self-improvement-loop.md`](docs/self-improvement-loop.md)**
+— read that doc before touching any `skill_*` module.
+
+Key modules: `skills.py` (data model + storage), `skill_extraction.py`
++ `skill_mission_extraction.py` (extractors), `skill_curator.py`
+(curator), `skill_loader.py` (matcher + injection), `skill_cli.py`
+(`resonant-skill` console script), `field_observation_ingest.py`,
+`bundled_skills/` (shipped reference skills).
+
 ### `gui/server.py` — Application Launcher
 
 Starts uvicorn in a background thread, then either:
@@ -163,8 +214,8 @@ Starlette ASGI app with:
 **`AppState`** (singleton) holds: backends, session, project context, settings, costs, harness state.
 
 Key methods:
-- `detect_backends()` — parallel network checks for Ollama (`http://10.0.0.133:11434`) / LM Studio (`http://10.0.0.133:1234/v1`) / Resonant Engine + API key checks for Claude/OpenAI. Appends `OllamaBackend.CLOUD_MODELS` to Ollama results.
-- `select_harness_backend(session_role, project_path)` — picks a backend by role preference (Ollama-first), prefers `deepseek-v4-flash:cloud` when Ollama is chosen.
+- `detect_backends()` — network check for Ollama (`http://10.0.0.133:11434`). Appends `OllamaBackend.CLOUD_MODELS` to the detected models.
+- `select_harness_backend(session_role, project_path)` — picks the per-harness-role model: pro for planner/evaluator, flash for the generator role.
 - `create_backend(type, model, session_role)` — instantiates backend + session
 - `_run_session_streaming(ws, user_msg, ...)` — streams engine events to WebSocket
 - `get_init_data()` — sends full state to frontend on connect
@@ -293,17 +344,18 @@ body
 
 ## Key Files by Size
 
+(Approximate; the GUI files in particular grow steadily.)
+
 | File | Lines | Purpose |
 |------|-------|---------|
-| `gui/app.py` | ~6500 | Server-side state, WebSocket handler, all API commands |
-| `gui/static/app.js` | ~4800 | Frontend: all UI logic, event handling, rendering |
-| `gui/static/styles.css` | ~5500 | Design system + all component styles |
-| `backends.py` | ~2400 | All backend implementations |
-| `engine/tools.py` | ~1100 | Tool definitions + execution routing |
+| `gui/static/app.js` | ~10,400 | Frontend: all UI logic, event handling, rendering |
+| `gui/static/styles.css` | ~9,100 | Design system + all component styles |
+| `gui/app.py` | ~8,200 | Server-side state, WebSocket handler, all API commands |
+| `backends.py` | ~2,400 | `OllamaBackend` implementation |
+| `tui.py` | ~1,800 | Terminal UI (alternative to GUI) |
+| `engine/tools.py` | ~1,100 | Tool definitions + execution routing |
 | `engine/session.py` | ~950 | Agentic loop orchestration |
-| `engine/browser.py` | ~550 | Playwright browser automation |
-| `engine/computer_use.py` | ~700 | Desktop vision loop |
-| `tui.py` | ~1800 | Terminal UI (alternative to GUI) |
+| `orchestration/*` | — | Autonomous missions + self-improvement loop (many files; see that section) |
 
 ## Running
 
@@ -314,26 +366,25 @@ python -m resonant_client.gui.server --port 8765
 # Browser-only mode
 python -m resonant_client.gui.server --port 8765 --browser
 
-# Override defaults
-RESONANT_DEFAULT_BACKEND=claude python -m resonant_client.gui.server --port 8765
-RESONANT_DEFAULT_MODEL=deepseek-v3.2:cloud python -m resonant_client.gui.server --port 8765
+# Override the default model (Ollama is the only backend)
+RESONANT_DEFAULT_MODEL=deepseek-v4-flash:cloud python -m resonant_client.gui.server --port 8765
 
 # Tune Ollama for the Mac Studio (already defaults to 32k ctx / 1024 batch / 120m keep-alive)
 RESONANT_OLLAMA_NUM_CTX=131072 RESONANT_OLLAMA_NUM_BATCH=2048 \
   python -m resonant_client.gui.server --port 8765
 
 # Terminal UI
-resonant --backend ollama --model deepseek-v4-flash:cloud
+resonant --backend ollama --model deepseek-v4-pro:cloud
 ```
 
 ## Testing
 
 ```bash
-pytest                              # all 514+ tests
+pytest                              # full suite — 2469 pass / 2 skip as of v0.6.3
 pytest -m unit                      # fast unit tests
 pytest tests/test_backends.py       # backend tests (Ollama tool detection, format conversion)
-pytest tests/test_session_todos.py  # todo parsing
-pytest tests/test_gui_hardening.py  # GUI hardening (BackendSpec, MCP, AppState)
+pytest tests/test_skill_loader_wiring.py   # self-improvement loop — read-side wiring
+pytest tests/test_grill_me_rigorous.py     # grill prompt invariants (incl. F1 Rule 0)
 ```
 
 ## Release & Distribution

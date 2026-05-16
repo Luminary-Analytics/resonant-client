@@ -1,6 +1,15 @@
 # Resonant Client — Roadmap
 
-Post-refocus, the client is a single-purpose agentic coder: Ollama + `deepseek-v4-flash:cloud` on the Mac Studio (`10.0.0.133`), with a clean Agent + Settings UI. The original 8 clusters below were the foundation (shipped pre-v0.2.0); see the "Post-refocus state" section further down for the v0.3.x–v0.5.9 evolution.
+Post-refocus, the client is a single-purpose agentic coder: Ollama + `deepseek-v4-pro:cloud` on the Mac Studio (`10.0.0.133`), with a clean Agent + Settings UI. The original 8 clusters below were the foundation (shipped pre-v0.2.0); see the "Post-refocus state" section further down for the v0.3.x–v0.6.x evolution.
+
+## Project direction (2026-05, set at v0.6.3)
+
+**Goal: an open-source flagship for local-first, self-improving autonomous coding.** Relicensed MIT at v0.6.3. The project is used personally today; the intent is a public flagship.
+
+- **The moat is the self-improvement loop** — an agent that gets measurably better at a codebase every mission. No other open-source coding agent has the full provenance-gated extractor/curator/loader loop. See [`docs/self-improvement-loop.md`](docs/self-improvement-loop.md).
+- **Comparables are Aider / OpenHands / Cline / Goose** — not closed business-automation SaaS. The ownable gap: *local-first* + *self-improving*.
+- **One repo, singular focus.** A 2026-05 evaluation of getviktor.com (an "AI coworker" SaaS) concluded **do not fork** into a Viktor-style business-automation product: flagships win on depth, and a second repo would halve attention and dilute the narrative. Take Viktor's *validation* (persistent memory + autonomous execution are the right bets), not its scope.
+- **Near-term priorities:** harden the loop until the headline feature is bulletproof and demoable; then v0.7 polish (README / CONTRIBUTING / architecture docs / a reproducible demo) for the flagship launch.
 
 ## Foundation status (pre-refocus, 2026-04-28)
 

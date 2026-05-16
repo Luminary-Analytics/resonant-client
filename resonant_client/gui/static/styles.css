@@ -8855,6 +8855,67 @@ body {
     font-variant-numeric: tabular-nums;
 }
 
+/* ── v0.6.4 (F2): persistent retry-exhausted chip ─────────────── */
+
+.backend-status-exhausted {
+    background: color-mix(in srgb, var(--err, #e5484d) 12%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--err, #e5484d) 40%, transparent);
+    color: var(--text);
+    align-items: flex-start;
+    /* Persistent — no fade animation; the retry banner fades, this
+       one stays until the user dismisses it or it is superseded. */
+}
+
+.backend-status-exhausted .backend-status-icon {
+    color: var(--err, #e5484d);
+    margin-top: 1px;
+}
+
+.backend-status-hint {
+    display: block;
+    width: 100%;
+    color: var(--muted);
+    font-size: 11px;
+    margin-top: 2px;
+}
+
+.backend-status-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+    align-items: center;
+}
+
+.backend-status-btn {
+    border: 1px solid var(--border);
+    background: var(--bg-elem);
+    color: var(--text);
+    border-radius: 5px;
+    font-size: 11px;
+    padding: 3px 9px;
+    cursor: pointer;
+}
+
+.backend-status-btn:hover {
+    border-color: var(--err, #e5484d);
+}
+
+.backend-status-dismiss {
+    padding: 3px 7px;
+    font-size: 13px;
+    line-height: 1;
+    color: var(--muted);
+}
+
+/* Brief highlight when the exhausted chip's "Switch model" button
+   jumps focus to the model selector. */
+.model-selector-flash {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+    border-radius: 4px;
+    transition: outline-color 0.3s ease;
+}
+
 /* ── v0.5.6a2: Spec-incomplete card (replaces dispatch card when spec is unparseable) ─ */
 
 .mission-spec-incomplete {

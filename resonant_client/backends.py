@@ -33,8 +33,13 @@ EVENT_ERROR = "error"                     # {"message": "..."}
 # are recoverable conditions the user wants to know about so a slow
 # response feels like "still working" rather than "stalled".
 # Payload shape: {"kind": "...", **kind_specific_fields}
-#   kind="ollama_retry": {"status_code", "attempt", "max", "model",
-#                          "backoff_seconds", "body_preview"}
+#   kind="ollama_retry":     {"status_code", "attempt", "max", "model",
+#                             "backoff_seconds", "body_preview"}
+#   kind="ollama_exhausted": {"status_code", "model", "attempts",
+#                             "body_preview"} — terminal: the retry
+#                             budget is spent. v0.6.4 (F2). The GUI
+#                             renders this as a persistent chip (the
+#                             per-retry banner auto-fades).
 EVENT_BACKEND_STATUS = "backend.status"
 
 
@@ -948,6 +953,21 @@ class OllamaBackend:
                         err_body = resp.read().decode("utf-8", errors="replace").strip()
                     except Exception:
                         err_body = "<unreadable error body>"
+                    # v0.6.4 (F2) — if we land here with a RETRYABLE status,
+                    # it means the retry helper exhausted its budget (it only
+                    # yields a non-2xx response after the last attempt). The
+                    # per-retry `ollama_retry` events faded from the GUI; emit
+                    # a distinct terminal `ollama_exhausted` status so the
+                    # frontend can render a PERSISTENT chip instead of leaving
+                    # the user staring at a silent, stalled chat.
+                    if resp.status_code in _OLLAMA_RETRYABLE_STATUS:
+                        yield (EVENT_BACKEND_STATUS, {
+                            "kind": "ollama_exhausted",
+                            "status_code": resp.status_code,
+                            "model": self.model,
+                            "attempts": _OLLAMA_MAX_RETRIES + 1,
+                            "body_preview": err_body[:200],
+                        })
                     # Log a redacted summary of the offending payload to help
                     # diagnose recurrences without dumping screenshots into logs.
                     try:

@@ -1007,3 +1007,132 @@ class TestBackendStatusEventConstant:
     def test_engine_event_alias_matches(self):
         from resonant_client.events import EngineEvent
         assert EngineEvent.BACKEND_STATUS.value == "backend.status"
+
+
+# ── v0.6.4 (F2): retry-budget-exhausted status event ─────────────────
+
+
+class TestOllamaExhaustedStatus:
+    """v0.6.4 (F2) — when the retry budget is spent on a transient 5xx,
+    `stream()` must emit a terminal `ollama_exhausted` backend-status
+    event BEFORE it raises. The v0.6.2 field run found that an exhausted
+    retry budget left the GUI silent — the per-retry banner faded and
+    nothing told the user the step had stalled. The exhausted event is
+    what the GUI renders as a persistent chip.
+
+    Stubs the httpx layer so every attempt 503s — exhausting the budget
+    deterministically with no network.
+    """
+
+    @pytest.fixture
+    def backend(self):
+        return OllamaBackend("http://stub", "deepseek-v4-pro:cloud")
+
+    def _all_503_client_factory(self):
+        """httpx.Client stand-in: every constructed client streams a 503."""
+        def _make_503_cm():
+            resp = MagicMock()
+            resp.status_code = 503
+            resp.read = MagicMock(
+                return_value=b'{"error":"Server overloaded, please retry shortly"}'
+            )
+            resp.request = MagicMock()
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=resp)
+            cm.__exit__ = MagicMock(return_value=None)
+            return cm
+
+        def _factory(*args, **kwargs):
+            client = MagicMock()
+            client.stream = MagicMock(side_effect=lambda *a, **k: _make_503_cm())
+            return client
+
+        return patch("httpx.Client", side_effect=_factory)
+
+    def _drain_stream(self, backend):
+        """Run backend.stream() to completion under the all-503 stub,
+        returning the full list of yielded (event_type, data) tuples.
+        `stream()` catches the terminal HTTPStatusError internally and
+        yields an EVENT_ERROR — it does not raise — so a plain drain
+        is safe."""
+        events = []
+        with self._all_503_client_factory(), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            for ev in backend.stream(
+                user_msg="hi", conversation_history=[],
+                instructions="", tools=[],
+            ):
+                events.append(ev)
+        return events
+
+    @pytest.mark.unit
+    def test_exhausted_retries_emit_exhausted_event(self, backend):
+        """Every attempt 503s → an `ollama_exhausted` backend-status
+        event is yielded with the model + attempt-count detail."""
+        events = self._drain_stream(backend)
+        exhausted = [
+            d for (etype, d) in events
+            if etype == EVENT_BACKEND_STATUS and d.get("kind") == "ollama_exhausted"
+        ]
+        assert len(exhausted) == 1, f"expected 1 exhausted event, got {len(exhausted)}"
+        ev = exhausted[0]
+        assert ev["status_code"] == 503
+        assert ev["model"] == "deepseek-v4-pro:cloud"
+        assert ev["attempts"] == 4  # 1 initial + 3 retries
+        assert "overloaded" in ev["body_preview"].lower()
+
+    @pytest.mark.unit
+    def test_exhausted_event_still_followed_by_error_event(self, backend):
+        """The exhausted status is ADDITIVE — `stream()` still yields
+        the terminal EVENT_ERROR afterward so existing error handling
+        is unchanged. The exhausted event just gives the GUI a chance
+        to render the persistent chip first."""
+        events = self._drain_stream(backend)
+        # An error event is still emitted (stream() catches the raise).
+        assert any(etype == "error" for (etype, _d) in events), \
+            "terminal error event must still be emitted"
+
+    @pytest.mark.unit
+    def test_retry_events_precede_exhausted_event(self, backend):
+        """The 3 retry events come first, then the terminal exhausted
+        event — so the GUI shows the retry banners, then the chip."""
+        events = self._drain_stream(backend)
+        kinds = [
+            d.get("kind") for (etype, d) in events
+            if etype == EVENT_BACKEND_STATUS
+        ]
+        # 3 retries (attempts 1-3) then 1 exhausted.
+        assert kinds == ["ollama_retry", "ollama_retry", "ollama_retry",
+                         "ollama_exhausted"]
+
+    @pytest.mark.unit
+    def test_non_retryable_4xx_emits_no_exhausted_event(self, backend):
+        """A 400 (non-retryable) must NOT produce an exhausted event —
+        the chip is only for spent retry budgets on transient 5xx."""
+        def _make_400_cm():
+            resp = MagicMock()
+            resp.status_code = 400
+            resp.read = MagicMock(return_value=b'{"error":"bad request"}')
+            resp.request = MagicMock()
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=resp)
+            cm.__exit__ = MagicMock(return_value=None)
+            return cm
+
+        def _factory(*args, **kwargs):
+            client = MagicMock()
+            client.stream = MagicMock(side_effect=lambda *a, **k: _make_400_cm())
+            return client
+
+        events = []
+        with patch("httpx.Client", side_effect=_factory), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            for ev in backend.stream(
+                user_msg="hi", conversation_history=[],
+                instructions="", tools=[],
+            ):
+                events.append(ev)
+        assert not [
+            d for (etype, d) in events
+            if etype == EVENT_BACKEND_STATUS and d.get("kind") == "ollama_exhausted"
+        ]

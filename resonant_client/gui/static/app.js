@@ -8783,9 +8783,70 @@ class ResonantApp {
         if (!event || !event.kind) return;
         if (event.kind === 'ollama_retry') {
             this._renderOllamaRetryBanner(event);
+        } else if (event.kind === 'ollama_exhausted') {
+            this._renderOllamaExhaustedChip(event);
         }
         // Future kinds get their own renderers; swallow unknown kinds
         // silently rather than confuse the user with unfamiliar text.
+    }
+
+    /**
+     * v0.6.4 (F2) — the backend exhausted its retry budget on a
+     * transient 5xx (typically Ollama Cloud's 503 "Server
+     * overloaded"). Unlike the per-retry banner, this chip is
+     * PERSISTENT — it does NOT auto-fade. The v0.6.2 field run found
+     * that when retries gave up, the transient banner cleared and
+     * the chat went silent, leaving the user unable to tell whether
+     * the agent was thinking, retrying, or fully stalled.
+     *
+     * The chip names the model, the attempt count, and offers two
+     * affordances: jump to the model selector (the alt deepseek tier
+     * hits a different cloud quota), and dismiss.
+     */
+    _renderOllamaExhaustedChip(event) {
+        if (!this.chatMessages) return;
+        const status = event.status_code || 503;
+        const model = event.model || 'the model';
+        const attempts = event.attempts || 4;
+
+        // Suggest the other deepseek tier — pro and flash hit
+        // separate cloud quotas, so switching often dodges the storm.
+        let altSuggestion = 'a different model';
+        if (/pro/i.test(model)) altSuggestion = 'deepseek-v4-flash:cloud';
+        else if (/flash/i.test(model)) altSuggestion = 'deepseek-v4-pro:cloud';
+
+        const reason = (status === 503)
+            ? 'rate-limited (HTTP 503 — cloud overloaded)'
+            : `returning transient ${status} errors`;
+
+        const chip = document.createElement('div');
+        chip.className = 'backend-status-banner backend-status-exhausted';
+        chip.innerHTML = `
+            <span class="backend-status-icon" aria-hidden="true">⛔</span>
+            <span class="backend-status-text">
+                <strong>${this.escapeHtml(model)}</strong> is ${this.escapeHtml(reason)} —
+                gave up after ${attempts} attempts. The current step is stalled.
+                <span class="backend-status-hint">Try switching to ${this.escapeHtml(altSuggestion)} (a separate cloud quota), or wait for the backend to recover.</span>
+            </span>
+            <span class="backend-status-actions">
+                <button type="button" class="backend-status-btn backend-status-switch">Switch model</button>
+                <button type="button" class="backend-status-btn backend-status-dismiss" aria-label="Dismiss">×</button>
+            </span>
+        `;
+        chip.querySelector('.backend-status-switch').addEventListener('click', () => {
+            // Guide the user to the model control rather than auto-
+            // switching: a mid-mission model swap has correctness
+            // caveats the user should own.
+            if (this.modelSelector) {
+                this.modelSelector.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                this.modelSelector.classList.add('model-selector-flash');
+                setTimeout(() => this.modelSelector.classList.remove('model-selector-flash'), 1600);
+                try { this.modelSelector.focus(); } catch (e) { /* non-fatal */ }
+            }
+        });
+        chip.querySelector('.backend-status-dismiss').addEventListener('click', () => chip.remove());
+        this.chatMessages.appendChild(chip);
+        this.scrollToBottom();
     }
 
     _renderOllamaRetryBanner(event) {

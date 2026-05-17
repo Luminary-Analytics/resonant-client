@@ -35,9 +35,15 @@ EVENT_ERROR = "error"                     # {"message": "..."}
 # Payload shape: {"kind": "...", **kind_specific_fields}
 #   kind="ollama_retry":     {"status_code", "attempt", "max", "model",
 #                             "backoff_seconds", "body_preview"}
+#   kind="ollama_timeout":   {"attempt", "max", "model",
+#                             "backoff_seconds"} — a connect/read
+#                             timeout during the open phase is being
+#                             retried. v0.6.4 (F6).
 #   kind="ollama_exhausted": {"status_code", "model", "attempts",
-#                             "body_preview"} — terminal: the retry
-#                             budget is spent. v0.6.4 (F2). The GUI
+#                             "body_preview", ["reason"]} — terminal:
+#                             the retry budget is spent. v0.6.4 (F2 +
+#                             F6). status_code 0 + reason="timeout"
+#                             marks the timeout flavor. The GUI
 #                             renders this as a persistent chip (the
 #                             per-retry banner auto-fades).
 EVENT_BACKEND_STATUS = "backend.status"
@@ -282,10 +288,16 @@ class OllamaBackend:
             self.thinking_mode = None
         # Keep models warm — first-load on a 284B MoE is several minutes.
         self._ollama_keep_alive = (os.environ.get("RESONANT_OLLAMA_KEEP_ALIVE", "120m").strip() or "120m")
-        # deepseek-v4-flash with thinking can take a while; raise read timeout.
-        self._ollama_http_timeout = float(os.environ.get("RESONANT_OLLAMA_HTTP_TIMEOUT_SEC", "300"))
+        # deepseek-v4 with thinking can take a while; raise read timeout.
+        # v0.6.4 (F6) — read timeout 240 → 300. A rigorous-grill cold
+        # call on deepseek-v4-pro:cloud is legitimately a multi-minute
+        # call (long prompt + deep reasoning); the v0.6.3 field run hit
+        # the 240s ceiling. 300s gives headroom without waiting absurdly
+        # long on a genuinely dead connection — and F6's timeout-retry
+        # gives a slow-but-transient call a second chance regardless.
+        self._ollama_http_timeout = float(os.environ.get("RESONANT_OLLAMA_HTTP_TIMEOUT_SEC", "360"))
         self._ollama_http_read_timeout = float(
-            os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "240")
+            os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
         )
 
     def get_runtime_telemetry(self, *, timeout: float = 5.0) -> dict:
@@ -684,6 +696,13 @@ class OllamaBackend:
         attempt = 0
         while True:
             client = httpx.Client(timeout=stream_timeout)
+            # v0.6.4 (F6) — once we've yielded the response to the
+            # caller, a timeout is the caller's stream-consumption
+            # timing out and gets thrown back in at the `yield`. We
+            # are committed at that point — must NOT retry. The flag
+            # distinguishes an open-phase timeout (retryable) from a
+            # mid-stream one (terminal).
+            opened_and_yielded = False
             try:
                 with client.stream(
                     "POST", f"{self.base_url}/api/chat", json=payload,
@@ -734,8 +753,40 @@ class OllamaBackend:
                         # non-2xx — hand to caller. cleanup handled
                         # by both `with`s exiting after caller's
                         # `with ...:` block ends.
+                        opened_and_yielded = True
                         yield client, resp
                         return
+            except httpx.TimeoutException as exc:
+                # v0.6.4 (F6) — a connect/read timeout during the
+                # OPEN phase is as transient as a 503: the v0.6.3
+                # field run found a slow Ollama Cloud cold-call hit
+                # the read ceiling. Retry it on the same backoff
+                # curve. A timeout AFTER we yielded is the caller's
+                # mid-stream consumption — we're committed; re-raise.
+                if opened_and_yielded or attempt >= _OLLAMA_MAX_RETRIES:
+                    raise
+                backoff = _OLLAMA_BASE_BACKOFF * (2 ** attempt)
+                logger.warning(
+                    "Ollama %s on /api/chat (attempt %d/%d, model=%s) "
+                    "— retrying in %.1fs.",
+                    type(exc).__name__, attempt + 1,
+                    _OLLAMA_MAX_RETRIES + 1, self.model, backoff,
+                )
+                if notify_retry is not None:
+                    try:
+                        notify_retry({
+                            "kind": "ollama_timeout",
+                            "attempt": attempt + 1,
+                            "max": _OLLAMA_MAX_RETRIES + 1,
+                            "model": self.model,
+                            "backoff_seconds": backoff,
+                        })
+                    except Exception:
+                        logger.debug(
+                            "notify_retry callback raised; ignoring",
+                            exc_info=True,
+                        )
+                # Fall through to the backoff sleep + retry.
             finally:
                 client.close()
 
@@ -1126,6 +1177,32 @@ class OllamaBackend:
                                 for t in collected_tokens:
                                     yield (EVENT_TEXT_DELTA, {"delta": t})
 
+        except httpx.TimeoutException as e:
+            # v0.6.4 (F6) — the open-phase timeout retries exhausted.
+            # `_open_chat_stream_with_retry` raised (rather than
+            # yielding), so the per-retry `ollama_timeout` events it
+            # buffered into `_pending_status` were never drained by
+            # the `with` body. Flush them now so the GUI still sees
+            # the retry sequence, THEN emit a terminal
+            # `ollama_exhausted` status (timeout flavor, status_code 0)
+            # so the GUI renders the persistent chip — same surface as
+            # the 503-exhausted path. Then fall through to the error.
+            try:
+                while _pending_status:
+                    yield _pending_status.pop(0)
+            except NameError:
+                # Timeout fired before _pending_status was bound —
+                # impossible in practice, but cheap to guard.
+                pass
+            yield (EVENT_BACKEND_STATUS, {
+                "kind": "ollama_exhausted",
+                "status_code": 0,
+                "reason": "timeout",
+                "model": self.model,
+                "attempts": _OLLAMA_MAX_RETRIES + 1,
+                "body_preview": type(e).__name__,
+            })
+            yield (EVENT_ERROR, {"message": str(e) or type(e).__name__})
         except Exception as e:
             yield (EVENT_ERROR, {"message": str(e)})
 

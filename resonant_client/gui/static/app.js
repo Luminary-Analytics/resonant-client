@@ -8781,7 +8781,10 @@ class ResonantApp {
      */
     handleBackendStatus(event) {
         if (!event || !event.kind) return;
-        if (event.kind === 'ollama_retry') {
+        if (event.kind === 'ollama_retry' || event.kind === 'ollama_timeout') {
+            // v0.6.4 (F6) — ollama_timeout (a slow open-phase call
+            // being retried) shares the transient retry banner; the
+            // renderer phrases it differently from a 5xx retry.
             this._renderOllamaRetryBanner(event);
         } else if (event.kind === 'ollama_exhausted') {
             this._renderOllamaExhaustedChip(event);
@@ -8815,9 +8818,17 @@ class ResonantApp {
         if (/pro/i.test(model)) altSuggestion = 'deepseek-v4-flash:cloud';
         else if (/flash/i.test(model)) altSuggestion = 'deepseek-v4-pro:cloud';
 
-        const reason = (status === 503)
-            ? 'rate-limited (HTTP 503 — cloud overloaded)'
-            : `returning transient ${status} errors`;
+        // v0.6.4 (F6) — status_code 0 + reason "timeout" is the
+        // timeout-exhausted flavor (the open-phase retries all timed
+        // out); otherwise it's the 5xx-exhausted flavor.
+        let reason;
+        if (event.reason === 'timeout' || status === 0) {
+            reason = 'not responding (read timeout)';
+        } else if (status === 503) {
+            reason = 'rate-limited (HTTP 503 — cloud overloaded)';
+        } else {
+            reason = `returning transient ${status} errors`;
+        }
 
         const chip = document.createElement('div');
         chip.className = 'backend-status-banner backend-status-exhausted';
@@ -8859,10 +8870,17 @@ class ResonantApp {
 
         // Phrase the message based on the actual upstream status.
         // 503 is the common case (cloud overloaded); 502/504 are
-        // gateway errors that look the same to the user.
-        const reason = (status === 503)
-            ? 'rate-limited (HTTP 503)'
-            : `transient ${status} error`;
+        // gateway errors that look the same to the user. v0.6.4 (F6):
+        // an ollama_timeout event carries no status_code — it's a
+        // slow open-phase call, not an error response.
+        let reason;
+        if (event.kind === 'ollama_timeout') {
+            reason = 'slow to respond';
+        } else if (status === 503) {
+            reason = 'rate-limited (HTTP 503)';
+        } else {
+            reason = `transient ${status} error`;
+        }
 
         const banner = document.createElement('div');
         banner.className = 'backend-status-banner backend-status-retry';

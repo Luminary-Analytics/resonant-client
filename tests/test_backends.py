@@ -10,6 +10,7 @@ Tests cover:
 """
 
 import json
+import httpx
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -991,6 +992,79 @@ class TestOpenChatStreamWithRetryNotify:
             ) as (client, resp):
                 assert resp.status_code == 200
 
+    # ── v0.6.4 (F6): retry on open-phase timeout ─────────────────────
+
+    def _factory_raising_then_ok(self, n_timeouts):
+        """httpx.Client factory: the first `n_timeouts` constructed
+        clients raise httpx.ReadTimeout from .stream(); subsequent
+        ones return a 200."""
+        count = [0]
+
+        def _factory(*args, **kwargs):
+            client = MagicMock()
+
+            def _stream(method, url, **kw):
+                count[0] += 1
+                if count[0] <= n_timeouts:
+                    raise httpx.ReadTimeout("simulated slow cloud")
+                return self._make_response(200, '{"ok":true}')
+
+            client.stream = _stream
+            return client
+
+        return patch("httpx.Client", side_effect=_factory)
+
+    @pytest.mark.unit
+    def test_timeout_then_200_emits_one_timeout_notify(self, backend):
+        """An open-phase read timeout is retried; notify fires once
+        with kind=ollama_timeout, then the 200 is yielded."""
+        notify_calls = []
+        with self._factory_raising_then_ok(1), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            with backend._open_chat_stream_with_retry(
+                payload={}, stream_timeout=None, cancel_event=None,
+                notify_retry=notify_calls.append,
+            ) as (client, resp):
+                assert resp.status_code == 200
+        assert len(notify_calls) == 1
+        ev = notify_calls[0]
+        assert ev["kind"] == "ollama_timeout"
+        assert ev["attempt"] == 1
+        assert ev["model"] == "llama3.1:8b"  # this class's fixture model
+        assert ev["backoff_seconds"] > 0
+
+    @pytest.mark.unit
+    def test_all_timeouts_exhaust_and_raise(self, backend):
+        """Every attempt times out → after the 4-attempt budget the
+        helper re-raises the httpx.TimeoutException."""
+        with self._factory_raising_then_ok(99), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            with pytest.raises(httpx.TimeoutException):
+                with backend._open_chat_stream_with_retry(
+                    payload={}, stream_timeout=None, cancel_event=None,
+                ) as (client, resp):
+                    pass
+
+    @pytest.mark.unit
+    def test_midstream_timeout_not_retried(self, backend):
+        """A timeout raised AFTER the response is yielded (the caller's
+        own stream-consumption timing out) is thrown back into the
+        helper — it must re-raise, NOT retry. Otherwise a half-consumed
+        stream would be silently restarted."""
+        notify_calls = []
+        with self._patch_client_factory([(200, '{"ok":true}')]), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            with pytest.raises(httpx.ReadTimeout):
+                with backend._open_chat_stream_with_retry(
+                    payload={}, stream_timeout=None, cancel_event=None,
+                    notify_retry=notify_calls.append,
+                ) as (client, resp):
+                    assert resp.status_code == 200
+                    # Simulate the caller's mid-stream consumption timing out.
+                    raise httpx.ReadTimeout("mid-stream")
+        # No retry notify — a committed (post-yield) timeout is terminal.
+        assert notify_calls == []
+
 
 class TestBackendStatusEventConstant:
     """Pin the event-type constant + the payload shape contract so a
@@ -1136,3 +1210,67 @@ class TestOllamaExhaustedStatus:
             d for (etype, d) in events
             if etype == EVENT_BACKEND_STATUS and d.get("kind") == "ollama_exhausted"
         ]
+
+    @pytest.mark.unit
+    def test_all_timeouts_emit_exhausted_timeout_event(self, backend):
+        """v0.6.4 (F6) — every open attempt times out → `stream()`
+        yields a terminal `ollama_exhausted` event in the TIMEOUT
+        flavor (status_code 0, reason 'timeout'), then the error
+        event."""
+        def _factory(*args, **kwargs):
+            client = MagicMock()
+            client.stream = MagicMock(side_effect=httpx.ReadTimeout("slow cloud"))
+            return client
+
+        events = []
+        with patch("httpx.Client", side_effect=_factory), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            for ev in backend.stream(
+                user_msg="hi", conversation_history=[],
+                instructions="", tools=[],
+            ):
+                events.append(ev)
+
+        exhausted = [
+            d for (etype, d) in events
+            if etype == EVENT_BACKEND_STATUS and d.get("kind") == "ollama_exhausted"
+        ]
+        assert len(exhausted) == 1
+        ev = exhausted[0]
+        assert ev["reason"] == "timeout"
+        assert ev["status_code"] == 0
+        assert ev["model"] == "deepseek-v4-pro:cloud"
+        assert ev["attempts"] == 4
+        # The terminal error event still follows.
+        assert any(etype == "error" for (etype, _d) in events)
+
+    @pytest.mark.unit
+    def test_timeout_retry_events_precede_exhausted(self, backend):
+        """The 3 ollama_timeout retry events come first, then the
+        terminal ollama_exhausted."""
+        def _factory(*args, **kwargs):
+            client = MagicMock()
+            client.stream = MagicMock(side_effect=httpx.ReadTimeout("slow"))
+            return client
+
+        events = []
+        with patch("httpx.Client", side_effect=_factory), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            for ev in backend.stream(
+                user_msg="hi", conversation_history=[],
+                instructions="", tools=[],
+            ):
+                events.append(ev)
+        kinds = [
+            d.get("kind") for (etype, d) in events
+            if etype == EVENT_BACKEND_STATUS
+        ]
+        assert kinds == ["ollama_timeout", "ollama_timeout",
+                         "ollama_timeout", "ollama_exhausted"]
+
+    @pytest.mark.unit
+    def test_read_timeout_default_raised_to_300(self):
+        """v0.6.4 (F6) — the read-timeout default went 240 → 300 after
+        the v0.6.3 field run hit the 240s ceiling on a pro cold call."""
+        b = OllamaBackend("http://stub", "deepseek-v4-pro:cloud")
+        assert b._ollama_http_read_timeout == 300.0

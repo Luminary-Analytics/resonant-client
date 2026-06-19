@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from contextlib import contextmanager
 from typing import Iterator, Tuple
@@ -214,9 +215,100 @@ def _safe_image_b64(image_payload) -> str:
 # attempt 4. Max total wait before give-up: 10.5s. We keep this
 # tight so a genuinely-down upstream doesn't make the autonomous
 # loop hang for minutes per call.
-_OLLAMA_MAX_RETRIES = 3
-_OLLAMA_BASE_BACKOFF = 1.5
-_OLLAMA_RETRYABLE_STATUS = frozenset({502, 503, 504, 522, 524})
+# v0.6.5 — env-configurable so a flaky multi-day cloud run can widen the
+# budget (and a local-Ollama setup can fail fast). Read once at import.
+_OLLAMA_MAX_RETRIES = int(os.environ.get("RESONANT_OLLAMA_MAX_RETRIES", "3") or "3")
+_OLLAMA_BASE_BACKOFF = float(os.environ.get("RESONANT_OLLAMA_RETRY_BASE_BACKOFF", "1.5") or "1.5")
+# v0.6.5 — 403/429 are the cloud rate-limiting our concurrency. Treat them
+# as RETRYABLE (with backoff) rather than terminal, and tag them as
+# rate-limit signals so the governor can shrink its cap. A persistent 403
+# (e.g. real auth failure) is still bounded — the circuit breaker opens
+# after repeated failures and the retry budget is small.
+_OLLAMA_RATELIMIT_STATUS = frozenset({403, 429})
+_OLLAMA_RETRYABLE_STATUS = frozenset({502, 503, 504, 522, 524}) | _OLLAMA_RATELIMIT_STATUS
+
+# v0.6.5 — circuit breaker (long-running hardening). After this many
+# CONSECUTIVE terminal failures against one endpoint, the breaker opens:
+# subsequent calls fail FAST (skip the retry/backoff storm) for a cooldown
+# window, and the backend emits a distinct `ollama_circuit_open` status so
+# the daemon/GUI can tell "the endpoint is down" apart from "this one task
+# failed". A single success closes it. Set the threshold to 0 to disable.
+_OLLAMA_CIRCUIT_THRESHOLD = int(os.environ.get("RESONANT_OLLAMA_CIRCUIT_THRESHOLD", "5") or "5")
+_OLLAMA_CIRCUIT_COOLDOWN = float(os.environ.get("RESONANT_OLLAMA_CIRCUIT_COOLDOWN_SEC", "60") or "60")
+
+# v0.6.5 — outbound concurrency governor. Nothing else caps how many
+# requests we fire at Ollama at once; under heavy autonomous/parallel load
+# (multiple missions, batched sub-agents) that floods ollama.com — which
+# proxies the :cloud models — and trips its per-account rate limit
+# (403/429). The governor caps simultaneous in-flight requests at an
+# ADAPTIVE limit and queues the rest. AIMD: a rate-limit signal
+# multiplicatively shrinks the limit; a streak of successes additively
+# grows it back toward the ceiling, so it self-finds the max safe
+# throughput instead of relying on a hand-picked number. Tune the start /
+# ceiling via RESONANT_OLLAMA_CONCURRENCY / RESONANT_OLLAMA_MAX_CONCURRENCY.
+_OLLAMA_CONCURRENCY = int(os.environ.get("RESONANT_OLLAMA_CONCURRENCY", "4") or "4")
+_OLLAMA_MAX_CONCURRENCY = int(os.environ.get("RESONANT_OLLAMA_MAX_CONCURRENCY", "8") or "8")
+_OLLAMA_GOV_INCREASE_AFTER = 8     # consecutive successes before +1 slot
+_OLLAMA_GOV_DECREASE_FACTOR = 0.5  # multiplicative shrink on a rate-limit
+
+
+class _RequestGovernor:
+    """Adaptive concurrency limiter shared across all backends/threads
+    hitting one Ollama endpoint. Thread-safe. `acquire()` blocks
+    (cancel-aware) until an in-flight slot is free under the current
+    adaptive limit; `release()` frees one. AIMD adjusts the limit:
+    `record_rate_limited()` shrinks it ×factor (down to 1),
+    `record_success()` grows it +1 after a success streak (up to max)."""
+
+    def __init__(self, start: int, max_limit: int):
+        self._cv = threading.Condition()
+        self._max = float(max(1, max_limit))
+        self._limit = float(max(1, min(start, max_limit)))
+        self._in_flight = 0
+        self._ok_streak = 0
+
+    def acquire(self, cancel_event=None, poll: float = 0.25) -> bool:
+        """Reserve a slot. Returns True once reserved, or False if
+        `cancel_event` fires while queued."""
+        with self._cv:
+            while self._in_flight >= int(self._limit):
+                if cancel_event is not None and cancel_event.is_set():
+                    return False
+                self._cv.wait(timeout=poll)
+                if cancel_event is not None and cancel_event.is_set():
+                    return False
+            self._in_flight += 1
+            return True
+
+    def release(self) -> None:
+        with self._cv:
+            if self._in_flight > 0:
+                self._in_flight -= 1
+            self._cv.notify()
+
+    def record_success(self) -> None:
+        with self._cv:
+            self._ok_streak += 1
+            if (self._ok_streak >= _OLLAMA_GOV_INCREASE_AFTER
+                    and self._limit < self._max):
+                self._limit = min(self._max, self._limit + 1)
+                self._ok_streak = 0
+                self._cv.notify_all()
+
+    def record_rate_limited(self) -> None:
+        with self._cv:
+            self._limit = max(1.0, self._limit * _OLLAMA_GOV_DECREASE_FACTOR)
+            self._ok_streak = 0
+
+    @property
+    def limit(self) -> int:
+        with self._cv:
+            return int(self._limit)
+
+    @property
+    def in_flight(self) -> int:
+        with self._cv:
+            return self._in_flight
 
 
 def _wait_with_cancel(seconds: float, cancel_event) -> bool:
@@ -253,6 +345,15 @@ class OllamaBackend:
     _tool_support_cache: dict[str, bool] = {}
     # Cache of model -> bool (True = capabilities include "vision")
     _vision_support_cache: dict[str, bool] = {}
+    # v0.6.5 — circuit-breaker state keyed by base_url (NOT model): backends
+    # are recreated per session/specialist but all talk to the same Ollama
+    # endpoint, so failure state must outlive a single instance.
+    # base_url -> {"failures": int, "open_until": float}
+    _circuit: dict[str, dict] = {}
+    # v0.6.5 — one adaptive concurrency governor per endpoint, shared
+    # across all backend instances/threads. base_url -> _RequestGovernor.
+    _governors: dict[str, "_RequestGovernor"] = {}
+    _governors_lock = threading.Lock()
 
     def __init__(self, base_url: str, model: str, *, thinking: str | None = None):
         self.base_url = base_url.rstrip("/")
@@ -272,17 +373,22 @@ class OllamaBackend:
             "num_batch": int(os.environ.get("RESONANT_OLLAMA_NUM_BATCH", "1024")),
             "num_ctx": int(os.environ.get("RESONANT_OLLAMA_NUM_CTX", "32768")),
         }
-        # Thinking-mode (deepseek-v4-flash et al.). Sent as `options.think`.
-        # NOTE: the exact key/value Ollama expects for deepseek thinking modes
-        # is model-dependent. We send `think: low|med|high` per the planned spec;
-        # if a future Ollama release uses `reasoning_effort` or similar, swap here.
+        # Thinking-mode. Sent as `options.think` (verified to work via
+        # that path on glm-5.2:cloud, 2026-06-17). The internal token is
+        # low/med/high; "med" is the deepseek spelling of the middle
+        # tier. The WIRE value Ollama accepts is MODEL-DEPENDENT:
+        # deepseek wants "med", but standard reasoning models (GLM-5.x)
+        # want "medium" and reject "med" with HTTP 400. low/high are
+        # universal. We keep the internal token stable (for round-trip
+        # through the GUI/spec) and translate only on the way to the
+        # wire — see `_wire_think_value`.
         raw = (thinking or "").strip().lower()
         if raw in {"", "off"}:
             self.thinking_mode = None
         elif raw in {"low", "med", "medium", "high"}:
             normalized = "med" if raw == "medium" else raw
             self.thinking_mode = normalized
-            self._ollama_options["think"] = normalized
+            self._ollama_options["think"] = self._wire_think_value(normalized)
         else:
             # Unknown value — drop silently rather than poisoning the dict
             self.thinking_mode = None
@@ -299,6 +405,18 @@ class OllamaBackend:
         self._ollama_http_read_timeout = float(
             os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
         )
+
+    def _wire_think_value(self, token: str) -> str:
+        """Map the internal thinking token to the value THIS model's
+        Ollama endpoint accepts. deepseek uses "med" for the middle
+        tier; standard reasoning models (GLM-5.x and others) use
+        "medium" and reject "med" with HTTP 400. "low"/"high" are
+        universal. Verified live against glm-5.2:cloud (2026-06-17):
+        "med" → 400, "medium"/"low"/"high" → accepted."""
+        base = self.model.split(":")[0].lower()
+        if token == "med" and not base.startswith("deepseek"):
+            return "medium"
+        return token
 
     def get_runtime_telemetry(self, *, timeout: float = 5.0) -> dict:
         """
@@ -404,7 +522,7 @@ class OllamaBackend:
         "minimax-m2", "minimax-m2.5", "minimax-m2.7",
         "nemotron-3-super", "nemotron-3-nano",
         "kimi-k2.5",
-        "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1",
+        "glm-4.7", "glm-4.7-flash", "glm-5", "glm-5.1", "glm-5.2",
         "devstral-2", "devstral-small-2",
         "cogito-2.1",
         "gemini-3-flash-preview",
@@ -413,12 +531,15 @@ class OllamaBackend:
     }
 
     # Cloud models to offer even if not yet pulled locally.
-    # v0.6.2 — deepseek-v4-pro is the flagship for autonomous missions
-    # (PLAN_DEEP convergence is 2.5× faster than flash on benchmarked
-    # specs — see docs/v0.5.1-smoke-results.md). Listed first so it
-    # surfaces in the picker. Flash kept available for fast one-shot
-    # / chat work.
+    # v0.6.5 — glm-5.2:cloud is the flagship (756B, 1M context, native
+    # tool calling). Listed first so it surfaces at the top of the
+    # picker. The deepseek-v4-pro/flash tiers stay just below as the
+    # secondary high-quality option — pro's PLAN_DEEP convergence is
+    # well characterized (docs/v0.5.1-smoke-results.md) and the
+    # deepseek pair sits on a separate cloud quota, so it doubles as
+    # the 503 fallback for the GLM flagship.
     CLOUD_MODELS = [
+        "glm-5.2:cloud",
         "deepseek-v4-pro:cloud",
         "deepseek-v4-flash:cloud",
         "deepseek-v3.2:cloud",
@@ -646,17 +767,24 @@ class OllamaBackend:
         """Quick non-streaming LLM call for classification. Returns plain text."""
         opts = dict(self._ollama_options)
         opts["num_predict"] = max_tokens
-        resp = httpx.post(
-            f"{self.base_url}/api/chat",
-            json={
-                "model": self.model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": False,
-                "keep_alive": self._ollama_keep_alive,
-                "options": opts,
-            },
-            timeout=30,
-        )
+        # v0.6.5 — go through the concurrency governor like stream() so a
+        # burst of classification calls doesn't bypass the cap.
+        gov = OllamaBackend._governor_for(self.base_url)
+        gov.acquire()
+        try:
+            resp = httpx.post(
+                f"{self.base_url}/api/chat",
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False,
+                    "keep_alive": self._ollama_keep_alive,
+                    "options": opts,
+                },
+                timeout=30,
+            )
+        finally:
+            gov.release()
         resp.raise_for_status()
         return resp.json().get("message", {}).get("content", "").strip()
 
@@ -798,6 +926,49 @@ class OllamaBackend:
                 return
             attempt += 1
 
+    # ── Circuit breaker (v0.6.5 long-running hardening) ──────────────
+    #
+    # Tracks consecutive terminal failures per endpoint. After
+    # `_OLLAMA_CIRCUIT_THRESHOLD` in a row the breaker opens for
+    # `_OLLAMA_CIRCUIT_COOLDOWN` seconds; while open, `stream()` fails
+    # fast instead of burning the retry/backoff budget (and cold-start
+    # time) on an endpoint that's clearly down. A single success closes
+    # it, and it half-opens automatically after the cooldown.
+
+    def _circuit_open(self) -> bool:
+        """True iff the breaker for this endpoint is currently open."""
+        if _OLLAMA_CIRCUIT_THRESHOLD <= 0:
+            return False
+        c = OllamaBackend._circuit.get(self.base_url)
+        return bool(c) and c.get("open_until", 0.0) > time.time()
+
+    def _circuit_record_failure(self) -> bool:
+        """Record a terminal failure; return True if it just tripped open."""
+        if _OLLAMA_CIRCUIT_THRESHOLD <= 0:
+            return False
+        c = OllamaBackend._circuit.setdefault(
+            self.base_url, {"failures": 0, "open_until": 0.0})
+        c["failures"] += 1
+        if c["failures"] >= _OLLAMA_CIRCUIT_THRESHOLD:
+            c["open_until"] = time.time() + _OLLAMA_CIRCUIT_COOLDOWN
+            return True
+        return False
+
+    def _circuit_record_success(self) -> None:
+        """A success closes the breaker for this endpoint."""
+        OllamaBackend._circuit.pop(self.base_url, None)
+
+    @classmethod
+    def _governor_for(cls, base_url: str) -> "_RequestGovernor":
+        """The shared adaptive concurrency governor for an endpoint
+        (lazily created). All requests to the same base_url share one."""
+        with cls._governors_lock:
+            gov = cls._governors.get(base_url)
+            if gov is None:
+                gov = _RequestGovernor(_OLLAMA_CONCURRENCY, _OLLAMA_MAX_CONCURRENCY)
+                cls._governors[base_url] = gov
+            return gov
+
     def stream(
         self,
         user_msg: str,
@@ -817,6 +988,25 @@ class OllamaBackend:
 
         Both modes fall through to JSON/XML/text detection as a final safety net.
         """
+        # v0.6.5 — circuit breaker: if this endpoint just failed repeatedly,
+        # fail fast rather than burning the retry budget + cold-start time on
+        # a backend that's almost certainly down. The distinct status lets the
+        # daemon/GUI tell "backend down" apart from a one-off task failure;
+        # the breaker half-opens after the cooldown.
+        if self._circuit_open():
+            yield (EVENT_BACKEND_STATUS, {
+                "kind": "ollama_circuit_open",
+                "model": self.model,
+                "base_url": self.base_url,
+            })
+            yield (EVENT_ERROR, {
+                "message": (
+                    "Ollama endpoint circuit-open after repeated failures; "
+                    "failing fast (will retry after a short cooldown)."
+                ),
+            })
+            return
+
         # Detect tool support on first use
         if self._use_native_tools is None and tools:
             self._use_native_tools = self._detect_tool_support()
@@ -967,6 +1157,14 @@ class OllamaBackend:
         force_buffer = False   # Always buffer (JSON/XML tool call detected)
         known_tool_names = {"bash", "file_write", "file_read", "file_edit", "glob", "grep"}
 
+        # v0.6.5 — reserve a governor slot before opening the request so total
+        # in-flight requests across all sessions/missions/sub-agents stay under
+        # the adaptive cap (queue here otherwise). Released in the finally
+        # below. Cancel-aware: bail cleanly if cancelled while queued.
+        _gov = OllamaBackend._governor_for(self.base_url)
+        if not _gov.acquire(cancel_event):
+            return
+
         try:
             stream_timeout = httpx.Timeout(
                 self._ollama_http_timeout,
@@ -984,11 +1182,16 @@ class OllamaBackend:
             # signal that an upstream 503 storm is being silently
             # weathered — users assumed the daemon hung.
             _pending_status: list[Tuple[str, dict]] = []
+            def _on_retry(p):
+                _pending_status.append((EVENT_BACKEND_STATUS, p))
+                # A 403/429 retry means the cloud is rate-limiting us → shrink
+                # the governor's concurrency cap (AIMD) so we back off the
+                # whole fan-out, not just this one call.
+                if p.get("status_code") in _OLLAMA_RATELIMIT_STATUS:
+                    _gov.record_rate_limited()
             with self._open_chat_stream_with_retry(
                 payload, stream_timeout, cancel_event,
-                notify_retry=lambda p: _pending_status.append(
-                    (EVENT_BACKEND_STATUS, p),
-                ),
+                notify_retry=_on_retry,
             ) as (client, resp):
                 # Drain any retry events accumulated during open
                 # before we touch the stream itself.
@@ -1019,6 +1222,9 @@ class OllamaBackend:
                             "attempts": _OLLAMA_MAX_RETRIES + 1,
                             "body_preview": err_body[:200],
                         })
+                        # v0.6.5 — a transient-5xx exhaustion counts toward
+                        # the circuit breaker (endpoint looks overloaded/down).
+                        self._circuit_record_failure()
                     # Log a redacted summary of the offending payload to help
                     # diagnose recurrences without dumping screenshots into logs.
                     try:
@@ -1115,6 +1321,11 @@ class OllamaBackend:
                                 if key in data:
                                     stats[key] = data[key]
 
+                            # v0.6.5 — a completed stream closes the circuit
+                            # breaker AND rewards the governor (AIMD additive
+                            # increase toward the concurrency ceiling).
+                            self._circuit_record_success()
+                            _gov.record_success()
                             yield (EVENT_DONE, {
                                 "cognitive_state": None,
                                 "stats": stats,
@@ -1202,9 +1413,15 @@ class OllamaBackend:
                 "attempts": _OLLAMA_MAX_RETRIES + 1,
                 "body_preview": type(e).__name__,
             })
+            # v0.6.5 — repeated open-phase timeouts count toward the breaker.
+            self._circuit_record_failure()
             yield (EVENT_ERROR, {"message": str(e) or type(e).__name__})
         except Exception as e:
             yield (EVENT_ERROR, {"message": str(e)})
+        finally:
+            # Always free the governor slot — on completion, error, timeout,
+            # or the generator being closed early by the consumer.
+            _gov.release()
 
 
 

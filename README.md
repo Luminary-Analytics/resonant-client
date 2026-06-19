@@ -1,15 +1,15 @@
 # Resonant Client
 
-**The Ollama-native agentic coding desktop app — purpose-built for DeepSeek and other open-source local models.**
+**The Ollama-native agentic coding desktop app — purpose-built for GLM, DeepSeek, and other open-source local models.**
 
-If you want to code with Anthropic models, reach for [Claude Code](https://claude.com/product/claude-code). If you want OpenAI, reach for [Codex](https://github.com/openai/codex). For DeepSeek (and any open Ollama model), this is the tool.
+If you want to code with Anthropic models, reach for [Claude Code](https://claude.com/product/claude-code). If you want OpenAI, reach for [Codex](https://github.com/openai/codex). For GLM, DeepSeek, and any open Ollama model, this is the tool.
 
 ```
 ┌──────────────────────────┐                ┌─────────────────────────┐
 │  resonant-client         │                │  Ollama                 │
 │                          │                │                         │
-│  • Mission flow          │   HTTP /api    │  • deepseek-v4-flash    │
-│  • Plan-graph specialists│ ──────────────>│  • deepseek-v4-pro      │
+│  • Mission flow          │   HTTP /api    │  • glm-5.2 (flagship)   │
+│  • Plan-graph specialists│ ──────────────>│  • deepseek-v4-pro/flash│
 │  • Cycle guards          │   LAN / WAN    │  • Any open model       │
 │  • await_user tool       │                │                         │
 │  • Diagnostics ZIP       │                │  Mac Studio / local     │
@@ -102,10 +102,10 @@ pip install -e ".[all,dev]"         # Everything + tests
 ## Prerequisites
 
 1. **Ollama running somewhere reachable.** Mac Studio at `10.0.0.133:11434` is the canonical default; localhost works too. Install from [ollama.com](https://ollama.com/download), then `ollama serve`.
-2. **At least one DeepSeek model pulled:**
+2. **At least one model pulled:**
    ```bash
-   ollama pull deepseek-v4-flash:cloud   # flagship — fast
-   ollama pull deepseek-v4-pro:cloud     # higher quality, slower
+   ollama pull glm-5.2:cloud             # flagship — 756B, 1M context
+   ollama pull deepseek-v4-pro:cloud     # secondary tier, separate cloud quota
    ```
 3. **Bundled installer:** Windows 10+ (x64). Source install: Python 3.11+ on Windows / macOS / Linux.
 
@@ -138,7 +138,7 @@ resonant-gui
 
 ```bash
 resonant                                          # auto-detect
-resonant --backend ollama --model deepseek-v4-flash:cloud
+resonant --backend ollama --model glm-5.2:cloud
 resonant --backend ollama --api http://10.0.0.133:11434 --model deepseek-v4-pro:cloud
 ```
 

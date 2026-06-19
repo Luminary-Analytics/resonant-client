@@ -260,6 +260,13 @@ class ResonantApp {
 
         // Header indicator refs
         this.gitBadge = document.getElementById('git-badge');
+        const _chromeBtn = document.getElementById('connect-chrome-btn');
+        if (_chromeBtn) {
+            _chromeBtn.addEventListener('click', () => {
+                this.send({ command: 'connect_browser' });
+                this._setChromeBtnState('connecting');
+            });
+        }
         this.gitBranchName = document.getElementById('git-branch-name');
         this.gitChangesCount = document.getElementById('git-changes-count');
         this.harnessBadge = document.getElementById('harness-badge');
@@ -828,7 +835,7 @@ class ResonantApp {
         // dropped. If a stale `/grill` muscle-memory shows up, point them
         // at the toggle so they don't get silently confused.
         if (text.startsWith('/grill') || text.startsWith('/mission')) {
-            this.showStatusMessage('Missions are now started from the 🎯 toggle in the chat header.');
+            this.showStatusMessage('Autonomous sessions are started from the 🎯 toggle in the chat header.');
             return;
         }
 
@@ -1046,7 +1053,7 @@ class ResonantApp {
         // session_cleared response or after a 6s safety timeout) catches
         // the gap.
         if (this._missionStartInflight) {
-            this.showStatusMessage('Mission is already starting — give it a second.');
+            this.showStatusMessage('Autonomous session is already starting — give it a second.');
             return;
         }
         this._missionStartInflight = true;
@@ -1159,7 +1166,7 @@ class ResonantApp {
         }
         this.renderFilteredSessions();
         this._syncMissionUI();
-        this.showStatusMessage('Mission exited.');
+        this.showStatusMessage('Autonomous session exited.');
     }
 
     // ── Autonomous Mission events (v0.5.0a7) ───────────────────────
@@ -1264,6 +1271,96 @@ class ResonantApp {
         this._updateAutonomousBadgeState();
         this._upgradeIterationCardToFailed(event);
         this._requestAutonomousMissionRoadmap();
+    }
+
+    // ── v0.6.5 — long-running session health (task #7) ────────────
+    // The daemon emits three health signals during multi-hour/-day
+    // autonomous runs. Surface them so the user can read liveness at a
+    // glance and is told when a step stalls or is recovered after a
+    // crash. Backend: autonomous_loop.py (_wait_with_monitor) and
+    // autonomous_session.py (resume path).
+
+    handleAutonomousHeartbeat(event) {
+        const s = this._ensureAutonomousState(event);
+        // Server-originated proof of life while waiting on a sub-mission.
+        // The badge's activity counter advances client-side even if the
+        // daemon froze, so this records the last REAL contact — that's
+        // what distinguishes "alive but slow" from "stuck". The token is
+        // painted by _fmtHeartbeatToken, gated on iterInFlight.
+        s.heartbeat = {
+            at: Date.now() / 1000,
+            elapsed: typeof event.elapsed_seconds === 'number'
+                ? event.elapsed_seconds : null,
+            iter: event.iter_count,
+            phase: event.phase || '',
+        };
+        this._updateAutonomousBadgeState();
+    }
+
+    handleAutonomousIterationTimeout(event) {
+        const s = this._ensureAutonomousState(event);
+        // The sub-mission blew past the dispatch ceiling and was
+        // cancelled as stalled; the daemon moves on to the next item.
+        // Drop the in-flight + heartbeat state so the badge stops
+        // advertising the dead wait, then leave a persistent chip.
+        s.iterInFlight = false;
+        s.heartbeat = null;
+        this._updateAutonomousBadgeState();
+        this._renderAutonomousHealthChip('timeout', event);
+    }
+
+    handleAutonomousResumeRecovery(event) {
+        // The app stopped mid-iteration; on resume the daemon re-ran the
+        // interrupted step. Warn so the user can reconcile any partial
+        // work from the previous run. One-shot notice — no badge state
+        // needed (the mission's own start event re-seeds the badge).
+        this._renderAutonomousHealthChip('recovery', event);
+    }
+
+    /**
+     * v0.6.5 — persistent, dismissable chip for a discrete autonomous
+     * health event: a stalled step cancelled (`timeout`), or a step
+     * re-run after a post-crash resume (`recovery`). Reuses the
+     * backend-status-banner styling so it reads like the other
+     * health/retry chips.
+     */
+    _renderAutonomousHealthChip(kind, event) {
+        if (!this.chatMessages) return;
+        const chip = document.createElement('div');
+        let icon, body;
+        if (kind === 'timeout') {
+            const secs = event && event.timeout_seconds;
+            const limit = (typeof secs === 'number' && secs > 0)
+                ? this._fmtDuration(secs) : 'its time limit';
+            const iter = (event && event.iter_count != null)
+                ? ` (iter ${this.escapeHtml(String(event.iter_count))})` : '';
+            icon = '⏱';
+            chip.className = 'backend-status-banner autonomous-health-chip autonomous-health-timeout';
+            body = `<span class="backend-status-text">
+                A step${iter} ran past ${this.escapeHtml(limit)} with no progress and was
+                <strong>cancelled as stalled</strong> — the session moves on to the next item.
+                <span class="backend-status-hint">If this repeats, the sub-mission may be blocked (e.g. waiting on input it can't get). Check that roadmap item.</span>
+            </span>`;
+        } else {
+            const iter = (event && event.iter != null)
+                ? ` (iter ${this.escapeHtml(String(event.iter))})` : '';
+            icon = '↻';
+            chip.className = 'backend-status-banner autonomous-health-chip autonomous-health-recovery';
+            body = `<span class="backend-status-text">
+                Resumed after an interruption — re-running the step${iter} that was in flight when the app stopped.
+                <span class="backend-status-hint">Check for partial work from the previous run (e.g. an uncommitted change) so nothing is duplicated.</span>
+            </span>`;
+        }
+        chip.innerHTML = `
+            <span class="backend-status-icon" aria-hidden="true">${icon}</span>
+            ${body}
+            <span class="backend-status-actions">
+                <button type="button" class="backend-status-btn backend-status-dismiss" aria-label="Dismiss">×</button>
+            </span>`;
+        chip.querySelector('.backend-status-dismiss')
+            .addEventListener('click', () => chip.remove());
+        this.chatMessages.appendChild(chip);
+        this.scrollToBottom();
     }
 
     handleAutonomousReflection(event) {
@@ -1375,7 +1472,7 @@ class ResonantApp {
         card.innerHTML = `
             <div class="autonomous-decision-head">
                 <span class="autonomous-decision-icon" aria-hidden="true">⏸</span>
-                <span class="autonomous-decision-title">Mission paused — your decision needed</span>
+                <span class="autonomous-decision-title">Autonomous session paused — your decision needed</span>
             </div>
             <div class="autonomous-decision-question">${this.escapeHtml(request.question || '')}</div>
             ${contextHTML}
@@ -1726,29 +1823,11 @@ class ResonantApp {
     }
 
     _renderAutonomousMissionBrowser() {
+        // v0.6.5 — folded into the unified per-project sessions list, where
+        // autonomous sessions are badged inline. The separate browser is
+        // hidden so they aren't listed twice.
         const root = document.getElementById('autonomous-mission-browser');
-        if (!root) return;
-        const missions = this._autonomousMissions || [];
-        if (!missions.length) {
-            root.hidden = true;
-            root.innerHTML = '';
-            return;
-        }
-        root.hidden = false;
-        const itemsHTML = missions.map(m => this._renderMissionBrowserItem(m)).join('');
-        root.innerHTML = `
-            <div class="amb-header">
-                <span>Missions (${missions.length})</span>
-            </div>
-            <div class="amb-list">${itemsHTML}</div>
-        `;
-        root.querySelectorAll('.amb-item').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.preventDefault();
-                const sessionId = btn.dataset.sessionId || '';
-                if (sessionId) this._handleMissionBrowserClick(sessionId);
-            });
-        });
+        if (root) { root.hidden = true; root.innerHTML = ''; }
     }
 
     _renderMissionBrowserItem(mission) {
@@ -2595,7 +2674,7 @@ class ResonantApp {
         el.innerHTML = `
             <span class="mission-past-icon" aria-hidden="true">🎯</span>
             <span class="mission-past-text">
-                <span class="mission-past-label">Mission</span>
+                <span class="mission-past-label">Autonomous</span>
                 <span class="mission-past-phase">${this.escapeHtml(phaseLabel)}</span>
             </span>
         `;
@@ -2662,7 +2741,7 @@ class ResonantApp {
         badge.innerHTML = `
             <span class="mission-badge-icon" aria-hidden="true">🎯</span>
             <span class="mission-badge-text">
-                <span class="mission-badge-label">Mission</span>
+                <span class="mission-badge-label">Autonomous</span>
                 <span class="mission-badge-phase">${this.escapeHtml(phaseLabel)}</span>
             </span>
             <span class="mission-badge-exit" title="Exit mission" aria-label="Exit mission">×</span>
@@ -2783,7 +2862,34 @@ class ResonantApp {
         const activityStr = this._fmtAutonomousActivity();
         if (activityStr) parts.push(activityStr);
 
+        // v0.6.5 (task #7) — heartbeat liveness. The activity counter
+        // above ticks client-side even if the daemon froze, so this
+        // server-originated token is what actually tells slow from stuck.
+        const hbToken = this._fmtHeartbeatToken();
+        if (hbToken) parts.push(hbToken);
+
         phaseEl.textContent = parts.join(' · ') || 'starting…';
+    }
+
+    /**
+     * v0.6.5 — render the heartbeat liveness token for the badge.
+     * Gated on `iterInFlight`: the daemon only heartbeats while a
+     * sub-mission is dispatched, and that flag is cleared the instant
+     * the iter completes/fails/times out — so a stale heartbeat can
+     * never linger as a false "live"/"stalled" between iterations.
+     *   • fresh beat  → "♥ live"  (proof the wait is genuinely alive)
+     *   • stale beat  → "⚠ no heartbeat 1m 30s"  (likely frozen)
+     */
+    _fmtHeartbeatToken() {
+        const s = this._autonomousState || {};
+        const hb = s.heartbeat;
+        if (!hb || typeof hb.at !== 'number' || !s.iterInFlight) return '';
+        const sinceLast = (Date.now() / 1000) - hb.at;
+        // 2.5 × the daemon's ~30s heartbeat — slack for network jitter
+        // and a momentarily busy event loop before we cry stall.
+        const STALE_AFTER = 75;
+        if (sinceLast <= STALE_AFTER) return '♥ live';
+        return `⚠ no heartbeat ${this._fmtDuration(sinceLast)}`;
     }
 
     /**
@@ -2926,7 +3032,7 @@ class ResonantApp {
         banner.id = 'mission-cancel-exit-banner';
         banner.className = 'mission-cancel-exit-banner';
         banner.innerHTML = `
-            <span class="mission-cancel-exit-msg">Mission paused. Exit it entirely, or stay in drafting?</span>
+            <span class="mission-cancel-exit-msg">Autonomous session paused. Exit it entirely, or stay in drafting?</span>
             <button type="button" class="mission-cancel-exit-btn-stay">Stay</button>
             <button type="button" class="mission-cancel-exit-btn-exit">Exit mission</button>
         `;
@@ -3022,7 +3128,7 @@ class ResonantApp {
             <div class="mission-composer">
                 <div class="mission-composer-header">
                     <span class="mission-composer-icon" aria-hidden="true">🎯</span>
-                    <span class="mission-composer-title">Start a Mission</span>
+                    <span class="mission-composer-title">Start an autonomous session</span>
                     <button type="button" class="mission-composer-close" aria-label="Close">×</button>
                 </div>
                 <p class="mission-composer-blurb">
@@ -3059,7 +3165,7 @@ class ResonantApp {
                         <kbd>${submitHintKey}</kbd> <kbd>Enter</kbd> to start
                     </span>
                     <button type="button" class="mission-composer-cancel">Cancel</button>
-                    <button type="button" class="mission-composer-start" disabled>Start mission</button>
+                    <button type="button" class="mission-composer-start" disabled>Start session</button>
                 </div>
             </div>
         `;
@@ -4155,6 +4261,16 @@ class ResonantApp {
             case 'autonomous_iteration_failed':
                 this.handleAutonomousIterationFailed(event);
                 break;
+            // v0.6.5 (task #7) — long-running session health signals.
+            case 'autonomous_heartbeat':
+                this.handleAutonomousHeartbeat(event);
+                break;
+            case 'autonomous_iteration_timeout':
+                this.handleAutonomousIterationTimeout(event);
+                break;
+            case 'autonomous_resume_recovery':
+                this.handleAutonomousResumeRecovery(event);
+                break;
             case 'autonomous_reflection':
                 this.handleAutonomousReflection(event);
                 break;
@@ -4252,6 +4368,9 @@ class ResonantApp {
                 break;
             case 'resume_prompt':
                 this.applyResumePrompt(event.prompt || '');
+                break;
+            case 'browser_status':
+                this._onBrowserStatus(event);
                 break;
             case 'sessions_updated':
                 this.sessions = event.sessions || [];
@@ -4757,13 +4876,17 @@ class ResonantApp {
 
         label.textContent = 'Pick a model';
 
-        // Pin DeepSeek flagship variants to the top.
-        const flagshipOrder = [
+        // Pin the flagship + secondary cloud tiers to the top.
+        // glm-5.2:cloud is THE flagship (v0.6.5); the deepseek-v4
+        // tiers stay pinned just below it as the secondary option.
+        const FLAGSHIP_MODEL = 'glm-5.2:cloud';
+        const pinnedOrder = [
+            FLAGSHIP_MODEL,
             'deepseek-v4-pro:cloud',
             'deepseek-v4-flash:cloud',
             'deepseek-v4:cloud',
         ];
-        const pinned = flagshipOrder.filter(m => models.includes(m));
+        const pinned = pinnedOrder.filter(m => models.includes(m));
         const others = models.filter(m => !pinned.includes(m));
         const ordered = [...pinned, ...others];
 
@@ -4771,7 +4894,7 @@ class ResonantApp {
         card.className = 'backend-group-cards single';
 
         for (const model of ordered) {
-            const isFlagship = flagshipOrder.includes(model);
+            const isFlagship = model === FLAGSHIP_MODEL;
             const row = document.createElement('div');
             row.className = 'backend-card';
             row.dataset.backend = 'ollama';
@@ -4822,8 +4945,8 @@ class ResonantApp {
                 <span>${this.escapeHtml(headline)}</span>
             </div>
             <p class="ollama-wizard-blurb">
-                Resonant Client v0.4.0 is purpose-built for DeepSeek (and other
-                open-source models) running through Ollama. If you want
+                Resonant Client is purpose-built for GLM, DeepSeek, and other
+                open-source models running through Ollama. If you want
                 Anthropic models, reach for <strong>Claude Code</strong>; for
                 OpenAI, reach for <strong>Codex</strong>.
             </p>
@@ -4857,14 +4980,14 @@ class ResonantApp {
             </div>
 
             <div class="ollama-wizard-step">
-                <div class="ollama-wizard-step-title">3. Pull DeepSeek</div>
+                <div class="ollama-wizard-step-title">3. Pull a model</div>
                 <div class="ollama-wizard-cmd">
-                    <code>ollama pull deepseek-v4-pro:cloud</code>
-                    <span class="ollama-wizard-cmd-note">— flagship, autonomous-mission default</span>
+                    <code>ollama pull glm-5.2:cloud</code>
+                    <span class="ollama-wizard-cmd-note">— flagship (756B, 1M context), the default</span>
                 </div>
                 <div class="ollama-wizard-cmd">
-                    <code>ollama pull deepseek-v4-flash:cloud</code>
-                    <span class="ollama-wizard-cmd-note">— faster per-call, good for quick chat</span>
+                    <code>ollama pull deepseek-v4-pro:cloud</code>
+                    <span class="ollama-wizard-cmd-note">— secondary tier, separate cloud quota</span>
                 </div>
             </div>
         `;
@@ -4967,7 +5090,7 @@ class ResonantApp {
             hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code> — found ${count} model${count === 1 ? '' : 's'}.`;
             hint.className = 'ollama-wizard-hint ollama-wizard-hint-ok';
         } else if (ok) {
-            hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code>, but no models pulled yet. Try <code>ollama pull deepseek-v4-pro:cloud</code>.`;
+            hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code>, but no models pulled yet. Try <code>ollama pull glm-5.2:cloud</code>.`;
             hint.className = 'ollama-wizard-hint ollama-wizard-hint-warn';
         } else {
             hint.innerHTML = `✗ <code>${this.escapeHtml(url)}</code> unreachable. Is <code>ollama serve</code> running on that host?`;
@@ -5064,7 +5187,7 @@ class ResonantApp {
                 <button class="onboarding-dismiss" aria-label="Dismiss" title="Dismiss">&times;</button>
             </div>
             <h3 class="onboarding-title">A laser-focused agentic IDE</h3>
-            <p class="onboarding-sub">Resonant is built around <strong>deepseek-v4 on Ollama</strong> &mdash; pro for autonomous missions, flash for quick chat. High-quality coding without sending your code to the cloud.</p>
+            <p class="onboarding-sub">Resonant is built around <strong>GLM-5.2 on Ollama</strong> &mdash; a 1M-context flagship for agentic coding, with the deepseek-v4 tiers a click away.</p>
             <ul class="onboarding-list">
                 <li><span class="onboarding-bullet">⚡</span><span><strong>Batch + sub-agents</strong> &mdash; ask the model to fan out reads or spawn isolated investigations</span></li>
                 <li><span class="onboarding-bullet">🔍</span><span><strong>Auto-lint &amp; auto-test on edit</strong> &mdash; toggle in Settings &rarr; General</span></li>
@@ -5207,10 +5330,10 @@ class ResonantApp {
         if (configuredModel && models.includes(configuredModel)) {
             return { backend: 'ollama', model: configuredModel };
         }
-        // v0.6.2 — pro is the autonomous-mission flagship (see
-        // network_defaults.py:get_default_model). Flash is the fast-iter
-        // fallback when pro isn't available.
-        for (const flagship of ['deepseek-v4-pro:cloud', 'deepseek-v4-flash:cloud', 'deepseek-v4:cloud']) {
+        // v0.6.5 — glm-5.2:cloud is the flagship (see
+        // network_defaults.py:get_default_model). The deepseek-v4
+        // tiers are the secondary fallback when GLM-5.2 isn't pulled.
+        for (const flagship of ['glm-5.2:cloud', 'deepseek-v4-pro:cloud', 'deepseek-v4-flash:cloud', 'deepseek-v4:cloud']) {
             if (models.includes(flagship)) return { backend: 'ollama', model: flagship };
         }
         return { backend: 'ollama', model: models[0] };
@@ -5284,14 +5407,15 @@ class ResonantApp {
         this._refreshThinkingModeVisibility();
     }
 
-    /** Show the thinking-mode selector only for deepseek-v* models on Ollama. */
+    /** Show the thinking-mode selector for Ollama reasoning models
+     * (deepseek-v*, glm-*). Other models hide it. */
     _refreshThinkingModeVisibility() {
         if (!this.thinkingModeSelector) return;
         const val = (this.modelSelector && this.modelSelector.value) || '';
         const colonIdx = val.indexOf(':');
         const backend = colonIdx > 0 ? val.substring(0, colonIdx) : '';
         const model = colonIdx > 0 ? val.substring(colonIdx + 1) : '';
-        const supports = backend === 'ollama' && /^deepseek-v\d/i.test(model || '');
+        const supports = backend === 'ollama' && /^(deepseek-v\d|glm-)/i.test(model || '');
         this.thinkingModeSelector.style.display = supports ? '' : 'none';
     }
 
@@ -5398,7 +5522,9 @@ class ResonantApp {
     /** Sync the thinking-mode selector with server state (called from init/session_loaded). */
     setThinkingMode(mode) {
         if (!this.thinkingModeSelector) return;
-        const value = mode || '';
+        // The server reports the explicit-off sentinel "off"; the
+        // selector models "off" as its empty value.
+        const value = (mode && mode !== 'off') ? mode : '';
         this.thinkingModeSelector.value = value;
         this._lastThinkingMode = value;
     }
@@ -6940,8 +7066,8 @@ class ResonantApp {
                       ]
                     },
                     { key: 'default_model', label: 'Default model', type: 'text',
-                      placeholder: 'e.g. deepseek-v4-pro:cloud',
-                      hint: 'Leave blank to use the first model the chosen backend reports. Pro is the v0.6.2 default for autonomous missions; flash is the fast-iter alternative for chat.' },
+                      placeholder: 'e.g. glm-5.2:cloud',
+                      hint: 'Leave blank to use the first model the chosen backend reports. glm-5.2:cloud is the v0.6.5 flagship default; the deepseek-v4 tiers are the secondary option.' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },
@@ -6956,7 +7082,7 @@ class ResonantApp {
                       hint: 'After every file_edit/file_write, run the test command on the matching test file. Failures are injected back as a follow-up turn.' },
                     { key: 'auto_test_command', label: 'Auto-test command', type: 'text',
                       hint: 'Default: "pytest -x". For JS/TS: "npx jest" or "npx vitest run".' },
-                    { key: 'big_context_profile', label: 'Big-context profile (deepseek-v4-flash 1M)', type: 'toggle',
+                    { key: 'big_context_profile', label: 'Big-context profile (GLM-5.2 / deepseek 1M)', type: 'toggle',
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
                       hint: 'Off by default. Enable to use Resonant\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.resonant/, not in your repo.' },
@@ -7383,7 +7509,7 @@ class ResonantApp {
             if (!body) return;
             const shortcuts = [
                 { label: 'Command palette', keys: ['Ctrl', 'K'] },
-                { label: 'New agent', keys: ['Ctrl', 'N'] },
+                { label: 'New session', keys: ['Ctrl', 'N'] },
                 { label: 'Settings', keys: ['Ctrl', ','] },
                 { label: 'Shortcuts help', keys: ['Ctrl', '/'] },
                 { label: 'Toggle sidebar', keys: ['Ctrl', 'Shift', 'D'] },
@@ -7408,7 +7534,7 @@ class ResonantApp {
 
     _cmdPaletteCommands() {
         return [
-            { id: 'new-agent',  icon: '+', label: 'New agent',          hint: 'Ctrl+N',       action: () => document.getElementById('new-agent-btn')?.click() },
+            { id: 'new-agent',  icon: '+', label: 'New session',        hint: 'Ctrl+N',       action: () => document.getElementById('new-agent-btn')?.click() },
             { id: 'settings',   icon: '\u2699', label: 'Open Settings',            hint: 'Ctrl+,', action: () => this.switchView('settings') },
             { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
             { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
@@ -8806,16 +8932,77 @@ class ResonantApp {
      * affordances: jump to the model selector (the alt deepseek tier
      * hits a different cloud quota), and dismiss.
      */
+    // ── Connect Chrome (debug mode) ──────────────────────────────────
+
+    _setChromeBtnState(state) {
+        const btn = document.getElementById('connect-chrome-btn');
+        const label = document.getElementById('connect-chrome-label');
+        if (!btn) return;
+        btn.classList.remove('is-connecting', 'is-connected', 'is-error');
+        if (state === 'connecting') { btn.classList.add('is-connecting'); if (label) label.textContent = 'Connecting…'; }
+        else if (state === 'connected') { btn.classList.add('is-connected'); if (label) label.textContent = 'Chrome ✓'; }
+        else { if (state === 'error') btn.classList.add('is-error'); if (label) label.textContent = 'Chrome'; }
+    }
+
+    _onBrowserStatus(event) {
+        const status = event.status;
+        if (status === 'connecting') { this._setChromeBtnState('connecting'); return; }
+        if (status === 'connected') {
+            this._setChromeBtnState('connected');
+            this._dismissChromeRelaunchChip();
+            return;
+        }
+        // needs_relaunch OR error → offer the one-click relaunch.
+        this._setChromeBtnState('error');
+        this._showChromeRelaunchChip(event.detail || '', status === 'error');
+    }
+
+    _dismissChromeRelaunchChip() {
+        const el = document.getElementById('chrome-relaunch-chip');
+        if (el) el.remove();
+    }
+
+    _showChromeRelaunchChip(detail, isError) {
+        this._dismissChromeRelaunchChip();
+        if (!this.chatMessages) return;
+        const chip = document.createElement('div');
+        chip.className = 'backend-status-banner chrome-relaunch-chip';
+        chip.id = 'chrome-relaunch-chip';
+        const msg = isError
+            ? `Couldn't open Chrome in debug mode: ${this.escapeHtml((detail || 'unknown error').slice(0, 200))}`
+            : 'Your Chrome is open without debug mode, so the agent can’t attach. Relaunch it in debug mode? Chrome reopens and restores your tabs.';
+        chip.innerHTML = `
+            <span class="backend-status-icon" aria-hidden="true">🌐</span>
+            <span class="backend-status-text">${msg}
+                <span class="backend-status-hint">Closes &amp; reopens your Chrome on the same profile, with the debug port on.</span>
+            </span>
+            <span class="backend-status-actions">
+                <button type="button" class="backend-status-btn chrome-relaunch-go">Relaunch in debug mode</button>
+                <button type="button" class="backend-status-btn chrome-relaunch-dismiss" aria-label="Dismiss">&times;</button>
+            </span>`;
+        chip.querySelector('.chrome-relaunch-go').addEventListener('click', () => {
+            this.send({ command: 'connect_browser', force_relaunch: true });
+            this._setChromeBtnState('connecting');
+            this._dismissChromeRelaunchChip();
+        });
+        chip.querySelector('.chrome-relaunch-dismiss').addEventListener('click', () => this._dismissChromeRelaunchChip());
+        this.chatMessages.appendChild(chip);
+        this.scrollToBottom();
+    }
+
     _renderOllamaExhaustedChip(event) {
         if (!this.chatMessages) return;
         const status = event.status_code || 503;
         const model = event.model || 'the model';
         const attempts = event.attempts || 4;
 
-        // Suggest the other deepseek tier — pro and flash hit
-        // separate cloud quotas, so switching often dodges the storm.
+        // Suggest a model on a SEPARATE cloud quota so switching
+        // dodges the storm. GLM-5.2 (flagship) and the deepseek tiers
+        // are independent quotas; deepseek pro/flash also differ from
+        // each other.
         let altSuggestion = 'a different model';
-        if (/pro/i.test(model)) altSuggestion = 'deepseek-v4-flash:cloud';
+        if (/glm/i.test(model)) altSuggestion = 'deepseek-v4-pro:cloud';
+        else if (/pro/i.test(model)) altSuggestion = 'deepseek-v4-flash:cloud';
         else if (/flash/i.test(model)) altSuggestion = 'deepseek-v4-pro:cloud';
 
         // v0.6.4 (F6) — status_code 0 + reason "timeout" is the
@@ -9305,14 +9492,14 @@ class ResonantApp {
 
     _renderPinnedGroup(sessions) {
         const wrap = document.createElement('div');
-        wrap.className = 'pinned-group';
+        wrap.className = 'mission-group pinned-group';
 
         const header = document.createElement('div');
-        header.className = 'pinned-group-header';
+        header.className = 'mission-group-header';
         header.innerHTML = `
-            <span class="pinned-group-icon" aria-hidden="true">📌</span>
-            <span class="pinned-group-title">Pinned</span>
-            <span class="pinned-group-count">${sessions.length}</span>
+            <span class="mission-group-icon" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M7 1.4l1.6 3.3 3.6.5-2.6 2.5.6 3.6L7 9.7 3.8 11.4l.6-3.6L1.8 5.2l3.6-.5L7 1.4z" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg></span>
+            <span class="mission-group-title">Pinned</span>
+            <span class="mission-group-count">${sessions.length}</span>
         `;
         wrap.appendChild(header);
 
@@ -9346,7 +9533,7 @@ class ResonantApp {
         const header = document.createElement('div');
         header.className = 'mission-group-header';
         header.innerHTML = `
-            <span class="mission-group-icon" aria-hidden="true">🎯</span>
+            <span class="mission-group-icon" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.1"/><circle cx="7" cy="7" r="2.4" stroke="currentColor" stroke-width="1.1"/></svg></span>
             <span class="mission-group-title">Missions</span>
             <span class="mission-group-count">${missions.length}</span>
             <button type="button" class="mission-group-add" title="Start a Mission" aria-label="New mission">+</button>
@@ -9394,7 +9581,7 @@ class ResonantApp {
         const header = document.createElement('div');
         header.className = 'mission-group-header';
         header.innerHTML = `
-            <span class="mission-group-icon" aria-hidden="true">🛠️</span>
+            <span class="mission-group-icon" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M8 1.5L3.5 8h3l-.5 4.5L10.5 6h-3L8 1.5z" stroke="currentColor" stroke-width="1" stroke-linejoin="round"/></svg></span>
             <span class="mission-group-title">Skills</span>
             <span class="mission-group-count">${skills.length}</span>
         `;
@@ -9600,7 +9787,7 @@ class ResonantApp {
         this.sessionList.innerHTML = '';
 
         if (this.sessions.length === 0) {
-            this.sessionList.innerHTML = '<div class="agent-empty">No agents yet</div>';
+            this.sessionList.innerHTML = '<div class="agent-empty">No sessions yet</div>';
             return;
         }
 
@@ -9622,7 +9809,7 @@ class ResonantApp {
                 ? `<span class="session-project-tag">${this.escapeHtml(roleLabel)}</span> \u00B7 `
                 : '';
 
-            const fullTitle = session.title || 'New agent';
+            const fullTitle = session.title || 'New session';
             el.title = fullTitle;  // native tooltip on hover for truncated rows
             el.innerHTML = `
                 <div class="agent-row-title">${this.escapeHtml(fullTitle)}</div>
@@ -9686,7 +9873,7 @@ class ResonantApp {
         this.sessionList.innerHTML = '';
 
         if (!sessions.length) {
-            this.sessionList.innerHTML = '<div class="agent-empty">No agents yet</div>';
+            this.sessionList.innerHTML = '<div class="agent-empty">No sessions yet</div>';
             return;
         }
 
@@ -9699,31 +9886,13 @@ class ResonantApp {
             this._renderPinnedGroup(pinned);
         }
 
-        // Split missions out into their own top-level group so they read as
-        // first-class entities (per the long-running-agents design). They
-        // are also filtered out of the per-project tree below to avoid
-        // double-listing.
-        const missions = unpinned.filter(s => s && s.mission_state);
-        const nonMissions = unpinned.filter(s => !s || !s.mission_state);
-
-        if (missions.length > 0) {
-            this._renderMissionsGroup(missions);
-        }
-
-        // v0.6.2a3 — Skills group below missions. No-ops when empty.
-        if (this.skills && this.skills.length) {
-            this._renderSkillsGroup(this.skills);
-        }
-
-        if (!nonMissions.length) {
-            // All filtered sessions are missions — nothing more to render
-            // beneath the Missions group.
-            return;
-        }
-
-        // Group regular sessions by project.
+        // v0.6.5 — unified "projects + sessions" model (Claude Code style):
+        // every session lives in its project's list, INCLUDING the
+        // long-running autonomous ones (formerly the separate "Missions"
+        // group). _createTreeSessionRow badges the autonomous ones so they
+        // stay distinguishable without needing their own section.
         const projectMap = new Map();
-        for (const s of nonMissions) {
+        for (const s of unpinned) {
             const path = (s.project_path || this.currentCwd || '').replace(/\\/g, '/');
             const name = s.project_name || path.split('/').pop() || 'Unknown';
             if (!projectMap.has(path)) {
@@ -9754,6 +9923,7 @@ class ResonantApp {
             header.className = 'proj-tree-header' + (isCurrent ? ' current' : '');
             header.innerHTML = `
                 <span class="proj-tree-chevron">${isExpanded ? '\u25BE' : '\u25B8'}</span>
+                <span class="proj-tree-folder" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M1.5 4a.8.8 0 01.8-.8h2.4l1 1.1h4.8a.8.8 0 01.8.8v5a.8.8 0 01-.8.8H2.3a.8.8 0 01-.8-.8V4z" stroke="currentColor" stroke-width="1.1"/></svg></span>
                 <span class="proj-tree-name">${this.escapeHtml(proj.name)}</span>
                 <span class="proj-tree-count">${proj.sessions.length}</span>
             `;
@@ -9776,6 +9946,11 @@ class ResonantApp {
                 this.sessionList.appendChild(container);
             }
         }
+
+        // Skills group last (no-ops when empty).
+        if (this.skills && this.skills.length) {
+            this._renderSkillsGroup(this.skills);
+        }
     }
 
     _createTreeSessionRow(session) {
@@ -9793,10 +9968,16 @@ class ResonantApp {
             ? `<span class="session-project-tag">${this.escapeHtml(roleLabel)}</span> \u00B7 `
             : '';
 
-        const pinIcon = session.pinned ? '<span class="session-pin-icon" aria-label="Pinned">📌</span>' : '';
+        const isActive = session.id === this.currentSessionId;
+        // v0.6.5 \u2014 autonomous (long-running) sessions are badged inline
+        // instead of living in a separate "Missions" group.
+        const ms = session.mission_state;
+        const isRunning = !!ms && ['drafting', 'planning_dispatched', 'executing', 'reviewing'].includes(ms.phase || '');
+        const dotCls = isActive ? 'is-active' : (isRunning ? 'is-running' : (session.pinned ? 'is-pinned' : 'is-idle'));
+        const autoBadge = ms ? '<span class="agent-row-auto" title="Autonomous (long-running) session">Auto</span> \u00B7 ' : '';
         el.innerHTML = `
-            <div class="agent-row-title">${pinIcon}${this.escapeHtml(session.title || 'New session')}</div>
-            <div class="agent-row-date">${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
+            <div class="agent-row-title"><span class="agent-row-dot ${dotCls}" aria-hidden="true"></span>${this.escapeHtml(session.title || 'New session')}</div>
+            <div class="agent-row-date">${autoBadge}${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
             <div class="agent-row-actions">
                 <button class="agent-menu-btn" title="More actions">&#8943;</button>
             </div>

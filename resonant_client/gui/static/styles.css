@@ -803,6 +803,35 @@ body {
     background: var(--bg-hover);
 }
 
+/* v0.6.5 — Cursor-style sidebar polish: crisp SVG group icons, a folder
+   glyph on each workspace row, and a leading status dot on session rows
+   (replacing the old emoji markers). */
+.mission-group-icon svg { display: block; }
+.proj-tree-folder {
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+    color: var(--muted);
+}
+.proj-tree-folder svg { display: block; }
+.proj-tree-header.current .proj-tree-folder { color: var(--brand); }
+.agent-row-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    margin-right: 7px;
+    vertical-align: middle;
+    background: var(--dimmer);
+    flex-shrink: 0;
+}
+.agent-row-dot.is-active { background: var(--ok); }
+.agent-row-dot.is-pinned { background: var(--brand); }
+.agent-row-dot.is-running { background: var(--brand); }
+/* v0.6.5 — inline "Auto" marker on long-running (autonomous) sessions in
+   the unified projects+sessions list. */
+.agent-row-auto { color: var(--brand2); font-weight: 500; }
+
 /* ── Plan-graph viewport (preview panel "Plan" tab) ── */
 .plan-graph-pane {
     display: flex;
@@ -1867,6 +1896,28 @@ body {
 }
 
 .input-git svg { flex-shrink: 0; opacity: 0.85; }
+
+/* v0.6.5 — Connect-Chrome (debug mode) button: mirrors .input-git, with
+   connecting / connected / error state colors. */
+.input-chrome {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    height: 22px;
+    padding: 0 8px;
+    background: none;
+    border: 1px solid transparent;
+    border-radius: var(--radius-xs);
+    color: var(--muted);
+    font-size: 11px;
+    cursor: pointer;
+    transition: background var(--duration-fast) ease, color var(--duration-fast) ease, border-color var(--duration-fast) ease;
+}
+.input-chrome:hover { background: var(--bg-hover); color: var(--brand); border-color: var(--border); }
+.input-chrome svg { flex-shrink: 0; opacity: 0.85; }
+.input-chrome.is-connecting { color: var(--warn); border-color: rgba(251, 191, 36, 0.4); }
+.input-chrome.is-connected { color: var(--ok); border-color: rgba(74, 222, 128, 0.4); }
+.input-chrome.is-error { color: var(--err); border-color: rgba(248, 113, 113, 0.4); }
 
 .input-git-branch {
     font-family: var(--font-mono);
@@ -3713,6 +3764,11 @@ body {
     gap: 8px;
     padding: 4px 10px 8px;
     border-top: 1px solid var(--border);
+    /* v0.6.5 — wrap at narrow widths so the right-side selectors drop to
+       their own row instead of overflowing off-screen. Surfaced when the
+       thinking-mode selector was un-gated for GLM, putting two selectors
+       in the footer-right; harmless at desktop widths (single row). */
+    flex-wrap: wrap;
 }
 
 .input-footer-left {
@@ -3726,6 +3782,10 @@ body {
     align-items: center;
     gap: 8px;
     margin-left: auto;
+    /* Let the thinking + model selectors stack on very narrow viewports
+       rather than run past the edge; stays right-aligned when wrapped. */
+    flex-wrap: wrap;
+    justify-content: flex-end;
 }
 
 /* + add context button */
@@ -8868,6 +8928,34 @@ body {
 
 .backend-status-exhausted .backend-status-icon {
     color: var(--err, #e5484d);
+    margin-top: 1px;
+}
+
+/* ── v0.6.5 (task #7): autonomous long-run health chips ───────── */
+
+.autonomous-health-chip {
+    align-items: flex-start;
+}
+
+.autonomous-health-timeout {
+    background: color-mix(in srgb, var(--warn, #d4a017) 12%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--warn, #d4a017) 38%, transparent);
+    color: var(--text);
+}
+
+.autonomous-health-timeout .backend-status-icon {
+    color: var(--warn, #d4a017);
+    margin-top: 1px;
+}
+
+.autonomous-health-recovery {
+    background: color-mix(in srgb, var(--brand2, #6e8efb) 12%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--brand2, #6e8efb) 38%, transparent);
+    color: var(--text);
+}
+
+.autonomous-health-recovery .backend-status-icon {
+    color: var(--brand2, #6e8efb);
     margin-top: 1px;
 }
 

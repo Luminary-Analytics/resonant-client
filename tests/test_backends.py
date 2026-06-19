@@ -16,10 +16,15 @@ from unittest.mock import patch, MagicMock
 
 from resonant_client.backends import (
     EVENT_BACKEND_STATUS,
+    _OLLAMA_RATELIMIT_STATUS,
+    _OLLAMA_RETRYABLE_STATUS,
+    _RequestGovernor,
     _convert_tools_for_ollama,
     _detect_json_tool_calls,
     _detect_text_tool_calls,
     _build_simple_tool_call,
+    _clean_image_b64,
+    _safe_image_b64,
     OllamaBackend,
 )
 
@@ -439,10 +444,16 @@ class TestBuildSimpleToolCall:
 
 @pytest.fixture(autouse=True)
 def clear_tool_cache():
-    """Clear the class-level tool support cache before each test."""
+    """Clear the class-level caches + circuit + governor state before each test."""
     OllamaBackend._tool_support_cache.clear()
+    OllamaBackend._vision_support_cache.clear()
+    OllamaBackend._circuit.clear()
+    OllamaBackend._governors.clear()
     yield
     OllamaBackend._tool_support_cache.clear()
+    OllamaBackend._vision_support_cache.clear()
+    OllamaBackend._circuit.clear()
+    OllamaBackend._governors.clear()
 
 
 def _make_backend(model="llama3.1:8b", url="http://10.0.0.133:11434"):
@@ -1274,3 +1285,336 @@ class TestOllamaExhaustedStatus:
         the v0.6.3 field run hit the 240s ceiling on a pro cold call."""
         b = OllamaBackend("http://stub", "deepseek-v4-pro:cloud")
         assert b._ollama_http_read_timeout == 300.0
+
+
+# ── v0.6.5: GLM-5.2 flagship swap ─────────────────────────────────────
+
+
+class TestGlmFlagshipWiring:
+    """v0.6.5 — glm-5.2:cloud is the flagship. Pin the two facts the
+    flagship swap depends on: GLM-5.2 is recognized as tool-capable
+    (so it uses native tool calling, not the XML fallback), and it
+    leads the CLOUD_MODELS picker list — while the deepseek tiers stay
+    selectable."""
+
+    @pytest.mark.unit
+    def test_glm_5_2_in_known_tool_support(self):
+        assert "glm-5.2" in OllamaBackend._KNOWN_TOOL_SUPPORT
+
+    @pytest.mark.unit
+    def test_glm_5_2_recognized_as_tool_capable(self):
+        # base_model "glm-5.2" is in the known list → True, no network.
+        backend = _make_backend("glm-5.2:cloud")
+        assert backend._detect_tool_support() is True
+
+    @pytest.mark.unit
+    def test_glm_5_2_is_first_in_cloud_models(self):
+        assert OllamaBackend.CLOUD_MODELS[0] == "glm-5.2:cloud"
+
+    @pytest.mark.unit
+    def test_deepseek_tiers_still_offered(self):
+        # The flagship swap keeps the deepseek tiers one click away.
+        assert "deepseek-v4-pro:cloud" in OllamaBackend.CLOUD_MODELS
+        assert "deepseek-v4-flash:cloud" in OllamaBackend.CLOUD_MODELS
+
+
+class TestThinkingWireValues:
+    """v0.6.5 — thinking is compatible with tools on GLM-5.2, but the
+    wire value is MODEL-DEPENDENT (verified live 2026-06-17): deepseek
+    uses the 'med' middle-tier token; GLM-5.x rejects 'med' with HTTP
+    400 and wants 'medium'. low/high are universal. The internal token
+    (backend.thinking_mode) stays stable for round-tripping."""
+
+    @pytest.mark.unit
+    def test_glm_med_token_maps_to_medium_on_wire(self):
+        b = OllamaBackend("http://stub", "glm-5.2:cloud", thinking="med")
+        assert b.thinking_mode == "med"                      # internal token
+        assert b._ollama_options.get("think") == "medium"    # wire value
+
+    @pytest.mark.unit
+    def test_glm_medium_word_also_maps_to_medium(self):
+        b = OllamaBackend("http://stub", "glm-5.2:cloud", thinking="medium")
+        assert b.thinking_mode == "med"
+        assert b._ollama_options.get("think") == "medium"
+
+    @pytest.mark.unit
+    def test_deepseek_med_stays_med_on_wire(self):
+        b = OllamaBackend("http://stub", "deepseek-v4-pro:cloud", thinking="med")
+        assert b.thinking_mode == "med"
+        assert b._ollama_options.get("think") == "med"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("model", ["glm-5.2:cloud", "deepseek-v4-pro:cloud"])
+    @pytest.mark.parametrize("level", ["low", "high"])
+    def test_low_high_are_universal(self, model, level):
+        b = OllamaBackend("http://stub", model, thinking=level)
+        assert b._ollama_options.get("think") == level
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize("off", ["", "off", None])
+    def test_off_sends_no_think_option(self, off):
+        b = OllamaBackend("http://stub", "glm-5.2:cloud", thinking=off)
+        assert b.thinking_mode is None
+        assert "think" not in b._ollama_options
+
+
+# ── v0.6.5: Circuit breaker (backend resilience for long runs) ────────
+
+
+class TestCircuitBreaker:
+    """Per-endpoint circuit breaker. N consecutive transient exhaustions
+    open it; while open, stream() fails fast (no HTTP) and emits
+    `ollama_circuit_open`; a success closes it. Keyed by base_url so the
+    state survives the per-session/specialist recreation of backends."""
+
+    @pytest.fixture
+    def backend(self):
+        return OllamaBackend("http://stub-cb", "deepseek-v4-pro:cloud")
+
+    def _all_503_factory(self):
+        """httpx.Client stand-in whose every .stream() yields a 503."""
+        def _make_503_cm():
+            resp = MagicMock()
+            resp.status_code = 503
+            resp.read = MagicMock(return_value=b'{"error":"overloaded"}')
+            resp.request = MagicMock()
+            cm = MagicMock()
+            cm.__enter__ = MagicMock(return_value=resp)
+            cm.__exit__ = MagicMock(return_value=None)
+            return cm
+
+        def _factory(*a, **k):
+            client = MagicMock()
+            client.stream = MagicMock(side_effect=lambda *a, **k: _make_503_cm())
+            return client
+
+        return patch("httpx.Client", side_effect=_factory)
+
+    def _drain(self, backend):
+        with self._all_503_factory(), \
+             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+            list(backend.stream(
+                user_msg="hi", conversation_history=[], instructions="", tools=[],
+            ))
+
+    @pytest.mark.unit
+    def test_opens_after_threshold_consecutive_failures(self, backend, monkeypatch):
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 3)
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_COOLDOWN", 1000.0)
+        assert backend._circuit_record_failure() is False  # 1
+        assert backend._circuit_record_failure() is False  # 2
+        assert backend._circuit_open() is False
+        assert backend._circuit_record_failure() is True   # 3 == threshold
+        assert backend._circuit_open() is True
+
+    @pytest.mark.unit
+    def test_success_closes_circuit(self, backend, monkeypatch):
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 2)
+        backend._circuit_record_failure()
+        assert backend.base_url in OllamaBackend._circuit
+        backend._circuit_record_success()
+        assert backend.base_url not in OllamaBackend._circuit
+
+    @pytest.mark.unit
+    def test_threshold_zero_disables_breaker(self, backend, monkeypatch):
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 0)
+        for _ in range(10):
+            assert backend._circuit_record_failure() is False
+        assert backend._circuit_open() is False
+
+    @pytest.mark.unit
+    def test_stream_exhaustion_records_failure(self, backend, monkeypatch):
+        # A real all-503 stream() drain must feed the breaker.
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 5)
+        self._drain(backend)
+        assert OllamaBackend._circuit.get(backend.base_url, {}).get("failures") == 1
+
+    @pytest.mark.unit
+    def test_fails_fast_when_open(self, backend, monkeypatch):
+        # Threshold 1 → one failure opens it; the next stream() must fail
+        # fast (emit ollama_circuit_open + error) WITHOUT touching the
+        # network at all.
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 1)
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_COOLDOWN", 1000.0)
+        assert backend._circuit_record_failure() is True
+        with patch("httpx.Client", side_effect=AssertionError("no network when open")):
+            events = list(backend.stream(
+                user_msg="hi", conversation_history=[], instructions="", tools=[],
+            ))
+        kinds = [d.get("kind") for (etype, d) in events if etype == EVENT_BACKEND_STATUS]
+        assert "ollama_circuit_open" in kinds
+        assert any(etype == "error" for (etype, _d) in events)
+
+
+# ── v0.6.5: Adaptive concurrency governor ─────────────────────────────
+
+
+class TestRequestGovernor:
+    """Adaptive concurrency limiter (AIMD): caps simultaneous in-flight
+    requests, blocks (cancel-aware) when full, shrinks the cap on a
+    rate-limit signal and grows it back on success streaks."""
+
+    @pytest.mark.unit
+    def test_acquire_release_accounting(self):
+        g = _RequestGovernor(start=2, max_limit=4)
+        assert g.acquire() is True
+        assert g.in_flight == 1
+        assert g.acquire() is True
+        assert g.in_flight == 2
+        g.release()
+        assert g.in_flight == 1
+
+    @pytest.mark.unit
+    def test_cap_blocks_until_release(self):
+        import threading
+        import time as _t
+        g = _RequestGovernor(start=1, max_limit=4)
+        assert g.acquire() is True            # take the only slot
+        got = []
+
+        def worker():
+            got.append(g.acquire(poll=0.02))  # should block
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        _t.sleep(0.1)
+        assert got == []                      # still blocked, no slot
+        g.release()
+        t.join(timeout=2.0)
+        assert got == [True]                  # unblocked once a slot freed
+
+    @pytest.mark.unit
+    def test_acquire_returns_false_on_cancel(self):
+        import threading
+        g = _RequestGovernor(start=1, max_limit=4)
+        g.acquire()                            # fill the only slot
+        cancel = threading.Event()
+        out = {}
+
+        def worker():
+            out["v"] = g.acquire(cancel_event=cancel, poll=0.02)
+
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        cancel.set()
+        t.join(timeout=2.0)
+        assert out["v"] is False
+
+    @pytest.mark.unit
+    def test_rate_limited_shrinks_multiplicatively(self):
+        g = _RequestGovernor(start=8, max_limit=8)
+        g.record_rate_limited()
+        assert g.limit == 4
+        g.record_rate_limited()
+        assert g.limit == 2
+
+    @pytest.mark.unit
+    def test_rate_limited_floors_at_one(self):
+        g = _RequestGovernor(start=2, max_limit=8)
+        for _ in range(10):
+            g.record_rate_limited()
+        assert g.limit == 1
+
+    @pytest.mark.unit
+    def test_success_grows_after_streak(self, monkeypatch):
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_GOV_INCREASE_AFTER", 3)
+        g = _RequestGovernor(start=2, max_limit=4)
+        g.record_success()
+        g.record_success()
+        assert g.limit == 2          # streak not yet reached
+        g.record_success()
+        assert g.limit == 3          # 3rd success → +1
+
+    @pytest.mark.unit
+    def test_success_caps_at_max(self, monkeypatch):
+        monkeypatch.setattr("resonant_client.backends._OLLAMA_GOV_INCREASE_AFTER", 1)
+        g = _RequestGovernor(start=2, max_limit=3)
+        for _ in range(20):
+            g.record_success()
+        assert g.limit == 3          # never exceeds the ceiling
+
+    @pytest.mark.unit
+    def test_governor_is_shared_per_endpoint(self):
+        a = OllamaBackend("http://stub-gov", "glm-5.2:cloud")
+        b = OllamaBackend("http://stub-gov", "deepseek-v4-pro:cloud")
+        # Same base_url → same governor instance (shared across backends).
+        assert OllamaBackend._governor_for(a.base_url) is \
+               OllamaBackend._governor_for(b.base_url)
+
+
+class TestRateLimitRetryable:
+    @pytest.mark.unit
+    def test_403_and_429_are_now_retryable(self):
+        # v0.6.5 — 403/429 (cloud rate-limit) are retried with backoff,
+        # not treated as terminal, and tagged as rate-limit signals.
+        assert 403 in _OLLAMA_RETRYABLE_STATUS
+        assert 429 in _OLLAMA_RETRYABLE_STATUS
+        assert _OLLAMA_RATELIMIT_STATUS == frozenset({403, 429})
+
+
+# ── Image / vision input path ─────────────────────────────────────────
+
+
+class TestImageHelpers:
+    @pytest.mark.unit
+    def test_clean_strips_data_url_prefix(self):
+        assert _clean_image_b64("data:image/png;base64,AAAB") == "AAAB"
+
+    @pytest.mark.unit
+    def test_clean_strips_whitespace_and_newlines(self):
+        assert _clean_image_b64("AA AB\nCC\tDD") == "AAABCCDD"
+
+    @pytest.mark.unit
+    def test_clean_empty_or_non_string_returns_empty(self):
+        assert _clean_image_b64("") == ""
+        assert _clean_image_b64("   ") == ""
+        assert _clean_image_b64(None) == ""
+        assert _clean_image_b64(123) == ""
+
+    @pytest.mark.unit
+    def test_safe_image_pulls_data_from_dict(self):
+        assert _safe_image_b64({"data": "data:image/jpeg;base64,ZZZ"}) == "ZZZ"
+
+    @pytest.mark.unit
+    def test_safe_image_non_dict_or_missing_returns_empty(self):
+        assert _safe_image_b64("not a dict") == ""
+        assert _safe_image_b64(None) == ""
+        assert _safe_image_b64({}) == ""
+
+
+class TestSupportsVision:
+    """Vision gating: a model that declares the `vision` capability accepts
+    images; everything else is treated as text-only so we never poison
+    /api/chat with an `images` field (which 400s text-only models)."""
+
+    @pytest.mark.unit
+    def test_vision_capability_detected(self):
+        b = _make_backend("qwen3-vl:8b")
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"capabilities": ["vision", "completion"]}
+        with patch("httpx.post", return_value=resp):
+            assert b.supports_vision() is True
+
+    @pytest.mark.unit
+    def test_no_vision_capability_is_text_only(self):
+        b = _make_backend("deepseek-v4-pro:cloud")
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"capabilities": ["completion", "tools"]}
+        with patch("httpx.post", return_value=resp):
+            assert b.supports_vision() is False
+
+    @pytest.mark.unit
+    def test_probe_failure_defaults_to_false(self):
+        b = _make_backend("mystery:latest")
+        with patch("httpx.post", side_effect=Exception("no network")):
+            assert b.supports_vision() is False
+
+    @pytest.mark.unit
+    def test_result_is_cached(self):
+        b = _make_backend("qwen3-vl:8b")
+        resp = MagicMock(status_code=200)
+        resp.json.return_value = {"capabilities": ["vision"]}
+        with patch("httpx.post", return_value=resp) as p:
+            assert b.supports_vision() is True
+            assert b.supports_vision() is True  # second call hits the cache
+        assert p.call_count == 1

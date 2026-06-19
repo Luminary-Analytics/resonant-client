@@ -233,6 +233,83 @@ def _events_of_kind(events: list[dict], kind: str) -> list[dict]:
     return [ev for ev in events if ev.get("event") == kind]
 
 
+# ── Stall detection (v0.6.5 long-running hardening) ──────────────────
+
+
+class TestStallDetection:
+    """The daemon-side wait monitor emits heartbeats during a blocking
+    dispatch and enforces a ceiling — on timeout it cancels the stuck
+    sub-mission (the canonical hang: `await_user` with no GUI, where
+    `wait_for_dispatch` would otherwise block forever)."""
+
+    def test_timeout_cancels_stuck_dispatch(self, tmp_path):
+        tracker = _StubCallTracker()
+        base = _make_hooks(tracker)
+        released = threading.Event()
+
+        def wait_block(handle):
+            tracker.waited_handles.append(handle)
+            # Simulate a hung sub-mission: block until the cancel fires.
+            released.wait(timeout=5.0)
+            return DispatchOutcome(success=False, error="cancelled", handle=handle)
+
+        def cancel_block(handle):
+            tracker.cancelled_handles.append(handle)
+            released.set()  # a real cancel_dispatch unblocks the wait
+
+        hooks = DaemonHooks(
+            dispatch_item=base.dispatch_item,
+            wait_for_dispatch=wait_block,
+            cancel_dispatch=cancel_block,
+            get_commit_sha=base.get_commit_sha,
+            validate_sha=base.validate_sha,
+            run_full_reflect=base.run_full_reflect,
+            check_context_factory=base.check_context_factory,
+        )
+        daemon, events = _make_daemon(tmp_path / "roadmap.md", hooks)
+        daemon.config.heartbeat_seconds = 0.05
+        daemon.config.dispatch_timeout_seconds = 0.3
+        daemon._iter_count = 1
+
+        item = RoadmapItem(id="T1.1", tier=1, title="stuck item")
+        outcome = daemon._wait_with_monitor(item, handle=7, started=time.time())
+
+        assert outcome.success is False
+        assert "timed out" in outcome.error
+        assert 7 in tracker.cancelled_handles
+        assert _events_of_kind(events, "autonomous_iteration_timeout")
+        assert _events_of_kind(events, "autonomous_heartbeat")
+
+    def test_fast_dispatch_no_timeout_no_cancel(self, tmp_path):
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)  # returns immediately, success=True
+        daemon, events = _make_daemon(tmp_path / "roadmap.md", hooks)
+        daemon.config.heartbeat_seconds = 5.0
+        daemon.config.dispatch_timeout_seconds = 5.0
+        daemon._iter_count = 1
+
+        item = RoadmapItem(id="T1.1", tier=1, title="quick item")
+        outcome = daemon._wait_with_monitor(item, handle=1, started=time.time())
+
+        assert outcome.success is True
+        assert tracker.cancelled_handles == []
+        assert not _events_of_kind(events, "autonomous_iteration_timeout")
+
+    def test_monitor_disabled_when_heartbeat_and_ceiling_off(self, tmp_path):
+        # heartbeat=0 + ceiling=None → no monitor thread; plain passthrough.
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        daemon, events = _make_daemon(tmp_path / "roadmap.md", hooks)
+        daemon.config.heartbeat_seconds = 0.0
+        daemon.config.dispatch_timeout_seconds = None
+        daemon._iter_count = 1
+
+        item = RoadmapItem(id="T1.1", tier=1, title="x")
+        outcome = daemon._wait_with_monitor(item, handle=2, started=time.time())
+        assert outcome.success is True
+        assert not _events_of_kind(events, "autonomous_heartbeat")
+
+
 # ── Lifecycle ───────────────────────────────────────────────────────────
 
 

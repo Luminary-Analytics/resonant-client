@@ -13,12 +13,67 @@ Usage:
 """
 
 import base64
-import time
 import logging
+import os
+import shutil
+import subprocess
+import sys
+import time
+import urllib.request
 from typing import Optional
 from .tools import ToolResult
 
 logger = logging.getLogger(__name__)
+
+# ── Real-Chrome / CDP config (v0.6.5) ─────────────────────────────────
+#
+# The agent attaches to the user's INSTALLED Chrome via the DevTools
+# protocol (CDP) so it drives their real profiles + existing logins in a
+# visible window they can work alongside — rather than a bundled, logged-
+# out Chromium. Resonant launches Chrome with `--remote-debugging-port`
+# (+ the chosen `--profile-directory`) when no debug endpoint is already
+# up, then connects. All knobs are env-overridable.
+_BROWSER_CDP_PORT = int(os.environ.get("RESONANT_BROWSER_CDP_PORT", "9222") or "9222")
+_BROWSER_PROFILE = os.environ.get("RESONANT_BROWSER_PROFILE", "Default") or "Default"
+
+
+def _find_chrome() -> Optional[str]:
+    """Locate the installed Google Chrome executable (or honor an explicit
+    RESONANT_BROWSER_CHROME_PATH). Returns None if not found."""
+    override = os.environ.get("RESONANT_BROWSER_CHROME_PATH")
+    if override and os.path.isfile(override):
+        return override
+    if sys.platform.startswith("win"):
+        candidates = [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+        ]
+    elif sys.platform == "darwin":
+        candidates = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"]
+    else:
+        candidates = ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"]
+    for c in candidates:
+        if os.path.isfile(c):
+            return c
+        found = shutil.which(c)
+        if found:
+            return found
+    return None
+
+
+def _default_user_data_dir() -> Optional[str]:
+    """The user's real Chrome User Data dir (carries their existing
+    profiles + logins). Override via RESONANT_BROWSER_USER_DATA_DIR."""
+    override = os.environ.get("RESONANT_BROWSER_USER_DATA_DIR")
+    if override:
+        return override
+    if sys.platform.startswith("win"):
+        local = os.environ.get("LOCALAPPDATA")
+        return os.path.join(local, "Google", "Chrome", "User Data") if local else None
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    return os.path.expanduser("~/.config/google-chrome")
 
 # ── Singleton browser manager ────────────────────────────────────────
 
@@ -42,6 +97,7 @@ class BrowserManager:
         self._context = None
         self._page = None
         self._connected = False
+        self._chrome_proc = None  # set when WE launched Chrome (CDP mode)
 
     @property
     def is_connected(self) -> bool:
@@ -102,6 +158,172 @@ class BrowserManager:
             self._playwright = None
             return f"Error connecting to Chrome at {endpoint}: {e}"
 
+    @staticmethod
+    def _cdp_alive(endpoint: str) -> bool:
+        """True if a Chrome DevTools endpoint is reachable at `endpoint`."""
+        try:
+            with urllib.request.urlopen(f"{endpoint}/json/version", timeout=1.0) as r:
+                return getattr(r, "status", 200) == 200
+        except Exception:
+            return False
+
+    def _wait_for_cdp(self, endpoint: str, timeout: float = 15.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._cdp_alive(endpoint):
+                return True
+            time.sleep(0.25)
+        return False
+
+    def _open_agent_tab(self) -> None:
+        """Give the agent its own fresh, foregrounded tab so it never
+        drives a tab the user is actively working in."""
+        if not self._connected or not self._context:
+            return
+        try:
+            self._page = self._context.new_page()
+            self._page.bring_to_front()
+        except Exception:
+            pass  # keep whatever connect_cdp selected
+
+    def connect_or_launch_chrome(
+        self,
+        *,
+        profile: Optional[str] = None,
+        port: Optional[int] = None,
+        user_data_dir: Optional[str] = None,
+        headless: bool = False,
+    ) -> str:
+        """v0.6.5 — attach to the user's REAL Chrome via CDP (their profiles
+        + existing logins, in a visible window they can work alongside):
+          1. If a debug Chrome is already up on `port`, attach to it.
+          2. Else launch installed Chrome with `--remote-debugging-port`
+             (+ the chosen `--profile-directory`) and attach.
+          3. If installed Chrome can't be found/launched, fall back to a
+             bundled Chromium so the agent still has *a* browser."""
+        if self._connected:
+            return "Browser already connected."
+        port = port or _BROWSER_CDP_PORT
+        profile = profile or _BROWSER_PROFILE
+        endpoint = f"http://127.0.0.1:{port}"
+
+        # 1. Reuse an already-running debug Chrome.
+        if self._cdp_alive(endpoint):
+            result = self.connect_cdp(endpoint)
+            self._open_agent_tab()
+            return result
+
+        # 2. Launch the real Chrome with the debug port + chosen profile.
+        chrome = _find_chrome()
+        if not chrome:
+            logger.warning("Installed Chrome not found; falling back to bundled Chromium.")
+            return self.launch(headless=headless)
+
+        udd = user_data_dir if user_data_dir is not None else _default_user_data_dir()
+        args = [chrome, f"--remote-debugging-port={port}"]
+        if udd:
+            args.append(f"--user-data-dir={udd}")
+        if profile:
+            args.append(f"--profile-directory={profile}")
+        args += ["--no-first-run", "--no-default-browser-check"]
+        if headless:
+            args.append("--headless=new")
+
+        try:
+            self._chrome_proc = subprocess.Popen(
+                args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.warning("Failed to launch Chrome (%s); falling back to Chromium.", e)
+            return self.launch(headless=headless)
+
+        if not self._wait_for_cdp(endpoint, timeout=20.0):
+            return (
+                f"Launched Chrome but its debug port {port} never came up. The "
+                f"usual cause: your everyday Chrome is already running on this "
+                f"profile, so the new launch handed off to it (Chrome can't open "
+                f"the debug port on an already-running profile). Close Chrome and "
+                f"retry, point RESONANT_BROWSER_USER_DATA_DIR at another dir, or "
+                f"start Chrome yourself with --remote-debugging-port={port}."
+            )
+        result = self.connect_cdp(endpoint)
+        self._open_agent_tab()
+        return result
+
+    @staticmethod
+    def _chrome_running() -> bool:
+        """True if any Chrome process is currently running."""
+        try:
+            if sys.platform.startswith("win"):
+                out = subprocess.run(
+                    ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"],
+                    capture_output=True, text=True, timeout=8,
+                )
+                return "chrome.exe" in (out.stdout or "").lower()
+            target = "Google Chrome" if sys.platform == "darwin" else "chrome"
+            out = subprocess.run(["pgrep", "-x", target], capture_output=True, timeout=8)
+            return out.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _close_all_chrome(force: bool = False) -> None:
+        """Ask every Chrome window to close. Graceful by default so Chrome
+        saves its session (tabs come back on relaunch); `force` hard-kills."""
+        try:
+            if sys.platform.startswith("win"):
+                cmd = ["taskkill", "/IM", "chrome.exe"] + (["/F"] if force else [])
+                subprocess.run(cmd, capture_output=True, timeout=12)
+            elif sys.platform == "darwin":
+                if force:
+                    subprocess.run(["pkill", "-9", "-x", "Google Chrome"], capture_output=True, timeout=12)
+                else:
+                    subprocess.run(["osascript", "-e", 'tell application "Google Chrome" to quit'],
+                                   capture_output=True, timeout=12)
+            else:
+                subprocess.run(["pkill", "-9" if force else "-TERM", "chrome"], capture_output=True, timeout=12)
+        except Exception:
+            logger.debug("close-all-chrome failed", exc_info=True)
+
+    def _wait_chrome_exited(self, timeout: float = 12.0) -> bool:
+        """Wait for Chrome processes to exit, escalating to a force-kill
+        partway through if a graceful close didn't take."""
+        deadline = time.time() + timeout
+        forced = False
+        while time.time() < deadline:
+            if not self._chrome_running():
+                return True
+            if not forced and time.time() > deadline - timeout / 2:
+                self._close_all_chrome(force=True)
+                forced = True
+            time.sleep(0.4)
+        return not self._chrome_running()
+
+    def relaunch_in_debug(
+        self,
+        *,
+        profile: Optional[str] = None,
+        port: Optional[int] = None,
+        user_data_dir: Optional[str] = None,
+        headless: bool = False,
+    ) -> str:
+        """v0.6.5 — the user has Chrome open WITHOUT the debug port (so we
+        can't attach, and a plain launch just hands off to the running
+        instance). Close it gracefully (Chrome saves the session for
+        restore), then relaunch on the real profile WITH the debug port and
+        attach. This is the one-click 'relaunch my Chrome in debug mode'."""
+        if self._connected:
+            return "Browser already connected."
+        self._close_all_chrome(force=False)
+        if not self._wait_chrome_exited(timeout=12.0):
+            return (
+                "Couldn't fully close Chrome to relaunch it in debug mode. "
+                "Close all Chrome windows manually, then try again."
+            )
+        return self.connect_or_launch_chrome(
+            profile=profile, port=port, user_data_dir=user_data_dir, headless=headless,
+        )
+
     def close(self):
         """Close browser and cleanup."""
         if self._browser:
@@ -114,6 +336,15 @@ class BrowserManager:
                 self._playwright.stop()
             except Exception:
                 pass
+        # v0.6.5 — if WE launched Chrome (CDP mode), terminate that process.
+        # When we merely ATTACHED to an already-running Chrome, _chrome_proc
+        # is None and the user's Chrome is left running untouched.
+        if self._chrome_proc is not None:
+            try:
+                self._chrome_proc.terminate()
+            except Exception:
+                pass
+            self._chrome_proc = None
         self._browser = None
         self._context = None
         self._page = None
@@ -149,10 +380,11 @@ def exec_browser_navigate(args: dict, start: float) -> ToolResult:
 
     mgr = get_browser()
 
-    # Auto-launch if not connected
+    # Auto-attach to the user's real Chrome via CDP if not connected (falls
+    # back to a bundled Chromium internally if Chrome isn't available).
     if not mgr.is_connected:
-        result = mgr.launch(headless=False)
-        if "Error" in result:
+        result = mgr.connect_or_launch_chrome()
+        if "Error" in result or "never came up" in result:
             return ToolResult(result, is_error=True, elapsed=time.time() - start)
 
     try:

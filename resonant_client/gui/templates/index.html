@@ -39,7 +39,7 @@
                 <div class="menubar-item" data-menu="file">
                     <span>File</span>
                     <div class="menubar-dropdown">
-                        <div class="menubar-action" data-action="new-agent">New Agent <span class="menubar-shortcut">Ctrl+N</span></div>
+                        <div class="menubar-action" data-action="new-agent">New Session <span class="menubar-shortcut">Ctrl+N</span></div>
                         <div class="menubar-action" data-action="open-folder">Open Folder...</div>
                         <div class="menubar-sep"></div>
                         <div class="menubar-action" data-action="settings">Settings <span class="menubar-shortcut">Ctrl+,</span></div>
@@ -109,7 +109,7 @@
 
     <div id="app">
         <!-- ═══ Sidebar — project switcher + search + sessions + footer nav ═══ -->
-        <aside id="sidebar" role="navigation" aria-label="Agent navigation">
+        <aside id="sidebar" role="navigation" aria-label="Sessions">
             <button id="sidebar-project-switch" class="sidebar-project-switch" title="Switch project / filter sessions" aria-haspopup="menu" aria-expanded="false">
                 <svg class="spsw-icon" width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M1 4a1 1 0 011-1h3l1.2 1.2H12a1 1 0 011 1v6.3a1 1 0 01-1 1H2a1 1 0 01-1-1V4z" stroke="currentColor" stroke-width="1.2"/></svg>
                 <span class="spsw-label" id="sidebar-project-switch-label">All projects</span>
@@ -117,7 +117,7 @@
             </button>
             <div class="sidebar-search">
                 <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="6" cy="6" r="4" stroke="currentColor" stroke-width="1.2"/><path d="M9 9l3.5 3.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-                <input type="text" placeholder="Search agents..." id="search-input" />
+                <input type="text" placeholder="Search sessions..." id="search-input" />
             </div>
             <!-- v0.5.3a3 — Sidebar roadmap inspector. Hidden when the
                  current session isn't an autonomous mission. Shows
@@ -131,7 +131,7 @@
                  when no autonomous missions exist. -->
             <div id="autonomous-mission-browser" class="autonomous-mission-browser" hidden></div>
             <div id="agent-list" class="agent-list">
-                <div class="agent-empty">No agents yet</div>
+                <div class="agent-empty">No sessions yet</div>
             </div>
             <div class="sidebar-footer">
                 <!-- Hidden DOM nodes preserved so existing JS that reads sidebar-project-name / sidebar-cwd
@@ -141,15 +141,15 @@
                     <span id="sidebar-cwd"></span>
                 </div>
                 <div class="sidebar-actions">
-                    <button class="sidebar-action active" data-view="agents" id="nav-agents" title="Agent sessions" aria-label="Agent sessions">
+                    <button class="sidebar-action active" data-view="agents" id="nav-agents" title="Sessions" aria-label="Sessions">
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3a1 1 0 011-1h8a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 2V10H3a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3"/></svg>
-                        <span>Agents</span>
+                        <span>Sessions</span>
                     </button>
                     <button class="sidebar-action" data-view="settings" id="nav-settings" title="Settings &mdash; Ctrl+," aria-label="Settings">
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M11.2 2.8l-1.1 1.1M3.9 10.1l-1.1 1.1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
                         <span>Settings</span>
                     </button>
-                    <button class="sidebar-action sidebar-action-primary" id="new-agent-btn" title="New agent &mdash; Ctrl+N" aria-label="New agent">
+                    <button class="sidebar-action sidebar-action-primary" id="new-agent-btn" title="New session &mdash; Ctrl+N" aria-label="New session">
                         <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
                         <span>New</span>
                     </button>
@@ -220,9 +220,9 @@
                                 <span class="header-project-path-text" id="header-project-path-text">—</span>
                             </button>
                             <button type="button" id="mission-toggle" class="mission-toggle"
-                                    title="Start a Mission — long-running spec → roadmap → execution">
+                                    title="Run autonomously — long-running spec → roadmap → execution">
                                 <span class="mission-toggle-icon" aria-hidden="true">🎯</span>
-                                <span class="mission-toggle-label">Mission</span>
+                                <span class="mission-toggle-label">Autonomous</span>
                             </button>
                             <!-- Mission badge gets injected here when a Mission is active -->
                         </div>
@@ -353,13 +353,17 @@
                                         <span class="input-git-branch" id="git-branch-name">main</span>
                                         <span class="input-git-changes" id="git-changes-count" style="display:none">0</span>
                                     </button>
+                                    <button class="input-chrome" id="connect-chrome-btn" title="Open Chrome in debug mode so the agent can drive your real browser — and you can watch / work alongside it.">
+                                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9.5" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="12" r="3.3" stroke="currentColor" stroke-width="1.4"/><path d="M12 8.7h8.6M8.6 10.9l-4.3 7.4M15.4 10.9l-4.3 7.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+                                        <span id="connect-chrome-label">Chrome</span>
+                                    </button>
                                 </div>
                                 <div class="input-footer-right">
                                     <span class="token-info" id="token-info" title="Approximate context tokens used by this turn"></span>
-                                    <select id="thinking-mode-selector" class="model-selector" title="Reasoning depth for deepseek-v* models &mdash; higher = better answers, slower" style="display:none;">
+                                    <select id="thinking-mode-selector" class="model-selector" title="Reasoning depth for thinking models (GLM-5.x, deepseek-v*) &mdash; higher = better answers, slower" style="display:none;">
                                         <option value="">Thinking: off</option>
                                         <option value="low">Thinking: low</option>
-                                        <option value="med">Thinking: med</option>
+                                        <option value="med">Thinking: medium</option>
                                         <option value="high">Thinking: high</option>
                                     </select>
                                     <select id="model-selector" class="model-selector" title="Switch backend / model for this session">

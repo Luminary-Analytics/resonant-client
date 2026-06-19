@@ -364,6 +364,37 @@ def resume_autonomous_mission(
             f"immediately stop with `misconfigured`."
         )
 
+    # v0.6.5 (long-running hardening) — surface crash recovery. If the
+    # previous run died mid-iteration, a `.inflight` checkpoint lingers.
+    # When its item is still unchecked, the interrupted iteration will be
+    # re-dispatched (Phase-1 sub-missions are idempotent enough that this
+    # is safe), but emit a visible recovery event + warn-log so the user
+    # knows work is being re-run rather than silently duplicated. Then
+    # clear the checkpoint so it fires exactly once.
+    inflight = roadmap_module.read_inflight(roadmap_path)
+    if inflight:
+        recovered_id = str(inflight.get("item_id") or "")
+        still_unchecked = any(
+            i.id == recovered_id and not i.checked for i in rm.items
+        )
+        if still_unchecked:
+            logger.warning(
+                "Resuming mission %s: iteration %s for item %s was in "
+                "flight when the previous run was interrupted; it will be "
+                "re-dispatched (check for partial work from the prior run).",
+                intent_id, inflight.get("iter"), recovered_id,
+            )
+            try:
+                on_event({
+                    "event": "autonomous_resume_recovery",
+                    "intent_id": intent_id,
+                    "item_id": recovered_id,
+                    "iter": inflight.get("iter"),
+                })
+            except Exception:
+                logger.debug("resume-recovery event emit failed", exc_info=True)
+        roadmap_module.clear_inflight(roadmap_path)
+
     logger.info(
         "Resuming autonomous mission %s — roadmap has %d items "
         "(%d already checked) and %d acceptance criteria",
@@ -372,6 +403,23 @@ def resume_autonomous_mission(
         sum(1 for i in rm.items if i.checked),
         len(rm.acceptance_criteria),
     )
+
+    # v0.6.5 (long-running hardening) — warm the model on resume. A
+    # mission that was paused/interrupted has very likely sat idle past
+    # Ollama's keep-alive window, so the first post-resume dispatch would
+    # otherwise eat a silent multi-minute cold-load. Best-effort +
+    # backgrounded so it never blocks (or fails) the resume.
+    backend = getattr(state, "backend", None)
+    if backend is not None and hasattr(backend, "warm_up"):
+        def _warm_on_resume() -> None:
+            try:
+                backend.warm_up()
+                logger.info("Resume warm-up issued for mission %s", intent_id)
+            except Exception:
+                logger.debug("resume warm-up failed", exc_info=True)
+        threading.Thread(
+            target=_warm_on_resume, name="resume-warmup", daemon=True,
+        ).start()
 
     return _spawn_autonomous_daemon(
         state=state,

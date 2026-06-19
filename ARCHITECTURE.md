@@ -6,10 +6,10 @@ This document describes every major module, data flow, and extension point in `r
 
 Resonant Client is an **Ollama-native agentic-coding desktop app** — an
 open-source flagship (MIT, since v0.6.3) for local-first, self-improving
-autonomous coding. The flagship configuration is **`deepseek-v4-pro:cloud`
-on Ollama running on the Mac Studio at `10.0.0.133`**. `deepseek-v4-pro`
-is the default for autonomous missions (faster convergence); `flash` is
-the fast-iter alternative for quick chat.
+autonomous coding. The flagship configuration is **`glm-5.2:cloud`
+on Ollama running on the Mac Studio at `10.0.0.133`** (756B, 1M context,
+native tool calling). The `deepseek-v4-pro` / `flash` tiers remain one
+click away in the model picker as the secondary high-quality option.
 
 > **Single-backend.** The v0.4.0 refocus cut every non-Ollama backend
 > (Anthropic, OpenAI, Claude Code, Codex, Resonant Engine, MLX, LM
@@ -58,7 +58,7 @@ state. Skills live at `~/.resonant/skills/`. Mirrors Claude Code's
 │   MODELS     │  batch        │   / loader)                    │
 └──────────────┴───────────────┴────────────────────────────────┘
 
-★ Mac Studio @ http://10.0.0.133:11434 with deepseek-v4-pro:cloud
+★ Mac Studio @ http://10.0.0.133:11434 with glm-5.2:cloud
 ```
 
 ## Scope (April 2026 refocus)
@@ -85,14 +85,14 @@ implements `stream()`, `health()`, `list_models()`, `classify()`.
 
 **Key design rule for Ollama:** All requests to a given `OllamaBackend` instance must use identical `_ollama_options` (num_ctx, num_batch, num_gpu). If any option differs between requests, Ollama unloads and reloads the entire model (30-120s penalty, much worse for large MoE models). Options are set once at init from environment variables.
 
-**Cloud models:** `OllamaBackend.CLOUD_MODELS` lists models routed via Ollama's cloud (`:cloud` tag). The flagship `deepseek-v4-pro:cloud` is listed first (v0.6.2 — pro converges autonomous missions ~2.5× faster than flash; see `docs/v0.5.1-smoke-results.md`). `deepseek-v4-flash:cloud` is second.
+**Cloud models:** `OllamaBackend.CLOUD_MODELS` lists models routed via Ollama's cloud (`:cloud` tag). The flagship `glm-5.2:cloud` is listed first (v0.6.5 — 756B, 1M context, native tools). The `deepseek-v4-pro:cloud` / `deepseek-v4-flash:cloud` tiers follow as the secondary option (pro's PLAN_DEEP convergence is well characterized — see `docs/v0.5.1-smoke-results.md`).
 
 **Backend priority** (`select_harness_backend` in `gui/app.py`): there is only one backend; per-harness-role model preference is pro for planner/evaluator, flash for the generator role (a deliberate fast-iter trade-off for the test harness). Override with `RESONANT_HARNESS_<ROLE>_MODEL`.
 
 ### `network_defaults.py` — Default backend/model resolution
 
 - `get_default_backend()` → `RESONANT_DEFAULT_BACKEND` env / `general.default_backend` setting / `"ollama"`
-- `get_default_model()` → `RESONANT_DEFAULT_MODEL` env / `general.default_model` setting / `"deepseek-v4-pro:cloud"` (v0.5.2 — switched from flash after the v0.5.1 GA smoke)
+- `get_default_model()` → `RESONANT_DEFAULT_MODEL` env / `general.default_model` setting / `"glm-5.2:cloud"` (v0.6.5 — switched the flagship from `deepseek-v4-pro:cloud`, which stays the secondary tier)
 
 ### `events.py` — Event Protocol
 

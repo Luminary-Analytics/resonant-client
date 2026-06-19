@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.network_defaults import resolve_ollama_url
+from resonant_client.network_defaults import (
+    default_thinking_for_model,
+    get_default_model,
+    resolve_ollama_url,
+)
 
 
 # ── resolve_ollama_url ──────────────────────────────────────────────────
@@ -127,3 +131,69 @@ class TestResolveOllamaUrlMalformedSettings:
 # tested `resolve_resonant_api_url` and `resolve_remote_engine_ws_url`
 # (defaults `http://localhost:8000` and `ws://localhost:8765`). Both
 # resolvers were removed when ResonantBackend left the codebase.
+
+
+# ── get_default_model ────────────────────────────────────────────────────
+
+
+class TestGetDefaultModel:
+    """v0.6.5 — the flagship default is glm-5.2:cloud (was
+    deepseek-v4-pro:cloud v0.5.2–v0.6.4). Pin it so a refactor can't
+    silently regress the out-of-the-box model, mirroring the
+    resolve_ollama_url regression guard above."""
+
+    def test_fresh_install_defaults_to_glm_5_2(self, monkeypatch):
+        # No env, no settings → the GLM-5.2 flagship.
+        monkeypatch.delenv("RESONANT_DEFAULT_MODEL", raising=False)
+        assert get_default_model(settings_data={}) == "glm-5.2:cloud"
+
+    def test_env_var_overrides_default(self, monkeypatch):
+        monkeypatch.setenv("RESONANT_DEFAULT_MODEL", "deepseek-v4-pro:cloud")
+        assert get_default_model(settings_data={}) == "deepseek-v4-pro:cloud"
+
+    def test_settings_value_overrides_default(self, monkeypatch):
+        monkeypatch.delenv("RESONANT_DEFAULT_MODEL", raising=False)
+        assert get_default_model(
+            settings_data={"general": {"default_model": "deepseek-v4-flash:cloud"}}
+        ) == "deepseek-v4-flash:cloud"
+
+    def test_env_wins_over_settings(self, monkeypatch):
+        monkeypatch.setenv("RESONANT_DEFAULT_MODEL", "kimi-k2.5:cloud")
+        assert get_default_model(
+            settings_data={"general": {"default_model": "deepseek-v4-pro:cloud"}}
+        ) == "kimi-k2.5:cloud"
+
+    def test_empty_settings_value_falls_through_to_default(self, monkeypatch):
+        # An empty string in settings.json must not be treated as a
+        # deliberate choice — fall through to the flagship default.
+        monkeypatch.delenv("RESONANT_DEFAULT_MODEL", raising=False)
+        assert get_default_model(
+            settings_data={"general": {"default_model": ""}}
+        ) == "glm-5.2:cloud"
+
+
+# ── default_thinking_for_model ───────────────────────────────────────────
+
+
+class TestDefaultThinkingForModel:
+    """v0.6.5 — GLM-5.x defaults to high-effort thinking (tools+thinking
+    confirmed compatible on glm-5.2:cloud); every other model defaults
+    to off, leaving the user to opt in via the thinking toggle."""
+
+    @pytest.mark.parametrize("model", [
+        "glm-5.2:cloud", "glm-5.1:cloud", "glm-5:cloud", "GLM-5.2:CLOUD",
+    ])
+    def test_glm5_defaults_to_high(self, model):
+        assert default_thinking_for_model(model) == "high"
+
+    @pytest.mark.parametrize("model", [
+        "glm-4.7:cloud",            # older GLM line — opt-in, not defaulted
+        "deepseek-v4-pro:cloud",
+        "deepseek-v4-flash:cloud",
+        "llama3.1:8b",
+        "qwen3.5:cloud",
+        "",
+        None,
+    ])
+    def test_others_default_to_off(self, model):
+        assert default_thinking_for_model(model) == ""

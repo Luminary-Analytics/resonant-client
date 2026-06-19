@@ -33,12 +33,15 @@ from resonant_client.gui.roadmap import (
     append_iteration_log,
     default_path,
     file_lock,
+    clear_inflight,
     load,
     mark_item_complete,
     parse,
+    read_inflight,
     render,
     save,
     update_criterion,
+    write_inflight,
 )
 
 
@@ -605,6 +608,20 @@ class TestDiskIO:
         save(rm, nested)
         assert nested.is_file()
 
+    def test_save_leaves_no_temp_file(self, tmp_path):
+        # v0.6.5 — the atomic write goes through a sibling .tmp +
+        # os.replace; a successful save must not leave the .tmp behind.
+        save(_populated_roadmap(), tmp_path / "roadmap.md")
+        assert not (tmp_path / "roadmap.md.tmp").exists()
+
+    def test_save_overwrites_existing_fully(self, tmp_path):
+        # Atomic replace means the second save fully supersedes the
+        # first — no append, no half-merged corruption.
+        path = tmp_path / "roadmap.md"
+        save(Roadmap(feature="first", intent_id="i1", time_budget_label="1h"), path)
+        save(Roadmap(feature="second", intent_id="i1", time_budget_label="1h"), path)
+        assert load(path).feature == "second"
+
 
 class TestFileLock:
     def test_acquires_and_releases(self, tmp_path):
@@ -637,3 +654,41 @@ class TestDefaultPath:
         assert p.parent.name == ".resonant"
         assert p.name == "roadmap-intent-abc123.md"
         assert p.parent.parent == tmp_path
+
+
+# ── In-flight iteration checkpoint (v0.6.5 crash-safe resume) ─────────
+
+
+class TestInflightCheckpoint:
+    def test_write_then_read_round_trips(self, tmp_path):
+        path = tmp_path / "roadmap.md"
+        write_inflight(path, item_id="T1.2", iter_num=7, started_at=123.0)
+        data = read_inflight(path)
+        assert data is not None
+        assert data["item_id"] == "T1.2"
+        assert data["iter"] == 7
+
+    def test_read_absent_returns_none(self, tmp_path):
+        assert read_inflight(tmp_path / "roadmap.md") is None
+
+    def test_clear_removes_checkpoint(self, tmp_path):
+        path = tmp_path / "roadmap.md"
+        write_inflight(path, item_id="T1.2", iter_num=1, started_at=1.0)
+        assert (tmp_path / "roadmap.md.inflight").exists()
+        clear_inflight(path)
+        assert read_inflight(path) is None
+        assert not (tmp_path / "roadmap.md.inflight").exists()
+
+    def test_clear_absent_is_noop(self, tmp_path):
+        # Idempotent — clearing a non-existent checkpoint must not raise.
+        clear_inflight(tmp_path / "roadmap.md")
+
+    def test_read_corrupt_returns_none(self, tmp_path):
+        # A truncated / garbage checkpoint must not raise on read.
+        (tmp_path / "roadmap.md.inflight").write_text("{not json", encoding="utf-8")
+        assert read_inflight(tmp_path / "roadmap.md") is None
+
+    def test_write_leaves_no_temp_file(self, tmp_path):
+        path = tmp_path / "roadmap.md"
+        write_inflight(path, item_id="T1.2", iter_num=1, started_at=1.0)
+        assert not (tmp_path / "roadmap.md.inflight.tmp").exists()

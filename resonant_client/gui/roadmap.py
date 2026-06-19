@@ -38,6 +38,7 @@ conventions described there.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import time
@@ -707,13 +708,101 @@ def load(path: Path | str) -> Roadmap:
 
 
 def save(rm: Roadmap, path: Path | str) -> None:
-    """Render + write a Roadmap to disk. Acquires the file lock
-    around the write to serialize against user hand-edits."""
+    """Render + write a Roadmap to disk ATOMICALLY.
+
+    Acquires the file lock to serialize against user hand-edits, then
+    writes to a sibling temp file (flush + fsync) and `os.replace()`s it
+    over the target. `os.replace` is atomic on both POSIX and Windows
+    when source and destination share a filesystem — they're siblings
+    here, so they always do. This is the v0.6.5 long-running-hardening
+    fix for the #1 unrecoverable failure mode: a crash / power loss /
+    OOM-kill mid-write previously left a truncated roadmap, which made a
+    days-long mission impossible to resume. A reader now always sees
+    either the old complete file or the new complete file, never a
+    half-written one."""
     p = Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     rendered = render(rm)
+    tmp = p.with_suffix(p.suffix + ".tmp")
     with file_lock(p):
-        p.write_text(rendered, encoding="utf-8")
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                fh.write(rendered)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, p)
+        except Exception:
+            # Never leave a half-written temp file behind to confuse
+            # the next save or a manual inspection.
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+
+
+# ── In-flight iteration checkpoint (crash-safe resume) ─────────────────
+#
+# v0.6.5 (long-running hardening). The roadmap is the source of truth for
+# what shipped, but there's a window in the daemon's iteration between
+# "sub-mission shipped + committed" and "roadmap saved with the item
+# checked". A crash / reboot / OOM-kill in that window leaves the item
+# unchecked, so on resume it is silently re-dispatched — duplicate work
+# the user never sees. We record the in-flight item id in a sibling
+# `.inflight` file before dispatch and clear it once the roadmap is
+# durably saved. On resume, a lingering `.inflight` whose item is still
+# unchecked means "the previous run died mid-iteration", so the resume
+# path can surface a recovery event instead of re-running work silently.
+
+
+def _inflight_path(roadmap_path: Path | str) -> Path:
+    p = Path(roadmap_path)
+    return p.with_suffix(p.suffix + ".inflight")
+
+
+def write_inflight(roadmap_path: Path | str, *, item_id: str,
+                   iter_num: int, started_at: float) -> None:
+    """Atomically record the iteration currently in flight. Best-effort:
+    a failure to write the checkpoint must never break the iteration, so
+    OSErrors are swallowed (the worst case is we lose crash-visibility,
+    not the run)."""
+    path = _inflight_path(roadmap_path)
+    payload = json.dumps({
+        "item_id": item_id,
+        "iter": iter_num,
+        "started_at": started_at,
+    })
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+
+
+def read_inflight(roadmap_path: Path | str) -> Optional[dict]:
+    """Return the in-flight checkpoint dict, or None if absent/unreadable."""
+    path = _inflight_path(roadmap_path)
+    try:
+        if path.is_file():
+            return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def clear_inflight(roadmap_path: Path | str) -> None:
+    """Remove the in-flight checkpoint. Best-effort and idempotent."""
+    try:
+        _inflight_path(roadmap_path).unlink()
+    except OSError:
+        pass
 
 
 # ── Default location ──────────────────────────────────────────────────

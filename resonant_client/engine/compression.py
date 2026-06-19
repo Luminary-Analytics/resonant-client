@@ -38,6 +38,12 @@ _MODEL_CONTEXT_BUDGETS: dict[str, int] = {
     "deepseek-v4-flash:cloud": 24_000,    # ~32K window
     "deepseek-v4:cloud": 48_000,          # generic mid-tier
     "deepseek-v4-pro:cloud": 96_000,      # ~128K window
+    # v0.6.5 — glm-5.2:cloud flagship. Upstream window is 1M, but we
+    # keep it at the proven pro-tier budget: safe under the 32K (or
+    # 131K big-context-profile) num_ctx the client actually requests,
+    # and the conservative-for-big-models philosophy below means we'd
+    # rather not compress its long sessions prematurely.
+    "glm-5.2:cloud": 96_000,
 }
 
 
@@ -46,8 +52,8 @@ def model_context_budget(model_name: str | None) -> int:
 
     Match strategy (in order):
       1. Exact case-insensitive match against `_MODEL_CONTEXT_BUDGETS`
-      2. Family-fallback heuristic: if the model name contains
-         "deepseek" with "flash"/"pro", use that tier's budget
+      2. Family-fallback heuristic: "deepseek" with "flash"/"pro" uses
+         that tier's budget; any "glm" uses the flagship budget
       3. Default to `DEFAULT_MAX_CONTEXT_TOKENS` (the pre-T2.1 behavior)
 
     Returns the integer threshold; never raises.
@@ -64,6 +70,10 @@ def model_context_budget(model_name: str | None) -> int:
             return _MODEL_CONTEXT_BUDGETS["deepseek-v4-pro:cloud"]
         # Bare "deepseek" without flash/pro suffix → mid-tier
         return _MODEL_CONTEXT_BUDGETS["deepseek-v4:cloud"]
+    # GLM cloud tiers all carry large (≥200K) upstream windows — treat
+    # any glm-* like the flagship budget rather than the generic default.
+    if "glm" in lower:
+        return _MODEL_CONTEXT_BUDGETS["glm-5.2:cloud"]
     return DEFAULT_MAX_CONTEXT_TOKENS
 
 

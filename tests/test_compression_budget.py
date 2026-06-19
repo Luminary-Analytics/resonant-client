@@ -34,6 +34,11 @@ class TestModelContextBudgetExact:
     def test_generic_v4(self):
         assert model_context_budget("deepseek-v4:cloud") == 48_000
 
+    def test_glm_5_2_flagship_exact(self):
+        # v0.6.5 — the flagship gets an explicit pro-tier budget rather
+        # than falling through to the generic 100K default.
+        assert model_context_budget("glm-5.2:cloud") == 96_000
+
     def test_case_insensitive(self):
         # The Ollama model selector tends to lowercase but tools could
         # pass mixed case; the lookup must not care.
@@ -53,6 +58,12 @@ class TestModelContextBudgetFamily:
     def test_bare_deepseek_uses_mid_tier(self):
         # "deepseek" without flash/pro suffix → mid (48K)
         assert model_context_budget("deepseek-coder:33b") == 48_000
+
+    def test_any_glm_uses_flagship_budget(self):
+        # v0.6.5 — all GLM cloud tiers carry large (≥200K) windows, so
+        # any "glm" resolves to the flagship budget, not the default.
+        assert model_context_budget("glm-5.1:cloud") == 96_000
+        assert model_context_budget("glm-4.7:cloud") == 96_000
 
     def test_unknown_model_uses_default(self):
         assert model_context_budget("llama3:70b") == DEFAULT_MAX_CONTEXT_TOKENS

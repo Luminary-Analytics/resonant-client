@@ -34,7 +34,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..events import EngineEvent, make_event
 from ..backends import OllamaBackend, create_backend
 from ..engine import Session, AGENT_TOOLS
-from ..network_defaults import resolve_ollama_url
+from ..network_defaults import default_thinking_for_model, resolve_ollama_url
 from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
@@ -203,8 +203,8 @@ class AppState:
 
     def _migrate_stale_defaults(self) -> None:
         """
-        After the April-2026 refocus, the flagship is Ollama + deepseek-v4-pro
-        for autonomous missions (v0.6.2 — was flash pre-v0.5.2).
+        After the April-2026 refocus, the flagship is Ollama + glm-5.2
+        (v0.6.5 — was deepseek-v4-pro v0.5.2–v0.6.4, flash before that).
         Settings persisted from earlier versions may still pin "default_backend"
         to "resonant" or other backends that the user picked once and forgot
         about. We override only when the saved value points at a now-deprecated
@@ -222,10 +222,10 @@ class AppState:
             current_model = str(self.settings.get("general", "default_model", "") or "").strip()
             if not current_model and current_backend in ("", "ollama"):
                 try:
-                    # v0.5.2 — pro is now the default for new users.
-                    # Tracks `network_defaults.get_default_model()`
-                    # and the v0.5.1 GA smoke results.
-                    self.settings.set("general", "default_model", "deepseek-v4-pro:cloud")
+                    # v0.6.5 — glm-5.2:cloud is the flagship default
+                    # for new users. Tracks
+                    # `network_defaults.get_default_model()`.
+                    self.settings.set("general", "default_model", "glm-5.2:cloud")
                 except Exception:
                     pass
         except Exception:
@@ -5110,6 +5110,13 @@ class AppState:
         selected_model = model or self._resolve_default_model(models)
         spec = BackendSpec(backend_type="ollama", model=selected_model)
         spec.url = info.get("url", "")
+        # v0.6.5 — seed the per-model default thinking level on a freshly
+        # built spec (no prior spec/session to inherit from). GLM-5.x
+        # defaults to high-effort thinking; create_backend / swap_backend
+        # still let a preserved per-session choice (including an explicit
+        # "off") win on rebuilds, so this only sets the initial default.
+        if not spec.thinking_mode:
+            spec.thinking_mode = default_thinking_for_model(selected_model)
         return spec
 
     def _resolve_default_model(self, models: list[str]) -> str:
@@ -7037,7 +7044,13 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "message": f"invalid thinking mode: {mode!r}"})
                 else:
                     try:
-                        normalized = "" if mode in {"", "off"} else ("med" if mode == "medium" else mode)
+                        # v0.6.5 — explicit "off" is stored as the truthy
+                        # token "off" (not "") so it survives the
+                        # thinking_mode preservation in create_backend /
+                        # swap_backend; otherwise a falsy "" would let the
+                        # per-model default (e.g. GLM→high) clobber the
+                        # user's choice on the next backend rebuild.
+                        normalized = "off" if mode in {"", "off"} else ("med" if mode == "medium" else mode)
                         if state.project.current_session:
                             state.project.current_session.thinking_mode = normalized
                             state.project.current_session.save()
@@ -7068,6 +7081,41 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "set_permission_mode":
                 mode = msg.get("mode", "bypass")
                 state.apply_permission_mode(mode)
+
+            elif command == "connect_browser":
+                # v0.6.5 — one-click "open Chrome in debug mode for the
+                # agent". Attaches to an already-debug Chrome, else launches
+                # the real Chrome with the debug port. `force_relaunch` closes
+                # the user's running Chrome and reopens it in debug mode (the
+                # single-instance lock case). Runs in a thread so the
+                # launch/close can't block the event loop; result flows back
+                # as a browser_status event.
+                force = bool(msg.get("force_relaunch"))
+                profile = msg.get("profile") or None
+                await ws.send_json({"event": "browser_status", "status": "connecting"})
+                from ..engine.browser import get_browser
+                mgr = get_browser()
+
+                def _connect():
+                    if force:
+                        return mgr.relaunch_in_debug(profile=profile)
+                    return mgr.connect_or_launch_chrome(profile=profile)
+
+                try:
+                    result = await asyncio.get_event_loop().run_in_executor(None, _connect)
+                except Exception as e:
+                    result = f"Error: {e}"
+                if mgr.is_connected:
+                    status = "connected"
+                elif "never came up" in (result or ""):
+                    status = "needs_relaunch"
+                else:
+                    status = "error"
+                await ws.send_json({
+                    "event": "browser_status",
+                    "status": status,
+                    "detail": (result or "")[:300],
+                })
 
             elif command == "get_session_replay_events":
                 # Fetch full display_events for any session without switching the active one.

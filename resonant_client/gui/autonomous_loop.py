@@ -220,6 +220,18 @@ class AutonomousMissionConfig:
     # If this many consecutive sub-missions fail (DispatchOutcome.success
     # = False), we stop. Don't grind on something fundamentally broken.
     check_failed_streak_limit: int = 2
+    # v0.6.5 (long-running hardening) — stall detection.
+    # Emit an `autonomous_heartbeat` every N seconds while blocked waiting
+    # on a sub-mission, so the GUI can tell a slow-but-alive daemon apart
+    # from a frozen one over a multi-day run. 0 disables.
+    heartbeat_seconds: float = 30.0
+    # Hard ceiling on a single sub-mission dispatch. A Phase-1 item rarely
+    # needs an hour; exceeding this almost always means the sub-mission is
+    # stuck — the canonical case is it called `await_user` with no GUI
+    # attached, so `wait_for_dispatch` would otherwise block FOREVER and
+    # freeze the whole mission. On timeout we cancel the dispatch (which
+    # unblocks the wait) and fail the iteration. None disables the ceiling.
+    dispatch_timeout_seconds: Optional[float] = 3600.0
 
 
 # ── The daemon ──────────────────────────────────────────────────────────
@@ -612,7 +624,14 @@ class AutonomousMissionDaemon:
                 # to finish. The daemon thread blocks here — but
                 # the engine's existing event stream still flows
                 # to the GUI via the IntentService callbacks.
-                if not self._run_one_iteration(item):
+                iteration_ok = self._run_one_iteration(item)
+                # The outcome is now durably in the roadmap (shipped →
+                # checked, or failed → still unchecked), so the in-flight
+                # checkpoint has done its job. Clearing it here means only
+                # a crash DURING the iteration leaves it set — exactly the
+                # signal the resume path looks for.
+                roadmap_module.clear_inflight(self.config.roadmap_path)
+                if not iteration_ok:
                     if self._check_failed_streak >= self.config.check_failed_streak_limit:
                         self._emit_stop(
                             "check_failed",
@@ -734,6 +753,20 @@ class AutonomousMissionDaemon:
             detail=f"{item.id}: {item.title[:60]}",
             specialist="implement")
 
+        # v0.6.5 (long-running hardening) — record the in-flight item
+        # BEFORE dispatch. If the process dies between "sub-mission
+        # shipped + committed" and "roadmap saved", the resume path
+        # finds this checkpoint and surfaces a recovery event rather
+        # than silently re-running committed work. The caller clears it
+        # once this method returns (the roadmap then reflects the
+        # outcome), so only a crash mid-iteration leaves it behind.
+        roadmap_module.write_inflight(
+            self.config.roadmap_path,
+            item_id=item.id,
+            iter_num=self._iter_count,
+            started_at=started,
+        )
+
         try:
             handle = self.hooks.dispatch_item(item)
         except Exception as exc:
@@ -758,14 +791,7 @@ class AutonomousMissionDaemon:
             specialist="implement")
 
         try:
-            outcome = self.hooks.wait_for_dispatch(handle)
-        except Exception as exc:
-            logger.exception("wait_for_dispatch raised for %s", item.id)
-            outcome = DispatchOutcome(
-                success=False,
-                error=f"wait raised: {exc}",
-                handle=handle,
-            )
+            outcome = self._wait_with_monitor(item, handle, started)
         finally:
             with self._lock:
                 self._in_flight_handle = None
@@ -843,6 +869,94 @@ class AutonomousMissionDaemon:
             "duration_seconds": duration,
         })
         return True
+
+    def _wait_with_monitor(self, item: RoadmapItem, handle: Any,
+                           started: float) -> DispatchOutcome:
+        """Block on the sub-mission via the hook, with a daemon-side
+        monitor thread running alongside (v0.6.5 long-running hardening):
+
+          * Heartbeat — emit `autonomous_heartbeat` every
+            `config.heartbeat_seconds` so the GUI can tell a slow-but-
+            alive wait apart from a frozen daemon.
+          * Stall ceiling — if the wait exceeds
+            `config.dispatch_timeout_seconds`, cancel the in-flight
+            dispatch (which unblocks `wait_for_dispatch`) and report a
+            timeout. Catches the otherwise-infinite hang where a
+            sub-mission called `await_user` with no GUI attached.
+
+        Returns the DispatchOutcome (a synthesized failure/timeout
+        outcome when the wait raises or the ceiling trips)."""
+        timed_out = {"flag": False}
+        monitor_stop = threading.Event()
+        hb = self.config.heartbeat_seconds or 0.0
+        ceiling = self.config.dispatch_timeout_seconds
+
+        def _monitor() -> None:
+            # Tick at the heartbeat cadence (fall back to 30s when only
+            # the ceiling is configured). Each tick: emit a heartbeat and
+            # check the stall ceiling.
+            tick = hb if hb > 0 else 30.0
+            while not monitor_stop.wait(tick):
+                elapsed = time.time() - started
+                if hb > 0:
+                    self._emit("autonomous_heartbeat", {
+                        "iter_count": self._iter_count,
+                        "item_id": item.id,
+                        "phase": "waiting_dispatch",
+                        "elapsed_seconds": round(elapsed, 1),
+                    })
+                if (ceiling and ceiling > 0 and elapsed >= ceiling
+                        and not timed_out["flag"]):
+                    timed_out["flag"] = True
+                    logger.warning(
+                        "Dispatch for %s exceeded the %.0fs ceiling; "
+                        "cancelling the sub-mission (likely stalled — e.g. "
+                        "awaiting user input with no GUI attached).",
+                        item.id, ceiling,
+                    )
+                    self._emit("autonomous_iteration_timeout", {
+                        "iter_count": self._iter_count,
+                        "item_id": item.id,
+                        "timeout_seconds": ceiling,
+                    })
+                    try:
+                        self.hooks.cancel_dispatch(handle)
+                    except Exception:
+                        logger.debug(
+                            "cancel_dispatch raised during timeout",
+                            exc_info=True,
+                        )
+                    return  # ceiling hit; the cancel unblocks the wait
+
+        monitor: Optional[threading.Thread] = None
+        if hb > 0 or (ceiling and ceiling > 0):
+            monitor = threading.Thread(
+                target=_monitor, name="autonomous-wait-monitor", daemon=True,
+            )
+            monitor.start()
+
+        try:
+            outcome = self.hooks.wait_for_dispatch(handle)
+        except Exception as exc:
+            logger.exception("wait_for_dispatch raised for %s", item.id)
+            outcome = DispatchOutcome(
+                success=False, error=f"wait raised: {exc}", handle=handle,
+            )
+        finally:
+            monitor_stop.set()
+            if monitor is not None:
+                monitor.join(timeout=2.0)
+
+        if timed_out["flag"]:
+            # Whatever the cancel produced, report it as a timeout so the
+            # failure streak + telemetry read "stalled", not generic.
+            outcome = DispatchOutcome(
+                success=False,
+                error=(f"dispatch timed out after {ceiling:.0f}s "
+                       f"(sub-mission cancelled — no completion)"),
+                handle=handle,
+            )
+        return outcome
 
     def _read_and_validate_sha(self) -> Optional[str]:
         """Read latest HEAD SHA via the hook, validate it via

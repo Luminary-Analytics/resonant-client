@@ -53,23 +53,42 @@ def get_default_backend(*, settings_data: Mapping[str, Any] | None = None) -> st
 
 
 def get_default_model(*, settings_data: Mapping[str, Any] | None = None) -> str:
-    # v0.5.2 — switched default from deepseek-v4-flash:cloud to
-    # deepseek-v4-pro:cloud after the v0.5.1 GA smoke showed pro
-    # converges on autonomous missions FASTER than flash (135s vs
-    # 340s on the wordcount spec) when paired with the PLAN_DEEP
-    # specialist. Pro's deeper planning produces tighter implementer
-    # subgoals, and total mission time drops despite per-call
-    # latency being higher. See docs/v0.5.1-smoke-results.md for the
-    # data and `RESONANT.md` for tier guidance.
+    # v0.6.5 — switched the flagship default to glm-5.2:cloud (756B,
+    # 1M context, native tool calling). GLM-5.2 is the out-of-the-box
+    # model on the Mac Studio now; the deepseek-v4 tiers stay one
+    # click away in the model dropdown as the secondary high-quality
+    # option (and on a separate cloud quota, so they double as the
+    # 503 fallback when the GLM endpoint is overloaded).
     #
-    # Users who want flash for quick one-shot work can still pick it
-    # in the model dropdown (the autonomous daemon auto-routes the
-    # planner regardless of which tier the user picks).
+    # History: v0.5.2 moved the default flash → pro after the v0.5.1
+    # GA smoke (pro's PLAN_DEEP convergence beat flash on the
+    # benchmarked specs — see docs/v0.5.1-smoke-results.md and
+    # RESONANT.md for tier guidance). That reasoning still holds for
+    # the deepseek pair; GLM-5.2 now leads.
+    #
+    # Override via the RESONANT_DEFAULT_MODEL env var or the
+    # `general.default_model` setting.
     return (
         str(os.environ.get("RESONANT_DEFAULT_MODEL", "") or "").strip()
-        or _get_setting("general", "default_model", "deepseek-v4-pro:cloud", settings_data=settings_data).strip()
-        or "deepseek-v4-pro:cloud"
+        or _get_setting("general", "default_model", "glm-5.2:cloud", settings_data=settings_data).strip()
+        or "glm-5.2:cloud"
     )
+
+
+def default_thinking_for_model(model: str | None) -> str:
+    """v0.6.5 — default reasoning-effort token for a freshly-built
+    backend. GLM-5.x is a reasoning model that produces its best
+    agentic output with thinking ON (tools + thinking are confirmed
+    compatible — verified live 2026-06-17 against glm-5.2:cloud), so it
+    defaults to "high". Every other model defaults to "" (off); the user
+    opts in via the thinking toggle. Returns an INTERNAL token
+    ("high"/"med"/"low"/"") — OllamaBackend maps it to the model-correct
+    wire value (deepseek wants "med", standard Ollama models want
+    "medium")."""
+    base = (model or "").split(":")[0].lower()
+    if base.startswith("glm-5"):
+        return "high"
+    return ""
 
 
 def resolve_ollama_url(

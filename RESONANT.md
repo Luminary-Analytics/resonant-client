@@ -50,18 +50,22 @@ resonant_client/
 
 - **Ollama** — local LLMs with adaptive tool-calling (native or XML fallback). The canonical default URL is `http://10.0.0.133:11434` (Mac Studio in the user's infra). Override via `OLLAMA_HOST` env or `network.ollama_url` in `~/.resonant/settings.json`.
 
-DeepSeek tier guidance (revised v0.5.2 — pro is now the default;
-see `docs/v0.5.1-smoke-results.md` for the data behind the choice):
+Model tier guidance:
 
-**Default (v0.5.2+):** `deepseek-v4-pro:cloud`. Pro is wired for
-both Mission and Autonomous Mission flows. v0.5.4a1 simplified
-the planner routing: PLAN_DEEP is now the unconditional default
-for autonomous missions (was per-tier-routed via PLANNER_BY_TIER
-in v0.5.1-v0.5.3). Users can switch to flash via the chat-header
-model dropdown or via Settings → general → default_model.
+**Default (v0.6.5+):** `glm-5.2:cloud` — the flagship (756B, 1M
+context, native tool calling). It's the out-of-the-box model on the
+Mac Studio; the deepseek-v4 tiers below stay one click away in the
+model dropdown (or via Settings → general → default_model) and sit on
+a separate cloud quota, so they double as the 503 fallback.
+
+**Secondary — DeepSeek tiers** (the v0.5.2–v0.6.4 default; see
+`docs/v0.5.1-smoke-results.md` for the data behind the pro/flash
+split). PLAN_DEEP is the unconditional planner for autonomous
+missions (v0.5.4a1; was per-tier-routed via PLANNER_BY_TIER in
+v0.5.1–v0.5.3).
 
 **For Mission flow (one-shot grill + plan-graph dispatch):**
-- `deepseek-v4-pro:cloud` — **recommended default.** Thorough grill
+- `deepseek-v4-pro:cloud` — **recommended DeepSeek tier.** Thorough grill
   (10-25 question rigorous mode for autonomous; 5-15 for standard),
   PLAN_DEEP planner reads codebase context before decomposing.
 - `deepseek-v4-flash:cloud` — fall back to flash for very simple
@@ -70,7 +74,7 @@ model dropdown or via Settings → general → default_model.
   multiple short missions back-to-back.
 
 **For Autonomous Mission (∞ Run autonomously, v0.5.1+):**
-- `deepseek-v4-pro:cloud` — **recommended default.** v0.5.1 GA smoke:
+- `deepseek-v4-pro:cloud` — **recommended DeepSeek tier.** v0.5.1 GA smoke:
   1 iter, 135s wall-clock (FASTER than flash on the wordcount spec
   because PLAN_DEEP produced a tighter implementer goal). Especially
   good for context-heavy work (multi-file refactors, integrations).

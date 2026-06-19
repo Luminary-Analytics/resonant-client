@@ -519,7 +519,7 @@ class ResonantApp {
 
         // New session — show project picker / welcome screen
         document.getElementById('new-agent-btn').addEventListener('click', () => {
-            this.showNewSessionSetup();
+            this.startNewSession();
         });
 
         // Add project button (next to project filter dropdown)
@@ -1339,7 +1339,7 @@ class ResonantApp {
             body = `<span class="backend-status-text">
                 A step${iter} ran past ${this.escapeHtml(limit)} with no progress and was
                 <strong>cancelled as stalled</strong> — the session moves on to the next item.
-                <span class="backend-status-hint">If this repeats, the sub-mission may be blocked (e.g. waiting on input it can't get). Check that roadmap item.</span>
+                <span class="backend-status-hint">If this repeats, the step may be blocked (e.g. waiting on input it can't get). Check that roadmap item.</span>
             </span>`;
         } else {
             const iter = (event && event.iter != null)
@@ -1731,7 +1731,7 @@ class ResonantApp {
     _renderOrphanCardHTML(orphan) {
         const intentId = orphan.intent_id || '';
         const sessionId = orphan.session_id || '';
-        const feature = orphan.feature || '(unnamed mission)';
+        const feature = orphan.feature || '(unnamed session)';
         const startedAt = typeof orphan.autonomous_started_at === 'number'
             ? orphan.autonomous_started_at : null;
         const ageLabel = startedAt
@@ -1748,7 +1748,7 @@ class ResonantApp {
         // round trip and tells the user why.
         const resumeAttrs = roadmapMissing
             ? 'disabled aria-disabled="true" title="Roadmap file is missing — cannot resume"'
-            : 'title="Resume this mission from where it stopped"';
+            : 'title="Resume this autonomous session from where it stopped"';
 
         return `
             <div class="autonomous-orphan-card" data-intent-id="${this.escapeHtml(intentId)}">
@@ -1764,7 +1764,7 @@ class ResonantApp {
                             ${resumeAttrs}>Resume</button>
                     <button type="button" class="autonomous-orphan-dismiss"
                             data-intent-id="${this.escapeHtml(intentId)}"
-                            title="Hide this — does NOT stop the mission's session record">Dismiss</button>
+                            title="Hide this — does NOT stop the autonomous session">Dismiss</button>
                 </div>
             </div>
         `;
@@ -1834,7 +1834,7 @@ class ResonantApp {
         const sessionId = mission.session_id || '';
         const intentId = mission.intent_id || '';
         const phase = mission.phase || '';
-        const feature = mission.feature || '(unnamed mission)';
+        const feature = mission.feature || '(unnamed session)';
         const isCurrent = sessionId === this.currentSessionId;
         const startedAt = typeof mission.autonomous_started_at === 'number'
             ? mission.autonomous_started_at : null;
@@ -2044,7 +2044,7 @@ class ResonantApp {
     }
 
     _renderRoadmapInspectorHTML(data) {
-        const feature = data.feature || '(unnamed mission)';
+        const feature = data.feature || '(unnamed session)';
         const summary = data.acceptance_summary || {};
         const passed = summary.passed || 0;
         const total = summary.total_blocking || 0;
@@ -2150,7 +2150,7 @@ class ResonantApp {
             </div>
             <div class="arm-inspector-summary">
                 ${summaryPill}
-                <span title="Iterations recorded in roadmap.md (each entry = one shipped sub-mission). The chat-header badge counts the in-flight iter as well, so during a running iter the header may show one ahead.">iter ${iterCount} completed</span>
+                <span title="Iterations recorded in roadmap.md (each entry = one shipped step). The chat-header badge counts the in-flight iter as well, so during a running iter the header may show one ahead.">iter ${iterCount} completed</span>
             </div>
             ${criteriaHTML ? `<ul class="arm-criteria-list">${criteriaHTML}</ul>` : ''}
             ${nextItemHTML}
@@ -2167,11 +2167,11 @@ class ResonantApp {
         // badge so the user instantly sees the final state.
         switch (phase) {
             case 'autonomous_complete':
-                return `<span class="arm-phase-badge arm-phase-complete" title="Mission converged">complete</span>`;
+                return `<span class="arm-phase-badge arm-phase-complete" title="Autonomous session converged">complete</span>`;
             case 'autonomous_paused':
-                return `<span class="arm-phase-badge arm-phase-paused" title="Mission paused (user stop / budget / stuck)">paused</span>`;
+                return `<span class="arm-phase-badge arm-phase-paused" title="Autonomous session paused (user stop / budget / stuck)">paused</span>`;
             case 'autonomous_failed':
-                return `<span class="arm-phase-badge arm-phase-failed" title="Mission ended in failure">failed</span>`;
+                return `<span class="arm-phase-badge arm-phase-failed" title="Autonomous session ended in failure">failed</span>`;
             default:
                 return '';
         }
@@ -2486,7 +2486,7 @@ class ResonantApp {
                 ? `time budget: ${this._fmtDuration(event.time_budget_seconds)}`
                 : 'full auto (no time cap)';
             const cap = event && event.max_iterations ? `, iteration cap: ${event.max_iterations}` : '';
-            titleText = 'Autonomous Mission started';
+            titleText = 'Autonomous session started';
             subText = `${budget}${cap}.`;
             cls += ' autonomous-banner-start';
         } else if (kind === 'complete') {
@@ -2494,7 +2494,7 @@ class ResonantApp {
             const elapsed = event && typeof event.elapsed_seconds === 'number'
                 ? this._fmtDuration(event.elapsed_seconds)
                 : '';
-            titleText = 'Mission complete · all acceptance criteria passed';
+            titleText = 'Autonomous session complete · all acceptance criteria passed';
             subText = `Stop reason: ${this.escapeHtml(reason)}${elapsed ? ` · ${elapsed} elapsed` : ''}.`;
             cls += ' autonomous-banner-complete';
         } else if (kind === 'paused') {
@@ -2503,12 +2503,12 @@ class ResonantApp {
             const elapsed = event && typeof event.elapsed_seconds === 'number'
                 ? this._fmtDuration(event.elapsed_seconds)
                 : '';
-            titleText = `Mission paused · ${this.escapeHtml(reason)}`;
+            titleText = `Autonomous session paused · ${this.escapeHtml(reason)}`;
             subText = `${this.escapeHtml(message)}${elapsed ? ` · ${elapsed} elapsed` : ''}.`;
             cls += ' autonomous-banner-paused';
         } else if (kind === 'failed') {
             const err = (event && event.error) || 'unknown failure';
-            titleText = 'Mission failed';
+            titleText = 'Autonomous session failed';
             subText = `${this.escapeHtml(err)}`;
             cls += ' autonomous-banner-failed';
             icon = '✗';
@@ -2724,7 +2724,7 @@ class ResonantApp {
             badge.id = 'mission-badge';
             badge.className = 'mission-badge';
             badge.type = 'button';
-            badge.title = 'Mission in progress — click to exit';
+            badge.title = 'Autonomous session running — click to exit';
             badge.addEventListener('click', () => this._handleMissionBadgeClick());
             header.appendChild(badge);
         }
@@ -2744,7 +2744,7 @@ class ResonantApp {
                 <span class="mission-badge-label">Autonomous</span>
                 <span class="mission-badge-phase">${this.escapeHtml(phaseLabel)}</span>
             </span>
-            <span class="mission-badge-exit" title="Exit mission" aria-label="Exit mission">×</span>
+            <span class="mission-badge-exit" title="Exit autonomous session" aria-label="Exit autonomous session">×</span>
         `;
         const exitBtn = badge.querySelector('.mission-badge-exit');
         if (exitBtn) {
@@ -2907,7 +2907,7 @@ class ResonantApp {
         const PHASE_LABELS = {
             picking: 'picking item',
             dispatching: 'dispatching',
-            waiting_dispatch: 'running sub-mission',
+            waiting_dispatch: 'running step',
             reflecting: 'running REFLECT',
             tick_pause: 'between iters',
             parked: 'awaiting your decision',
@@ -2965,7 +2965,7 @@ class ResonantApp {
         // v0.5.9a4 — clarified copy: Stop is the abrupt one. Pause
         // is the graceful affordance for the lighter touch.
         const ok = confirm(
-            'Stop the autonomous mission NOW? In-flight tool calls ' +
+            'Stop the autonomous session NOW? In-flight tool calls ' +
             'will be cancelled. For a graceful "finish current iter ' +
             'then stop", click Pause instead.'
         );
@@ -3034,7 +3034,7 @@ class ResonantApp {
         banner.innerHTML = `
             <span class="mission-cancel-exit-msg">Autonomous session paused. Exit it entirely, or stay in drafting?</span>
             <button type="button" class="mission-cancel-exit-btn-stay">Stay</button>
-            <button type="button" class="mission-cancel-exit-btn-exit">Exit mission</button>
+            <button type="button" class="mission-cancel-exit-btn-exit">Exit session</button>
         `;
         const cleanup = () => banner.remove();
         banner.querySelector('.mission-cancel-exit-btn-stay').addEventListener('click', cleanup);
@@ -3051,7 +3051,7 @@ class ResonantApp {
         // Click on the badge itself — show a small confirm (no popover
         // library, just a confirm() for v1) so the user doesn't lose work
         // on a fat-finger click.
-        const ok = confirm('Exit this mission?\n\nThe session stays in your sidebar under "Missions" and you can review the conversation, but no new work will be dispatched.');
+        const ok = confirm('Exit this autonomous session?\n\nIt stays in your sidebar and you can review the conversation, but no new work will be dispatched.');
         if (ok) this._handleMissionExitClick();
     }
 
@@ -3100,7 +3100,7 @@ class ResonantApp {
             modelHintHTML = `
                 <div class="mission-composer-hint mission-composer-hint-warn">
                     <span aria-hidden="true">⚠</span>
-                    Pick a model first — the Mission needs Ollama to run the interview.
+                    Pick a model first — the autonomous session needs Ollama to run the interview.
                 </div>`;
         } else if (backendType === 'ollama' && /qwen/i.test(modelName)) {
             modelHintHTML = `
@@ -3221,8 +3221,8 @@ class ResonantApp {
         // they hit it.
         const updateStartLabel = () => {
             startBtn.textContent = autonomousToggle.checked
-                ? '∞ Start autonomous mission'
-                : 'Start mission';
+                ? '∞ Start autonomous session'
+                : 'Start session';
         };
         updateStartLabel();
         autonomousToggle.addEventListener('change', updateStartLabel);
@@ -3530,10 +3530,10 @@ class ResonantApp {
         wrap.innerHTML = `
             <div class="mission-autonomous-head">
                 <span class="mission-autonomous-icon" aria-hidden="true">∞</span>
-                <span class="mission-autonomous-title">Autonomous Mission</span>
+                <span class="mission-autonomous-title">Autonomous session</span>
             </div>
             <p class="mission-autonomous-blurb">
-                Acceptance criteria from the spec drive the convergence check. The mission stops
+                Acceptance criteria from the spec drive the convergence check. The session stops
                 when ALL criteria are met (regardless of budget remaining), the budget runs out,
                 or you click Stop. <strong>Pick a time budget:</strong>
             </p>
@@ -3548,7 +3548,7 @@ class ResonantApp {
                 </button>
             </div>
             <p class="mission-autonomous-fullauto-note" style="display: none;">
-                Full auto skips the time ceiling. Mission stops only on convergence, blocking,
+                Full auto skips the time ceiling. The session stops only on convergence, blocking,
                 or your Stop click. A 100-iteration cap is always enforced as a defensive backstop.
             </p>
         `;
@@ -3628,10 +3628,10 @@ class ResonantApp {
         chip.innerHTML = `
             <span class="mission-dispatch-chip-icon" aria-hidden="true">∞</span>
             <span class="mission-dispatch-chip-text">
-                Mission dispatched at ${hh}:${mm}:${ss}
+                Autonomous session dispatched at ${hh}:${mm}:${ss}
                 <span class="mission-dispatch-chip-budget">· ${this.escapeHtml(budget || '')}</span>
             </span>
-            <button type="button" class="mission-dispatch-chip-stop" title="Stop the autonomous mission after the current iteration">Stop</button>
+            <button type="button" class="mission-dispatch-chip-stop" title="Stop the autonomous session after the current iteration">Stop</button>
         `;
         const stopBtn = chip.querySelector('.mission-dispatch-chip-stop');
         stopBtn.addEventListener('click', () => {
@@ -4573,7 +4573,7 @@ class ResonantApp {
                 {
                     const consumer = this._pendingFolderPickConsumer;
                     const label = consumer === 'mission'
-                        ? 'Pick mission folder'
+                        ? 'Pick session folder'
                         : 'Switch project';
                     if (event.message) this.showStatusMessage(event.message);
                     this._promptForProjectPath(label, (path) => {
@@ -5210,47 +5210,15 @@ class ResonantApp {
         if (this.chatMessages.children.length > 0) return;
         const empty = document.createElement('div');
         empty.className = 'chat-empty-state';
-        const projectShort = (this.currentCwd || '').replace(/\\/g, '/').split('/').pop() || 'this project';
+        // v0.6.6 — minimal empty state: just a greeting + the input below.
+        // The suggestion cards (explore / git status / run tests) and the
+        // "Or start a Mission" button were removed as clutter; missions stay
+        // reachable via the chat-header Autonomous toggle.
         empty.innerHTML = `
             <div class="chat-empty-glyph">┃</div>
             <h2 class="chat-empty-title">Ready when you are.</h2>
             <p class="chat-empty-sub">Type your request below. <kbd>Enter</kbd> to send, <kbd>Shift+Enter</kbd> for newline.</p>
-            <div class="chat-empty-suggestions">
-                <button class="chat-suggestion" data-prompt="Summarize the structure of this codebase in 5 bullets.">
-                    <span class="chat-suggestion-label">Explore the codebase</span>
-                    <span class="chat-suggestion-hint">Quick architecture summary of ${this.escapeHtml(projectShort)}</span>
-                </button>
-                <button class="chat-suggestion" data-prompt="Use git_status to show what's currently changed in this repo.">
-                    <span class="chat-suggestion-label">Check git status</span>
-                    <span class="chat-suggestion-hint">First-class git tool, structured output</span>
-                </button>
-                <button class="chat-suggestion" data-prompt="Run the test suite and tell me what failed.">
-                    <span class="chat-suggestion-label">Run the tests</span>
-                    <span class="chat-suggestion-hint">Then iterate on any failures</span>
-                </button>
-            </div>
-            <div class="chat-empty-mission">
-                <button type="button" class="chat-empty-mission-btn" data-action="start-mission">
-                    <span class="chat-empty-mission-icon" aria-hidden="true">🎯</span>
-                    <span class="chat-empty-mission-text">
-                        <span class="chat-empty-mission-label">Or start a Mission</span>
-                        <span class="chat-empty-mission-hint">Get interviewed about a feature, then dispatch a plan-graph to build it.</span>
-                    </span>
-                </button>
-            </div>
         `;
-        empty.addEventListener('click', (ev) => {
-            // v0.3.2 — Mission entry from empty state. Discoverable surface
-            // for users who don't know about the chat-header toggle yet.
-            if (ev.target.closest('[data-action="start-mission"]')) {
-                this.openMissionComposer();
-                return;
-            }
-            const btn = ev.target.closest('.chat-suggestion');
-            if (!btn) return;
-            this.userInput.value = btn.dataset.prompt || '';
-            this.userInput.focus();
-        });
         this.chatMessages.appendChild(empty);
     }
 
@@ -9858,7 +9826,10 @@ class ResonantApp {
         const projFilter = (this._projectFilter || '').replace(/\\/g, '/');
 
         let filtered = allSessions;
-        if (projFilter) {
+        if (this._pinnedOnly) {
+            // v0.6.6 — "Pinned" quick-filter: only pinned sessions, across all projects.
+            filtered = filtered.filter(s => s && s.pinned);
+        } else if (projFilter) {
             filtered = filtered.filter(s => (s.project_path || '').replace(/\\/g, '/') === projFilter);
         }
         if (searchVal) {
@@ -10114,12 +10085,20 @@ class ResonantApp {
             </div>`;
 
         let html = '';
-        // Filter section: All projects + per-project filter is implicit via clicking a recent.
+        // v0.6.6 — typeahead box: live-filter the project list as you type.
+        html += `<div class="psw-search-wrap"><input type="text" class="psw-search" placeholder="Filter projects…" autocomplete="off" spellcheck="false" aria-label="Filter projects" /></div>`;
+        // Quick filters: every session, or only the pinned ones.
         html += itemHtml(
             '&#9776;',
             'All projects',
             'Show every session in the sidebar',
-            { checked: !filter, cls: 'psw-filter-all' }
+            { checked: !filter && !this._pinnedOnly, cls: 'psw-filter-all' }
+        );
+        html += itemHtml(
+            '&#9733;',
+            'Pinned',
+            'Only pinned sessions',
+            { checked: !!this._pinnedOnly, cls: 'psw-filter-pinned' }
         );
         html += '<div class="psw-divider"></div>';
         // Quick actions
@@ -10167,9 +10146,13 @@ class ResonantApp {
             this._closeProjectSwitcher();
             this._setProjectFilter('');
         });
+        menu.querySelector('.psw-filter-pinned')?.addEventListener('click', () => {
+            this._closeProjectSwitcher();
+            this._setPinnedFilter(true);
+        });
         menu.querySelector('.psw-new-session')?.addEventListener('click', () => {
             this._closeProjectSwitcher();
-            if (cur) this.selectProjectFolder(cur);
+            this.startNewSession();
         });
         menu.querySelector('.psw-open-other')?.addEventListener('click', () => {
             this._closeProjectSwitcher();
@@ -10187,6 +10170,39 @@ class ResonantApp {
                 if (norm !== cur) this.selectProjectFolder(path);
             });
         });
+
+        // v0.6.6 — typeahead: live-filter the recent-project rows as the user
+        // types. The fixed quick-filters (All / Pinned / actions) stay put; only
+        // the project list narrows. Enter selects the first visible match.
+        const typeahead = menu.querySelector('.psw-search');
+        if (typeahead) {
+            const heading = menu.querySelector('.psw-heading');
+            const applyTypeahead = () => {
+                const q = typeahead.value.toLowerCase().trim();
+                let anyVisible = false;
+                menu.querySelectorAll('.psw-project').forEach((row) => {
+                    const label = (row.querySelector('.psw-label')?.textContent || '').toLowerCase();
+                    const sub = (row.querySelector('.psw-sub')?.textContent || '').toLowerCase();
+                    const match = !q || label.includes(q) || sub.includes(q);
+                    row.style.display = match ? '' : 'none';
+                    if (match) anyVisible = true;
+                });
+                if (heading) heading.style.display = anyVisible ? '' : 'none';
+            };
+            typeahead.addEventListener('input', applyTypeahead);
+            typeahead.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    const first = [...menu.querySelectorAll('.psw-project')]
+                        .find(r => r.style.display !== 'none');
+                    first?.click();
+                } else if (e.key === 'Escape') {
+                    this._closeProjectSwitcher();
+                }
+            });
+            // Focus immediately so the user can start typing without a click.
+            setTimeout(() => { try { typeahead.focus(); } catch (e) { /* non-fatal */ } }, 0);
+        }
 
         // Close on outside click / Escape. Guard against the click that just opened
         // the menu re-firing through document (synthetic-click sequences sometimes do this).
@@ -10213,6 +10229,7 @@ class ResonantApp {
     _setProjectFilter(path) {
         const norm = (path || '').replace(/\\/g, '/');
         this._projectFilter = norm;
+        this._pinnedOnly = false;  // picking a project clears the Pinned quick-filter
         // Remember explicit "all projects" choice so init events don't re-apply the filter.
         this._projectFilterUserCleared = !norm;
         if (this.sidebarProjectSwitchLabel) {
@@ -10224,6 +10241,23 @@ class ResonantApp {
                     || norm.split('/').pop();
                 this.sidebarProjectSwitchLabel.textContent = name;
             }
+        }
+        this.renderFilteredSessions();
+    }
+
+    /**
+     * v0.6.6 — "Pinned" quick-filter from the sidebar filter dropdown.
+     * Mutually exclusive with the per-project filter: turning it on clears
+     * any project filter and shows only pinned sessions across all projects.
+     */
+    _setPinnedFilter(on) {
+        this._pinnedOnly = !!on;
+        this._projectFilter = '';
+        // Treat this like an explicit user choice so init/cwd events don't
+        // clobber the label or re-apply a project filter underneath it.
+        this._projectFilterUserCleared = true;
+        if (this.sidebarProjectSwitchLabel) {
+            this.sidebarProjectSwitchLabel.textContent = on ? 'Pinned' : 'All projects';
         }
         this.renderFilteredSessions();
     }
@@ -10242,6 +10276,26 @@ class ResonantApp {
     }
 
     // ── New Session Setup ──────────────────────────────────────
+
+    /**
+     * v0.6.6 — one-click "New session". The nice-and-simple path:
+     *   • A project + backend are already live → spin up a FRESH session in
+     *     the same project/backend (the `clear` command), landing straight on
+     *     the empty composer. This is "add a session to the current project".
+     *   • Otherwise (first run, or just after switching projects with no
+     *     backend chosen yet) → open the workspace picker. Picking a recent
+     *     folder reuses that project; picking a NEW folder creates a new
+     *     project + session.
+     * `currentSessionId` is the reliable "live project + backend" signal — a
+     * session can't exist without both, and `clear` needs the backend.
+     */
+    startNewSession() {
+        if (this.currentSessionId) {
+            this.send({ command: 'clear', session_role: this.sessionRole || 'generator' });
+        } else {
+            this.showNewSessionSetup();
+        }
+    }
 
     showNewSessionSetup() {
         if (this.agentPanel) this.agentPanel.style.display = 'none';

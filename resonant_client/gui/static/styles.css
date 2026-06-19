@@ -523,6 +523,59 @@ body {
 
 .sidebar-search input::placeholder { color: var(--dim); }
 
+/* v0.6.6 — prominent "New session" entry at the very top of the sidebar.
+   Shares the full-width bar language of the project-switch + search rows. */
+.sidebar-new-session {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    box-sizing: border-box;
+    flex-shrink: 0;
+    text-align: left;
+}
+.sidebar-new-session:hover {
+    background: var(--bg-elem);
+    color: var(--brand);
+}
+.sidebar-new-session .sns-icon { flex-shrink: 0; color: var(--brand); display: inline-flex; }
+.sidebar-new-session .sns-label { flex: 1; min-width: 0; }
+.sidebar-new-session .sns-shortcut { flex-shrink: 0; color: var(--dim); font-size: 11px; }
+
+/* v0.6.6 — typeahead box inside the project/pinned filter dropdown. */
+.project-switcher-menu .psw-search-wrap {
+    position: sticky;
+    top: 0;
+    background: var(--bg-panel);
+    padding: 2px 2px 6px;
+    margin-bottom: 2px;
+    border-bottom: 1px solid var(--border);
+    z-index: 1;
+}
+.project-switcher-menu .psw-search {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 9px;
+    background: var(--bg-elem);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+}
+.project-switcher-menu .psw-search:focus { border-color: var(--brand); }
+.project-switcher-menu .psw-search::placeholder { color: var(--dim); }
+.project-switcher-menu .psw-filter-pinned .psw-icon { color: var(--brand); }
+
 .sidebar-brand {
     display: flex;
     align-items: center;

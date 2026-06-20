@@ -229,6 +229,13 @@ class ResonantApp {
             ev.stopPropagation();
             this._openProjectSwitcher(this.sidebarProjectSwitch);
         });
+        // v0.6.7 — composer-footer folder chip opens the same project
+        // switcher (switch project / open another folder / recent).
+        const _footerProjectBtn = document.getElementById('footer-project-btn');
+        _footerProjectBtn?.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            this._openProjectSwitcher(_footerProjectBtn);
+        });
         this.sidebarCwd = document.getElementById('sidebar-cwd');
         this.sidebarProjectName = document.getElementById('sidebar-project-name');
         this.sessionList = document.getElementById('agent-list');
@@ -2534,6 +2541,13 @@ class ResonantApp {
      * Click swaps projects via the native picker.
      */
     _updateHeaderProjectPath(cwd) {
+        // v0.6.7 — keep the composer-footer folder chip in sync (always,
+        // even if the header path element happens to be absent).
+        const _footerName = document.getElementById('footer-project-name');
+        if (_footerName) {
+            const _p = (cwd || '').replace(/\\/g, '/').split('/').filter(Boolean);
+            _footerName.textContent = _p[_p.length - 1] || (cwd || 'project');
+        }
         const btn = document.getElementById('header-project-path');
         const text = document.getElementById('header-project-path-text');
         if (!btn || !text) return;
@@ -9479,50 +9493,6 @@ class ResonantApp {
         this.sessionList.appendChild(wrap);
     }
 
-    /**
-     * Render the "Missions" sidebar group — split into Active and
-     * Completed subsections (B6 fix). Active = drafting / planning /
-     * executing / reviewing. Completed = exited / completed. Each
-     * subsection has its own subheader; the Completed subsection is
-     * collapsed by default to keep the sidebar compact when a project
-     * accumulates archived missions.
-     */
-    _renderMissionsGroup(missions) {
-        const ACTIVE_PHASES = new Set(['drafting', 'planning_dispatched', 'executing', 'reviewing']);
-        const active = missions.filter(s => ACTIVE_PHASES.has(s.mission_state?.phase || ''));
-        const inactive = missions.filter(s => !ACTIVE_PHASES.has(s.mission_state?.phase || ''));
-        const sortByUpdated = (a, b) => (b.updated_at || 0) - (a.updated_at || 0);
-        active.sort(sortByUpdated);
-        inactive.sort(sortByUpdated);
-
-        const wrap = document.createElement('div');
-        wrap.className = 'mission-group';
-
-        const header = document.createElement('div');
-        header.className = 'mission-group-header';
-        header.innerHTML = `
-            <span class="mission-group-icon" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.1"/><circle cx="7" cy="7" r="2.4" stroke="currentColor" stroke-width="1.1"/></svg></span>
-            <span class="mission-group-title">Missions</span>
-            <span class="mission-group-count">${missions.length}</span>
-            <button type="button" class="mission-group-add" title="Start a Mission" aria-label="New mission">+</button>
-        `;
-        header.querySelector('.mission-group-add').addEventListener('click', (e) => {
-            e.stopPropagation();
-            this.openMissionComposer();
-        });
-        wrap.appendChild(header);
-
-        if (active.length > 0) {
-            const sub = this._createMissionSubsection('Active', active, /* defaultExpanded= */ true);
-            wrap.appendChild(sub);
-        }
-        if (inactive.length > 0) {
-            const sub = this._createMissionSubsection('Completed', inactive, /* defaultExpanded= */ false);
-            wrap.appendChild(sub);
-        }
-        this.sessionList.appendChild(wrap);
-    }
-
     // ── v0.6.2a3 — Skills sidebar group + detail dialog ──────────────
 
     requestSkillList() {
@@ -9665,80 +9635,6 @@ class ResonantApp {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         if (!confirm('Archive this skill? It will be moved to the archive folder (reversible).')) return;
         this.ws.send(JSON.stringify({ command: 'skill_archive', skill_id: this._skillDetailOpenId, reason: 'archived via GUI' }));
-    }
-
-    _createMissionSubsection(label, missions, defaultExpanded) {
-        const sub = document.createElement('div');
-        sub.className = 'mission-subsection' + (defaultExpanded ? ' expanded' : '');
-
-        const subhead = document.createElement('div');
-        subhead.className = 'mission-subsection-header';
-        subhead.innerHTML = `
-            <span class="mission-subsection-chevron">${defaultExpanded ? '▾' : '▸'}</span>
-            <span class="mission-subsection-label">${this.escapeHtml(label)}</span>
-            <span class="mission-subsection-count">${missions.length}</span>
-        `;
-        const items = document.createElement('div');
-        items.className = 'mission-subsection-items';
-        for (const m of missions) items.appendChild(this._createMissionRow(m));
-        subhead.addEventListener('click', () => {
-            const expanded = sub.classList.toggle('expanded');
-            subhead.querySelector('.mission-subsection-chevron').textContent = expanded ? '▾' : '▸';
-        });
-        sub.appendChild(subhead);
-        sub.appendChild(items);
-        return sub;
-    }
-
-    _createMissionRow(session) {
-        const phase = (session.mission_state && session.mission_state.phase) || '';
-        const seed = (session.mission_state && session.mission_state.seed_feature) || session.title || '';
-        const phaseLabel = {
-            drafting: 'drafting',
-            planning_dispatched: 'planning',
-            executing: 'executing',
-            reviewing: 'reviewing',
-            completed: 'done',
-            exited: 'exited',
-        }[phase] || phase;
-
-        const isActive = session.id === this.currentSessionId;
-        const isInactive = phase === 'exited' || phase === 'completed';
-
-        const el = document.createElement('div');
-        el.className = 'mission-row' + (isActive ? ' active' : '') + (isInactive ? ' inactive' : '');
-        el.setAttribute('role', 'button');
-        el.setAttribute('tabindex', '0');
-        el.dataset.sessionId = session.id;
-
-        // B4 fix — Resume affordance on inactive rows. Hover-revealed so
-        // it doesn't compete with the row's primary "click to switch"
-        // affordance, but prominent on hover.
-        const resumeButtonHtml = isInactive
-            ? `<button type="button" class="mission-row-resume" title="Resume this mission" aria-label="Resume mission">↻</button>`
-            : '';
-
-        el.innerHTML = `
-            <span class="mission-row-dot" data-phase="${this.escapeHtml(phase)}"></span>
-            <span class="mission-row-body">
-                <span class="mission-row-title">${this.escapeHtml(seed.slice(0, 80))}</span>
-                <span class="mission-row-meta">${this.escapeHtml(phaseLabel)}</span>
-            </span>
-            ${resumeButtonHtml}
-        `;
-        el.addEventListener('click', () => {
-            if (session.id !== this.currentSessionId) {
-                this.send({ command: 'switch_session', session_id: session.id });
-            }
-        });
-        const resumeBtn = el.querySelector('.mission-row-resume');
-        if (resumeBtn) {
-            resumeBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                this.send({ command: 'mission_resume', session_id: session.id });
-            });
-        }
-        return el;
     }
 
     showSessionSkeletons() {
@@ -10139,6 +10035,13 @@ class ResonantApp {
             menu.style.minWidth = `${Math.max(260, Math.round(rect.width))}px`;
         }
         document.body.appendChild(menu);
+        // v0.6.7 — anchors low in the viewport (e.g. the composer-footer
+        // folder chip) would otherwise open off the bottom edge; flip the
+        // menu to open upward when there isn't room below.
+        const _menuH = menu.offsetHeight;
+        if (rect.bottom + _menuH + 8 > window.innerHeight) {
+            menu.style.top = `${Math.max(8, Math.round(rect.top - _menuH - 4))}px`;
+        }
         anchor.setAttribute('aria-expanded', 'true');
 
         // Wire up actions by class (more robust than positional indexing).

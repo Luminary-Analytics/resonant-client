@@ -232,6 +232,12 @@ def main():
         level=logging.DEBUG if args.debug else logging.WARNING,
     )
 
+    try:
+        from resonant_client.updater import init_updater
+        init_updater()
+    except Exception:
+        logger.exception("Updater init failed (non-fatal)")
+
     launch_gui(
         host=args.host,
         port=args.port,

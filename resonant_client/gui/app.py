@@ -7404,6 +7404,29 @@ async def websocket_endpoint(ws: WebSocket):
                 else:
                     await ws.send_json({"event": "error", "message": f"Invalid directory: {project_path}"})
 
+            elif command == "check_updates":
+                try:
+                    from resonant_client.updater import check_for_updates_now
+
+                    started = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: check_for_updates_now(silent=False),
+                    )
+                    await ws.send_json({
+                        "event": "status_msg",
+                        "message": (
+                            "Update checker opened."
+                            if started
+                            else "Update checker is unavailable in this build."
+                        ),
+                    })
+                except Exception as exc:
+                    logger.exception("check_updates failed")
+                    await ws.send_json({
+                        "event": "error",
+                        "message": f"Failed to check for updates: {exc}",
+                    })
+
             elif command == "save_diagnostics":
                 # v0.3.4 — Help → Save diagnostics. Bundles redacted logs
                 # + intent audits + settings into a ZIP under ~/Downloads

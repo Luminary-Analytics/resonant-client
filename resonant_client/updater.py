@@ -193,7 +193,7 @@ def init_updater() -> bool:
         return False
 
 
-def check_for_updates_now(silent: bool = False) -> None:
+def check_for_updates_now(silent: bool = False) -> bool:
     """
     Trigger an immediate update check.
 
@@ -207,15 +207,17 @@ def check_for_updates_now(silent: bool = False) -> None:
         init_updater()
     if _dll is None:
         logger.debug("Update check requested but WinSparkle is unavailable")
-        return
+        return False
 
     try:
         if silent:
             _dll.win_sparkle_check_update_without_ui()
         else:
             _dll.win_sparkle_check_update_with_ui()
+        return True
     except OSError as exc:
         logger.error("Update check failed: %s", exc)
+        return False
 
 
 def cleanup_updater() -> None:

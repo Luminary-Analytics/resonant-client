@@ -513,6 +513,26 @@ class ResonantApp {
         document.getElementById('sidebar-toggle').addEventListener('click', () => {
             document.getElementById('sidebar').classList.toggle('collapsed');
         });
+        const sidebar = document.getElementById('sidebar');
+        const mobileSidebarQuery = window.matchMedia('(max-width: 820px)');
+        const syncMobileSidebar = () => {
+            if (!sidebar) return;
+            sidebar.classList.toggle('collapsed', mobileSidebarQuery.matches);
+        };
+        syncMobileSidebar();
+        mobileSidebarQuery.addEventListener?.('change', syncMobileSidebar);
+        document.getElementById('titlebar-sidebar-toggle')?.addEventListener('click', () => {
+            document.getElementById('sidebar-toggle')?.click();
+        });
+        document.getElementById('titlebar-command')?.addEventListener('click', () => {
+            this.openCommandPalette();
+        });
+        document.getElementById('rail-new-session')?.addEventListener('click', () => {
+            document.getElementById('new-agent-btn')?.click();
+        });
+        document.querySelector('[data-action="shortcuts"]')?.addEventListener('click', () => {
+            this.toggleShortcutsOverlay();
+        });
 
         // Permission dialog
         document.getElementById('permission-allow').addEventListener('click', () => {
@@ -692,7 +712,7 @@ class ResonantApp {
         });
 
         // ── Sidebar Navigation ──
-        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view]').forEach(item => {
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view], .rail-btn[data-view]').forEach(item => {
             item.addEventListener('click', () => {
                 this.switchView(item.dataset.view);
             });
@@ -838,11 +858,8 @@ class ResonantApp {
             return;
         }
 
-        // Mission entry is now a UI toggle (chat-header) — slash command
-        // dropped. If a stale `/grill` muscle-memory shows up, point them
-        // at the toggle so they don't get silently confused.
         if (text.startsWith('/grill') || text.startsWith('/mission')) {
-            this.showStatusMessage('Autonomous sessions are started from the 🎯 toggle in the chat header.');
+            this.showStatusMessage('That workflow is hidden in the redesigned UI. Start a normal session and ask Resonant directly.');
             return;
         }
 
@@ -2548,6 +2565,18 @@ class ResonantApp {
             const _p = (cwd || '').replace(/\\/g, '/').split('/').filter(Boolean);
             _footerName.textContent = _p[_p.length - 1] || (cwd || 'project');
         }
+        const shellName = document.getElementById('sidebar-shell-project-name');
+        const shellPath = document.getElementById('sidebar-shell-project-path');
+        if (shellName || shellPath) {
+            const path = (cwd || '').replace(/\\/g, '/');
+            const parts = path.split('/').filter(Boolean);
+            const short = parts[parts.length - 1] || 'Resonant';
+            if (shellName) shellName.textContent = short;
+            if (shellPath) {
+                shellPath.textContent = path || 'Open a workspace';
+                shellPath.title = path || 'Open a workspace';
+            }
+        }
         const btn = document.getElementById('header-project-path');
         const text = document.getElementById('header-project-path-text');
         if (!btn || !text) return;
@@ -2616,6 +2645,14 @@ class ResonantApp {
         return null;
     }
 
+    _syncSessionTitle(sess = null) {
+        const el = document.getElementById('chat-session-title');
+        if (!el) return;
+        const session = sess || this._currentSessionSummary();
+        el.textContent = (session && session.title) || 'New session';
+        el.title = el.textContent;
+    }
+
     /**
      * Sync the chat-header chrome with the current session's mission state.
      * Called whenever sessions_updated or session_cleared lands.
@@ -2629,6 +2666,7 @@ class ResonantApp {
      */
     _syncMissionUI() {
         const sess = this._currentSessionSummary();
+        this._syncSessionTitle(sess);
         const ms = sess && sess.mission_state;
         const phase = ms && ms.phase;
         const seed = (ms && ms.seed_feature) || '';
@@ -3806,9 +3844,9 @@ class ResonantApp {
     formatSessionRole(role) {
         // Note: 'chat' is a legacy role from the pre-refocus Ask mode. We
         // now hide it instead of rendering "Ask" — chat mode is gone.
-        const labels = { planner: 'Planner', generator: 'Generator', evaluator: 'Evaluator' };
+        const labels = { planner: 'Plan', generator: 'Build', evaluator: 'Review' };
         if (role === 'chat') return ''; // suppress legacy tag
-        return labels[role] || 'Generator';
+        return labels[role] || 'Build';
     }
 
     setHarnessSprint(payload) {
@@ -4451,6 +4489,7 @@ class ResonantApp {
                 this.applySessionRoleUI(event.session_role || 'generator');
                 this.sessionRole = event.session_role || this.sessionRole;
                 this.renderFilteredSessions();
+                this._syncSessionTitle();
                 this.showChatInterface();
                 // Clear preview panel for loaded session
                 this.clearPreviewPanel();
@@ -4841,13 +4880,6 @@ class ResonantApp {
             return;
         }
 
-        const preferred = this._getPreferredBackendSelection(backends);
-        const configuredBackend = this.settings?.general?.default_backend || '';
-        if (configuredBackend && preferred?.backend === configuredBackend) {
-            this.selectBackend(preferred.backend, preferred.model);
-            return;
-        }
-
         // If we're on the backend step (project already selected), refresh backend cards
         const backendStep = document.getElementById('backend-step');
         if (backendStep && backendStep.style.display !== 'none') {
@@ -4888,7 +4920,7 @@ class ResonantApp {
             return;
         }
 
-        label.textContent = 'Pick a model';
+        label.textContent = 'Pick an Ollama model';
 
         // Pin the flagship + secondary cloud tiers to the top.
         // glm-5.2:cloud is THE flagship (v0.6.5); the deepseek-v4
@@ -4914,14 +4946,14 @@ class ResonantApp {
             row.dataset.backend = 'ollama';
             row.dataset.model = model;
             const pills = [];
-            if (isFlagship) pills.push('<span class="backend-pill backend-pill-rec">Flagship</span>');
+            if (isFlagship) pills.push('<span class="backend-pill backend-pill-rec">Recommended</span>');
             if (model.endsWith(':cloud')) pills.push('<span class="backend-pill backend-pill-ok">Cloud</span>');
             else pills.push('<span class="backend-pill backend-pill-ok">Local</span>');
             row.innerHTML = `
                 <div class="backend-card-icon">🦙</div>
                 <div class="backend-card-info">
                     <div class="backend-card-name">${this.escapeHtml(model)}</div>
-                    <div class="backend-card-detail">${this.escapeHtml(ollamaInfo.url || 'Ollama')}</div>
+                    <div class="backend-card-detail">${this.escapeHtml(ollamaInfo.url || 'Ollama endpoint')}</div>
                     <div class="backend-card-pills">${pills.join('')}</div>
                 </div>
                 <div class="backend-card-dot"></div>
@@ -5174,7 +5206,7 @@ class ResonantApp {
         this.inputBar.style.display = 'flex';
         if (this.settingsView) this.settingsView.style.display = 'none';
         this.currentView = 'agents';
-        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view]').forEach(el =>
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view], .rail-btn[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === 'agents'));
         this._maybeRenderChatEmptyState();
         this.userInput.focus();
@@ -5224,14 +5256,10 @@ class ResonantApp {
         if (this.chatMessages.children.length > 0) return;
         const empty = document.createElement('div');
         empty.className = 'chat-empty-state';
-        // v0.6.6 — minimal empty state: just a greeting + the input below.
-        // The suggestion cards (explore / git status / run tests) and the
-        // "Or start a Mission" button were removed as clutter; missions stay
-        // reachable via the chat-header Autonomous toggle.
+        // Minimal empty state: keep the surface quiet until the first turn.
         empty.innerHTML = `
             <div class="chat-empty-glyph">┃</div>
-            <h2 class="chat-empty-title">Ready when you are.</h2>
-            <p class="chat-empty-sub">Type your request below. <kbd>Enter</kbd> to send, <kbd>Shift+Enter</kbd> for newline.</p>
+            <h2 class="chat-empty-title">Ready.</h2>
         `;
         this.chatMessages.appendChild(empty);
     }
@@ -6991,7 +7019,7 @@ class ResonantApp {
         const sessionList = document.getElementById('agent-list');
         if (sessionList) sessionList.style.display = viewName === 'agents' ? '' : 'none';
 
-        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view]').forEach(el =>
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view], .rail-btn[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === viewName));
 
         // Header title swap — make it obvious you're on a non-agent screen
@@ -7093,7 +7121,7 @@ class ResonantApp {
                 ]
             },
             {
-                id: 'local_backends', title: 'Local Backends (Ollama / LM Studio)', open: false,
+                id: 'local_backends', title: 'Ollama Runtime', open: false,
                 fields: [
                     { key: 'ollama_host', label: 'Ollama host (OLLAMA_HOST)', type: 'text' },
                     { key: 'ollama_num_ctx', label: 'Ollama context window (num_ctx)', type: 'number' },
@@ -7365,6 +7393,10 @@ class ResonantApp {
                     case 'toggle-sidebar': document.getElementById('sidebar-toggle')?.click(); break;
                     case 'toggle-preview': document.getElementById('preview-toggle')?.click(); break;
                     case 'shortcuts': this.toggleShortcutsOverlay(); break;
+                    case 'check-updates':
+                        this.showStatusMessage('Checking for updates...');
+                        this.send({ command: 'check_updates' });
+                        break;
                     case 'save-diagnostics':
                         // v0.3.4 — Help → Save Diagnostics. Bundles
                         // redacted logs / intent audits / settings into
@@ -7375,7 +7407,7 @@ class ResonantApp {
                         this.showStatusMessage('Bundling diagnostics…');
                         this.send({ command: 'save_diagnostics' });
                         break;
-                    case 'about': this.showStatusMessage('Resonant Client — Build software with agents'); break;
+                    case 'about': this.showStatusMessage('Resonant Client - local-first multimodal coding agent'); break;
                 }
             });
         });
@@ -9841,7 +9873,7 @@ class ResonantApp {
         const ms = session.mission_state;
         const isRunning = !!ms && ['drafting', 'planning_dispatched', 'executing', 'reviewing'].includes(ms.phase || '');
         const dotCls = isActive ? 'is-active' : (isRunning ? 'is-running' : (session.pinned ? 'is-pinned' : 'is-idle'));
-        const autoBadge = ms ? '<span class="agent-row-auto" title="Autonomous (long-running) session">Auto</span> \u00B7 ' : '';
+        const autoBadge = '';
         el.innerHTML = `
             <div class="agent-row-title"><span class="agent-row-dot ${dotCls}" aria-hidden="true"></span>${this.escapeHtml(session.title || 'New session')}</div>
             <div class="agent-row-date">${autoBadge}${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
@@ -9905,7 +9937,7 @@ class ResonantApp {
             } else if (action === 'delete') {
                 this.send({ command: 'delete_session', session_id: session.id });
             } else if (action === 'rename') {
-                const newTitle = prompt('Rename agent:', session.title);
+                const newTitle = prompt('Rename session:', session.title);
                 if (newTitle && newTitle.trim()) {
                     this.send({ command: 'rename_session', session_id: session.id, title: newTitle.trim() });
                 }
@@ -10208,7 +10240,7 @@ class ResonantApp {
 
         this.welcomeScreen.style.display = 'flex';
         this.currentView = 'agents';
-        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view]').forEach(el =>
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view], .rail-btn[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === 'agents'));
 
         this.clearPreviewPanel();

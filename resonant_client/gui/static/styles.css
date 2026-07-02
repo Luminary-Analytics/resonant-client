@@ -9540,7 +9540,7 @@ body {
 
 .status-popover-tabs {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 2px;
     padding: 6px;
     border-bottom: 1px solid var(--border);
@@ -9634,6 +9634,17 @@ body {
 
 .status-row:hover {
     background: rgba(255,255,255,.035);
+}
+
+.status-skill-row {
+    width: 100%;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
 }
 
 .status-row-main {
@@ -9753,8 +9764,29 @@ body {
     gap: 12px;
 }
 
+.rail-top {
+    flex: 1;
+    min-height: 0;
+}
+
+.rail-projects {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    min-height: 0;
+    max-width: 100%;
+    overflow-y: auto;
+    scrollbar-width: none;
+}
+
+.rail-projects::-webkit-scrollbar {
+    display: none;
+}
+
 .rail-avatar,
-.rail-btn {
+.rail-btn,
+.rail-project-icon {
     width: 34px;
     height: 34px;
     border-radius: 8px;
@@ -9789,10 +9821,46 @@ body {
 }
 
 .rail-btn:hover,
-.rail-btn.active {
+.rail-btn.active,
+.rail-project-icon:hover,
+.rail-project-icon.active {
     color: var(--text);
     background: var(--bg-hover);
     border-color: var(--border);
+}
+
+.rail-project-icon {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0;
+}
+
+.rail-project-icon.active {
+    color: #fff;
+    background: linear-gradient(180deg, #51348a, #231a36);
+    border-color: rgba(143,108,255,.62);
+    box-shadow: inset 0 0 0 1px rgba(143,108,255,.3);
+}
+
+.rail-project-count {
+    position: absolute;
+    right: -5px;
+    bottom: -3px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 3px;
+    border-radius: 999px;
+    background: #262626;
+    border: 1px solid #0e0e0e;
+    color: var(--muted);
+    font-size: 9px;
+    font-weight: 700;
+    line-height: 13px;
+}
+
+.rail-project-icon.active .rail-project-count {
+    color: #fff;
+    background: var(--brand);
 }
 
 #sidebar {

@@ -236,6 +236,7 @@ class ResonantApp {
         this.statusPopoverTrigger = document.getElementById('status-popover-trigger');
         this.statusPopover = document.getElementById('status-popover');
         this.statusPopoverBody = document.getElementById('status-popover-body');
+        this.railProjects = document.getElementById('rail-projects');
         // Sidebar project switcher pill — opens the same dropdown the titlebar used to
         // and additionally filters the sidebar session tree to the selected project.
         this.sidebarProjectSwitch = document.getElementById('sidebar-project-switch');
@@ -542,20 +543,12 @@ class ResonantApp {
     _renderStatusPlugins() {
         const plugins = Array.isArray(this.resonantPlugins) ? this.resonantPlugins : [];
         if (!plugins.length) {
-            return [
-                this._statusRow({
-                    dot: 'muted',
-                    title: 'No Resonant plugins installed',
-                    detail: 'Plugin packages will appear here when they are enabled.',
-                    meta: this._statusPill('empty'),
-                }),
-                this._statusRow({
-                    dot: 'muted',
-                    title: 'Skills are separate',
-                    detail: 'Pinned skills stay in the Skills section of the sidebar.',
-                    meta: this._statusPill('info'),
-                }),
-            ].join('');
+            return this._statusRow({
+                dot: 'muted',
+                title: 'No Resonant plugins installed',
+                detail: 'Plugin packages will appear here when they are enabled.',
+                meta: this._statusPill('empty'),
+            });
         }
         return plugins.slice(0, 12).map((plugin) => {
             const status = String(plugin.status || (plugin.enabled === false ? 'disabled' : 'available')).toLowerCase();
@@ -574,6 +567,37 @@ class ResonantApp {
             : '');
     }
 
+    _renderStatusSkills() {
+        const skills = Array.isArray(this.skills) ? this.skills : [];
+        if (!skills.length) {
+            return this._statusRow({
+                dot: 'muted',
+                title: 'No skills installed',
+                detail: 'Reusable skills will appear here when available.',
+                meta: this._statusPill('empty'),
+            });
+        }
+        const rows = skills.slice(0, 18).map((skill) => {
+            const id = skill.id || '';
+            const title = skill.name || id || 'Skill';
+            const desc = (skill.description || '').slice(0, 96);
+            const meta = skill.pinned ? 'pinned' : (skill.scope || 'skill');
+            const detail = [skill.scope, skill.created_by, desc].filter(Boolean).join(' · ');
+            return `
+                <button class="status-row status-skill-row" type="button" data-status-skill-id="${this.escapeHtml(id)}">
+                    <span class="status-row-dot ${skill.pinned ? 'ok' : 'muted'}" aria-hidden="true"></span>
+                    <span class="status-row-main">
+                        <span class="status-row-title">${this.escapeHtml(title)}</span>
+                        ${detail ? `<span class="status-row-detail">${this.escapeHtml(detail)}</span>` : ''}
+                    </span>
+                    <span class="status-row-meta">${this._statusPill(meta)}</span>
+                </button>`;
+        }).join('');
+        return rows + (skills.length > 18
+            ? `<div class="status-popover-more">${skills.length - 18} more skills configured</div>`
+            : '');
+    }
+
     _renderStatusPopover() {
         if (!this.statusPopoverBody) return;
         const tab = this.statusPopoverTab || 'servers';
@@ -585,6 +609,7 @@ class ResonantApp {
             mcp: () => this._renderStatusMcp(),
             lsp: () => this._renderStatusLsp(),
             plugins: () => this._renderStatusPlugins(),
+            skills: () => this._renderStatusSkills(),
         };
         this.statusPopoverBody.innerHTML = `
             <div class="status-popover-summary">
@@ -978,6 +1003,12 @@ class ResonantApp {
             if (tab && tab.dataset.statusTab) {
                 this.statusPopoverTab = tab.dataset.statusTab;
                 this._renderStatusPopover();
+                return;
+            }
+            const skillRow = e.target.closest('[data-status-skill-id]');
+            if (skillRow?.dataset.statusSkillId) {
+                this.openSkillDetail(skillRow.dataset.statusSkillId);
+                this.closeStatusPopover();
                 return;
             }
             const action = e.target.closest('[data-status-action]');
@@ -4963,20 +4994,21 @@ class ResonantApp {
                 if (Array.isArray(event.recent_projects)) {
                     this.recentProjects = event.recent_projects;
                 }
+                {
+                    const registeredPath = this._normalizeProjectPath(event.path || '');
+                    const hasRegistered = registeredPath && (this.recentProjects || [])
+                        .some(project => this._normalizeProjectPath(project?.path || '') === registeredPath);
+                    if (registeredPath && !hasRegistered) {
+                        this.recentProjects = [
+                            { name: this._projectNameFromPath(registeredPath), path: registeredPath },
+                            ...(this.recentProjects || []),
+                        ];
+                    }
+                }
                 if (Array.isArray(event.all_sessions)) {
                     this.allSessions = event.all_sessions;
                 }
-                {
-                    const registeredPath = (event.path || '').replace(/\\/g, '/');
-                    if (registeredPath) {
-                        if (!this._expandedProjects) this._expandedProjects = new Set();
-                        this._expandedProjects.add(registeredPath);
-                    }
-                    // Adding a project should make it visible immediately.
-                    // Keep the active project/session unchanged; only broaden
-                    // the sidebar filter so empty project groups can appear.
-                    this._setProjectFilter('');
-                }
+                this.renderProjectRail();
                 break;
             case 'resume_prompt':
                 this.applyResumePrompt(event.prompt || '');
@@ -5016,6 +5048,12 @@ class ResonantApp {
                 if (event.cwd) {
                     this.currentCwd = event.cwd.replace(/\\/g, '/');
                     this._updateHeaderProjectPath(this.currentCwd);
+                    this._projectFilter = this.currentCwd;
+                    this._projectFilterUserCleared = false;
+                    this._pinnedOnly = false;
+                    if (this.sidebarProjectSwitchLabel) {
+                        this.sidebarProjectSwitchLabel.textContent = this._projectNameFromPath(this.currentCwd);
+                    }
                 }
                 this.applySessionRoleUI(event.session_role || this.sessionRole);
                 this.renderFilteredSessions();
@@ -5300,7 +5338,6 @@ class ResonantApp {
             case 'skill_list':
                 this.skills = event.skills || [];
                 this._renderStatusPopover();
-                this.renderFilteredSessions();
                 if (this._skillDetailOpenId) {
                     // Refresh open detail dialog if it's still relevant.
                     const stillExists = this.skills.some(s => s.id === this._skillDetailOpenId);
@@ -5436,6 +5473,8 @@ class ResonantApp {
             this.applySessionRoleUI(current_session_role || this.currentSessionRole || 'generator');
             this.sessionRole = current_session_role || this.sessionRole;
             this.renderFilteredSessions();
+        } else {
+            this.renderProjectRail();
         }
 
         // v0.5.3a2 — Resume orphaned autonomous missions. Server sends
@@ -10388,6 +10427,7 @@ class ResonantApp {
         }
 
         this._renderProjectTree(filtered);
+        this.renderProjectRail();
     }
 
     _renderProjectTree(sessions) {
@@ -10404,109 +10444,14 @@ class ResonantApp {
             this._renderPinnedGroup(pinned);
         }
 
-        // v0.6.5 — unified "projects + sessions" model (Claude Code style):
-        // every session lives in its project's list, INCLUDING the
-        // long-running autonomous ones (formerly the separate "Missions"
-        // group). _createTreeSessionRow badges the autonomous ones so they
-        // stay distinguishable without needing their own section.
-        const projectMap = new Map();
-        const addProjectShell = (pathValue, nameValue = '') => {
-            const path = (pathValue || '').replace(/\\/g, '/');
-            if (!path) return null;
-            if (!projectMap.has(path)) {
-                const name = nameValue || path.split('/').filter(Boolean).pop() || 'Unknown';
-                projectMap.set(path, { name, path, sessions: [] });
-            }
-            return projectMap.get(path);
-        };
-        for (const s of unpinned) {
-            const path = (s.project_path || this.currentCwd || '').replace(/\\/g, '/');
-            const name = s.project_name || path.split('/').pop() || 'Unknown';
-            const project = addProjectShell(path, name);
-            if (project) project.sessions.push(s);
+        // Projects live on the rail; the sidebar body stays a flat session list.
+        const sortByUpdated = (a, b) => (b.updated_at || 0) - (a.updated_at || 0);
+        for (const session of [...unpinned].sort(sortByUpdated)) {
+            this.sessionList.appendChild(this._createTreeSessionRow(session));
         }
 
-        const searchVal = (document.getElementById('search-input')?.value || '').toLowerCase().trim();
-        const projFilter = (this._projectFilter || '').replace(/\\/g, '/');
-        const includeProjectShell = (pathValue, nameValue = '') => {
-            const path = (pathValue || '').replace(/\\/g, '/');
-            if (!path) return;
-            if (projFilter && path !== projFilter) return;
-            addProjectShell(path, nameValue);
-        };
-        if (!this._pinnedOnly && !searchVal) {
-            includeProjectShell(this.currentCwd, this.currentCwd?.split(/[\\/]/).filter(Boolean).pop() || '');
-            for (const proj of (this.recentProjects || [])) {
-                includeProjectShell(proj?.path || '', proj?.name || '');
-            }
-        }
-
-        // Track expanded state (default: current project expanded, others collapsed)
-        if (!this._expandedProjects) this._expandedProjects = new Set();
-        const curPath = (this.currentCwd || '').replace(/\\/g, '/');
-        if (!this._expandedProjectsInited) {
-            this._expandedProjects.add(curPath);
-            this._expandedProjectsInited = true;
-        }
-        // When the tree contains a single project (e.g. filtered down), auto-expand it
-        // so users immediately see the sessions instead of having to click the chevron.
-        if (projectMap.size === 1) {
-            const onlyPath = projectMap.keys().next().value;
-            this._expandedProjects.add(onlyPath);
-        }
-
-        if (projectMap.size === 0) {
-            if (!pinned.length) {
-                this.sessionList.innerHTML = '<div class="agent-empty">No sessions yet</div>';
-            }
-            if (this.skills && this.skills.length) {
-                this._renderSkillsGroup(this.skills);
-            }
-            return;
-        }
-
-        for (const [path, proj] of projectMap) {
-            const isExpanded = this._expandedProjects.has(path);
-            const isCurrent = path === curPath;
-
-            const header = document.createElement('div');
-            header.className = 'proj-tree-header' + (isCurrent ? ' current' : '');
-            header.innerHTML = `
-                <span class="proj-tree-chevron">${isExpanded ? '\u25BE' : '\u25B8'}</span>
-                <span class="proj-tree-folder" aria-hidden="true"><svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M1.5 4a.8.8 0 01.8-.8h2.4l1 1.1h4.8a.8.8 0 01.8.8v5a.8.8 0 01-.8.8H2.3a.8.8 0 01-.8-.8V4z" stroke="currentColor" stroke-width="1.1"/></svg></span>
-                <span class="proj-tree-name">${this.escapeHtml(proj.name)}</span>
-                <span class="proj-tree-count">${proj.sessions.length}</span>
-            `;
-            header.addEventListener('click', () => {
-                if (this._expandedProjects.has(path)) {
-                    this._expandedProjects.delete(path);
-                } else {
-                    this._expandedProjects.add(path);
-                }
-                this.renderFilteredSessions();
-            });
-            this.sessionList.appendChild(header);
-
-            if (isExpanded) {
-                const container = document.createElement('div');
-                container.className = 'proj-tree-sessions';
-                if (proj.sessions.length) {
-                    for (const session of proj.sessions) {
-                        container.appendChild(this._createTreeSessionRow(session));
-                    }
-                } else {
-                    const empty = document.createElement('div');
-                    empty.className = 'project-empty';
-                    empty.textContent = 'No sessions yet';
-                    container.appendChild(empty);
-                }
-                this.sessionList.appendChild(container);
-            }
-        }
-
-        // Skills group last (no-ops when empty).
-        if (this.skills && this.skills.length) {
-            this._renderSkillsGroup(this.skills);
+        if (!pinned.length && !unpinned.length) {
+            this.sessionList.innerHTML = '<div class="agent-empty">No sessions yet</div>';
         }
     }
 
@@ -10637,6 +10582,103 @@ class ResonantApp {
             ? { month: 'short', day: 'numeric' }
             : { month: 'short', day: 'numeric', year: 'numeric' };
         return date.toLocaleDateString(undefined, opts);
+    }
+
+    _normalizeProjectPath(path) {
+        return (path || '').replace(/\\/g, '/').replace(/\/+$/, '');
+    }
+
+    _projectNameFromPath(path) {
+        const parts = this._normalizeProjectPath(path).split('/').filter(Boolean);
+        return parts[parts.length - 1] || 'Project';
+    }
+
+    _projectInitials(name) {
+        const clean = String(name || '').trim();
+        if (!clean) return 'P';
+        const words = clean.split(/[\s._-]+/).filter(Boolean);
+        if (words.length >= 2) return `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase();
+        return clean.slice(0, 2).toUpperCase();
+    }
+
+    _getProjectRailItems() {
+        const byPath = new Map();
+        const sessionPool = (this.allSessions && this.allSessions.length)
+            ? this.allSessions
+            : this.sessions;
+        const counts = new Map();
+        for (const session of (sessionPool || [])) {
+            const key = this._normalizeProjectPath(session?.project_path || this.currentCwd || '');
+            if (!key) continue;
+            counts.set(key, (counts.get(key) || 0) + 1);
+        }
+        const addProject = (pathValue, nameValue = '') => {
+            const path = this._normalizeProjectPath(pathValue);
+            if (!path) return;
+            if (!byPath.has(path)) {
+                byPath.set(path, {
+                    path,
+                    name: nameValue || this._projectNameFromPath(path),
+                    count: counts.get(path) || 0,
+                });
+                return;
+            }
+            const existing = byPath.get(path);
+            if (!existing.name && nameValue) existing.name = nameValue;
+            existing.count = counts.get(path) || existing.count || 0;
+        };
+
+        addProject(this.currentCwd, this._projectNameFromPath(this.currentCwd || ''));
+        for (const project of (this.recentProjects || [])) {
+            addProject(project?.path || '', project?.name || '');
+        }
+        for (const session of (sessionPool || [])) {
+            addProject(session?.project_path || '', session?.project_name || '');
+        }
+        return Array.from(byPath.values());
+    }
+
+    renderProjectRail() {
+        if (!this.railProjects) return;
+        const projects = this._getProjectRailItems();
+        const currentPath = this._normalizeProjectPath(this.currentCwd || '');
+        this.railProjects.innerHTML = '';
+
+        for (const project of projects) {
+            const isActive = project.path === currentPath;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = `rail-project-icon${isActive ? ' active' : ''}`;
+            btn.title = `${project.name}\n${project.path}`;
+            btn.setAttribute('aria-label', isActive
+                ? `${project.name} project, active`
+                : `Open project ${project.name}`);
+            btn.dataset.path = project.path;
+            btn.innerHTML = `<span class="rail-project-initials">${this.escapeHtml(this._projectInitials(project.name))}</span>`;
+            if (project.count > 0) {
+                const badge = document.createElement('span');
+                badge.className = 'rail-project-count';
+                badge.textContent = project.count > 99 ? '99+' : String(project.count);
+                btn.appendChild(badge);
+            }
+            btn.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                this._selectRailProject(project.path);
+            });
+            this.railProjects.appendChild(btn);
+        }
+    }
+
+    _selectRailProject(path) {
+        const norm = this._normalizeProjectPath(path);
+        if (!norm) return;
+        const cur = this._normalizeProjectPath(this.currentCwd || '');
+        this._setProjectFilter(norm);
+        if (norm !== cur) {
+            this.selectProjectFolder(path);
+        } else {
+            this.renderProjectRail();
+        }
     }
 
     // ── Project switcher dropdown ──────────────────────────────────────
@@ -11027,6 +11069,12 @@ class ResonantApp {
         this.headerProject.textContent = short;
         this.sidebarProjectName.textContent = short;
         this.sidebarCwd.textContent = path;
+        this._updateHeaderProjectPath(this.currentCwd);
+        this._projectFilter = this.currentCwd;
+        this._pinnedOnly = false;
+        this._projectFilterUserCleared = false;
+        if (this.sidebarProjectSwitchLabel) this.sidebarProjectSwitchLabel.textContent = short;
+        this.renderFilteredSessions();
 
         // Bug #7+#8 fix: project switch was leaving the chat panel and the
         // git pill showing the previous project's state. The set_project

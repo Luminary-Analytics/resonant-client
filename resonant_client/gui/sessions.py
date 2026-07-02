@@ -145,8 +145,7 @@ def _safe_default_project_path() -> str:
                 # tests that call set_project leave temp dirs in the live
                 # recents file, and adopting one strands sessions under a
                 # project hash pytest deletes a few runs later.
-                normalized = path.replace("\\", "/").lower()
-                if "pytest-of-" in normalized or "/temp/pytest-" in normalized:
+                if _is_pytest_temp_path(path):
                     continue
                 # When cwd was vetoed as the Resonant source repo (a dev
                 # launch from the checkout), don't let the recents loop

@@ -463,7 +463,14 @@ class TestComputerUseToolDefs:
             assert name in TOOL_ICONS, f"Missing icon: {name}"
 
     def test_all_tools_routable(self):
-        """execute_tool should route all computer use tools (even if deps missing)."""
+        """execute_tool should route all computer use tools (even if deps missing).
+
+        Every OS-facing call must be stubbed: unmocked, this test popped a
+        real Windows "cannot find 'test'" ShellExecute dialog on the
+        developer's desktop (open_application), jumped the mouse to the
+        top-left corner (drag/hover), and could steal focus from a live
+        window (window_focus) on every suite run.
+        """
         from resonant_client.engine.tools import execute_tool
 
         # These should all be routable (may fail on deps but shouldn't be "Unknown tool")
@@ -475,9 +482,14 @@ class TestComputerUseToolDefs:
             ("computer_wait", {"mode": "duration", "seconds": 0.01}),
             ("open_application", {"name": "test"}),
         ]
-        for name, args in tools_to_test:
-            result = execute_tool(name, args)
-            assert "Unknown tool" not in result.output, f"{name} not routed"
+        with patch("pyautogui.moveTo"), patch("pyautogui.drag"), \
+             patch("resonant_client.engine.computer_use.focus_window",
+                   return_value="Focused window: test"), \
+             patch("subprocess.Popen"), patch("os.startfile", create=True), \
+             patch("time.sleep"):
+            for name, args in tools_to_test:
+                result = execute_tool(name, args)
+                assert "Unknown tool" not in result.output, f"{name} not routed"
 
 
 # ── Integration: Vision Loop Test ─────────────────────────────────────

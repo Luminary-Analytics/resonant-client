@@ -7476,6 +7476,37 @@ async def websocket_endpoint(ws: WebSocket):
                 })
                 await ws.send_json(state.get_init_data())
 
+            elif command == "register_project":
+                project_path = msg.get("path", "").strip()
+                if not project_path:
+                    await ws.send_json({"event": "error", "message": "Project path is required."})
+                    continue
+                try:
+                    resolved_project_path = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.ensure_project_path(project_path),
+                    )
+                    registered_project_path = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.project.register_project(resolved_project_path),
+                    )
+                    await ws.send_json({
+                        "event": "project_registered",
+                        "path": registered_project_path,
+                        "recent_projects": state.project.get_recent_projects(),
+                        "all_sessions": state.project.list_all_sessions(),
+                    })
+                    await ws.send_json({
+                        "event": "ui_notice",
+                        "message": f"Project added: {registered_project_path}",
+                    })
+                except Exception as exc:
+                    logger.warning("register_project failed for %r: %s", project_path, exc)
+                    await ws.send_json({
+                        "event": "error",
+                        "message": f"Couldn't add project folder: {exc}",
+                    })
+
             elif command == "set_project":
                 project_path = msg.get("path", "").strip()
                 if not project_path:

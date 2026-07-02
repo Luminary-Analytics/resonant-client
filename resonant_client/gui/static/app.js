@@ -959,7 +959,7 @@ class ResonantApp {
             this.switchView('agents');
         });
         document.getElementById('rail-open-project')?.addEventListener('click', () => {
-            this.openProjectFolder();
+            this.openProjectFolder('register');
         });
         // Scope to the activity rail: the bare [data-action="shortcuts"]
         // selector grabbed the Help-menu item first, double-binding it
@@ -1015,7 +1015,7 @@ class ResonantApp {
 
         // Add project button (next to project filter dropdown)
         document.getElementById('pf-add-project')?.addEventListener('click', () => {
-            this.openProjectFolder();
+            this.openProjectFolder('register');
         });
 
         // Image paste (Ctrl+V)
@@ -3127,8 +3127,8 @@ class ResonantApp {
         el.title = el.textContent;
     }
 
-    openProjectFolder() {
-        this._pendingFolderPickConsumer = null;
+    openProjectFolder(consumer = null) {
+        this._pendingFolderPickConsumer = consumer;
         this.send({
             command: 'folder_dialog',
             directory: (this.currentCwd || '').trim(),
@@ -4959,6 +4959,15 @@ class ResonantApp {
             case 'ui_notice':
                 this.showToastMessage(event.message);
                 break;
+            case 'project_registered':
+                if (Array.isArray(event.recent_projects)) {
+                    this.recentProjects = event.recent_projects;
+                }
+                if (Array.isArray(event.all_sessions)) {
+                    this.allSessions = event.all_sessions;
+                }
+                this.renderFilteredSessions();
+                break;
             case 'resume_prompt':
                 this.applyResumePrompt(event.prompt || '');
                 break;
@@ -5150,6 +5159,12 @@ class ResonantApp {
                         }
                         break;
                     }
+                    if (this._pendingFolderPickConsumer === 'register') {
+                        this._pendingFolderPickConsumer = null;
+                        this.registerProjectFolder(event.path);
+                        break;
+                    }
+                    this._pendingFolderPickConsumer = null;
                     const folderInput = document.getElementById('welcome-folder-input');
                     if (folderInput) folderInput.value = event.path;
                     this.selectProjectFolder(event.path);
@@ -5168,17 +5183,23 @@ class ResonantApp {
                     const consumer = this._pendingFolderPickConsumer;
                     const label = consumer === 'mission'
                         ? 'Pick session folder'
+                        : consumer === 'register'
+                            ? 'Add project'
                         : 'Open project';
+                    this._pendingFolderPickConsumer = null;
                     if (event.message) this.showToastMessage(event.message);
                     this._promptForProjectPath(label, (path) => {
                         if (consumer === 'mission') {
-                            this._pendingFolderPickConsumer = null;
                             const pathInput = document.getElementById('mission-composer-path');
                             if (pathInput) {
                                 pathInput.value = path;
                                 pathInput.dispatchEvent(new Event('input'));
                                 pathInput.focus();
                             }
+                            return;
+                        }
+                        if (consumer === 'register') {
+                            this.registerProjectFolder(path);
                             return;
                         }
                         this.selectProjectFolder(path);
@@ -10945,6 +10966,12 @@ class ResonantApp {
         }
 
         input.focus();
+    }
+
+    registerProjectFolder(path) {
+        const cleanPath = (path || '').trim();
+        if (!cleanPath) return;
+        this.send({ command: 'register_project', path: cleanPath });
     }
 
     selectProjectFolder(path) {

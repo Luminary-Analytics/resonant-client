@@ -455,6 +455,18 @@ class ProjectManager:
 
     def _save_recent_project(self):
         """Track this project in the recent projects list."""
+        self._save_recent_project_path(self.project_path)
+
+    def register_project(self, project_path: str) -> str:
+        """Track a project folder without switching the active project."""
+        normalized = os.path.normpath(project_path)
+        _sessions_dir(normalized).mkdir(parents=True, exist_ok=True)
+        self._save_recent_project_path(normalized)
+        return normalized
+
+    def _save_recent_project_path(self, project_path: str):
+        """Track an arbitrary project path in the recent projects list."""
+        normalized_project = os.path.normpath(project_path)
         recents_file = _resonant_dir() / "recent_projects.json"
         recents = []
         try:
@@ -466,7 +478,7 @@ class ProjectManager:
         if not isinstance(recents, list):
             recents = []
 
-        norm = self.project_path.replace("\\", "/")
+        norm = normalized_project.replace("\\", "/")
         # Scrub pytest tmp dirs on every write so files polluted by
         # pre-fix test runs self-heal; get_recent_projects applies the
         # same filter at read time.
@@ -476,10 +488,10 @@ class ProjectManager:
             and (r.get("path") or "").replace("\\", "/") != norm
             and not _is_pytest_temp_path(r.get("path") or "")
         ]
-        if not _is_pytest_temp_path(self.project_path):
+        if not _is_pytest_temp_path(normalized_project):
             recents.insert(0, {
-                "path": self.project_path,
-                "name": os.path.basename(self.project_path),
+                "path": normalized_project,
+                "name": os.path.basename(normalized_project) or normalized_project,
                 "last_used": time.time(),
             })
         recents = recents[:20]

@@ -264,6 +264,27 @@ class TestRecentProjectsWriteHygiene:
         saved = json.loads(recents_file.read_text(encoding="utf-8"))
         assert saved == []
 
+    def test_register_project_does_not_switch_active_project(self, isolated_home, tmp_path, monkeypatch):
+        monkeypatch.setattr(sessions_mod, "_is_pytest_temp_path", lambda path: False)
+        active = tmp_path / "active-project"
+        other = tmp_path / "battleship-2d"
+        active.mkdir()
+        other.mkdir()
+
+        pm = ProjectManager(str(active))
+        pm.set_project(str(active))
+        session = pm.create_session(backend_type="test", model="model")
+
+        registered = pm.register_project(str(other))
+
+        assert registered == os.path.normpath(str(other))
+        assert pm.project_path == os.path.normpath(str(active))
+        assert pm.current_session is session
+
+        recents = pm.get_recent_projects(limit=20)
+        paths = [p["path"] for p in recents]
+        assert paths[:2] == [registered, os.path.normpath(str(active))]
+
 
 class TestProjectManagerUsesSafeDefault:
     def test_explicit_path_still_wins(self, tmp_path, isolated_home):

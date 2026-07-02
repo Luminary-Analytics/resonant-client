@@ -37,16 +37,8 @@
                     <path d="M6.5 2v12" stroke="currentColor" stroke-width="1.2"/>
                 </svg>
             </button>
-            <button id="titlebar-back" class="titlebar-icon-btn" type="button" title="Back" aria-label="Back" disabled>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M10 4L6 8l4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-            </button>
-            <button id="titlebar-forward" class="titlebar-icon-btn" type="button" title="Forward" aria-label="Forward" disabled>
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-            </button>
+            <!-- back/forward nav removed until session-history navigation
+                 exists — permanently-disabled buttons were dead chrome. -->
             <nav class="titlebar-menus">
                 <div class="menubar-item" data-menu="file">
                     <span>File</span>
@@ -151,10 +143,12 @@
     <div id="app">
         <nav id="activity-rail" aria-label="Primary">
             <div class="rail-top">
-                <button class="rail-avatar" type="button" title="Resonant" aria-label="Resonant">
+                <!-- Brand mark, not a control — a <button> here invited
+                     clicks that did nothing. -->
+                <div class="rail-avatar" role="img" title="Resonant" aria-label="Resonant">
                     <span class="rail-avatar-letter">R</span>
                     <span class="rail-avatar-dot" aria-hidden="true"></span>
-                </button>
+                </div>
                 <button id="rail-open-project" class="rail-btn" type="button" title="Open project" aria-label="Open project">
                     <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                         <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/>
@@ -432,6 +426,12 @@
                     <!-- ═══ Settings / Customize View ═══ -->
                     <div id="settings-view" class="feature-view" style="display:none">
                         <div class="feature-view-header">
+                            <button id="settings-back" class="feature-view-back" type="button" title="Back to session" aria-label="Back to session">
+                                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                                    <path d="M10 4L6 8l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                </svg>
+                                <span>Back to session</span>
+                            </button>
                             <h2>Settings</h2>
                             <p class="feature-view-sub">Local runtime and workspace preferences</p>
                         </div>

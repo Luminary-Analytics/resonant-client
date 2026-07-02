@@ -140,6 +140,10 @@ class AppState:
         # Project / session manager
         self.project = ProjectManager()
         self._first_message_sent = False
+        # Guards the connect/init/redetect-time default-backend
+        # auto-create: two sockets (desktop window + browser tab) can
+        # race the `if not state.backend` check on executor threads.
+        self._default_session_lock = threading.Lock()
         # Settings & cost tracking
         self.settings = SettingsManager()
         self._migrate_stale_defaults()
@@ -5428,18 +5432,21 @@ class AppState:
         """
         if self.backend:
             return False
-        backend_type, model = self.default_chat_backend_choice()
-        if not backend_type or not model:
-            return False
-        self.create_backend(
-            backend_type,
-            model,
-            session_mode="code",
-            session_role=session_role or "generator",
-        )
-        self._first_message_sent = False
-        self.costs.reset_session()
-        return True
+        with self._default_session_lock:
+            if self.backend:
+                return False
+            backend_type, model = self.default_chat_backend_choice()
+            if not backend_type or not model:
+                return False
+            self.create_backend(
+                backend_type,
+                model,
+                session_mode="code",
+                session_role=session_role or "generator",
+            )
+            self._first_message_sent = False
+            self.costs.reset_session()
+            return True
 
     def ensure_persisted_current_session(self, *, session_role: str = "generator"):
         """Create the on-disk session record lazily on first user message."""
@@ -7544,6 +7551,24 @@ async def websocket_endpoint(ws: WebSocket):
                 start_dir = (msg.get("directory") or "").strip()
                 if not start_dir or not os.path.isdir(start_dir):
                     start_dir = state.project.project_path if state.project else ""
+
+                # v0.5.6a4 fast-path, restored (regressed in v0.6.8): in
+                # browser mode there is no pywebview window, and a tkinter
+                # dialog opens on the SERVER's display — invisible to a
+                # remote user — while the awaited executor call blocks this
+                # socket's message loop until someone dismisses it on the
+                # host. Route browser users to the in-page path modal.
+                if _webview_window is None:
+                    await ws.send_json({
+                        "event": "folder_picker_unavailable",
+                        "message": (
+                            "Native folder picker isn't available in "
+                            "browser mode — type the project path "
+                            "directly."
+                        ),
+                    })
+                    continue
+
                 await ws.send_json({"event": "status_msg", "message": "Opening project picker..."})
 
                 def _pick_folder():
@@ -8272,7 +8297,10 @@ def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | Non
         command = str(data.get("command", "") or "").strip()
         enabled = bool(data.get("enabled", True))
         try:
-            command_head = shlex.split(command)[0] if command else ""
+            # posix=False on Windows: POSIX rules eat the backslashes in
+            # "C:\tools\...\server.exe" and which() never finds it.
+            parts = shlex.split(command, posix=(os.name != "nt")) if command else []
+            command_head = parts[0].strip('"') if parts else ""
         except ValueError:
             command_head = command.split(" ", 1)[0] if command else ""
         available = bool(command_head and shutil.which(command_head))

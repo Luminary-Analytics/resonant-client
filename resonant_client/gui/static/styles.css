@@ -1921,36 +1921,13 @@ body {
     display: none !important;
 }
 
-/* Git status moved to the sidebar footer — see .sidebar-git below. */
+/* Git badge removed in v0.6.7 (composer declutter). The git popover now
+   opens from the agent-run-card Review button and the command palette. */
 .git-badge {
     display: none !important;
 }
 
-/* Git status — lives inline in the input footer alongside the permission/mic controls */
-.input-git {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    height: 22px;
-    padding: 0 8px;
-    background: none;
-    border: 1px solid transparent;
-    border-radius: var(--radius-xs);
-    color: var(--muted);
-    font-size: 11px;
-    cursor: pointer;
-    transition: background var(--duration-fast) ease, color var(--duration-fast) ease, border-color var(--duration-fast) ease;
-}
-
-.input-git:hover {
-    background: var(--bg-hover);
-    color: var(--brand);
-    border-color: var(--border);
-}
-
-.input-git svg { flex-shrink: 0; opacity: 0.85; }
-
-/* v0.6.5 — Connect-Chrome (debug mode) button: mirrors .input-git, with
+/* v0.6.5 — Connect-Chrome (debug mode) button: composer-footer chip with
    connecting / connected / error state colors. */
 .input-chrome {
     display: inline-flex;
@@ -1972,7 +1949,7 @@ body {
 .input-chrome.is-connected { color: var(--ok); border-color: rgba(74, 222, 128, 0.4); }
 .input-chrome.is-error { color: var(--err); border-color: rgba(248, 113, 113, 0.4); }
 
-/* v0.6.7 — composer-footer project/folder chip. Mirrors .input-git. */
+/* v0.6.7 — composer-footer project/folder chip. Mirrors .input-chrome. */
 .input-project {
     display: inline-flex;
     align-items: center;
@@ -1989,30 +1966,6 @@ body {
 .input-project:hover { background: var(--bg-hover); color: var(--brand); border-color: var(--border); }
 .input-project svg { flex-shrink: 0; opacity: 0.85; }
 .input-project-name { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-.input-git-branch {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    color: var(--muted);
-}
-
-.input-git:hover .input-git-branch { color: var(--text); }
-
-.input-git-changes {
-    background: rgba(248, 191, 113, 0.18);
-    color: #f8bf71;
-    border: 1px solid rgba(248, 191, 113, 0.4);
-    font-size: 10px;
-    font-weight: 600;
-    min-width: 18px;
-    height: 14px;
-    padding: 0 4px;
-    border-radius: 7px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 0 4px;
-}
 
 /* ── Git Popover ── */
 .git-popover {
@@ -5458,6 +5411,27 @@ body {
 
 .feature-view-header {
     margin-bottom: 24px;
+}
+
+/* "Back to session" escape hatch at the top of Settings — the sidebar
+   view buttons that used to provide the way back were removed in v0.6.8. */
+.feature-view-back {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 12px;
+    padding: 4px 10px 4px 6px;
+    font-size: 12.5px;
+    color: var(--dim);
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+}
+
+.feature-view-back:hover {
+    color: var(--text);
+    background: var(--bg-hover);
 }
 
 .feature-view-header h2 {
@@ -9770,6 +9744,7 @@ body {
     border-color: rgba(255,255,255,.35);
     box-shadow: inset 0 0 0 1px rgba(143,108,255,.4);
     font-weight: 650;
+    cursor: default; /* brand mark, not a control */
 }
 
 .rail-avatar-dot {

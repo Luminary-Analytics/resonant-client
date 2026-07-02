@@ -10,6 +10,7 @@ Post-refocus, the client is a single-purpose agentic coder: Ollama + `deepseek-v
 - **Comparables are Aider / OpenHands / Cline / Goose** — not closed business-automation SaaS. The ownable gap: *local-first* + *self-improving*.
 - **One repo, singular focus.** A 2026-05 evaluation of getviktor.com (an "AI coworker" SaaS) concluded **do not fork** into a Viktor-style business-automation product: flagships win on depth, and a second repo would halve attention and dilute the narrative. Take Viktor's *validation* (persistent memory + autonomous execution are the right bets), not its scope.
 - **Near-term priorities:** harden the loop until the headline feature is bulletproof and demoable; then v0.7 polish (README / CONTRIBUTING / architecture docs / a reproducible demo) for the flagship launch.
+- **Harness gap analysis (2026-07-01):** [`docs/harness-competitive-analysis-2026-07-01.md`](docs/harness-competitive-analysis-2026-07-01.md) benchmarks the harness against Claude Code / OpenCode / Codex / Gemini CLI / Aider / Cline / Goose and ranks 16 improvements. The six quick wins — per-model `num_ctx` + compaction fix, fuzzy edit-application cascade, KV-cache prefix discipline, DeepSeek `reasoning_content` replay + vendor sampling pins, tool-arg validation ladder, Ollama structured outputs — are the next harness workstream.
 
 ## Foundation status (pre-refocus, 2026-04-28)
 

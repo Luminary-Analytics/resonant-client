@@ -251,6 +251,12 @@ class ResonantApp {
             ev.stopPropagation();
             this._openProjectSwitcher(_footerProjectBtn);
         });
+        // Project-card "..." (Project actions) — same switcher menu.
+        const _projectMenuBtn = document.querySelector('.sidebar-project-menu');
+        _projectMenuBtn?.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            this._openProjectSwitcher(_projectMenuBtn);
+        });
         this.sidebarCwd = document.getElementById('sidebar-cwd');
         this.sidebarProjectName = document.getElementById('sidebar-project-name');
         this.sessionList = document.getElementById('agent-list');
@@ -600,16 +606,17 @@ class ResonantApp {
             && pywebview.api
             && typeof pywebview.api.resize_window === 'function';
         if (!hasResizeApi()) {
-            if (!this._waitingForResizeApi) {
-                this._waitingForResizeApi = true;
-                window.addEventListener('pywebviewready', () => {
-                    this._waitingForResizeApi = false;
-                    this._bindWindowResizeHandles();
-                }, { once: true });
-                setTimeout(() => {
-                    this._waitingForResizeApi = false;
-                    this._bindWindowResizeHandles();
-                }, 1000);
+            // Register the ready-listener ONCE (desktop mode injects
+            // pywebview late), and cap the poll — in plain-browser mode
+            // pywebview never appears, and the old retry loop leaked a
+            // fresh once-listener + timer every second forever.
+            if (!this._resizeApiWaitBound) {
+                this._resizeApiWaitBound = true;
+                window.addEventListener('pywebviewready', () => this._bindWindowResizeHandles(), { once: true });
+            }
+            this._resizeApiPolls = (this._resizeApiPolls || 0) + 1;
+            if (this._resizeApiPolls <= 15) {
+                setTimeout(() => this._bindWindowResizeHandles(), 1000);
             }
             return;
         }
@@ -663,16 +670,15 @@ class ResonantApp {
             && pywebview.api
             && typeof pywebview.api.move_window === 'function';
         if (!hasMoveApi()) {
-            if (!this._waitingForMoveApi) {
-                this._waitingForMoveApi = true;
-                window.addEventListener('pywebviewready', () => {
-                    this._waitingForMoveApi = false;
-                    this._bindWindowDragFallback();
-                }, { once: true });
-                setTimeout(() => {
-                    this._waitingForMoveApi = false;
-                    this._bindWindowDragFallback();
-                }, 1000);
+            // Same once-listener + capped-poll shape as
+            // _bindWindowResizeHandles — see the comment there.
+            if (!this._moveApiWaitBound) {
+                this._moveApiWaitBound = true;
+                window.addEventListener('pywebviewready', () => this._bindWindowDragFallback(), { once: true });
+            }
+            this._moveApiPolls = (this._moveApiPolls || 0) + 1;
+            if (this._moveApiPolls <= 15) {
+                setTimeout(() => this._bindWindowDragFallback(), 1000);
             }
             return;
         }
@@ -899,12 +905,18 @@ class ResonantApp {
             this.openCommandPalette();
         });
         document.getElementById('titlebar-settings')?.addEventListener('click', () => {
-            this.switchView('settings');
+            this.switchView(this.currentView === 'settings' ? 'agents' : 'settings');
+        });
+        document.getElementById('settings-back')?.addEventListener('click', () => {
+            this.switchView('agents');
         });
         document.getElementById('rail-open-project')?.addEventListener('click', () => {
             this.openProjectFolder();
         });
-        document.querySelector('[data-action="shortcuts"]')?.addEventListener('click', () => {
+        // Scope to the activity rail: the bare [data-action="shortcuts"]
+        // selector grabbed the Help-menu item first, double-binding it
+        // (open+close per click) while this rail button got no handler.
+        document.querySelector('.rail-btn[data-action="shortcuts"]')?.addEventListener('click', () => {
             this.toggleShortcutsOverlay();
         });
 
@@ -1117,7 +1129,10 @@ class ResonantApp {
         // ── Sidebar Navigation ──
         document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view], .rail-btn[data-view]').forEach(item => {
             item.addEventListener('click', () => {
-                this.switchView(item.dataset.view);
+                // The settings gear toggles — a second click returns to the
+                // chat, so Settings is never a navigation dead end.
+                const view = item.dataset.view;
+                this.switchView(view === 'settings' && this.currentView === 'settings' ? 'agents' : view);
             });
         });
 
@@ -5692,6 +5707,10 @@ class ResonantApp {
         else this.chatContainer.style.display = 'flex';
         this.inputBar.style.display = 'flex';
         if (this.settingsView) this.settingsView.style.display = 'none';
+        // Un-hide the sidebar session list too — switchView('settings')
+        // hides it, and arriving here via Ctrl+N used to leave it hidden.
+        const sessionList = document.getElementById('agent-list');
+        if (sessionList) sessionList.style.display = '';
         this.currentView = 'agents';
         document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view], .rail-btn[data-view]').forEach(el =>
             el.classList.toggle('active', el.dataset.view === 'agents'));
@@ -8040,6 +8059,8 @@ class ResonantApp {
         return [
             { id: 'new-agent',  icon: '+', label: 'New session',        hint: 'Ctrl+N',       action: () => document.getElementById('new-agent-btn')?.click() },
             { id: 'settings',   icon: '\u2699', label: 'Open Settings',            hint: 'Ctrl+,', action: () => this.switchView('settings') },
+            { id: 'sessions',   icon: '\u2190', label: 'Back to Sessions',         hint: 'Alt+1',  action: () => this.switchView('agents') },
+            { id: 'git',        icon: '\u2387', label: 'Git changes & commits',    hint: '',       action: () => { if (this.gitData?.is_repo) this.toggleGitPopover(); else this.showStatusMessage('Not a git repository.'); } },
             { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
             { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
             { id: 'shortcuts',  icon: '\u2328', label: 'Keyboard shortcuts',       hint: 'Ctrl+/', action: () => this.toggleShortcutsOverlay() },
@@ -8406,9 +8427,10 @@ class ResonantApp {
             reviewBtn.addEventListener('click', (e) => {
                 // Don't bubble into the banner toggle.
                 e.stopPropagation();
-                const gitBadge = document.getElementById('git-badge');
-                if (gitBadge && gitBadge.style.display !== 'none') gitBadge.click();
-                else this.showStatusMessage('Use the git status control in the header when available.');
+                // Open the git popover directly — the header badge it used
+                // to click was removed in v0.6.7.
+                if (this.gitData && this.gitData.is_repo) this.toggleGitPopover();
+                else this.showStatusMessage('Not a git repository — nothing to review.');
             });
         }
 
@@ -10995,6 +11017,14 @@ class ResonantApp {
             const existing = document.querySelector('.git-popover');
             if (existing) existing.remove();
             this.gitPopoverOpen = false;
+            // Deregister the outside-click handler no matter HOW the
+            // popover was closed (× button, Review re-click, outside
+            // click) — a stale handler resurrects the popover on the
+            // next unrelated click.
+            if (this._gitPopoverOutsideHandler) {
+                document.removeEventListener('click', this._gitPopoverOutsideHandler);
+                this._gitPopoverOutsideHandler = null;
+            }
             return;
         }
         if (!this.gitData || !this.gitData.is_repo) return;
@@ -11030,14 +11060,17 @@ class ResonantApp {
             });
         });
 
-        // Close on click outside
+        // Close on click outside. gitBadge is optional — the header badge
+        // was removed in v0.6.7; the popover now opens from the Review
+        // button and the command palette. The handler is stored on the
+        // instance so the close branch above can always deregister it.
         setTimeout(() => {
             const handler = (e) => {
-                if (!popover.contains(e.target) && !this.gitBadge.contains(e.target)) {
+                if (!popover.contains(e.target) && !this.gitBadge?.contains(e.target)) {
                     this.toggleGitPopover();
-                    document.removeEventListener('click', handler);
                 }
             };
+            this._gitPopoverOutsideHandler = handler;
             document.addEventListener('click', handler);
         }, 100);
 

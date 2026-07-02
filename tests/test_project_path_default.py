@@ -105,20 +105,108 @@ class TestSafeDefaultProjectPath:
 
     def test_uses_most_recent_project_when_install_cwd(self, monkeypatch, isolated_home, tmp_path):
         # cwd is unsafe AND the user has a recent project on disk →
-        # prefer the recent one over the Documents fallback.
-        good_project = tmp_path / "old_project"
-        good_project.mkdir()
+        # prefer the recent one over the Documents fallback. The recent
+        # entry uses a fake NON-temp path (with isdir patched) because
+        # real tmp_path dirs live under pytest-of-*, which the recents
+        # loop now filters as test-fixture pollution.
+        good_project = ("D:\\Repos\\old_project" if os.name == "nt"
+                        else "/home/user/dev/old_project")
 
         recents = isolated_home / ".resonant" / "recent_projects.json"
         recents.parent.mkdir(parents=True, exist_ok=True)
         recents.write_text(json.dumps([
-            {"path": str(good_project), "name": "old_project", "last_used": 0},
+            {"path": good_project, "name": "old_project", "last_used": 0},
         ]))
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            os.path, "isdir",
+            lambda p: True if p == good_project else real_isdir(p),
+        )
         monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
                                                     if os.name == "nt"
                                                     else "/Applications/X"))
         result = _safe_default_project_path()
-        assert result == str(good_project)
+        assert result == good_project
+
+    def test_recents_skip_pytest_fixture_dirs(self, monkeypatch, isolated_home, tmp_path):
+        # Tests that call set_project can leave pytest temp paths in the
+        # live recents file; the recents loop must skip them even though
+        # they exist on disk (they vanish a few pytest runs later).
+        polluted = tmp_path / "polluted_project"
+        polluted.mkdir()
+        good_project = ("D:\\Repos\\real_project" if os.name == "nt"
+                        else "/home/user/dev/real_project")
+
+        recents = isolated_home / ".resonant" / "recent_projects.json"
+        recents.parent.mkdir(parents=True, exist_ok=True)
+        recents.write_text(json.dumps([
+            {"path": str(polluted), "name": "polluted_project", "last_used": 1},
+            {"path": good_project, "name": "real_project", "last_used": 0},
+        ]))
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            os.path, "isdir",
+            lambda p: True if p == good_project else real_isdir(p),
+        )
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+                                                    if os.name == "nt"
+                                                    else "/Applications/X"))
+        assert _safe_default_project_path() == good_project
+
+    def test_explicit_resonant_checkout_restores_from_recents(self, monkeypatch, isolated_home):
+        # Dogfooding case: the user explicitly opened the Resonant repo
+        # and it sits in recents. A normal desktop launch (cwd = install
+        # dir, NOT the checkout) must restore it — the resonant-source
+        # veto only applies to the dev-launch cwd default.
+        checkout = ("D:\\Repos\\resonant-checkout" if os.name == "nt"
+                    else "/home/user/dev/resonant-checkout")
+
+        recents = isolated_home / ".resonant" / "recent_projects.json"
+        recents.parent.mkdir(parents=True, exist_ok=True)
+        recents.write_text(json.dumps([
+            {"path": checkout, "name": "resonant-checkout", "last_used": 0},
+        ]))
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            os.path, "isdir",
+            lambda p: True if p == checkout else real_isdir(p),
+        )
+        monkeypatch.setattr(
+            sessions_mod, "_looks_like_resonant_source",
+            lambda p: str(p) == checkout,
+        )
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+                                                    if os.name == "nt"
+                                                    else "/Applications/X"))
+        assert _safe_default_project_path() == checkout
+
+    def test_dev_launch_from_checkout_skips_resonant_recents(self, monkeypatch, isolated_home):
+        # Dev-server launch FROM the checkout: cwd is vetoed as resonant
+        # source, and the recents loop must not hand the same checkout
+        # straight back — otherwise the veto is a no-op on any machine
+        # whose recents already contain the repo.
+        checkout = ("D:\\Repos\\resonant-checkout" if os.name == "nt"
+                    else "/home/user/dev/resonant-checkout")
+        other = ("D:\\Repos\\other_project" if os.name == "nt"
+                 else "/home/user/dev/other_project")
+
+        recents = isolated_home / ".resonant" / "recent_projects.json"
+        recents.parent.mkdir(parents=True, exist_ok=True)
+        recents.write_text(json.dumps([
+            {"path": checkout, "name": "resonant-checkout", "last_used": 1},
+            {"path": other, "name": "other_project", "last_used": 0},
+        ]))
+        real_isdir = os.path.isdir
+        monkeypatch.setattr(
+            os.path, "isdir",
+            lambda p: True if p in (checkout, other) else real_isdir(p),
+        )
+        monkeypatch.setattr(
+            sessions_mod, "_looks_like_resonant_source",
+            lambda p: str(p) == checkout or p == os.getcwd(),
+        )
+        monkeypatch.setattr(os, "getcwd", lambda: checkout)
+        assert _safe_default_project_path() == other
 
     def test_skips_recent_projects_that_no_longer_exist(self, monkeypatch, isolated_home, tmp_path):
         # Stale recent_projects.json — pointing at a since-deleted dir

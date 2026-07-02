@@ -49,8 +49,6 @@ def _is_unsafe_cwd(path: str) -> bool:
     """
     if not path:
         return True
-    if _looks_like_resonant_source(path):
-        return True
     norm = os.path.normpath(path)
     if os.name == "nt":
         norm = norm.lower()
@@ -92,9 +90,14 @@ def _safe_default_project_path() -> str:
     wins over (2)/(3) so the existing "launch from terminal in repo
     root" workflow keeps working.
     """
-    # Honor cwd when it's user-writable (preserves dev workflow).
+    # Honor cwd when it's user-writable (preserves dev workflow). The
+    # Resonant source repo is excluded HERE only — a dev-server launch
+    # from the repo shouldn't make Resonant its own project, but a repo
+    # the user explicitly opened (and that recents remembers) must still
+    # restore on the next launch.
     cwd = os.getcwd()
-    if not _is_unsafe_cwd(cwd):
+    cwd_is_resonant_source = _looks_like_resonant_source(cwd)
+    if not _is_unsafe_cwd(cwd) and not cwd_is_resonant_source:
         try:
             test_path = os.path.join(cwd, ".resonant_write_probe")
             with open(test_path, "w", encoding="utf-8"):
@@ -114,7 +117,22 @@ def _safe_default_project_path() -> str:
                 if not isinstance(entry, dict):
                     continue
                 path = (entry.get("path") or "").strip()
-                if path and os.path.isdir(path) and not _is_unsafe_cwd(path):
+                if not path:
+                    continue
+                # Same pytest-fixture filter as get_recent_projects —
+                # tests that call set_project leave temp dirs in the live
+                # recents file, and adopting one strands sessions under a
+                # project hash pytest deletes a few runs later.
+                normalized = path.replace("\\", "/").lower()
+                if "pytest-of-" in normalized or "/temp/pytest-" in normalized:
+                    continue
+                # When cwd was vetoed as the Resonant source repo (a dev
+                # launch from the checkout), don't let the recents loop
+                # hand the same checkout straight back. Normal desktop
+                # launches (cwd = install dir) restore it fine.
+                if cwd_is_resonant_source and _looks_like_resonant_source(path):
+                    continue
+                if os.path.isdir(path) and not _is_unsafe_cwd(path):
                     return path
     except Exception:
         pass

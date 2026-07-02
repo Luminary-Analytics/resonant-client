@@ -9912,6 +9912,12 @@ body {
     padding: 0;
 }
 
+.project-empty {
+    color: var(--muted);
+    font-size: 12px;
+    padding: 7px 8px 8px 28px;
+}
+
 .agent-row {
     min-height: 32px;
     padding: 7px 28px 7px 8px;

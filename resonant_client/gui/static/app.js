@@ -4966,7 +4966,17 @@ class ResonantApp {
                 if (Array.isArray(event.all_sessions)) {
                     this.allSessions = event.all_sessions;
                 }
-                this.renderFilteredSessions();
+                {
+                    const registeredPath = (event.path || '').replace(/\\/g, '/');
+                    if (registeredPath) {
+                        if (!this._expandedProjects) this._expandedProjects = new Set();
+                        this._expandedProjects.add(registeredPath);
+                    }
+                    // Adding a project should make it visible immediately.
+                    // Keep the active project/session unchanged; only broaden
+                    // the sidebar filter so empty project groups can appear.
+                    this._setProjectFilter('');
+                }
                 break;
             case 'resume_prompt':
                 this.applyResumePrompt(event.prompt || '');
@@ -10383,16 +10393,12 @@ class ResonantApp {
     _renderProjectTree(sessions) {
         if (!this.sessionList) return;
         this.sessionList.innerHTML = '';
-
-        if (!sessions.length) {
-            this.sessionList.innerHTML = '<div class="agent-empty">No sessions yet</div>';
-            return;
-        }
+        const visibleSessions = Array.isArray(sessions) ? sessions.filter(Boolean) : [];
 
         // Pinned sessions float to the top in their own group, removed from
         // their original section to avoid double-listing.
-        const pinned = sessions.filter(s => s && s.pinned);
-        const unpinned = sessions.filter(s => !s || !s.pinned);
+        const pinned = visibleSessions.filter(s => s && s.pinned);
+        const unpinned = visibleSessions.filter(s => s && !s.pinned);
 
         if (pinned.length > 0) {
             this._renderPinnedGroup(pinned);
@@ -10404,13 +10410,35 @@ class ResonantApp {
         // group). _createTreeSessionRow badges the autonomous ones so they
         // stay distinguishable without needing their own section.
         const projectMap = new Map();
+        const addProjectShell = (pathValue, nameValue = '') => {
+            const path = (pathValue || '').replace(/\\/g, '/');
+            if (!path) return null;
+            if (!projectMap.has(path)) {
+                const name = nameValue || path.split('/').filter(Boolean).pop() || 'Unknown';
+                projectMap.set(path, { name, path, sessions: [] });
+            }
+            return projectMap.get(path);
+        };
         for (const s of unpinned) {
             const path = (s.project_path || this.currentCwd || '').replace(/\\/g, '/');
             const name = s.project_name || path.split('/').pop() || 'Unknown';
-            if (!projectMap.has(path)) {
-                projectMap.set(path, { name, path, sessions: [] });
+            const project = addProjectShell(path, name);
+            if (project) project.sessions.push(s);
+        }
+
+        const searchVal = (document.getElementById('search-input')?.value || '').toLowerCase().trim();
+        const projFilter = (this._projectFilter || '').replace(/\\/g, '/');
+        const includeProjectShell = (pathValue, nameValue = '') => {
+            const path = (pathValue || '').replace(/\\/g, '/');
+            if (!path) return;
+            if (projFilter && path !== projFilter) return;
+            addProjectShell(path, nameValue);
+        };
+        if (!this._pinnedOnly && !searchVal) {
+            includeProjectShell(this.currentCwd, this.currentCwd?.split(/[\\/]/).filter(Boolean).pop() || '');
+            for (const proj of (this.recentProjects || [])) {
+                includeProjectShell(proj?.path || '', proj?.name || '');
             }
-            projectMap.get(path).sessions.push(s);
         }
 
         // Track expanded state (default: current project expanded, others collapsed)
@@ -10425,6 +10453,16 @@ class ResonantApp {
         if (projectMap.size === 1) {
             const onlyPath = projectMap.keys().next().value;
             this._expandedProjects.add(onlyPath);
+        }
+
+        if (projectMap.size === 0) {
+            if (!pinned.length) {
+                this.sessionList.innerHTML = '<div class="agent-empty">No sessions yet</div>';
+            }
+            if (this.skills && this.skills.length) {
+                this._renderSkillsGroup(this.skills);
+            }
+            return;
         }
 
         for (const [path, proj] of projectMap) {
@@ -10452,8 +10490,15 @@ class ResonantApp {
             if (isExpanded) {
                 const container = document.createElement('div');
                 container.className = 'proj-tree-sessions';
-                for (const session of proj.sessions) {
-                    container.appendChild(this._createTreeSessionRow(session));
+                if (proj.sessions.length) {
+                    for (const session of proj.sessions) {
+                        container.appendChild(this._createTreeSessionRow(session));
+                    }
+                } else {
+                    const empty = document.createElement('div');
+                    empty.className = 'project-empty';
+                    empty.textContent = 'No sessions yet';
+                    container.appendChild(empty);
                 }
                 this.sessionList.appendChild(container);
             }

@@ -125,6 +125,34 @@ def launch_gui(
                     if self._win[0]:
                         self._win[0].destroy()
 
+                def resize_window(self, width: int, height: int):
+                    if not self._win[0]:
+                        return False
+                    try:
+                        width = max(800, int(width))
+                        height = max(600, int(height))
+                    except (TypeError, ValueError):
+                        return False
+                    try:
+                        from webview.window import FixPoint
+                        self._win[0].resize(width, height, FixPoint.NORTH | FixPoint.WEST)
+                        return True
+                    except Exception:
+                        logger.debug("Could not resize pywebview window", exc_info=True)
+                        return False
+
+                def move_window(self, x: int, y: int):
+                    if not self._win[0]:
+                        return False
+                    try:
+                        self._win[0].move(int(x), int(y))
+                        return True
+                    except (TypeError, ValueError):
+                        return False
+                    except Exception:
+                        logger.debug("Could not move pywebview window", exc_info=True)
+                        return False
+
             win_ref = [None]
             api = _WindowAPI(win_ref)
 
@@ -142,6 +170,7 @@ def launch_gui(
                 width=1200,
                 height=800,
                 min_size=(800, 600),
+                resizable=True,
                 text_select=True,
                 frameless=True,
                 # Whole-window drag off; pywebview moves the window only from .pywebview-drag-region

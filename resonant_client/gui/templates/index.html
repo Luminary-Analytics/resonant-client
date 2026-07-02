@@ -96,7 +96,31 @@
             <span id="header-project" class="titlebar-project" title="Current project" aria-label="Current project"></span>
         </div>
         <div class="titlebar-right">
-            <span class="header-status" id="header-status"></span>
+            <div class="titlebar-status-wrap">
+                <button id="status-popover-trigger" class="titlebar-status-btn" type="button"
+                        title="Runtime status" aria-label="Runtime status" aria-haspopup="dialog" aria-expanded="false">
+                    <svg class="status-glyph" width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <rect x="2" y="2" width="12" height="12" rx="1.8" stroke="currentColor" stroke-width="1.15"/>
+                        <path d="M4.5 5h4.2M4.5 8h7M4.5 11h4.8" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/>
+                    </svg>
+                    <span class="header-status" id="header-status" aria-hidden="true"></span>
+                </button>
+                <div id="status-popover" class="status-popover" role="dialog" aria-label="Runtime status" hidden>
+                    <div class="status-popover-tabs" role="tablist" aria-label="Runtime status categories">
+                        <button class="status-tab active" type="button" data-status-tab="servers">Servers</button>
+                        <button class="status-tab" type="button" data-status-tab="mcp">MCP</button>
+                        <button class="status-tab" type="button" data-status-tab="lsp">LSP</button>
+                        <button class="status-tab" type="button" data-status-tab="plugins">Plugins</button>
+                    </div>
+                    <div id="status-popover-body" class="status-popover-body"></div>
+                </div>
+            </div>
+            <button id="titlebar-settings" class="titlebar-icon-btn" type="button" title="Settings (Ctrl+,)" aria-label="Settings">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M6.9 2.2h2.2l.35 1.45c.28.1.55.21.8.36l1.28-.78 1.55 1.55-.78 1.28c.15.25.27.52.36.8l1.44.35v2.2l-1.44.35c-.1.28-.21.55-.36.8l.78 1.28-1.55 1.55-1.28-.78c-.25.15-.52.27-.8.36l-.35 1.44H6.9l-.35-1.44a4.9 4.9 0 01-.8-.36l-1.28.78-1.55-1.55.78-1.28a4.9 4.9 0 01-.36-.8L1.9 9.4V7.2l1.44-.35c.1-.28.21-.55.36-.8l-.78-1.28 1.55-1.55 1.28.78c.25-.15.52-.27.8-.36L6.9 2.2z" stroke="currentColor" stroke-width="1.05" stroke-linejoin="round"/>
+                    <circle cx="8" cy="8.3" r="2" stroke="currentColor" stroke-width="1.15"/>
+                </svg>
+            </button>
             <button id="sidebar-toggle" class="titlebar-icon-btn titlebar-sidebar-legacy" title="Toggle sidebar (Ctrl+Shift+D)" aria-label="Toggle sidebar">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                     <rect x="1" y="1" width="5" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
@@ -131,13 +155,7 @@
                     <span class="rail-avatar-letter">R</span>
                     <span class="rail-avatar-dot" aria-hidden="true"></span>
                 </button>
-                <button class="rail-btn active" type="button" data-view="agents" title="Sessions" aria-label="Sessions">
-                    <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                        <rect x="2.5" y="3" width="11" height="9.5" rx="1.7" stroke="currentColor" stroke-width="1.25"/>
-                        <path d="M5.5 5.5h5M5.5 8h3.5" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
-                    </svg>
-                </button>
-                <button id="rail-new-session" class="rail-btn" type="button" title="New session" aria-label="New session">
+                <button id="rail-open-project" class="rail-btn" type="button" title="Open project" aria-label="Open project">
                     <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                         <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/>
                     </svg>
@@ -146,8 +164,8 @@
             <div class="rail-bottom">
                 <button class="rail-btn" type="button" data-view="settings" title="Settings" aria-label="Settings">
                     <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                        <circle cx="8" cy="8" r="2.1" stroke="currentColor" stroke-width="1.25"/>
-                        <path d="M8 2.5v1.2M8 12.3v1.2M2.5 8h1.2M12.3 8h1.2M4.1 4.1l.9.9M11 11l.9.9M11.9 4.1l-.9.9M5 11l-.9.9" stroke="currentColor" stroke-width="1.25" stroke-linecap="round"/>
+                        <path d="M6.9 2.2h2.2l.35 1.45c.28.1.55.21.8.36l1.28-.78 1.55 1.55-.78 1.28c.15.25.27.52.36.8l1.44.35v2.2l-1.44.35c-.1.28-.21.55-.36.8l.78 1.28-1.55 1.55-1.28-.78c-.25.15-.52.27-.8.36l-.35 1.44H6.9l-.35-1.44a4.9 4.9 0 01-.8-.36l-1.28.78-1.55-1.55.78-1.28a4.9 4.9 0 01-.36-.8L1.9 9.4V7.2l1.44-.35c.1-.28.21-.55.36-.8l-.78-1.28 1.55-1.55 1.28.78c.25-.15.52-.27.8-.36L6.9 2.2z" stroke="currentColor" stroke-width="1.05" stroke-linejoin="round"/>
+                        <circle cx="8" cy="8.3" r="2" stroke="currentColor" stroke-width="1.15"/>
                     </svg>
                 </button>
                 <button class="rail-btn" type="button" data-action="shortcuts" title="Keyboard shortcuts" aria-label="Keyboard shortcuts">
@@ -202,16 +220,6 @@
                 <div id="project-selector" hidden>
                     <span id="sidebar-project-name"></span>
                     <span id="sidebar-cwd"></span>
-                </div>
-                <div class="sidebar-actions">
-                    <button class="sidebar-action active" data-view="agents" id="nav-agents" title="Sessions" aria-label="Sessions">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M2 3a1 1 0 011-1h8a1 1 0 011 1v6a1 1 0 01-1 1H6l-3 2V10H3a1 1 0 01-1-1V3z" stroke="currentColor" stroke-width="1.3"/></svg>
-                        <span>Sessions</span>
-                    </button>
-                    <button class="sidebar-action" data-view="settings" id="nav-settings" title="Settings &mdash; Ctrl+," aria-label="Settings">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="7" cy="7" r="2" stroke="currentColor" stroke-width="1.3"/><path d="M7 1v1.5M7 11.5V13M1 7h1.5M11.5 7H13M2.8 2.8l1.1 1.1M10.1 10.1l1.1 1.1M11.2 2.8l-1.1 1.1M3.9 10.1l-1.1 1.1" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
-                        <span>Settings</span>
-                    </button>
                 </div>
             </div>
         </aside>
@@ -400,18 +408,18 @@
                                         <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M1.5 4a.8.8 0 01.8-.8h2.4l1 1.1h4.8a.8.8 0 01.8.8v5a.8.8 0 01-.8.8H2.3a.8.8 0 01-.8-.8V4z" stroke="currentColor" stroke-width="1.1"/></svg>
                                         <span class="input-project-name" id="footer-project-name">project</span>
                                     </button>
-                                    <button class="input-chrome" id="connect-chrome-btn" title="Open Chrome in debug mode so the agent can drive your real browser — and you can watch / work alongside it.">
+                                    <button class="input-chrome" id="connect-chrome-btn" title="Open Chrome in debug mode so the agent can drive your real browser — and you can watch / work alongside it." hidden>
                                         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="12" cy="12" r="9.5" stroke="currentColor" stroke-width="1.4"/><circle cx="12" cy="12" r="3.3" stroke="currentColor" stroke-width="1.4"/><path d="M12 8.7h8.6M8.6 10.9l-4.3 7.4M15.4 10.9l-4.3 7.4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
                                         <span id="connect-chrome-label">Chrome</span>
                                     </button>
                                 </div>
                                 <div class="input-footer-right">
                                     <span class="token-info" id="token-info" title="Approximate context tokens used by this turn"></span>
-                                    <select id="thinking-mode-selector" class="model-selector" title="Reasoning depth for thinking models (GLM-5.x, deepseek-v*) &mdash; higher = better answers, slower" style="display:none;">
-                                        <option value="">Thinking: off</option>
-                                        <option value="low">Thinking: low</option>
-                                        <option value="med">Thinking: medium</option>
-                                        <option value="high">Thinking: high</option>
+                                    <select id="thinking-mode-selector" class="reasoning-selector" title="Reasoning depth for thinking models" aria-label="Reasoning depth" style="display:none;">
+                                        <option value="">Off</option>
+                                        <option value="low">Low</option>
+                                        <option value="med">Med</option>
+                                        <option value="high">High</option>
                                     </select>
                                     <select id="model-selector" class="model-selector" title="Switch backend / model for this session">
                                         <option value="">No model</option>
@@ -589,6 +597,9 @@
     </div>
 
     <script src="/static/plan_graph_view.js?v={{ asset_version }}"></script>
+    <div class="window-resize-edge window-resize-right" data-resize-edge="right" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-bottom" data-resize-edge="bottom" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-corner" data-resize-edge="corner" aria-hidden="true"></div>
     <script src="/static/app.js?v={{ asset_version }}"></script>
 </body>
 </html>

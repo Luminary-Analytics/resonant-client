@@ -15,6 +15,7 @@ import os
 import queue
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -5410,6 +5411,46 @@ class AppState:
         self.apply_permission_mode(self.permission_mode, session=self.session)
         return self.backend
 
+    def default_chat_backend_choice(self) -> tuple[str, str]:
+        """Return the default chat backend/model from detected providers."""
+        info = self.available_backends.get("ollama") or {}
+        models = list(info.get("models") or [])
+        if not models:
+            return "", ""
+        return "ollama", self._resolve_default_model(models)
+
+    def ensure_default_runtime_session(self, *, session_role: str = "generator") -> bool:
+        """Create an in-memory backend/session so the composer is usable.
+
+        This deliberately does not create a persisted SessionRecord. A sidebar
+        session is written only once the user sends the first message, which
+        keeps cold starts from filling the list with empty "New session" rows.
+        """
+        if self.backend:
+            return False
+        backend_type, model = self.default_chat_backend_choice()
+        if not backend_type or not model:
+            return False
+        self.create_backend(
+            backend_type,
+            model,
+            session_mode="code",
+            session_role=session_role or "generator",
+        )
+        self._first_message_sent = False
+        self.costs.reset_session()
+        return True
+
+    def ensure_persisted_current_session(self, *, session_role: str = "generator"):
+        """Create the on-disk session record lazily on first user message."""
+        if self.project.current_session or not self.backend:
+            return self.project.current_session
+        return self.project.create_session(
+            backend_type=getattr(self.backend, "name", ""),
+            model=getattr(self.backend, "model", ""),
+            session_role=session_role or "generator",
+        )
+
     # CLI-wrapper backends manage their own session via --resume <id> and
     # ignore the conversation_history list we pass to .stream(). When the
     # user swaps TO one of these mid-conversation, they need a heads-up
@@ -5552,6 +5593,8 @@ class AppState:
                 entry["models"] = info["models"]
             if "model_labels" in info:
                 entry["model_labels"] = info["model_labels"]
+            if "url" in info:
+                entry["url"] = info["url"]
             if "health" in info:
                 entry["patterns"] = info["health"].get("memory_patterns", 0)
             backends_info[key] = entry
@@ -5785,6 +5828,15 @@ async def websocket_endpoint(ws: WebSocket):
         })
         await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
 
+    if not state.backend and state.available_backends:
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: state.ensure_default_runtime_session(),
+            )
+        except Exception:
+            logger.exception("default runtime session startup failed")
+
     # Initialize codebase index if not already set
     if not state.codebase_index and state.project:
         state.codebase_index = CodebaseIndex(state.project.project_path, engram=state.engram)
@@ -5796,6 +5848,14 @@ async def websocket_endpoint(ws: WebSocket):
             command = msg.get("command", "")
 
             if command == "init":
+                if not state.backend and state.available_backends:
+                    try:
+                        await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.ensure_default_runtime_session(),
+                        )
+                    except Exception:
+                        logger.exception("default runtime session init failed")
                 await ws.send_json(state.get_init_data())
 
             elif command == "get_harness_state":
@@ -6015,10 +6075,6 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "message": "Already running"})
                     continue
 
-                # Auto-title session from first message
-                if not state._first_message_sent:
-                    state.project.update_session_title(text)
-
                 # Parse attached images (base64 from frontend paste/upload)
                 images = None
                 raw_images = msg.get("images", [])
@@ -6040,6 +6096,13 @@ async def websocket_endpoint(ws: WebSocket):
                     state.project.current_session.session_role
                     if state.project.current_session else "generator"
                 )
+                if not state.project.current_session:
+                    state.ensure_persisted_current_session(session_role=session_role)
+
+                # Auto-title session from first message
+                if not state._first_message_sent:
+                    state.project.update_session_title(text)
+
                 # Sprint workflow is opt-in. The wrap only runs when (a) the master
                 # setting is on AND (b) an active sprint contract exists. Otherwise
                 # the message goes through unmodified — same as Claude Code / Codex.
@@ -7380,6 +7443,14 @@ async def websocket_endpoint(ws: WebSocket):
                 state.refresh_network_defaults()
                 await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
                 ollama_info = state.available_backends.get("ollama") or {}
+                if ollama_info and not state.backend:
+                    try:
+                        await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.ensure_default_runtime_session(),
+                        )
+                    except Exception:
+                        logger.exception("default runtime session after backend redetect failed")
                 await ws.send_json({
                     "event": "ollama_probe_result",
                     "ok": bool(ollama_info),
@@ -7400,6 +7471,14 @@ async def websocket_endpoint(ws: WebSocket):
                     state.costs.reset_session()
                     # Re-detect backends
                     await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
+                    if state.available_backends:
+                        try:
+                            await asyncio.get_event_loop().run_in_executor(
+                                None,
+                                lambda: state.ensure_default_runtime_session(),
+                            )
+                        except Exception:
+                            logger.exception("default runtime session after project switch failed")
                     await ws.send_json(state.get_init_data())
                 else:
                     await ws.send_json({"event": "error", "message": f"Invalid directory: {project_path}"})
@@ -7462,26 +7541,10 @@ async def websocket_endpoint(ws: WebSocket):
                 # acknowledge the click — silent failure was a real UX issue surfaced
                 # in the dogfood test (the user clicks "Open another project..." and
                 # has no idea whether it worked).
-                await ws.send_json({"event": "status_msg", "message": "Opening folder picker..."})
-
-                # v0.5.6a4 — fast-path browser mode (no pywebview window
-                # attached) directly to the in-page modal text input.
-                # Linux-bridge field-observation #3: the previous tkinter
-                # fallback opened a Tk window that was hidden behind the
-                # browser, looked hung, and gave no escape hatch. The
-                # frontend's `_promptForProjectPath` modal is now wired
-                # to handle `folder_picker_unavailable` in-place without
-                # abandoning the user's session.
-                if _webview_window is None:
-                    await ws.send_json({
-                        "event": "folder_picker_unavailable",
-                        "message": (
-                            "Native folder picker isn't available in "
-                            "browser mode — type the project path "
-                            "directly."
-                        ),
-                    })
-                    continue
+                start_dir = (msg.get("directory") or "").strip()
+                if not start_dir or not os.path.isdir(start_dir):
+                    start_dir = state.project.project_path if state.project else ""
+                await ws.send_json({"event": "status_msg", "message": "Opening project picker..."})
 
                 def _pick_folder():
                     global _webview_window
@@ -7490,32 +7553,53 @@ async def websocket_endpoint(ws: WebSocket):
                             import webview
                             result = _webview_window.create_file_dialog(
                                 webview.FOLDER_DIALOG,
+                                directory=start_dir,
                             )
                             if result and len(result) > 0:
-                                return result[0]
+                                return {"path": result[0], "opened": True}
+                            return {"path": "", "opened": True}
                         except Exception as e:
                             logger.warning(f"pywebview folder dialog failed: {e}")
-                        return None
-                    # Defensive: shouldn't reach here (the v0.5.6a4
-                    # fast-path above catches no-window). Kept as a
-                    # belt-and-suspenders fallback in case some future
-                    # codepath sets _webview_window mid-call.
+
+                    root = None
                     try:
                         import tkinter as tk
                         from tkinter import filedialog
                         root = tk.Tk()
                         root.withdraw()
                         root.attributes('-topmost', True)
-                        folder = filedialog.askdirectory(title="Select Project Folder")
-                        root.destroy()
-                        return folder or None
+                        try:
+                            root.lift()
+                            root.focus_force()
+                            root.update()
+                        except Exception:
+                            pass
+                        folder = filedialog.askdirectory(
+                            parent=root,
+                            title="Open project",
+                            initialdir=start_dir or None,
+                        )
+                        try:
+                            root.destroy()
+                        except Exception:
+                            pass
+                        return {"path": folder or "", "opened": True}
                     except Exception as e:
                         logger.warning(f"tkinter folder dialog failed: {e}")
-                        return None
+                        try:
+                            if root is not None:
+                                root.destroy()
+                        except Exception:
+                            pass
+                        return {"path": "", "opened": False}
 
                 picked = await asyncio.get_event_loop().run_in_executor(None, _pick_folder)
-                if picked:
-                    await ws.send_json({"event": "folder_picked", "path": picked})
+                picked_path = picked.get("path", "") if isinstance(picked, dict) else ""
+                picker_opened = bool(picked.get("opened")) if isinstance(picked, dict) else False
+                if picked_path:
+                    await ws.send_json({"event": "folder_picked", "path": picked_path})
+                elif picker_opened:
+                    await ws.send_json({"event": "status_msg", "message": "Project picker closed."})
                 else:
                     # No pick — tell the user what to do next so the click isn't a dead end.
                     await ws.send_json({
@@ -7648,6 +7732,15 @@ async def websocket_endpoint(ws: WebSocket):
                         state.session.mcp_tools = state.mcp_manager.get_all_tools()
                     servers = state.mcp_manager.list_servers()
                     await ws.send_json({"event": "mcp_list", "servers": servers})
+
+            elif command == "lsp_list":
+                await ws.send_json(_lsp_list_payload(
+                    project_path=state.project.project_path,
+                    settings=state.settings,
+                ))
+
+            elif command == "plugin_list":
+                await ws.send_json(_plugin_list_payload(settings=state.settings))
 
             # ── Engram Memory ──
             elif command == "engram_recall":
@@ -8119,6 +8212,237 @@ def _git_quick(action: str, msg: dict) -> dict:
 
 
 # ── Skill list/view payload helpers (v0.6.2a3) ───────────────────────
+
+
+def _workspace_language_hints(project_path: str, *, max_files: int = 1600) -> set[str]:
+    ext_map = {
+        ".py": "python",
+        ".js": "javascript",
+        ".jsx": "javascript",
+        ".ts": "typescript",
+        ".tsx": "typescript",
+        ".rs": "rust",
+        ".go": "go",
+        ".cs": "csharp",
+        ".java": "java",
+        ".lua": "lua",
+        ".rb": "ruby",
+        ".php": "php",
+    }
+    skip_dirs = {
+        ".git", ".hg", ".svn", ".venv", "venv", "env", "__pycache__",
+        "node_modules", "dist", "build", "target", ".next", ".turbo",
+    }
+    found: set[str] = set()
+    root = Path(project_path or "")
+    if not root.exists():
+        return found
+
+    scanned = 0
+    try:
+        for _dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".cache")]
+            for filename in filenames:
+                scanned += 1
+                lang = ext_map.get(Path(filename).suffix.lower())
+                if lang:
+                    found.add(lang)
+                if scanned >= max_files or len(found) >= 8:
+                    return found
+    except OSError:
+        return found
+    return found
+
+
+def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None) -> dict:
+    """Build the {event: "lsp_list", servers: [...]} status payload.
+
+    Resonant does not yet own a full LSP client, so this is an inventory:
+    explicitly configured servers plus common language-server binaries found
+    on PATH for languages present in the current workspace.
+    """
+    configured = settings.get("lsp_servers") if settings else {}
+    if not isinstance(configured, dict):
+        configured = {}
+
+    servers: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for name, raw in configured.items():
+        data = raw if isinstance(raw, dict) else {"command": str(raw)}
+        command = str(data.get("command", "") or "").strip()
+        enabled = bool(data.get("enabled", True))
+        try:
+            command_head = shlex.split(command)[0] if command else ""
+        except ValueError:
+            command_head = command.split(" ", 1)[0] if command else ""
+        available = bool(command_head and shutil.which(command_head))
+        status = "disabled" if not enabled else ("available" if available else "missing")
+        servers.append({
+            "id": f"configured:{name}",
+            "name": str(data.get("name") or name),
+            "command": command,
+            "enabled": enabled,
+            "available": available,
+            "status": status,
+            "source": "configured",
+        })
+        seen_names.add(str(name).lower())
+
+    workspace_langs = _workspace_language_hints(project_path)
+    common_specs = [
+        {
+            "id": "typescript",
+            "name": "TypeScript/JavaScript",
+            "languages": ["typescript", "javascript"],
+            "executables": ["typescript-language-server"],
+            "command": "typescript-language-server --stdio",
+        },
+        {
+            "id": "python-pyright",
+            "name": "Python (Pyright)",
+            "languages": ["python"],
+            "executables": ["pyright-langserver"],
+            "command": "pyright-langserver --stdio",
+        },
+        {
+            "id": "python-pylsp",
+            "name": "Python (pylsp)",
+            "languages": ["python"],
+            "executables": ["pylsp"],
+            "command": "pylsp",
+        },
+        {
+            "id": "rust-analyzer",
+            "name": "Rust Analyzer",
+            "languages": ["rust"],
+            "executables": ["rust-analyzer"],
+            "command": "rust-analyzer",
+        },
+        {
+            "id": "gopls",
+            "name": "Go",
+            "languages": ["go"],
+            "executables": ["gopls"],
+            "command": "gopls",
+        },
+        {
+            "id": "csharp",
+            "name": "C#",
+            "languages": ["csharp"],
+            "executables": ["csharp-ls", "omnisharp"],
+            "command": "csharp-ls",
+        },
+        {
+            "id": "java",
+            "name": "Java",
+            "languages": ["java"],
+            "executables": ["jdtls"],
+            "command": "jdtls",
+        },
+        {
+            "id": "lua",
+            "name": "Lua",
+            "languages": ["lua"],
+            "executables": ["lua-language-server"],
+            "command": "lua-language-server",
+        },
+    ]
+    for spec in common_specs:
+        if spec["id"] in seen_names:
+            continue
+        relevant = bool(workspace_langs.intersection(spec["languages"]))
+        executable = next((exe for exe in spec["executables"] if shutil.which(exe)), "")
+        if not relevant and not executable:
+            continue
+        servers.append({
+            "id": spec["id"],
+            "name": spec["name"],
+            "command": spec["command"],
+            "enabled": False,
+            "available": bool(executable),
+            "status": "available" if executable else "missing",
+            "source": "detected",
+            "languages": spec["languages"],
+            "detail": (f"Installed: {executable}" if executable else "Not installed on PATH"),
+        })
+
+    servers.sort(key=lambda item: (
+        0 if item.get("source") == "configured" else 1,
+        0 if item.get("available") else 1,
+        str(item.get("name", "")).lower(),
+    ))
+    return {
+        "event": "lsp_list",
+        "servers": servers,
+        "workspace_languages": sorted(workspace_langs),
+    }
+
+
+def _plugin_list_payload(*, settings: SettingsManager | None = None) -> dict:
+    """Build the {event: "plugin_list", plugins: [...]} status payload.
+
+    Skills are a prompt/runtime capability and remain in the sidebar. This
+    payload is reserved for Resonant plugin packages so pinned skills do not
+    appear as plugins in the OpenCode-style status popover.
+    """
+    configured = settings.get("plugins") if settings else {}
+    if isinstance(configured, dict):
+        raw_items = configured.items()
+    elif isinstance(configured, list):
+        raw_items = ((str(idx), item) for idx, item in enumerate(configured))
+    else:
+        raw_items = []
+
+    plugins: list[dict[str, Any]] = []
+    for key, raw in raw_items:
+        if isinstance(raw, dict):
+            data = raw
+        elif isinstance(raw, str):
+            data = {"path": raw}
+        else:
+            data = {"enabled": bool(raw)}
+
+        name = str(data.get("name") or data.get("id") or key or "").strip()
+        if not name:
+            continue
+
+        plugin_path = str(data.get("path") or data.get("directory") or "").strip()
+        enabled = bool(data.get("enabled", True))
+        available = True
+        if plugin_path:
+            try:
+                available = Path(plugin_path).expanduser().exists()
+            except OSError:
+                available = False
+
+        status = str(data.get("status") or (
+            "disabled" if not enabled else "missing" if not available else "available"
+        ))
+        plugins.append({
+            "id": str(data.get("id") or key),
+            "name": name,
+            "description": str(data.get("description") or data.get("detail") or ""),
+            "path": plugin_path,
+            "source": str(data.get("source") or "configured"),
+            "version": str(data.get("version") or ""),
+            "enabled": enabled,
+            "available": available,
+            "status": status,
+        })
+
+    plugins.sort(key=lambda item: (
+        0 if item.get("enabled") else 1,
+        0 if item.get("available") else 1,
+        str(item.get("name", "")).lower(),
+    ))
+    return {
+        "event": "plugin_list",
+        "plugins": plugins,
+        "summary": {
+            "configured": len(plugins),
+            "enabled": sum(1 for item in plugins if item.get("enabled")),
+        },
+    }
 
 
 def _skill_list_payload(*, project_path: str = "", include_deprecated: bool = False) -> dict:

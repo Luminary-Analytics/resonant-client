@@ -53,6 +53,8 @@ DEFAULTS = {
     "api_keys": {},
     "hooks": [],
     "mcp_servers": {},
+    "lsp_servers": {},
+    "plugins": {},
     "keyboard_shortcuts": {},
     "cost_tracking": {
         "enabled": True,

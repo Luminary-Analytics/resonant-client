@@ -49,11 +49,30 @@ def _is_unsafe_cwd(path: str) -> bool:
     """
     if not path:
         return True
+    if _looks_like_resonant_source(path):
+        return True
     norm = os.path.normpath(path)
     if os.name == "nt":
         norm = norm.lower()
         return any(norm.startswith(prefix) for prefix in _UNSAFE_CWD_PREFIXES_WIN)
     return any(norm.startswith(prefix) for prefix in _UNSAFE_CWD_PREFIXES_POSIX)
+
+
+def _looks_like_resonant_source(path: str) -> bool:
+    """True when a source/dev launch cwd points at Resonant itself.
+
+    The desktop app's project should be the user's workspace, not the
+    application repo just because the dev server was launched from there.
+    Users can still open this folder explicitly via the project picker.
+    """
+    try:
+        p = Path(path)
+        return (
+            (p / "resonant_client" / "gui" / "app.py").is_file()
+            and (p / "pyproject.toml").is_file()
+        )
+    except OSError:
+        return False
 
 
 def _safe_default_project_path() -> str:
@@ -89,7 +108,7 @@ def _safe_default_project_path() -> str:
     recents_file = _RESONANT_DIR / "recent_projects.json"
     try:
         if recents_file.exists():
-            with open(recents_file, "r", encoding="utf-8") as f:
+            with open(recents_file, "r", encoding="utf-8-sig") as f:
                 raw = json.load(f) or []
             for entry in raw:
                 if not isinstance(entry, dict):
@@ -401,7 +420,7 @@ class ProjectManager:
         recents = []
         try:
             if recents_file.exists():
-                with open(recents_file, "r", encoding="utf-8") as f:
+                with open(recents_file, "r", encoding="utf-8-sig") as f:
                     recents = json.load(f)
         except Exception:
             pass
@@ -436,7 +455,7 @@ class ProjectManager:
         raw: list = []
         try:
             if recents_file.exists():
-                with open(recents_file, "r", encoding="utf-8") as f:
+                with open(recents_file, "r", encoding="utf-8-sig") as f:
                     raw = json.load(f) or []
         except Exception:
             return []

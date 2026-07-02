@@ -209,6 +209,18 @@ class ResonantApp {
         // RESONANT.md state
         this.resonantMd = null;
 
+        // Runtime status popover state
+        this.systemStatus = 'disconnected';
+        this.systemStatusLabel = 'Disconnected';
+        this.statusPopoverOpen = false;
+        this.statusPopoverTab = 'servers';
+        this.mcpServers = [];
+        this.mcpHealth = {};
+        this.lspItems = [];
+        this.resonantPlugins = [];
+        this.pluginSummary = {};
+        this.browserStatus = { status: 'idle', detail: '' };
+
         // DOM refs
         this.chatMessages = document.getElementById('chat-messages');
         this.chatContainer = document.getElementById('chat-container');
@@ -221,6 +233,9 @@ class ResonantApp {
         this.thinkingModeSelector = document.getElementById('thinking-mode-selector');
         this.headerStatus = document.getElementById('header-status');
         this.headerProject = document.getElementById('header-project');
+        this.statusPopoverTrigger = document.getElementById('status-popover-trigger');
+        this.statusPopover = document.getElementById('status-popover');
+        this.statusPopoverBody = document.getElementById('status-popover-body');
         // Sidebar project switcher pill — opens the same dropdown the titlebar used to
         // and additionally filters the sidebar session tree to the selected project.
         this.sidebarProjectSwitch = document.getElementById('sidebar-project-switch');
@@ -272,6 +287,7 @@ class ResonantApp {
             _chromeBtn.addEventListener('click', () => {
                 this.send({ command: 'connect_browser' });
                 this._setChromeBtnState('connecting');
+                this._setBrowserStatus('connecting', '');
             });
         }
         this.gitBranchName = document.getElementById('git-branch-name');
@@ -309,7 +325,7 @@ class ResonantApp {
 
         this.ws.onopen = () => {
             this.reconnectAttempts = 0;
-            this.headerStatus.textContent = 'Connected';
+            this._setSystemStatus('connected', 'Connected');
             this.ws.send(JSON.stringify({ command: 'init' }));
         };
 
@@ -324,9 +340,9 @@ class ResonantApp {
         this.ws.onclose = () => {
             // Show "Reconnecting..." during retry attempts to avoid flickering
             if (this.reconnectAttempts < 10) {
-                this.headerStatus.textContent = 'Reconnecting...';
+                this._setSystemStatus('warning', 'Reconnecting...');
             } else {
-                this.headerStatus.textContent = 'Disconnected';
+                this._setSystemStatus('disconnected', 'Disconnected');
             }
             this.scheduleReconnect();
         };
@@ -342,7 +358,7 @@ class ResonantApp {
             this.reconnectAttempts++;
             setTimeout(() => this.connect(), delay);
         } else {
-            this.headerStatus.textContent = 'Disconnected';
+            this._setSystemStatus('disconnected', 'Disconnected');
         }
     }
 
@@ -350,6 +366,358 @@ class ResonantApp {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify(data));
         }
+    }
+
+    _setSystemStatus(state, label) {
+        this.systemStatus = state || 'connected';
+        this.systemStatusLabel = label || 'Connected';
+        if (this.headerStatus) {
+            this.headerStatus.textContent = '';
+            this.headerStatus.classList.remove('is-connected', 'is-warning', 'is-error', 'is-disconnected');
+            const mapped = this.systemStatus === 'connected'
+                ? 'is-connected'
+                : this.systemStatus === 'warning'
+                    ? 'is-warning'
+                    : this.systemStatus === 'error'
+                        ? 'is-error'
+                        : 'is-disconnected';
+            this.headerStatus.classList.add(mapped);
+        }
+        if (this.statusPopoverTrigger) {
+            this.statusPopoverTrigger.title = this.systemStatusLabel;
+            this.statusPopoverTrigger.setAttribute('aria-label', `Runtime status: ${this.systemStatusLabel}`);
+        }
+        this._renderStatusPopover();
+    }
+
+    toggleStatusPopover() {
+        this.statusPopoverOpen = !this.statusPopoverOpen;
+        if (this.statusPopover) this.statusPopover.hidden = !this.statusPopoverOpen;
+        if (this.statusPopoverTrigger) {
+            this.statusPopoverTrigger.setAttribute('aria-expanded', this.statusPopoverOpen ? 'true' : 'false');
+        }
+        if (this.statusPopoverOpen) {
+            this.requestMcpList();
+            this.requestLspList();
+            this.requestPluginList();
+            this._renderStatusPopover();
+        }
+    }
+
+    closeStatusPopover() {
+        if (!this.statusPopoverOpen) return;
+        this.statusPopoverOpen = false;
+        if (this.statusPopover) this.statusPopover.hidden = true;
+        if (this.statusPopoverTrigger) this.statusPopoverTrigger.setAttribute('aria-expanded', 'false');
+    }
+
+    requestMcpList() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ command: 'mcp_list' }));
+    }
+
+    requestLspList() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ command: 'lsp_list' }));
+    }
+
+    requestPluginList() {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+        this.ws.send(JSON.stringify({ command: 'plugin_list' }));
+    }
+
+    _setBrowserStatus(status, detail) {
+        this.browserStatus = { status: status || 'idle', detail: detail || '' };
+        this._renderStatusPopover();
+    }
+
+    _statusPill(status) {
+        const normalized = String(status || '').toLowerCase();
+        const klass = normalized.includes('error') || normalized.includes('fail') || normalized.includes('unreachable') || normalized === 'offline'
+            ? 'bad'
+            : normalized.includes('warn') || normalized.includes('pending') || normalized.includes('idle') || normalized.includes('attention') || normalized.includes('missing')
+                ? 'warn'
+                : normalized.includes('connected') || normalized.includes('ready') || normalized.includes('ok') || normalized.includes('available')
+                    ? 'ok'
+                    : 'muted';
+        return `<span class="status-pill ${klass}">${this.escapeHtml(status || 'unknown')}</span>`;
+    }
+
+    _statusRow({ dot = 'muted', title = '', detail = '', meta = '', action = '' }) {
+        return `
+            <div class="status-row">
+                <span class="status-row-dot ${dot}" aria-hidden="true"></span>
+                <span class="status-row-main">
+                    <span class="status-row-title">${this.escapeHtml(title)}</span>
+                    ${detail ? `<span class="status-row-detail">${this.escapeHtml(detail)}</span>` : ''}
+                </span>
+                ${meta ? `<span class="status-row-meta">${meta}</span>` : ''}
+                ${action}
+            </div>`;
+    }
+
+    _renderStatusServers() {
+        const backends = this.backends || {};
+        const rows = [];
+        for (const [key, info] of Object.entries(backends)) {
+            const models = Array.isArray(info?.models) ? info.models : [];
+            const active = key === this.currentBackendName;
+            const detail = info?.url || (key === 'ollama' ? 'Ollama endpoint' : 'Model server');
+            const label = active && this.currentModelName ? `${key} / ${this.currentModelName}` : key;
+            rows.push(this._statusRow({
+                dot: active ? 'ok' : 'muted',
+                title: label,
+                detail,
+                meta: this._statusPill(`${models.length} models`),
+            }));
+        }
+        if (!rows.length) {
+            rows.push(this._statusRow({
+                dot: 'bad',
+                title: 'Ollama',
+                detail: this.settings?.network?.ollama_url || 'No reachable model server',
+                meta: this._statusPill('offline'),
+            }));
+        }
+        const browser = this.browserStatus || { status: 'idle', detail: '' };
+        const browserState = browser.status === 'connected'
+            ? 'connected'
+            : browser.status === 'connecting'
+                ? 'pending'
+                : browser.status === 'error' || browser.status === 'needs_relaunch'
+                    ? 'attention'
+                    : 'idle';
+        rows.push(this._statusRow({
+            dot: browser.status === 'connected' ? 'ok' : browser.status === 'error' || browser.status === 'needs_relaunch' ? 'warn' : 'muted',
+            title: 'Browser automation',
+            detail: browser.detail || 'Optional Chrome debug bridge',
+            meta: this._statusPill(browserState),
+            action: '<button class="status-row-action" type="button" data-status-action="connect-browser">Connect</button>',
+        }));
+        return rows.join('');
+    }
+
+    _renderStatusMcp() {
+        const servers = Array.isArray(this.mcpServers) ? this.mcpServers : [];
+        if (!servers.length) {
+            return this._statusRow({
+                dot: 'muted',
+                title: 'No MCP servers configured',
+                detail: 'Add servers in Settings when MCP tools are needed.',
+                meta: this._statusPill('empty'),
+            });
+        }
+        return servers.map((server) => this._statusRow({
+            dot: server.connected ? 'ok' : server.enabled === false ? 'muted' : 'warn',
+            title: server.name || 'MCP server',
+            detail: server.command || '',
+            meta: this._statusPill(server.connected ? `${server.tools || 0} tools` : (server.enabled === false ? 'disabled' : 'disconnected')),
+        })).join('');
+    }
+
+    _renderStatusLsp() {
+        const items = Array.isArray(this.lspItems) ? this.lspItems : [];
+        if (!items.length) {
+            return this._statusRow({
+                dot: 'muted',
+                title: 'No LSP servers detected',
+                detail: 'Configured servers and installed language servers will appear here.',
+                meta: this._statusPill('empty'),
+            });
+        }
+        return items.map((item) => this._statusRow({
+            dot: item.status === 'available' || item.status === 'connected' ? 'ok' : item.status === 'disabled' ? 'muted' : 'warn',
+            title: item.name || item.id || 'Language server',
+            detail: item.detail || item.command || (Array.isArray(item.languages) ? item.languages.join(', ') : ''),
+            meta: this._statusPill(item.status || 'unknown'),
+        })).join('');
+    }
+
+    _renderStatusPlugins() {
+        const plugins = Array.isArray(this.resonantPlugins) ? this.resonantPlugins : [];
+        if (!plugins.length) {
+            return [
+                this._statusRow({
+                    dot: 'muted',
+                    title: 'No Resonant plugins installed',
+                    detail: 'Plugin packages will appear here when they are enabled.',
+                    meta: this._statusPill('empty'),
+                }),
+                this._statusRow({
+                    dot: 'muted',
+                    title: 'Skills are separate',
+                    detail: 'Pinned skills stay in the Skills section of the sidebar.',
+                    meta: this._statusPill('info'),
+                }),
+            ].join('');
+        }
+        return plugins.slice(0, 12).map((plugin) => {
+            const status = String(plugin.status || (plugin.enabled === false ? 'disabled' : 'available')).toLowerCase();
+            const ok = ['available', 'enabled', 'connected', 'ready', 'ok'].includes(status);
+            const disabled = status === 'disabled' || plugin.enabled === false;
+            const detail = plugin.description || plugin.detail || plugin.path || plugin.source || '';
+            const meta = plugin.version ? `${status} ${plugin.version}` : status;
+            return this._statusRow({
+                dot: ok ? 'ok' : disabled ? 'muted' : 'warn',
+                title: plugin.name || plugin.id || 'Resonant plugin',
+                detail,
+                meta: this._statusPill(meta),
+            });
+        }).join('') + (plugins.length > 12
+            ? `<div class="status-popover-more">${plugins.length - 12} more plugins configured</div>`
+            : '');
+    }
+
+    _renderStatusPopover() {
+        if (!this.statusPopoverBody) return;
+        const tab = this.statusPopoverTab || 'servers';
+        this.statusPopover?.querySelectorAll('.status-tab').forEach((btn) => {
+            btn.classList.toggle('active', btn.dataset.statusTab === tab);
+        });
+        const renderers = {
+            servers: () => this._renderStatusServers(),
+            mcp: () => this._renderStatusMcp(),
+            lsp: () => this._renderStatusLsp(),
+            plugins: () => this._renderStatusPlugins(),
+        };
+        this.statusPopoverBody.innerHTML = `
+            <div class="status-popover-summary">
+                <span class="status-summary-dot ${this.systemStatus === 'connected' ? 'ok' : this.systemStatus === 'warning' ? 'warn' : 'bad'}"></span>
+                <span>${this.escapeHtml(this.systemStatusLabel || 'Runtime status')}</span>
+            </div>
+            <div class="status-popover-list">${(renderers[tab] || renderers.servers)()}</div>
+            <div class="status-popover-footer">
+                <button type="button" data-status-action="connect-browser">Browser automation</button>
+                <button type="button" data-status-action="open-settings">Settings</button>
+            </div>`;
+    }
+
+    _bindWindowResizeHandles() {
+        if (this._resizeHandlesBound) return;
+        const handles = Array.from(document.querySelectorAll('[data-resize-edge]'));
+        if (!handles.length) return;
+        const hasResizeApi = () => typeof pywebview !== 'undefined'
+            && pywebview.api
+            && typeof pywebview.api.resize_window === 'function';
+        if (!hasResizeApi()) {
+            if (!this._waitingForResizeApi) {
+                this._waitingForResizeApi = true;
+                window.addEventListener('pywebviewready', () => {
+                    this._waitingForResizeApi = false;
+                    this._bindWindowResizeHandles();
+                }, { once: true });
+                setTimeout(() => {
+                    this._waitingForResizeApi = false;
+                    this._bindWindowResizeHandles();
+                }, 1000);
+            }
+            return;
+        }
+        this._resizeHandlesBound = true;
+        document.body.classList.add('native-resize-ready');
+
+        handles.forEach((handle) => {
+            handle.addEventListener('mousedown', (event) => {
+                if (!hasResizeApi()) return;
+                event.preventDefault();
+                const edge = handle.dataset.resizeEdge || 'corner';
+                const startX = event.screenX;
+                const startY = event.screenY;
+                const startW = window.outerWidth || window.innerWidth;
+                const startH = window.outerHeight || window.innerHeight;
+                let queued = false;
+                let nextW = startW;
+                let nextH = startH;
+
+                const flush = () => {
+                    queued = false;
+                    pywebview.api.resize_window(Math.round(nextW), Math.round(nextH));
+                };
+                const onMove = (moveEvent) => {
+                    const dx = moveEvent.screenX - startX;
+                    const dy = moveEvent.screenY - startY;
+                    if (edge === 'right' || edge === 'corner') nextW = Math.max(800, startW + dx);
+                    if (edge === 'bottom' || edge === 'corner') nextH = Math.max(600, startH + dy);
+                    if (!queued) {
+                        queued = true;
+                        requestAnimationFrame(flush);
+                    }
+                };
+                const onUp = () => {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                    document.body.classList.remove('is-window-resizing');
+                };
+                document.body.classList.add('is-window-resizing');
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
+        });
+    }
+
+    _bindWindowDragFallback() {
+        if (this._dragFallbackBound) return;
+        const titlebar = document.getElementById('app-titlebar');
+        if (!titlebar) return;
+        const hasMoveApi = () => typeof pywebview !== 'undefined'
+            && pywebview.api
+            && typeof pywebview.api.move_window === 'function';
+        if (!hasMoveApi()) {
+            if (!this._waitingForMoveApi) {
+                this._waitingForMoveApi = true;
+                window.addEventListener('pywebviewready', () => {
+                    this._waitingForMoveApi = false;
+                    this._bindWindowDragFallback();
+                }, { once: true });
+                setTimeout(() => {
+                    this._waitingForMoveApi = false;
+                    this._bindWindowDragFallback();
+                }, 1000);
+            }
+            return;
+        }
+        this._dragFallbackBound = true;
+        document.body.classList.add('native-drag-ready');
+
+        titlebar.addEventListener('mousedown', (event) => {
+            if (event.button !== 0 || event.detail > 1) return;
+            const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+            if (target?.closest('button,input,select,textarea,a,.titlebar-menus,.titlebar-window-controls,.titlebar-command,.status-popover,.header-badge,[role="button"]')) {
+                return;
+            }
+            if (!hasMoveApi()) return;
+
+            event.preventDefault();
+            const startMouseX = event.screenX;
+            const startMouseY = event.screenY;
+            const startWindowX = window.screenX;
+            const startWindowY = window.screenY;
+            let queued = false;
+            let nextX = startWindowX;
+            let nextY = startWindowY;
+
+            const flush = () => {
+                queued = false;
+                pywebview.api.move_window(Math.round(nextX), Math.round(nextY));
+            };
+            const onMove = (moveEvent) => {
+                nextX = startWindowX + (moveEvent.screenX - startMouseX);
+                nextY = startWindowY + (moveEvent.screenY - startMouseY);
+                if (!queued) {
+                    queued = true;
+                    requestAnimationFrame(flush);
+                }
+            };
+            const onUp = () => {
+                document.removeEventListener('mousemove', onMove);
+                document.removeEventListener('mouseup', onUp);
+                document.body.classList.remove('is-window-dragging');
+            };
+
+            document.body.classList.add('is-window-dragging');
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
     }
 
     // ── Event Binding ───────────────────────────────────────────
@@ -450,6 +818,9 @@ class ResonantApp {
             if (idx > 0) {
                 const backend = val.substring(0, idx);
                 const model = val.substring(idx + 1);
+                this.currentBackendName = backend;
+                this.currentModelName = model;
+                this._setSystemStatus('connected', `${backend} / ${model}`);
                 this.send({ command: 'switch_model', backend, model });
             }
             this._refreshThinkingModeVisibility();
@@ -471,7 +842,7 @@ class ResonantApp {
             this.userInput.style.height = 'auto';
         });
 
-        // Thinking-mode selector (deepseek-v* only)
+        // Reasoning-depth selector for models that expose thinking controls.
         if (this.thinkingModeSelector) {
             this.thinkingModeSelector.addEventListener('change', () => {
                 const mode = this.thinkingModeSelector.value || '';
@@ -527,12 +898,44 @@ class ResonantApp {
         document.getElementById('titlebar-command')?.addEventListener('click', () => {
             this.openCommandPalette();
         });
-        document.getElementById('rail-new-session')?.addEventListener('click', () => {
-            document.getElementById('new-agent-btn')?.click();
+        document.getElementById('titlebar-settings')?.addEventListener('click', () => {
+            this.switchView('settings');
+        });
+        document.getElementById('rail-open-project')?.addEventListener('click', () => {
+            this.openProjectFolder();
         });
         document.querySelector('[data-action="shortcuts"]')?.addEventListener('click', () => {
             this.toggleShortcutsOverlay();
         });
+
+        this.statusPopoverTrigger?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            this.toggleStatusPopover();
+        });
+        this.statusPopover?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const tab = e.target.closest('.status-tab');
+            if (tab && tab.dataset.statusTab) {
+                this.statusPopoverTab = tab.dataset.statusTab;
+                this._renderStatusPopover();
+                return;
+            }
+            const action = e.target.closest('[data-status-action]');
+            if (action?.dataset.statusAction === 'connect-browser') {
+                this.send({ command: 'connect_browser' });
+                this._setChromeBtnState('connecting');
+                this._setBrowserStatus('connecting', '');
+                this.closeStatusPopover();
+                return;
+            }
+            if (action?.dataset.statusAction === 'open-settings') {
+                this.switchView('settings');
+                this.closeStatusPopover();
+            }
+        });
+        document.addEventListener('click', () => this.closeStatusPopover());
+        this._bindWindowResizeHandles();
+        this._bindWindowDragFallback();
 
         // Permission dialog
         document.getElementById('permission-allow').addEventListener('click', () => {
@@ -551,7 +954,7 @@ class ResonantApp {
 
         // Add project button (next to project filter dropdown)
         document.getElementById('pf-add-project')?.addEventListener('click', () => {
-            this.send({ command: 'folder_dialog' });
+            this.openProjectFolder();
         });
 
         // Image paste (Ctrl+V)
@@ -2614,7 +3017,7 @@ class ResonantApp {
                     });
                     return;
                 }
-                this.send({ command: 'folder_dialog' });
+                this.openProjectFolder();
             });
             // Right-click also opens the text-input modal (discoverable
             // alternative for users without a Shift key, e.g. some
@@ -2651,6 +3054,70 @@ class ResonantApp {
         const session = sess || this._currentSessionSummary();
         el.textContent = (session && session.title) || 'New session';
         el.title = el.textContent;
+    }
+
+    openProjectFolder() {
+        this._pendingFolderPickConsumer = null;
+        this.send({
+            command: 'folder_dialog',
+            directory: (this.currentCwd || '').trim(),
+        });
+    }
+
+    showCurrentProjectBackendSetup() {
+        const cwd = (this.currentCwd || '').trim();
+        if (!cwd) {
+            this.openProjectFolder();
+            return;
+        }
+
+        if (this.agentPanel) this.agentPanel.style.display = 'none';
+        else this.chatContainer.style.display = 'none';
+        this.inputBar.style.display = 'none';
+        if (this.settingsView) this.settingsView.style.display = 'none';
+
+        this.welcomeScreen.style.display = 'flex';
+        this.currentView = 'agents';
+        document.querySelectorAll('.sidebar-icon-btn[data-view], .sidebar-nav-item[data-view], .sidebar-action[data-view], .rail-btn[data-view]').forEach(el =>
+            el.classList.toggle('active', el.dataset.view === 'agents'));
+
+        this.clearPreviewPanel();
+        this.closePreviewPanel();
+        this._maybeRenderOnboardingCard();
+
+        const projectStep = document.getElementById('project-step');
+        const backendStep = document.getElementById('backend-step');
+        const roleSelect = document.getElementById('setup-session-role');
+        if (projectStep) projectStep.style.display = 'none';
+        if (backendStep) backendStep.style.display = 'block';
+        if (roleSelect) {
+            const wrapper = roleSelect.closest('.chat-welcome-footer');
+            if (wrapper) wrapper.style.display = this.harnessEnabled ? '' : 'none';
+            roleSelect.value = this.sessionRole || 'generator';
+            roleSelect.onchange = () => {
+                this.sessionRole = roleSelect.value || 'generator';
+            };
+        }
+
+        const short = cwd.replace(/\\/g, '/').split('/').pop() || cwd;
+        const badge = document.getElementById('setup-project-badge');
+        if (badge) {
+            badge.innerHTML = `
+                <span class="badge-icon">&#128193;</span>
+                ${this.escapeHtml(short)}
+                <span class="badge-change">change</span>
+            `;
+            badge.onclick = () => this.openProjectFolder();
+        }
+
+        const backends = this.backends || {};
+        if (Object.keys(backends).length > 0) {
+            this.showBackendSelector(backends);
+        } else {
+            const label = document.querySelector('.backend-label');
+            if (label) label.textContent = 'Scanning backends...';
+            this.send({ command: 'redetect_backends' });
+        }
     }
 
     /**
@@ -4627,7 +5094,7 @@ class ResonantApp {
                     const consumer = this._pendingFolderPickConsumer;
                     const label = consumer === 'mission'
                         ? 'Pick session folder'
-                        : 'Switch project';
+                        : 'Open project';
                     if (event.message) this.showStatusMessage(event.message);
                     this._promptForProjectPath(label, (path) => {
                         if (consumer === 'mission') {
@@ -4697,10 +5164,22 @@ class ResonantApp {
                 this.handleCompression(event);
                 break;
             case 'mcp_list':
+                this.mcpServers = event.servers || [];
+                this.mcpHealth = event.health || {};
+                this._renderStatusPopover();
                 // Refresh settings view if open
                 if (this.currentView === 'settings') {
                     this.renderSettingsView();
                 }
+                break;
+            case 'lsp_list':
+                this.lspItems = event.servers || event.items || [];
+                this._renderStatusPopover();
+                break;
+            case 'plugin_list':
+                this.resonantPlugins = event.plugins || [];
+                this.pluginSummary = event.summary || {};
+                this._renderStatusPopover();
                 break;
             case 'rag_indexed':
                 this.ragStats = event;
@@ -4715,6 +5194,7 @@ class ResonantApp {
                 break;
             case 'skill_list':
                 this.skills = event.skills || [];
+                this._renderStatusPopover();
                 this.renderFilteredSessions();
                 if (this._skillDetailOpenId) {
                     // Refresh open detail dialog if it's still relevant.
@@ -4787,6 +5267,8 @@ class ResonantApp {
 
         // Store backends for later use
         this.backends = backends || {};
+        this.currentBackendName = current_backend || '';
+        this.currentModelName = current_model || '';
         this.handlesTools = event.handles_tools || false;
 
         if (recent_projects) {
@@ -4839,6 +5321,8 @@ class ResonantApp {
 
         // v0.6.2a3 — Fetch skill list so the Skills sidebar group populates.
         this.requestSkillList();
+        this.requestMcpList();
+        this.requestLspList();
 
         if (sessions) {
             this.sessions = sessions;
@@ -4866,11 +5350,14 @@ class ResonantApp {
             if (!refresh_only) {
                 this.showChatInterface();
             }
-            this.headerStatus.textContent = `${current_backend} · ${current_model}`;
+            this._setSystemStatus('connected', `${current_backend} / ${current_model}`);
             this.populateModelSelector(backends, current_backend, current_model);
             this.setThinkingMode(event.current_thinking_mode || '');
             return;
         }
+
+        this._setSystemStatus(Object.keys(this.backends || {}).length ? 'connected' : 'warning',
+            Object.keys(this.backends || {}).length ? 'Ready' : 'No model server');
 
         if (refresh_only) {
             const backendStep = document.getElementById('backend-step');
@@ -5252,22 +5739,25 @@ class ResonantApp {
     /** Render an empty-state card in the chat panel when there are no messages yet. */
     _maybeRenderChatEmptyState() {
         if (!this.chatMessages) return;
+        this.agentPanel?.classList.remove('has-empty-state');
         // Only render when chat is genuinely empty (no messages, no replays)
         if (this.chatMessages.children.length > 0) return;
         const empty = document.createElement('div');
         empty.className = 'chat-empty-state';
-        // Minimal empty state: keep the surface quiet until the first turn.
         empty.innerHTML = `
-            <div class="chat-empty-glyph">┃</div>
-            <h2 class="chat-empty-title">Ready.</h2>
+            <img class="chat-empty-logo" src="/static/resonant.png" alt="" aria-hidden="true">
+            <h2 class="chat-empty-title">Resonant</h2>
+            <p class="chat-empty-sub">Local-first multimodal coding agent for open-source models</p>
         `;
         this.chatMessages.appendChild(empty);
+        this.agentPanel?.classList.add('has-empty-state');
     }
 
     /** Remove the empty-state card the moment a real message lands. */
     _removeChatEmptyState() {
         const el = this.chatMessages?.querySelector('.chat-empty-state');
         if (el) el.remove();
+        this.agentPanel?.classList.remove('has-empty-state');
     }
 
     setPermissionMode(mode, notifyServer = true) {
@@ -7387,7 +7877,7 @@ class ResonantApp {
                 const action = el.dataset.action;
                 switch (action) {
                     case 'new-agent': document.getElementById('new-agent-btn')?.click(); break;
-                    case 'open-folder': document.getElementById('project-selector')?.click(); break;
+                    case 'open-folder': this.openProjectFolder(); break;
                     case 'settings': this.switchView('settings'); break;
                     case 'cmd-palette': this.openCommandPalette(); break;
                     case 'toggle-sidebar': document.getElementById('sidebar-toggle')?.click(); break;
@@ -7664,7 +8154,7 @@ class ResonantApp {
 
         // Enrich header status line
         if (this.headerStatus && this.lastModel) {
-            this.headerStatus.textContent = this.lastModel;
+            this._setSystemStatus('connected', this.lastModel);
         }
     }
 
@@ -8960,6 +9450,7 @@ class ResonantApp {
 
     _onBrowserStatus(event) {
         const status = event.status;
+        this._setBrowserStatus(status || 'idle', event.detail || '');
         if (status === 'connecting') { this._setChromeBtnState('connecting'); return; }
         if (status === 'connected') {
             this._setChromeBtnState('connected');
@@ -10091,7 +10582,7 @@ class ResonantApp {
         });
         menu.querySelector('.psw-open-other')?.addEventListener('click', () => {
             this._closeProjectSwitcher();
-            this.send({ command: 'folder_dialog' });
+            this.openProjectFolder();
         });
         menu.querySelectorAll('.psw-project').forEach((row) => {
             row.addEventListener('click', () => {
@@ -10213,22 +10704,17 @@ class ResonantApp {
     // ── New Session Setup ──────────────────────────────────────
 
     /**
-     * v0.6.6 — one-click "New session". The nice-and-simple path:
-     *   • A project + backend are already live → spin up a FRESH session in
-     *     the same project/backend (the `clear` command), landing straight on
-     *     the empty composer. This is "add a session to the current project".
-     *   • Otherwise (first run, or just after switching projects with no
-     *     backend chosen yet) → open the workspace picker. Picking a recent
-     *     folder reuses that project; picking a NEW folder creates a new
-     *     project + session.
-     * `currentSessionId` is the reliable "live project + backend" signal — a
-     * session can't exist without both, and `clear` needs the backend.
+     * New session is scoped to the active project. Project add/switch lives on
+     * the rail + / Open Folder affordance, matching OpenCode's split.
      */
     startNewSession() {
-        if (this.currentSessionId) {
+        const selectedBackend = this.currentBackendName || ((this.modelSelector?.value || '').split(':')[0] || '');
+        if (this.currentSessionId || selectedBackend) {
             this.send({ command: 'clear', session_role: this.sessionRole || 'generator' });
+        } else if (this.currentCwd) {
+            this.showCurrentProjectBackendSetup();
         } else {
-            this.showNewSessionSetup();
+            this.openProjectFolder();
         }
     }
 
@@ -10281,7 +10767,7 @@ class ResonantApp {
         // Bind native folder browse button
         const browseBtn = document.getElementById('welcome-folder-browse');
         browseBtn.onclick = () => {
-            this.send({ command: 'folder_dialog' });
+            this.openProjectFolder();
         };
 
         input.onkeydown = (e) => {
@@ -10335,7 +10821,7 @@ class ResonantApp {
                 <div style="flex:1"><div class="proj-name">Choose a different folder</div></div>
             `;
             chooseItem.addEventListener('click', () => {
-                this.send({ command: 'folder_dialog' });
+                this.openProjectFolder();
             });
             recentSection.appendChild(chooseItem);
 

@@ -5643,6 +5643,7 @@ class AppState:
                 getattr(self.project.current_session, "thinking_mode", "") if self.project.current_session else ""
             ),
             "recent_projects": self.project.get_recent_projects(),
+            "playground_project": self.project.get_playground_project(),
             "settings": self.settings.get_masked(),
             "resonant_md": get_instruction_info(self.project.project_path),
             "rag": self.codebase_index.get_stats() if self.codebase_index else {"total_files": 0, "is_indexed": False},
@@ -7494,6 +7495,7 @@ async def websocket_endpoint(ws: WebSocket):
                         "event": "project_registered",
                         "path": registered_project_path,
                         "recent_projects": state.project.get_recent_projects(),
+                        "playground_project": state.project.get_playground_project(),
                         "all_sessions": state.project.list_all_sessions(),
                     })
                     await ws.send_json({

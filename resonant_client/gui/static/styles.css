@@ -9821,25 +9821,37 @@ body {
 }
 
 .rail-btn:hover,
-.rail-btn.active,
-.rail-project-icon:hover,
-.rail-project-icon.active {
+.rail-btn.active {
     color: var(--text);
     background: var(--bg-hover);
     border-color: var(--border);
 }
 
 .rail-project-icon {
+    color: #fff;
+    background: linear-gradient(180deg, var(--rail-project-bg, #5b3b95), var(--rail-project-bg-2, #2b2240));
+    border-color: var(--rail-project-border, rgba(182,157,255,.62));
     font-size: 12px;
     font-weight: 700;
     letter-spacing: 0;
+    opacity: .78;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
+}
+
+.rail-project-icon:hover {
+    opacity: 1;
+    filter: brightness(1.08);
+    border-color: rgba(255,255,255,.55);
 }
 
 .rail-project-icon.active {
+    opacity: 1;
     color: #fff;
-    background: linear-gradient(180deg, #51348a, #231a36);
-    border-color: rgba(143,108,255,.62);
-    box-shadow: inset 0 0 0 1px rgba(143,108,255,.3);
+    background: linear-gradient(180deg, var(--rail-project-bg, #5b3b95), var(--rail-project-bg-2, #2b2240));
+    border-color: rgba(255,255,255,.72);
+    box-shadow:
+        inset 0 0 0 1px rgba(255,255,255,.14),
+        0 0 0 2px rgba(143,108,255,.34);
 }
 
 .rail-project-count {

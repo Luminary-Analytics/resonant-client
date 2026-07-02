@@ -25,6 +25,7 @@ from resonant_client.gui import sessions as sessions_mod
 from resonant_client.gui.sessions import (
     ProjectManager,
     _is_unsafe_cwd,
+    _playground_project_path,
     _safe_default_project_path,
 )
 
@@ -228,6 +229,37 @@ class TestSafeDefaultProjectPath:
         # The fallback must exist on disk after the call (so subsequent
         # ProjectManager() calls don't fail when creating sessions/).
         assert os.path.isdir(result)
+
+    def test_playground_prefers_existing_sibling_project(self, monkeypatch, isolated_home, tmp_path):
+        monkeypatch.setattr(sessions_mod, "_is_pytest_temp_path", lambda path: False)
+        repos = tmp_path / "Repos"
+        recent_project = repos / "advanced-tictactoe"
+        playground = repos / "Playground"
+        recent_project.mkdir(parents=True)
+        playground.mkdir()
+
+        recents = isolated_home / ".resonant" / "recent_projects.json"
+        recents.parent.mkdir(parents=True, exist_ok=True)
+        recents.write_text(json.dumps([
+            {"path": str(recent_project), "name": "advanced-tictactoe", "last_used": 0},
+        ]))
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+                                                    if os.name == "nt"
+                                                    else "/Applications/X"))
+
+        assert _playground_project_path() == os.path.normpath(str(playground))
+
+    def test_project_manager_exposes_permanent_playground(self, monkeypatch, isolated_home):
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+                                                    if os.name == "nt"
+                                                    else "/Applications/X"))
+        pm = ProjectManager()
+
+        playground = pm.get_playground_project()
+
+        assert playground["name"] == "Playground"
+        assert playground["permanent"] is True
+        assert os.path.isdir(playground["path"])
 
 
 class TestRecentProjectsWriteHygiene:

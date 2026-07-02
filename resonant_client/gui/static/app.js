@@ -189,6 +189,8 @@ class ResonantApp {
         this.allSessions = [];
         this.currentSessionId = '';
         this.recentProjects = [];
+        this.playgroundProject = null;
+        this._projectRailOrder = [];
         this.harnessState = null;
         this.harnessCycles = [];
         this.harnessCyclePoller = null;
@@ -4994,6 +4996,9 @@ class ResonantApp {
                 if (Array.isArray(event.recent_projects)) {
                     this.recentProjects = event.recent_projects;
                 }
+                if (event.playground_project) {
+                    this.playgroundProject = event.playground_project;
+                }
                 {
                     const registeredPath = this._normalizeProjectPath(event.path || '');
                     const hasRegistered = registeredPath && (this.recentProjects || [])
@@ -5385,6 +5390,7 @@ class ResonantApp {
             current_session_mode,
             current_session_role,
             recent_projects,
+            playground_project,
             refresh_only,
             harness_enabled,
             harness_cycles,
@@ -5415,6 +5421,9 @@ class ResonantApp {
 
         if (recent_projects) {
             this.recentProjects = recent_projects;
+        }
+        if (playground_project) {
+            this.playgroundProject = playground_project;
         }
         // Master switch: when sprint workflow is off, the role selector + harness
         // badge stay hidden and we don't even fetch cycle state. Defaults to false
@@ -10588,6 +10597,10 @@ class ResonantApp {
         return (path || '').replace(/\\/g, '/').replace(/\/+$/, '');
     }
 
+    _projectKey(path) {
+        return this._normalizeProjectPath(path).toLowerCase();
+    }
+
     _projectNameFromPath(path) {
         const parts = this._normalizeProjectPath(path).split('/').filter(Boolean);
         return parts[parts.length - 1] || 'Project';
@@ -10596,46 +10609,95 @@ class ResonantApp {
     _projectInitials(name) {
         const clean = String(name || '').trim();
         if (!clean) return 'P';
+        if (clean.toLowerCase() === 'playground') return 'P';
         const words = clean.split(/[\s._-]+/).filter(Boolean);
         if (words.length >= 2) return `${words[0][0] || ''}${words[1][0] || ''}`.toUpperCase();
         return clean.slice(0, 2).toUpperCase();
     }
 
+    _projectRailPalette() {
+        return [
+            ['#5b3b95', '#2b2240', 'rgba(182,157,255,.62)'],
+            ['#2d7a65', '#153c34', 'rgba(95,231,195,.54)'],
+            ['#8a4d2b', '#442615', 'rgba(255,171,105,.55)'],
+            ['#2c5f9a', '#142c49', 'rgba(111,183,255,.52)'],
+            ['#8a2f55', '#421727', 'rgba(255,119,169,.52)'],
+            ['#66702a', '#313614', 'rgba(215,232,99,.48)'],
+            ['#6a3c8c', '#311d42', 'rgba(202,139,255,.52)'],
+            ['#9a3c35', '#451b18', 'rgba(255,128,119,.52)'],
+            ['#276f84', '#12343e', 'rgba(94,218,244,.48)'],
+            ['#7a6424', '#3a3012', 'rgba(240,205,87,.48)'],
+            ['#355f32', '#182d17', 'rgba(135,218,127,.48)'],
+            ['#6b4674', '#332138', 'rgba(218,157,232,.48)'],
+        ];
+    }
+
+    _projectRailColor(index) {
+        const palette = this._projectRailPalette();
+        return palette[index % palette.length];
+    }
+
     _getProjectRailItems() {
-        const byPath = new Map();
+        const byKey = new Map();
+        const candidateOrder = [];
         const sessionPool = (this.allSessions && this.allSessions.length)
             ? this.allSessions
             : this.sessions;
         const counts = new Map();
         for (const session of (sessionPool || [])) {
-            const key = this._normalizeProjectPath(session?.project_path || this.currentCwd || '');
+            const key = this._projectKey(session?.project_path || this.currentCwd || '');
             if (!key) continue;
             counts.set(key, (counts.get(key) || 0) + 1);
         }
-        const addProject = (pathValue, nameValue = '') => {
+        const addProject = (pathValue, nameValue = '', options = {}) => {
             const path = this._normalizeProjectPath(pathValue);
             if (!path) return;
-            if (!byPath.has(path)) {
-                byPath.set(path, {
+            const key = this._projectKey(path);
+            if (!key) return;
+            if (!byKey.has(key)) {
+                byKey.set(key, {
+                    key,
                     path,
                     name: nameValue || this._projectNameFromPath(path),
-                    count: counts.get(path) || 0,
+                    count: counts.get(key) || 0,
+                    permanent: !!options.permanent,
                 });
+                candidateOrder.push(key);
                 return;
             }
-            const existing = byPath.get(path);
+            const existing = byKey.get(key);
             if (!existing.name && nameValue) existing.name = nameValue;
-            existing.count = counts.get(path) || existing.count || 0;
+            if (options.permanent) {
+                existing.permanent = true;
+                existing.name = nameValue || existing.name || 'Playground';
+            }
+            existing.count = counts.get(key) || existing.count || 0;
         };
 
-        addProject(this.currentCwd, this._projectNameFromPath(this.currentCwd || ''));
+        if (this.playgroundProject?.path) {
+            addProject(this.playgroundProject.path, this.playgroundProject.name || 'Playground', { permanent: true });
+        }
         for (const project of (this.recentProjects || [])) {
             addProject(project?.path || '', project?.name || '');
         }
         for (const session of (sessionPool || [])) {
             addProject(session?.project_path || '', session?.project_name || '');
         }
-        return Array.from(byPath.values());
+        addProject(this.currentCwd, this._projectNameFromPath(this.currentCwd || ''));
+
+        const allKeys = new Set(candidateOrder);
+        const playgroundKey = this.playgroundProject?.path ? this._projectKey(this.playgroundProject.path) : '';
+        const previousOrder = Array.isArray(this._projectRailOrder) ? this._projectRailOrder : [];
+        const orderedKeys = [];
+        const pushKey = (key) => {
+            if (key && allKeys.has(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
+        };
+
+        pushKey(playgroundKey);
+        previousOrder.forEach(pushKey);
+        candidateOrder.forEach(pushKey);
+        this._projectRailOrder = orderedKeys;
+        return orderedKeys.map(key => byKey.get(key)).filter(Boolean);
     }
 
     renderProjectRail() {
@@ -10644,8 +10706,9 @@ class ResonantApp {
         const currentPath = this._normalizeProjectPath(this.currentCwd || '');
         this.railProjects.innerHTML = '';
 
-        for (const project of projects) {
+        for (const [index, project] of projects.entries()) {
             const isActive = project.path === currentPath;
+            const [bg, bg2, border] = this._projectRailColor(index);
             const btn = document.createElement('button');
             btn.type = 'button';
             btn.className = `rail-project-icon${isActive ? ' active' : ''}`;
@@ -10654,6 +10717,9 @@ class ResonantApp {
                 ? `${project.name} project, active`
                 : `Open project ${project.name}`);
             btn.dataset.path = project.path;
+            btn.style.setProperty('--rail-project-bg', bg);
+            btn.style.setProperty('--rail-project-bg-2', bg2);
+            btn.style.setProperty('--rail-project-border', border);
             btn.innerHTML = `<span class="rail-project-initials">${this.escapeHtml(this._projectInitials(project.name))}</span>`;
             if (project.count > 0) {
                 const badge = document.createElement('span');

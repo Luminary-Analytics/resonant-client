@@ -16,6 +16,8 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+PLAYGROUND_PROJECT_NAME = "Playground"
+
 def _resonant_dir() -> Path:
     """Resolve ~/.resonant at call time, never at import time.
 
@@ -93,6 +95,75 @@ def _looks_like_resonant_source(path: str) -> bool:
         )
     except OSError:
         return False
+
+
+def _read_recent_project_entries() -> list[dict]:
+    recents_file = _resonant_dir() / "recent_projects.json"
+    try:
+        if recents_file.exists():
+            with open(recents_file, "r", encoding="utf-8-sig") as f:
+                raw = json.load(f) or []
+                return raw if isinstance(raw, list) else []
+    except Exception:
+        pass
+    return []
+
+
+def _playground_project_path() -> str:
+    """Return the permanent app-owned Playground project path.
+
+    Prefer a real folder named Playground next to the user's current or
+    recent projects; this preserves dogfooding setups like D:/Repos/Playground.
+    Fall back to the existing safe Documents workspace for fresh installs.
+    """
+    override = os.environ.get("RESONANT_PLAYGROUND_PROJECT", "").strip()
+    recent_entries = _read_recent_project_entries()
+
+    source_paths: list[str] = []
+    if override:
+        source_paths.append(os.path.expandvars(os.path.expanduser(override)))
+    cwd = os.getcwd()
+    if cwd and not _is_unsafe_cwd(cwd):
+        source_paths.append(cwd)
+    for entry in recent_entries:
+        if not isinstance(entry, dict):
+            continue
+        path = (entry.get("path") or "").strip()
+        if path:
+            source_paths.append(path)
+
+    def usable(path: str | Path) -> bool:
+        raw = os.path.normpath(str(path))
+        return (
+            bool(raw)
+            and not _is_pytest_temp_path(raw)
+            and not _is_unsafe_cwd(raw)
+            and os.path.isdir(raw)
+        )
+
+    for raw in source_paths:
+        candidate = Path(raw)
+        if candidate.name.lower() == PLAYGROUND_PROJECT_NAME.lower() and usable(candidate):
+            return os.path.normpath(str(candidate))
+
+    for raw in source_paths:
+        candidate = Path(raw).parent / PLAYGROUND_PROJECT_NAME
+        if usable(candidate):
+            return os.path.normpath(str(candidate))
+
+    docs = Path.home() / "Documents" / "Resonant Projects"
+    try:
+        docs.mkdir(parents=True, exist_ok=True)
+        return str(docs)
+    except OSError:
+        pass
+
+    workspace = _resonant_dir() / "workspace"
+    try:
+        workspace.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(workspace)
 
 
 def _safe_default_project_path() -> str:
@@ -548,6 +619,14 @@ class ProjectManager:
             if len(cleaned) >= limit:
                 break
         return cleaned
+
+    def get_playground_project(self) -> dict:
+        path = _playground_project_path()
+        return {
+            "path": path,
+            "name": PLAYGROUND_PROJECT_NAME,
+            "permanent": True,
+        }
 
     def clear_recent_projects(self) -> None:
         """Wipe the recent-projects history (keeps the current project)."""

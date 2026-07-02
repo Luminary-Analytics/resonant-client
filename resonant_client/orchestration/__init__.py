@@ -70,7 +70,7 @@ from .autonomy import (
     FloorViolation,
     check_floor,
     DEFAULT_PROTECTED_BRANCHES,
-    DEFAULT_PROTECTED_PATHS,
+    default_protected_paths,
     DEFAULT_BUDGET_USD_MAX,
 )
 from .audit import (
@@ -141,7 +141,7 @@ __all__ = [
     "FloorViolation",
     "check_floor",
     "DEFAULT_PROTECTED_BRANCHES",
-    "DEFAULT_PROTECTED_PATHS",
+    "default_protected_paths",
     "DEFAULT_BUDGET_USD_MAX",
     "KIND_DECISION",
     "KIND_FLOOR",

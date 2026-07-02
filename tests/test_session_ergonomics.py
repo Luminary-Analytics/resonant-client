@@ -18,10 +18,8 @@ from resonant_client.gui.sessions import ProjectManager, SessionRecord
 @pytest.fixture
 def isolated_resonant_home(tmp_path, monkeypatch):
     """Point the sessions storage at a tmp dir so tests don't touch real ~/.resonant."""
-    root = tmp_path / ".resonant"
-    monkeypatch.setattr(sessions_mod, "_RESONANT_DIR", root)
-    monkeypatch.setattr(sessions_mod, "_PROJECTS_DIR", root / "projects")
-    return root
+    monkeypatch.setattr(sessions_mod.Path, "home", staticmethod(lambda: tmp_path))
+    return tmp_path / ".resonant"
 
 
 def _make_history(num_user_msgs: int) -> list[dict]:

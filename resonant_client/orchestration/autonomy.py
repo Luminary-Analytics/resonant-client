@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -24,13 +24,17 @@ from typing import Callable, Optional
 # Defaults — overridable per-project via settings (autonomy_*_overrides).
 DEFAULT_PROTECTED_BRANCHES = ("main", "master", "prod", "production")
 DEFAULT_PROTECTED_BRANCH_PREFIXES = ("release/",)
-DEFAULT_PROTECTED_PATHS = (
-    Path.home() / ".ssh",
-    Path.home() / ".aws",
-    Path.home() / ".kube",
-    Path.home() / ".gnupg",
-    Path("/etc"),
-)
+def default_protected_paths() -> tuple[Path, ...]:
+    """Resolved at call time, never at import time, so the protected
+    list follows Path.home() — tests patch home after this module is
+    already imported."""
+    return (
+        Path.home() / ".ssh",
+        Path.home() / ".aws",
+        Path.home() / ".kube",
+        Path.home() / ".gnupg",
+        Path("/etc"),
+    )
 DEFAULT_BUDGET_USD_MAX = 5.00
 
 
@@ -54,7 +58,7 @@ class AutonomySettings:
     """Snapshot of the autonomy-related settings, passed to each rule."""
     protected_branches: tuple[str, ...] = DEFAULT_PROTECTED_BRANCHES
     protected_branch_prefixes: tuple[str, ...] = DEFAULT_PROTECTED_BRANCH_PREFIXES
-    protected_paths: tuple[Path, ...] = DEFAULT_PROTECTED_PATHS
+    protected_paths: tuple[Path, ...] = field(default_factory=default_protected_paths)
     budget_usd_max: float = DEFAULT_BUDGET_USD_MAX
 
     @classmethod
@@ -70,7 +74,7 @@ class AutonomySettings:
             protected_branches=tuple(protected_branches_raw or DEFAULT_PROTECTED_BRANCHES),
             protected_paths=tuple(
                 Path(p) for p in (protected_paths_raw or [])
-            ) or DEFAULT_PROTECTED_PATHS,
+            ) or default_protected_paths(),
             budget_usd_max=float(budget or DEFAULT_BUDGET_USD_MAX),
         )
 

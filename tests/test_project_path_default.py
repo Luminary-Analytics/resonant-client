@@ -31,13 +31,11 @@ from resonant_client.gui.sessions import (
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Point ~/.resonant at a tmp dir + neuter Path.home() so we don't
-    touch the real Documents folder during tests."""
+    """Neuter Path.home() so ~/.resonant and ~/Documents resolve into a
+    tmp dir during tests. sessions.py resolves ~/.resonant at call time
+    (_resonant_dir), so patching Path.home is all the isolation needed."""
     fake_home = tmp_path / "fake_home"
     fake_home.mkdir()
-    fake_resonant = fake_home / ".resonant"
-    monkeypatch.setattr(sessions_mod, "_RESONANT_DIR", fake_resonant)
-    monkeypatch.setattr(sessions_mod, "_PROJECTS_DIR", fake_resonant / "projects")
     monkeypatch.setattr(sessions_mod.Path, "home", staticmethod(lambda: fake_home))
     return fake_home
 
@@ -230,6 +228,41 @@ class TestSafeDefaultProjectPath:
         # The fallback must exist on disk after the call (so subsequent
         # ProjectManager() calls don't fail when creating sessions/).
         assert os.path.isdir(result)
+
+
+class TestRecentProjectsWriteHygiene:
+    """_save_recent_project must never record pytest tmp dirs, and must
+    scrub ones that earlier (unisolated) test runs left behind."""
+
+    def test_scrubs_existing_pytest_temp_entries_on_save(self, isolated_home):
+        recents_file = isolated_home / ".resonant" / "recent_projects.json"
+        recents_file.parent.mkdir(parents=True, exist_ok=True)
+        recents_file.write_text(json.dumps([
+            {"path": "C:\\Users\\x\\AppData\\Local\\Temp\\pytest-of-x\\pytest-123\\proj0",
+             "name": "proj0", "last_used": 2},
+            {"path": "/tmp/pytest-of-x/pytest-9/proj1", "name": "proj1", "last_used": 1},
+            {"path": "/dev/keep-me", "name": "keep-me", "last_used": 0},
+        ]))
+
+        pm = ProjectManager("/dev/proj")
+        pm.set_project("/dev/proj")
+
+        saved = json.loads(recents_file.read_text(encoding="utf-8"))
+        paths = [e["path"].replace("\\", "/") for e in saved]
+        assert not any("pytest-of-" in p.lower() for p in paths)
+        assert any(p.endswith("keep-me") for p in paths)
+        # The project just set is at the top.
+        assert paths[0].endswith("/dev/proj")
+
+    def test_never_records_pytest_temp_project(self, isolated_home):
+        pm = ProjectManager("/dev/proj")
+        pm.set_project(
+            "C:\\Users\\x\\AppData\\Local\\Temp\\pytest-of-x\\pytest-9\\proj"
+        )
+
+        recents_file = isolated_home / ".resonant" / "recent_projects.json"
+        saved = json.loads(recents_file.read_text(encoding="utf-8"))
+        assert saved == []
 
 
 class TestProjectManagerUsesSafeDefault:

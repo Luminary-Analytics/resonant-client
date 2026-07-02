@@ -21,6 +21,40 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+# ── Home isolation (process-wide) ──────────────────────────────────
+# Importing resonant_client.gui.app constructs the module-level
+# `state = AppState()` singleton, which writes
+# ~/.resonant/recent_projects.json. Test modules import app at module
+# scope, so that write fires at COLLECTION time — before any fixture
+# runs. The redirect therefore has to happen here, at conftest import
+# time, for the whole pytest process. The autouse fixture below layers
+# a fresh per-test home on top of this session-wide one.
+
+_SESSION_TEST_HOME = Path(tempfile.mkdtemp(prefix="resonant-tests-home-"))
+Path.home = staticmethod(lambda: _SESSION_TEST_HOME)  # type: ignore[method-assign]
+
+
+# ── Home isolation (autouse) ───────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path_factory, monkeypatch):
+    """Point Path.home() at a per-test tmp dir for EVERY test.
+
+    Code under resonant_client writes into ~/.resonant at runtime
+    (recent_projects.json, projects/<hash>/sessions/, settings.json…).
+    Tests that forgot to isolate used to leave pytest tmp paths in the
+    user's real ~/.resonant/recent_projects.json, so isolation is now
+    the default. Tests that need a specific fake home re-patch
+    Path.home themselves and their patch wins for the test's duration.
+
+    Note this covers Path.home() only — os.path.expanduser("~") and
+    direct env reads still see the real home.
+    """
+    fake_home = tmp_path_factory.mktemp("isolated_home")
+    monkeypatch.setattr(Path, "home", staticmethod(lambda: fake_home))
+    return fake_home
+
+
 # ── Fixtures: Temporary directories ────────────────────────────────
 
 @pytest.fixture

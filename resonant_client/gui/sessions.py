@@ -16,8 +16,30 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-_RESONANT_DIR = Path.home() / ".resonant"
-_PROJECTS_DIR = _RESONANT_DIR / "projects"
+def _resonant_dir() -> Path:
+    """Resolve ~/.resonant at call time, never at import time.
+
+    Tests monkeypatch Path.home() after this module is already
+    imported; an import-time constant kept pointing at the real user
+    home, so every test run that touched set_project() prepended
+    pytest tmp paths to the user's real ~/.resonant/recent_projects.json.
+    """
+    return Path.home() / ".resonant"
+
+
+def _projects_dir() -> Path:
+    return _resonant_dir() / "projects"
+
+
+def _is_pytest_temp_path(path: str) -> bool:
+    """True for pytest tmp-dir paths (…/Temp/pytest-of-<user>/pytest-NNN/…).
+
+    These are junk left in recent_projects.json by test runs that
+    weren't isolated from the real user home: never write them, and
+    scrub any that already made it in.
+    """
+    normalized = (path or "").replace("\\", "/").lower()
+    return "pytest-of-" in normalized or "/temp/pytest-" in normalized
 
 
 # v0.3.3 — directories where the bundled exe must never treat the
@@ -108,7 +130,7 @@ def _safe_default_project_path() -> str:
             pass
 
     # Most-recent project (best signal for repeat users).
-    recents_file = _RESONANT_DIR / "recent_projects.json"
+    recents_file = _resonant_dir() / "recent_projects.json"
     try:
         if recents_file.exists():
             with open(recents_file, "r", encoding="utf-8-sig") as f:
@@ -146,7 +168,7 @@ def _safe_default_project_path() -> str:
         pass
 
     # Last resort — always writable since it's our own data dir.
-    workspace = _RESONANT_DIR / "workspace"
+    workspace = _resonant_dir() / "workspace"
     try:
         workspace.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -163,7 +185,7 @@ def _project_hash(project_path: str) -> str:
 def _project_dir(project_path: str) -> Path:
     """Get the storage directory for a project."""
     h = _project_hash(project_path)
-    return _PROJECTS_DIR / h
+    return _projects_dir() / h
 
 
 def _sessions_dir(project_path: str) -> Path:
@@ -434,7 +456,7 @@ class ProjectManager:
 
     def _save_recent_project(self):
         """Track this project in the recent projects list."""
-        recents_file = _RESONANT_DIR / "recent_projects.json"
+        recents_file = _resonant_dir() / "recent_projects.json"
         recents = []
         try:
             if recents_file.exists():
@@ -442,18 +464,29 @@ class ProjectManager:
                     recents = json.load(f)
         except Exception:
             pass
+        if not isinstance(recents, list):
+            recents = []
 
         norm = self.project_path.replace("\\", "/")
-        recents = [r for r in recents if r.get("path", "").replace("\\", "/") != norm]
-        recents.insert(0, {
-            "path": self.project_path,
-            "name": os.path.basename(self.project_path),
-            "last_used": time.time(),
-        })
+        # Scrub pytest tmp dirs on every write so files polluted by
+        # pre-fix test runs self-heal; get_recent_projects applies the
+        # same filter at read time.
+        recents = [
+            r for r in recents
+            if isinstance(r, dict)
+            and (r.get("path") or "").replace("\\", "/") != norm
+            and not _is_pytest_temp_path(r.get("path") or "")
+        ]
+        if not _is_pytest_temp_path(self.project_path):
+            recents.insert(0, {
+                "path": self.project_path,
+                "name": os.path.basename(self.project_path),
+                "last_used": time.time(),
+            })
         recents = recents[:20]
 
         try:
-            _RESONANT_DIR.mkdir(parents=True, exist_ok=True)
+            _resonant_dir().mkdir(parents=True, exist_ok=True)
             with open(recents_file, "w", encoding="utf-8") as f:
                 json.dump(recents, f, indent=2)
         except Exception as e:
@@ -469,7 +502,7 @@ class ProjectManager:
 
         Capped at `limit` entries.
         """
-        recents_file = _RESONANT_DIR / "recent_projects.json"
+        recents_file = _resonant_dir() / "recent_projects.json"
         raw: list = []
         try:
             if recents_file.exists():
@@ -491,7 +524,7 @@ class ProjectManager:
                 continue
             normalized = path.replace("\\", "/").lower()
             # Filter out pytest test fixture dirs
-            if "pytest-of-" in normalized or "/temp/pytest-" in normalized:
+            if _is_pytest_temp_path(path):
                 continue
             # Filter out paths that no longer exist
             if not os.path.isdir(path):
@@ -507,7 +540,7 @@ class ProjectManager:
 
     def clear_recent_projects(self) -> None:
         """Wipe the recent-projects history (keeps the current project)."""
-        recents_file = _RESONANT_DIR / "recent_projects.json"
+        recents_file = _resonant_dir() / "recent_projects.json"
         try:
             recents_file.unlink(missing_ok=True)
         except Exception:

@@ -1260,7 +1260,6 @@ Examples:
     parser.add_argument("--ollama-url", type=str, default=None)
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--max-tokens", type=int, default=4096)
-    parser.add_argument("--max-steps", type=int, default=25)
     parser.add_argument("--approve", action="store_true")
     parser.add_argument("--auto-plan", action="store_true",
                         help="Automatically enable plan mode for complex requests")
@@ -1413,7 +1412,6 @@ Examples:
 
     session = Session(
         backend=backend,
-        max_steps=args.max_steps,
         max_tokens=args.max_tokens,
         auto_approve=not args.approve,
         auto_plan=args.auto_plan,

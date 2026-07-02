@@ -293,7 +293,6 @@ class LocalSpecialistRunner:
 
         session = Session(
             backend=backend_for_call,
-            max_steps=profile.max_steps,
             auto_approve=True,
             allowed_tools=allowed,
             project_instructions=system_prompt,

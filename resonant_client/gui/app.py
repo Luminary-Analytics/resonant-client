@@ -101,10 +101,6 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 class AppState:
     """Shared application state."""
 
-    # Effectively unlimited for normal tasks — separate doom-loop detection
-    # (see _check_doom_loop in engine/session.py) catches the real runaways.
-    # Override per-user via Settings → general.session_max_steps.
-    SESSION_MAX_STEPS = 200
     SESSION_MAX_TOKENS = 4096
     HARNESS_ROLE_MAX_TOKENS = {
         "planner": 1024,
@@ -258,6 +254,31 @@ class AppState:
     @staticmethod
     def _normalize_path(project_path: str) -> str:
         return os.path.normpath(project_path).replace("\\", "/").lower()
+
+    @staticmethod
+    def _resolve_project_path(project_path: str) -> str:
+        raw = str(project_path or "").strip().strip('"')
+        if not raw:
+            raise ValueError("Project path is required.")
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        try:
+            return str(Path(expanded).resolve(strict=False))
+        except OSError:
+            return os.path.abspath(os.path.normpath(expanded))
+
+    @classmethod
+    def ensure_project_path(cls, project_path: str) -> str:
+        """Resolve and materialize a selected project folder.
+
+        Selecting a never-before-seen folder should create the project root and
+        its Resonant session storage in one flow. Existing folders are reused.
+        """
+        resolved = cls._resolve_project_path(project_path)
+        path = Path(resolved)
+        if path.exists() and not path.is_dir():
+            raise NotADirectoryError(f"Project path is not a directory: {resolved}")
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
 
     def _project_namespace(self, project_path: str) -> str:
         normalized = os.path.normpath(project_path).replace("\\", "/").lower()
@@ -4303,7 +4324,7 @@ class AppState:
         return "", "", "", ""
 
     def apply_project_context(self, project_path: str, refresh_index: bool = True) -> str:
-        project_path = os.path.normpath(project_path or self.project.project_path or os.getcwd())
+        project_path = self.ensure_project_path(project_path or self.project.project_path or os.getcwd())
         os.chdir(project_path)
 
         if self._normalize_path(project_path) != self._normalize_path(self.project.project_path):
@@ -5302,19 +5323,8 @@ class AppState:
                 else harness_instructions
             )
 
-        # User-overridable step budget. Default is high enough that normal tasks
-        # never hit it; doom-loop detection in engine/session.py catches real runaways.
-        configured_max_steps = self.settings.get("general", "session_max_steps", None)
-        try:
-            effective_max_steps = int(configured_max_steps) if configured_max_steps else self.SESSION_MAX_STEPS
-        except (TypeError, ValueError):
-            effective_max_steps = self.SESSION_MAX_STEPS
-        if effective_max_steps <= 0:
-            effective_max_steps = 10000  # sentinel for "treat as unlimited"
-
         session = Session(
             backend=backend,
-            max_steps=effective_max_steps,
             max_tokens=max_tokens or self.SESSION_MAX_TOKENS,
             auto_approve=self._session_auto_approve() if auto_approve is None else auto_approve,
             allowed_tools=allowed_tools,
@@ -7468,8 +7478,15 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif command == "set_project":
                 project_path = msg.get("path", "").strip()
-                if project_path and os.path.isdir(project_path):
-                    state.apply_project_context(project_path, refresh_index=True)
+                if not project_path:
+                    await ws.send_json({"event": "error", "message": "Project path is required."})
+                    continue
+                try:
+                    resolved_project_path = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: state.ensure_project_path(project_path),
+                    )
+                    state.apply_project_context(resolved_project_path, refresh_index=True)
                     # Reset backend + session
                     state.backend = None
                     state.backend_spec = None
@@ -7487,8 +7504,16 @@ async def websocket_endpoint(ws: WebSocket):
                         except Exception:
                             logger.exception("default runtime session after project switch failed")
                     await ws.send_json(state.get_init_data())
-                else:
-                    await ws.send_json({"event": "error", "message": f"Invalid directory: {project_path}"})
+                    await ws.send_json({
+                        "event": "ui_notice",
+                        "message": f"Project ready: {resolved_project_path}",
+                    })
+                except Exception as exc:
+                    logger.warning("set_project failed for %r: %s", project_path, exc)
+                    await ws.send_json({
+                        "event": "error",
+                        "message": f"Couldn't open project folder: {exc}",
+                    })
 
             elif command == "check_updates":
                 try:
@@ -7569,7 +7594,7 @@ async def websocket_endpoint(ws: WebSocket):
                     })
                     continue
 
-                await ws.send_json({"event": "status_msg", "message": "Opening project picker..."})
+                await ws.send_json({"event": "ui_notice", "message": "Opening project picker..."})
 
                 def _pick_folder():
                     global _webview_window
@@ -7624,7 +7649,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if picked_path:
                     await ws.send_json({"event": "folder_picked", "path": picked_path})
                 elif picker_opened:
-                    await ws.send_json({"event": "status_msg", "message": "Project picker closed."})
+                    await ws.send_json({"event": "ui_notice", "message": "Project picker closed."})
                 else:
                     # No pick — tell the user what to do next so the click isn't a dead end.
                     await ws.send_json({

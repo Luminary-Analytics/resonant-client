@@ -119,18 +119,14 @@ class TestRunHappyTextPath:
         assert "step.start" in kinds
         assert "step.end" in kinds
 
-    def test_max_steps_cap_emits_error(self):
-        # If the loop runs to the max_steps cap WITHOUT a stop
-        # condition (e.g. backend keeps emitting tool calls forever),
-        # the run emits an ERROR before SESSION_END.
-        # Easiest way to hit the cap: 0 max_steps means the while
-        # loop never enters; iteration stays 0, and `iteration >=
-        # max_steps` (0 >= 0) fires the ERROR.
+    def test_zero_max_steps_disables_cap(self):
+        # 0 used to mean "stop immediately" and emitted a step-limit error.
+        # The shipped app now treats missing/zero max_steps as unlimited.
         backend = StreamingBackend(events=[text_delta("ok"), done()])
         session = Session(backend=backend, max_steps=0)
         events = list(session.run("hi"))
         errs = events_of_kind(events, "error")
-        assert any("step limit" in e.get("message", "") for e in errs)
+        assert not any("step limit" in e.get("message", "") for e in errs)
 
 
 # ── EVENT_ERROR mid-stream ──────────────────────────────────────────────

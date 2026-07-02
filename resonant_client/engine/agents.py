@@ -16,7 +16,6 @@ class AgentType:
     description: str
     allowed_tools: list[str]
     system_prompt: str
-    max_steps: int = 15
     model: Optional[str] = None  # None = inherit from parent
 
     def filter_tools(self, all_tools: list[dict]) -> list[dict]:
@@ -70,7 +69,6 @@ RULES:
 3. You may use bash for non-destructive commands (ls, git log, etc.) but NEVER modify files.
 4. Return a clear, concise summary of what you found.
 5. Do NOT write or edit any files.""",
-        max_steps=15,
     ),
 
     "plan": AgentType(
@@ -91,7 +89,6 @@ RULES:
 3. Mention which files need to change and how.
 4. Flag risks or ambiguities.
 5. Do NOT write or edit any files — only analyze and plan.""",
-        max_steps=15,
     ),
 }
 

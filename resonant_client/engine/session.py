@@ -354,7 +354,7 @@ class Session:
     def __init__(
         self,
         backend,
-        max_steps: int = 25,
+        max_steps: Optional[int] = None,
         max_tokens: int = 16384,
         auto_approve: bool = True,
         auto_plan: bool = False,
@@ -364,7 +364,11 @@ class Session:
         cancel_event: Optional[threading.Event] = None,
     ):
         self.backend = backend
-        self.max_steps = max_steps
+        try:
+            parsed_max_steps = int(max_steps) if max_steps is not None else 0
+        except (TypeError, ValueError):
+            parsed_max_steps = 0
+        self.max_steps: Optional[int] = parsed_max_steps if parsed_max_steps > 0 else None
         self.max_tokens = max_tokens
         self.auto_approve = auto_approve
         self.auto_plan = auto_plan
@@ -696,7 +700,9 @@ class Session:
             except Exception as e:
                 logger.warning(f"Context compression failed: {e}")
 
-        while iteration < self.max_steps:
+        while True:
+            if self.max_steps is not None and iteration >= self.max_steps:
+                break
             if self.cancel_requested:
                 yield from self._cancelled_events(total_start, exec_step)
                 return
@@ -1353,7 +1359,7 @@ class Session:
             except Exception as e:
                 logger.warning(f"Engram session summary failed: {e}")
 
-        if iteration >= self.max_steps:
+        if self.max_steps is not None and iteration >= self.max_steps:
             yield make_event(EngineEvent.ERROR,
                             message=f"Reached {self.max_steps} step limit — use /clear to reset")
 
@@ -1373,7 +1379,7 @@ class Session:
         The sub-agent gets:
         - Its own conversation history (empty)
         - Restricted tools based on agent type
-        - A lower step limit
+        - No parent-history bleed-through
         - No ability to spawn further sub-agents (recursion guard)
 
         All sub-agent events are yielded through the parent for TUI display.
@@ -1413,7 +1419,6 @@ class Session:
         # Create child session
         child = Session(
             backend=self.backend,
-            max_steps=agent_type.max_steps,
             max_tokens=self.max_tokens,
             auto_approve=True,  # Sub-agents auto-approve (no interactive prompts)
             parent_session=self,

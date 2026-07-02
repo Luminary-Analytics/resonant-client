@@ -125,15 +125,21 @@ def launch_gui(
                     if self._win[0]:
                         self._win[0].destroy()
 
-                def resize_window(self, width: int, height: int):
+                def resize_window(self, width: int, height: int, x=None, y=None):
                     if not self._win[0]:
                         return False
                     try:
                         width = max(800, int(width))
                         height = max(600, int(height))
+                        move_to = (
+                            int(x) if x is not None else None,
+                            int(y) if y is not None else None,
+                        )
                     except (TypeError, ValueError):
                         return False
                     try:
+                        if move_to[0] is not None and move_to[1] is not None:
+                            self._win[0].move(move_to[0], move_to[1])
                         from webview.window import FixPoint
                         self._win[0].resize(width, height, FixPoint.NORTH | FixPoint.WEST)
                         return True

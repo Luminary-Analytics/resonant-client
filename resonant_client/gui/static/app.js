@@ -627,24 +627,51 @@ class ResonantApp {
             handle.addEventListener('mousedown', (event) => {
                 if (!hasResizeApi()) return;
                 event.preventDefault();
-                const edge = handle.dataset.resizeEdge || 'corner';
+                const edge = handle.dataset.resizeEdge || 'bottom-right';
                 const startX = event.screenX;
                 const startY = event.screenY;
                 const startW = window.outerWidth || window.innerWidth;
                 const startH = window.outerHeight || window.innerHeight;
+                const startWindowX = window.screenX;
+                const startWindowY = window.screenY;
+                const minW = 800;
+                const minH = 600;
                 let queued = false;
                 let nextW = startW;
                 let nextH = startH;
+                let nextX = startWindowX;
+                let nextY = startWindowY;
 
                 const flush = () => {
                     queued = false;
-                    pywebview.api.resize_window(Math.round(nextW), Math.round(nextH));
+                    if (edge.includes('left') || edge.includes('top')) {
+                        pywebview.api.resize_window(
+                            Math.round(nextW),
+                            Math.round(nextH),
+                            Math.round(nextX),
+                            Math.round(nextY),
+                        );
+                    } else {
+                        pywebview.api.resize_window(Math.round(nextW), Math.round(nextH));
+                    }
                 };
                 const onMove = (moveEvent) => {
                     const dx = moveEvent.screenX - startX;
                     const dy = moveEvent.screenY - startY;
-                    if (edge === 'right' || edge === 'corner') nextW = Math.max(800, startW + dx);
-                    if (edge === 'bottom' || edge === 'corner') nextH = Math.max(600, startH + dy);
+                    if (edge.includes('right')) {
+                        nextW = Math.max(minW, startW + dx);
+                    }
+                    if (edge.includes('bottom')) {
+                        nextH = Math.max(minH, startH + dy);
+                    }
+                    if (edge.includes('left')) {
+                        nextW = Math.max(minW, startW - dx);
+                        nextX = startWindowX + Math.min(dx, startW - minW);
+                    }
+                    if (edge.includes('top')) {
+                        nextH = Math.max(minH, startH - dy);
+                        nextY = startWindowY + Math.min(dy, startH - minH);
+                    }
                     if (!queued) {
                         queued = true;
                         requestAnimationFrame(flush);
@@ -660,6 +687,26 @@ class ResonantApp {
                 document.addEventListener('mouseup', onUp);
             });
         });
+    }
+
+    _bindComposerGutterSync() {
+        if (!this.inputBar || this._composerGutterBound) return;
+        this._composerGutterBound = true;
+
+        const sync = () => {
+            const visible = this.inputBar.style.display !== 'none';
+            const height = visible ? Math.ceil(this.inputBar.getBoundingClientRect().height || 0) : 0;
+            const gutter = Math.max(118, height + 34);
+            document.documentElement.style.setProperty('--composer-gutter', `${gutter}px`);
+        };
+
+        this._syncComposerGutter = sync;
+        sync();
+        if (typeof ResizeObserver !== 'undefined') {
+            this._composerGutterObserver = new ResizeObserver(sync);
+            this._composerGutterObserver.observe(this.inputBar);
+        }
+        window.addEventListener('resize', sync);
     }
 
     _bindWindowDragFallback() {
@@ -756,6 +803,7 @@ class ResonantApp {
         this.userInput.addEventListener('input', () => {
             this.userInput.style.height = 'auto';
             this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+            this._syncComposerGutter?.();
             this._updateFileFuzzyState();
         });
         // Caret moves on click/arrow without firing 'input' — keep the popup
@@ -948,6 +996,7 @@ class ResonantApp {
         document.addEventListener('click', () => this.closeStatusPopover());
         this._bindWindowResizeHandles();
         this._bindWindowDragFallback();
+        this._bindComposerGutterSync();
 
         // Permission dialog
         document.getElementById('permission-allow').addEventListener('click', () => {
@@ -1201,6 +1250,7 @@ class ResonantApp {
         container.innerHTML = '';
         if (this.attachedImages.length === 0) {
             container.style.display = 'none';
+            this._syncComposerGutter?.();
             return;
         }
 
@@ -1218,6 +1268,7 @@ class ResonantApp {
             });
             container.appendChild(el);
         });
+        this._syncComposerGutter?.();
     }
 
     // ── Send Message ────────────────────────────────────────────
@@ -1238,6 +1289,7 @@ class ResonantApp {
                 this._runShellShortcut(cmd, /* feedToLlm= */ false);
                 this.userInput.value = '';
                 this.userInput.style.height = 'auto';
+                this._syncComposerGutter?.();
                 return;
             }
         } else if (text.startsWith('!') && text.length > 1 && !text.startsWith('!!')) {
@@ -1250,6 +1302,7 @@ class ResonantApp {
                 this._runShellShortcut(cmd, /* feedToLlm= */ true);
                 this.userInput.value = '';
                 this.userInput.style.height = 'auto';
+                this._syncComposerGutter?.();
                 return;
             }
         }
@@ -1262,6 +1315,7 @@ class ResonantApp {
             this.startIntent(text.slice('/plan '.length).trim());
             this.userInput.value = '';
             this.userInput.style.height = 'auto';
+            this._syncComposerGutter?.();
             return;
         }
         if (text === '/plan') {
@@ -1273,6 +1327,7 @@ class ResonantApp {
             this.send({ command: 'pin_session' });
             this.userInput.value = '';
             this.userInput.style.height = 'auto';
+            this._syncComposerGutter?.();
             return;
         }
 
@@ -1322,6 +1377,7 @@ class ResonantApp {
         // Clear input and attachments
         this.userInput.value = '';
         this.userInput.style.height = 'auto';
+        this._syncComposerGutter?.();
         this.attachedImages = [];
         this.renderAttachedImages();
         this.setRunning(true);
@@ -4900,6 +4956,9 @@ class ResonantApp {
             case 'status_msg':
                 this.showStatusMessage(event.message);
                 break;
+            case 'ui_notice':
+                this.showToastMessage(event.message);
+                break;
             case 'resume_prompt':
                 this.applyResumePrompt(event.prompt || '');
                 break;
@@ -5110,7 +5169,7 @@ class ResonantApp {
                     const label = consumer === 'mission'
                         ? 'Pick session folder'
                         : 'Open project';
-                    if (event.message) this.showStatusMessage(event.message);
+                    if (event.message) this.showToastMessage(event.message);
                     this._promptForProjectPath(label, (path) => {
                         if (consumer === 'mission') {
                             this._pendingFolderPickConsumer = null;
@@ -5706,6 +5765,7 @@ class ResonantApp {
         if (this.agentPanel) this.agentPanel.style.display = 'flex';
         else this.chatContainer.style.display = 'flex';
         this.inputBar.style.display = 'flex';
+        this._syncComposerGutter?.();
         if (this.settingsView) this.settingsView.style.display = 'none';
         // Un-hide the sidebar session list too — switchView('settings')
         // hides it, and arriving here via Ctrl+N used to leave it hidden.
@@ -7523,6 +7583,7 @@ class ResonantApp {
         if (this.agentPanel) this.agentPanel.style.display = 'none';
         else this.chatContainer.style.display = 'none';
         this.inputBar.style.display = 'none';
+        this._syncComposerGutter?.();
         if (this.settingsView) this.settingsView.style.display = 'none';
 
         const sessionList = document.getElementById('agent-list');
@@ -7551,6 +7612,7 @@ class ResonantApp {
                     if (this.agentPanel) this.agentPanel.style.display = 'flex';
                     else this.chatContainer.style.display = 'flex';
                     this.inputBar.style.display = 'flex';
+                    this._syncComposerGutter?.();
                 } else {
                     this.welcomeScreen.style.display = 'flex';
                 }
@@ -7605,8 +7667,6 @@ class ResonantApp {
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
                       hint: 'Off by default. Enable to use Resonant\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.resonant/, not in your repo.' },
-                    { key: 'session_max_steps', label: 'Session step budget', type: 'text',
-                      hint: 'Maximum agentic loop steps before the session caps out. Default 200 (effectively unlimited for normal tasks). Set to 0 to disable entirely \u2014 doom-loop detection still catches real runaways. Local-model users can safely raise this; cloud users may want a smaller cap for cost.' },
                 ]
             },
             {
@@ -8531,7 +8591,6 @@ class ResonantApp {
             suggestions.push('Run tests');
             suggestions.push('Explain the changes');
         }
-        suggestions.push('Continue');
         if (!suggestions.length) return;
 
         const el = document.createElement('div');
@@ -8543,6 +8602,7 @@ class ResonantApp {
             btn.addEventListener('click', () => {
                 el.remove();
                 this.userInput.value = btn.textContent;
+                this._syncComposerGutter?.();
                 this.sendMessage();
             });
         });
@@ -9406,6 +9466,23 @@ class ResonantApp {
         }
     }
 
+    showToastMessage(message) {
+        if (!message) return;
+        let el = document.getElementById('ui-toast-message');
+        if (!el) {
+            el = document.createElement('div');
+            el.id = 'ui-toast-message';
+            el.className = 'ui-toast-message';
+            document.body.appendChild(el);
+        }
+        el.textContent = message;
+        el.classList.add('visible');
+        clearTimeout(el._hideTimer);
+        el._hideTimer = setTimeout(() => {
+            el.classList.remove('visible');
+        }, 2200);
+    }
+
     showStatusMessage(message) {
         // Brief toast-like status message
         const el = document.createElement('div');
@@ -9797,6 +9874,7 @@ class ResonantApp {
         range.value = 0;
         scrubber.style.display = 'flex';
         this.inputBar.style.display = 'none';
+        this._syncComposerGutter?.();
 
         this._renderReplayUpTo(0);
     }
@@ -9806,6 +9884,7 @@ class ResonantApp {
         this._stopReplayTimer();
         this.chatMessages.innerHTML = this._replay.stashedHTML;
         this.inputBar.style.display = this._replay.inputBarDisplay || '';
+        this._syncComposerGutter?.();
         const scrubber = document.getElementById('replay-scrubber');
         if (scrubber) scrubber.style.display = 'none';
         this._replay = null;

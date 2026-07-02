@@ -48,7 +48,7 @@ EDDSA_PUBLIC_KEY = "HgNb0s7xavpa1bFyX/8B24AnuUdgekpvgO6HQU+zv8k="
 
 APPCAST_URL = "https://luminary-analytics.github.io/resonant-client/appcast.xml"
 COMPANY_NAME = "Luminary Analytics"
-APP_NAME = "Resonant Client"
+APP_NAME = "Resonant"
 
 # WinSparkle stores user prefs (last-checked time, "skip this version", etc.)
 # under HKCU\Software\<COMPANY>\<APP>\WinSparkle. Explicit registry path keeps

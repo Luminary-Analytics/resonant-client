@@ -1,5 +1,5 @@
 ; -----------------------------------------------------------------------------
-; Resonant Client — Inno Setup script
+; Resonant — Inno Setup script
 ; -----------------------------------------------------------------------------
 ;
 ; Wraps the PyInstaller one-folder output (dist/resonant/) into a single-file
@@ -27,7 +27,7 @@
 ;                                         install only).
 ;
 ; The installed app:
-;   - Lives at C:\Program Files\Resonant Client\
+;   - Lives at C:\Program Files\Resonant\
 ;   - Adds Start Menu entry under \All Users\ (visible to Windows Search)
 ;   - Adds optional desktop shortcut (user picks during install)
 ;   - Registers in Programs and Features (HKLM hive) for clean uninstall
@@ -45,7 +45,7 @@
   #define AppVersion "0.2.0"
 #endif
 
-#define AppName        "Resonant Client"
+#define AppName        "Resonant"
 #define AppPublisher   "Luminary Analytics"
 #define AppURL         "https://github.com/Luminary-Analytics/resonant-client"
 #define AppExeName     "resonant.exe"

@@ -59,6 +59,21 @@ def _load_app_module(monkeypatch, cwd: Path):
                 "thinking": None,
             },
         ),
+        (
+            BackendSpec(
+                backend_type="codex",
+                model="gpt-5.5",
+                cwd="D:/Repos/example",
+            ),
+            {},
+            {},
+            ("codex",),
+            {
+                "model": "gpt-5.5",
+                "cwd": "D:/Repos/example",
+                "permission_mode": None,
+            },
+        ),
     ],
 )
 def test_backend_spec_recreates_expected_backend(monkeypatch, spec, settings_data, env, expected_args, expected_kwargs):

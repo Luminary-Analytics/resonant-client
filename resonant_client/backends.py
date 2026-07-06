@@ -12,10 +12,14 @@ and streaming. Yields a common event stream the engine consumes.
 import json
 import logging
 import os
+import queue
 import re
+import shutil
+import subprocess
 import threading
 import time
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator, Tuple
 
 import httpx
@@ -1426,6 +1430,424 @@ class OllamaBackend:
 
 
 # ---------------------------------------------------------------------------
+# Codex CLI backend
+# ---------------------------------------------------------------------------
+
+
+_CODEX_DEFAULT_MODELS = [
+    "gpt-5.5",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex-spark",
+]
+
+_CODEX_MODEL_LABELS = {
+    "gpt-5.5": "gpt-5.5",
+    "gpt-5.4-mini": "gpt-5.4-mini",
+    "gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
+}
+
+
+def _truthy_env(name: str, default: bool = True) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _split_model_list(raw: str) -> list[str]:
+    result: list[str] = []
+    for item in re.split(r"[,;\n]", raw or ""):
+        value = item.strip()
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _load_codex_config() -> dict:
+    try:
+        import tomllib
+
+        path = Path.home() / ".codex" / "config.toml"
+        if not path.exists():
+            return {}
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _codex_configured_model(config: dict | None = None) -> str:
+    data = config if config is not None else _load_codex_config()
+    try:
+        return str(data.get("model", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def codex_cli_models(config: dict | None = None) -> list[str]:
+    """Return the Codex model list Resonant should expose.
+
+    Codex CLI does not currently expose a stable "list models" command. Keep a
+    small official-docs-backed default list, prepend the user's configured
+    Codex model if present, and allow early/new rollouts via
+    RESONANT_CODEX_MODELS.
+    """
+    configured = _codex_configured_model(config)
+    env_models = _split_model_list(os.environ.get("RESONANT_CODEX_MODELS", ""))
+    candidates = env_models or list(_CODEX_DEFAULT_MODELS)
+    if configured and configured not in candidates:
+        candidates.insert(0, configured)
+    return candidates
+
+
+def codex_cli_model_labels() -> dict[str, str]:
+    labels = dict(_CODEX_MODEL_LABELS)
+    for model in codex_cli_models():
+        labels.setdefault(model, model)
+    return labels
+
+
+def _codex_configured_cli_path(config: dict | None = None) -> str:
+    data = config if config is not None else _load_codex_config()
+    try:
+        servers = data.get("mcp_servers", {}) or {}
+        node_repl = servers.get("node_repl", {}) or {}
+        env = node_repl.get("env", {}) or {}
+        return str(env.get("CODEX_CLI_PATH", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def resolve_codex_cli_path() -> str:
+    """Resolve the best Codex CLI executable for subscription-backed runs."""
+    config = _load_codex_config()
+    candidates = [
+        os.environ.get("RESONANT_CODEX_CLI", "").strip(),
+        os.environ.get("CODEX_CLI_PATH", "").strip(),
+        _codex_configured_cli_path(config),
+        shutil.which("codex") or "",
+    ]
+    seen: set[str] = set()
+    for raw in candidates:
+        if not raw:
+            continue
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        key = os.path.normcase(os.path.normpath(expanded))
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isfile(expanded):
+            return expanded
+        if shutil.which(expanded):
+            return expanded
+    return ""
+
+
+def _codex_context_blocks(instructions: str) -> str:
+    blocks: list[str] = []
+    patterns = [
+        r"--- PROJECT INSTRUCTIONS.*?--- END PROJECT INSTRUCTIONS ---",
+        r"--- RECALLED MEMORIES ---.*?--- END MEMORIES ---",
+        r"--- RELEVANT FILES ---.*?--- END RELEVANT FILES ---",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, instructions or "", flags=re.DOTALL)
+        if match:
+            blocks.append(match.group(0).strip())
+    return "\n\n".join(blocks)
+
+
+def _shorten_for_codex_prompt(value, limit: int) -> str:
+    if isinstance(value, list):
+        text_parts: list[str] = []
+        for part in value:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    text_parts.append(str(part.get("text", "")))
+                elif part.get("type") == "image":
+                    text_parts.append("[image attachment omitted from Codex CLI handoff]")
+            else:
+                text_parts.append(str(part))
+        text = "\n".join(p for p in text_parts if p)
+    else:
+        text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 80)] + "\n...[truncated for Codex CLI handoff]..."
+
+
+def _format_codex_history(history: list) -> str:
+    try:
+        max_turns = int(os.environ.get("RESONANT_CODEX_HISTORY_TURNS", "20") or "20")
+    except ValueError:
+        max_turns = 20
+    try:
+        per_item_limit = int(os.environ.get("RESONANT_CODEX_HISTORY_ITEM_CHARS", "4000") or "4000")
+    except ValueError:
+        per_item_limit = 4000
+    selected = list(history or [])[-max(0, max_turns):]
+    lines: list[str] = []
+    for turn in selected:
+        role = str(turn.get("role", "") or "unknown")
+        if role == "tool_call":
+            name = str(turn.get("name", "") or "tool")
+            content = f"called {name} with {turn.get('arguments', {})}"
+        elif role == "tool_result":
+            name = str(turn.get("name", "") or "tool")
+            content = f"{name} result: {turn.get('content', '')}"
+        else:
+            content = turn.get("content", "")
+        text = _shorten_for_codex_prompt(content, per_item_limit).strip()
+        if text:
+            lines.append(f"{role.upper()}:\n{text}")
+    return "\n\n".join(lines)
+
+
+def _build_codex_prompt(
+    *,
+    user_msg: str,
+    conversation_history: list,
+    instructions: str,
+    cwd: str,
+) -> str:
+    is_plan = "You are in PLAN MODE" in (instructions or "")
+    context = _codex_context_blocks(instructions or "")
+    history = _format_codex_history(conversation_history or [])
+
+    parts = [
+        "You are being invoked by Resonant through Codex CLI.",
+        "Use Codex's native tools and normal CLI behavior. Do not emit Resonant <tool_call> XML.",
+        f"Working directory: {cwd}",
+    ]
+    if is_plan:
+        parts.append("This is a planning turn. Return a concise plan and do not modify files.")
+    if context:
+        parts.append(context)
+    if history:
+        parts.append("--- CONVERSATION HISTORY ---\n" + history + "\n--- END CONVERSATION HISTORY ---")
+    parts.append("--- CURRENT USER REQUEST ---\n" + str(user_msg or "").strip())
+    return "\n\n".join(parts).strip() + "\n"
+
+
+class CodexCliBackend:
+    """Subscription/API-auth backed Codex CLI execution."""
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        cwd: str | None = None,
+        cli_path: str | None = None,
+        sandbox: str | None = None,
+    ):
+        if not model:
+            raise ValueError("Model name required for Codex backend")
+        self.model = model
+        self.name = "codex"
+        self.handles_tools = True
+        self.cwd = os.path.abspath(cwd or os.getcwd())
+        self.cli_path = cli_path or resolve_codex_cli_path()
+        if not self.cli_path:
+            raise ValueError(
+                "Codex CLI was not found. Install/sign in to Codex, or set "
+                "RESONANT_CODEX_CLI to the codex executable."
+            )
+        self.sandbox = (sandbox or os.environ.get("RESONANT_CODEX_SANDBOX", "workspace-write")).strip()
+        if self.sandbox not in {"read-only", "workspace-write", "danger-full-access"}:
+            self.sandbox = "workspace-write"
+        self.ignore_user_config = _truthy_env("RESONANT_CODEX_IGNORE_USER_CONFIG", True)
+
+    @staticmethod
+    def list_available_models() -> list[str]:
+        return codex_cli_models()
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return bool(resolve_codex_cli_path())
+
+    def list_models(self) -> list[str]:
+        return self.list_available_models()
+
+    def health(self) -> dict:
+        try:
+            proc = subprocess.run(
+                [self.cli_path, "login", "status"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            status = "ready" if proc.returncode == 0 else "error"
+            message = (proc.stdout or proc.stderr or "").strip()
+            return {
+                "status": status,
+                "backend": "codex",
+                "model": self.model,
+                "available_models": self.list_models(),
+                "message": message,
+                "cli_path": self.cli_path,
+            }
+        except Exception as exc:
+            return {"status": "error", "backend": "codex", "message": str(exc)}
+
+    def classify(self, prompt: str, max_tokens: int = 50) -> str:
+        events = list(self.stream(
+            user_msg=prompt,
+            conversation_history=[],
+            instructions="Return a short answer.",
+            tools=[],
+            max_tokens=max_tokens,
+        ))
+        return "".join(data.get("delta", "") for event, data in events if event == EVENT_TEXT_DELTA).strip()
+
+    def _command(self) -> list[str]:
+        cmd = [
+            self.cli_path,
+            "exec",
+            "--json",
+            "--sandbox",
+            self.sandbox,
+            "--skip-git-repo-check",
+            "--model",
+            self.model,
+            "-C",
+            self.cwd,
+        ]
+        if self.ignore_user_config:
+            cmd.insert(2, "--ignore-user-config")
+        cmd.append("-")
+        return cmd
+
+    def stream(
+        self,
+        user_msg: str,
+        conversation_history: list,
+        instructions: str,
+        tools: list,
+        max_tokens: int = 4096,
+        cancel_event=None,
+    ) -> Iterator[Tuple[str, dict]]:
+        prompt = _build_codex_prompt(
+            user_msg=user_msg,
+            conversation_history=conversation_history,
+            instructions=instructions,
+            cwd=self.cwd,
+        )
+        try:
+            proc = subprocess.Popen(
+                self._command(),
+                cwd=self.cwd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            yield (EVENT_ERROR, {"message": f"Failed to start Codex CLI: {exc}"})
+            return
+
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except Exception:
+            pass
+
+        output_q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+
+        def _reader(stream, stream_name: str) -> None:
+            try:
+                for line in iter(stream.readline, ""):
+                    output_q.put((stream_name, line))
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        threads = []
+        for stream, name in ((proc.stdout, "stdout"), (proc.stderr, "stderr")):
+            if stream is None:
+                continue
+            t = threading.Thread(target=_reader, args=(stream, name), daemon=True)
+            t.start()
+            threads.append(t)
+
+        agent_messages: list[str] = []
+        stderr_tail: list[str] = []
+        usage: dict = {}
+        error_message = ""
+
+        while True:
+            if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                yield (EVENT_ERROR, {"message": "Codex CLI run cancelled"})
+                return
+
+            try:
+                stream_name, line = output_q.get(timeout=0.1)
+            except queue.Empty:
+                if proc.poll() is not None and output_q.empty():
+                    break
+                continue
+
+            if stream_name == "stderr":
+                text = line.strip()
+                if text:
+                    stderr_tail.append(text)
+                    stderr_tail = stderr_tail[-12:]
+                continue
+
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            etype = event.get("type", "")
+            if etype == "item.completed":
+                item = event.get("item") or {}
+                if item.get("type") == "agent_message":
+                    text = str(item.get("text", "") or "")
+                    if text:
+                        agent_messages.append(text)
+            elif etype == "turn.completed":
+                usage = event.get("usage") or {}
+            elif etype == "error":
+                error_message = str(event.get("message", "") or "")
+            elif etype == "turn.failed":
+                err = event.get("error") or {}
+                error_message = str(err.get("message", "") or error_message)
+
+        for t in threads:
+            t.join(timeout=0.2)
+
+        returncode = proc.poll()
+        final_text = "\n\n".join(m.strip() for m in agent_messages if m.strip()).strip()
+        if final_text:
+            yield (EVENT_TEXT_DELTA, {"delta": final_text})
+            yield (EVENT_DONE, {"model": self.model, "stats": usage or None, "cognitive_state": None})
+            return
+
+        if error_message:
+            yield (EVENT_ERROR, {"message": error_message})
+            return
+        if returncode:
+            detail = "\n".join(stderr_tail).strip()
+            yield (EVENT_ERROR, {"message": detail or f"Codex CLI exited with code {returncode}"})
+            return
+        yield (EVENT_DONE, {"model": self.model, "stats": usage or None, "cognitive_state": None})
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -1453,11 +1875,16 @@ def create_backend(
     `local_root`) are accepted but ignored — kept in the signature so
     older callers don't crash on the way through.
     """
+    if backend_type == "codex":
+        return CodexCliBackend(
+            model or codex_cli_models()[0],
+            cwd=cwd,
+            sandbox=os.environ.get("RESONANT_CODEX_SANDBOX", "workspace-write"),
+        )
     if backend_type != "ollama":
         raise ValueError(
-            f"Unsupported backend {backend_type!r}. Resonant Client v0.4.0 "
-            f"supports only Ollama. For Anthropic models, use Claude Code; "
-            f"for OpenAI models, use Codex."
+            f"Unsupported backend {backend_type!r}. Resonant Client supports "
+            f"Ollama and Codex."
         )
     if not model:
         raise ValueError("Model name required for Ollama backend")

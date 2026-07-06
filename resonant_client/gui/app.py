@@ -33,7 +33,13 @@ from starlette.templating import Jinja2Templates
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..events import EngineEvent, make_event
-from ..backends import OllamaBackend, create_backend
+from ..backends import (
+    CodexCliBackend,
+    OllamaBackend,
+    codex_cli_model_labels,
+    create_backend,
+    resolve_codex_cli_path,
+)
 from ..engine import Session, AGENT_TOOLS
 from ..network_defaults import default_thinking_for_model, resolve_ollama_url
 from .sessions import ProjectManager
@@ -4488,6 +4494,14 @@ class AppState:
             # Non-fatal — empty available means "show the Ollama wizard."
             pass
 
+        codex_cli = resolve_codex_cli_path()
+        if codex_cli:
+            available["codex"] = {
+                "models": CodexCliBackend.list_available_models(),
+                "model_labels": codex_cli_model_labels(),
+                "cli_path": codex_cli,
+            }
+
         self.available_backends = available
         return available
 
@@ -5117,11 +5131,19 @@ class AppState:
         # v0.4.0 — Ollama is the only supported backend. Reject anything
         # else with a message that points the user at the right tool
         # rather than silently failing.
+        if backend_type == "codex":
+            info = self.available_backends.get("codex") or {}
+            models = info.get("models") or CodexCliBackend.list_available_models()
+            selected_model = model or self._resolve_default_model(models)
+            spec = BackendSpec(backend_type="codex", model=selected_model)
+            spec.cwd = project_path
+            spec.permission_mode = self.permission_mode
+            return spec
+
         if backend_type != "ollama":
             raise ValueError(
-                f"Backend '{backend_type}' is not supported in v0.4.0. "
-                f"Resonant Client is now Ollama-native. For Anthropic models, "
-                f"use Claude Code; for OpenAI models, use Codex."
+                f"Backend '{backend_type}' is not supported. Resonant Client "
+                f"supports Ollama and Codex."
             )
 
         info = self.available_backends.get("ollama")
@@ -5427,11 +5449,20 @@ class AppState:
 
     def default_chat_backend_choice(self) -> tuple[str, str]:
         """Return the default chat backend/model from detected providers."""
-        info = self.available_backends.get("ollama") or {}
-        models = list(info.get("models") or [])
-        if not models:
-            return "", ""
-        return "ollama", self._resolve_default_model(models)
+        configured_backend = str(
+            self.settings.get("general", "default_backend", "") or ""
+        ).strip().lower()
+        backend_order = []
+        if configured_backend:
+            backend_order.append(configured_backend)
+        backend_order.extend(k for k in ("ollama", "codex") if k not in backend_order)
+
+        for backend_type in backend_order:
+            info = self.available_backends.get(backend_type) or {}
+            models = list(info.get("models") or [])
+            if models:
+                return backend_type, self._resolve_default_model(models)
+        return "", ""
 
     def ensure_default_runtime_session(self, *, session_role: str = "generator") -> bool:
         """Create an in-memory backend/session so the composer is usable.
@@ -5475,7 +5506,7 @@ class AppState:
     # v0.4.0 — kept as empty set for compatibility with existing call sites
     # (one branch in switch_model checks it). Pre-v0.4.0 this held the set
     # of backends whose CLI sessions ignored our conversation_history.
-    CLI_WRAPPED_BACKENDS: set = set()
+    CLI_WRAPPED_BACKENDS: set = {"codex"}
 
     def swap_backend(
         self,
@@ -5612,6 +5643,8 @@ class AppState:
                 entry["model_labels"] = info["model_labels"]
             if "url" in info:
                 entry["url"] = info["url"]
+            if "cli_path" in info:
+                entry["cli_path"] = info["cli_path"]
             if "health" in info:
                 entry["patterns"] = info["health"].get("memory_patterns", 0)
             backends_info[key] = entry

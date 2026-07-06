@@ -153,6 +153,11 @@ class ResonantApp {
         // elapsed). Stats accumulate across step.end events; we render one
         // dim line below the assistant's prose at session.end.
         this._currentTurn = this._freshTurnAggregate();
+        this._activeTask = null;
+        this.activeTaskCard = null;
+        this.activeTaskActivityEl = null;
+        this.activeTaskResultEl = null;
+        this.activeTaskFooterEl = null;
         // Map of in-flight block tool call_id → DOM row, so tool.result can
         // update the same row in place rather than rendering a separate one.
         this._blockToolRows = new Map();
@@ -1391,6 +1396,7 @@ class ResonantApp {
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;
         this._currentTurn = this._freshTurnAggregate();
+        this._resetTaskCardState();
         this._blockToolRows = new Map();
         this.subagentDepth = 0;
         this.subagentContainer = null;
@@ -1599,6 +1605,7 @@ class ResonantApp {
         // event that re-renders chat — but we want the user message to
         // appear immediately for responsive feel.
         this.chatMessages.innerHTML = '';
+        this._resetTaskCardState();
         this.addUserMessage(feature);
         this._resetAgentRunSummary(feature);
 
@@ -5037,6 +5044,7 @@ class ResonantApp {
                 // is already what we're showing.
                 if (!event.mission_started) {
                     this.chatMessages.innerHTML = '';
+                    this._resetTaskCardState();
                 }
                 this.sessions = event.sessions || [];
                 if (Array.isArray(event.all_sessions)) {
@@ -5087,6 +5095,7 @@ class ResonantApp {
                 break;
             case 'session_loaded':
                 this.chatMessages.innerHTML = '';
+                this._resetTaskCardState();
                 this.currentSessionId = event.current_session_id || '';
                 this.sessions = event.sessions || [];
                 this.applySessionRoleUI(event.session_role || 'generator');
@@ -5967,6 +5976,10 @@ class ResonantApp {
         // v0.4.0 — single backend, single group. Old multi-backend
         // grouping (Local / Subscriptions / APIs) is gone.
         return {
+            codex: {
+                label: 'Codex',
+                backends: ['codex'],
+            },
             ollama: {
                 label: 'Ollama',
                 backends: ['ollama'],
@@ -5975,10 +5988,37 @@ class ResonantApp {
     }
 
     _getBackendLabels() {
-        return { ollama: 'Ollama' };
+        return { codex: 'Codex', ollama: 'Ollama' };
     }
 
     _getPreferredBackendSelection(backends) {
+        const preferredConfiguredBackend = (this.settings?.general?.default_backend || '').trim();
+        const preferredConfiguredModel = this.settings?.general?.default_model || '';
+        const backendOrder = [];
+        if (preferredConfiguredBackend && backends?.[preferredConfiguredBackend]?.models?.length) {
+            backendOrder.push(preferredConfiguredBackend);
+        }
+        for (const candidate of ['ollama', 'codex']) {
+            if (!backendOrder.includes(candidate)) backendOrder.push(candidate);
+        }
+        for (const backend of backendOrder) {
+            const modelsForBackend = backends?.[backend]?.models || [];
+            if (!modelsForBackend.length) continue;
+            if (preferredConfiguredModel && modelsForBackend.includes(preferredConfiguredModel)) {
+                return { backend, model: preferredConfiguredModel };
+            }
+            if (backend === 'codex') {
+                for (const flagship of ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex-spark']) {
+                    if (modelsForBackend.includes(flagship)) return { backend, model: flagship };
+                }
+                return { backend, model: modelsForBackend[0] };
+            }
+            for (const flagship of ['glm-5.2:cloud', 'deepseek-v4-pro:cloud', 'deepseek-v4-flash:cloud', 'deepseek-v4:cloud']) {
+                if (modelsForBackend.includes(flagship)) return { backend, model: flagship };
+            }
+            return { backend, model: modelsForBackend[0] };
+        }
+        return null;
         // v0.4.0 — Ollama-only. Pick the configured default model if
         // it's pulled, otherwise the first deepseek flagship variant
         // we can find, otherwise the first available model.
@@ -6325,7 +6365,9 @@ class ResonantApp {
         const el = document.createElement('div');
         el.className = 'turn-footer';
         el.innerHTML = `▣ ${parts.map((p) => `<span>${this.escapeHtml(p)}</span>`).join('<span class="sep">·</span>')}`;
-        this.chatMessages.appendChild(el);
+        const footerTarget = (this._activeTask && this._activeTask.footerEl) || this.chatMessages;
+        if (this._activeTask && this._activeTask.footerEl) this._activeTask.footerEl.hidden = false;
+        footerTarget.appendChild(el);
         t.footerEl = el;
     }
 
@@ -6947,7 +6989,9 @@ class ResonantApp {
     }
 
     getRenderTarget() {
-        return this.subagentContainer || this.chatMessages;
+        if (this.subagentContainer) return this.subagentContainer;
+        const task = this._ensureTaskCard('Task');
+        return (task && task.activityEl) || this.chatMessages;
     }
 
     renderInlineToolCall(name, args, info, category) {
@@ -7722,12 +7766,13 @@ class ResonantApp {
                     { key: 'default_backend', label: 'Default backend', type: 'select',
                       options: [
                           { value: 'ollama', label: 'Ollama' },
+                          { value: 'codex', label: 'Codex' },
                           { value: '', label: 'Auto' },
                       ]
                     },
                     { key: 'default_model', label: 'Default model', type: 'text',
-                      placeholder: 'e.g. glm-5.2:cloud',
-                      hint: 'Leave blank to use the first model the chosen backend reports. glm-5.2:cloud is the v0.6.5 flagship default; the deepseek-v4 tiers are the secondary option.' },
+                      placeholder: 'e.g. glm-5.2:cloud or gpt-5.5',
+                      hint: 'Leave blank to use the chosen backend default. Ollama uses glm-5.2:cloud when available; Codex uses gpt-5.5 when available.' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },
@@ -8607,6 +8652,83 @@ class ResonantApp {
         this._removeLiveAgentTodoStrip();
     }
 
+    _renderTaskCompletionSummary(event = {}) {
+        const task = this._activeTask;
+        if (!task || !task.card) return;
+
+        const errored = !!this._agentRunErrored;
+        const status = errored ? 'Stopped' : 'Done';
+        const stateClass = errored ? 'is-error' : 'is-done';
+        task.card.classList.remove('task-card-running');
+        task.card.classList.add(errored ? 'task-card-error' : 'task-card-done');
+        if (task.stateEl) {
+            task.stateEl.className = `task-card-state ${stateClass}`;
+            task.stateEl.textContent = status;
+        }
+
+        const t = this._currentTurn || {};
+        const elapsed = event.total_elapsed || t.totalElapsed || 0;
+        const steps = event.total_steps || t.stepCount || 0;
+        const tools = t.toolCallCount || 0;
+        const files = (this._agentRunSummary && this._agentRunSummary.fileChanges) || [];
+        const todos = (this._agentRunSummary && this._agentRunSummary.todos) || null;
+
+        const parts = [];
+        if (steps > 0) parts.push(`${steps} step${steps === 1 ? '' : 's'}`);
+        if (tools > 0) parts.push(`${tools} tool${tools === 1 ? '' : 's'}`);
+        if (files.length > 0) parts.push(`${files.length} file${files.length === 1 ? '' : 's'}`);
+        if (todos && todos.total > 0) parts.push(`${todos.done || 0}/${todos.total} to-dos`);
+        if (elapsed > 0) parts.push(this._formatRunDuration(elapsed));
+
+        const summary = document.createElement('div');
+        summary.className = `task-run-summary ${errored ? 'is-error' : 'is-done'}`;
+        const detail = errored
+            ? (this._agentRunErrorMessage || 'Run stopped before completion.')
+            : (parts.length ? parts.join(' | ') : 'Completed');
+        summary.innerHTML = `
+            <span class="task-run-mark">${errored ? '!' : 'OK'}</span>
+            <span class="task-run-label">${this.escapeHtml(status)}</span>
+            <span class="task-run-detail">${this.escapeHtml(detail)}</span>
+        `;
+
+        if (files.length > 0 && !errored) {
+            const review = document.createElement('button');
+            review.type = 'button';
+            review.className = 'task-review-btn';
+            review.textContent = 'Review';
+            review.addEventListener('click', (e) => {
+                e.stopPropagation();
+                if (this.gitData && this.gitData.is_repo) this.toggleGitPopover();
+                else this.showStatusMessage('Not a git repository; nothing to review.');
+            });
+            summary.appendChild(review);
+        }
+
+        task.footerEl.hidden = false;
+        task.footerEl.prepend(summary);
+
+        if (files.length > 0) {
+            const changes = document.createElement('details');
+            changes.className = 'task-change-list';
+            changes.innerHTML = `
+                <summary>Changed files</summary>
+                <ol>${files.slice(0, 12).map((f) => `
+                    <li>
+                        <code title="${this.escapeHtml(f.path)}">${this.escapeHtml(this.shortenPath(f.path))}</code>
+                        ${f.detail ? `<span>${this.escapeHtml(f.detail)}</span>` : ''}
+                    </li>
+                `).join('')}</ol>
+                ${files.length > 12 ? `<div class="task-change-more">${files.length - 12} more</div>` : ''}
+            `;
+            task.footerEl.appendChild(changes);
+        }
+    }
+
+    _finishActiveTask(event = {}) {
+        this._renderTaskCompletionSummary(event);
+        this._setActiveTask(null);
+    }
+
     handleSessionEnd(event) {
         this.removeThinking();
         this._removeLiveAgentTodoStrip();
@@ -8627,6 +8749,14 @@ class ResonantApp {
         // replaces the per-step "▣ model · tokens · 1.2s" footer that used
         // to repeat after every step.
         this._renderTurnFooter();
+        this._finishActiveTask(event);
+        this.setRunning(false);
+        this.scrollToBottom();
+
+        if (!this.isReplaying) {
+            this.requestGitStatus();
+        }
+        return;
 
         const fileCount = (this._agentRunSummary && this._agentRunSummary.fileChanges)
             ? this._agentRunSummary.fileChanges.length
@@ -8724,7 +8854,7 @@ class ResonantApp {
         el.appendChild(children);
 
         // Append to current render target
-        const target = this.subagentContainer || this.chatMessages;
+        const target = this.subagentContainer || this.getRenderTarget();
         target.appendChild(el);
 
         // Push nesting — child events render into this subagent's children div
@@ -8796,6 +8926,10 @@ class ResonantApp {
         el.textContent = `✗ ${event.message || 'Unknown error'}`;
         this.getRenderTarget().appendChild(el);
         this.scrollToBottom();
+        this._finishActiveTask({
+            total_elapsed: (this._currentTurn && this._currentTurn.totalElapsed) || 0,
+            total_steps: (this._currentTurn && this._currentTurn.stepCount) || 0,
+        });
 
         // If it was a fatal-ish error, stop running and clean up terminals
         if (event.message && (
@@ -9381,7 +9515,136 @@ class ResonantApp {
         this._fuzzyIdx = 0;
     }
 
+    _resetTaskCardState() {
+        this._activeTask = null;
+        this.activeTaskCard = null;
+        this.activeTaskActivityEl = null;
+        this.activeTaskResultEl = null;
+        this.activeTaskFooterEl = null;
+    }
+
+    _setActiveTask(task) {
+        this._activeTask = task || null;
+        this.activeTaskCard = task ? task.card : null;
+        this.activeTaskActivityEl = task ? task.activityEl : null;
+        this.activeTaskResultEl = task ? task.resultEl : null;
+        this.activeTaskFooterEl = task ? task.footerEl : null;
+    }
+
+    _appendTaskImages(container, images = []) {
+        if (!images || images.length === 0) return;
+        const wrap = document.createElement('div');
+        wrap.className = 'task-attachments';
+        for (const img of images) {
+            const thumb = document.createElement('img');
+            thumb.src = img.dataUrl || `data:${img.media_type};base64,${img.data}`;
+            thumb.alt = 'Attached';
+            thumb.className = 'task-attachment-thumb';
+            thumb.addEventListener('click', () => this.showLightbox(thumb.src));
+            wrap.appendChild(thumb);
+        }
+        container.appendChild(wrap);
+    }
+
+    _beginTaskCard(text, images = [], options = {}) {
+        this._removeChatEmptyState();
+
+        const requestText = (text || '').trim() || 'Task';
+        const card = document.createElement('article');
+        card.className = 'task-card task-card-running';
+        card.dataset.userMessage = options.synthetic ? 'synthetic' : 'true';
+
+        const header = document.createElement('div');
+        header.className = 'task-card-header';
+
+        const state = document.createElement('span');
+        state.className = 'task-card-state is-running';
+        state.textContent = 'Running';
+
+        const main = document.createElement('div');
+        main.className = 'task-card-main';
+
+        const label = document.createElement('div');
+        label.className = 'task-card-label';
+        label.textContent = options.synthetic ? 'Agent task' : 'Task';
+
+        const request = document.createElement('div');
+        request.className = 'task-request-text';
+        request.textContent = requestText;
+
+        main.appendChild(label);
+        main.appendChild(request);
+        this._appendTaskImages(main, images);
+
+        const actions = document.createElement('div');
+        actions.className = 'task-card-actions';
+        if (!options.synthetic) {
+            actions.innerHTML = `
+                <button class="msg-action-btn task-fork-btn" data-action="fork" title="Fork from this task" aria-label="Fork from this task">
+                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                        <circle cx="3" cy="3" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                        <circle cx="11" cy="3" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                        <circle cx="7" cy="11" r="1.5" stroke="currentColor" stroke-width="1.1"/>
+                        <path d="M3 4.5V7c0 1 .8 1.8 1.8 1.8h4.4c1 0 1.8-.8 1.8-1.8V4.5" stroke="currentColor" stroke-width="1.1" fill="none"/>
+                        <path d="M7 8.8v.7" stroke="currentColor" stroke-width="1.1"/>
+                    </svg>
+                </button>`;
+            actions.querySelector('[data-action="fork"]')?.addEventListener('click', () => {
+                this._forkFromUserMessage(card);
+            });
+        }
+
+        header.appendChild(state);
+        header.appendChild(main);
+        header.appendChild(actions);
+
+        const activity = document.createElement('div');
+        activity.className = 'task-activity';
+
+        const result = document.createElement('div');
+        result.className = 'task-result';
+        result.hidden = true;
+
+        const footer = document.createElement('div');
+        footer.className = 'task-card-footer';
+        footer.hidden = true;
+
+        card.appendChild(header);
+        card.appendChild(activity);
+        card.appendChild(result);
+        card.appendChild(footer);
+        this.chatMessages.appendChild(card);
+
+        const task = {
+            card,
+            stateEl: state,
+            activityEl: activity,
+            resultEl: result,
+            footerEl: footer,
+            requestText,
+            startedAt: performance.now(),
+        };
+        this._setActiveTask(task);
+        this.scrollToBottom();
+        return task;
+    }
+
+    _ensureTaskCard(label = 'Task') {
+        if (this._activeTask && this._activeTask.card && this._activeTask.card.isConnected) {
+            return this._activeTask;
+        }
+        return this._beginTaskCard(label, [], { synthetic: true });
+    }
+
+    _getTaskResultTarget() {
+        const task = this._ensureTaskCard('Agent response');
+        if (!task || !task.resultEl) return null;
+        task.resultEl.hidden = false;
+        return task.resultEl;
+    }
+
     addUserMessage(text, images = []) {
+        return this._beginTaskCard(text, images);
         this._removeChatEmptyState();
         const el = document.createElement('div');
         el.className = 'msg-user';
@@ -9434,7 +9697,7 @@ class ResonantApp {
     /** Compute the index of `el` among .msg-user blocks, then fork. */
     _forkFromUserMessage(el) {
         if (!this.currentSessionId) return;
-        const rows = Array.from(this.chatMessages.querySelectorAll('.msg-user'));
+        const rows = Array.from(this.chatMessages.querySelectorAll('.task-card[data-user-message="true"], .msg-user'));
         const idx = rows.indexOf(el);
         if (idx < 0) return;
         if (!confirm(`Fork from this message? A new session will be created with the conversation up through this exchange.`)) return;
@@ -9463,7 +9726,8 @@ class ResonantApp {
                 if (btn) { btn.innerHTML = '\u2713'; setTimeout(() => { btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4" y="4" width="8" height="8" rx="1.2" stroke="currentColor" stroke-width="1.1"/><path d="M10 4V2.8A.8.8 0 009.2 2H2.8a.8.8 0 00-.8.8v6.4a.8.8 0 00.8.8H4" stroke="currentColor" stroke-width="1.1"/></svg>'; }, 1500); }
             });
         });
-        this.getRenderTarget().appendChild(el);
+        const target = this.subagentContainer || this._getTaskResultTarget() || this.chatMessages;
+        target.appendChild(el);
         return el;
     }
 
@@ -9563,11 +9827,17 @@ class ResonantApp {
     }
 
     showStatusMessage(message) {
-        // Brief toast-like status message
+        if (!message) return;
+        if (typeof this.showToastMessage === 'function' && !this.isReplaying) {
+            this.showToastMessage(message);
+            return;
+        }
         const el = document.createElement('div');
+        el.className = 'status-inline';
         el.style.cssText = 'text-align:center;color:var(--muted);font-size:12px;padding:8px;';
         el.textContent = message;
-        this.chatMessages.appendChild(el);
+        const target = (this._activeTask && this._activeTask.activityEl) || this.chatMessages;
+        target.appendChild(el);
         this.scrollToBottom();
     }
 
@@ -9962,6 +10232,7 @@ class ResonantApp {
         if (!this._replay) return;
         this._stopReplayTimer();
         this.chatMessages.innerHTML = this._replay.stashedHTML;
+        this._resetTaskCardState();
         this.inputBar.style.display = this._replay.inputBarDisplay || '';
         this._syncComposerGutter?.();
         const scrubber = document.getElementById('replay-scrubber');
@@ -9977,6 +10248,7 @@ class ResonantApp {
         this._replay.index = clamped;
         // Wipe + replay events 0..clamped
         this.chatMessages.innerHTML = '';
+        this._resetTaskCardState();
         if (clamped > 0) this.replayDisplayEvents(events.slice(0, clamped));
         // Update label
         const time = document.getElementById('replay-time');
@@ -10112,9 +10384,10 @@ class ResonantApp {
         // Detect interrupted session — if last event isn't session.end,
         // the model was cut off mid-response
         if (events.length > 0) {
-            const lastEvent = events[events.length - 1];
-            const lastType = lastEvent.event;
-            if (lastType !== 'session.end' && lastType !== 'error') {
+            const ignored = new Set(['status', 'init', 'status_msg', 'sessions_updated']);
+            const lastEvent = [...events].reverse().find((e) => e && !ignored.has(e.event));
+            const resumable = new Set(['step.start', 'tool.call', 'tool.result', 'text.delta', 'thinking.delta', 'await_user']);
+            if (lastEvent && resumable.has(lastEvent.event)) {
                 this.showResumeButton();
             }
         }
@@ -10128,14 +10401,20 @@ class ResonantApp {
         el.className = 'resume-banner';
         el.innerHTML = `
             <span class="resume-text">Session was interrupted</span>
-            <button class="resume-btn">Resume</button>
+            <button class="resume-btn">Resume task</button>
         `;
         el.querySelector('.resume-btn').addEventListener('click', () => {
             el.remove();
             this.userInput.value = 'Continue where you left off.';
             this.sendMessage();
         });
-        this.chatMessages.appendChild(el);
+        const task = this._activeTask;
+        if (task && task.footerEl) {
+            task.footerEl.hidden = false;
+            task.footerEl.appendChild(el);
+        } else {
+            this.chatMessages.appendChild(el);
+        }
     }
 
     handleTextDoneReplay(event) {
@@ -10151,7 +10430,7 @@ class ResonantApp {
 
         // Create a message element
         const el = document.createElement('div');
-        el.className = 'message assistant';
+        el.className = 'msg-assistant';
 
         // Render markdown
         let html = text;
@@ -10169,7 +10448,7 @@ class ResonantApp {
             if (typeof hljs !== 'undefined') hljs.highlightElement(block);
         });
 
-        const container = this.subagentContainer || this.chatMessages;
+        const container = this.subagentContainer || this._getTaskResultTarget() || this.chatMessages;
         container.appendChild(el);
     }
 
@@ -11151,7 +11430,10 @@ class ResonantApp {
         //    that follows set_project will re-render whatever's appropriate
         //    for the new project, but until then we want a clean slate
         //    rather than the previous project's last conversation lingering.
-        if (this.chatMessages) this.chatMessages.innerHTML = '';
+        if (this.chatMessages) {
+            this.chatMessages.innerHTML = '';
+            this._resetTaskCardState();
+        }
         this.clearPreviewPanel?.();
         // 2. Request a fresh git_status for the new project so the bottom
         //    git pill reflects the new branch / dirty count instead of the

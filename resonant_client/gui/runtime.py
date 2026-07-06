@@ -97,9 +97,15 @@ class BackendSpec:
                 model=self.model,
                 thinking=self.thinking_mode or None,
             )
+        if backend_type == "codex":
+            return create_backend(
+                "codex",
+                model=self.model,
+                cwd=self.cwd or None,
+                permission_mode=self.permission_mode or None,
+            )
 
         raise ValueError(
-            f"Backend '{backend_type}' is not supported in v0.4.0. "
-            f"Resonant Client is now Ollama-native. For Anthropic "
-            f"models, use Claude Code; for OpenAI models, use Codex."
+            f"Backend '{backend_type}' is not supported. Resonant Client "
+            f"supports Ollama and Codex."
         )

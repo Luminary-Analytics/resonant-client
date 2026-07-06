@@ -120,3 +120,34 @@ class TestResolveDefaultModelFallback:
         state = _make_state_with_settings_get("  deepseek-v4-pro:cloud  ")
         models = ["deepseek-v4-flash", "deepseek-v4-pro:cloud"]
         assert state._resolve_default_model(models) == "deepseek-v4-pro:cloud"
+
+
+class TestDefaultChatBackendChoice:
+    def _state(self, *, default_backend="", default_model=""):
+        state = AppState.__new__(AppState)
+        state.available_backends = {
+            "ollama": {"models": ["glm-5.2:cloud"]},
+            "codex": {"models": ["gpt-5.5", "gpt-5.4-mini"]},
+        }
+        state.settings = MagicMock()
+
+        def _get(section, key=None, default=None):
+            if section == "general" and key == "default_backend":
+                return default_backend
+            if section == "general" and key == "default_model":
+                return default_model
+            return default
+
+        state.settings.get = MagicMock(side_effect=_get)
+        return state
+
+    def test_honors_codex_default_backend(self):
+        state = self._state(default_backend="codex", default_model="gpt-5.5")
+
+        assert state.default_chat_backend_choice() == ("codex", "gpt-5.5")
+
+    def test_auto_uses_codex_when_ollama_unavailable(self):
+        state = self._state(default_backend="", default_model="")
+        state.available_backends = {"codex": {"models": ["gpt-5.5"]}}
+
+        assert state.default_chat_backend_choice() == ("codex", "gpt-5.5")

@@ -8075,12 +8075,34 @@ class ResonantApp {
         if (hasNativeAPI()) wireControls();
         else setTimeout(wireControls, 1000);
 
+        const menuButton = document.querySelector('.titlebar-menu-button');
+        const appMenu = document.querySelector('.titlebar-menus');
+        const closeAppMenu = () => {
+            if (!appMenu) return;
+            appMenu.classList.remove('is-open');
+            menuButton?.setAttribute('aria-expanded', 'false');
+        };
+        menuButton?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const isOpen = appMenu?.classList.toggle('is-open') || false;
+            menuButton.setAttribute('aria-expanded', isOpen ? 'true' : 'false');
+        });
+        document.addEventListener('click', (e) => {
+            if (!appMenu || !appMenu.classList.contains('is-open')) return;
+            if (appMenu.contains(e.target) || menuButton?.contains(e.target)) return;
+            closeAppMenu();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeAppMenu();
+        });
+
         document.querySelectorAll('.menubar-action[data-action]').forEach(el => {
             el.addEventListener('click', () => {
                 const action = el.dataset.action;
                 switch (action) {
                     case 'new-agent': document.getElementById('new-agent-btn')?.click(); break;
                     case 'open-folder': this.openProjectFolder(); break;
+                    case 'project-switch': this._openProjectSwitcher(this.sidebarProjectSwitch || document.getElementById('footer-project-btn')); break;
                     case 'settings': this.switchView('settings'); break;
                     case 'cmd-palette': this.openCommandPalette(); break;
                     case 'toggle-sidebar': document.getElementById('sidebar-toggle')?.click(); break;
@@ -8102,6 +8124,7 @@ class ResonantApp {
                         break;
                     case 'about': this.showStatusMessage('Resonant Client - local-first multimodal coding agent'); break;
                 }
+                closeAppMenu();
             });
         });
     }
@@ -8724,8 +8747,37 @@ class ResonantApp {
         }
     }
 
+    _collapseTaskActivity(event = {}) {
+        const task = this._activeTask;
+        const activity = task && task.activityEl;
+        if (!activity || activity.children.length === 0) return;
+        if (activity.querySelector(':scope > .task-activity-details')) return;
+
+        const t = this._currentTurn || {};
+        const steps = event.total_steps || t.stepCount || 0;
+        const tools = t.toolCallCount || 0;
+        const pieces = [];
+        if (steps > 0) pieces.push(`${steps} step${steps === 1 ? '' : 's'}`);
+        if (tools > 0) pieces.push(`${tools} tool${tools === 1 ? '' : 's'}`);
+
+        const details = document.createElement('details');
+        details.className = 'task-activity-details';
+        const summary = document.createElement('summary');
+        summary.innerHTML = `
+            <span class="task-activity-caret" aria-hidden="true"></span>
+            <span class="task-activity-title">Activity</span>
+            ${pieces.length ? `<span class="task-activity-meta">${this.escapeHtml(pieces.join(' | '))}</span>` : ''}
+        `;
+        details.appendChild(summary);
+        while (activity.firstChild) {
+            details.appendChild(activity.firstChild);
+        }
+        activity.appendChild(details);
+    }
+
     _finishActiveTask(event = {}) {
         this._renderTaskCompletionSummary(event);
+        this._collapseTaskActivity(event);
         this._setActiveTask(null);
     }
 
@@ -9727,6 +9779,11 @@ class ResonantApp {
             });
         });
         const target = this.subagentContainer || this._getTaskResultTarget() || this.chatMessages;
+        if (!this.subagentContainer && target.classList?.contains('task-result')) {
+            target.querySelectorAll(':scope > .msg-assistant').forEach((msg) => {
+                msg.classList.add('task-progress-note');
+            });
+        }
         target.appendChild(el);
         return el;
     }
@@ -10449,6 +10506,11 @@ class ResonantApp {
         });
 
         const container = this.subagentContainer || this._getTaskResultTarget() || this.chatMessages;
+        if (!this.subagentContainer && container.classList?.contains('task-result')) {
+            container.querySelectorAll(':scope > .msg-assistant').forEach((msg) => {
+                msg.classList.add('task-progress-note');
+            });
+        }
         container.appendChild(el);
     }
 

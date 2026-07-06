@@ -26,7 +26,7 @@
     <!-- ═══ Single titlebar — brand + menus + project context + window controls ═══ -->
     <div id="app-titlebar" class="app-titlebar pywebview-drag-region">
         <div class="titlebar-left">
-            <button class="titlebar-menu-button" type="button" title="Menu" aria-label="Menu">
+            <button class="titlebar-menu-button" type="button" title="Menu" aria-label="Menu" aria-haspopup="menu" aria-expanded="false">
                 <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                     <path d="M3 4.5h10M3 8h10M3 11.5h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
                 </svg>
@@ -39,7 +39,7 @@
             </button>
             <!-- back/forward nav removed until session-history navigation
                  exists — permanently-disabled buttons were dead chrome. -->
-            <nav class="titlebar-menus">
+            <nav class="titlebar-menus" aria-label="Application menu" role="menu">
                 <div class="menubar-item" data-menu="file">
                     <span>File</span>
                     <div class="menubar-dropdown">
@@ -66,6 +66,23 @@
                         <div class="menubar-sep"></div>
                         <div class="menubar-action" data-action="toggle-sidebar">Toggle Sidebar <span class="menubar-shortcut">Ctrl+Shift+D</span></div>
                         <div class="menubar-action" data-action="toggle-preview">Toggle Preview</div>
+                    </div>
+                </div>
+                <div class="menubar-item" data-menu="go">
+                    <span>Go</span>
+                    <div class="menubar-dropdown">
+                        <div class="menubar-action" data-action="cmd-palette">Search Resonant <span class="menubar-shortcut">Ctrl+K</span></div>
+                        <div class="menubar-action" data-action="project-switch">Projects</div>
+                        <div class="menubar-action" data-action="open-folder">Open Project&hellip;</div>
+                    </div>
+                </div>
+                <div class="menubar-item" data-menu="window">
+                    <span>Window</span>
+                    <div class="menubar-dropdown">
+                        <div class="menubar-action" data-action="toggle-sidebar">Toggle Sidebar <span class="menubar-shortcut">Ctrl+Shift+D</span></div>
+                        <div class="menubar-action" data-action="toggle-preview">Toggle Preview</div>
+                        <div class="menubar-sep"></div>
+                        <div class="menubar-action" data-action="settings">Settings <span class="menubar-shortcut">Ctrl+,</span></div>
                     </div>
                 </div>
                 <div class="menubar-item" data-menu="help">

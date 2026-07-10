@@ -23,7 +23,7 @@ import time
 import difflib
 from pathlib import Path
 import uuid
-from datetime import date, datetime
+from datetime import date
 from typing import Any, Callable, Optional
 
 from starlette.applications import Starlette
@@ -37,7 +37,6 @@ from ..backends import (
     CodexCliBackend,
     OllamaBackend,
     codex_cli_model_labels,
-    create_backend,
     resolve_codex_cli_path,
 )
 from ..engine import Session, AGENT_TOOLS
@@ -4316,6 +4315,12 @@ class AppState:
         target = session or self.session
         if target:
             target.auto_approve = self._session_auto_approve(self.permission_mode)
+            backend = getattr(target, "backend", None)
+            configure = getattr(backend, "configure_permission_mode", None)
+            if callable(configure):
+                configure(self.permission_mode)
+        if self.backend_spec and self.backend_spec.backend_type == "codex":
+            self.backend_spec.permission_mode = self.permission_mode
         return self.permission_mode
 
     def _api_key_details(self, provider: str, env_var: str) -> tuple[str, str, str, str]:
@@ -4453,6 +4458,12 @@ class AppState:
         session._mcp_manager = self.mcp_manager
         session._engram = engram or self.engram
         session._codebase_index = codebase_index or self.codebase_index
+        from ..orchestration.skill_loader import build_skill_context
+        session._skill_context_provider = lambda query: build_skill_context(
+            query,
+            project_path=target_path,
+            max_skills=6,
+        )
         session.auto_approve = self._session_auto_approve()
         return session
 
@@ -5126,6 +5137,9 @@ class AppState:
             spec = BackendSpec.from_dict(self.backend_spec.to_dict(include_sensitive=True))
             if model:
                 spec.model = model
+            if backend_type == "codex":
+                spec.cwd = project_path
+                spec.permission_mode = self.permission_mode
             return spec
 
         # v0.4.0 — Ollama is the only supported backend. Reject anything
@@ -5263,8 +5277,6 @@ class AppState:
             changes the override mid-session.
         """
         override = self._resolve_specialist_model_override(specialization)
-        if not override:
-            return None
         # We can only override an Ollama backend (the only supported
         # backend in v0.4.0+). Defensive: if some future codepath
         # somehow gets here with a non-Ollama default, fall through to
@@ -5283,9 +5295,21 @@ class AppState:
             # accepts back via its constructor.
             base_url = self.backend.base_url
             thinking = getattr(self.backend, "thinking_mode", None)
+            target_model = override or self.backend.model
+            hard_reasoning_phase = (specialization or "").strip().lower() in {
+                "plan_deep", "reflect", "verify", "repair",
+            }
+            flagship = any(
+                marker in target_model.lower()
+                for marker in ("glm-5.2", "deepseek-v4")
+            )
+            if hard_reasoning_phase and flagship and thinking not in {None, "off"}:
+                thinking = "max"
+            if not override and thinking == getattr(self.backend, "thinking_mode", None):
+                return None
             return OllamaBackend(
                 base_url=base_url,
-                model=override,
+                model=target_model,
                 thinking=thinking,
             )
         except Exception:
@@ -7154,7 +7178,7 @@ async def websocket_endpoint(ws: WebSocket):
                 # Forces a backend rebuild because Ollama options must be stable
                 # for the lifetime of an OllamaBackend instance.
                 mode = (msg.get("mode") or "").strip().lower()
-                if mode not in {"", "off", "low", "med", "medium", "high"}:
+                if mode not in {"", "off", "low", "med", "medium", "high", "max"}:
                     await ws.send_json({"event": "error", "message": f"invalid thinking mode: {mode!r}"})
                 else:
                     try:

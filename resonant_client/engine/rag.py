@@ -20,7 +20,6 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -264,19 +263,79 @@ class CodebaseIndex:
         return results[:max_results]
 
     def get_context_for_prompt(self, query: str, max_files: int = 5) -> str:
-        """Search and format results for system prompt injection."""
+        """Return a compact repo map plus query-specific file candidates."""
         if not self.is_indexed:
             return ""
 
         results = self.search(query, max_results=max_files)
-        if not results:
+        lines = ["\n\n" + self.get_repo_map(max_tokens=700)]
+        if results:
+            lines.append("--- RELEVANT FILES ---")
+            for r in results:
+                symbols_str = f" [{', '.join(r.symbols[:5])}]" if r.symbols else ""
+                lines.append(f"- {r.path}{symbols_str}: {r.context}")
+            lines.append("--- END RELEVANT FILES ---")
+        return "\n".join(lines)
+
+    def get_repo_map(self, max_tokens: int = 1_000) -> str:
+        """Build a deterministic, dependency-weighted symbol orientation map.
+
+        This uses the index's existing symbol/import data, so it is intentionally
+        lightweight rather than a full AST renderer.  Files referenced by many
+        peers rank first, followed by shallow entrypoints and symbol-rich files.
+        """
+        with self._lock:
+            entries = list(self._entries.values())
+        if not entries:
             return ""
 
-        lines = ["\n\n--- RELEVANT FILES ---"]
-        for r in results:
-            symbols_str = f" [{', '.join(r.symbols[:5])}]" if r.symbols else ""
-            lines.append(f"- {r.path}{symbols_str}: {r.context}")
-        lines.append("--- END RELEVANT FILES ---")
+        identities: dict[str, set[str]] = {}
+        for entry in entries:
+            no_ext = os.path.splitext(entry.path)[0].replace("\\", "/")
+            identities[entry.path] = {
+                no_ext.lower(),
+                no_ext.replace("/", ".").lower(),
+                Path(no_ext).name.lower(),
+            }
+
+        inbound = {entry.path: 0 for entry in entries}
+        for source in entries:
+            for raw_import in source.imports:
+                imported = raw_import.strip("./").replace("\\", "/").lower()
+                imported_dotted = imported.replace("/", ".")
+                for target, names in identities.items():
+                    if target == source.path:
+                        continue
+                    if any(
+                        imported == name
+                        or imported_dotted == name
+                        or imported.endswith("/" + name)
+                        or imported_dotted.endswith("." + name)
+                        for name in names
+                    ):
+                        inbound[target] += 1
+
+        def rank(entry: IndexEntry) -> tuple[float, str]:
+            depth = entry.path.count("/")
+            filename = Path(entry.path).name.lower()
+            entrypoint = 3 if filename in {
+                "readme.md", "pyproject.toml", "package.json", "main.py", "app.py",
+                "main.ts", "main.js", "cargo.toml", "go.mod",
+            } else 0
+            score = inbound[entry.path] * 10 + entrypoint + len(entry.symbols) * 0.08 - depth * 0.2
+            return (-score, entry.path.lower())
+
+        lines = ["--- REPO MAP (dependency-weighted, signatures only) ---"]
+        budget_chars = max(400, int(max_tokens) * 4)
+        for entry in sorted(entries, key=rank):
+            symbols = ", ".join(entry.symbols[:8]) or "(no indexed symbols)"
+            line = f"- {entry.path}: {symbols}"
+            if inbound[entry.path]:
+                line += f" [referenced by {inbound[entry.path]} file(s)]"
+            if sum(len(item) + 1 for item in lines) + len(line) > budget_chars:
+                break
+            lines.append(line)
+        lines.append("--- END REPO MAP ---")
         return "\n".join(lines)
 
     def get_stats(self) -> dict:
@@ -371,7 +430,6 @@ class CodebaseIndex:
                                 break
 
                 # Symbol matching
-                symbols_lower = [s.lower() for s in entry.symbols]
                 for term in terms:
                     matches = [s for s in entry.symbols if term in s.lower()]
                     if matches:

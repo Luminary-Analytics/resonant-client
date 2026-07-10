@@ -116,7 +116,7 @@ If Ollama isn't reachable on first launch, the welcome screen renders a setup wi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_HOST` | `http://10.0.0.133:11434` | Ollama base URL |
-| `RESONANT_OLLAMA_NUM_CTX` | `4096` | Ollama context window size |
+| `RESONANT_OLLAMA_NUM_CTX` | model-aware | Override Ollama context size (cloud GLM-5.2/DeepSeek V4 use their advertised ~1M windows; local models stay conservative) |
 | `RESONANT_OLLAMA_NUM_BATCH` | `512` | Ollama batch size |
 | `RESONANT_OLLAMA_NUM_GPU` | `99` | Ollama GPU layers |
 | `RESONANT_OLLAMA_KEEP_ALIVE` | `60m` | How long Ollama keeps the model loaded |

@@ -6,11 +6,11 @@ enabling users to review changes before they're applied.
 """
 
 import difflib
-import json
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Optional
+
+from .editing import EditMatchError, apply_text_edit
 
 
 @dataclass
@@ -164,9 +164,16 @@ def _review_file_edit(args: dict, project_path: str) -> DiffReview:
                 old_text = old_text.replace("\r\n", "\n")
                 new_text = new_text.replace("\r\n", "\n")
 
-            # Apply the edit to generate the new version
-            if old_text in original:
-                modified = original.replace(old_text, new_text, 1)
+            # Apply the exact same matching cascade as tool execution so the
+            # preview cannot approve one location and write another.
+            try:
+                application = apply_text_edit(
+                    original,
+                    old_text,
+                    new_text,
+                    replace_all=bool(args.get("replace_all", False)),
+                )
+                modified = application.content
                 review.old_content = original
                 review.new_content = modified
 
@@ -184,12 +191,21 @@ def _review_file_edit(args: dict, project_path: str) -> DiffReview:
                 review.hunks = _parse_hunks(diff_text)
 
                 # Summary
-                added = sum(1 for h in review.hunks for l in h.lines if l.startswith("+"))
-                removed = sum(1 for h in review.hunks for l in h.lines if l.startswith("-"))
-                review.summary = f"Edit {file_path}: +{added} -{removed} lines"
-            else:
-                review.summary = f"Edit {file_path} (old_text not found in file)"
-                review.warnings.append("The text to replace was not found in the file")
+                added = sum(
+                    1 for hunk in review.hunks for line in hunk.lines
+                    if line.startswith("+")
+                )
+                removed = sum(
+                    1 for hunk in review.hunks for line in hunk.lines
+                    if line.startswith("-")
+                )
+                review.summary = (
+                    f"Edit {file_path}: +{added} -{removed} lines "
+                    f"({application.strategy} match)"
+                )
+            except EditMatchError as exc:
+                review.summary = f"Edit {file_path} (old_text not found; cannot apply safely)"
+                review.warnings.append(str(exc))
                 review.risk_level = "medium"
         else:
             # File doesn't exist yet

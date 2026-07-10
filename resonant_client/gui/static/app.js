@@ -8765,7 +8765,7 @@ class ResonantApp {
         const summary = document.createElement('summary');
         summary.innerHTML = `
             <span class="task-activity-caret" aria-hidden="true"></span>
-            <span class="task-activity-title">Activity</span>
+            <span class="task-activity-title">Work log</span>
             ${pieces.length ? `<span class="task-activity-meta">${this.escapeHtml(pieces.join(' | '))}</span>` : ''}
         `;
         details.appendChild(summary);
@@ -9618,7 +9618,7 @@ class ResonantApp {
 
         const label = document.createElement('div');
         label.className = 'task-card-label';
-        label.textContent = options.synthetic ? 'Agent task' : 'Task';
+        label.textContent = options.synthetic ? 'Resonant' : 'You';
 
         const request = document.createElement('div');
         request.className = 'task-request-text';

@@ -29,12 +29,13 @@ import threading
 import time
 from typing import Any, Callable, Optional
 
+from ..engine.policies import policy_for_tier
+from ..engine.sandbox import PathSandbox
 from ..engine.session import Session
 from .plan_graph import NodeSpecialization, NodeStatus, PlanGraph, PlanNode
 from .specialists import (
     assemble_system_prompt,
     filter_tools_for_specialist,
-    get_specialist,
 )
 from .walker import SpecialistResult
 
@@ -124,6 +125,40 @@ def _confidence_from_outcome(
 _FENCE_RE = re.compile(
     r"```(?:json)?\s*\n(.+?)\n```", re.DOTALL,
 )
+
+_PLAN_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "subgoals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "goal": {"type": "string"},
+                    "specialization": {"type": "string"},
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": ["integer", "string"]},
+                    },
+                },
+                "required": ["goal", "specialization", "depends_on"],
+            },
+        },
+    },
+    "required": ["subgoals"],
+}
+
+_VERIFY_OUTPUT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "verdict": {
+            "type": "string",
+            "enum": ["pass", "revise", "blocked"],
+        },
+        "findings": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["verdict", "findings"],
+}
 
 
 def _extract_json_block(text: str) -> Optional[dict]:
@@ -239,8 +274,6 @@ class LocalSpecialistRunner:
         return override
 
     def _run_node(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
-        profile = get_specialist(node.specialization)
-
         # v0.3.5 — inherit `working_subdir` from completed deps. If a
         # parent implementer scaffolded into `<root>/web/`, this child
         # specialist runs there too instead of starting back at the
@@ -256,12 +289,13 @@ class LocalSpecialistRunner:
 
         # Resolve the effective working directory. project_path stays
         # the intent root; the session's project_path is rooted there
-        # plus any inherited subdir. Sandbox + tool dispatch already
-        # treat session.project_path as the trust root.
-        effective_path = self.project_path
+        # plus any inherited subdir, while the sandbox keeps the full
+        # project as the trust root.
+        workspace_sandbox = PathSandbox(self.project_path)
+        effective_path = workspace_sandbox.project_path
         if node.working_subdir:
             try:
-                effective_path = os.path.normpath(
+                effective_path = workspace_sandbox.validate_path(
                     os.path.join(self.project_path, node.working_subdir)
                 )
             except (TypeError, ValueError):
@@ -299,6 +333,8 @@ class LocalSpecialistRunner:
             cancel_event=self.cancel_event,
         )
         session.project_path = effective_path
+        session.sandbox = workspace_sandbox
+        session.execution_policy = policy_for_tier("full-auto")
         # Hand the settings through so autonomy.check_floor can pick up custom
         # protected branches / budget cap / external paths during tool dispatch.
         session._settings_ref = self.settings
@@ -414,6 +450,7 @@ class LocalSpecialistRunner:
         subgoals: list[dict] = []
         verdict = ""
         findings: list[str] = []
+        structured_output_repaired = False
 
         # v0.5.1a3 — PLAN_DEEP shares the JSON-subgoals output schema
         # with PLAN, so it goes through the same parser. Without this,
@@ -425,11 +462,25 @@ class LocalSpecialistRunner:
         ):
             subgoals, parse_ok = self._parse_subgoals(full_text)
             if not parse_ok:
+                repaired = self._repair_structured_output(
+                    session.backend, full_text, _PLAN_OUTPUT_SCHEMA,
+                )
+                if repaired is not None:
+                    subgoals, parse_ok = self._parse_subgoals(json.dumps(repaired))
+                    structured_output_repaired = parse_ok
+            if not parse_ok:
                 # Parse failed → soft ceiling at 0.5; the walker should still trust
                 # the work somewhat, but downstream specialists won't lean on it.
                 confidence = min(confidence, 0.5)
         elif node.specialization == NodeSpecialization.VERIFY:
             verdict, findings, parse_ok = self._parse_verdict(full_text)
+            if not parse_ok:
+                repaired = self._repair_structured_output(
+                    session.backend, full_text, _VERIFY_OUTPUT_SCHEMA,
+                )
+                if repaired is not None:
+                    verdict, findings, parse_ok = self._parse_verdict(json.dumps(repaired))
+                    structured_output_repaired = parse_ok
             if not parse_ok:
                 confidence = min(confidence, 0.5)
                 verdict = verdict or "blocked"
@@ -448,6 +499,7 @@ class LocalSpecialistRunner:
                 "step_count": step_count,
                 "hit_step_limit": hit_step_limit,
                 "duration_ms": round(duration_ms, 1),
+                "structured_output_repaired": structured_output_repaired,
             },
             subgoals=subgoals,
             verdict=verdict,
@@ -456,6 +508,24 @@ class LocalSpecialistRunner:
         return result
 
     # ── Helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _repair_structured_output(backend: Any, text: str, schema: dict) -> Optional[dict]:
+        """Use constrained decoding when a specialist's JSON fence drifted."""
+        generator = getattr(backend, "generate_structured", None)
+        if not callable(generator) or not text:
+            return None
+        try:
+            result = generator(
+                "Convert the following completed specialist response into the requested "
+                "JSON structure without adding facts:\n\n" + text[-12_000:],
+                schema,
+                max_tokens=2048,
+            )
+        except Exception:
+            logger.warning("Structured specialist-output repair failed", exc_info=True)
+            return None
+        return result if isinstance(result, dict) else None
 
     def _build_context_from_deps(self, node: PlanNode, graph: PlanGraph) -> str:
         """Assemble a "what did prior nodes find?" preamble from completed deps."""

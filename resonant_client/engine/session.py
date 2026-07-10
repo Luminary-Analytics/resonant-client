@@ -25,12 +25,22 @@ from ..backends import (
     EVENT_BACKEND_STATUS,
 )
 from ..events import EngineEvent, make_event
-from .tools import AGENT_TOOLS, execute_tool, get_tool_icon
-from .agents import get_agent_type, AGENT_TYPES
+from .tools import (
+    AGENT_TOOLS,
+    BATCH_ALLOWED_TOOL_NAMES,
+    execute_tool,
+    get_tool_icon,
+)
+from .agents import get_agent_type
 from .compression import should_compress, compress, estimate_tokens
 from .hooks import HookRunner, HookType
+from .tool_arguments import ToolArgumentError, normalize_tool_arguments
 
 logger = logging.getLogger(__name__)
+
+
+class ToolBoundaryViolation(Exception):
+    """A tool call escaped the active session's execution boundary."""
 
 
 # ── Doom Loop Detection ────────────────────────────────────────────────
@@ -373,6 +383,7 @@ class Session:
         self.auto_approve = auto_approve
         self.auto_plan = auto_plan
         self.conversation_history: list = []
+        self.todos: list[dict] = []
         self.plan_mode: bool = False
         self.parent_session = parent_session
         self._allowed_tools = allowed_tools  # None = use AGENT_TOOLS
@@ -383,6 +394,7 @@ class Session:
         self.mcp_tools: list[dict] = []  # Extra tools from MCP servers
         self._engram = None  # EngramIntegration, set externally
         self._codebase_index = None  # CodebaseIndex, set externally
+        self._skill_context_provider = None
         self._cancel_event = cancel_event or threading.Event()
         self.project_path: Optional[str] = None  # Set externally for path resolution
         # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed)
@@ -424,6 +436,7 @@ class Session:
         self._mcp_manager = getattr(parent, "_mcp_manager", None)
         self._engram = parent._engram
         self._codebase_index = parent._codebase_index
+        self._skill_context_provider = parent._skill_context_provider
         pl = parent.event_logger
         if pl and getattr(pl, "enabled", False):
             try:
@@ -462,6 +475,22 @@ class Session:
     def clear(self):
         """Clear conversation history."""
         self.conversation_history.clear()
+        self.todos.clear()
+
+    def _goal_recitation(self, objective: str) -> str:
+        """Render compact, lossless task state at the tail of a tool step."""
+        goal = (objective or "").strip()
+        if len(goal) > 2_000:
+            goal = goal[:2_000] + "..."
+        lines = ["<goal_recitation>", f"Original request: {goal}"]
+        if self.todos:
+            lines.append("Current checklist:")
+            for todo in self.todos[:20]:
+                marker = "x" if todo.get("done") else " "
+                lines.append(f"- [{marker}] {todo.get('text', '')}")
+        lines.append("Keep the next action aligned with this goal; verify before declaring done.")
+        lines.append("</goal_recitation>")
+        return "\n".join(lines)
 
     def set_backend(self, backend, *, reset_history: bool = False):
         """
@@ -526,6 +555,103 @@ class Session:
             return not PathSandbox.is_exec_tool(tool_name)
         else:  # full-auto
             return True
+
+    def _prepare_workspace_tool_args(self, tool_name: str, tool_args: dict) -> dict:
+        """Normalize and validate path-bearing tool arguments.
+
+        ``project_path`` is the working directory for relative arguments while
+        ``sandbox`` is the trust root. They may differ for specialists running
+        inside an inherited working subdirectory.
+        """
+        if not isinstance(tool_args, dict):
+            raise ToolBoundaryViolation(
+                f"Tool '{tool_name}' arguments must be a JSON object, got "
+                f"{type(tool_args).__name__}."
+            )
+        prepared = dict(tool_args)
+        working_dir = self.project_path or os.getcwd()
+
+        if tool_name == "batch":
+            calls = prepared.get("calls", [])
+            if not isinstance(calls, list):
+                raise ToolBoundaryViolation("Batch 'calls' must be an array.")
+            allowed_session_names = None
+            if self._allowed_tools is not None:
+                allowed_session_names = {
+                    item.get("function", {}).get("name", "")
+                    for item in self._allowed_tools
+                }
+            normalized_calls = []
+            for index, call in enumerate(calls):
+                if not isinstance(call, dict):
+                    raise ToolBoundaryViolation(f"Batch call {index} must be an object.")
+                child_name = str(call.get("name") or "")
+                if child_name not in BATCH_ALLOWED_TOOL_NAMES:
+                    raise ToolBoundaryViolation(
+                        f"Batch child '{child_name}' is not a permitted read-only batch tool."
+                    )
+                if allowed_session_names is not None and child_name not in allowed_session_names:
+                    raise ToolBoundaryViolation(
+                        f"Batch child '{child_name}' is not in this specialist's tool allowlist."
+                    )
+                normalized_calls.append({
+                    "name": child_name,
+                    "arguments": self._prepare_workspace_tool_args(
+                        child_name,
+                        call.get("arguments", {}),
+                    ),
+                })
+            prepared["calls"] = normalized_calls
+            return prepared
+
+        file_tools = {"file_write", "file_read", "file_edit"}
+        search_tools = {"glob", "grep"}
+        cwd_tools = {
+            "bash",
+            "git_status", "git_diff", "git_commit", "git_branch_create", "git_log",
+            "repl_python_start", "repl_node_start",
+        }
+
+        if tool_name in file_tools:
+            path = str(prepared.get("path") or "")
+            if path and not os.path.isabs(path):
+                path = os.path.join(working_dir, path)
+            if path:
+                prepared["path"] = path
+        elif tool_name in search_tools:
+            # Search patterns are data, not paths. Only the search root is
+            # resolved; rewriting ``needle`` as ``<project>/needle`` corrupts
+            # every normal grep regex.
+            path = str(prepared.get("path") or working_dir)
+            if not os.path.isabs(path):
+                path = os.path.join(working_dir, path)
+            prepared["path"] = path
+        elif tool_name in cwd_tools:
+            cwd = str(prepared.get("cwd") or working_dir)
+            if not os.path.isabs(cwd):
+                cwd = os.path.join(working_dir, cwd)
+            prepared["cwd"] = cwd
+
+        if self.sandbox:
+            if tool_name in file_tools | search_tools and prepared.get("path"):
+                prepared["path"] = self.sandbox.validate_path(prepared["path"])
+            if tool_name == "glob" and prepared.get("pattern"):
+                prepared["pattern"] = self.sandbox.validate_glob_pattern(
+                    str(prepared["pattern"]),
+                    base_path=prepared.get("path"),
+                )
+            if tool_name == "grep" and prepared.get("glob"):
+                file_glob = str(prepared["glob"])
+                if os.path.isabs(file_glob) or any(
+                    separator in file_glob for separator in ("/", "\\")
+                ):
+                    raise ToolBoundaryViolation(
+                        "Grep 'glob' must be a filename pattern, not a path."
+                    )
+            if tool_name in cwd_tools and prepared.get("cwd"):
+                prepared["cwd"] = self.sandbox.validate_bash_cwd(prepared["cwd"])
+
+        return prepared
 
     def _cancelled_events(self, total_start: float, total_steps: int) -> Iterator[dict]:
         yield make_event(EngineEvent.ERROR, message="Interrupted")
@@ -647,6 +773,7 @@ class Session:
         iteration = 0
         exec_step = 0
         current_msg = user_msg
+        active_goal = user_msg
         total_start = time.time()
         executing_plan = False
         last_tool_used = None
@@ -683,22 +810,27 @@ class Session:
         # used the 100K default, which never fired for flash (smaller
         # window) and was overly conservative for pro (larger window).
         backend_model = getattr(self.backend, "model", None) if self.backend else None
-        if should_compress(self.conversation_history, model_name=backend_model):
+        context_window = getattr(self.backend, "effective_context_tokens", None)
+
+        # Resolve memory/RAG once for this user turn, then keep the system
+        # prompt byte-stable across every tool step.
+        turn_context = ""
+        if self._engram and self._engram.enabled:
             try:
-                compressed, summary = compress(self, model_name=backend_model)
-                if summary:
-                    old_count = len(self.conversation_history)
-                    old_tokens = estimate_tokens(self.conversation_history)
-                    self.conversation_history = compressed
-                    new_tokens = estimate_tokens(self.conversation_history)
-                    yield make_event(EngineEvent.COMPRESSION,
-                                    old_entries=old_count,
-                                    new_entries=len(compressed),
-                                    old_tokens=old_tokens,
-                                    new_tokens=new_tokens,
-                                    summary_preview=summary[:200])
+                turn_context += self._engram.get_context_for_prompt(user_msg) or ""
             except Exception as e:
-                logger.warning(f"Context compression failed: {e}")
+                logger.warning(f"Engram recall failed: {e}")
+        if self._codebase_index and self._codebase_index.is_indexed:
+            try:
+                turn_context += self._codebase_index.get_context_for_prompt(user_msg) or ""
+            except Exception as e:
+                logger.warning(f"RAG context failed: {e}")
+        if callable(self._skill_context_provider):
+            try:
+                skill_context = self._skill_context_provider(user_msg)
+                turn_context += getattr(skill_context, "block", skill_context) or ""
+            except Exception as e:
+                logger.warning(f"Interactive skill lookup failed: {e}")
 
         while True:
             if self.max_steps is not None and iteration >= self.max_steps:
@@ -706,6 +838,33 @@ class Session:
             if self.cancel_requested:
                 yield from self._cancelled_events(total_start, exec_step)
                 return
+            # A single specialist turn can add dozens of tool results, so
+            # enforce the real backend window before every inference step.
+            if should_compress(
+                self.conversation_history,
+                model_name=backend_model,
+                context_window=context_window,
+            ):
+                try:
+                    old_count = len(self.conversation_history)
+                    old_tokens = estimate_tokens(self.conversation_history)
+                    compressed, summary = compress(
+                        self,
+                        model_name=backend_model,
+                        context_window=context_window,
+                    )
+                    if summary:
+                        self.conversation_history = compressed
+                        yield make_event(
+                            EngineEvent.COMPRESSION,
+                            old_entries=old_count,
+                            new_entries=len(compressed),
+                            old_tokens=old_tokens,
+                            new_tokens=estimate_tokens(compressed),
+                            summary_preview=summary[:200],
+                        )
+                except Exception as e:
+                    logger.warning(f"Context compression failed: {e}")
             iteration += 1
             is_planning = self.plan_mode and not executing_plan
 
@@ -733,25 +892,8 @@ class Session:
                 working_directory=wd,
             )
 
-            # ── Inject context from memory & RAG (first iteration only) ──
-            if iteration == 1:
-                # Engram memory context
-                if self._engram and self._engram.enabled:
-                    try:
-                        memory_context = self._engram.get_context_for_prompt(user_msg)
-                        if memory_context:
-                            instructions += memory_context
-                    except Exception as e:
-                        logger.warning(f"Engram recall failed: {e}")
-
-                # RAG codebase context
-                if self._codebase_index and self._codebase_index.is_indexed:
-                    try:
-                        rag_context = self._codebase_index.get_context_for_prompt(user_msg)
-                        if rag_context:
-                            instructions += rag_context
-                    except Exception as e:
-                        logger.warning(f"RAG context failed: {e}")
+            # Keep retrieved context stable throughout this tool loop.
+            instructions += turn_context
 
             # ── Stream from backend ──
             collected_text = []
@@ -784,9 +926,21 @@ class Session:
                         fn_name = data.get("name", "")
                         fn_args_str = data.get("arguments", "{}")
                         try:
-                            fn_args = json.loads(fn_args_str) if isinstance(fn_args_str, str) else fn_args_str
-                        except json.JSONDecodeError:
+                            fn_args = normalize_tool_arguments(
+                                fn_name,
+                                fn_args_str,
+                                self.tools,
+                            )
+                            fn_args_str = json.dumps(
+                                fn_args,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
+                            data["arguments"] = fn_args_str
+                            data["_normalized_arguments"] = fn_args
+                        except ToolArgumentError as exc:
                             fn_args = {}
+                            data["_argument_error"] = str(exc)
                         yield make_event(EngineEvent.TOOL_CALL,
                                         name=fn_name, arguments=fn_args,
                                         arguments_str=fn_args_str,
@@ -836,6 +990,7 @@ class Session:
 
                 todo_items = parse_markdown_todos(full_text)
                 if todo_items:
+                    self.todos = todo_items
                     done_ct = sum(1 for t in todo_items if t.get("done"))
                     yield make_event(
                         EngineEvent.TODOS_UPDATED,
@@ -891,6 +1046,11 @@ class Session:
                 yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
                 break  # Exit the agentic loop — CLI ran to completion
 
+            reasoning_by_call_id = {
+                item.get("call_id", ""): item.get("reasoning_content") or item.get("thinking")
+                for item in tool_calls
+                if item.get("call_id") and (item.get("reasoning_content") or item.get("thinking"))
+            }
             for item in tool_calls:
                 if self.cancel_requested:
                     yield from self._cancelled_events(total_start, exec_step)
@@ -898,11 +1058,35 @@ class Session:
                 fn_name = item.get("name", "")
                 fn_args_str = item.get("arguments", "{}")
                 call_id = item.get("call_id", "")
-
-                try:
-                    fn_args = json.loads(fn_args_str) if isinstance(fn_args_str, str) else fn_args_str
-                except json.JSONDecodeError:
-                    fn_args = {}
+                fn_args = item.get("_normalized_arguments", {})
+                argument_error = item.get("_argument_error", "")
+                if argument_error:
+                    result_output = (
+                        f"Tool arguments were malformed: {argument_error}. "
+                        "Correct the arguments and call the tool again."
+                    )
+                    yield make_event(
+                        EngineEvent.TOOL_RESULT,
+                        name=fn_name,
+                        call_id=call_id,
+                        output=result_output,
+                        is_error=True,
+                        denied=True,
+                        elapsed=0.0,
+                    )
+                    self.conversation_history.append({
+                        "role": "tool_call",
+                        "name": fn_name,
+                        "arguments": fn_args_str,
+                        "call_id": call_id,
+                        "content": f"Called {fn_name}",
+                    })
+                    self.conversation_history.append({
+                        "role": "tool_result",
+                        "call_id": call_id,
+                        "content": result_output,
+                    })
+                    continue
 
                 # Tool call event already yielded during streaming (above)
                 # No duplicate yield here — go straight to execution
@@ -1083,42 +1267,27 @@ class Session:
                             })
                             continue
 
-                    # Resolve relative file paths against project directory
-                    if self.project_path:
-                        if fn_name in ("file_write", "file_read", "file_edit", "glob", "grep"):
-                            for key in ("path", "pattern"):
-                                if key in fn_args and fn_args[key]:
-                                    p = fn_args[key]
-                                    if not os.path.isabs(p):
-                                        fn_args[key] = os.path.join(self.project_path, p)
-                        if fn_name == "bash" and "cwd" not in fn_args:
-                            fn_args["cwd"] = self.project_path
-
-                    # Sandbox validation — block paths outside project directory
-                    if self.sandbox:
-                        from .sandbox import SandboxViolation
-                        try:
-                            if fn_name in ("file_write", "file_read", "file_edit"):
-                                if "path" in fn_args and fn_args["path"]:
-                                    fn_args["path"] = self.sandbox.validate_path(fn_args["path"])
-                            elif fn_name == "bash" and "cwd" in fn_args:
-                                fn_args["cwd"] = self.sandbox.validate_bash_cwd(fn_args["cwd"])
-                        except SandboxViolation as sv:
-                            result_output = f"Blocked by sandbox: {sv}"
-                            yield make_event(EngineEvent.TOOL_RESULT,
-                                            name=fn_name, call_id=call_id,
-                                            output=result_output, is_error=True,
-                                            denied=True, elapsed=0.0)
-                            self.conversation_history.append({
-                                "role": "tool_call", "name": fn_name,
-                                "arguments": fn_args_str, "call_id": call_id,
-                                "content": f"Called {fn_name}",
-                            })
-                            self.conversation_history.append({
-                                "role": "tool_result", "call_id": call_id,
-                                "content": result_output,
-                            })
-                            continue
+                    # Normalize every path-bearing call at one boundary. This
+                    # also validates batch children before parallel fan-out.
+                    from .sandbox import SandboxViolation
+                    try:
+                        fn_args = self._prepare_workspace_tool_args(fn_name, fn_args)
+                    except (SandboxViolation, ToolBoundaryViolation) as exc:
+                        result_output = f"Blocked by tool boundary: {exc}"
+                        yield make_event(EngineEvent.TOOL_RESULT,
+                                        name=fn_name, call_id=call_id,
+                                        output=result_output, is_error=True,
+                                        denied=True, elapsed=0.0)
+                        self.conversation_history.append({
+                            "role": "tool_call", "name": fn_name,
+                            "arguments": fn_args_str, "call_id": call_id,
+                            "content": f"Called {fn_name}",
+                        })
+                        self.conversation_history.append({
+                            "role": "tool_result", "call_id": call_id,
+                            "content": result_output,
+                        })
+                        continue
 
                     result = execute_tool(
                         fn_name, fn_args,
@@ -1186,6 +1355,12 @@ class Session:
                     return
 
             # ── Status ──
+            if reasoning_by_call_id:
+                for entry in self.conversation_history:
+                    reasoning = reasoning_by_call_id.get(entry.get("call_id", ""))
+                    if entry.get("role") == "tool_call" and reasoning:
+                        entry["reasoning_content"] = reasoning
+
             yield make_event(EngineEvent.STATUS,
                             model=done_model, stats=done_stats,
                             cognitive_state=cog_state,
@@ -1346,6 +1521,7 @@ class Session:
                     self._windowed_cycle_nudged = True
                 else:
                     current_msg = "Continue based on the tool results above."
+                current_msg += "\n\n" + self._goal_recitation(active_goal)
                 continue
             else:
                 break

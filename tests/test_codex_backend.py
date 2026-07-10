@@ -63,6 +63,63 @@ def test_codex_prompt_uses_native_tools_not_resonant_xml():
     assert "fix it" in prompt
 
 
+def test_codex_prompt_does_not_duplicate_current_user_turn():
+    prompt = _build_codex_prompt(
+        user_msg="fix it",
+        conversation_history=[{"role": "user", "content": "fix it"}],
+        instructions="",
+        cwd="D:/Repo",
+    )
+
+    assert prompt.count("fix it") == 1
+    assert "CONVERSATION HISTORY" not in prompt
+
+
+def test_codex_command_uses_supported_noninteractive_permission_flags(tmp_path):
+    backend = CodexCliBackend(
+        "gpt-5.5",
+        cwd=str(tmp_path),
+        cli_path="codex",
+        permission_mode="bypass",
+    )
+
+    command = backend._command()
+
+    assert "--ignore-user-config" not in command
+    assert command[1:3] == ["exec", "--json"]
+    assert 'approval_policy="never"' in command
+    assert command[command.index("--sandbox") + 1] == "workspace-write"
+
+
+def test_codex_permission_modes_are_safe_and_backend_specific(tmp_path):
+    backend = CodexCliBackend("gpt-5.5", cwd=str(tmp_path), cli_path="codex")
+
+    backend.configure_permission_mode("ask")
+    assert (backend.sandbox, backend.approval_policy) == ("read-only", "never")
+
+    backend.configure_permission_mode("plan")
+    assert (backend.sandbox, backend.approval_policy) == ("read-only", "never")
+
+    backend.configure_permission_mode("auto-edit")
+    assert (backend.sandbox, backend.approval_policy) == ("workspace-write", "untrusted")
+
+    backend.configure_permission_mode("bypass")
+    assert (backend.sandbox, backend.approval_policy) == ("workspace-write", "never")
+
+
+def test_codex_explicit_sandbox_override_wins_over_mode(tmp_path):
+    backend = CodexCliBackend(
+        "gpt-5.5",
+        cwd=str(tmp_path),
+        cli_path="codex",
+        sandbox="danger-full-access",
+        permission_mode="ask",
+    )
+
+    assert backend.sandbox == "danger-full-access"
+    assert backend.approval_policy == "never"
+
+
 class _FakeProc:
     def __init__(self):
         self.stdin = io.StringIO()

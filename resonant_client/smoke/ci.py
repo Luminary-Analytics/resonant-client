@@ -26,7 +26,6 @@ Default behavior (no flags): n=1 per spec (fast smoke), no baseline.
 """
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass, field

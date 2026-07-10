@@ -5,9 +5,7 @@ Connects to the Engram memory system for persistent, context-aware recall
 across sessions. Uses MCP transport or direct HTTP to the engram server.
 """
 
-import json
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 

@@ -20,8 +20,6 @@ Bundled deps:
 - Desktop tools (pyautogui, mss, Pillow) — bundled. They're optional in
   pyproject but the installed exe should include them so screenshot/click/
   type work out of the box.
-- Backend SDKs (anthropic, openai) — bundled. Cheap (pure Python) and
-  removes a "go install this" UX wart.
 - pywebview          — bundled (v0.2.2+). Provides the native desktop
                        frame so users see "the app", not a console + a
                        browser tab. Requires Microsoft Edge WebView2
@@ -120,10 +118,6 @@ hiddenimports = [
     "websockets.asyncio.client",
     "uvicorn.protocols.websockets.websockets_impl",
     "uvicorn.protocols.websockets.wsproto_impl",
-
-    # Backend SDKs imported lazily by engine/backends.py
-    "anthropic",
-    "openai",
 
     # Desktop tools (bundled — see header comment)
     "pyautogui",

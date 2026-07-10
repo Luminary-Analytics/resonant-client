@@ -40,13 +40,11 @@ from .field_observation_ingest import (
 )
 from .skill_curator import run_curation
 from .skills import (
-    DEFAULT_SCOPE,
     SKILL_SCOPES,
     Skill,
     archive_skill,
     demote_skill,
     list_archived_skills,
-    list_skills,
     list_skills_filtered,
     load_skill,
     promote_skill,

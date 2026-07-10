@@ -10,10 +10,9 @@ The TUI handles ONLY display and input. All logic lives in the engine.
 """
 
 import json
+import io
 import os
-import re
 import sys
-import time
 import argparse
 import logging
 import difflib
@@ -22,29 +21,23 @@ from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.table import Table
-from rich.text import Text
-from rich.rule import Rule
 from rich.live import Live
 from rich.spinner import Spinner
-from rich.columns import Columns
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
-from .events import EngineEvent, make_event
+from .events import EngineEvent
 from .network_defaults import get_default_backend, get_default_model
 from .backends import create_backend, OllamaBackend
 from .engine import Session
-from .engine.tools import AGENT_TOOLS, get_tool_icon
 
 logger = logging.getLogger(__name__)
 
 # Force UTF-8 output on Windows
-import io
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
@@ -246,8 +239,8 @@ def _render_tool_call(event: dict):
                     colored_lines.append(f"[{C_DIM}]    {line}[/{C_DIM}]")
             if len(diff) > 20:
                 colored_lines.append(f"[{C_DIM}]    {G_THINK} {len(diff) - 20} more lines[/{C_DIM}]")
-            added = sum(1 for l in diff[2:] if l.startswith("+"))
-            removed = sum(1 for l in diff[2:] if l.startswith("-"))
+            added = sum(1 for line in diff[2:] if line.startswith("+"))
+            removed = sum(1 for line in diff[2:] if line.startswith("-"))
             subtitle = f"[{C_OK}]+{added}[/{C_OK}] [{C_ERR}]-{removed}[/{C_ERR}]"
             console.print(Panel(
                 "\n".join(colored_lines),
@@ -318,7 +311,7 @@ def _render_tool_call(event: dict):
         mode = args.get("mode", "text")
         selector = args.get("selector", "")
         meta = f"{mode}" + (f" · {selector}" if selector else "")
-        _inline_tool(icon, f"Read page", meta=meta, color=C_BRAND2)
+        _inline_tool(icon, "Read page", meta=meta, color=C_BRAND2)
     elif name == "browser_screenshot":
         full = args.get("full_page", False)
         _inline_tool(icon, "Page screenshot", meta="full page" if full else "viewport", color=C_BRAND2)
@@ -394,7 +387,6 @@ def _render_tool_result(event: dict):
         _block_tool_line(" · ".join(status_parts), color=C_DIM)
 
     elif name == "file_write":
-        fpath = metadata.get("path", "")
         lines = metadata.get("lines", 0)
         chars = metadata.get("chars", 0)
         icon = G_CHECK if not is_error else G_CROSS
@@ -440,7 +432,6 @@ def _render_tool_result(event: dict):
 
     # ── Browser tool results ──
     elif name == "browser_navigate":
-        url = metadata.get("url", "")
         title = metadata.get("title", "")
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
@@ -530,7 +521,6 @@ def _render_step_end(event: dict, model: str = None, stats: dict = None):
     Render step completion marker (opencode pattern).
     Format: ▣ model · duration · tokens
     """
-    step = event.get("step", 0)
     elapsed = event.get("elapsed", 0.0)
     if not model or elapsed <= 0:
         return

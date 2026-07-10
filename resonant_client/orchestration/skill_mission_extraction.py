@@ -35,7 +35,6 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 
 from .skills import Skill, save_skill, tokenize

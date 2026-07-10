@@ -162,13 +162,9 @@ def launch_gui(
             win_ref = [None]
             api = _WindowAPI(win_ref)
 
-            # Resolve icon path
+            # Resolve the Windows icon used after the native HWND exists.
             icon_dir = os.path.join(os.path.dirname(__file__), "static")
             ico_path = os.path.join(icon_dir, "resonant.ico")
-            png_path = os.path.join(icon_dir, "resonant.png")
-            icon_path = ico_path if os.path.exists(ico_path) else (
-                png_path if os.path.exists(png_path) else None
-            )
 
             wv_kwargs = dict(
                 title="Resonant",
@@ -197,7 +193,6 @@ def launch_gui(
 
             window = webview.create_window(**wv_kwargs)
             win_ref[0] = window
-            from .app import _webview_window as _
             import resonant_client.gui.app as _gui_app
             _gui_app._webview_window = window
 

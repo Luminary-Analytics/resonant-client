@@ -30,19 +30,17 @@ from .baseline import (
     diff_against_baseline,
     list_baselines,
     load_baseline,
-    save_baseline,
 )
 from .ci import (
     DEFAULT_CI_SPECS,
     CISpecResult,
-    CISuiteResult,
     parse_specs_arg,
     render_ci_markdown,
     run_ci_suite,
 )
 from .report import render_run_markdown, render_variance_markdown
 from .runner import MODELS, SmokeResult, run_smoke
-from .specs import SPECS, get_spec, list_spec_names
+from .specs import SPECS, list_spec_names
 from .variance import VarianceReport, run_variance
 
 
@@ -93,13 +91,13 @@ def _cmd_list_specs(_args: argparse.Namespace) -> int:
 
 def _print_run_header(spec_name: str, model_label: str) -> None:
     print("=" * 70)
-    print(f"SMOKE — spec={spec_name} model={model_label}")
+    print(f"SMOKE - spec={spec_name} model={model_label}")
     print("=" * 70)
 
 
 def _print_run_result(result: SmokeResult) -> None:
-    converged = "✅" if result.is_converged() else (
-        "[unvalidated] TIMEOUT" if result.timed_out else "✗"
+    converged = "PASS" if result.is_converged() else (
+        "TIMEOUT" if result.timed_out else "FAIL"
     )
     print()
     print("-" * 70)
@@ -137,7 +135,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
-    print(f"  → record: {out_path}")
+    print(f"  -> record: {out_path}")
 
     # v0.5.4a3 — markdown report. When `--report` is set, write the
     # human-readable summary to that path. When omitted, write
@@ -147,7 +145,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     md_path = Path(args.report) if args.report else out_path.with_suffix(".md")
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(render_run_markdown(result), encoding="utf-8")
-    print(f"  → markdown: {md_path}")
+    print(f"  -> markdown: {md_path}")
     return 0 if result.is_converged() else 1
 
 
@@ -157,7 +155,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _print_variance_report(report: VarianceReport) -> None:
     print()
     print("=" * 70)
-    print(f"VARIANCE REPORT — spec={report.spec_name} model={report.model_label} n={report.n}")
+    print(f"VARIANCE REPORT - spec={report.spec_name} model={report.model_label} n={report.n}")
     print("=" * 70)
     print(f"  converged:        {report.converged_count}/{report.n} "
           f"({report.convergence_rate * 100:.0f}%)")
@@ -185,12 +183,12 @@ def _print_variance_report(report: VarianceReport) -> None:
 
 def _cmd_variance(args: argparse.Namespace) -> int:
     _print_run_header(args.spec, args.model)
-    print(f"Running {args.n} smoke(s)…")
+    print(f"Running {args.n} smoke(s)...")
     print()
 
     def _on_run_complete(idx: int, result: SmokeResult) -> None:
-        verdict_label = "✅" if result.is_converged() else (
-            "[unvalidated]TO" if result.timed_out else "✗"
+        verdict_label = "PASS" if result.is_converged() else (
+            "TIMEOUT" if result.timed_out else "FAIL"
         )
         print(
             f"  run {idx}/{args.n}: {verdict_label} verdict={result.verdict} "
@@ -231,12 +229,12 @@ def _cmd_variance(args: argparse.Namespace) -> int:
             print()
             print(f"  Diff vs baseline (n={diff.baseline_n}):")
             print(f"    convergence: {diff.baseline_convergence_rate * 100:.0f}% "
-                  f"→ {diff.current_convergence_rate * 100:.0f}% "
+                  f"-> {diff.current_convergence_rate * 100:.0f}% "
                   f"({diff.delta_convergence_rate * 100:+.0f}pp)")
             for r in diff.regressions:
                 print(f"    [unvalidated] {r}")
             for imp in diff.improvements:
-                print(f"    ✅ {imp}")
+                print(f"    IMPROVED: {imp}")
             if not diff.regressions and not diff.improvements:
                 print("    (no significant change)")
 
@@ -245,7 +243,7 @@ def _cmd_variance(args: argparse.Namespace) -> int:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
-    print(f"\n  → record: {out_path}")
+    print(f"\n  -> record: {out_path}")
 
     # v0.5.4a3 — markdown report next to the JSON.
     md_path = Path(args.report) if args.report else out_path.with_suffix(".md")
@@ -253,7 +251,7 @@ def _cmd_variance(args: argparse.Namespace) -> int:
     md_path.write_text(
         render_variance_markdown(report, baseline_diff=diff), encoding="utf-8",
     )
-    print(f"  → markdown: {md_path}")
+    print(f"  -> markdown: {md_path}")
 
     # Convergence-rate gating: variance is "passing" iff every run
     # converged AND there are no regressions vs baseline.
@@ -274,18 +272,18 @@ def _cmd_baseline_set(args: argparse.Namespace) -> int:
     """
     src = Path(args.source)
     if not src.is_file():
-        print(f"✗ Source file not found: {src}")
+        print(f"ERROR: Source file not found: {src}")
         return 1
     try:
         data = json.loads(src.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        print(f"✗ Could not read source: {exc}")
+        print(f"ERROR: Could not read source: {exc}")
         return 1
     src_spec = data.get("spec_name", "")
     src_model = data.get("model_label", "")
     if args.spec != src_spec or args.model != src_model:
         print(
-            f"✗ Source variance is for ({src_spec}, {src_model}) but flags "
+            f"ERROR: Source variance is for ({src_spec}, {src_model}) but flags "
             f"specified ({args.spec}, {args.model}). Refusing to baseline "
             "across mismatched (spec, model)."
         )
@@ -295,7 +293,7 @@ def _cmd_baseline_set(args: argparse.Namespace) -> int:
     target = baseline_path(project_root, args.spec, args.model)
     if target.exists() and not args.force:
         print(
-            f"✗ Baseline already exists at {target}. Pass --force to "
+            f"ERROR: Baseline already exists at {target}. Pass --force to "
             "overwrite, or `baseline rm` first."
         )
         return 1
@@ -303,7 +301,7 @@ def _cmd_baseline_set(args: argparse.Namespace) -> int:
     target.write_text(json.dumps(data, indent=2), encoding="utf-8")
     rate_pct = int(round(float(data.get("convergence_rate", 0.0)) * 100))
     n = data.get("n", 0)
-    print(f"✅ Baseline set: {target}")
+    print(f"OK: Baseline set: {target}")
     print(f"   spec={args.spec} model={args.model} n={n} convergence={rate_pct}%")
     return 0
 
@@ -345,7 +343,7 @@ def _cmd_baseline_show(args: argparse.Namespace) -> int:
     rate = float(data.get("convergence_rate", 0.0))
     n = data.get("n", 0)
     converged = data.get("converged_count", 0)
-    print(f"Baseline — {args.spec} × {args.model} × n={n}")
+    print(f"Baseline - {args.spec} x {args.model} x n={n}")
     print(f"  convergence: {converged}/{n} ({int(round(rate * 100))}%)")
     total = data.get("total_elapsed_seconds") or {}
     if total.get("median") is not None:
@@ -374,11 +372,11 @@ def _cmd_ci(args: argparse.Namespace) -> int:
     try:
         spec_names = parse_specs_arg(args.specs) if args.specs else list(DEFAULT_CI_SPECS)
     except ValueError as exc:
-        print(f"✗ {exc}")
+        print(f"ERROR: {exc}")
         return 2
 
     print("=" * 70)
-    print(f"CI SUITE — model={args.model} specs={','.join(spec_names)} n={args.n}")
+    print(f"CI SUITE - model={args.model} specs={','.join(spec_names)} n={args.n}")
     if args.diff_baseline:
         print("  --diff-baseline: any baseline regression fails the suite")
     print("=" * 70)
@@ -386,13 +384,13 @@ def _cmd_ci(args: argparse.Namespace) -> int:
 
     def _on_spec_complete(spec_name: str, spec_result: CISpecResult) -> None:
         if spec_result.passed:
-            sigil = "✅"
+            sigil = "PASS"
             label = "PASS"
         elif spec_result.has_regressions:
             sigil = "[unvalidated]"
             label = "REGRESSED"
         else:
-            sigil = "✗"
+            sigil = "FAIL"
             label = "FAIL"
         v = spec_result.variance
         print(
@@ -415,8 +413,8 @@ def _cmd_ci(args: argparse.Namespace) -> int:
 
     print()
     print("-" * 70)
-    overall = "✅ PASS" if result.all_passed else "✗ FAIL"
-    print(f"{overall} — {result.passing_count}/{len(result.spec_results)} specs passed")
+    overall = "PASS" if result.all_passed else "FAIL"
+    print(f"{overall} - {result.passing_count}/{len(result.spec_results)} specs passed")
     print(f"  total elapsed: {result.total_elapsed_seconds:.1f}s")
     print(f"  exit code:     {result.exit_code()}")
 
@@ -425,12 +423,12 @@ def _cmd_ci(args: argparse.Namespace) -> int:
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result.to_dict(), indent=2), encoding="utf-8")
-    print(f"  → record: {out_path}")
+    print(f"  -> record: {out_path}")
 
     md_path = Path(args.report) if args.report else out_path.with_suffix(".md")
     md_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.write_text(render_ci_markdown(result), encoding="utf-8")
-    print(f"  → markdown: {md_path}")
+    print(f"  -> markdown: {md_path}")
 
     return result.exit_code()
 
@@ -442,7 +440,7 @@ def _cmd_baseline_rm(args: argparse.Namespace) -> int:
         print(f"No baseline at {target}")
         return 1
     target.unlink()
-    print(f"✅ Removed baseline: {target}")
+    print(f"OK: Removed baseline: {target}")
     return 0
 
 

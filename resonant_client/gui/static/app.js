@@ -36,6 +36,13 @@ const COLLAPSIBLE_TOOLS = new Set([
 
 const BLOCK_TOOLS = new Set(['bash', 'file_write', 'file_edit', 'browser_js']);
 
+function shouldGroupAsEvidence(name, args = {}) {
+    if (COLLAPSIBLE_TOOLS.has(name)) return true;
+    if (name !== 'bash') return false;
+    const command = String(args.command || '').trim();
+    return /^(?:(?:python\s+-m\s+)?pytest\b|(?:python\s+-m\s+)?ruff\b|(?:npm|pnpm|yarn)\s+(?:(?:run\s+)?(?:test|lint|build|check))\b|cargo\s+(?:test|check|clippy)\b|go\s+test\b|git\s+(?:status|diff|log|show)\b)/i.test(command);
+}
+
 // v0.5.4a4 — phases that should activate the sidebar roadmap inspector.
 // Originally `autonomous_running` only (v0.5.3a3); extended to include
 // terminal phases so users can review the final state of completed /
@@ -182,6 +189,10 @@ class ResonantApp {
         // Subagent nesting
         this.subagentDepth = 0;
         this.subagentContainer = null;
+        this.agentActivities = new Map();
+        this.agentActivityOrder = [];
+        this.agentActivityStack = [];
+        this.contextState = null;
 
         // Preview panel state
         this.previewOpen = false;
@@ -203,6 +214,10 @@ class ResonantApp {
         // View state
         this.currentView = 'agents';
         this.settings = {};
+        this.promptInspector = null;
+        this.evaluationDashboard = null;
+        this.iterationCheckpoints = [];
+        this.checkpointComparison = null;
 
         // Per-turn agent run summary (Cursor-style card on session.end)
         this._agentRunSummary = { title: '', fileChanges: [], todos: null };
@@ -1104,6 +1119,9 @@ class ResonantApp {
             tab.addEventListener('click', () => {
                 this.switchPreviewPane(tab.dataset.pane);
             });
+        });
+        document.getElementById('context-cockpit-refresh')?.addEventListener('click', () => {
+            this.send({ command: 'get_context_state' });
         });
 
         // Plan-graph toolbar buttons
@@ -5126,6 +5144,7 @@ class ResonantApp {
                 }
                 break;
             case 'plan.event':
+                this.trackPlanAgentEvent(event);
                 if (window.PlanGraphView) {
                     window.PlanGraphView.applyEvent(event.event_payload || event);
                     this._markPlanTabUnread();
@@ -5302,6 +5321,37 @@ class ResonantApp {
                 }
                 this.renderSettingsView();
                 break;
+            case 'prompt_inspector':
+                this.promptInspector = event.data || null;
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'evaluation_dashboard':
+                this.evaluationDashboard = event.data || null;
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'evaluation_started':
+                this.showStatusMessage('Model evaluation started in the background');
+                this.send({ command: 'evaluation_list' });
+                break;
+            case 'checkpoint_list':
+                this.iterationCheckpoints = event.checkpoints || [];
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'checkpoint_comparison':
+                this.checkpointComparison = event.data || null;
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'checkpoint_restored':
+                this.showStatusMessage(`Checkpoint restored; failed state preserved on ${event.data?.recovery_branch || 'a recovery branch'}`);
+                this.send({ command: 'checkpoint_list' });
+                this.send({ command: 'git_status' });
+                break;
+            case 'autonomous_iteration_checkpoint':
+                this.showStatusMessage(`Saved recovery checkpoint for iteration ${event.iter_count}`);
+                break;
+            case 'autonomous_iteration_checkpoint_failed':
+                this.showStatusMessage(`Checkpoint unavailable: ${event.error || 'unknown error'}`);
+                break;
             case 'costs':
                 // Update cost display
                 break;
@@ -5319,6 +5369,10 @@ class ResonantApp {
                 break;
             case 'context.compression':
                 this.handleCompression(event);
+                break;
+            case 'context.state':
+                this.contextState = event;
+                this.renderContextCockpit();
                 break;
             case 'mcp_list':
                 this.mcpServers = event.servers || [];
@@ -6451,6 +6505,7 @@ class ResonantApp {
                 toolCounts: {},
                 callIdToItem: new Map(),
                 callCount: 0,
+                errorCount: 0,
             };
         }
 
@@ -6471,18 +6526,37 @@ class ResonantApp {
             desc = this.escapeHtml(args.pattern || '');
         } else if (name === 'grep') {
             desc = `'${this.escapeHtml(args.pattern || '')}'`;
+        } else if (name === 'bash') {
+            const command = String(args.command || '');
+            desc = `<code>${this.escapeHtml(command.length > 180 ? command.slice(0, 177) + '...' : command)}</code>`;
         } else {
             desc = this.escapeHtml(info.label);
         }
 
         const line = document.createElement('div');
-        line.className = 'tool-inline pending';
+        line.className = 'tool-inline evidence-item pending';
+        line.setAttribute('role', 'button');
+        line.setAttribute('tabindex', '0');
         line.innerHTML = `
             <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
             <span class="tool-desc">${desc}</span>
             <span class="tool-meta"></span>
             <span class="tool-status" style="color:var(--muted)">…</span>
         `;
+        const toggleOutput = () => {
+            if (!line.classList.contains('has-output')) return;
+            line.classList.toggle('show-output');
+            line.setAttribute(
+                'aria-expanded', line.classList.contains('show-output') ? 'true' : 'false'
+            );
+        };
+        line.addEventListener('click', toggleOutput);
+        line.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                toggleOutput();
+            }
+        });
         live.items.appendChild(line);
 
         const callId = callEvent.call_id || '';
@@ -6518,6 +6592,7 @@ class ResonantApp {
 
         const meta = resultEvent.metadata || {};
         const isError = resultEvent.is_error || false;
+        const output = String(resultEvent.output || '');
 
         let metaText = '';
         if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
@@ -6533,6 +6608,25 @@ class ResonantApp {
             statusEl.style.color = isError ? 'var(--err)' : 'var(--ok)';
         }
         line.classList.remove('pending');
+        if (output) {
+            const preview = document.createElement('pre');
+            preview.className = 'tool-evidence-output';
+            preview.textContent = output.length > 8000
+                ? output.slice(0, 8000) + '\n… output truncated in chat'
+                : output;
+            line.appendChild(preview);
+            line.classList.add('has-output');
+        }
+        if (isError) {
+            live.errorCount += 1;
+            line.classList.add('is-error', 'show-output');
+            const errorIcon = live.header.querySelector('.collapsed-icon');
+            if (errorIcon) errorIcon.textContent = '\u25be';
+            live.container.classList.add('has-errors', 'expanded');
+            const icon = live.header.querySelector('.collapsed-icon');
+            if (icon) icon.textContent = 'â–¾';
+        }
+        this._updateLiveCollapsedHeader();
     }
 
     /** Refresh the live group's summary label, step range, and call count. */
@@ -6543,7 +6637,22 @@ class ResonantApp {
         const metaEl = live.header.querySelector('.collapsed-meta');
         if (summaryEl) {
             const action = inferActionLabel(live.toolCounts);
+            summaryEl.textContent = live.errorCount
+                ? `Evidence · ${action} · ${live.errorCount} failed`
+                : `Evidence · ${action}`;
             summaryEl.textContent = `◆ ${action}`;
+        }
+        if (summaryEl) {
+            const action = inferActionLabel(live.toolCounts);
+            summaryEl.textContent = live.errorCount
+                ? `Evidence · ${action} · ${live.errorCount} failed`
+                : `Evidence · ${action}`;
+        }
+        if (summaryEl) {
+            const action = inferActionLabel(live.toolCounts);
+            const parts = ['Evidence', action];
+            if (live.errorCount) parts.push(`${live.errorCount} failed`);
+            summaryEl.textContent = parts.join(' \u00b7 ');
         }
         if (metaEl) {
             const stepMeta = live.firstStep === live.lastStep
@@ -6565,8 +6674,11 @@ class ResonantApp {
             const live = this._liveCollapsedGroup;
             live.container.classList.remove('running');
             live.container.classList.remove('expanded');
+            if (live.errorCount) live.container.classList.add('expanded');
             const icon = live.header && live.header.querySelector('.collapsed-icon');
+            if (icon && live.errorCount) icon.textContent = '\u25be';
             if (icon) icon.textContent = '▸';
+            if (icon) icon.textContent = live.errorCount ? '\u25be' : '\u25b8';
             this._liveCollapsedGroup = null;
         }
         this.collapsedGroup = [];
@@ -6923,7 +7035,7 @@ class ResonantApp {
             this.updateStepActionLabel();
         }
 
-        if (COLLAPSIBLE_TOOLS.has(name) && this.stepIsInlineOnly) {
+        if (shouldGroupAsEvidence(name, event.arguments || {}) && this.stepIsInlineOnly) {
             // Live-render into the running collapsed group + keep the data
             // buffer in sync (used by step.end / replay paths).
             this._appendToLiveCollapsedGroup(event);
@@ -6964,7 +7076,13 @@ class ResonantApp {
             return;
         }
 
-        if (this.stepIsInlineOnly && COLLAPSIBLE_TOOLS.has(name)) {
+        const liveOwnsResult = Boolean(
+            this._liveCollapsedGroup && (
+                (callId && this._liveCollapsedGroup.callIdToItem.has(callId))
+                || (this._liveCollapsedGroup._lastItemTool === name)
+            )
+        );
+        if (this.stepIsInlineOnly && liveOwnsResult) {
             // Update the live item with status + metadata (e.g. "5 matches")
             this._updateLiveCollapsedItemResult(event);
             this.stepToolResults.push(event);
@@ -7491,6 +7609,9 @@ class ResonantApp {
      */
     switchPreviewPane(pane) {
         const isPlan = pane === 'plan';
+        const isAgents = pane === 'agents';
+        const isContext = pane === 'context';
+        const isBrowser = !isPlan && !isAgents && !isContext;
         document.querySelectorAll('.preview-tab[data-pane]').forEach((t) => {
             t.classList.toggle('active', t.dataset.pane === pane);
         });
@@ -7498,16 +7619,22 @@ class ResonantApp {
         const browserViewport = document.getElementById('preview-viewport');
         const browserConsole = document.getElementById('preview-console');
         const planPane = document.getElementById('plan-graph-pane');
-        if (browserChrome) browserChrome.style.display = isPlan ? 'none' : '';
-        if (browserViewport) browserViewport.style.display = isPlan ? 'none' : '';
-        if (browserConsole) browserConsole.style.display = isPlan ? 'none' : '';
+        if (browserChrome) browserChrome.style.display = isBrowser ? '' : 'none';
+        if (browserViewport) browserViewport.style.display = isBrowser ? '' : 'none';
+        if (browserConsole) browserConsole.style.display = isBrowser ? '' : 'none';
         if (planPane) planPane.style.display = isPlan ? 'flex' : 'none';
+        const agentsPane = document.getElementById('agent-activity-pane');
+        if (agentsPane) agentsPane.style.display = isAgents ? 'flex' : 'none';
+        const contextPane = document.getElementById('context-cockpit-pane');
+        if (contextPane) contextPane.style.display = isContext ? 'flex' : 'none';
 
         // C2 — track the active pane so plan-event handlers can decide
         // whether to flash the unread-update indicator. Switching TO the
         // plan pane clears any pending indicator.
         this._currentPreviewPane = pane;
         if (isPlan) this._clearPlanTabUnread();
+        if (isAgents) this._clearAgentTabUnread();
+        if (isContext) this.send({ command: 'get_context_state' });
     }
 
     /**
@@ -7525,6 +7652,15 @@ class ResonantApp {
     _clearPlanTabUnread() {
         const tab = document.querySelector('.preview-tab[data-pane="plan"]');
         if (tab) tab.classList.remove('has-unread');
+    }
+
+    _markAgentTabUnread() {
+        if (this._currentPreviewPane === 'agents') return;
+        document.querySelector('.preview-tab[data-pane="agents"]')?.classList.add('has-unread');
+    }
+
+    _clearAgentTabUnread() {
+        document.querySelector('.preview-tab[data-pane="agents"]')?.classList.remove('has-unread');
     }
 
     /**
@@ -7663,6 +7799,12 @@ class ResonantApp {
         this.previewCurrentIndex = -1;
         this._previewUrl = '';
         this._previewTitle = '';
+        this.agentActivities.clear();
+        this.agentActivityOrder = [];
+        this.agentActivityStack = [];
+        this.contextState = null;
+        this.renderAgentActivityTree();
+        this.renderContextCockpit();
 
         // Reset viewport
         if (this.previewViewport) {
@@ -7742,6 +7884,8 @@ class ResonantApp {
                 break;
             case 'settings':
                 this.settingsView.style.display = 'flex';
+                this.send({ command: 'evaluation_list' });
+                this.send({ command: 'checkpoint_list' });
                 if (!this.settings || !Object.keys(this.settings).length) {
                     this.send({ command: 'get_settings' });
                 } else {
@@ -7755,6 +7899,12 @@ class ResonantApp {
 
     renderSettingsView() {
         if (!this.settingsBody) return;
+
+        const openSectionIds = new Set(
+            [...this.settingsBody.querySelectorAll('.settings-section.open')]
+                .map(element => element.dataset.settingsSection)
+                .filter(Boolean)
+        );
 
         const sections = [
             {
@@ -7822,6 +7972,15 @@ class ResonantApp {
                 ]
             },
             {
+                id: 'prompt_inspector', title: 'Active Prompt Inspector', custom: true,
+            },
+            {
+                id: 'model_evaluations', title: 'GLM / DeepSeek Evaluations', custom: true,
+            },
+            {
+                id: 'iteration_checkpoints', title: 'Iteration Checkpoints & Recovery', custom: true,
+            },
+            {
                 id: 'network', title: 'Network',
                 fields: [
                     // v0.4.0 — Ollama is the only backend. Default Mac Studio
@@ -7860,7 +8019,8 @@ class ResonantApp {
         for (const section of sections) {
             const data = this.settings[section.id] || {};
             const el = document.createElement('div');
-            el.className = `settings-section${section.open ? ' open' : ''}`;
+            el.className = `settings-section${section.open || openSectionIds.has(section.id) ? ' open' : ''}`;
+            el.dataset.settingsSection = section.id;
 
             let bodyHtml = '';
             if (section.id === 'rag') {
@@ -7882,6 +8042,94 @@ class ResonantApp {
                         <button class="btn-sm rag-force-btn" style="font-size:12px">Force Re-index</button>
                     </div>
                     <div class="settings-row" style="margin-top:4px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Index enables semantic file search for better context in prompts</span></div>
+                `;
+            } else if (section.id === 'prompt_inspector') {
+                const inspector = this.promptInspector;
+                if (!inspector) {
+                    bodyHtml = `
+                        <div class="settings-row"><span class="settings-row-label">Inspect the exact layered system prompt for the active model and session.</span></div>
+                        <div class="settings-row"><button class="btn-sm prompt-inspector-refresh">Load active prompt</button></div>
+                    `;
+                } else {
+                    const layers = (inspector.layers || []).map(layer => `
+                        <details class="prompt-layer">
+                            <summary><span>${this.escapeHtml(layer.label || layer.id)}</span><span>${layer.estimated_tokens || 0} est. tokens</span></summary>
+                            <pre>${this.escapeHtml(layer.content || '')}</pre>
+                        </details>
+                    `).join('');
+                    bodyHtml = `
+                        <div class="prompt-inspector-meta">
+                            <span class="prompt-profile-badge">${this.escapeHtml(inspector.profile || inspector.family || 'generic')}</span>
+                            <span>${this.escapeHtml(inspector.model || 'default model')}</span>
+                            <span>${inspector.estimated_tokens || 0} est. tokens</span>
+                            <span title="${this.escapeHtml(inspector.sha256 || '')}">${this.escapeHtml((inspector.sha256 || '').slice(0, 12))}</span>
+                            <button class="btn-sm prompt-inspector-refresh">Refresh</button>
+                        </div>
+                        <div class="prompt-layer-list">${layers}</div>
+                    `;
+                }
+            } else if (section.id === 'model_evaluations') {
+                const dashboard = this.evaluationDashboard || {};
+                const models = dashboard.models || [
+                    { label: 'glm', model: 'glm-5.2:cloud' },
+                    { label: 'pro', model: 'deepseek-v4-pro:cloud' },
+                ];
+                const specs = dashboard.specs || ['minimal'];
+                const records = dashboard.records || [];
+                const active = Boolean(dashboard.active_id);
+                const recordHtml = records.slice(0, 8).map(record => {
+                    const result = record.result || {};
+                    const rate = result.convergence_rate == null
+                        ? '' : `${Math.round(result.convergence_rate * 100)}% convergence`;
+                    const timing = result.total_elapsed_seconds || {};
+                    const median = timing.median == null ? '' : `${Number(timing.median).toFixed(1)}s median`;
+                    const baseline = record.baseline_diff;
+                    const delta = baseline?.delta_total_elapsed_median;
+                    const baselineText = baseline
+                        ? `${baseline.has_regressions ? 'Regression' : 'Baseline OK'}${delta == null ? '' : ` (${delta >= 0 ? '+' : ''}${Number(delta).toFixed(1)}s)`}`
+                        : 'No project baseline';
+                    return `
+                        <div class="evaluation-record status-${this.escapeHtml(record.status || 'unknown')}">
+                            <div class="evaluation-record-head">
+                                <strong>${this.escapeHtml(record.model_id || record.model_label || '')}</strong>
+                                <span>${this.escapeHtml(record.spec_name || '')} × ${record.n || 1}</span>
+                                <span class="evaluation-status">${this.escapeHtml(record.status || '')}</span>
+                            </div>
+                            <div class="evaluation-metrics">
+                                <span>${record.completed_runs || 0}/${record.n || 1} runs</span>
+                                ${rate ? `<span>${rate}</span>` : ''}
+                                ${median ? `<span>${median}</span>` : ''}
+                                <span>${this.escapeHtml(baselineText)}</span>
+                            </div>
+                            ${record.error ? `<div class="evaluation-error">${this.escapeHtml(record.error)}</div>` : ''}
+                        </div>
+                    `;
+                }).join('');
+                bodyHtml = `
+                    <div class="evaluation-controls">
+                        <label>Model<select class="settings-select evaluation-model">${models.map(item => `<option value="${this.escapeHtml(item.label)}">${this.escapeHtml(item.model)}</option>`).join('')}</select></label>
+                        <label>Spec<select class="settings-select evaluation-spec">${specs.map(name => `<option value="${this.escapeHtml(name)}">${this.escapeHtml(name)}</option>`).join('')}</select></label>
+                        <label>Runs<select class="settings-select evaluation-n"><option value="1">1 quick</option><option value="3">3 variance</option><option value="5">5 release</option></select></label>
+                        <button class="btn-sm evaluation-start" ${active ? 'disabled' : ''}>${active ? 'Evaluation running…' : 'Run evaluation'}</button>
+                    </div>
+                    <div class="settings-row-hint evaluation-hint">Runs use fresh temporary projects and the live Ollama models. Results persist under ~/.resonant/evaluations.</div>
+                    <div class="evaluation-records">${recordHtml || '<div class="settings-row"><span class="settings-row-label">No evaluations yet.</span></div>'}</div>
+                `;
+            } else if (section.id === 'iteration_checkpoints') {
+                const checkpoints = this.iterationCheckpoints || [];
+                const comparison = this.checkpointComparison;
+                bodyHtml = `
+                    <div class="settings-row-hint checkpoint-hint">Each autonomous iteration snapshots tracked and untracked work without moving HEAD. Restore first preserves the failed state on a resonant-recovery/* branch.</div>
+                    <div class="checkpoint-list">
+                        ${checkpoints.length ? checkpoints.map(item => `
+                            <div class="checkpoint-record">
+                                <div><strong>${this.escapeHtml((item.message || 'Iteration checkpoint').replace('Resonant checkpoint ', ''))}</strong><small>${this.escapeHtml(item.commit?.slice(0, 10) || '')} · ${this.escapeHtml(item.created_at || '')}</small></div>
+                                <button class="btn-sm checkpoint-compare" data-ref="${this.escapeHtml(item.ref)}">Compare</button>
+                                <button class="btn-sm checkpoint-restore" data-ref="${this.escapeHtml(item.ref)}">Restore</button>
+                            </div>
+                        `).join('') : '<div class="settings-row"><span class="settings-row-label">No iteration checkpoints yet.</span></div>'}
+                    </div>
+                    ${comparison ? `<div class="checkpoint-comparison"><strong>Changes since checkpoint</strong><pre>${this.escapeHtml(comparison.name_status || 'No changes')}</pre><pre>${this.escapeHtml(comparison.stat || '')}</pre></div>` : ''}
                 `;
             } else if (section.id === 'hooks') {
                 const hooks = Array.isArray(data) ? data : [];
@@ -8033,6 +8281,39 @@ class ResonantApp {
                 ragForceBtn.disabled = true;
             });
         }
+        this.settingsBody.querySelectorAll('.prompt-inspector-refresh').forEach(btn => {
+            btn.addEventListener('click', () => {
+                btn.disabled = true;
+                btn.textContent = 'Loading...';
+                this.send({ command: 'get_prompt_inspector' });
+            });
+        });
+        const evaluationStart = this.settingsBody.querySelector('.evaluation-start');
+        if (evaluationStart) {
+            evaluationStart.addEventListener('click', () => {
+                const model = this.settingsBody.querySelector('.evaluation-model')?.value || 'glm';
+                const spec = this.settingsBody.querySelector('.evaluation-spec')?.value || 'minimal';
+                const n = Number(this.settingsBody.querySelector('.evaluation-n')?.value || 1);
+                evaluationStart.disabled = true;
+                evaluationStart.textContent = 'Starting…';
+                this.send({ command: 'evaluation_start', model, spec, n });
+            });
+        }
+        this.settingsBody.querySelectorAll('.checkpoint-compare').forEach(btn => {
+            btn.addEventListener('click', () => {
+                btn.disabled = true;
+                this.send({ command: 'checkpoint_compare', ref: btn.dataset.ref });
+            });
+        });
+        this.settingsBody.querySelectorAll('.checkpoint-restore').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const ref = btn.dataset.ref;
+                if (!confirm('Restore this checkpoint? Your current files will be preserved on a resonant-recovery/* branch first.')) return;
+                btn.disabled = true;
+                btn.textContent = 'Restoring…';
+                this.send({ command: 'checkpoint_restore', ref });
+            });
+        });
     }
 
     // ── Menu Bar ──────────────────────────────────────────────
@@ -8872,12 +9153,188 @@ class ResonantApp {
 
     // ── Subagents ───────────────────────────────────────────────
 
+    handleCompression(event) {
+        const target = this.getRenderTarget?.() || this.chatMessages;
+        if (target) {
+            const banner = document.createElement('div');
+            banner.className = 'compression-banner';
+            banner.innerHTML = `
+                <span>Context compressed</span>
+                <span>${Number(event.old_tokens || 0).toLocaleString()} → ${Number(event.new_tokens || 0).toLocaleString()} est. tokens</span>
+            `;
+            target.appendChild(banner);
+            this.scrollToBottom();
+        }
+        this.send({ command: 'get_context_state' });
+    }
+
+    renderContextCockpit() {
+        const body = document.getElementById('context-cockpit-body');
+        if (!body) return;
+        const state = this.contextState;
+        if (!state) {
+            body.innerHTML = '<div class="agent-activity-empty">Context telemetry appears when a session starts.</div>';
+            return;
+        }
+        const total = Number(state.estimated_total_tokens || 0);
+        const windowTokens = Number(state.context_window || 0);
+        const threshold = Number(state.compression_threshold || 0);
+        const utilization = Math.max(0, Math.min(1, Number(state.utilization || 0)));
+        const pct = Math.round(utilization * 100);
+        const history = state.history || {};
+        const prompt = state.system_prompt || {};
+        const roles = Object.entries(history.role_tokens || {}).map(([role, tokens]) =>
+            `<span>${this.escapeHtml(role)} <strong>${Number(tokens).toLocaleString()}</strong></span>`
+        ).join('');
+        const sources = Object.entries(state.sources || {}).map(([name, data]) =>
+            `<span>${this.escapeHtml(name)} <strong>${Number(data.estimated_tokens || 0).toLocaleString()}</strong></span>`
+        ).join('');
+        const layers = (prompt.layers || []).map(layer => `
+            <div class="context-list-row"><span>${this.escapeHtml(layer.label || layer.id)}</span><strong>${Number(layer.estimated_tokens || 0).toLocaleString()}</strong></div>
+        `).join('');
+        const payloads = (state.largest_tool_payloads || []).map(item => `
+            <div class="context-list-row"><span>${this.escapeHtml(item.name || 'tool')} <small>#${item.index}</small></span><strong>${Number(item.estimated_tokens || 0).toLocaleString()}</strong></div>
+        `).join('');
+        const todos = state.todos || [];
+        body.innerHTML = `
+            <div class="context-hero">
+                <div><strong>${total.toLocaleString()}</strong><span>estimated tokens</span></div>
+                <div><strong>${windowTokens.toLocaleString()}</strong><span>effective window</span></div>
+                <div><strong>${Number(state.compression_count || 0)}</strong><span>compressions</span></div>
+            </div>
+            <div class="context-meter ${pct >= 75 ? 'is-warning' : ''}"><span style="width:${pct}%"></span></div>
+            <div class="context-meter-label"><span>${pct}% used</span><span>compress near ${threshold.toLocaleString()}</span></div>
+            <section class="context-card">
+                <h4>Composition</h4>
+                <div class="context-stat-chips">
+                    <span>system <strong>${Number(prompt.estimated_tokens || 0).toLocaleString()}</strong></span>
+                    <span>history <strong>${Number(history.estimated_tokens || 0).toLocaleString()}</strong></span>
+                    ${sources}
+                </div>
+                <div class="context-stat-chips">${roles || '<span>No history entries</span>'}</div>
+            </section>
+            <section class="context-card"><h4>Prompt layers</h4>${layers || '<div class="context-empty-row">No prompt layers</div>'}</section>
+            <section class="context-card"><h4>Largest tool payloads</h4>${payloads || '<div class="context-empty-row">No tool results</div>'}</section>
+            <section class="context-card"><h4>Durable task state</h4><div class="context-empty-row">${todos.length ? `${todos.filter(item => item.done).length}/${todos.length} todos complete` : 'No active todo ledger'}</div></section>
+        `;
+    }
+
+    trackPlanAgentEvent(event) {
+        const wrapped = event.event_payload || event;
+        const payload = wrapped.payload || {};
+        const nodeId = wrapped.node_id || '';
+        if (!nodeId || !['node.start', 'node.done'].includes(wrapped.kind)) return;
+        const id = `specialist:${event.intent_id || 'intent'}:${nodeId}`;
+        const existing = this.agentActivities.get(id) || {
+            id,
+            kind: 'specialist',
+            label: payload.specialization || 'specialist',
+            prompt: payload.goal || '',
+            parentId: '',
+            startedAt: (wrapped.ts || Date.now() / 1000) * 1000,
+        };
+        if (!this.agentActivities.has(id)) this.agentActivityOrder.push(id);
+        if (wrapped.kind === 'node.start') {
+            existing.status = 'running';
+            existing.label = payload.specialization || existing.label;
+            existing.prompt = payload.goal || existing.prompt;
+        } else {
+            existing.status = payload.status || 'done';
+            existing.finishedAt = (wrapped.ts || Date.now() / 1000) * 1000;
+            existing.handoff = payload.summary || payload.error || '';
+            existing.confidence = payload.confidence;
+            existing.verdict = payload.verdict || '';
+        }
+        this.agentActivities.set(id, existing);
+        this.renderAgentActivityTree();
+        this._markAgentTabUnread();
+    }
+
+    renderAgentActivityTree() {
+        const tree = document.getElementById('agent-activity-tree');
+        const count = document.getElementById('agent-activity-count');
+        const badge = document.getElementById('agents-tab-badge');
+        if (!tree) return;
+        const activities = this.agentActivityOrder
+            .map(id => this.agentActivities.get(id))
+            .filter(Boolean);
+        if (count) count.textContent = `${activities.length} worker${activities.length === 1 ? '' : 's'}`;
+        if (badge) {
+            badge.textContent = String(activities.filter(item => item.status === 'running').length || activities.length);
+            badge.style.display = activities.length ? '' : 'none';
+        }
+        if (!activities.length) {
+            tree.innerHTML = '<div class="agent-activity-empty">Sub-agents and specialists will appear here.</div>';
+            const detail = document.getElementById('agent-handoff-detail');
+            if (detail) detail.style.display = 'none';
+            return;
+        }
+        tree.innerHTML = activities.map(item => {
+            const depth = item.parentId ? 1 : 0;
+            const elapsed = item.finishedAt && item.startedAt
+                ? `${((item.finishedAt - item.startedAt) / 1000).toFixed(1)}s`
+                : item.status === 'running' ? 'live' : '';
+            return `
+                <button class="agent-activity-node status-${this.escapeHtml(item.status || 'queued')}" data-activity-id="${this.escapeHtml(item.id)}" style="--agent-depth:${depth}">
+                    <span class="agent-activity-state"></span>
+                    <span class="agent-activity-main">
+                        <strong>${this.escapeHtml(item.label || item.kind || 'worker')}</strong>
+                        <small>${this.escapeHtml((item.prompt || '').slice(0, 90) || item.kind || '')}</small>
+                    </span>
+                    <span class="agent-activity-elapsed">${this.escapeHtml(elapsed)}</span>
+                </button>
+            `;
+        }).join('');
+        tree.querySelectorAll('.agent-activity-node').forEach(node => {
+            node.addEventListener('click', () => this.showAgentHandoff(node.dataset.activityId));
+        });
+    }
+
+    showAgentHandoff(id) {
+        const item = this.agentActivities.get(id);
+        const detail = document.getElementById('agent-handoff-detail');
+        if (!item || !detail) return;
+        const metadata = [
+            item.status,
+            item.steps != null ? `${item.steps} steps` : '',
+            item.confidence != null ? `${Math.round(item.confidence * 100)}% confidence` : '',
+            item.verdict || '',
+        ].filter(Boolean).join(' · ');
+        detail.innerHTML = `
+            <div class="agent-handoff-header">
+                <strong>${this.escapeHtml(item.label || 'Worker')}</strong>
+                <button class="agent-handoff-close" type="button" aria-label="Close handoff">×</button>
+            </div>
+            <div class="agent-handoff-meta">${this.escapeHtml(metadata)}</div>
+            ${item.prompt ? `<div class="agent-handoff-section"><span>Assignment</span><pre>${this.escapeHtml(item.prompt)}</pre></div>` : ''}
+            <div class="agent-handoff-section"><span>Handoff</span><pre>${this.escapeHtml(item.handoff || 'No handoff was returned.')}</pre></div>
+        `;
+        detail.style.display = 'block';
+        detail.querySelector('.agent-handoff-close')?.addEventListener('click', () => {
+            detail.style.display = 'none';
+        });
+    }
+
     handleSubagentStart(event) {
         this.removeThinking();
         this.ensureStepRendered();
 
         const agentType = event.agent_type || '';
         const prompt = event.prompt || '';
+        const activityId = `task:${event.call_id || Date.now()}`;
+        this.agentActivities.set(activityId, {
+            id: activityId,
+            kind: 'subagent',
+            label: agentType || 'task',
+            prompt,
+            parentId: this.agentActivityStack.at(-1) || '',
+            status: 'running',
+            startedAt: Date.now(),
+        });
+        this.agentActivityOrder.push(activityId);
+        this.agentActivityStack.push(activityId);
+        this.renderAgentActivityTree();
+        this._markAgentTabUnread();
         const display = prompt.length > 100 ? prompt.slice(0, 97) + '...' : prompt;
 
         const el = document.createElement('div');
@@ -8920,6 +9377,18 @@ class ResonantApp {
         const agentType = event.agent_type || '';
         const steps = event.steps || 0;
         const elapsed = event.elapsed || 0;
+        const activityId = `task:${event.call_id || ''}`;
+        const activity = this.agentActivities.get(activityId);
+        if (activity) {
+            activity.status = 'done';
+            activity.steps = steps;
+            activity.finishedAt = activity.startedAt + elapsed * 1000;
+            activity.handoff = event.result || event.result_preview || '';
+            this.agentActivities.set(activityId, activity);
+            this.agentActivityStack = this.agentActivityStack.filter(id => id !== activityId);
+            this.renderAgentActivityTree();
+            this._markAgentTabUnread();
+        }
 
         // Find the current subagent block and add result footer
         if (this.subagentContainer) {

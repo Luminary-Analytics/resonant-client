@@ -30,8 +30,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-import pytest
-
 from resonant_client.gui import roadmap as roadmap_module
 from resonant_client.gui.autonomous_loop import (
     AutonomousMissionConfig,
@@ -105,6 +103,7 @@ def _make_hooks(
     roadmap_path: Optional[Path] = None,
     bash_runner: Optional[BashRunner] = None,
     vision_runner: Optional[VisionRunner] = None,
+    checkpoint_hook=None,
 ) -> DaemonHooks:
     """Build a DaemonHooks with simple stubs. Each stub records its
     invocation in `tracker` so tests can assert the right calls
@@ -181,6 +180,7 @@ def _make_hooks(
         validate_sha=validate_sha,
         run_full_reflect=run_full_reflect,
         check_context_factory=check_context_factory,
+        checkpoint_hook=checkpoint_hook,
     )
 
 
@@ -508,6 +508,38 @@ class TestIterationHappyPath:
         assert "autonomous_iteration_complete" in kinds
         assert "autonomous_reflection" in kinds
         assert kinds[-1] == "autonomous_mission_complete"
+
+    def test_creates_checkpoint_before_iteration_dispatch(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "checkpoint me", "")],
+            criteria=[("bash", "`ok` exits 0")],
+        )
+        tracker = _StubCallTracker()
+        calls = []
+
+        def checkpoint_hook(**kwargs):
+            calls.append(kwargs)
+            return {"ref": "refs/resonant/checkpoints/test/0001", "commit": "abc"}
+
+        hooks = _make_hooks(
+            tracker,
+            checkpoint_hook=checkpoint_hook,
+            bash_runner=BashRunner(_run=lambda *args, **kwargs: (0, "ok", "")),
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        assert calls == [{
+            "intent_id": "test-intent",
+            "iteration": 1,
+            "item_id": "T1.1",
+        }]
+        kinds = [event["event"] for event in events]
+        assert kinds.index("autonomous_iteration_checkpoint") < kinds.index(
+            "autonomous_iteration_started"
+        )
 
 
 # ── Failed iteration ────────────────────────────────────────────────────
@@ -922,6 +954,67 @@ class TestPureBashConvergence:
         assert complete[0]["stop_reason"] == "satisfied"
 
 
+class TestAcceptanceRepairItems:
+    def test_failed_criterion_becomes_deduplicated_repair_work(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[],
+            criteria=[("bash", "`repair-check` exits 0")],
+        )
+        tracker = _StubCallTracker()
+
+        def fail_until_repair_dispatched(cmd, **kw):
+            if tracker.dispatched_items:
+                return (0, "fixed\n", "")
+            return (1, "", "still broken\n")
+
+        hooks = _make_hooks(
+            tracker,
+            roadmap_path=path,
+            bash_runner=BashRunner(_run=fail_until_repair_dispatched),
+        )
+        daemon, events = _make_daemon(path, hooks)
+
+        _run_daemon_to_completion(daemon)
+
+        repair_events = _events_of_kind(
+            events, "autonomous_repair_items_added"
+        )
+        assert len(repair_events) == 1
+        assert repair_events[0]["count"] == 1
+        assert len(tracker.dispatched_items) == 1
+        assert tracker.dispatched_items[0].startswith("T1.")
+
+        complete = _events_of_kind(events, "autonomous_mission_complete")
+        assert len(complete) == 1
+        assert complete[0]["stop_reason"] == "satisfied"
+
+        persisted = roadmap_module.load(path)
+        assert len(persisted.items) == 1
+        assert persisted.items[0].checked is True
+        assert "acceptance-repair:" in persisted.items[0].description
+
+    def test_existing_repair_marker_prevents_duplicate(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[],
+            criteria=[("bash", "`repair-check` exits 0")],
+        )
+        tracker = _StubCallTracker()
+        hooks = _make_hooks(tracker)
+        daemon, _ = _make_daemon(path, hooks)
+        rm = roadmap_module.load(path)
+        rm.acceptance_criteria[0].passed = False
+        rm.acceptance_criteria[0].evidence = "exit=1"
+
+        first = daemon._ensure_acceptance_repair_items(rm)
+        second = daemon._ensure_acceptance_repair_items(rm)
+
+        assert len(first) == 1
+        assert second == []
+        assert len(rm.items) == 1
+
+
 # ── State snapshot ──────────────────────────────────────────────────────
 
 
@@ -1119,8 +1212,6 @@ class TestAtomicTerminalStateTransition:
         rm = roadmap_module.load(path)
         rm.status = "complete"
         roadmap_module.save(rm, path)
-        mtime_before = path.stat().st_mtime_ns
-
         tracker = _StubCallTracker()
         hooks = _make_hooks(
             tracker,

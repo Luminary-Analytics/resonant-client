@@ -51,14 +51,11 @@ Ollama or a live shell to verify the dispatch logic.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
-import shlex
 import subprocess
-import time
-from dataclasses import dataclass, field
-from typing import Callable, Optional, Protocol
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 from ..gui.roadmap import AcceptanceCriterion
 

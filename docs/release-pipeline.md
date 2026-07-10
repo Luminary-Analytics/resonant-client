@@ -41,7 +41,7 @@ End-to-end runtime: ~3-5 minutes on `windows-latest` GitHub-hosted runner.
   │  on: push.tags: ['v*.*.*']                                   │
   │                                                               │
   │  1. Checkout main + verify tag matches __version__            │
-  │  2. pip install -e ".[gui,desktop,claude,openai]"             │
+  │  2. pip install -e ".[gui,desktop]"                           │
   │  3. PyInstaller build (packaging/resonant.spec)               │
   │  4. Smoke test: resonant.exe --version                        │
   │  5. Inno Setup compile (packaging/installer.iss)              │
@@ -97,7 +97,6 @@ End-to-end runtime: ~3-5 minutes on `windows-latest` GitHub-hosted runner.
 **Bundled deps (auto-detected):**
 - Core: `rich`, `prompt-toolkit`, `httpx`
 - GUI server: `starlette`, `uvicorn`, `jinja2`, `websockets`
-- Backend SDKs: `anthropic`, `openai`
 - Desktop tools: `pyautogui`, `mss`, `Pillow` (for screenshot/click/type)
 
 **Bundled deps (explicit hidden imports):**
@@ -271,7 +270,7 @@ python packaging/update_appcast.py \
 | 2 | Extract version from tag | Strip `refs/tags/v` prefix → `version` output | <1 sec |
 | 3 | Sanity check — tag matches `__version__` | Read `resonant_client/__init__.py`, abort if mismatch | <1 sec |
 | 4 | Set up Python | `actions/setup-python@v5` Python 3.13 + pip cache | ~10 sec |
-| 5 | Install build dependencies | `pip install -e ".[gui,desktop,claude,openai]"` + pyinstaller | ~60-90 sec (first run); ~30 sec cached |
+| 5 | Install build dependencies | `pip install -e ".[gui,desktop]"` + pyinstaller | ~60-90 sec (first run); ~30 sec cached |
 | 6 | Build PyInstaller bundle | `pyinstaller packaging/resonant.spec --clean --noconfirm` | ~60-90 sec |
 | 7 | Smoke-test bundled exe | `resonant.exe --version` must match | <1 sec |
 | 8 | Build installer with Inno Setup | `ISCC.exe /DAppVersion=X.Y.Z packaging/installer.iss` | ~40 sec |

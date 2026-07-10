@@ -144,6 +144,30 @@ class TestBuildRoadmapFromSpec:
         loaded = roadmap_module.load(path)
         assert len(loaded.acceptance_criteria) == 4
 
+    def test_wrapped_refined_intent_survives_item_round_trip(self, tmp_path):
+        spec = """\
+## Final spec
+
+**Refined intent:** Create `hello.txt` at the project
+root containing exactly `hello world` followed by a newline.
+
+**Time budget:** 1h
+
+**Acceptance criteria:**
+- `[bash]` `test -f hello.txt` exits 0
+"""
+        _, path = build_roadmap_from_spec(
+            feature="minimal",
+            intent_id="wrapped-intent",
+            spec_markdown=spec,
+            project_path=str(tmp_path),
+        )
+
+        loaded = roadmap_module.load(path)
+        description = loaded.items[0].description
+        assert "exactly `hello world` followed by a newline" in description
+        assert "\n" not in description
+
     def test_default_path_under_dot_resonant(self, tmp_path):
         _, path = build_roadmap_from_spec(
             feature="x",
@@ -357,6 +381,18 @@ class TestSeedItemFromIntent:
         title, desc = _seed_item_from_intent("", "Add /export command")
         assert "export" in title.lower()
         assert desc == "Add /export command"
+
+    def test_collapses_wrapped_description_without_losing_content(self):
+        title, desc = _seed_item_from_intent(
+            "Create hello.txt at the project\n"
+            "root containing exactly hello world.",
+            "fallback feature",
+        )
+        assert "\n" not in desc
+        assert desc == (
+            "Create hello.txt at the project root containing exactly hello world."
+        )
+        assert "hello.txt" in title
 
     def test_default_when_both_empty(self):
         title, desc = _seed_item_from_intent("", "")

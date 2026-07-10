@@ -13,7 +13,6 @@ Similar to Claude Code's hook system:
 import logging
 import os
 import subprocess
-import sys
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional

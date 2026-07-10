@@ -159,7 +159,7 @@ def exec_process_list(args: dict, start: float) -> ToolResult:
     if not rows:
         text = "No processes match." if name_filter else "No processes."
     else:
-        lines = [f"PID      MEM(MB)   NAME                          CMD"]
+        lines = ["PID      MEM(MB)   NAME                          CMD"]
         for r in rows[:80]:
             lines.append(
                 f"{(r['pid'] or 0):<8} {r['memory_mb']:<9} {(r['name'] or '')[:30]:<30}  {r['cmdline_short']}"

@@ -15,17 +15,14 @@ warrant always-on collection.
 """
 from __future__ import annotations
 
-import io
 import json
 import logging
-import os
 import platform
 import re
 import sys
 import time
 import zipfile
 from pathlib import Path
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -137,15 +134,15 @@ def _meta_text(version: str, resonant_dir: Path) -> str:
             settings_blob = "(settings.json unreadable)"
 
     lines = [
-        f"# Resonant Client diagnostics",
-        f"",
+        "# Resonant Client diagnostics",
+        "",
         f"version: {version}",
         f"python: {sys.version.split()[0]}",
         f"platform: {platform.platform()}",
         f"timestamp: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}",
-        f"",
-        f"# settings.json (redacted)",
-        f"",
+        "",
+        "# settings.json (redacted)",
+        "",
         settings_blob or "(no settings.json on disk)",
     ]
     return "\n".join(lines)

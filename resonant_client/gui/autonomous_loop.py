@@ -55,6 +55,7 @@ build hooks from lambdas.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -193,6 +194,7 @@ class DaemonHooks:
     # `run_curation` from `orchestration/`.
     extract_skill_hook: Optional[Callable[..., Any]] = None
     queue_curation_hook: Optional[Callable[[str], None]] = None
+    checkpoint_hook: Optional[Callable[..., dict]] = None
 
 
 # ── Configuration ───────────────────────────────────────────────────────
@@ -609,6 +611,12 @@ class AutonomousMissionDaemon:
                         # guide.
                         rm_post = self._load_roadmap()
                         if rm_post.next_unchecked_item() is None:
+                            repair_items = self._ensure_acceptance_repair_items(
+                                rm_post
+                            )
+                            if repair_items:
+                                self._tick_pause_or_stop()
+                                continue
                             self._emit_stop(
                                 "stuck",
                                 "roadmap empty but acceptance criteria "
@@ -740,6 +748,26 @@ class AutonomousMissionDaemon:
         """
         self._iter_count += 1
         started = time.time()
+
+        if self.hooks.checkpoint_hook is not None:
+            try:
+                checkpoint = self.hooks.checkpoint_hook(
+                    intent_id=self.config.intent_id,
+                    iteration=self._iter_count,
+                    item_id=item.id,
+                )
+                self._emit("autonomous_iteration_checkpoint", {
+                    "iter_count": self._iter_count,
+                    "item_id": item.id,
+                    "checkpoint": checkpoint,
+                })
+            except Exception as exc:
+                logger.warning("iteration checkpoint failed: %s", exc)
+                self._emit("autonomous_iteration_checkpoint_failed", {
+                    "iter_count": self._iter_count,
+                    "item_id": item.id,
+                    "error": str(exc),
+                })
 
         self._emit("autonomous_iteration_started", {
             "iter_count": self._iter_count,
@@ -1002,7 +1030,7 @@ class AutonomousMissionDaemon:
         # Deterministic prelude.
         try:
             ctx = self.hooks.check_context_factory(rm)
-        except Exception as exc:
+        except Exception:
             logger.exception("check_context_factory raised")
             ctx = CheckContext()  # degraded fallback
         pass_result = run_reflect_pass(rm, ctx)
@@ -1312,6 +1340,77 @@ class AutonomousMissionDaemon:
                 )
 
         return outcome
+
+    def _ensure_acceptance_repair_items(
+        self, rm: Roadmap
+    ) -> list[RoadmapItem]:
+        """Turn definitive acceptance failures into actionable work.
+
+        REFLECT is encouraged to add follow-up work, but a malformed or
+        underspecified model response must not strand an autonomous mission
+        with a red criterion and an empty roadmap.  We synthesize one stable,
+        deduplicated repair item for each blocking criterion that actually
+        failed.  Pending/manual checks remain human/model concerns and do not
+        produce speculative work.
+        """
+        existing_text = "\n".join(
+            f"{item.title}\n{item.description}" for item in rm.items
+        )
+        added: list[RoadmapItem] = []
+        criteria_payload: list[dict[str, str]] = []
+
+        for criterion in rm.acceptance_criteria:
+            if not criterion.is_blocking or criterion.passed is not False:
+                continue
+
+            digest = hashlib.sha256(
+                f"{criterion.type}\0{criterion.text}".encode("utf-8")
+            ).hexdigest()[:12]
+            marker = f"acceptance-repair:{digest}"
+            if marker in existing_text:
+                continue
+
+            evidence = criterion.evidence.strip() or "No evidence was recorded."
+            description = (
+                f"[{marker}] Fix the failing [{criterion.type}] acceptance "
+                f"criterion: {criterion.text}. Last evidence: {evidence}"
+            )
+            item = roadmap_module.add_item(
+                rm,
+                tier=1,
+                title=f"Repair failed [{criterion.type}] acceptance criterion",
+                description=description,
+                source_iter=self._iter_count,
+            )
+            added.append(item)
+            existing_text += f"\n{item.title}\n{item.description}"
+            criteria_payload.append({
+                "item_id": item.id,
+                "type": criterion.type,
+                "criterion": criterion.text,
+                "evidence": evidence[:500],
+                "marker": marker,
+            })
+
+        if not added:
+            return []
+
+        try:
+            roadmap_module.save(rm, self.config.roadmap_path)
+        except Exception:
+            logger.exception("Failed to persist acceptance repair items")
+            return []
+
+        self._emit("autonomous_repair_items_added", {
+            "iter_count": self._iter_count,
+            "count": len(added),
+            "items": criteria_payload,
+        })
+        logger.info(
+            "Synthesized %d deterministic acceptance repair item(s)",
+            len(added),
+        )
+        return added
 
     # ── Internal helpers ──────────────────────────────────────────
 

@@ -42,6 +42,7 @@ def test_retrieved_context_is_stable_across_tool_steps(tmp_path):
 
     assert len(backend.full_instructions) == 2
     assert all("PINNED MEMORY" in value for value in backend.full_instructions)
+    assert all("MODEL PROFILE: DEEPSEEK" in value for value in backend.full_instructions)
     assert backend.full_instructions[0] == backend.full_instructions[1]
 
 

@@ -40,6 +40,7 @@ from ..backends import (
     resolve_codex_cli_path,
 )
 from ..engine import Session, AGENT_TOOLS
+from ..engine.session import inspect_system_instructions
 from ..network_defaults import default_thinking_for_model, resolve_ollama_url
 from .sessions import ProjectManager
 from .settings import SettingsManager
@@ -50,6 +51,7 @@ from .project_instructions import (
     load_project_instructions,
 )
 from .runtime import BackendSpec
+from .evaluation_dashboard import EvaluationManager
 from ..harness import EvaluatorReport, HarnessWorkspace, HarnessOrchestrator, HarnessService
 from ..orchestration import IntentService
 from .autonomous_session import (
@@ -171,6 +173,7 @@ class AppState:
         self._project_instructions: str | None = None
         self._ws_ref = None
         self._ws_loop = None
+        self.evaluations = EvaluationManager(on_event=self._push_ws_event)
         # Extension systems
         self.hook_runner = HookRunner(self.settings)
         self.mcp_manager = MCPManager(self.settings)
@@ -206,6 +209,17 @@ class AppState:
         )
         self.refresh_network_defaults()
         self.apply_project_context(self.project.project_path, refresh_index=True)
+
+    def _push_ws_event(self, payload: dict) -> None:
+        """Best-effort thread-safe delivery for background GUI services."""
+        ws = self._ws_ref
+        loop = self._ws_loop
+        if ws is None or loop is None:
+            return
+        try:
+            asyncio.run_coroutine_threadsafe(ws.send_json(payload), loop)
+        except Exception:
+            logger.debug("background websocket event failed", exc_info=True)
 
     def _migrate_stale_defaults(self) -> None:
         """
@@ -7172,6 +7186,99 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "model_telemetry", "data": data})
                 else:
                     await ws.send_json({"event": "model_telemetry", "data": {"error": "no Ollama backend"}})
+
+            elif command == "get_prompt_inspector":
+                session = state.session
+                model_name = (
+                    getattr(state.backend, "model", "")
+                    or getattr(state.backend_spec, "model", "")
+                    or state.settings.get("general", "default_model", "")
+                )
+                data = inspect_system_instructions(
+                    plan_mode=bool(getattr(session, "plan_mode", False)),
+                    project_instructions=getattr(session, "project_instructions", None),
+                    working_directory=state.project.project_path,
+                    model_name=model_name,
+                    prompt_role=getattr(session, "prompt_role", "primary"),
+                    role_instructions=getattr(session, "role_instructions", None),
+                )
+                await ws.send_json({"event": "prompt_inspector", "data": data})
+
+            elif command == "get_context_state":
+                data = state.session.context_snapshot() if state.session else {
+                    "model": "",
+                    "context_window": 0,
+                    "estimated_total_tokens": 0,
+                    "utilization": 0,
+                    "history": {"entries": 0, "estimated_tokens": 0},
+                    "system_prompt": {"estimated_tokens": 0, "layers": []},
+                    "sources": {},
+                    "largest_tool_payloads": [],
+                    "todos": [],
+                    "compression_count": 0,
+                }
+                await ws.send_json({"event": "context.state", **data})
+
+            elif command == "checkpoint_list":
+                try:
+                    from ..orchestration.checkpoints import IterationCheckpointStore
+                    store = IterationCheckpointStore(state.project.project_path)
+                    await ws.send_json({
+                        "event": "checkpoint_list",
+                        "checkpoints": store.list(),
+                    })
+                except Exception as exc:
+                    await ws.send_json({
+                        "event": "checkpoint_list",
+                        "checkpoints": [],
+                        "error": str(exc),
+                    })
+
+            elif command == "checkpoint_compare":
+                try:
+                    from ..orchestration.checkpoints import IterationCheckpointStore
+                    store = IterationCheckpointStore(state.project.project_path)
+                    data = await asyncio.get_event_loop().run_in_executor(
+                        None, store.compare, str(msg.get("ref") or "")
+                    )
+                    await ws.send_json({"event": "checkpoint_comparison", "data": data})
+                except Exception as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+
+            elif command == "checkpoint_restore":
+                try:
+                    if state.active_thread and state.active_thread.is_alive():
+                        raise RuntimeError("Stop the active agent before restoring a checkpoint")
+                    from ..orchestration.checkpoints import IterationCheckpointStore
+                    store = IterationCheckpointStore(state.project.project_path)
+                    data = await asyncio.get_event_loop().run_in_executor(
+                        None, store.restore, str(msg.get("ref") or "")
+                    )
+                    await ws.send_json({"event": "checkpoint_restored", "data": data})
+                except Exception as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+
+            elif command == "evaluation_list":
+                await ws.send_json({
+                    "event": "evaluation_dashboard",
+                    "data": state.evaluations.snapshot(),
+                })
+
+            elif command == "evaluation_start":
+                try:
+                    record = state.evaluations.start(
+                        model_label=str(msg.get("model") or "glm"),
+                        spec_name=str(msg.get("spec") or "minimal"),
+                        n=int(msg.get("n") or 1),
+                        timeout_minutes=int(msg.get("timeout_minutes") or 25),
+                        project_path=state.project.project_path,
+                    )
+                    await ws.send_json({
+                        "event": "evaluation_started",
+                        "record": record,
+                    })
+                except (TypeError, ValueError, RuntimeError) as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
 
             elif command == "set_thinking_mode":
                 # Per-session thinking-mode toggle (deepseek-v* etc.).

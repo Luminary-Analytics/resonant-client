@@ -309,11 +309,10 @@ class LocalSpecialistRunner:
                     node.working_subdir,
                 )
 
-        system_prompt = assemble_system_prompt(
+        role_prompt = assemble_system_prompt(
             specialization=node.specialization,
             node_goal=node.goal,
             intent=graph.intent,
-            project_conventions=self.project_instructions,
             extra_context=self._build_context_from_deps(node, graph),
         )
         allowed = filter_tools_for_specialist(node.specialization, self.all_tools)
@@ -329,7 +328,9 @@ class LocalSpecialistRunner:
             backend=backend_for_call,
             auto_approve=True,
             allowed_tools=allowed,
-            project_instructions=system_prompt,
+            project_instructions=self.project_instructions,
+            role_instructions=role_prompt,
+            prompt_role="specialist",
             cancel_event=self.cancel_event,
         )
         session.project_path = effective_path

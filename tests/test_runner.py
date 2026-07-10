@@ -441,7 +441,8 @@ def test_dep_summaries_passed_as_context():
     captured: dict = {}
 
     def fake_init(self, backend, **kwargs):
-        captured["project_instructions"] = kwargs.get("project_instructions")
+        captured["role_instructions"] = kwargs.get("role_instructions")
+        captured["prompt_role"] = kwargs.get("prompt_role")
         self.backend = backend
         self._cancel_event = threading.Event()
         self.project_path = None
@@ -455,7 +456,8 @@ def test_dep_summaries_passed_as_context():
          patch("resonant_client.orchestration.runner.Session.run", fake_run):
         runner(child, g)
 
-    sys_prompt = captured["project_instructions"]
+    sys_prompt = captured["role_instructions"]
+    assert captured["prompt_role"] == "specialist"
     assert "research X" in sys_prompt
     assert "prefers-color-scheme" in sys_prompt
 

@@ -25,7 +25,7 @@ from resonant_client.smoke import (
     render_variance_markdown,
     summarize_runs,
 )
-from resonant_client.smoke.cli import build_parser
+from resonant_client.smoke.cli import _print_run_result, build_parser
 from resonant_client.smoke.flaky import (
     _MALFORMED_PLANNER_RESPONSE,
     _PLANNER_PROMPT_SIGNATURES,
@@ -265,6 +265,15 @@ class TestVarianceReport:
 
 
 class TestCLIParser:
+    def test_failure_result_is_safe_for_ascii_windows_console(self, capsys):
+        result = _make_result(verdict="failed", stop_reason="acceptance_failed")
+
+        _print_run_result(result)
+
+        output = capsys.readouterr().out
+        output.encode("ascii")
+        assert "FAIL" in output
+
     def test_list_specs_subcommand_parses(self):
         parser = build_parser()
         args = parser.parse_args(["list-specs"])

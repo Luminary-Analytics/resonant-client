@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "max_total_bytes": 157286400,
+  "max_file_count": 400,
+  "required_globs": [
+    "resonant.exe",
+    "_internal/WinSparkle.dll",
+    "_internal/resonant_client/gui/templates/index.html",
+    "_internal/resonant_client/gui/static/app.js",
+    "_internal/resonant_client/gui/static/styles.css"
+  ],
+  "forbidden_path_components": [
+    "anthropic",
+    "openai",
+    "playwright",
+    "numpy",
+    "pandas",
+    "scipy",
+    "cv2"
+  ]
+}

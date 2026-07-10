@@ -81,9 +81,14 @@ def _activity_phases(events):
     ]
 
 
-def _wait_for_event(events, kind, timeout=2.0):
+def _wait_for_event(events, kind, timeout=5.0):
     """Spin-wait for the first event of `kind`; return True if it
-    landed in time, False on timeout."""
+    landed in time, False on timeout.
+
+    The full suite uses many xdist workers. On a loaded Windows runner the
+    daemon thread can spend more than two seconds waiting to be scheduled,
+    even though the decision event itself is immediate once it runs.
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         if any(e.get("event") == kind for e in events):

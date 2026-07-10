@@ -23,7 +23,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterator, Optional
+from typing import Callable, Optional
 
 from .plan_graph import (
     NodeSpecialization,

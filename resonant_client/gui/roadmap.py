@@ -45,7 +45,7 @@ import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
+from typing import Iterator, Optional
 
 
 # ── Type tags for acceptance criteria ──────────────────────────────────
@@ -515,11 +515,27 @@ def _format_item(item: RoadmapItem) -> str:
     suffix = ""
     if item.checked and item.commit_sha:
         if item.note:
-            suffix = f" *(shipped at `{item.commit_sha}`: {item.note})*"
+            suffix = (
+                f" *(shipped at `{item.commit_sha}`: "
+                f"{_inline_item_text(item.note)})*"
+            )
         else:
             suffix = f" *(shipped at `{item.commit_sha}`)*"
-    desc = f" {item.description}".rstrip() if item.description else ""
-    return f"- {box} **{item.id} — {item.title}.**{desc}{suffix}"
+    title = _inline_item_text(item.title)
+    description = _inline_item_text(item.description)
+    desc = f" {description}" if description else ""
+    return f"- {box} **{item.id} — {title}.**{desc}{suffix}"
+
+
+def _inline_item_text(value: str) -> str:
+    """Collapse roadmap item fields to the writer's one-line grammar.
+
+    Item parsing is intentionally line-oriented. Allowing a wrapped grill
+    intent or model-authored description through here makes the continuation
+    disappear on the next load, silently stripping requirements from the
+    specialist goal. Normalize at the canonical writer/mutation boundary.
+    """
+    return re.sub(r"\s+", " ", value or "").strip()
 
 
 def _format_criterion(c: AcceptanceCriterion) -> str:
@@ -610,7 +626,11 @@ def add_item(
         full_desc = f"*(added in iteration {source_iter})*"
 
     new_id = f"T{tier}.{next_suffix}"
-    item = RoadmapItem.from_id(new_id, title=title, description=full_desc)
+    item = RoadmapItem.from_id(
+        new_id,
+        title=_inline_item_text(title),
+        description=_inline_item_text(full_desc),
+    )
     rm.items.append(item)
     return item
 

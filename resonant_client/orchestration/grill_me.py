@@ -23,7 +23,6 @@ Inspired by https://github.com/mattpocock/skills/blob/main/skills/productivity/g
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path

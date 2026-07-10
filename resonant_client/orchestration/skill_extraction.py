@@ -13,7 +13,7 @@ import re
 import time
 from typing import Optional
 
-from .plan_graph import NodeStatus, PlanGraph, PlanNode
+from .plan_graph import NodeStatus, PlanGraph
 from .skills import DEFAULT_SCOPE, Skill, save_skill, tokenize
 
 

@@ -203,16 +203,20 @@ AGENT_TOOLS = [
             "name": "task",
             "description": (
                 "Spawn a sub-agent to handle a subtask independently. The sub-agent gets its "
-                "own context window and runs to completion, then returns its result. Use 'explore' "
-                "for fast read-only codebase searches, 'plan' for analysis without modification, "
-                "'build' for tasks that require writing/editing code."
+                "own context window and runs to completion, then returns a structured handoff. "
+                "Use 'explore' for fast read-only codebase searches, 'plan' for analysis without "
+                "modification, and 'build' for isolated writing/editing work. Delegate only a "
+                "bounded, non-duplicative assignment; the parent must review and integrate it."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "prompt": {
                         "type": "string",
-                        "description": "Clear description of the task for the sub-agent"
+                        "description": (
+                            "Complete assignment contract: objective, read/write scope, relevant "
+                            "context, constraints, expected evidence, and return format"
+                        )
                     },
                     "agent_type": {
                         "type": "string",

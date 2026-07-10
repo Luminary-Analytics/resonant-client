@@ -29,10 +29,9 @@ import logging
 import re
 import time
 from importlib import resources
-from pathlib import Path
 from typing import Iterator
 
-from ..skills import Skill, save_skill, load_skill, _skills_root
+from ..skills import Skill, load_skill, save_skill
 
 logger = logging.getLogger(__name__)
 

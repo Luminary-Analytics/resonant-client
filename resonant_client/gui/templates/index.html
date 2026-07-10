@@ -491,6 +491,15 @@
                             <span class="preview-tab-name">Plan</span>
                             <span class="preview-tab-badge" id="plan-tab-badge" style="display:none">0</span>
                         </div>
+                        <div class="preview-tab" id="agents-tab" data-pane="agents" title="Agent activity and handoffs">
+                            <span class="preview-tab-dot"></span>
+                            <span class="preview-tab-name">Agents</span>
+                            <span class="preview-tab-badge" id="agents-tab-badge" style="display:none">0</span>
+                        </div>
+                        <div class="preview-tab" id="context-tab" data-pane="context" title="Live context composition and budget">
+                            <span class="preview-tab-dot"></span>
+                            <span class="preview-tab-name">Context</span>
+                        </div>
                         <button id="preview-close" class="preview-tab-close" title="Close preview">&times;</button>
                     </div>
                     <!-- Browser chrome — nav + URL bar -->
@@ -540,6 +549,25 @@
                             <div class="plan-graph-empty">Plan-graph idle &mdash; start an intent to see it populate.</div>
                         </div>
                         <div id="plan-graph-detail" class="plan-graph-detail" style="display:none"></div>
+                    </div>
+                    <div id="agent-activity-pane" class="agent-activity-pane" style="display:none">
+                        <div class="agent-activity-toolbar">
+                            <span>Run activity</span>
+                            <span class="agent-activity-count" id="agent-activity-count">0 workers</span>
+                        </div>
+                        <div id="agent-activity-tree" class="agent-activity-tree">
+                            <div class="agent-activity-empty">Sub-agents and specialists will appear here.</div>
+                        </div>
+                        <div id="agent-handoff-detail" class="agent-handoff-detail" style="display:none"></div>
+                    </div>
+                    <div id="context-cockpit-pane" class="context-cockpit-pane" style="display:none">
+                        <div class="context-cockpit-toolbar">
+                            <span>Context cockpit</span>
+                            <button id="context-cockpit-refresh" class="plan-graph-btn" type="button">Refresh</button>
+                        </div>
+                        <div id="context-cockpit-body" class="context-cockpit-body">
+                            <div class="agent-activity-empty">Context telemetry appears when a session starts.</div>
+                        </div>
                     </div>
                     <!-- Console / logs panel -->
                     <div class="preview-console" id="preview-console">

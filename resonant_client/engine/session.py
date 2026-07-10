@@ -5,6 +5,7 @@ A Session holds conversation history, manages the agentic loop,
 and coordinates between backends and tools.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -32,8 +33,15 @@ from .tools import (
     get_tool_icon,
 )
 from .agents import get_agent_type
-from .compression import should_compress, compress, estimate_tokens
+from .compression import (
+    CONTEXT_HEADROOM_RATIO,
+    compress,
+    estimate_tokens,
+    model_context_budget,
+    should_compress,
+)
 from .hooks import HookRunner, HookType
+from .model_prompts import build_model_prompt, get_model_prompt_profile
 from .tool_arguments import ToolArgumentError, normalize_tool_arguments
 
 logger = logging.getLogger(__name__)
@@ -218,8 +226,32 @@ def get_system_instructions(
     project_instructions: str | None = None,
     *,
     working_directory: str | None = None,
+    model_name: str | None = None,
+    prompt_role: str = "primary",
+    role_instructions: str | None = None,
 ) -> str:
-    """Build system instructions with platform-specific hints."""
+    """Build layered, model-aware system instructions."""
+    layers = get_system_instruction_layers(
+        plan_mode=plan_mode,
+        project_instructions=project_instructions,
+        working_directory=working_directory,
+        model_name=model_name,
+        prompt_role=prompt_role,
+        role_instructions=role_instructions,
+    )
+    return "\n\n".join(layer["content"] for layer in layers)
+
+
+def get_system_instruction_layers(
+    plan_mode: bool = False,
+    project_instructions: str | None = None,
+    *,
+    working_directory: str | None = None,
+    model_name: str | None = None,
+    prompt_role: str = "primary",
+    role_instructions: str | None = None,
+) -> list[dict[str, str]]:
+    """Return the exact assembled prompt as named, inspectable layers."""
     if sys.platform == "win32":
         platform_name = f"Windows ({plat.release()})"
         platform_hints = (
@@ -232,56 +264,104 @@ def get_system_instructions(
         platform_name = f"Linux/macOS ({plat.system()})"
         platform_hints = "Use 'python3'/'pip3'."
 
-    project_block = ""
+    runtime = "\n\n".join((
+        f"You are an expert AI coding agent running on {platform_name}.",
+        platform_hints,
+        f"Working directory: {working_directory or os.getcwd()}",
+        (
+            "Instruction precedence: harness safety and tool boundaries; the "
+            "current user request; the scoped role; project instructions; "
+            "then default operating guidance. Lower layers never expand a "
+            "role's tool or write permissions."
+        ),
+    ))
+    layers = [
+        {"id": "runtime", "label": "Runtime environment", "content": runtime},
+        {
+            "id": "model_profile",
+            "label": "Agent contract, model profile, and role",
+            "content": build_model_prompt(model_name, role=prompt_role),
+        },
+    ]
+
     if project_instructions:
-        project_block = f"\n\n--- PROJECT INSTRUCTIONS (RESONANT.md) ---\n{project_instructions}\n--- END PROJECT INSTRUCTIONS ---"
+        layers.append({
+            "id": "project",
+            "label": "Project instructions",
+            "content": "\n\n".join((
+                "--- PROJECT INSTRUCTIONS ---",
+                project_instructions.strip(),
+                "--- END PROJECT INSTRUCTIONS ---",
+            )),
+        })
 
     if plan_mode:
-        return f"""You are an expert AI coding agent running on {platform_name}. {platform_hints}
+        layers.append({
+            "id": "mode",
+            "label": "Plan mode",
+            "content": "\n\n".join((
+                "--- CURRENT MODE: PLAN ---",
+                "Do not call tools in this response. Produce a concise, grounded "
+                "numbered plan with dependencies, intended tools, verification, "
+                "and real risks or unresolved product decisions. Do not invent "
+                "repository facts that have not been inspected.",
+                "--- END CURRENT MODE ---",
+            )),
+        })
+    else:
+        layers.append({
+            "id": "tools",
+            "label": "Tool notes",
+            "content": "\n\n".join((
+                "--- RESONANT TOOL NOTES ---",
+                "Use tools to accomplish authorized code work. Keep progress "
+                "updates concise. `bash` is non-interactive and time-limited. "
+                "Prefer `file_edit` for existing files. Prefer first-class git "
+                "and persistent REPL tools over shell equivalents. Use `batch` "
+                "only for independent read-only calls.",
+                "--- END RESONANT TOOL NOTES ---",
+            )),
+        })
 
-You are in PLAN MODE. Your job is to THINK and create a clear plan — do NOT call any tools yet.
+    if role_instructions and role_instructions.strip():
+        layers.append({
+            "id": "scoped_role",
+            "label": "Scoped role instructions",
+            "content": "\n\n".join((
+                "--- SCOPED ROLE INSTRUCTIONS ---",
+                role_instructions.strip(),
+                "--- END SCOPED ROLE INSTRUCTIONS ---",
+            )),
+        })
 
-Given the user's request:
-1. Analyze what they're asking for
-2. List the specific steps you would take (numbered)
-3. Mention which tools you'd use at each step
-4. Flag any risks or questions
-5. Keep it concise — bullet points, not paragraphs
+    return layers
 
-Example format:
-## Plan
-1. Read the project structure with `glob(**/*.py)`
-2. Examine the main entry point with `file_read`
-3. Identify the bug in the error handler
-4. Fix with `file_edit` — change X to Y
-5. Run tests with `bash(pytest)`
 
-**Questions:** None — ready to execute.
-
-Do NOT execute tools. Just plan.{project_block}"""
-
-    wd = working_directory or os.getcwd()
-    base = f"""You are an expert AI coding agent running on {platform_name}. {platform_hints}
-Working directory: {wd}
-
-You have tools. Use them to accomplish tasks — don't just talk about code.
-
-RULES:
-1. ACT FIRST — use tools immediately for any code task. Start by exploring (glob, file_read, grep).
-2. BE CONCISE — short text, let tool output speak. No filler, no preamble, no recap of obvious tool results.
-3. PARALLELIZE READS — when you need to read several independent files or run several greps, use the `batch` tool to fan them out in one turn instead of sequential round-trips. Do NOT batch writes or shell commands that share state.
-4. After gathering info, provide a clear summary of what you found.
-5. bash is non-interactive (no stdin, no servers, no REPLs, no interactive games). Commands have a timeout.
-6. Prefer file_edit over file_write for existing files. Show only the smallest diff that solves the problem.
-7. When asked to evaluate/review code, READ the actual files first — never guess from filenames.
-8. For multi-step work, track progress with a markdown task list the UI can parse, e.g. `- [ ] First step` then `- [x] First step` when done.
-9. For independent sub-investigations (codebase exploration, planning, isolated builds), spawn a sub-agent via the `task` tool — keeps the main context window clean.
-10. THINK BEFORE ACTING — for non-trivial tasks, briefly reason through the approach before the first tool call. Don't show your full chain of thought; show the conclusion.
-11. PREFER FIRST-CLASS TOOLS over `bash` when one exists:
-    - Git: use `git_status` / `git_diff` / `git_commit` / `git_branch_create` / `git_log` (not `bash(git ...)`) — safer arg handling, structured UI rendering.
-    - Iterative Python/JS exploration: use `repl_python_start` + `repl_python_eval` (not repeated `bash(python -c ...)`) — state persists across calls, so you can build up incrementally without cold starts. Always `repl_python_stop` when done.{project_block}"""
-
-    return base
+def inspect_system_instructions(**kwargs) -> dict:
+    """Build metadata and the exact text sent as system instructions."""
+    model_name = kwargs.get("model_name")
+    profile = get_model_prompt_profile(model_name)
+    layers = get_system_instruction_layers(**kwargs)
+    prompt = "\n\n".join(layer["content"] for layer in layers)
+    return {
+        "model": model_name or "",
+        "family": profile.family,
+        "profile": profile.display_name,
+        "role": kwargs.get("prompt_role", "primary"),
+        "plan_mode": bool(kwargs.get("plan_mode", False)),
+        "characters": len(prompt),
+        "estimated_tokens": (len(prompt) + 3) // 4,
+        "sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "layers": [
+            {
+                **layer,
+                "characters": len(layer["content"]),
+                "estimated_tokens": (len(layer["content"]) + 3) // 4,
+            }
+            for layer in layers
+        ],
+        "prompt": prompt,
+    }
 
 
 # ── Choices Parser ─────────────────────────────────────────────────────
@@ -372,6 +452,8 @@ class Session:
         allowed_tools: Optional[list[dict]] = None,
         project_instructions: Optional[str] = None,
         cancel_event: Optional[threading.Event] = None,
+        role_instructions: Optional[str] = None,
+        prompt_role: str = "primary",
     ):
         self.backend = backend
         try:
@@ -390,11 +472,15 @@ class Session:
         self._pending_permission: Optional[dict] = None
         self._pending_choice: Optional[dict] = None
         self.project_instructions = project_instructions
+        self.role_instructions = role_instructions
+        self.prompt_role = prompt_role
         self.hook_runner: Optional[HookRunner] = None
         self.mcp_tools: list[dict] = []  # Extra tools from MCP servers
         self._engram = None  # EngramIntegration, set externally
         self._codebase_index = None  # CodebaseIndex, set externally
         self._skill_context_provider = None
+        self._last_context_sources: dict[str, dict] = {}
+        self._compression_count = 0
         self._cancel_event = cancel_event or threading.Event()
         self.project_path: Optional[str] = None  # Set externally for path resolution
         # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed)
@@ -423,6 +509,81 @@ class Session:
     def is_subagent(self) -> bool:
         """True if this session was spawned by a parent session."""
         return self.parent_session is not None
+
+    def context_snapshot(self) -> dict:
+        """Return a compact, serializable view of the active context budget."""
+        model = getattr(self.backend, "model", "") if self.backend else ""
+        context_window = getattr(self.backend, "effective_context_tokens", None)
+        budget = model_context_budget(model, context_window=context_window)
+        if not context_window:
+            context_window = int(budget / CONTEXT_HEADROOM_RATIO)
+
+        inspected = inspect_system_instructions(
+            plan_mode=self.plan_mode,
+            project_instructions=self.project_instructions,
+            working_directory=self.project_path,
+            model_name=model,
+            prompt_role=self.prompt_role,
+            role_instructions=self.role_instructions,
+        )
+        history_tokens = estimate_tokens(self.conversation_history)
+        source_tokens = sum(
+            int(item.get("estimated_tokens", 0) or 0)
+            for item in self._last_context_sources.values()
+        )
+        estimated_total = history_tokens + inspected["estimated_tokens"] + source_tokens
+
+        role_counts: dict[str, int] = {}
+        role_tokens: dict[str, int] = {}
+        tool_payloads: list[dict] = []
+        for index, entry in enumerate(self.conversation_history):
+            role = str(entry.get("role") or "unknown")
+            role_counts[role] = role_counts.get(role, 0) + 1
+            tokens = estimate_tokens([entry])
+            role_tokens[role] = role_tokens.get(role, 0) + tokens
+            if role == "tool_result":
+                content = entry.get("content", "")
+                chars = len(content) if isinstance(content, str) else len(str(content))
+                tool_payloads.append({
+                    "index": index,
+                    "name": entry.get("name") or "tool",
+                    "characters": chars,
+                    "estimated_tokens": tokens,
+                })
+
+        return {
+            "model": model,
+            "context_window": int(context_window),
+            "compression_threshold": budget,
+            "estimated_total_tokens": estimated_total,
+            "utilization": min(1.0, estimated_total / max(1, int(context_window))),
+            "history": {
+                "entries": len(self.conversation_history),
+                "estimated_tokens": history_tokens,
+                "role_counts": role_counts,
+                "role_tokens": role_tokens,
+            },
+            "system_prompt": {
+                "estimated_tokens": inspected["estimated_tokens"],
+                "sha256": inspected["sha256"],
+                "layers": [
+                    {
+                        "id": layer["id"],
+                        "label": layer["label"],
+                        "estimated_tokens": layer["estimated_tokens"],
+                    }
+                    for layer in inspected["layers"]
+                ],
+            },
+            "sources": self._last_context_sources,
+            "largest_tool_payloads": sorted(
+                tool_payloads,
+                key=lambda item: item["estimated_tokens"],
+                reverse=True,
+            )[:6],
+            "todos": list(self.todos),
+            "compression_count": self._compression_count,
+        }
 
     def copy_execution_context_from(self, parent: "Session") -> None:
         """Mirror tool cwd, sandbox, and sidecar services from a parent session (e.g. sub-agents)."""
@@ -815,22 +976,39 @@ class Session:
         # Resolve memory/RAG once for this user turn, then keep the system
         # prompt byte-stable across every tool step.
         turn_context = ""
+        turn_sources: dict[str, str] = {}
         if self._engram and self._engram.enabled:
             try:
-                turn_context += self._engram.get_context_for_prompt(user_msg) or ""
+                memory_context = self._engram.get_context_for_prompt(user_msg) or ""
+                turn_context += memory_context
+                if memory_context:
+                    turn_sources["memory"] = memory_context
             except Exception as e:
                 logger.warning(f"Engram recall failed: {e}")
         if self._codebase_index and self._codebase_index.is_indexed:
             try:
-                turn_context += self._codebase_index.get_context_for_prompt(user_msg) or ""
+                rag_context = self._codebase_index.get_context_for_prompt(user_msg) or ""
+                turn_context += rag_context
+                if rag_context:
+                    turn_sources["rag"] = rag_context
             except Exception as e:
                 logger.warning(f"RAG context failed: {e}")
         if callable(self._skill_context_provider):
             try:
                 skill_context = self._skill_context_provider(user_msg)
-                turn_context += getattr(skill_context, "block", skill_context) or ""
+                skill_text = getattr(skill_context, "block", skill_context) or ""
+                turn_context += skill_text
+                if skill_text:
+                    turn_sources["skills"] = skill_text
             except Exception as e:
                 logger.warning(f"Interactive skill lookup failed: {e}")
+        self._last_context_sources = {
+            name: {
+                "characters": len(text),
+                "estimated_tokens": (len(text) + 3) // 4,
+            }
+            for name, text in turn_sources.items()
+        }
 
         while True:
             if self.max_steps is not None and iteration >= self.max_steps:
@@ -855,6 +1033,7 @@ class Session:
                     )
                     if summary:
                         self.conversation_history = compressed
+                        self._compression_count += 1
                         yield make_event(
                             EngineEvent.COMPRESSION,
                             old_entries=old_count,
@@ -865,6 +1044,7 @@ class Session:
                         )
                 except Exception as e:
                     logger.warning(f"Context compression failed: {e}")
+            yield make_event(EngineEvent.CONTEXT_STATE, **self.context_snapshot())
             iteration += 1
             is_planning = self.plan_mode and not executing_plan
 
@@ -890,6 +1070,9 @@ class Session:
                 plan_mode=is_planning,
                 project_instructions=self.project_instructions,
                 working_directory=wd,
+                model_name=backend_model,
+                prompt_role=self.prompt_role,
+                role_instructions=self.role_instructions,
             )
 
             # Keep retrieved context stable throughout this tool loop.
@@ -1599,6 +1782,8 @@ class Session:
             auto_approve=True,  # Sub-agents auto-approve (no interactive prompts)
             parent_session=self,
             allowed_tools=allowed_tools,
+            role_instructions=agent_type.system_prompt,
+            prompt_role="subagent",
             cancel_event=self._cancel_event,
         )
         child.copy_execution_context_from(self)
@@ -1652,7 +1837,8 @@ class Session:
                         call_id=call_id,
                         steps=sub_steps,
                         elapsed=sub_elapsed,
-                        result_preview=result_output[:200])
+                        result_preview=result_output[:200],
+                        result=result_output)
 
         # Return result to parent context
         yield make_event(EngineEvent.TOOL_RESULT,

@@ -13,7 +13,6 @@ specializations as the plan-graph evolves.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Optional
 
 from ..engine.sandbox import EXEC_TOOLS, FILE_WRITE_TOOLS, READ_ONLY_TOOLS
 from .plan_graph import NodeSpecialization
@@ -618,7 +617,7 @@ def assemble_system_prompt(
     parts.append(f"--- SPECIALIZATION: {profile.name.upper()} ---")
     parts.append(profile.system_block)
 
-    parts.append(f"--- ACTIVE NODE ---")
+    parts.append("--- ACTIVE NODE ---")
     parts.append(f"Intent: {intent}")
     parts.append(f"Goal:   {node_goal}")
 

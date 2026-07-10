@@ -250,7 +250,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.13' }
-      - run: pip install -e ".[gui,desktop,claude,openai]" pyinstaller
+      - run: pip install -e ".[gui,desktop]" pyinstaller
       - run: pyinstaller packaging/resonant.spec --clean --noconfirm
       - run: ./dist/resonant/resonant.exe --version
 ```

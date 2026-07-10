@@ -18,7 +18,6 @@ clears it.
 from __future__ import annotations
 
 import logging
-import queue
 import threading
 import time
 from dataclasses import dataclass, field
@@ -40,14 +39,13 @@ from .persistence import (
 )
 from .plan_graph import (
     NodeSpecialization,
-    NodeStatus,
     PlanGraph,
     PlanNode,
     new_node_id,
 )
 from .runner import LocalSpecialistRunner
 from .skill_extraction import extract_skill, is_extraction_candidate
-from .walker import GraphWalker, SpecialistResult, WalkerEvent
+from .walker import GraphWalker, WalkerEvent
 
 logger = logging.getLogger(__name__)
 

@@ -118,7 +118,9 @@ The `TODOS_UPDATED` event is emitted when the model's text contains GitHub-style
 
 The core loop:
 
-1. Build system instructions (platform-aware, includes RESONANT.md project instructions, encourages `batch` for parallel reads and `task` for isolated sub-investigations)
+1. Build layered system instructions: invariant harness contract, model-family
+   profile, primary/sub-agent/specialist role, and AGENTS.md/RESONANT.md project
+   instructions (see [model prompt architecture](docs/model-prompt-architecture.md))
 2. Stream from backend (`backend.stream()`)
 3. Collect text tokens → yield `TEXT_DELTA` / `TEXT_DONE`
 4. Parse tool calls (native API or text-mode XML)
@@ -127,7 +129,11 @@ The core loop:
 7. Detect doom loops (same tool+args repeated N times)
 8. Handle plan mode, choices, sub-agents
 
-**System prompt rule 8** nudges models to use markdown task lists for multi-step work, enabling the live todo strip in the GUI. **Rule 3** nudges models to use the `batch` tool for parallel independent reads. **Rule 9** nudges models to use the `task` tool for sub-investigations.
+The durable prompt contract asks models to use markdown task lists for
+multi-step work, enabling the live todo strip in the GUI. It limits `batch` to
+parallel independent reads and requires complete, bounded assignment contracts
+for `task` sub-agents. GLM 5.x, DeepSeek, and conservative generic overlays
+adapt execution style without forking the core contract.
 
 ### `engine/tools.py` — Tool Definitions and Execution
 

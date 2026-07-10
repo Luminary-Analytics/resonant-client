@@ -27,6 +27,9 @@ on:
     paths:
       - 'resonant_client/**'
       - 'packaging/resonant.spec'
+      - 'packaging/check_bundle.py'
+      - 'packaging/bundle-policy.json'
+      - 'scripts/build_clean.ps1'
       - 'packaging/winsparkle/**'
       - 'pyproject.toml'
       - '.github/workflows/build-check.yml'
@@ -36,6 +39,9 @@ on:
     paths:
       - 'resonant_client/**'
       - 'packaging/resonant.spec'
+      - 'packaging/check_bundle.py'
+      - 'packaging/bundle-policy.json'
+      - 'scripts/build_clean.ps1'
       - 'packaging/winsparkle/**'
       - 'pyproject.toml'
 
@@ -54,17 +60,10 @@ jobs:
           python-version: '3.13'
           cache: 'pip'
 
-      - name: Install build dependencies
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[gui,desktop,claude,openai]"
-          pip install pyinstaller
-
       - name: Build PyInstaller bundle
         shell: pwsh
         run: |
-          pyinstaller packaging/resonant.spec --clean --noconfirm
+          ./scripts/build_clean.ps1
           if (-not (Test-Path "dist/resonant/resonant.exe")) {
               throw "PyInstaller did not produce dist/resonant/resonant.exe — likely an untracked file referenced by the spec, or a missing hidden import. See https://github.com/Luminary-Analytics/resonant-client/blob/main/docs/known-issues.md#12 for context."
           }
@@ -72,11 +71,29 @@ jobs:
       - name: Smoke-test --version
         shell: pwsh
         run: |
-          $output = & "dist/resonant/resonant.exe" --version
+          # The executable is a Windows GUI subsystem binary (console=False),
+          # so PowerShell's `&` cannot capture its stdout directly. Explicit
+          # redirection gives the child a writable stdout handle.
+          $stdout = Join-Path $env:RUNNER_TEMP "resonant-version.out"
+          $stderr = Join-Path $env:RUNNER_TEMP "resonant-version.err"
+          $proc = Start-Process -FilePath "dist/resonant/resonant.exe" `
+              -ArgumentList "--version" -Wait -PassThru `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if ($proc.ExitCode -ne 0) {
+              throw "Bundled exe --version exited $($proc.ExitCode): $(Get-Content $stderr -Raw)"
+          }
+
+          $output = (Get-Content $stdout -Raw).Trim()
           Write-Host "Version output: $output"
           if ($output -notmatch "resonant-client \d+\.\d+\.\d+") {
               throw "Bundled exe didn't print a recognizable version string: $output"
           }
+
+      - name: Upload bundle manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: resonant-bundle-manifest
+          path: dist/bundle-manifest.json
 
       - name: Verify WinSparkle DLL bundled
         shell: pwsh
@@ -97,7 +114,7 @@ jobs:
 
           $proc = Start-Process -FilePath "dist/resonant/resonant.exe" `
               -ArgumentList "gui","--port","8975" `
-              -PassThru -NoNewWindow
+              -PassThru -WindowStyle Hidden
 
           try {
               # Wait up to 30s for the server to bind.

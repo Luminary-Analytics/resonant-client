@@ -56,20 +56,10 @@ jobs:
           python-version: '3.13'
           cache: 'pip'
 
-      - name: Install build dependencies
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          # Install the project + the deps PyInstaller needs to bundle.
-          # [all] pulls in gui + desktop + claude + openai + browser, but we
-          # exclude playwright/pywebview from the bundle via the spec excludes.
-          pip install -e ".[gui,desktop,claude,openai]"
-          pip install pyinstaller
-
       - name: Build PyInstaller bundle
         shell: pwsh
         run: |
-          pyinstaller packaging/resonant.spec --clean --noconfirm
+          ./scripts/build_clean.ps1
           if (-not (Test-Path "dist/resonant/resonant.exe")) {
               throw "PyInstaller did not produce dist/resonant/resonant.exe"
           }
@@ -79,7 +69,15 @@ jobs:
         run: |
           # Just confirm --version works — quick sanity that the bundle is
           # not totally broken before we spend time wrapping it.
-          $output = & "dist/resonant/resonant.exe" --version
+          $stdout = Join-Path $env:RUNNER_TEMP "resonant-version.out"
+          $stderr = Join-Path $env:RUNNER_TEMP "resonant-version.err"
+          $proc = Start-Process -FilePath "dist/resonant/resonant.exe" `
+              -ArgumentList "--version" -Wait -PassThru `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          if ($proc.ExitCode -ne 0) {
+              throw "Bundled exe --version exited $($proc.ExitCode): $(Get-Content $stderr -Raw)"
+          }
+          $output = (Get-Content $stdout -Raw).Trim()
           if ($output -notmatch "resonant-client ${{ steps.version.outputs.version }}") {
               throw "Bundled exe reported wrong version: $output"
           }

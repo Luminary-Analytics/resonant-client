@@ -22,7 +22,7 @@ try:
 except ImportError:  # pragma: no cover - runs on 3.10 only
     _toml = None  # type: ignore
 
-from .skills import Skill, list_skills, load_skill
+from .skills import Skill, load_skill
 
 logger = logging.getLogger(__name__)
 

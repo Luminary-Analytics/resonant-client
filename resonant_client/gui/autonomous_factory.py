@@ -40,7 +40,6 @@ import re
 import shutil
 import subprocess
 import threading
-import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -896,6 +895,17 @@ def build_autonomous_mission_hooks(
 
         queue_curation_hook = _queue_curation
 
+    checkpoint_hook = None
+    try:
+        from ..orchestration.checkpoints import IterationCheckpointStore
+        checkpoint_store = IterationCheckpointStore(project_path)
+        checkpoint_hook = checkpoint_store.create
+    except Exception:
+        logger.debug(
+            "iteration checkpoints unavailable for %s", project_path,
+            exc_info=True,
+        )
+
     return DaemonHooks(
         dispatch_item=dispatch_item,
         wait_for_dispatch=wait_for_dispatch,
@@ -919,4 +929,5 @@ def build_autonomous_mission_hooks(
         ),
         extract_skill_hook=extract_skill_hook,
         queue_curation_hook=queue_curation_hook,
+        checkpoint_hook=checkpoint_hook,
     )

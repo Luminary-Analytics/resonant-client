@@ -199,6 +199,11 @@ def _seed_item_from_intent(refined_intent: str, feature: str) -> tuple[str, str]
     if not intent:
         intent = "Implement the feature described in the spec."
 
+    # Roadmap items use a one-line markdown grammar. The grill deliberately
+    # wraps long refined intents, so preserve every word while collapsing the
+    # layout before storing the item description. Otherwise reload drops the
+    # continuation and specialists receive a truncated requirement.
+    intent = re.sub(r"\s+", " ", intent)
     title = _smart_title(intent, max_len=80)
     return title, intent
 

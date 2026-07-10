@@ -6,7 +6,6 @@ This module is imported by both engine and TUI — keep it dependency-free.
 """
 
 from enum import Enum
-from typing import Any
 
 
 # ── Backend-level events (from backends.py, unchanged) ─────────────────
@@ -52,6 +51,7 @@ class EngineEvent(str, Enum):
 
     # Context management
     COMPRESSION = "context.compression"      # Context was compressed
+    CONTEXT_STATE = "context.state"          # Live context budget/composition
 
     # Status / metadata
     STATUS = "status"                         # Model info, token counts, timing

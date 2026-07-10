@@ -33,7 +33,7 @@ class BackendSpec:
     api_key_env: str = ""
     api_key_setting: str = ""
     api_key: str = ""
-    # deepseek-v4-flash et al. thinking mode: "low" | "med" | "high" | ""
+    # Thinking mode: "low" | "med" | "high" | "max" | "off" | ""
     thinking_mode: str = ""
 
     def to_dict(self, include_sensitive: bool = False) -> dict[str, Any]:

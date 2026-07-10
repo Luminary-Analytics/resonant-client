@@ -83,7 +83,7 @@ class TestBatch:
 
     def test_one_call_exception_isolated(self):
         # A worker raising must become that call's error, not crash the batch.
-        def boom(name, args, cancel):
+        def boom(name, args, cancel, **kwargs):
             if name == "grep":
                 raise RuntimeError("kaboom")
             return _ok()

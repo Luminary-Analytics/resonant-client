@@ -11184,3 +11184,130 @@ body.is-window-dragging * {
         font-size: 13px;
     }
 }
+
+/* Resonant task transcript — Codex-like hierarchy with a local-first accent. */
+.task-card {
+    position: relative;
+    gap: 10px;
+    margin-bottom: 38px;
+    padding-left: 18px;
+}
+
+.task-card::before {
+    content: "";
+    position: absolute;
+    top: 7px;
+    bottom: 4px;
+    left: 2px;
+    width: 1px;
+    background: linear-gradient(180deg, rgba(45, 212, 191, .62), rgba(45, 212, 191, .06) 58%, transparent);
+}
+
+.task-card::after {
+    content: "";
+    position: absolute;
+    top: 7px;
+    left: -1px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #2dd4bf;
+    box-shadow: 0 0 0 3px rgba(45, 212, 191, .11);
+}
+
+.task-card-header {
+    order: 1;
+}
+
+.task-card-main {
+    max-width: min(72%, 620px);
+}
+
+.task-card-label {
+    display: block;
+    margin: 0 8px 5px 0;
+    color: var(--dim);
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: .08em;
+    text-align: right;
+    text-transform: uppercase;
+}
+
+.task-request-text {
+    padding: 10px 13px;
+    border-color: rgba(45, 212, 191, .18);
+    border-radius: 8px;
+    background: linear-gradient(135deg, rgba(45, 212, 191, .075), rgba(255, 255, 255, .035));
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
+}
+
+.task-activity,
+.task-card-running .task-activity {
+    order: 2;
+    padding: 0 8px 0 0;
+}
+
+.task-result,
+.task-card-running .task-result {
+    order: 3;
+    padding: 2px 10px 0 0;
+}
+
+.task-result:not([hidden])::before {
+    content: "Resonant";
+    display: block;
+    margin-bottom: 9px;
+    color: #5eead4;
+    font-size: 10px;
+    font-weight: 750;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+}
+
+.task-card-footer {
+    order: 4;
+    padding: 0 10px 0 0;
+}
+
+.task-activity-details {
+    border: 0;
+    border-radius: 7px;
+    background: rgba(255,255,255,.018);
+}
+
+.task-activity-details > summary {
+    min-height: 28px;
+    padding: 0 8px;
+}
+
+.task-activity-title {
+    font-weight: 600;
+}
+
+.task-run-summary {
+    padding-top: 2px;
+    border-top: 1px solid rgba(255,255,255,.055);
+}
+
+.input-wrapper {
+    border-color: rgba(255,255,255,.13);
+    border-radius: 12px;
+    background: linear-gradient(180deg, rgba(24,24,24,.98), rgba(17,17,17,.98));
+    box-shadow: 0 18px 50px rgba(0,0,0,.26), inset 0 1px 0 rgba(255,255,255,.035);
+}
+
+.input-wrapper:focus-within {
+    border-color: rgba(45, 212, 191, .48);
+    box-shadow: 0 18px 52px rgba(0,0,0,.30), 0 0 0 2px rgba(45, 212, 191, .07);
+}
+
+@media (max-width: 820px) {
+    .task-card {
+        padding-left: 13px;
+    }
+
+    .task-card-main {
+        max-width: 90%;
+    }
+}

@@ -11,11 +11,9 @@ overrides the explicit `max_tokens`.
 
 from __future__ import annotations
 
-import pytest
-
 from resonant_client.engine.compression import (
     DEFAULT_MAX_CONTEXT_TOKENS,
-    KEEP_RECENT_TURNS,
+    evict_old_tool_outputs,
     model_context_budget,
     should_compress,
 )
@@ -76,6 +74,10 @@ class TestModelContextBudgetEdgeCases:
 
     def test_none_uses_default(self):
         assert model_context_budget(None) == DEFAULT_MAX_CONTEXT_TOKENS
+
+    def test_runtime_context_window_overrides_stale_model_table(self):
+        assert model_context_budget("glm-5.2:cloud", context_window=32_768) == 24_576
+        assert model_context_budget("unknown", context_window=131_072) == 98_304
 
 
 # ── should_compress with model_name ─────────────────────────────────────
@@ -141,3 +143,30 @@ class TestShouldCompressWithModel:
         history = _make_long_history(approx_chars=30_000 * 4)
         assert should_compress(history, max_tokens=20_000) is True
         assert should_compress(history, max_tokens=50_000) is False
+
+
+class TestToolOutputEviction:
+    def test_evicts_only_old_oversized_results(self):
+        history = []
+        for index in range(12):
+            history.append({
+                "role": "tool_result",
+                "name": "file_read",
+                "content": f"result-{index}:" + ("x" * 2_000),
+            })
+
+        pruned, count = evict_old_tool_outputs(history)
+
+        assert count == 4
+        assert "Earlier file_read result evicted" in pruned[0]["content"]
+        assert pruned[4]["content"] == history[4]["content"]
+        assert history[0]["content"].startswith("result-0:")
+
+    def test_keeps_small_old_results(self):
+        history = [
+            {"role": "tool_result", "name": "bash", "content": "ok"}
+            for _ in range(10)
+        ]
+        pruned, count = evict_old_tool_outputs(history)
+        assert count == 0
+        assert pruned == history

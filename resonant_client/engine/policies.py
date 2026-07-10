@@ -32,6 +32,7 @@ class PolicyRule:
     tool_pattern: str  # Glob pattern matching tool name (e.g., "bash", "file_*", "*")
     action: str = "allow"  # allow | prompt | deny
     arg_patterns: dict[str, str] = field(default_factory=dict)  # Regex patterns for args
+    arg_globs: dict[str, str | list[str]] = field(default_factory=dict)
     reason: str = ""  # Human-readable explanation
 
     def matches(self, tool_name: str, tool_args: dict) -> bool:
@@ -49,6 +50,18 @@ class PolicyRule:
             except re.error:
                 return False
 
+        # Friendlier command policies can use shell-like globs instead of
+        # embedding regular expressions in resonant-policy.json.  All listed
+        # argument constraints must match; a list means any glob may match.
+        for arg_key, patterns in self.arg_globs.items():
+            arg_value = str(tool_args.get(arg_key, "")).lower()
+            choices = [patterns] if isinstance(patterns, str) else patterns
+            if not isinstance(choices, list) or not any(
+                fnmatch.fnmatchcase(arg_value, str(pattern).lower())
+                for pattern in choices
+            ):
+                return False
+
         return True
 
     @classmethod
@@ -57,6 +70,7 @@ class PolicyRule:
             tool_pattern=data.get("tool_pattern", "*"),
             action=data.get("action", "allow"),
             arg_patterns=data.get("arg_patterns", {}),
+            arg_globs=data.get("arg_globs", {}),
             reason=data.get("reason", ""),
         )
 

@@ -18,8 +18,6 @@ from __future__ import annotations
 import os
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from resonant_client.orchestration import (
     NodeSpecialization,
     NodeStatus,
@@ -182,7 +180,9 @@ class TestRunnerInheritance:
 
         assert child.working_subdir == "web"
         # session.project_path should join the runner root with the subdir
-        assert captured["project_path"] == os.path.normpath("/tmp/proj/web")
+        assert captured["project_path"] == os.path.normcase(
+            os.path.realpath(os.path.abspath("/tmp/proj/web"))
+        )
 
     def test_explicit_subdir_on_node_takes_precedence(self):
         # If a node already has a subdir set, dep inheritance must not
@@ -209,7 +209,9 @@ class TestRunnerInheritance:
             runner._run_node(child, g)
 
         assert child.working_subdir == "apps/api"
-        assert captured["project_path"] == os.path.normpath("/tmp/proj/apps/api")
+        assert captured["project_path"] == os.path.normcase(
+            os.path.realpath(os.path.abspath("/tmp/proj/apps/api"))
+        )
 
     def test_no_subdir_when_no_deps_have_one(self):
         g = PlanGraph.new("intent")
@@ -225,7 +227,9 @@ class TestRunnerInheritance:
 
         assert node.working_subdir is None
         # session uses the bare project_path
-        assert captured["project_path"] == "/tmp/proj"
+        assert captured["project_path"] == os.path.normcase(
+            os.path.realpath(os.path.abspath("/tmp/proj"))
+        )
 
 
 class TestRunnerRecordsDeclaration:

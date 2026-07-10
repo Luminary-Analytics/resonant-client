@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import threading
-from typing import Iterator
+import os
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from resonant_client.orchestration import (
     LocalSpecialistRunner,
@@ -176,6 +174,30 @@ def test_allowlist_denials_dont_inflate_error_count():
         result = runner(node, g)
     assert result.confidence == 1.0, "denials shouldn't tank confidence"
     assert result.subgoals  # parsed cleanly
+
+
+def test_planner_repairs_malformed_envelope_with_constrained_output():
+    g = PlanGraph.new("intent")
+    node = _node(g, goal="plan it", spec=NodeSpecialization.PLAN)
+    events = [
+        {"event": "text.done", "text": "I would split this into implementation work."},
+        {"event": "session.end"},
+    ]
+    runner, fake_run = _make_runner(events)
+    runner.backend.generate_structured.return_value = {
+        "subgoals": [{
+            "goal": "implement it",
+            "specialization": "implement",
+            "depends_on": [],
+        }],
+    }
+
+    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+        result = runner(node, g)
+
+    assert result.subgoals[0]["goal"] == "implement it"
+    assert result.confidence == 1.0
+    assert result.data["structured_output_repaired"] is True
 
 
 def test_real_error_still_marks_blocked():
@@ -383,6 +405,27 @@ def test_runner_passes_filtered_tools_to_session():
     assert "file_edit" not in names
     assert "bash" not in names
     assert "file_read" in names
+
+
+def test_runner_attaches_workspace_sandbox_to_specialist_session():
+    """Full-auto specialists must still be confined to the intent project."""
+    g = PlanGraph.new("intent")
+    node = _node(g, goal="implement", spec=NodeSpecialization.IMPLEMENT)
+    captured = {}
+
+    def fake_run(self, user_msg, **kwargs):
+        captured["sandbox"] = self.sandbox
+        captured["policy"] = self.execution_policy
+        yield {"event": "text.done", "text": "ok"}
+        yield {"event": "session.end"}
+
+    runner, _ = _make_runner()
+    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+        runner(node, g)
+
+    assert captured["sandbox"].enabled is True
+    assert os.path.basename(captured["sandbox"].project_path) == "proj"
+    assert captured["policy"] is not None
 
 
 # ── Dependency context propagation ─────────────────────────────────────

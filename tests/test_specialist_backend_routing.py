@@ -376,7 +376,22 @@ class TestBuildSpecialistBackend:
         )
         result = state._build_specialist_backend("reflect")
         assert result is not None
-        assert result.thinking_mode == "high"
+        assert result.thinking_mode == "max"
+
+    def test_hard_glm_phase_promotes_high_to_max_without_model_override(self, monkeypatch):
+        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        state = _make_state_with_settings(lambda *a, **kw: {})
+        state.backend = OllamaBackend(
+            base_url="http://10.0.0.133:11434",
+            model="glm-5.2:cloud",
+            thinking="high",
+        )
+
+        result = state._build_specialist_backend("reflect")
+
+        assert result is not None
+        assert result.model == "glm-5.2:cloud"
+        assert result.thinking_mode == "max"
 
     def test_override_with_no_thinking_passes_none(self, monkeypatch):
         monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)

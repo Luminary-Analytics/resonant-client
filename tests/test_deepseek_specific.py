@@ -11,10 +11,7 @@ Covers:
 
 from __future__ import annotations
 
-import json
 import os
-
-import pytest
 
 from resonant_client.backends import OllamaBackend
 from resonant_client.gui.runtime import BackendSpec
@@ -28,31 +25,36 @@ class TestOllamaThinking:
     def test_no_thinking_default(self):
         b = OllamaBackend("http://example", "deepseek-v4-flash:cloud")
         assert b.thinking_mode is None
-        assert "think" not in b._ollama_options
+        assert b._ollama_think is None
 
     def test_low_thinking(self):
         b = OllamaBackend("http://example", "deepseek-v4-flash:cloud", thinking="low")
         assert b.thinking_mode == "low"
-        assert b._ollama_options["think"] == "low"
+        assert b._ollama_think == "low"
 
     def test_med_normalizes_medium(self):
         b = OllamaBackend("http://example", "deepseek-v4-flash:cloud", thinking="medium")
         assert b.thinking_mode == "med"
-        assert b._ollama_options["think"] == "med"
+        assert b._ollama_think == "med"
 
     def test_high_thinking(self):
         b = OllamaBackend("http://example", "deepseek-v4-flash:cloud", thinking="high")
-        assert b._ollama_options["think"] == "high"
+        assert b._ollama_think == "high"
+
+    def test_max_thinking(self):
+        b = OllamaBackend("http://example", "deepseek-v4-pro:cloud", thinking="max")
+        assert b.thinking_mode == "max"
+        assert b._ollama_think == "max"
 
     def test_unknown_value_drops_silently(self):
         b = OllamaBackend("http://example", "deepseek-v4-flash:cloud", thinking="bananas")
         assert b.thinking_mode is None
-        assert "think" not in b._ollama_options
+        assert b._ollama_think is None
 
     def test_off_drops(self):
         b = OllamaBackend("http://example", "deepseek-v4-flash:cloud", thinking="off")
         assert b.thinking_mode is None
-        assert "think" not in b._ollama_options
+        assert b._ollama_think is None
 
 
 # ── BackendSpec round-trip ─────────────────────────────────────────────

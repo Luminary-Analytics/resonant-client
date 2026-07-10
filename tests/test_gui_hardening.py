@@ -139,6 +139,25 @@ def test_app_state_preserves_blank_secret_and_applies_permission_mode(monkeypatc
     assert state.session.auto_approve is False
 
 
+def test_app_state_applies_permission_mode_to_cli_backend(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".resonant").mkdir()
+
+    app_module = _load_app_module(monkeypatch, project)
+    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self: {})
+    state = app_module.AppState()
+    backend = _DummyBackend(name="codex", model="gpt-5.5")
+    observed = []
+    backend.configure_permission_mode = observed.append
+    state.session = state.build_session(backend=backend, project_path=str(project))
+
+    state.apply_permission_mode("plan")
+
+    assert observed == ["plan"]
+    assert state.permission_mode == "plan"
+
+
 def test_app_state_applies_project_context_and_builds_project_scoped_session(monkeypatch, tmp_path):
     project_one = tmp_path / "one"
     project_two = tmp_path / "two"

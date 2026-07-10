@@ -7,7 +7,6 @@ Tools run server-side (same machine as the engine).
 
 import json
 import os
-import re
 import subprocess
 import sys
 import time
@@ -23,6 +22,7 @@ from .truncation import (
     truncate_line,
     truncate_tail,
 )
+from .editing import EditMatchError, apply_text_edit
 
 
 # ── Tool Definitions (OpenAI function-calling format) ──────────────────
@@ -85,6 +85,14 @@ AGENT_TOOLS = [
                     "path": {
                         "type": "string",
                         "description": "File path to read"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Zero-based line offset (default: 0). Use next_offset from a prior result to continue."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum lines to return (default: 400, maximum: 2000)."
                     }
                 },
                 "required": ["path"]
@@ -95,7 +103,10 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "file_edit",
-            "description": "Edit a file by replacing old_text with new_text. The old_text must match exactly.",
+            "description": (
+                "Edit a file by replacing old_text with new_text. Include enough surrounding "
+                "context for a unique match; minor whitespace drift is repaired automatically."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -110,6 +121,10 @@ AGENT_TOOLS = [
                     "new_text": {
                         "type": "string",
                         "description": "The replacement text"
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace every match only when intentionally editing repeated text. Default: false."
                     },
                     "allow_leading_dash": {
                         "type": "boolean",
@@ -135,6 +150,14 @@ AGENT_TOOLS = [
                     "path": {
                         "type": "string",
                         "description": "Base directory to search from (default: current directory)"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Zero-based result offset for pagination (default: 0)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum paths to return (default: 50, maximum: 200)."
                     }
                 },
                 "required": ["pattern"]
@@ -160,6 +183,14 @@ AGENT_TOOLS = [
                     "glob": {
                         "type": "string",
                         "description": "File glob filter like '*.py'"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Zero-based match offset for pagination (default: 0)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum matches to return (default: 50, maximum: 200)."
                     }
                 },
                 "required": ["pattern"]
@@ -190,6 +221,26 @@ AGENT_TOOLS = [
                     },
                 },
                 "required": ["prompt", "agent_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_view",
+            "description": (
+                "Read the full procedure and verification notes for a relevant "
+                "Resonant skill surfaced in the prompt."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "Skill identifier from the relevant-skills prompt block."
+                    }
+                },
+                "required": ["skill_id"]
             }
         }
     },
@@ -761,9 +812,9 @@ AGENT_TOOLS = [
         "function": {
             "name": "batch",
             "description": (
-                "Execute multiple tool calls in parallel. Use when you need to read several "
-                "files at once, search for multiple patterns, or run independent operations "
-                "concurrently. Maximum 25 calls. Cannot batch 'task' or 'batch' tools."
+                "Execute multiple read-only workspace calls in parallel. Use when you need to "
+                "read several files, search for multiple patterns, or inspect git state. "
+                "Maximum 25 calls. Mutating, shell, UI, task, and nested batch tools are refused."
             ),
             "parameters": {
                 "type": "object",
@@ -776,7 +827,7 @@ AGENT_TOOLS = [
                             "properties": {
                                 "name": {
                                     "type": "string",
-                                    "description": "Tool name (file_read, glob, grep, bash, file_write, file_edit)"
+                                    "description": "Tool name (file_read, glob, grep, git_status, git_diff, git_log)"
                                 },
                                 "arguments": {
                                     "type": "object",
@@ -1267,8 +1318,16 @@ def execute_tool(
             return _exec_glob(arguments, start)
         elif name == "grep":
             return _exec_grep(arguments, start, cancel_event=cancel_event)
+        elif name == "skill_view":
+            return _exec_skill_view(arguments, start, project_path=project_path)
         elif name == "batch":
-            return _exec_batch(arguments, start, cancel_event=cancel_event)
+            return _exec_batch(
+                arguments,
+                start,
+                cancel_event=cancel_event,
+                project_path=project_path,
+                settings=settings,
+            )
         elif name == "task":
             # Task tool requires session context — handled by Session, not here
             return ToolResult(
@@ -1592,24 +1651,40 @@ def _exec_file_write(args: dict, start: float) -> ToolResult:
 
 def _exec_file_read(args: dict, start: float) -> ToolResult:
     fpath = args.get("path", "")
+    offset = max(0, int(args.get("offset", 0) or 0))
+    limit = min(2_000, max(1, int(args.get("limit", 400) or 400)))
     path = Path(fpath)
     if not path.exists():
         return ToolResult(f"Error: File not found: {fpath}", is_error=True, elapsed=time.time() - start)
     content = path.read_text(encoding="utf-8")
-    # Head truncation — for files the model needs the start (imports, top-level
-    # structure). The previous 10KB char slice was hard-cutting lines mid-token;
-    # the unified utility caps at 2000 lines / 50KB and stays line-aligned.
-    result = truncate_head(content)
-    output = result.content + render_truncation_footer(result)
+    lines = content.split("\n")
+    total_lines = len(lines)
+    selected = "\n".join(lines[offset:offset + limit])
+    result = truncate_head(selected, max_lines=limit)
+    output = result.content
+    shown_lines = result.output_lines
+    next_offset = offset + shown_lines
+    has_more = next_offset < total_lines
+    if has_more:
+        output += (
+            f"\n\n[showing lines {offset + 1}-{next_offset} of {total_lines}. "
+            f"Continue with file_read {{\"path\": {json.dumps(str(fpath))}, "
+            f"\"offset\": {next_offset}, \"limit\": {limit}}}]"
+        )
+    elif result.truncated:
+        output += render_truncation_footer(result)
     elapsed = time.time() - start
     return ToolResult(
         output,
         elapsed=elapsed,
         metadata={
             "path": fpath,
-            "lines": result.total_lines,
-            "shown_lines": result.output_lines,
-            "truncated": result.truncated,
+            "lines": total_lines,
+            "shown_lines": shown_lines,
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset if has_more else None,
+            "truncated": has_more or result.truncated,
         },
     )
 
@@ -1618,6 +1693,7 @@ def _exec_file_edit(args: dict, start: float) -> ToolResult:
     fpath = args.get("path", "")
     old_text = args.get("old_text", "")
     new_text = args.get("new_text", "")
+    replace_all = bool(args.get("replace_all", False))
     allow_dash = bool(args.get("allow_leading_dash", False))
     err = _validate_write_path(fpath, allow_dash)
     if err:
@@ -1632,26 +1708,45 @@ def _exec_file_edit(args: dict, start: float) -> ToolResult:
         return ToolResult(f"Error: File not found: {fpath}", is_error=True, elapsed=time.time() - start)
 
     content = path.read_text(encoding="utf-8")
-    if old_text not in content:
+    try:
+        application = apply_text_edit(
+            content,
+            old_text,
+            new_text,
+            replace_all=replace_all,
+        )
+    except EditMatchError as exc:
         return ToolResult(
-            f"Error: old_text not found in {fpath}. The text to replace was not found.",
+            f"Error editing {fpath}: {exc}",
             is_error=True,
             elapsed=time.time() - start,
         )
 
-    content = content.replace(old_text, new_text, 1)
-    path.write_text(content, encoding="utf-8")
+    path.write_text(application.content, encoding="utf-8")
     elapsed = time.time() - start
     return ToolResult(
-        f"File edited: {fpath}",
+        (
+            f"File edited: {fpath} "
+            f"({application.strategy} match, line {application.line}, "
+            f"{application.replacements} replacement(s))"
+        ),
         elapsed=elapsed,
-        metadata={"path": fpath, "old_text": old_text, "new_text": new_text},
+        metadata={
+            "path": fpath,
+            "old_text": old_text,
+            "new_text": new_text,
+            "match_strategy": application.strategy,
+            "replacements": application.replacements,
+            "line": application.line,
+        },
     )
 
 
 def _exec_glob(args: dict, start: float) -> ToolResult:
     pattern = args.get("pattern", "")
     base = args.get("path", ".")
+    offset = max(0, int(args.get("offset", 0) or 0))
+    limit = min(200, max(1, int(args.get("limit", 50) or 50)))
 
     # Models often pass absolute patterns (e.g. "D:/Repos/proj/**/*.py") —
     # Python's Path.glob refuses those with "Non-relative patterns are
@@ -1677,7 +1772,7 @@ def _exec_glob(args: dict, start: float) -> ToolResult:
             pattern = str(Path(*parts[split_at:]))
 
     try:
-        matches = sorted(Path(base).glob(pattern))[:50]
+        all_matches = sorted(Path(base).glob(pattern))
     except (NotImplementedError, OSError) as exc:
         return ToolResult(
             f"Error: glob pattern not supported ({exc}). "
@@ -1685,12 +1780,30 @@ def _exec_glob(args: dict, start: float) -> ToolResult:
             is_error=True,
             elapsed=time.time() - start,
         )
+    total = len(all_matches)
+    matches = all_matches[offset:offset + limit]
     result = "\n".join(str(m) for m in matches)
+    next_offset = offset + len(matches)
+    if next_offset < total:
+        result += (
+            f"\n\n[showing paths {offset + 1}-{next_offset} of {total}. "
+            f"Continue with glob {{\"pattern\": {json.dumps(str(pattern))}, "
+            f"\"path\": {json.dumps(str(base))}, \"offset\": {next_offset}, "
+            f"\"limit\": {limit}}}]"
+        )
     elapsed = time.time() - start
     return ToolResult(
         result or "(no matches)",
         elapsed=elapsed,
-        metadata={"pattern": pattern, "count": len(matches), "base": base},
+        metadata={
+            "pattern": pattern,
+            "count": total,
+            "shown": len(matches),
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset if next_offset < total else None,
+            "base": base,
+        },
     )
 
 
@@ -1698,19 +1811,24 @@ def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event]
     pattern = args.get("pattern", "")
     path = args.get("path", ".")
     file_glob = args.get("glob", "")
+    offset = max(0, int(args.get("offset", 0) or 0))
+    limit = min(200, max(1, int(args.get("limit", 50) or 50)))
 
+    # Never interpolate model-controlled search values into a shell command.
+    # A quoted string is not a security boundary: a pattern containing a quote
+    # can escape it and turn this read-only tool into arbitrary shell execution.
     if sys.platform == "win32":
-        cmd = f'findstr /s /n /r "{pattern}" "{path}\\*"'
-        if file_glob:
-            cmd = f'findstr /s /n /r "{pattern}" "{path}\\{file_glob}"'
+        target = os.path.join(path, file_glob or "*") if os.path.isdir(path) else path
+        cmd = ["findstr", "/s", "/n", "/r", f"/c:{pattern}", target]
     else:
-        cmd = f'grep -rn "{pattern}" "{path}"'
+        cmd = ["grep", "-rn"]
         if file_glob:
-            cmd = f'grep -rn --include="{file_glob}" "{pattern}" "{path}"'
+            cmd.extend([f"--include={file_glob}"])
+        cmd.extend(["--", pattern, path])
 
     returncode, stdout, _stderr, timed_out = _run_subprocess_with_cancel(
         cmd,
-        shell=True,
+        shell=False,
         text=False,
         timeout=30,
         cwd=os.getcwd(),
@@ -1752,35 +1870,117 @@ def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event]
             t, was = truncate_line(ln, GREP_MAX_LINE_LENGTH)
             capped.append(t)
             any_line_truncated = any_line_truncated or was
-        # Keep grep's existing 30-match preview but route through the unified
-        # head utility so the footer is consistent with the other tools.
-        joined = "\n".join(capped)
-        result = truncate_head(joined, max_lines=30)
+        selected = capped[offset:offset + limit]
+        joined = "\n".join(selected)
+        result = truncate_head(joined, max_lines=limit)
         output = result.content
-        if result.truncated:
-            output += f"\n... ({count} total matches)"
-        if any_line_truncated and not result.truncated:
+        shown = result.output_lines if selected else 0
+        next_offset = offset + shown
+        if next_offset < count:
+            output += (
+                f"\n\n[showing matches {offset + 1}-{next_offset} of {count}. "
+                f"Continue with grep {{\"pattern\": {json.dumps(str(pattern))}, "
+                f"\"path\": {json.dumps(str(path))}, \"offset\": {next_offset}, "
+                f"\"limit\": {limit}}}]"
+            )
+        if any_line_truncated:
             output += "\n[note: some match lines were individually truncated]"
+    else:
+        shown = 0
+        next_offset = offset
 
     elapsed = time.time() - start
     return ToolResult(
         output or "(no matches)",
         elapsed=elapsed,
-        metadata={"pattern": pattern, "count": count, "exit_code": returncode},
+        metadata={
+            "pattern": pattern,
+            "count": count,
+            "shown": shown,
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset if next_offset < count else None,
+            "exit_code": returncode,
+        },
+    )
+
+
+def _exec_skill_view(args: dict, start: float, *, project_path: str = "") -> ToolResult:
+    """Read a project/global skill body without exposing skill storage paths."""
+    skill_id = str(args.get("skill_id", "") or "").strip()
+    from ..orchestration.skills import load_skill, skill_dir
+
+    skill = None
+    resolved_scope = ""
+    for scope in ("project", "global"):
+        if scope == "project" and not project_path:
+            continue
+        skill = load_skill(
+            skill_id,
+            scope=scope,
+            project_path=project_path if scope == "project" else None,
+        )
+        if skill:
+            resolved_scope = scope
+            break
+    if not skill:
+        return ToolResult(
+            f"Error: skill not found: {skill_id}",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
+
+    directory = skill_dir(
+        skill.id,
+        scope=resolved_scope,
+        project_path=project_path if resolved_scope == "project" else None,
+    )
+    sections = [f"# {skill.id}\n\n{skill.description}".strip()]
+    for filename, heading in (
+        ("procedure.md", "Procedure"),
+        ("verification.md", "Verification"),
+    ):
+        path = directory / filename
+        if path.is_file():
+            body = path.read_text(encoding="utf-8").strip()
+            if body:
+                sections.append(f"## {heading}\n\n{body}")
+    output = "\n\n".join(sections)
+    result = truncate_head(output, max_lines=800, max_bytes=24 * 1024)
+    return ToolResult(
+        result.content + render_truncation_footer(result),
+        elapsed=time.time() - start,
+        metadata={
+            "skill_id": skill.id,
+            "scope": resolved_scope,
+            "truncated": result.truncated,
+        },
     )
 
 
 # ── Batch tool (parallel execution) ──────────────────────────────────
 
-# Tools that cannot be batched (prevent recursion)
-BATCH_FORBIDDEN = {"batch", "task"}
+# Batch is deliberately limited to workspace reads.  The outer ``batch`` call
+# receives one policy/permission decision; allowing arbitrary child tools would
+# let a model smuggle writes, shell commands, or desktop actions past specialist
+# allowlists and the session sandbox.
+BATCH_ALLOWED_TOOL_NAMES = frozenset({
+    "file_read", "glob", "grep", "git_status", "git_diff", "git_log", "skill_view",
+})
 BATCH_MAX_CALLS = 25
 BATCH_MAX_WORKERS = 10
 
 
-def _exec_batch(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
+def _exec_batch(
+    args: dict,
+    start: float,
+    cancel_event: Optional[threading.Event] = None,
+    *,
+    project_path: str = "",
+    settings: object = None,
+) -> ToolResult:
     """
-    Execute multiple tool calls in parallel using ThreadPoolExecutor.
+    Execute approved read-only tool calls in parallel using ThreadPoolExecutor.
 
     - Max 25 calls per batch
     - Cannot batch 'batch' or 'task' (recursion guard)
@@ -1811,16 +2011,26 @@ def _exec_batch(args: dict, start: float, cancel_event: Optional[threading.Event
             name = call.get("name", "")
             call_args = call.get("arguments", {})
 
-            if name in BATCH_FORBIDDEN:
+            if name not in BATCH_ALLOWED_TOOL_NAMES:
                 results[i] = {
                     "index": i, "name": name, "status": "error",
-                    "output": f"Cannot batch '{name}' tool",
+                    "output": (
+                        f"Cannot batch '{name}' tool. Batch only supports: "
+                        f"{sorted(BATCH_ALLOWED_TOOL_NAMES)}"
+                    ),
                     "elapsed": 0,
                 }
                 forbidden_indices.add(i)
                 continue
 
-            future = pool.submit(execute_tool, name, call_args, cancel_event)
+            future = pool.submit(
+                execute_tool,
+                name,
+                call_args,
+                cancel_event,
+                project_path=project_path,
+                settings=settings,
+            )
             futures[future] = (i, name)
 
         for future in as_completed(futures):

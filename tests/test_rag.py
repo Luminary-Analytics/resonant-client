@@ -237,8 +237,9 @@ class TestGetContextForPrompt:
         idx = CodebaseIndex(tmp_project)
         idx.index()
         ctx = idx.get_context_for_prompt("main", max_files=1)
-        # Count file entries (lines starting with "- ")
-        file_lines = [l for l in ctx.split("\n") if l.startswith("- ")]
+        relevant = ctx.split("--- RELEVANT FILES ---", 1)[-1]
+        # Count query-specific entries, excluding the fixed repo map.
+        file_lines = [line for line in relevant.split("\n") if line.startswith("- ")]
         assert len(file_lines) <= 1
 
     @pytest.mark.integration
@@ -246,7 +247,17 @@ class TestGetContextForPrompt:
         idx = CodebaseIndex(tmp_project)
         idx.index()
         ctx = idx.get_context_for_prompt("xyzzy_nonexistent_12345")
-        assert ctx == ""
+        assert "--- REPO MAP" in ctx
+        assert "--- RELEVANT FILES ---" not in ctx
+
+    @pytest.mark.integration
+    def test_repo_map_prioritizes_referenced_files_with_symbols(self, tmp_project):
+        idx = CodebaseIndex(tmp_project)
+        idx.index()
+        repo_map = idx.get_repo_map(max_tokens=300)
+        assert "REPO MAP" in repo_map
+        assert "auth.py" in repo_map
+        assert "Authenticator" in repo_map
 
 
 # ======================================================================

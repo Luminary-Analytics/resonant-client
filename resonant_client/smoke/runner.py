@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-import sys
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -40,6 +39,7 @@ logger = logging.getLogger(__name__)
 # removed, so adding a new model here is sufficient — the autonomous
 # stack uses PLAN_DEEP for all of them.
 MODELS: dict[str, str] = {
+    "glm": "glm-5.2:cloud",
     "flash": "deepseek-v4-flash:cloud",
     "pro": "deepseek-v4-pro:cloud",
 }
@@ -73,6 +73,13 @@ class SmokeResult:
     iter_failed: int = 0
     reflection_count: int = 0
     iter_durations_seconds: list[float] = field(default_factory=list)
+    tool_calls_total: int = 0
+    edit_attempts: int = 0
+    edit_successes: int = 0
+    fuzzy_edit_rescues: int = 0
+    tool_argument_failures: int = 0
+    backend_retry_count: int = 0
+    structured_output_repairs: int = 0
     project_path: str = ""
     roadmap_path: str = ""
     error: str = ""               # set if start_autonomous_mission raised
@@ -87,6 +94,11 @@ class SmokeResult:
         if not self.iter_durations_seconds:
             return None
         return sum(self.iter_durations_seconds) / len(self.iter_durations_seconds)
+
+    def edit_apply_success_rate(self) -> Optional[float]:
+        if not self.edit_attempts:
+            return None
+        return self.edit_successes / self.edit_attempts
 
     def to_dict(self) -> dict:
         """Serializable form — JSON-friendly. The variance report uses
@@ -107,6 +119,14 @@ class SmokeResult:
             "reflection_count": self.reflection_count,
             "iter_durations_seconds": list(self.iter_durations_seconds),
             "avg_iter_duration_seconds": self.avg_iter_duration_seconds(),
+            "tool_calls_total": self.tool_calls_total,
+            "edit_attempts": self.edit_attempts,
+            "edit_successes": self.edit_successes,
+            "edit_apply_success_rate": self.edit_apply_success_rate(),
+            "fuzzy_edit_rescues": self.fuzzy_edit_rescues,
+            "tool_argument_failures": self.tool_argument_failures,
+            "backend_retry_count": self.backend_retry_count,
+            "structured_output_repairs": self.structured_output_repairs,
             "project_path": self.project_path,
             "roadmap_path": self.roadmap_path,
             "error": self.error,
@@ -249,6 +269,13 @@ def _new_summary() -> dict:
         "iter_failed": 0,
         "reflection_count": 0,
         "iter_durations": [],
+        "tool_calls_total": 0,
+        "edit_attempts": 0,
+        "edit_successes": 0,
+        "fuzzy_edit_rescues": 0,
+        "tool_argument_failures": 0,
+        "backend_retry_count": 0,
+        "structured_output_repairs": 0,
     }
 
 
@@ -278,6 +305,26 @@ def _accumulate_event(payload: dict, summary: dict) -> None:
         summary["iter_failed"] += 1
     elif kind == "autonomous_reflection":
         summary["reflection_count"] += 1
+    elif kind == "tool.call":
+        summary["tool_calls_total"] += 1
+        if payload.get("name") == "file_edit":
+            summary["edit_attempts"] += 1
+    elif kind == "tool.result":
+        if str(payload.get("output") or "").startswith("Tool arguments were malformed"):
+            summary["tool_argument_failures"] += 1
+        if payload.get("name") == "file_edit" and not payload.get("is_error") and not payload.get("denied"):
+            summary["edit_successes"] += 1
+            strategy = (payload.get("metadata") or {}).get("match_strategy")
+            if strategy and strategy != "exact":
+                summary["fuzzy_edit_rescues"] += 1
+    elif kind == "backend.status":
+        if "retry" in str(payload.get("kind") or ""):
+            summary["backend_retry_count"] += 1
+    elif kind == "node.done":
+        result = payload.get("result") or payload.get("data") or {}
+        metrics = result.get("data") if isinstance(result, dict) else {}
+        if isinstance(metrics, dict) and metrics.get("structured_output_repaired"):
+            summary["structured_output_repairs"] += 1
 
 
 # ── Stub AppState for the runner ───────────────────────────────────────
@@ -469,6 +516,13 @@ def run_smoke(
         iter_failed=summary["iter_failed"],
         reflection_count=summary["reflection_count"],
         iter_durations_seconds=list(summary["iter_durations"]),
+        tool_calls_total=summary["tool_calls_total"],
+        edit_attempts=summary["edit_attempts"],
+        edit_successes=summary["edit_successes"],
+        fuzzy_edit_rescues=summary["fuzzy_edit_rescues"],
+        tool_argument_failures=summary["tool_argument_failures"],
+        backend_retry_count=summary["backend_retry_count"],
+        structured_output_repairs=summary["structured_output_repairs"],
         project_path=str(project_path),
         roadmap_path=roadmap_path,
         error=error,

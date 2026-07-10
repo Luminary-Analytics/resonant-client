@@ -116,6 +116,15 @@ class TestSmokeResult:
         r = _make_result(iter_durations=[60.0, 90.0, 120.0])
         assert r.avg_iter_duration_seconds() == 90.0
 
+    def test_edit_apply_success_rate(self):
+        r = _make_result()
+        r.edit_attempts = 4
+        r.edit_successes = 3
+        assert r.edit_apply_success_rate() == 0.75
+
+    def test_glm_flagship_is_a_first_class_smoke_model(self):
+        assert MODELS["glm"] == "glm-5.2:cloud"
+
     def test_to_dict_includes_derived_fields(self):
         r = _make_result(iter_durations=[100.0, 200.0])
         d = r.to_dict()

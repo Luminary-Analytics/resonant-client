@@ -4,6 +4,7 @@ Protocol helpers for communicating with the Resonant Engine API.
 Extracted from resonant_engine/api.py so the client has no engine dependencies.
 """
 
+import html
 import json
 import re
 import logging
@@ -144,6 +145,46 @@ def _try_parse_tool_json(raw: str) -> dict | None:
                     return {"name": name, "arguments": {"_raw": args_str}}
 
     return None
+
+
+def parse_dsml_tool_calls(text: str) -> tuple[str, list[dict]]:
+    """Recover DeepSeek DSML tool calls leaked as assistant text."""
+    block_pattern = re.compile(
+        r"<\|DSML\|tool_calls>(.*?)</\|DSML\|tool_calls>",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    invoke_pattern = re.compile(
+        r"<\|DSML\|invoke\s+name=[\"']([^\"']+)[\"']>(.*?)"
+        r"</\|DSML\|invoke>",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    parameter_pattern = re.compile(
+        r"<\|DSML\|parameter\s+name=[\"']([^\"']+)[\"']"
+        r"(?:\s+string=[\"'](true|false)[\"'])?>(.*?)"
+        r"</\|DSML\|parameter>",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+
+    calls: list[dict] = []
+    for block in block_pattern.finditer(text or ""):
+        for invoke in invoke_pattern.finditer(block.group(1)):
+            arguments: dict = {}
+            for parameter in parameter_pattern.finditer(invoke.group(2)):
+                name, string_flag, raw_value = parameter.groups()
+                value = html.unescape(raw_value.strip())
+                if (string_flag or "").lower() != "true":
+                    try:
+                        value = json.loads(value)
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                arguments[html.unescape(name)] = value
+            calls.append({
+                "name": html.unescape(invoke.group(1)),
+                "arguments": json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+            })
+
+    plain_text = block_pattern.sub("", text or "").strip()
+    return plain_text, calls
 
 
 def parse_tool_calls(text: str) -> tuple:

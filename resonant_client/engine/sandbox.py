@@ -7,16 +7,13 @@ Inspired by Codex CLI's approach: more autonomy = tighter sandbox.
 
 from __future__ import annotations
 
-import logging
 import os
-from pathlib import Path
 from typing import Optional
-
-logger = logging.getLogger(__name__)
 
 # Tools classified as read-only (safe even in suggest mode)
 READ_ONLY_TOOLS = frozenset({
     "file_read", "glob", "grep",
+    "skill_view",
     "browser_read", "browser_screenshot", "browser_js",
     "browser_scroll", "browser_hover", "browser_wait", "browser_back", "browser_tabs",
     "computer_screenshot",
@@ -65,9 +62,12 @@ class PathSandbox:
         allowed_dirs: Optional[list[str]] = None,
         enabled: bool = True,
     ):
-        self.project_path = os.path.normpath(os.path.abspath(project_path))
+        # Resolve symlinks/junctions at the boundary, not only lexical ``..``
+        # components.  ``abspath`` alone lets ``project/link/file`` escape when
+        # ``link`` points outside the project.
+        self.project_path = self._canonical_path(project_path)
         self.allowed_dirs = [
-            os.path.normpath(os.path.abspath(d))
+            self._canonical_path(d)
             for d in (allowed_dirs or [])
         ]
         self.enabled = enabled
@@ -86,9 +86,9 @@ class PathSandbox:
 
         # Resolve the path
         if os.path.isabs(path):
-            resolved = os.path.normpath(os.path.abspath(path))
+            resolved = self._canonical_path(path)
         else:
-            resolved = os.path.normpath(os.path.join(self.project_path, path))
+            resolved = self._canonical_path(os.path.join(self.project_path, path))
 
         # Check if path is within allowed boundaries
         if self._is_within_bounds(resolved):
@@ -101,7 +101,7 @@ class PathSandbox:
         if not self.enabled:
             return cwd
 
-        resolved = os.path.normpath(os.path.abspath(cwd))
+        resolved = self._canonical_path(cwd)
         if self._is_within_bounds(resolved):
             return resolved
 
@@ -109,21 +109,56 @@ class PathSandbox:
 
     def _is_within_bounds(self, resolved_path: str) -> bool:
         """Check if a resolved path falls within project_path or allowed_dirs."""
-        # Normalize for comparison (case-insensitive on Windows)
-        norm = resolved_path.lower() if os.name == "nt" else resolved_path
-        project_norm = self.project_path.lower() if os.name == "nt" else self.project_path
-
-        # Check project directory
-        if norm == project_norm or norm.startswith(project_norm + os.sep):
-            return True
-
-        # Check additional allowed directories
-        for allowed in self.allowed_dirs:
-            allowed_norm = allowed.lower() if os.name == "nt" else allowed
-            if norm == allowed_norm or norm.startswith(allowed_norm + os.sep):
-                return True
-
+        candidate = self._canonical_path(resolved_path)
+        for root in (self.project_path, *self.allowed_dirs):
+            try:
+                if os.path.commonpath((candidate, root)) == root:
+                    return True
+            except ValueError:
+                # Different Windows drives have no common path.
+                continue
         return False
+
+    @staticmethod
+    def _canonical_path(path: str) -> str:
+        """Return a normalized, symlink-aware path for boundary checks."""
+        return os.path.normcase(os.path.realpath(os.path.abspath(path)))
+
+    def validate_glob_pattern(
+        self,
+        pattern: str,
+        *,
+        base_path: Optional[str] = None,
+    ) -> str:
+        """Validate the non-wildcard prefix of a glob pattern.
+
+        Both absolute patterns and relative ``..`` traversal can replace or
+        escape the independently validated base directory.  Resolve the static
+        portion of the effective pattern and keep it within the sandbox.
+        """
+        if not self.enabled or not pattern:
+            return pattern
+
+        effective_pattern = pattern
+        if not os.path.isabs(effective_pattern):
+            effective_pattern = os.path.join(base_path or self.project_path, pattern)
+
+        normalized_pattern = os.path.normpath(effective_pattern)
+        parts = normalized_pattern.split(os.sep)
+        prefix_parts: list[str] = []
+        for part in parts:
+            if any(char in part for char in ("*", "?", "[")):
+                break
+            prefix_parts.append(part)
+        prefix = os.sep.join(prefix_parts) or os.path.dirname(normalized_pattern)
+        # Preserve the root/drive when splitting an absolute path.
+        drive, _ = os.path.splitdrive(normalized_pattern)
+        if drive and not os.path.isabs(prefix):
+            prefix = drive + os.sep + prefix
+        elif normalized_pattern.startswith(os.sep) and not prefix.startswith(os.sep):
+            prefix = os.sep + prefix
+        self.validate_path(prefix)
+        return pattern
 
     @staticmethod
     def is_read_only_tool(tool_name: str) -> bool:

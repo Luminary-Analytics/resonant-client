@@ -10,6 +10,7 @@ and streaming. Yields a common event stream the engine consumes.
 """
 
 import json
+import hashlib
 import logging
 import os
 import queue
@@ -24,7 +25,7 @@ from typing import Iterator, Tuple
 
 import httpx
 
-from .protocol import build_tool_system_prompt, parse_tool_calls
+from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,12 @@ EVENT_ERROR = "error"                     # {"message": "..."}
 #                             renders this as a persistent chip (the
 #                             per-retry banner auto-fades).
 EVENT_BACKEND_STATUS = "backend.status"
+
+
+def _new_call_id(name: str, arguments: str, ordinal: int = 0) -> str:
+    """Return a stable identifier that remains unique within one response."""
+    payload = f"{ordinal}\0{name}\0{arguments}".encode("utf-8", errors="replace")
+    return f"call_{hashlib.sha256(payload).hexdigest()[:8]}"
 
 
 def _convert_tools_for_ollama(tools: list) -> list:
@@ -92,7 +99,7 @@ def _detect_json_tool_calls(text: str) -> list:
                         args = parsed.get("arguments", {})
                         if name:
                             args_str = json.dumps(args) if isinstance(args, dict) else str(args)
-                            call_id = f"call_{hash(name + args_str) & 0xFFFFFFFF:08x}"
+                            call_id = _new_call_id(name, args_str, len(results))
                             results.append({
                                 "name": name,
                                 "arguments": args_str,
@@ -159,7 +166,7 @@ def _build_simple_tool_call(name: str, raw_args: str) -> dict | None:
         return None  # file_write, file_edit need multiple args
 
     args_str = json.dumps(args)
-    call_id = f"call_{hash(name + args_str) & 0xFFFFFFFF:08x}"
+    call_id = _new_call_id(name, args_str)
     return {"name": name, "arguments": args_str, "call_id": call_id}
 
 
@@ -197,6 +204,17 @@ def _safe_image_b64(image_payload) -> str:
     if not isinstance(image_payload, dict):
         return ""
     return _clean_image_b64(image_payload.get("data", ""))
+
+
+def _message_text(content) -> str:
+    """Extract comparable text from a scalar or multimodal history entry."""
+    if isinstance(content, list):
+        return " ".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict) and part.get("type") == "text"
+        )
+    return str(content or "")
 
 
 # ---------------------------------------------------------------------------
@@ -359,6 +377,21 @@ class OllamaBackend:
     _governors: dict[str, "_RequestGovernor"] = {}
     _governors_lock = threading.Lock()
 
+    @staticmethod
+    def _default_num_ctx(model: str) -> int:
+        """Return a practical model-aware context target."""
+        lower = (model or "").lower()
+        # Cloud KV memory is remote, so expose the flagship windows instead of
+        # carrying forward the old local-memory 32K/128K caps.  The Ollama
+        # registry advertises 976K for GLM-5.2 and 1M for DeepSeek V4.
+        if lower == "glm-5.2:cloud":
+            return 999_424
+        if lower in {"deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"}:
+            return 1_048_576
+        if "glm-5" in lower or ("deepseek" in lower and "pro" in lower):
+            return 131_072
+        return 32_768
+
     def __init__(self, base_url: str, model: str, *, thinking: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -372,10 +405,15 @@ class OllamaBackend:
         # 32k context (1M is the model's max but is wasteful for typical sessions),
         # 1024 batch size to keep the GPU fed, num_gpu=99 forces all layers onto Metal.
         # Override via RESONANT_OLLAMA_NUM_CTX/NUM_BATCH/NUM_GPU when needed.
+        configured_num_ctx = os.environ.get("RESONANT_OLLAMA_NUM_CTX", "").strip()
+        try:
+            num_ctx = int(configured_num_ctx) if configured_num_ctx else self._default_num_ctx(model)
+        except ValueError:
+            num_ctx = self._default_num_ctx(model)
         self._ollama_options = {
             "num_gpu": int(os.environ.get("RESONANT_OLLAMA_NUM_GPU", "99")),
             "num_batch": int(os.environ.get("RESONANT_OLLAMA_NUM_BATCH", "1024")),
-            "num_ctx": int(os.environ.get("RESONANT_OLLAMA_NUM_CTX", "32768")),
+            "num_ctx": max(4_096, num_ctx),
         }
         # Thinking-mode. Sent as `options.think` (verified to work via
         # that path on glm-5.2:cloud, 2026-06-17). The internal token is
@@ -387,16 +425,25 @@ class OllamaBackend:
         # through the GUI/spec) and translate only on the way to the
         # wire — see `_wire_think_value`.
         raw = (thinking or "").strip().lower()
+        self._ollama_think: str | bool | None = None
         if raw in {"", "off"}:
             self.thinking_mode = None
-        elif raw in {"low", "med", "medium", "high"}:
+        elif raw in {"low", "med", "medium", "high", "max"}:
             normalized = "med" if raw == "medium" else raw
             self.thinking_mode = normalized
-            self._ollama_options["think"] = self._wire_think_value(normalized)
+            self._ollama_think = self._wire_think_value(normalized)
         else:
             # Unknown value — drop silently rather than poisoning the dict
             self.thinking_mode = None
         # Keep models warm — first-load on a 284B MoE is several minutes.
+        # Pin the vendor-tested sampling distribution. DeepSeek's thinking
+        # mode ignores sampling controls, so omit them there.
+        model_lower = self.model.lower()
+        if "glm-5" in model_lower:
+            self._ollama_options.update({"temperature": 1.0, "top_p": 0.95})
+        elif "deepseek-v4" in model_lower and self._ollama_think is None:
+            self._ollama_options.update({"temperature": 1.0, "top_p": 1.0})
+
         self._ollama_keep_alive = (os.environ.get("RESONANT_OLLAMA_KEEP_ALIVE", "120m").strip() or "120m")
         # deepseek-v4 with thinking can take a while; raise read timeout.
         # v0.6.4 (F6) — read timeout 240 → 300. A rigorous-grill cold
@@ -410,6 +457,28 @@ class OllamaBackend:
             os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
         )
 
+    @property
+    def effective_context_tokens(self) -> int:
+        """Context window currently sent to Ollama and used by compression."""
+        return int(self._ollama_options.get("num_ctx", 32_768) or 32_768)
+
+    def _apply_reported_context_length(self, model_info: dict) -> None:
+        """Clamp the request window to a model's advertised maximum."""
+        lengths: list[int] = []
+        for key, value in (model_info or {}).items():
+            if not str(key).lower().endswith("context_length"):
+                continue
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                lengths.append(parsed)
+        if lengths:
+            reported = max(lengths)
+            if reported < self.effective_context_tokens:
+                self._ollama_options["num_ctx"] = max(4_096, reported)
+
     def _wire_think_value(self, token: str) -> str:
         """Map the internal thinking token to the value THIS model's
         Ollama endpoint accepts. deepseek uses "med" for the middle
@@ -421,6 +490,12 @@ class OllamaBackend:
         if token == "med" and not base.startswith("deepseek"):
             return "medium"
         return token
+
+    def _with_thinking(self, payload: dict, *, enabled: bool = True) -> dict:
+        """Attach Ollama's documented top-level ``think`` request field."""
+        if enabled and self._ollama_think is not None:
+            payload["think"] = self._ollama_think
+        return payload
 
     def get_runtime_telemetry(self, *, timeout: float = 5.0) -> dict:
         """
@@ -455,7 +530,7 @@ class OllamaBackend:
             "raw_ps_entry": {},
             "model_info": {},
             "supports_thinking": False,
-            "active_thinking": self._ollama_options.get("think", ""),
+            "active_thinking": self._ollama_think or "",
         }
 
         # /api/ps — what's loaded right now
@@ -601,6 +676,7 @@ class OllamaBackend:
             )
             if resp.status_code == 200:
                 info = resp.json()
+                self._apply_reported_context_length(info.get("model_info") or {})
                 # v0.5.2a3 — check `capabilities` array FIRST. Cloud
                 # models (`*:cloud`) typically have an empty template
                 # field but DO declare capabilities. Falling through
@@ -647,14 +723,14 @@ class OllamaBackend:
             }]
             resp = httpx.post(
                 f"{self.base_url}/api/chat",
-                json={
+                json=self._with_thinking({
                     "model": self.model,
                     "messages": [{"role": "user", "content": "Call test_tool with value 'hello'"}],
                     "tools": probe_tool,
                     "stream": False,
                     "keep_alive": self._ollama_keep_alive,
                     "options": opts,
-                },
+                }),
                 timeout=30,
             )
             if resp.status_code == 200:
@@ -700,7 +776,9 @@ class OllamaBackend:
                 timeout=5,
             )
             if resp.status_code == 200:
-                caps = resp.json().get("capabilities", []) or []
+                info = resp.json()
+                self._apply_reported_context_length(info.get("model_info") or {})
+                caps = info.get("capabilities", []) or []
                 supported = any(str(c).lower() == "vision" for c in caps)
                 OllamaBackend._vision_support_cache[self.model] = supported
                 logger.info(f"Vision support for {self.model}: {supported} (capabilities={caps})")
@@ -722,13 +800,13 @@ class OllamaBackend:
             opts["num_predict"] = 1
             httpx.post(
                 f"{self.base_url}/api/chat",
-                json={
+                json=self._with_thinking({
                     "model": self.model,
                     "messages": [{"role": "user", "content": "hi"}],
                     "stream": False,
                     "keep_alive": self._ollama_keep_alive,
                     "options": opts,
-                },
+                }),
                 timeout=max(120.0, self._ollama_http_timeout),
             )
             logger.info("Model %s warmed up", self.model)
@@ -750,6 +828,67 @@ class OllamaBackend:
             }
         except Exception as e:
             return {"status": "error", "message": str(e)}
+
+    def generate_structured(
+        self,
+        user_msg: str,
+        schema: dict,
+        *,
+        instructions: str = "Return only the requested JSON value.",
+        max_tokens: int = 4096,
+    ) -> dict | list:
+        """Generate JSON with Ollama's schema-constrained ``format`` mode.
+
+        Keep this separate from the conversational tool loop: it is intended
+        for final machine-readable envelopes after free-form reasoning.
+        """
+        if self.model.lower().endswith(":cloud"):
+            raise NotImplementedError(
+                "Ollama Cloud does not currently support structured outputs"
+            )
+        if not isinstance(schema, dict) or not schema:
+            raise ValueError("schema must be a non-empty JSON Schema object")
+        options = dict(self._ollama_options)
+        options.update({"num_predict": max(1, int(max_tokens)), "temperature": 0})
+        payload = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": instructions},
+                {"role": "user", "content": user_msg},
+            ],
+            "format": schema,
+            "stream": False,
+            "keep_alive": self._ollama_keep_alive,
+            "options": options,
+        }
+        governor = self._governor_for(self.base_url)
+        if not governor.acquire():
+            raise RuntimeError("structured output request was cancelled")
+        try:
+            response = httpx.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=httpx.Timeout(
+                    self._ollama_http_timeout,
+                    connect=10.0,
+                    read=self._ollama_http_read_timeout,
+                ),
+            )
+            if response.status_code in _OLLAMA_RATELIMIT_STATUS:
+                governor.record_rate_limited()
+            response.raise_for_status()
+            raw = (response.json().get("message") or {}).get("content", "")
+            parsed = json.loads(raw)
+            expected = schema.get("type")
+            if expected == "object" and not isinstance(parsed, dict):
+                raise ValueError("structured response root was not an object")
+            if expected == "array" and not isinstance(parsed, list):
+                raise ValueError("structured response root was not an array")
+            governor.record_success()
+            self._circuit_record_success()
+            return parsed
+        finally:
+            governor.release()
 
     def list_models(self) -> list:
         """Return list of available model names, including cloud models."""
@@ -782,6 +921,7 @@ class OllamaBackend:
                     "model": self.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
+                    "think": False,
                     "keep_alive": self._ollama_keep_alive,
                     "options": opts,
                 },
@@ -877,9 +1017,8 @@ class OllamaBackend:
                                     "notify_retry callback raised; ignoring",
                                     exc_info=True,
                                 )
-                        # Fall through to retry; client closes via
-                        # the outer try's finally.
-                        retry_after_close = True
+                        # Fall through to retry; the response and client close
+                        # when their context managers exit.
                     else:
                         # Success path (2xx) OR final attempt with a
                         # non-2xx — hand to caller. cleanup handled
@@ -1044,7 +1183,7 @@ class OllamaBackend:
                             args = json.loads(args)
                         except json.JSONDecodeError:
                             args = {}
-                    messages.append({
+                    assistant_message = {
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [{
@@ -1053,7 +1192,11 @@ class OllamaBackend:
                                 "arguments": args,
                             }
                         }],
-                    })
+                    }
+                    reasoning = turn.get("reasoning_content") or turn.get("thinking")
+                    if reasoning:
+                        assistant_message["thinking"] = reasoning
+                    messages.append(assistant_message)
                 else:
                     # Text mode: reconstruct XML tool call in assistant message
                     args = turn.get("arguments", "{}")
@@ -1123,12 +1266,21 @@ class OllamaBackend:
                 else:
                     messages.append({"role": role, "content": content})
 
-        # Current user message
-        messages.append({"role": "user", "content": user_msg})
+        # Session.run records the current user turn before calling the backend.
+        # Avoid duplicating it on the first inference step.
+        history_has_current_user = bool(
+            conversation_history
+            and conversation_history[-1].get("role") == "user"
+            and _message_text(conversation_history[-1].get("content")) == str(user_msg or "")
+        )
+        if not history_has_current_user:
+            messages.append({"role": "user", "content": user_msg})
 
         # Use fixed options — NEVER change num_ctx or other params between requests,
         # or Ollama will reload the entire model from disk (30-120s penalty)
         opts = dict(self._ollama_options)
+        if "deepseek-v4-pro" in self.model.lower():
+            max_tokens = min(max_tokens, 65_536)
         opts["num_predict"] = max_tokens
 
         payload = {
@@ -1138,6 +1290,7 @@ class OllamaBackend:
             "keep_alive": self._ollama_keep_alive,
             "options": opts,
         }
+        self._with_thinking(payload)
 
         # Pass tools via Ollama API only in native mode
         # In text mode, tools are already in the system prompt
@@ -1145,6 +1298,7 @@ class OllamaBackend:
             payload["tools"] = _convert_tools_for_ollama(tools)
 
         collected_tokens = []      # Text tokens (buffered initially)
+        collected_thinking = []    # Replayed on assistant tool-call messages
         native_tool_calls = []     # Tool calls from Ollama's native API
         streaming = False          # True once we've started streaming text to TUI
         has_tools = bool(tools)    # Whether tools are available (determines buffering)
@@ -1287,10 +1441,23 @@ class OllamaBackend:
 
                             plain_text = ""  # Text outside tool_call blocks
                             if not detected_calls:
+                                plain_text, dsml_calls = parse_dsml_tool_calls(clean_text)
+                                for tc in dsml_calls:
+                                    detected_calls.append({
+                                        "name": tc["name"],
+                                        "arguments": tc["arguments"],
+                                        "call_id": _new_call_id(
+                                            tc["name"], tc["arguments"], len(detected_calls)
+                                        ),
+                                    })
+
+                            if not detected_calls:
                                 # Try XML tags — returns (plain_text, tool_calls)
                                 plain_text, xml_calls = parse_tool_calls(clean_text)
                                 for tc in xml_calls:
-                                    call_id = f"call_{hash(tc['name'] + tc['arguments']) & 0xFFFFFFFF:08x}"
+                                    call_id = _new_call_id(
+                                        tc["name"], tc["arguments"], len(detected_calls)
+                                    )
                                     detected_calls.append({
                                         "name": tc["name"],
                                         "arguments": tc["arguments"],
@@ -1339,6 +1506,9 @@ class OllamaBackend:
 
                         # Check for native tool calls
                         msg = data.get("message", {})
+                        reasoning_token = msg.get("thinking") or msg.get("reasoning_content")
+                        if reasoning_token:
+                            collected_thinking.append(str(reasoning_token))
                         native_tc = msg.get("tool_calls", [])
                         if native_tc:
                             for tc in native_tc:
@@ -1346,11 +1516,12 @@ class OllamaBackend:
                                 name = fn.get("name", "")
                                 args = fn.get("arguments", {})
                                 args_str = json.dumps(args) if isinstance(args, dict) else str(args)
-                                call_id = f"call_{hash(name + args_str) & 0xFFFFFFFF:08x}"
+                                call_id = _new_call_id(name, args_str, len(native_tool_calls))
                                 native_tool_calls.append({
                                     "name": name,
                                     "arguments": args_str,
                                     "call_id": call_id,
+                                    "reasoning_content": "".join(collected_thinking),
                                 })
                             continue
 
@@ -1445,13 +1616,6 @@ _CODEX_MODEL_LABELS = {
     "gpt-5.4-mini": "gpt-5.4-mini",
     "gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
 }
-
-
-def _truthy_env(name: str, default: bool = True) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _split_model_list(raw: str) -> list[str]:
@@ -1611,7 +1775,14 @@ def _build_codex_prompt(
 ) -> str:
     is_plan = "You are in PLAN MODE" in (instructions or "")
     context = _codex_context_blocks(instructions or "")
-    history = _format_codex_history(conversation_history or [])
+    history_items = list(conversation_history or [])
+    if (
+        history_items
+        and history_items[-1].get("role") == "user"
+        and _message_text(history_items[-1].get("content")) == str(user_msg or "")
+    ):
+        history_items = history_items[:-1]
+    history = _format_codex_history(history_items)
 
     parts = [
         "You are being invoked by Resonant through Codex CLI.",
@@ -1628,6 +1799,20 @@ def _build_codex_prompt(
     return "\n\n".join(parts).strip() + "\n"
 
 
+_CODEX_PERMISSION_PROFILES = {
+    # ``codex exec`` cannot relay an interactive approval request back through
+    # Resonant yet. Keep Ask and Plan genuinely non-mutating instead of letting
+    # a subprocess silently approve its own changes.
+    "ask": ("read-only", "never"),
+    "plan": ("read-only", "never"),
+    # Auto-edit lets Codex use its patching tools while untrusted shell actions
+    # are refused by the non-interactive CLI.
+    "auto-edit": ("workspace-write", "untrusted"),
+    # Resonant's Full-auto remains sandboxed to the selected project.
+    "bypass": ("workspace-write", "never"),
+}
+
+
 class CodexCliBackend:
     """Subscription/API-auth backed Codex CLI execution."""
 
@@ -1638,6 +1823,7 @@ class CodexCliBackend:
         cwd: str | None = None,
         cli_path: str | None = None,
         sandbox: str | None = None,
+        permission_mode: str | None = None,
     ):
         if not model:
             raise ValueError("Model name required for Codex backend")
@@ -1651,10 +1837,21 @@ class CodexCliBackend:
                 "Codex CLI was not found. Install/sign in to Codex, or set "
                 "RESONANT_CODEX_CLI to the codex executable."
             )
-        self.sandbox = (sandbox or os.environ.get("RESONANT_CODEX_SANDBOX", "workspace-write")).strip()
-        if self.sandbox not in {"read-only", "workspace-write", "danger-full-access"}:
-            self.sandbox = "workspace-write"
-        self.ignore_user_config = _truthy_env("RESONANT_CODEX_IGNORE_USER_CONFIG", True)
+        self._sandbox_override = (sandbox or "").strip()
+        if self._sandbox_override not in {"read-only", "workspace-write", "danger-full-access"}:
+            self._sandbox_override = ""
+        self.permission_mode = "bypass"
+        self.sandbox = "workspace-write"
+        self.approval_policy = "never"
+        self.configure_permission_mode(permission_mode or "bypass")
+
+    def configure_permission_mode(self, mode: str) -> None:
+        """Apply Resonant's permission mode to the non-interactive CLI run."""
+        normalized = mode if mode in _CODEX_PERMISSION_PROFILES else "bypass"
+        sandbox, approval = _CODEX_PERMISSION_PROFILES[normalized]
+        self.permission_mode = normalized
+        self.sandbox = self._sandbox_override or sandbox
+        self.approval_policy = approval
 
     @staticmethod
     def list_available_models() -> list[str]:
@@ -1706,6 +1903,8 @@ class CodexCliBackend:
             self.cli_path,
             "exec",
             "--json",
+            "-c",
+            f'approval_policy="{self.approval_policy}"',
             "--sandbox",
             self.sandbox,
             "--skip-git-repo-check",
@@ -1714,8 +1913,6 @@ class CodexCliBackend:
             "-C",
             self.cwd,
         ]
-        if self.ignore_user_config:
-            cmd.insert(2, "--ignore-user-config")
         cmd.append("-")
         return cmd
 
@@ -1879,7 +2076,8 @@ def create_backend(
         return CodexCliBackend(
             model or codex_cli_models()[0],
             cwd=cwd,
-            sandbox=os.environ.get("RESONANT_CODEX_SANDBOX", "workspace-write"),
+            sandbox=os.environ.get("RESONANT_CODEX_SANDBOX") or None,
+            permission_mode=permission_mode,
         )
     if backend_type != "ollama":
         raise ValueError(

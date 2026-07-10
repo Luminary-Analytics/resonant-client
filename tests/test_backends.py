@@ -741,6 +741,29 @@ class TestOllamaBackendInit:
         assert b._ollama_keep_alive == "24h"
         assert b._ollama_http_read_timeout == 300.0
 
+    @pytest.mark.unit
+    def test_flagship_models_get_large_context_without_env_override(self, monkeypatch):
+        monkeypatch.delenv("RESONANT_OLLAMA_NUM_CTX", raising=False)
+
+        glm = OllamaBackend("http://127.0.0.1:11434", "glm-5.2:cloud")
+        pro = OllamaBackend("http://127.0.0.1:11434", "deepseek-v4-pro:cloud")
+        flash = OllamaBackend("http://127.0.0.1:11434", "deepseek-v4-flash:cloud")
+
+        assert glm.effective_context_tokens == 999_424
+        assert pro.effective_context_tokens == 1_048_576
+        assert flash.effective_context_tokens == 1_048_576
+
+    @pytest.mark.unit
+    def test_reported_context_length_can_clamp_but_not_expand_request(self, monkeypatch):
+        monkeypatch.delenv("RESONANT_OLLAMA_NUM_CTX", raising=False)
+        backend = OllamaBackend("http://127.0.0.1:11434", "glm-5.2:cloud")
+
+        backend._apply_reported_context_length({"glm.context_length": 65_536})
+        assert backend.effective_context_tokens == 65_536
+
+        backend._apply_reported_context_length({"glm.context_length": 1_000_000})
+        assert backend.effective_context_tokens == 65_536
+
 
 # ---------------------------------------------------------------------------
 # Edge cases / adversarial
@@ -1329,33 +1352,33 @@ class TestThinkingWireValues:
     def test_glm_med_token_maps_to_medium_on_wire(self):
         b = OllamaBackend("http://stub", "glm-5.2:cloud", thinking="med")
         assert b.thinking_mode == "med"                      # internal token
-        assert b._ollama_options.get("think") == "medium"    # wire value
+        assert b._ollama_think == "medium"                   # top-level wire value
 
     @pytest.mark.unit
     def test_glm_medium_word_also_maps_to_medium(self):
         b = OllamaBackend("http://stub", "glm-5.2:cloud", thinking="medium")
         assert b.thinking_mode == "med"
-        assert b._ollama_options.get("think") == "medium"
+        assert b._ollama_think == "medium"
 
     @pytest.mark.unit
     def test_deepseek_med_stays_med_on_wire(self):
         b = OllamaBackend("http://stub", "deepseek-v4-pro:cloud", thinking="med")
         assert b.thinking_mode == "med"
-        assert b._ollama_options.get("think") == "med"
+        assert b._ollama_think == "med"
 
     @pytest.mark.unit
     @pytest.mark.parametrize("model", ["glm-5.2:cloud", "deepseek-v4-pro:cloud"])
     @pytest.mark.parametrize("level", ["low", "high"])
     def test_low_high_are_universal(self, model, level):
         b = OllamaBackend("http://stub", model, thinking=level)
-        assert b._ollama_options.get("think") == level
+        assert b._ollama_think == level
 
     @pytest.mark.unit
     @pytest.mark.parametrize("off", ["", "off", None])
     def test_off_sends_no_think_option(self, off):
         b = OllamaBackend("http://stub", "glm-5.2:cloud", thinking=off)
         assert b.thinking_mode is None
-        assert "think" not in b._ollama_options
+        assert b._ollama_think is None
 
 
 # ── v0.6.5: Circuit breaker (backend resilience for long runs) ────────

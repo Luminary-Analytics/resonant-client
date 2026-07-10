@@ -184,7 +184,8 @@ class TestStuckBackendSmoke:
         # First call gets the original user message.
         assert msgs[0] == "explore the repo"
         # Second call (after one repeat, count=1) is the standard continue prompt.
-        assert msgs[1] == "Continue based on the tool results above."
+        assert msgs[1].startswith("Continue based on the tool results above.")
+        assert "Original request: explore the repo" in msgs[1]
         # Third call (after the second identical tool call, count=2) is the nudge.
         assert "different" in msgs[2].lower(), msgs[2]
         assert "glob" in msgs[2].lower(), msgs[2]

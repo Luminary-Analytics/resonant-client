@@ -77,10 +77,22 @@ def render_run_markdown(result: SmokeResult) -> str:
     lines.append(f"| Iter (started/done/failed) | "
                  f"{result.iter_started} / {result.iter_complete} / {result.iter_failed} |")
     lines.append(f"| Reflections | {result.reflection_count} |")
+    edit_rate = result.edit_apply_success_rate()
+    lines.append(f"| Tool calls | {result.tool_calls_total} |")
+    lines.append(
+        f"| Edit apply success | "
+        f"{result.edit_successes}/{result.edit_attempts} "
+        f"({edit_rate * 100:.0f}%) |" if edit_rate is not None
+        else "| Edit apply success | - |"
+    )
+    lines.append(f"| Fuzzy edit rescues | {result.fuzzy_edit_rescues} |")
+    lines.append(f"| Tool argument failures | {result.tool_argument_failures} |")
+    lines.append(f"| Backend retries | {result.backend_retry_count} |")
+    lines.append(f"| Structured-output repairs | {result.structured_output_repairs} |")
     avg = result.avg_iter_duration_seconds()
     lines.append(f"| Avg iter duration | {_fmt_duration(avg)} |")
     if result.timed_out:
-        lines.append(f"| Timed out | yes |")
+        lines.append("| Timed out | yes |")
     if result.error:
         # Backtick-escape the error so leading `<` etc don't break formatting.
         lines.append(f"| Error | `{result.error}` |")

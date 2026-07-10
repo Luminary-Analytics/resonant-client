@@ -251,6 +251,40 @@ class TestAccumulateEvent:
         _accumulate_event({"event": "autonomous_reflection"}, s)
         assert s["reflection_count"] == 1
 
+    def test_agent_reliability_metrics_are_accumulated(self):
+        s = self._new()
+        events = [
+            {"event": "tool.call", "name": "file_edit"},
+            {
+                "event": "tool.result",
+                "name": "file_edit",
+                "is_error": False,
+                "metadata": {"match_strategy": "indentation"},
+            },
+            {"event": "tool.call", "name": "grep"},
+            {
+                "event": "tool.result",
+                "name": "grep",
+                "is_error": True,
+                "output": "Tool arguments were malformed: expected object",
+            },
+            {"event": "backend.status", "kind": "ollama_retry"},
+            {
+                "event": "node.done",
+                "result": {"data": {"structured_output_repaired": True}},
+            },
+        ]
+        for event in events:
+            _accumulate_event(event, s)
+
+        assert s["tool_calls_total"] == 2
+        assert s["edit_attempts"] == 1
+        assert s["edit_successes"] == 1
+        assert s["fuzzy_edit_rescues"] == 1
+        assert s["tool_argument_failures"] == 1
+        assert s["backend_retry_count"] == 1
+        assert s["structured_output_repairs"] == 1
+
     def test_unknown_event_is_no_op(self):
         s_before = self._new()
         s = self._new()

@@ -6,7 +6,6 @@ into a compact form while keeping recent turns intact.
 """
 
 import logging
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +15,9 @@ CHARS_PER_TOKEN = 4
 # Default thresholds
 DEFAULT_MAX_CONTEXT_TOKENS = 100_000
 KEEP_RECENT_TURNS = 6  # Keep last N user+assistant pairs verbatim
+CONTEXT_HEADROOM_RATIO = 0.75
+KEEP_RECENT_TOOL_RESULTS = 8
+EVICT_TOOL_RESULT_OVER_CHARS = 1_200
 
 # v0.4.6 (T2.1) — per-tier context budgets for the DeepSeek family
 # (and any other model where the upstream context window differs
@@ -47,7 +49,11 @@ _MODEL_CONTEXT_BUDGETS: dict[str, int] = {
 }
 
 
-def model_context_budget(model_name: str | None) -> int:
+def model_context_budget(
+    model_name: str | None,
+    *,
+    context_window: int | None = None,
+) -> int:
     """Return the compress-threshold for `model_name`.
 
     Match strategy (in order):
@@ -58,6 +64,8 @@ def model_context_budget(model_name: str | None) -> int:
 
     Returns the integer threshold; never raises.
     """
+    if context_window:
+        return max(4_096, int(context_window * CONTEXT_HEADROOM_RATIO))
     if not model_name:
         return DEFAULT_MAX_CONTEXT_TOKENS
     lower = model_name.lower()
@@ -91,11 +99,50 @@ def estimate_tokens(history: list) -> int:
     return total_chars // CHARS_PER_TOKEN
 
 
+def evict_old_tool_outputs(
+    history: list,
+    *,
+    keep_recent: int = KEEP_RECENT_TOOL_RESULTS,
+    over_chars: int = EVICT_TOOL_RESULT_OVER_CHARS,
+) -> tuple[list, int]:
+    """Replace stale, oversized tool payloads with re-fetchable receipts.
+
+    Tool output is usually the cheapest context to discard: file reads, grep
+    results, and test logs can be reproduced, while user decisions and agent
+    conclusions cannot.  Keep the newest results intact and preserve tool
+    identity/size so a model can deliberately re-run a paginated read.
+    """
+    tool_indexes = [
+        index for index, entry in enumerate(history)
+        if entry.get("role") == "tool_result"
+    ]
+    protected = set(tool_indexes[-max(0, keep_recent):]) if keep_recent else set()
+    rewritten = list(history)
+    evicted = 0
+    for index in tool_indexes:
+        if index in protected:
+            continue
+        entry = history[index]
+        content = entry.get("content", "")
+        if not isinstance(content, str) or len(content) <= over_chars:
+            continue
+        name = str(entry.get("name") or "tool")
+        replacement = dict(entry)
+        replacement["content"] = (
+            f"[Earlier {name} result evicted from context ({len(content):,} chars). "
+            "Re-run the tool with offset/limit pagination if the details are needed.]"
+        )
+        rewritten[index] = replacement
+        evicted += 1
+    return rewritten, evicted
+
+
 def should_compress(
     history: list,
     max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     *,
     model_name: str | None = None,
+    context_window: int | None = None,
 ) -> bool:
     """Check if the conversation history needs compression.
 
@@ -108,8 +155,11 @@ def should_compress(
     """
     if len(history) < KEEP_RECENT_TURNS * 2 + 4:
         return False
-    if model_name is not None:
-        max_tokens = model_context_budget(model_name)
+    if model_name is not None or context_window is not None:
+        max_tokens = model_context_budget(
+            model_name,
+            context_window=context_window,
+        )
     return estimate_tokens(history) > max_tokens
 
 
@@ -164,6 +214,7 @@ def compress(
     max_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
     *,
     model_name: str | None = None,
+    context_window: int | None = None,
 ) -> tuple[list, str]:
     """Compress conversation history by summarizing older messages.
 
@@ -180,8 +231,28 @@ def compress(
     history = session.conversation_history
     backend = backend or session.backend
 
-    if not should_compress(history, max_tokens, model_name=model_name):
+    if not should_compress(
+        history,
+        max_tokens,
+        model_name=model_name,
+        context_window=context_window,
+    ):
         return history, ""
+
+    # First take the lossless/recoverable tier: evict old, oversized tool
+    # payloads before asking the model to summarize human and agent decisions.
+    pruned_history, evicted = evict_old_tool_outputs(history)
+    if evicted:
+        budget = (
+            model_context_budget(model_name, context_window=context_window)
+            if model_name is not None or context_window is not None
+            else max_tokens
+        )
+        if estimate_tokens(pruned_history) <= budget:
+            note = f"Evicted {evicted} stale tool output(s); conversation text was preserved."
+            logger.info(note)
+            return pruned_history, note
+        history = pruned_history
 
     # Split: older messages to summarize, recent to keep
     # Count backwards to find the split point (keep KEEP_RECENT_TURNS user messages)

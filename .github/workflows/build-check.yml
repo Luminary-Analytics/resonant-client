@@ -127,6 +127,12 @@ jobs:
                   --max-time 5 `
                   "http://127.0.0.1:8975/ws"
               if ($wsCode -ne "101") { throw "WS /ws returned $wsCode, expected 101 Switching Protocols" }
+              # curl deliberately reaches --max-time after a successful 101
+              # because the upgraded WebSocket remains open. PowerShell keeps
+              # that native exit code (28) and otherwise fails the whole step
+              # after every assertion has passed. The HTTP code above is the
+              # authoritative handshake result, so clear the expected timeout.
+              $global:LASTEXITCODE = 0
               Write-Host "✓ WS /ws  $wsCode Switching Protocols"
 
               # Log inspection — even with HTTP 200, a real bug can produce

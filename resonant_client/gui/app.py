@@ -108,11 +108,13 @@ templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 class AppState:
     """Shared application state."""
 
-    SESSION_MAX_TOKENS = 4096
+    # Ordinary model turns do not set a generation-token limit. The provider's
+    # natural stop and native context window are the only boundaries.
+    SESSION_MAX_TOKENS = None
     HARNESS_ROLE_MAX_TOKENS = {
-        "planner": 1024,
-        "generator": 1536,
-        "evaluator": 384,
+        "planner": None,
+        "generator": None,
+        "evaluator": None,
     }
     CODE_SESSION_ROLES = {"planner", "generator", "evaluator"}
 
@@ -479,27 +481,11 @@ class AppState:
             return raw
         return "hybrid"
 
-    def get_harness_evaluator_artifact_max_tokens(self) -> int:
-        raw = str(os.environ.get("RESONANT_HARNESS_EVALUATOR_ARTIFACT_MAX_TOKENS", "") or "").strip()
-        if raw:
-            try:
-                value = int(raw)
-                if value > 0:
-                    return value
-            except ValueError:
-                pass
-        return 192
+    def get_harness_evaluator_artifact_max_tokens(self) -> None:
+        return None
 
-    def get_harness_evaluator_structured_max_tokens(self) -> int:
-        raw = str(os.environ.get("RESONANT_HARNESS_EVALUATOR_STRUCTURED_MAX_TOKENS", "") or "").strip()
-        if raw:
-            try:
-                value = int(raw)
-                if value > 0:
-                    return value
-            except ValueError:
-                pass
-        return 256
+    def get_harness_evaluator_structured_max_tokens(self) -> None:
+        return None
 
     def get_harness_generator_mode(self) -> str:
         raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_MODE", "hybrid") or "").strip().lower()
@@ -507,49 +493,17 @@ class AppState:
             return raw
         return "hybrid"
 
-    def get_harness_generator_artifact_max_tokens(self) -> int:
-        raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_ARTIFACT_MAX_TOKENS", "") or "").strip()
-        if raw:
-            try:
-                value = int(raw)
-                if value > 0:
-                    return value
-            except ValueError:
-                pass
-        return 448
+    def get_harness_generator_artifact_max_tokens(self) -> None:
+        return None
 
-    def get_harness_generator_structured_max_tokens(self) -> int:
-        raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_STRUCTURED_MAX_TOKENS", "") or "").strip()
-        if raw:
-            try:
-                value = int(raw)
-                if value > 0:
-                    return value
-            except ValueError:
-                pass
-        return 1024
+    def get_harness_generator_structured_max_tokens(self) -> None:
+        return None
 
-    def get_harness_generator_patch_max_tokens(self) -> int:
-        raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_PATCH_MAX_TOKENS", "") or "").strip()
-        if raw:
-            try:
-                value = int(raw)
-                if value > 0:
-                    return value
-            except ValueError:
-                pass
-        return 768
+    def get_harness_generator_patch_max_tokens(self) -> None:
+        return None
 
-    def get_harness_generator_repair_max_tokens(self) -> int:
-        raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_REPAIR_MAX_TOKENS", "") or "").strip()
-        if raw:
-            try:
-                value = int(raw)
-                if value > 0:
-                    return value
-            except ValueError:
-                pass
-        return 384
+    def get_harness_generator_repair_max_tokens(self) -> None:
+        return None
 
     def should_use_harness_artifact_evaluator(self, project_path: Optional[str] = None) -> bool:
         mode = self.get_harness_evaluator_mode()
@@ -4712,17 +4666,8 @@ class AppState:
             return self.get_harness_role_timeout_seconds(session_role)
         return value if value > 0 else self.get_harness_role_timeout_seconds(session_role)
 
-    def get_harness_role_max_tokens(self, session_role: str) -> int:
-        role_env = session_role.upper()
-        raw = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_MAX_TOKENS", "") or "").strip()
-        if raw:
-            try:
-                value = int(raw)
-                if value > 0:
-                    return value
-            except ValueError:
-                pass
-        return int(self.HARNESS_ROLE_MAX_TOKENS.get(session_role, self.SESSION_MAX_TOKENS))
+    def get_harness_role_max_tokens(self, session_role: str) -> int | None:
+        return self.HARNESS_ROLE_MAX_TOKENS.get(session_role, self.SESSION_MAX_TOKENS)
 
     def build_harness_role_session(
         self,
@@ -4744,7 +4689,11 @@ class AppState:
             )
             model = model or selected_model
         spec = self.build_backend_spec(backend_type, model=model or None, project_path=project_path)
-        max_tokens = max_tokens_override or self.get_harness_role_max_tokens(normalized_role)
+        max_tokens = (
+            max_tokens_override
+            if max_tokens_override is not None
+            else self.get_harness_role_max_tokens(normalized_role)
+        )
         backend = spec.create_backend(self.settings)
         session = self.build_session(
             backend=backend,
@@ -5385,7 +5334,7 @@ class AppState:
 
         session = Session(
             backend=backend,
-            max_tokens=max_tokens or self.SESSION_MAX_TOKENS,
+            max_tokens=max_tokens,
             auto_approve=self._session_auto_approve() if auto_approve is None else auto_approve,
             allowed_tools=allowed_tools,
             project_instructions=project_instructions,

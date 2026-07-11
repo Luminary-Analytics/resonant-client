@@ -15,7 +15,7 @@ CHARS_PER_TOKEN = 4
 # Default thresholds
 DEFAULT_MAX_CONTEXT_TOKENS = 100_000
 KEEP_RECENT_TURNS = 6  # Keep last N user+assistant pairs verbatim
-CONTEXT_HEADROOM_RATIO = 0.75
+CONTEXT_HEADROOM_RATIO = 1.0
 KEEP_RECENT_TOOL_RESULTS = 8
 EVICT_TOOL_RESULT_OVER_CHARS = 1_200
 
@@ -26,9 +26,9 @@ EVICT_TOOL_RESULT_OVER_CHARS = 1_200
 # effective context window would hit OOM / truncation BEFORE the
 # compressor ever fired.
 #
-# Each value is the threshold ABOVE which `should_compress` returns
-# True. Keep ~25% headroom below the model's actual context window
-# for the response + tool results.
+# Each value is the threshold ABOVE which `should_compress` returns.
+# Large windows retain 95% for input; smaller windows protect a fixed
+# response reserve so reasoning and tool results still fit.
 #
 # Numbers are conservative best-guesses based on public Ollama docs
 # at the time of writing (2026-05-02). When new DeepSeek tiers ship,
@@ -36,16 +36,16 @@ EVICT_TOOL_RESULT_OVER_CHARS = 1_200
 # which is the right behavior for both larger-context models (we'd
 # rather not compress unnecessarily) and unknown smaller models
 # (the model itself will tell us via OOM).
+def _budget_for_window(context_window: int) -> int:
+    """Use the complete provider-advertised context window."""
+    return max(4_096, int(context_window))
+
+
 _MODEL_CONTEXT_BUDGETS: dict[str, int] = {
-    "deepseek-v4-flash:cloud": 24_000,    # ~32K window
+    "deepseek-v4-flash:cloud": _budget_for_window(1_048_576),
     "deepseek-v4:cloud": 48_000,          # generic mid-tier
-    "deepseek-v4-pro:cloud": 96_000,      # ~128K window
-    # v0.6.5 — glm-5.2:cloud flagship. Upstream window is 1M, but we
-    # keep it at the proven pro-tier budget: safe under the 32K (or
-    # 131K big-context-profile) num_ctx the client actually requests,
-    # and the conservative-for-big-models philosophy below means we'd
-    # rather not compress its long sessions prematurely.
-    "glm-5.2:cloud": 96_000,
+    "deepseek-v4-pro:cloud": _budget_for_window(1_048_576),
+    "glm-5.2:cloud": _budget_for_window(999_424),  # Ollama Cloud: 976K
 }
 
 
@@ -65,7 +65,7 @@ def model_context_budget(
     Returns the integer threshold; never raises.
     """
     if context_window:
-        return max(4_096, int(context_window * CONTEXT_HEADROOM_RATIO))
+        return _budget_for_window(context_window)
     if not model_name:
         return DEFAULT_MAX_CONTEXT_TOKENS
     lower = model_name.lower()

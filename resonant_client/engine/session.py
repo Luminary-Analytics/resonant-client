@@ -459,7 +459,7 @@ class Session:
         self,
         backend,
         max_steps: Optional[int] = None,
-        max_tokens: int = 16384,
+        max_tokens: int | None = None,
         auto_approve: bool = True,
         auto_plan: bool = False,
         parent_session: Optional["Session"] = None,

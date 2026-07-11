@@ -26,10 +26,7 @@ from __future__ import annotations
 
 from typing import Iterator
 
-import pytest
-
 from resonant_client.engine.compression import (
-    DEFAULT_MAX_CONTEXT_TOKENS,
     KEEP_RECENT_TURNS,
     _build_summary_prompt,
     _extract_text,
@@ -399,9 +396,8 @@ class TestCompress:
         assert len(explicit_backend.stream_calls) == 1
         assert session_backend.stream_calls == []
 
-    def test_model_name_kwarg_resolves_threshold(self):
-        # When model_name is provided, the per-tier budget overrides
-        # max_tokens. flash → 24K threshold.
+    def test_runtime_context_window_resolves_threshold(self):
+        # Runtime model metadata overrides a caller's generic max_tokens value.
         history = _build_long_history(n_user_pairs=KEEP_RECENT_TURNS + 2,
                                       msg_chars=300)
         backend = _StubBackend(deltas=["S"])
@@ -416,10 +412,7 @@ class TestCompress:
         # If the override worked, compress fires and summary is non-empty.
         # If it didn't work, summary stays "" and history stays the same.
         # Pick whichever assertion is correct based on actual token count.
-        # Build a history that's definitely > 24K tokens (flash budget).
-        # Each entry is ~300 chars; need >96K chars total for >24K tokens.
-        # KEEP_RECENT_TURNS+2 pairs * 600 chars/pair = ~6000 chars. Not
-        # enough. Use a bigger history.
+        # Use enough history to exceed the synthetic 32K runtime window.
         big_history = _build_long_history(
             n_user_pairs=KEEP_RECENT_TURNS + 30, msg_chars=2000,
         )
@@ -428,5 +421,6 @@ class TestCompress:
         _, summary2 = compress(
             session2, max_tokens=10**9,
             model_name="deepseek-v4-flash:cloud",
+            context_window=32_768,
         )
         assert summary2 == "S"  # compress fired despite huge max_tokens

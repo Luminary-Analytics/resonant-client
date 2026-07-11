@@ -243,6 +243,7 @@ class TestRunEmptyResponseRecovery:
         ]
 
 
+
 class TestRunCompletionIntegrity:
     def test_promise_without_action_continues_through_edit_and_validation(self, tmp_path):
         target = tmp_path / "sample.py"

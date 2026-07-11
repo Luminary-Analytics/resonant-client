@@ -708,7 +708,6 @@ class OllamaBackend:
         # Probe: send a minimal request with a simple tool and check response format
         try:
             opts = dict(self._ollama_options)
-            opts["num_predict"] = 50
             probe_tool = [{
                 "type": "function",
                 "function": {
@@ -797,7 +796,6 @@ class OllamaBackend:
         try:
             # Use EXACT same options as stream() to prevent Ollama from reloading
             opts = dict(self._ollama_options)
-            opts["num_predict"] = 1
             httpx.post(
                 f"{self.base_url}/api/chat",
                 json=self._with_thinking({
@@ -835,7 +833,7 @@ class OllamaBackend:
         schema: dict,
         *,
         instructions: str = "Return only the requested JSON value.",
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
     ) -> dict | list:
         """Generate JSON with Ollama's schema-constrained ``format`` mode.
 
@@ -849,7 +847,7 @@ class OllamaBackend:
         if not isinstance(schema, dict) or not schema:
             raise ValueError("schema must be a non-empty JSON Schema object")
         options = dict(self._ollama_options)
-        options.update({"num_predict": max(1, int(max_tokens)), "temperature": 0})
+        options["temperature"] = 0
         payload = {
             "model": self.model,
             "messages": [
@@ -909,7 +907,6 @@ class OllamaBackend:
     def classify(self, prompt: str, max_tokens: int = 50) -> str:
         """Quick non-streaming LLM call for classification. Returns plain text."""
         opts = dict(self._ollama_options)
-        opts["num_predict"] = max_tokens
         # v0.6.5 — go through the concurrency governor like stream() so a
         # burst of classification calls doesn't bypass the cap.
         gov = OllamaBackend._governor_for(self.base_url)
@@ -1118,7 +1115,7 @@ class OllamaBackend:
         conversation_history: list,
         instructions: str,
         tools: list,
-        max_tokens: int = 4096,
+        max_tokens: int | None = None,
         cancel_event=None,
     ) -> Iterator[Tuple[str, dict]]:
         """
@@ -1279,9 +1276,6 @@ class OllamaBackend:
         # Use fixed options — NEVER change num_ctx or other params between requests,
         # or Ollama will reload the entire model from disk (30-120s penalty)
         opts = dict(self._ollama_options)
-        if "deepseek-v4-pro" in self.model.lower():
-            max_tokens = min(max_tokens, 65_536)
-        opts["num_predict"] = max_tokens
 
         payload = {
             "model": self.model,
@@ -1488,7 +1482,8 @@ class OllamaBackend:
                             # Stats
                             stats = {}
                             for key in ("total_duration", "eval_count", "eval_duration",
-                                         "prompt_eval_count", "prompt_eval_duration"):
+                                         "prompt_eval_count", "prompt_eval_duration",
+                                         "done_reason"):
                                 if key in data:
                                     stats[key] = data[key]
 

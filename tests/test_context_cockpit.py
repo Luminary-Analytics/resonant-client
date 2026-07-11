@@ -25,7 +25,7 @@ def test_context_snapshot_reports_budget_layers_sources_and_payloads(tmp_path):
 
     assert snapshot["model"] == "glm-5.2:cloud"
     assert snapshot["context_window"] == 131_072
-    assert snapshot["compression_threshold"] == 98_304
+    assert snapshot["compression_threshold"] == 131_072
     assert snapshot["system_prompt"]["layers"]
     assert snapshot["sources"]["rag"]["estimated_tokens"] == 200
     assert snapshot["largest_tool_payloads"][0]["name"] == "file_read"

@@ -43,6 +43,14 @@ from .compression import (
 from .hooks import HookRunner, HookType
 from .model_prompts import build_model_prompt, get_model_prompt_profile
 from .tool_arguments import ToolArgumentError, normalize_tool_arguments
+from .turn_outcomes import (
+    VALIDATION_TOOL_NAMES,
+    WRITE_TOOL_NAMES,
+    classify_turn_outcome,
+    request_requires_workspace_change,
+    response_promises_future_action,
+    unique_strings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +83,12 @@ CYCLE_WINDOW_REPEAT = 3
 READ_ONLY_TOOLS = frozenset({"glob", "grep", "file_read"})
 WRITE_TOOLS = frozenset({"file_write", "file_edit", "file_replace"})
 CHURN_LIMIT = 14   # generous — gives room for "explore THEN write" patterns
+
+# A cloud model can occasionally terminate a successful HTTP stream with only
+# hidden reasoning metadata and no user-visible text or tool call. Treating
+# that as completed produces a blank answer and a misleading green "Done".
+EMPTY_RESPONSE_RETRY_LIMIT = 2
+PROMISE_CONTINUATION_LIMIT = 2
 
 # v0.4.9 (T2.4) — per-model overrides for the cycle-guard thresholds.
 # DeepSeek pro is more deliberate (longer thinking pauses between
@@ -504,6 +518,7 @@ class Session:
         # agent one turn to pivot — call await_user, switch tools, or
         # summarize what it has — before the cycle guard kills the run.
         self._windowed_cycle_nudged: bool = False
+        self._read_result_cache: dict[str, dict[str, object]] = {}
 
     @property
     def is_subagent(self) -> bool:
@@ -890,6 +905,52 @@ class Session:
                         message=f"Auto-test feedback injected ({target})",
                     )
 
+    def _compact_tool_result_for_context(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        call_id: str,
+        output: str,
+        *,
+        is_error: bool,
+    ) -> tuple[str, dict]:
+        """Deduplicate identical file reads while preserving full UI output."""
+        if tool_name != "file_read" or is_error:
+            return output, {}
+
+        signature_payload = {
+            "path": os.path.normcase(os.path.normpath(str(tool_args.get("path") or ""))),
+            "offset": tool_args.get("offset"),
+            "limit": tool_args.get("limit"),
+        }
+        signature = json.dumps(signature_payload, sort_keys=True, default=str)
+        digest = hashlib.sha256(str(output).encode("utf-8", errors="replace")).hexdigest()
+        previous = self._read_result_cache.get(signature)
+        self._read_result_cache[signature] = {
+            "digest": digest,
+            "call_id": call_id,
+            "characters": len(str(output)),
+        }
+        prior_call = str(previous.get("call_id") or "") if previous else ""
+        prior_still_in_context = bool(prior_call) and any(
+            entry.get("role") == "tool_result" and entry.get("call_id") == prior_call
+            for entry in self.conversation_history
+        )
+        if not previous or previous.get("digest") != digest or not prior_still_in_context:
+            return output, {}
+
+        compact = (
+            f"[Unchanged file_read result: identical to call {prior_call}; "
+            f"sha256={digest[:12]}; {len(str(output))} characters omitted from "
+            "repeated context. Use the earlier result.]"
+        )
+        return compact, {
+            "context_deduplicated": True,
+            "context_original_characters": len(str(output)),
+            "context_reference_call_id": prior_call,
+            "context_sha256": digest,
+        }
+
     def run(
         self,
         user_msg: str,
@@ -915,6 +976,18 @@ class Session:
                           If None, await_user returns "(no user available)".
             images: Optional list of (image_bytes, media_type) for multimodal input
         """
+        turn_text_blocks: list[str] = []
+        turn_tool_names: list[str] = []
+        turn_successful_tools: list[str] = []
+        turn_failed_tools: list[str] = []
+        turn_changed_files: list[str] = []
+        turn_validation_tools: list[str] = []
+        terminal_error = ""
+        promise_continuations = 0
+        empty_response_attempts = 0
+        last_done_stats = None
+        last_done_model = getattr(self.backend, "model", "") if self.backend else ""
+
         # Build user message content (multimodal or text-only)
         if images:
             import base64
@@ -942,6 +1015,56 @@ class Session:
         self._doom_loop_nudged = False
         # v0.4.11 (T2.6) — same per-turn reset for the windowed-cycle nudge.
         self._windowed_cycle_nudged = False
+        empty_response_retries = 0
+        step_limit_reached = False
+
+        def completion_payload(total_elapsed: float, total_steps: int) -> dict:
+            assistant_text = "\n\n".join(turn_text_blocks).strip()
+            changed_files = unique_strings(turn_changed_files)
+            validation_tools = unique_strings(turn_validation_tools)
+            successful_tools = unique_strings(turn_successful_tools)
+            failed_tools = unique_strings(turn_failed_tools)
+            tool_names = unique_strings(turn_tool_names)
+            outcome = classify_turn_outcome(
+                user_request=active_goal,
+                assistant_text=assistant_text,
+                changed_files=changed_files,
+                validation_tools=validation_tools,
+                successful_tools=successful_tools,
+                terminal_error=terminal_error,
+            )
+            evidence = {
+                "requires_workspace_change": request_requires_workspace_change(active_goal),
+                "visible_answer": bool(assistant_text),
+                "output_characters": len(assistant_text),
+                "tool_calls": len(turn_tool_names),
+                "tool_names": tool_names,
+                "successful_tools": successful_tools,
+                "failed_tools": failed_tools,
+                "changed_files": changed_files,
+                "validation_tools": validation_tools,
+                "empty_response_attempts": empty_response_attempts,
+                "promise_continuations": promise_continuations,
+            }
+            provider_stats = {
+                str(key): value
+                for key, value in (last_done_stats or {}).items()
+                if isinstance(value, (int, float, str, bool)) or value is None
+            }
+            telemetry = {
+                "model": last_done_model or backend_model or "",
+                "outcome": outcome,
+                "elapsed_seconds": round(float(total_elapsed), 6),
+                "steps": int(total_steps),
+                "tool_calls": len(turn_tool_names),
+                "output_characters": len(assistant_text),
+                "empty_response_attempts": empty_response_attempts,
+                "promise_continuations": promise_continuations,
+                "changed_files": len(changed_files),
+                "validation_tools": validation_tools,
+                "provider_stats": provider_stats,
+            }
+            return {"outcome": outcome, "evidence": evidence, "telemetry": telemetry}
 
         if self.cancel_requested:
             yield from self._cancelled_events(total_start, 0)
@@ -1012,6 +1135,7 @@ class Session:
 
         while True:
             if self.max_steps is not None and iteration >= self.max_steps:
+                step_limit_reached = True
                 break
             if self.cancel_requested:
                 yield from self._cancelled_events(total_start, exec_step)
@@ -1107,6 +1231,8 @@ class Session:
                         # Yield tool call immediately for TUI display
                         # (don't wait until stream ends to show what's coming)
                         fn_name = data.get("name", "")
+                        if fn_name:
+                            turn_tool_names.append(fn_name)
                         fn_args_str = data.get("arguments", "{}")
                         try:
                             fn_args = normalize_tool_arguments(
@@ -1134,12 +1260,17 @@ class Session:
                         cog_state = data.get("cognitive_state")
                         done_stats = data.get("stats")
                         done_model = data.get("model")
+                        last_done_stats = done_stats
+                        last_done_model = done_model or last_done_model
 
                     elif event_type == EVENT_ERROR:
-                        yield make_event(EngineEvent.ERROR, message=data.get("message", "Unknown"))
+                        terminal_error = data.get("message", "Unknown")
+                        yield make_event(EngineEvent.ERROR, message=terminal_error)
+                        elapsed = time.time() - total_start
                         yield make_event(EngineEvent.SESSION_END,
-                                        total_elapsed=time.time() - total_start,
-                                        total_steps=exec_step)
+                                        total_elapsed=elapsed,
+                                        total_steps=exec_step,
+                                        **completion_payload(elapsed, exec_step))
                         return
 
                     elif event_type == EVENT_BACKEND_STATUS:
@@ -1156,10 +1287,13 @@ class Session:
                 yield from self._cancelled_events(total_start, exec_step)
                 return
             except Exception as e:
-                yield make_event(EngineEvent.ERROR, message=f"Stream error: {e}")
+                terminal_error = f"Stream error: {e}"
+                yield make_event(EngineEvent.ERROR, message=terminal_error)
+                elapsed = time.time() - total_start
                 yield make_event(EngineEvent.SESSION_END,
-                                total_elapsed=time.time() - total_start,
-                                total_steps=exec_step)
+                                total_elapsed=elapsed,
+                                total_steps=exec_step,
+                                **completion_payload(elapsed, exec_step))
                 return
 
             step_elapsed = time.time() - step_start
@@ -1168,7 +1302,60 @@ class Session:
             full_text = "".join(collected_text).strip()
             full_text = strip_tool_call_tags(full_text)
 
+            if not full_text and not tool_calls:
+                empty_response_retries += 1
+                empty_response_attempts += 1
+                yield make_event(
+                    EngineEvent.STATUS,
+                    model=done_model,
+                    stats=done_stats,
+                    cognitive_state=cog_state,
+                    elapsed=step_elapsed,
+                )
+
+                if empty_response_retries <= EMPTY_RESPONSE_RETRY_LIMIT:
+                    yield make_event(
+                        EngineEvent.BACKEND_STATUS,
+                        kind="empty_response_retry",
+                        attempt=empty_response_retries,
+                        max=EMPTY_RESPONSE_RETRY_LIMIT,
+                        model=backend_model,
+                    )
+                    yield make_event(
+                        EngineEvent.STEP_END,
+                        step=exec_step,
+                        elapsed=step_elapsed,
+                    )
+                    # Empty provider responses are retries, not productive
+                    # agent steps, so they do not consume max_steps.
+                    iteration -= 1
+                    current_msg = (
+                        "Your previous turn returned no user-visible text and no "
+                        "tool call. Continue the user's current request now. "
+                        "Either provide a concrete answer or call the appropriate "
+                        "tool; do not return reasoning-only or an empty response."
+                    )
+                    continue
+
+                attempts = EMPTY_RESPONSE_RETRY_LIMIT + 1
+                message = (
+                    f"The model returned an empty response {attempts} times. "
+                    "No answer was produced. Retry the request or switch models."
+                )
+                terminal_error = message
+                logger.warning("%s model=%s", message, backend_model)
+                yield make_event(EngineEvent.ERROR, message=message)
+                yield make_event(
+                    EngineEvent.STEP_END,
+                    step=exec_step,
+                    elapsed=step_elapsed,
+                )
+                break
+
+            empty_response_retries = 0
+
             if full_text:
+                turn_text_blocks.append(full_text)
                 yield make_event(EngineEvent.TEXT_DONE, text=full_text)
 
                 todo_items = parse_markdown_todos(full_text)
@@ -1221,6 +1408,17 @@ class Session:
                     "role": "assistant",
                     "content": f"[CLI executed tools: {tool_summary}]"
                 })
+                for cli_item in tool_calls:
+                    cli_name = cli_item.get("name", "")
+                    if cli_name:
+                        turn_successful_tools.append(cli_name)
+                    if cli_name in WRITE_TOOL_NAMES:
+                        cli_args = cli_item.get("_normalized_arguments", {})
+                        cli_path = cli_args.get("path") if isinstance(cli_args, dict) else ""
+                        if cli_path:
+                            turn_changed_files.append(str(cli_path))
+                    if cli_name in VALIDATION_TOOL_NAMES and turn_changed_files:
+                        turn_validation_tools.append(cli_name)
                 has_tool_calls = False  # Don't loop — CLI already completed
                 yield make_event(EngineEvent.STATUS,
                                 model=done_model, stats=done_stats,
@@ -1244,6 +1442,7 @@ class Session:
                 fn_args = item.get("_normalized_arguments", {})
                 argument_error = item.get("_argument_error", "")
                 if argument_error:
+                    turn_failed_tools.append(fn_name)
                     result_output = (
                         f"Tool arguments were malformed: {argument_error}. "
                         "Correct the arguments and call the tool again."
@@ -1282,6 +1481,7 @@ class Session:
                         tool_name=fn_name,
                     )
                     if not hook_result.allowed:
+                        turn_failed_tools.append(fn_name)
                         result_output = f"Blocked by hook: {hook_result.error or 'denied'}"
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
@@ -1303,6 +1503,7 @@ class Session:
                     from .policies import PolicyAction
                     policy_action = self.execution_policy.evaluate(fn_name, fn_args)
                     if policy_action == PolicyAction.DENY:
+                        turn_failed_tools.append(fn_name)
                         reason = self.execution_policy.get_reason(fn_name, fn_args)
                         result_output = f"Blocked by policy: {reason or 'denied'}"
                         yield make_event(EngineEvent.TOOL_RESULT,
@@ -1323,6 +1524,7 @@ class Session:
                 # Permission check (three-tier autonomy model)
                 approved = self._should_auto_approve(fn_name)
                 if not approved:
+                    turn_failed_tools.append(fn_name)
                     # Policy says PROMPT — defer to permission callback
                     if on_permission:
                         approved = on_permission(fn_name, fn_args)
@@ -1350,6 +1552,7 @@ class Session:
                 if fn_name == "task":
                     # Task tool — spawn a sub-agent session
                     yield from self._execute_task(fn_args, call_id, fn_args_str)
+                    turn_successful_tools.append(fn_name)
                 elif fn_name == "await_user":
                     # v0.3.5 — pause and ask the user. Synchronously
                     # waits via the on_user_input callback. The GUI
@@ -1393,6 +1596,7 @@ class Session:
                         "role": "tool_result", "call_id": call_id,
                         "content": awu_result.output,
                     })
+                    turn_successful_tools.append(fn_name)
                 elif fn_name.startswith("mcp_") and hasattr(self, '_mcp_manager') and self._mcp_manager:
                     # MCP tool — route to MCP server
                     import time as _time
@@ -1420,6 +1624,7 @@ class Session:
                         "role": "tool_result", "call_id": call_id,
                         "content": result.output,
                     })
+                    (turn_failed_tools if result.is_error else turn_successful_tools).append(fn_name)
                 else:
                     # Allowlist guard: when this Session was constructed with a
                     # filtered tool list (e.g. via specialist dispatch), refuse
@@ -1431,6 +1636,7 @@ class Session:
                         allowed_names = {t.get("function", {}).get("name", "")
                                           for t in self._allowed_tools}
                         if fn_name not in allowed_names:
+                            turn_failed_tools.append(fn_name)
                             denial = (
                                 f"Tool '{fn_name}' is not in this session's allowlist. "
                                 f"Allowed tools: {sorted(allowed_names)}"
@@ -1456,6 +1662,7 @@ class Session:
                     try:
                         fn_args = self._prepare_workspace_tool_args(fn_name, fn_args)
                     except (SandboxViolation, ToolBoundaryViolation) as exc:
+                        turn_failed_tools.append(fn_name)
                         result_output = f"Blocked by tool boundary: {exc}"
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
@@ -1479,11 +1686,32 @@ class Session:
                         settings=getattr(self, "_settings_ref", None),
                     )
 
+                    history_output, context_meta = self._compact_tool_result_for_context(
+                        fn_name,
+                        fn_args,
+                        call_id,
+                        result.output,
+                        is_error=result.is_error,
+                    )
+                    event_metadata = dict(result.metadata)
+                    event_metadata.update(context_meta)
+
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
                                     output=result.output, is_error=result.is_error,
-                                    elapsed=result.elapsed, metadata=result.metadata,
+                                    elapsed=result.elapsed, metadata=event_metadata,
                                     denied=False)
+
+                    if result.is_error:
+                        turn_failed_tools.append(fn_name)
+                    else:
+                        turn_successful_tools.append(fn_name)
+                        if fn_name in WRITE_TOOL_NAMES:
+                            changed_path = fn_args.get("path") or ""
+                            if changed_path:
+                                turn_changed_files.append(str(changed_path))
+                        if fn_name in VALIDATION_TOOL_NAMES and turn_changed_files:
+                            turn_validation_tools.append(fn_name)
 
                     # Add to conversation history
                     self.conversation_history.append({
@@ -1496,7 +1724,7 @@ class Session:
                     # so the model can see it (computer use / browser screenshot loop)
                     tool_result_entry = {
                         "role": "tool_result", "call_id": call_id,
-                        "content": result.output,
+                        "content": history_output,
                     }
                     if result.metadata.get("screenshot_b64"):
                         tool_result_entry["image"] = {
@@ -1518,6 +1746,10 @@ class Session:
                     ):
                         edited_path = fn_args.get("path") or ""
                         if edited_path:
+                            if self.auto_lint_enabled:
+                                turn_validation_tools.append("auto_lint")
+                            if self.auto_test_enabled:
+                                turn_validation_tools.append("auto_test")
                             for fb_event in self._run_post_edit_feedback(edited_path):
                                 yield fb_event
 
@@ -1574,14 +1806,15 @@ class Session:
                     {},
                 )
                 tool_name = last_call.get("name", "the same tool")
+                terminal_error = (
+                    f"Stopped: the agent called `{tool_name}` with the same "
+                    f"arguments {identical_count} times in a row and isn't making "
+                    f"progress. Try rephrasing your request or switching to a "
+                    f"stronger model."
+                )
                 yield make_event(
                     EngineEvent.ERROR,
-                    message=(
-                        f"Stopped: the agent called `{tool_name}` with the same "
-                        f"arguments {identical_count} times in a row and isn't making "
-                        f"progress. Try rephrasing your request or switching to a "
-                        f"stronger model."
-                    ),
+                    message=terminal_error,
                 )
                 yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
                 break
@@ -1615,16 +1848,17 @@ class Session:
                 #   message, giving the agent a turn to pivot.
                 if wrep_count >= _cycle_repeat_threshold and self._windowed_cycle_nudged:
                     args_repr = wrep_args if len(wrep_args) <= 80 else wrep_args[:77] + "..."
+                    terminal_error = (
+                        f"Stopped: `{wrep_tool}` with args `{args_repr}` was "
+                        f"called {wrep_count} times in the last {CYCLE_WINDOW} "
+                        f"steps despite a prior nudge to call `await_user`. "
+                        f"The agent is stuck. Try rephrasing your request, "
+                        f"giving more concrete context, or switching to a "
+                        f"stronger model."
+                    )
                     yield make_event(
                         EngineEvent.ERROR,
-                        message=(
-                            f"Stopped: `{wrep_tool}` with args `{args_repr}` was "
-                            f"called {wrep_count} times in the last {CYCLE_WINDOW} "
-                            f"steps despite a prior nudge to call `await_user`. "
-                            f"The agent is stuck. Try rephrasing your request, "
-                            f"giving more concrete context, or switching to a "
-                            f"stronger model."
-                        ),
+                        message=terminal_error,
                     )
                     yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
                     break
@@ -1636,20 +1870,46 @@ class Session:
                 # legitimate "explore → mkdir → write" patterns.
                 churn = _count_read_only_churn(self.conversation_history)
                 if churn >= _churn_threshold:
+                    terminal_error = (
+                        f"Stopped: {churn} consecutive read-only lookups "
+                        f"(glob / grep / file_read) without writing anything. "
+                        f"The agent is stuck exploring instead of producing. "
+                        f"Try a more concrete request or rephrase the goal."
+                    )
                     yield make_event(
                         EngineEvent.ERROR,
-                        message=(
-                            f"Stopped: {churn} consecutive read-only lookups "
-                            f"(glob / grep / file_read) without writing anything. "
-                            f"The agent is stuck exploring instead of producing. "
-                            f"Try a more concrete request or rephrase the goal."
-                        ),
+                        message=terminal_error,
                     )
                     yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
                     break
 
             # ── Continue or stop ──
             yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+
+            if (
+                not has_tool_calls
+                and request_requires_workspace_change(active_goal)
+                and not turn_changed_files
+                and response_promises_future_action(full_text)
+                and promise_continuations < PROMISE_CONTINUATION_LIMIT
+            ):
+                promise_continuations += 1
+                yield make_event(
+                    EngineEvent.BACKEND_STATUS,
+                    kind="action_promise_continuation",
+                    attempt=promise_continuations,
+                    max=PROMISE_CONTINUATION_LIMIT,
+                    model=backend_model,
+                )
+                iteration -= 1
+                current_msg = (
+                    "You promised to perform the requested workspace change but "
+                    "ended the turn without taking action. Continue now: inspect "
+                    "only what is necessary, make the change with tools, validate "
+                    "it, and then report concrete evidence. Do not merely describe "
+                    "what you intend to do."
+                )
+                continue
 
             if has_tool_calls:
                 last_names = [item.get("name", "") for item in tool_calls if item.get("name")]
@@ -1718,13 +1978,15 @@ class Session:
             except Exception as e:
                 logger.warning(f"Engram session summary failed: {e}")
 
-        if self.max_steps is not None and iteration >= self.max_steps:
-            yield make_event(EngineEvent.ERROR,
-                            message=f"Reached {self.max_steps} step limit — use /clear to reset")
+        if step_limit_reached:
+            terminal_error = f"Reached {self.max_steps} step limit — use /clear to reset"
+            yield make_event(EngineEvent.ERROR, message=terminal_error)
 
+        final_steps = exec_step if exec_step > 0 else iteration
         yield make_event(EngineEvent.SESSION_END,
                         total_elapsed=total_elapsed,
-                        total_steps=exec_step if exec_step > 0 else iteration)
+                        total_steps=final_steps,
+                        **completion_payload(total_elapsed, final_steps))
 
     def _execute_task(
         self,

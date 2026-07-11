@@ -8331,6 +8331,12 @@ async def _run_session_streaming(
                             "message": f"Daily spend crossed ${float(budget_alert):.2f} (${today_cost:.4f} today)",
                         })
 
+            if event_type == EngineEvent.SESSION_END.value and event.get("telemetry"):
+                try:
+                    state.evaluations.record_turn_telemetry(event["telemetry"])
+                except Exception:
+                    logger.debug("turn telemetry persistence failed", exc_info=True)
+
             # Collect display events for session replay (skip streaming deltas)
             if event_type not in SKIP_FOR_REPLAY:
                 display_events.append(event)

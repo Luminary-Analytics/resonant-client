@@ -221,6 +221,7 @@ class ResonantApp {
 
         // Per-turn agent run summary (Cursor-style card on session.end)
         this._agentRunSummary = { title: '', fileChanges: [], todos: null };
+        this._autoFallbackDepth = 0;
         this._liveAgentTodoEl = null;
 
         // Git state
@@ -1329,7 +1330,9 @@ class ResonantApp {
 
     // ── Send Message ────────────────────────────────────────────
 
-    sendMessage() {
+    sendMessage(options = {}) {
+        const autoRetry = !!(options && options.autoRetry === true);
+        if (!autoRetry) this._autoFallbackDepth = 0;
         const text = this.userInput.value.trim();
         if (!text) return;
 
@@ -1392,11 +1395,6 @@ class ResonantApp {
             return;
         }
 
-        // Add user message to chat (with image thumbnails if attached)
-        this.addUserMessage(text, this.attachedImages);
-
-        this._resetAgentRunSummary(text);
-
         // Reset streaming state
         if (this._renderTimer) {
             clearTimeout(this._renderTimer);
@@ -1415,6 +1413,13 @@ class ResonantApp {
         this._liveCollapsedGroup = null;
         this._currentTurn = this._freshTurnAggregate();
         this._resetTaskCardState();
+
+        // Reset stale task state before creating the new turn card. Creating
+        // the card first and then resetting discarded its reference, so the
+        // first response event opened a synthetic card labelled "Task".
+        this.addUserMessage(text, this.attachedImages);
+        this._resetAgentRunSummary(text);
+
         this._blockToolRows = new Map();
         this.subagentDepth = 0;
         this.subagentContainer = null;
@@ -8076,7 +8081,23 @@ class ResonantApp {
                 ];
                 const specs = dashboard.specs || ['minimal'];
                 const records = dashboard.records || [];
+                const turnSummary = dashboard.turn_summary || {};
+                const turnModels = Object.entries(turnSummary.by_model || {});
                 const active = Boolean(dashboard.active_id);
+                const telemetryHtml = turnModels.map(([model, metrics]) => `
+                    <div class="evaluation-record">
+                        <div class="evaluation-record-head">
+                            <strong>${this.escapeHtml(model)}</strong>
+                            <span>${metrics.turns || 0} interactive turns</span>
+                        </div>
+                        <div class="evaluation-metrics">
+                            <span>${Math.round((metrics.empty_response_rate || 0) * 100)}% empty-response turns</span>
+                            <span>${Math.round((metrics.incomplete_rate || 0) * 100)}% incomplete</span>
+                            <span>${Number(metrics.avg_elapsed_seconds || 0).toFixed(1)}s average</span>
+                            <span>${metrics.promise_continuations || 0} promise continuations</span>
+                        </div>
+                    </div>
+                `).join('');
                 const recordHtml = records.slice(0, 8).map(record => {
                     const result = record.result || {};
                     const rate = result.convergence_rate == null
@@ -8113,6 +8134,8 @@ class ResonantApp {
                         <button class="btn-sm evaluation-start" ${active ? 'disabled' : ''}>${active ? 'Evaluation running…' : 'Run evaluation'}</button>
                     </div>
                     <div class="settings-row-hint evaluation-hint">Runs use fresh temporary projects and the live Ollama models. Results persist under ~/.resonant/evaluations.</div>
+                    <div class="settings-row-hint evaluation-hint"><strong>Interactive provider health</strong> — redacted outcomes, retries, and latency; prompts and responses are never stored.</div>
+                    <div class="evaluation-records">${telemetryHtml || '<div class="settings-row"><span class="settings-row-label">No interactive telemetry yet.</span></div>'}</div>
                     <div class="evaluation-records">${recordHtml || '<div class="settings-row"><span class="settings-row-label">No evaluations yet.</span></div>'}</div>
                 `;
             } else if (section.id === 'iteration_checkpoints') {
@@ -8961,41 +8984,64 @@ class ResonantApp {
         if (!task || !task.card) return;
 
         const errored = !!this._agentRunErrored;
-        const status = errored ? 'Stopped' : 'Done';
-        const stateClass = errored ? 'is-error' : 'is-done';
-        task.card.classList.remove('task-card-running');
-        task.card.classList.add(errored ? 'task-card-error' : 'task-card-done');
-        if (task.stateEl) {
-            task.stateEl.className = `task-card-state ${stateClass}`;
-            task.stateEl.textContent = status;
-        }
-
         const t = this._currentTurn || {};
         const elapsed = event.total_elapsed || t.totalElapsed || 0;
         const steps = event.total_steps || t.stepCount || 0;
         const tools = t.toolCallCount || 0;
         const files = (this._agentRunSummary && this._agentRunSummary.fileChanges) || [];
         const todos = (this._agentRunSummary && this._agentRunSummary.todos) || null;
+        const evidence = event.evidence || {};
+        const hasVisibleResult = !!(task.resultEl && task.resultEl.textContent.trim());
+        const legacyOutcome = files.length > 0
+            ? 'changed_unverified'
+            : (hasVisibleResult ? 'answered' : 'incomplete');
+        const outcome = errored ? 'failed' : (event.outcome || legacyOutcome);
+        const outcomeMeta = {
+            answered: { label: 'Answered', mark: 'OK', state: 'is-done', card: 'task-card-done' },
+            changed_verified: { label: 'Changed & verified', mark: 'OK', state: 'is-done', card: 'task-card-done' },
+            changed_unverified: { label: 'Changed — verify', mark: '!', state: 'is-warning', card: 'task-card-warning' },
+            no_changes_needed: { label: 'No changes needed', mark: 'OK', state: 'is-done', card: 'task-card-done' },
+            needs_input: { label: 'Needs input', mark: '?', state: 'is-warning', card: 'task-card-warning' },
+            incomplete: { label: 'Needs attention', mark: '!', state: 'is-warning', card: 'task-card-warning' },
+            failed: { label: 'Failed', mark: '!', state: 'is-error', card: 'task-card-error' },
+        }[outcome] || { label: 'Completed', mark: 'OK', state: 'is-done', card: 'task-card-done' };
+
+        task.card.classList.remove('task-card-running', 'task-card-done', 'task-card-error', 'task-card-warning');
+        task.card.classList.add(outcomeMeta.card);
+        task.card.dataset.outcome = outcome;
+        if (task.stateEl) {
+            task.stateEl.className = `task-card-state ${outcomeMeta.state}`;
+            task.stateEl.textContent = outcomeMeta.label;
+        }
 
         const parts = [];
         if (steps > 0) parts.push(`${steps} step${steps === 1 ? '' : 's'}`);
         if (tools > 0) parts.push(`${tools} tool${tools === 1 ? '' : 's'}`);
         if (files.length > 0) parts.push(`${files.length} file${files.length === 1 ? '' : 's'}`);
+        if ((evidence.validation_tools || []).length > 0) {
+            parts.push(`validated with ${evidence.validation_tools.join(', ')}`);
+        }
         if (todos && todos.total > 0) parts.push(`${todos.done || 0}/${todos.total} to-dos`);
         if (elapsed > 0) parts.push(this._formatRunDuration(elapsed));
 
         const summary = document.createElement('div');
-        summary.className = `task-run-summary ${errored ? 'is-error' : 'is-done'}`;
-        const detail = errored
-            ? (this._agentRunErrorMessage || 'Run stopped before completion.')
-            : (parts.length ? parts.join(' | ') : 'Completed');
+        summary.className = `task-run-summary ${outcomeMeta.state}`;
+        const outcomeDetails = {
+            failed: this._agentRunErrorMessage || 'The turn stopped before producing a usable result.',
+            incomplete: evidence.requires_workspace_change
+                ? 'The request asked for a workspace change, but no successful edit was recorded.'
+                : 'The turn ended without a visible result.',
+            changed_unverified: 'Files changed, but no successful validation ran afterward.',
+            needs_input: 'The agent needs a decision before it can continue.',
+        };
+        const detail = outcomeDetails[outcome] || (parts.length ? parts.join(' | ') : outcomeMeta.label);
         summary.innerHTML = `
-            <span class="task-run-mark">${errored ? '!' : 'OK'}</span>
-            <span class="task-run-label">${this.escapeHtml(status)}</span>
+            <span class="task-run-mark">${outcomeMeta.mark}</span>
+            <span class="task-run-label">${this.escapeHtml(outcomeMeta.label)}</span>
             <span class="task-run-detail">${this.escapeHtml(detail)}</span>
         `;
 
-        if (files.length > 0 && !errored) {
+        if (files.length > 0 && outcome !== 'failed') {
             const review = document.createElement('button');
             review.type = 'button';
             review.className = 'task-review-btn';
@@ -9006,6 +9052,26 @@ class ResonantApp {
                 else this.showStatusMessage('Not a git repository; nothing to review.');
             });
             summary.appendChild(review);
+        }
+
+        if (['incomplete', 'failed', 'changed_unverified'].includes(outcome) && !this._replay) {
+            const actions = document.createElement('span');
+            actions.className = 'task-recovery-actions';
+            actions.innerHTML = `
+                <button type="button" class="task-review-btn" data-recovery="retry">Retry</button>
+                <button type="button" class="task-review-btn" data-recovery="alternate">Retry another model</button>
+                <button type="button" class="task-review-btn" data-recovery="continue">${outcome === 'changed_unverified' ? 'Verify changes' : 'Continue'}</button>
+            `;
+            actions.querySelector('[data-recovery="retry"]')?.addEventListener('click', () => {
+                this._retryTask(task, { mode: 'retry' });
+            });
+            actions.querySelector('[data-recovery="alternate"]')?.addEventListener('click', () => {
+                this._retryTask(task, { mode: 'retry', alternate: true });
+            });
+            actions.querySelector('[data-recovery="continue"]')?.addEventListener('click', () => {
+                this._retryTask(task, { mode: 'continue' });
+            });
+            summary.appendChild(actions);
         }
 
         task.footerEl.hidden = false;
@@ -9026,6 +9092,38 @@ class ResonantApp {
             `;
             task.footerEl.appendChild(changes);
         }
+    }
+
+    _selectAlternateModelValue() {
+        if (!this.modelSelector) return false;
+        const current = this.modelSelector.value || '';
+        const preferred = /glm/i.test(current)
+            ? ['deepseek-v4-pro:cloud', 'deepseek-v4-flash:cloud']
+            : ['glm-5.2:cloud', 'deepseek-v4-pro:cloud'];
+        const options = Array.from(this.modelSelector.options || []);
+        const target = preferred
+            .map((model) => options.find((option) => option.value.endsWith(`:${model}`)))
+            .find((option) => option && option.value !== current);
+        if (!target) return false;
+        this.modelSelector.value = target.value;
+        this.modelSelector.dispatchEvent(new Event('change'));
+        return true;
+    }
+
+    _retryTask(task, { mode = 'retry', alternate = false, auto = false } = {}) {
+        if (this.isRunning || !task) return;
+        if (alternate && !this._selectAlternateModelValue()) {
+            this.showStatusMessage('No alternate model is currently available.');
+            if (auto) return;
+        }
+        const original = (task.requestText || '').trim();
+        const prompt = mode === 'continue'
+            ? 'Continue the previous request. Verify any changes already made and report concrete evidence.'
+            : original;
+        if (!prompt) return;
+        this.userInput.value = prompt;
+        this.userInput.style.height = 'auto';
+        this.sendMessage({ autoRetry: auto });
     }
 
     _collapseTaskActivity(event = {}) {
@@ -9063,6 +9161,7 @@ class ResonantApp {
     }
 
     handleSessionEnd(event) {
+        const finishedTask = this._activeTask;
         this.removeThinking();
         this._removeLiveAgentTodoStrip();
 
@@ -9088,6 +9187,20 @@ class ResonantApp {
 
         if (!this.isReplaying) {
             this.requestGitStatus();
+        }
+        const emptyFailure = event.outcome === 'failed'
+            && Number(event.evidence?.empty_response_attempts || 0) >= 3;
+        if (
+            !this.isReplaying
+            && emptyFailure
+            && this.permissionMode === 'bypass'
+            && this._autoFallbackDepth === 0
+        ) {
+            this._autoFallbackDepth = 1;
+            this.showStatusMessage('Primary model returned empty responses; retrying once with an alternate model.');
+            setTimeout(() => {
+                this._retryTask(finishedTask, { mode: 'retry', alternate: true, auto: true });
+            }, 250);
         }
         return;
 
@@ -10390,11 +10503,52 @@ class ResonantApp {
             // being retried) shares the transient retry banner; the
             // renderer phrases it differently from a 5xx retry.
             this._renderOllamaRetryBanner(event);
+        } else if (event.kind === 'empty_response_retry') {
+            this._renderEmptyResponseRetryBanner(event);
+        } else if (event.kind === 'action_promise_continuation') {
+            this._renderActionContinuationBanner(event);
         } else if (event.kind === 'ollama_exhausted') {
             this._renderOllamaExhaustedChip(event);
         }
         // Future kinds get their own renderers; swallow unknown kinds
         // silently rather than confuse the user with unfamiliar text.
+    }
+
+    _renderEmptyResponseRetryBanner(event) {
+        if (!this.chatMessages) return;
+        const attempt = event.attempt || 1;
+        const max = event.max || 2;
+        const model = event.model || 'The model';
+        const banner = document.createElement('div');
+        banner.className = 'backend-status-banner backend-status-retry';
+        banner.innerHTML = `
+            <span class="backend-status-icon" aria-hidden="true">↻</span>
+            <span class="backend-status-text">
+                ${this.escapeHtml(model)} returned no usable response — retrying automatically
+                <span class="backend-status-attempt">retry ${attempt}/${max}</span>
+            </span>
+        `;
+        this.chatMessages.appendChild(banner);
+        this.scrollToBottom();
+        setTimeout(() => {
+            banner.classList.add('backend-status-banner-fading');
+            setTimeout(() => banner.remove(), 400);
+        }, 3500);
+    }
+
+    _renderActionContinuationBanner(event) {
+        if (!this.chatMessages) return;
+        const banner = document.createElement('div');
+        banner.className = 'backend-status-banner backend-status-retry';
+        banner.innerHTML = `
+            <span class="backend-status-icon" aria-hidden="true">→</span>
+            <span class="backend-status-text">
+                The agent promised an action without taking it — continuing automatically
+                <span class="backend-status-attempt">continuation ${event.attempt || 1}/${event.max || 2}</span>
+            </span>
+        `;
+        this.chatMessages.appendChild(banner);
+        this.scrollToBottom();
     }
 
     /**

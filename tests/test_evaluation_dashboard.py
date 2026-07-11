@@ -77,3 +77,30 @@ def test_evaluation_validates_inputs_and_prevents_overlap(tmp_path):
             model_label="nope", spec_name="minimal", n=1, project_path=tmp_path
         )
     release = True
+
+
+def test_interactive_turn_telemetry_is_redacted_persisted_and_summarized(tmp_path):
+    manager = EvaluationManager(storage_dir=tmp_path)
+    manager.record_turn_telemetry({
+        "model": "glm-5.2:cloud",
+        "outcome": "incomplete",
+        "elapsed_seconds": 4.0,
+        "empty_response_attempts": 1,
+        "promise_continuations": 2,
+        "prompt": "must not persist",
+        "response": "must not persist",
+    })
+
+    snapshot = manager.snapshot()
+    record = snapshot["turn_telemetry"][0]
+    assert "prompt" not in record
+    assert "response" not in record
+    assert record["outcome"] == "incomplete"
+    metrics = snapshot["turn_summary"]["by_model"]["glm-5.2:cloud"]
+    assert metrics["empty_response_rate"] == 1.0
+    assert metrics["incomplete_rate"] == 1.0
+    assert metrics["promise_continuations"] == 2
+    assert (tmp_path / "turn-telemetry.jsonl").is_file()
+
+    reloaded = EvaluationManager(storage_dir=tmp_path)
+    assert reloaded.snapshot()["turn_summary"]["turns"] == 1

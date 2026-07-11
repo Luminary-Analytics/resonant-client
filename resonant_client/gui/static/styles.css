@@ -11588,6 +11588,41 @@ body.is-window-dragging * {
     border-top: 1px solid rgba(255,255,255,.055);
 }
 
+.task-run-summary.is-warning .task-run-mark,
+.task-card-state.is-warning {
+    color: #fde68a;
+    background: rgba(245, 158, 11, .14);
+    border-color: rgba(245, 158, 11, .32);
+}
+
+.task-card-warning .task-progress-note,
+.task-card-warning .turn-footer {
+    display: none;
+}
+
+.task-recovery-actions {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-left: auto;
+}
+
+.task-recovery-actions .task-review-btn {
+    margin-left: 0;
+}
+
+@media (max-width: 760px) {
+    .task-run-summary {
+        flex-wrap: wrap;
+    }
+
+    .task-run-detail,
+    .task-recovery-actions {
+        width: 100%;
+        white-space: normal;
+    }
+}
+
 .input-wrapper {
     border-color: rgba(255,255,255,.13);
     border-radius: 12px;

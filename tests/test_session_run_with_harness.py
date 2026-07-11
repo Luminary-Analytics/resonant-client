@@ -24,6 +24,7 @@ from tests.streaming_stub import (
     first_of_kind,
     kinds_of,
     text_delta,
+    tool_call,
 )
 
 
@@ -204,6 +205,102 @@ class TestRunBackendStatusPassThrough:
         assert first_of_kind(events, "text.done") is not None
 
 
+class TestRunEmptyResponseRecovery:
+    """An empty successful stream must never become a green blank turn."""
+
+    def test_retries_empty_response_without_consuming_step_budget(self):
+        backend = StreamingBackend(scripts=[
+            [done()],
+            [text_delta("Recovered answer"), done()],
+        ])
+        session = Session(backend=backend, max_steps=1)
+
+        events = list(session.run("rewrite it"))
+
+        assert backend.stream_count == 2
+        retry = first_of_kind(events, "backend.status")
+        assert retry is not None
+        assert retry["kind"] == "empty_response_retry"
+        assert retry["attempt"] == 1
+        assert first_of_kind(events, "text.done")["text"] == "Recovered answer"
+        assert not events_of_kind(events, "error")
+        assert "no user-visible text" in backend.stream_calls[1]["user_msg"]
+
+    def test_repeated_empty_responses_fail_visibly(self):
+        backend = StreamingBackend(events=[done()])
+        session = Session(backend=backend, max_steps=1)
+
+        events = list(session.run("rewrite it"))
+
+        assert backend.stream_count == 3
+        assert len(events_of_kind(events, "backend.status")) == 2
+        errors = events_of_kind(events, "error")
+        assert len(errors) == 1
+        assert "empty response 3 times" in errors[0]["message"]
+        assert not events_of_kind(events, "text.done")
+        assert session.conversation_history == [
+            {"role": "user", "content": "rewrite it"}
+        ]
+
+
+class TestRunCompletionIntegrity:
+    def test_promise_without_action_continues_through_edit_and_validation(self, tmp_path):
+        target = tmp_path / "sample.py"
+        backend = StreamingBackend(scripts=[
+            [text_delta("Let me rewrite it cleanly, then run it to verify."), done()],
+            [tool_call("file_write", {"path": str(target), "content": "value = 1\n"}), done()],
+            [tool_call("bash", {"command": f'python -m py_compile "{target}"'}), done()],
+            [text_delta("Updated sample.py and verified it compiles."), done()],
+        ])
+        session = Session(backend=backend, max_steps=3, auto_approve=True)
+        session.project_path = str(tmp_path)
+
+        events = list(session.run("rewrite sample.py"))
+
+        continuation = next(
+            event for event in events
+            if event.get("event") == "backend.status"
+            and event.get("kind") == "action_promise_continuation"
+        )
+        assert continuation["attempt"] == 1
+        end = first_of_kind(events, "session.end")
+        assert end["outcome"] == "changed_verified"
+        assert end["evidence"]["changed_files"] == [str(target)]
+        assert end["evidence"]["validation_tools"] == ["bash"]
+        assert end["telemetry"]["promise_continuations"] == 1
+        assert target.read_text(encoding="utf-8") == "value = 1\n"
+
+    def test_change_request_without_change_is_incomplete_not_done(self):
+        backend = StreamingBackend(events=[text_delta("Done."), done()])
+        session = Session(backend=backend, max_steps=1)
+
+        events = list(session.run("fix the parser"))
+
+        end = first_of_kind(events, "session.end")
+        assert end["outcome"] == "incomplete"
+        assert end["evidence"]["requires_workspace_change"] is True
+
+    def test_repeated_file_read_is_compacted_only_in_model_context(self):
+        session = Session(backend=StreamingBackend())
+        output = "large payload" * 100
+
+        first, first_meta = session._compact_tool_result_for_context(
+            "file_read", {"path": "sample.py"}, "read-1", output, is_error=False
+        )
+        session.conversation_history.append({
+            "role": "tool_result", "call_id": "read-1", "content": first
+        })
+        second, second_meta = session._compact_tool_result_for_context(
+            "file_read", {"path": "sample.py"}, "read-2", output, is_error=False
+        )
+
+        assert first == output
+        assert first_meta == {}
+        assert len(second) < len(output)
+        assert "identical to call read-1" in second
+        assert second_meta["context_deduplicated"] is True
+
+
 # ── Stream raises an exception ──────────────────────────────────────────
 
 
@@ -285,7 +382,7 @@ class TestStreamingBackendItself:
     behaves the way the rest of these tests assume."""
 
     def test_records_stream_call_args(self):
-        backend = StreamingBackend(events=[done()])
+        backend = StreamingBackend(events=[text_delta("ok"), done()])
         session = Session(backend=backend, max_steps=1)
         list(session.run("test message"))
 
@@ -308,7 +405,7 @@ class TestStreamingBackendItself:
         # script has multiple entries. Use raise_on_stream to bail
         # out cleanly on the SECOND call.
         backend = StreamingBackend(scripts=[
-            [done()],  # First call: just exit cleanly
+            [text_delta("ok"), done()],  # First call: exit with a valid answer
         ])
         session = Session(backend=backend, max_steps=1)
         list(session.run("hi"))

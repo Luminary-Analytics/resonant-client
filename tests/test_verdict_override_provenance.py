@@ -9,10 +9,6 @@ block instead of relying on prose parsing.
 """
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
-
 from resonant_client.gui import roadmap as roadmap_module
 from resonant_client.gui.autonomous_loop import (
     AutonomousMissionConfig,
@@ -25,11 +21,7 @@ from resonant_client.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
 )
-from resonant_client.orchestration.acceptance_check import (
-    BashRunner,
-    CheckContext,
-)
-from resonant_client.orchestration.reflect import ReflectPassResult
+from resonant_client.orchestration.acceptance_check import CheckContext
 
 
 def _build_roadmap_with_unpassed(tmp_path):
@@ -90,7 +82,8 @@ class TestVerdictOverrideProvenance:
         events = []
         daemon, path = _make_daemon_with_lying_reflect(tmp_path, events)
         daemon.start()
-        daemon.join(timeout=3.0)
+        daemon.join(timeout=10.0)
+        assert not daemon.is_running(), "autonomous reflection did not finish in time"
 
         reflections = [
             e for e in events
@@ -137,7 +130,8 @@ class TestVerdictOverrideProvenance:
         )
         daemon = AutonomousMissionDaemon(config, hooks, on_event=events.append)
         daemon.start()
-        daemon.join(timeout=3.0)
+        daemon.join(timeout=10.0)
+        assert not daemon.is_running(), "autonomous reflection did not finish in time"
 
         reflections = [
             e for e in events
@@ -178,7 +172,8 @@ class TestVerdictOverrideProvenance:
         )
         daemon = AutonomousMissionDaemon(config, hooks, on_event=events.append)
         daemon.start()
-        daemon.join(timeout=3.0)
+        daemon.join(timeout=10.0)
+        assert not daemon.is_running(), "autonomous reflection did not finish in time"
 
         reflections = [
             e for e in events
@@ -230,7 +225,8 @@ class TestVerdictOverrideProvenance:
         )
         daemon = AutonomousMissionDaemon(config, hooks, on_event=events.append)
         daemon.start()
-        daemon.join(timeout=3.0)
+        daemon.join(timeout=10.0)
+        assert not daemon.is_running(), "autonomous reflection did not finish in time"
 
         overridden = [
             e for e in events
@@ -282,7 +278,8 @@ class TestVerdictOverrideProvenance:
         )
         daemon = AutonomousMissionDaemon(config, hooks, on_event=events.append)
         daemon.start()
-        daemon.join(timeout=3.0)
+        daemon.join(timeout=10.0)
+        assert not daemon.is_running(), "autonomous reflection did not finish in time"
 
         overridden = [
             e for e in events

@@ -34,7 +34,9 @@ class EvaluationManager:
         self._lock = threading.RLock()
         self._active_id = ""
         self._records: dict[str, dict] = {}
+        self._turn_telemetry: list[dict] = []
         self._load_records()
+        self._load_turn_telemetry()
 
     def capabilities(self) -> dict:
         return {
@@ -53,7 +55,64 @@ class EvaluationManager:
                 **self.capabilities(),
                 "active_id": self._active_id,
                 "records": records[:30],
+                "turn_telemetry": list(reversed(self._turn_telemetry[-50:])),
+                "turn_summary": self._turn_summary(),
             }
+
+    def record_turn_telemetry(self, payload: dict) -> dict:
+        """Persist a redacted interactive-turn health record."""
+        allowed = {
+            "model",
+            "outcome",
+            "elapsed_seconds",
+            "steps",
+            "tool_calls",
+            "output_characters",
+            "empty_response_attempts",
+            "promise_continuations",
+            "changed_files",
+            "validation_tools",
+            "provider_stats",
+        }
+        record = {key: payload.get(key) for key in allowed if key in payload}
+        record["recorded_at"] = time.time()
+        with self._lock:
+            self._turn_telemetry.append(record)
+            self._turn_telemetry = self._turn_telemetry[-500:]
+            try:
+                self.storage_dir.mkdir(parents=True, exist_ok=True)
+                with self._telemetry_path().open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record, default=str) + "\n")
+            except OSError:
+                logger.warning("failed to persist turn telemetry", exc_info=True)
+        self._emit()
+        return dict(record)
+
+    def _turn_summary(self) -> dict:
+        records = self._turn_telemetry[-500:]
+        by_model: dict[str, dict] = {}
+        for record in records:
+            model = str(record.get("model") or "unknown")
+            bucket = by_model.setdefault(model, {
+                "turns": 0,
+                "empty_response_turns": 0,
+                "promise_continuations": 0,
+                "incomplete_or_failed": 0,
+                "elapsed_seconds": 0.0,
+            })
+            bucket["turns"] += 1
+            if int(record.get("empty_response_attempts") or 0) > 0:
+                bucket["empty_response_turns"] += 1
+            bucket["promise_continuations"] += int(record.get("promise_continuations") or 0)
+            if record.get("outcome") in {"incomplete", "failed", "changed_unverified"}:
+                bucket["incomplete_or_failed"] += 1
+            bucket["elapsed_seconds"] += float(record.get("elapsed_seconds") or 0.0)
+        for bucket in by_model.values():
+            turns = max(1, bucket["turns"])
+            bucket["avg_elapsed_seconds"] = round(bucket.pop("elapsed_seconds") / turns, 3)
+            bucket["empty_response_rate"] = round(bucket["empty_response_turns"] / turns, 4)
+            bucket["incomplete_rate"] = round(bucket["incomplete_or_failed"] / turns, 4)
+        return {"turns": len(records), "by_model": by_model}
 
     def start(
         self,
@@ -166,6 +225,9 @@ class EvaluationManager:
     def _record_path(self, run_id: str) -> Path:
         return self.storage_dir / f"{run_id}.json"
 
+    def _telemetry_path(self) -> Path:
+        return self.storage_dir / "turn-telemetry.jsonl"
+
     def _save_record(self, record: dict) -> None:
         try:
             self.storage_dir.mkdir(parents=True, exist_ok=True)
@@ -190,3 +252,16 @@ class EvaluationManager:
                     self._records[record["id"]] = record
             except (OSError, json.JSONDecodeError):
                 logger.debug("skipping invalid evaluation record %s", path)
+
+    def _load_turn_telemetry(self) -> None:
+        path = self._telemetry_path()
+        if not path.exists():
+            return
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines()[-500:]:
+                if line.strip():
+                    record = json.loads(line)
+                    if isinstance(record, dict):
+                        self._turn_telemetry.append(record)
+        except (OSError, json.JSONDecodeError):
+            logger.debug("skipping invalid turn telemetry", exc_info=True)

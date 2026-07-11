@@ -26,6 +26,7 @@ from ..backends import (
     EVENT_BACKEND_STATUS,
 )
 from ..events import EngineEvent, make_event
+from ..content import build_user_content
 from .tools import (
     AGENT_TOOLS,
     BATCH_ALLOWED_TOOL_NAMES,
@@ -988,21 +989,12 @@ class Session:
         last_done_stats = None
         last_done_model = getattr(self.backend, "model", "") if self.backend else ""
 
-        # Build user message content (multimodal or text-only)
-        if images:
-            import base64
-            content_parts = []
-            for img_bytes, media_type in images:
-                b64 = base64.b64encode(img_bytes).decode("utf-8")
-                content_parts.append({
-                    "type": "image",
-                    "media_type": media_type,
-                    "data": b64,
-                })
-            content_parts.append({"type": "text", "text": user_msg})
-            self.conversation_history.append({"role": "user", "content": content_parts})
-        else:
-            self.conversation_history.append({"role": "user", "content": user_msg})
+        # Store one normalized content contract now. Backend adapters decide
+        # which parts are native and which require an honest text fallback.
+        self.conversation_history.append({
+            "role": "user",
+            "content": build_user_content(user_msg, images),
+        })
 
         iteration = 0
         exec_step = 0

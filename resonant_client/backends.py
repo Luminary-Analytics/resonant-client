@@ -26,6 +26,13 @@ from typing import Iterator, Tuple
 import httpx
 
 from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
+from .content import content_text, ollama_message_content, text_fallback
+from .capabilities import (
+    ModelCapabilities,
+    default_context_window,
+    extract_reported_context_length,
+    infer_model_capabilities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,13 +215,7 @@ def _safe_image_b64(image_payload) -> str:
 
 def _message_text(content) -> str:
     """Extract comparable text from a scalar or multimodal history entry."""
-    if isinstance(content, list):
-        return " ".join(
-            str(part.get("text", ""))
-            for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        )
-    return str(content or "")
+    return content_text(content, include_fallbacks=False)
 
 
 # ---------------------------------------------------------------------------
@@ -380,22 +381,13 @@ class OllamaBackend:
     @staticmethod
     def _default_num_ctx(model: str) -> int:
         """Return a practical model-aware context target."""
-        lower = (model or "").lower()
-        # Cloud KV memory is remote, so expose the flagship windows instead of
-        # carrying forward the old local-memory 32K/128K caps.  The Ollama
-        # registry advertises 976K for GLM-5.2 and 1M for DeepSeek V4.
-        if lower == "glm-5.2:cloud":
-            return 999_424
-        if lower in {"deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"}:
-            return 1_048_576
-        if "glm-5" in lower or ("deepseek" in lower and "pro" in lower):
-            return 131_072
-        return 32_768
+        return default_context_window(model)
 
     def __init__(self, base_url: str, model: str, *, thinking: str | None = None):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.name = "ollama"
+        self._capabilities = infer_model_capabilities(model)
         self._use_native_tools: bool | None = None  # None = not yet detected
         # CRITICAL: Options must be IDENTICAL across ALL requests (warm_up, stream, etc.)
         # for this backend instance. If any option differs between requests, Ollama may
@@ -462,20 +454,25 @@ class OllamaBackend:
         """Context window currently sent to Ollama and used by compression."""
         return int(self._ollama_options.get("num_ctx", 32_768) or 32_768)
 
+    @property
+    def capability_profile(self) -> ModelCapabilities:
+        """Serializable, runtime-enriched model capabilities."""
+        return self._capabilities
+
+    def _apply_reported_capabilities(self, info: dict) -> None:
+        reported = info.get("capabilities", []) or []
+        model_info = info.get("model_info") or {}
+        reported_window = extract_reported_context_length(model_info)
+        self._capabilities = self._capabilities.with_runtime_metadata(
+            reported if isinstance(reported, list) else (),
+            context_window=reported_window,
+        )
+        self._apply_reported_context_length(model_info)
+
     def _apply_reported_context_length(self, model_info: dict) -> None:
         """Clamp the request window to a model's advertised maximum."""
-        lengths: list[int] = []
-        for key, value in (model_info or {}).items():
-            if not str(key).lower().endswith("context_length"):
-                continue
-            try:
-                parsed = int(value)
-            except (TypeError, ValueError):
-                continue
-            if parsed > 0:
-                lengths.append(parsed)
-        if lengths:
-            reported = max(lengths)
+        reported = extract_reported_context_length(model_info)
+        if reported:
             if reported < self.effective_context_tokens:
                 self._ollama_options["num_ctx"] = max(4_096, reported)
 
@@ -531,6 +528,7 @@ class OllamaBackend:
             "model_info": {},
             "supports_thinking": False,
             "active_thinking": self._ollama_think or "",
+            "capability_profile": self._capabilities.to_dict(),
         }
 
         # /api/ps — what's loaded right now
@@ -581,6 +579,8 @@ class OllamaBackend:
             params = (show_data.get("parameters") or "").lower()
             caps = " ".join(show_data.get("capabilities", []) or []).lower()
             result["supports_thinking"] = ("think" in params or "thinking" in caps or "reasoning" in caps)
+            self._apply_reported_capabilities(show_data)
+            result["capability_profile"] = self._capabilities.to_dict()
         except Exception:
             pass
 
@@ -676,7 +676,7 @@ class OllamaBackend:
             )
             if resp.status_code == 200:
                 info = resp.json()
-                self._apply_reported_context_length(info.get("model_info") or {})
+                self._apply_reported_capabilities(info)
                 # v0.5.2a3 — check `capabilities` array FIRST. Cloud
                 # models (`*:cloud`) typically have an empty template
                 # field but DO declare capabilities. Falling through
@@ -776,7 +776,7 @@ class OllamaBackend:
             )
             if resp.status_code == 200:
                 info = resp.json()
-                self._apply_reported_context_length(info.get("model_info") or {})
+                self._apply_reported_capabilities(info)
                 caps = info.get("capabilities", []) or []
                 supported = any(str(c).lower() == "vision" for c in caps)
                 OllamaBackend._vision_support_cache[self.model] = supported
@@ -1208,7 +1208,8 @@ class OllamaBackend:
                     # Check for screenshot image in tool result (computer use loop).
                     # Drop images entirely for non-vision models — Ollama 400s the
                     # request and the image stays in history poisoning every retry.
-                    img_b64 = _safe_image_b64(turn.get("image")) if allow_images else ""
+                    image_payload = turn.get("image")
+                    img_b64 = _safe_image_b64(image_payload) if allow_images else ""
                     if img_b64:
                         # Ollama: include screenshot as user message with image
                         # since tool role doesn't support images in Ollama
@@ -1222,14 +1223,21 @@ class OllamaBackend:
                             "images": [img_b64],
                         })
                     else:
+                        fallback = text_fallback({
+                            "type": "image",
+                            "media_type": (image_payload or {}).get("media_type", "image/png")
+                            if isinstance(image_payload, dict) else "image/png",
+                            "name": f"{turn.get('name', 'tool')} screenshot",
+                        }) if image_payload else ""
                         messages.append({
                             "role": "tool",
-                            "content": content,
+                            "content": f"{content}\n\n{fallback}".strip(),
                         })
                 else:
                     # Text mode: tool results become user messages
                     tool_name = turn.get("name", "tool")
-                    img_b64 = _safe_image_b64(turn.get("image")) if allow_images else ""
+                    image_payload = turn.get("image")
+                    img_b64 = _safe_image_b64(image_payload) if allow_images else ""
                     if img_b64:
                         messages.append({
                             "role": "user",
@@ -1237,26 +1245,23 @@ class OllamaBackend:
                             "images": [img_b64],
                         })
                     else:
+                        fallback = text_fallback({
+                            "type": "image",
+                            "media_type": (image_payload or {}).get("media_type", "image/png")
+                            if isinstance(image_payload, dict) else "image/png",
+                            "name": f"{tool_name} screenshot",
+                        }) if image_payload else ""
                         messages.append({
                             "role": "user",
-                            "content": f"[{tool_name} result]\n{content}",
+                            "content": f"[{tool_name} result]\n{content}\n\n{fallback}".strip(),
                         })
             elif role in ("user", "assistant"):
                 # Handle multimodal content (images + text)
                 if isinstance(content, list):
-                    # Ollama uses "images" field for vision models
-                    text_parts = []
-                    images = []
-                    for part in content:
-                        if part.get("type") == "image":
-                            if not allow_images:
-                                continue
-                            cleaned = _clean_image_b64(part.get("data", ""))
-                            if cleaned:
-                                images.append(cleaned)
-                        elif part.get("type") == "text":
-                            text_parts.append(part.get("text", ""))
-                    msg = {"role": role, "content": " ".join(text_parts)}
+                    text_value, raw_images = ollama_message_content(content, allow_images=allow_images)
+                    images = [_clean_image_b64(value) for value in raw_images]
+                    images = [value for value in images if value]
+                    msg = {"role": role, "content": text_value}
                     if images:
                         msg["images"] = images
                     messages.append(msg)

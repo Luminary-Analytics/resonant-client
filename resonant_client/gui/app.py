@@ -5639,10 +5639,14 @@ class AppState:
         current_backend = ""
         current_model = ""
         handles_tools = False
+        model_capabilities = {}
         if self.backend:
             current_backend = getattr(self.backend, "name", "")
             current_model = getattr(self.backend, "model", "")
             handles_tools = getattr(self.backend, "handles_tools", False)
+            profile = getattr(self.backend, "capability_profile", None)
+            if profile is not None and hasattr(profile, "to_dict"):
+                model_capabilities = profile.to_dict()
 
         return {
             "event": "init",
@@ -5651,6 +5655,7 @@ class AppState:
             "current_backend": current_backend,
             "current_model": current_model,
             "handles_tools": handles_tools,
+            "model_capabilities": model_capabilities,
             "permission_mode": self.permission_mode,
             "cwd": self.project.project_path.replace("\\", "/"),
             "sessions": self.project.list_sessions(),
@@ -5846,9 +5851,140 @@ def _make_autonomous_event_forwarder(
 
 # ── WebSocket Handler ─────────────────────────────────────────────────
 
+async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
+    """Run one serialized chat turn without blocking the WS receive loop."""
+    text = str(msg.get("text") or "").strip()
+    if not text:
+        return
+    if not state.session:
+        await ws.send_json({"event": "error", "message": "No backend selected"})
+        return
+
+    images = None
+    raw_images = msg.get("images", [])
+    if raw_images:
+        import base64 as _b64
+        images = []
+        for image in raw_images:
+            data = image.get("data", "")
+            media_type = image.get("media_type", "image/png")
+            try:
+                images.append((_b64.b64decode(data), media_type))
+            except Exception:
+                pass
+
+    session_mode = "code"
+    session_role = (
+        state.project.current_session.session_role
+        if state.project.current_session else "generator"
+    )
+    if not state.project.current_session:
+        state.ensure_persisted_current_session(session_role=session_role)
+
+    if not state._first_message_sent:
+        state.project.update_session_title(text)
+
+    text_for_session = text
+    if not state._first_message_sent and state.harness_enabled():
+        harness_summary = state.get_harness_summary(state.project.project_path)
+        has_active_sprint = bool(
+            harness_summary.get("active_sprint_id")
+            and harness_summary.get("contract_status") in {"approved", "needs_revision"}
+        )
+        if has_active_sprint:
+            text_for_session = state.wrap_user_message_for_harness(
+                user_msg=text,
+                session_mode=session_mode,
+                session_role=session_role,
+            )
+    state._first_message_sent = True
+
+    state.cancel_requested.clear()
+    state.session.reset_cancel()
+    display_events = await _run_session_streaming(
+        ws,
+        state.session,
+        text_for_session,
+        images=images,
+        display_user_msg=text,
+        session_mode=session_mode,
+        session_role=session_role,
+    )
+
+    state.project.save_current_session(state.session, display_events=display_events)
+    await ws.send_json({
+        "event": "sessions_updated",
+        "sessions": state.project.list_sessions(),
+        "current_session_id": (
+            state.project.current_session.id if state.project.current_session else ""
+        ),
+    })
+
+
 async def websocket_endpoint(ws: WebSocket):
     """Main WebSocket handler — bidirectional communication with frontend."""
     await ws.accept()
+
+    pending_chat_messages: list[dict[str, Any]] = []
+    chat_runner: asyncio.Task | None = None
+    cancel_request_id: str | None = None
+
+    async def _drain_chat_queue() -> None:
+        nonlocal chat_runner, cancel_request_id
+        try:
+            while pending_chat_messages:
+                queued = pending_chat_messages.pop(0)
+                try:
+                    if queued.get("_was_queued"):
+                        await ws.send_json({
+                            "event": "message.started",
+                            "message_id": queued.get("message_id", ""),
+                            "text": queued.get("text", ""),
+                        })
+                    await _process_chat_message(ws, queued)
+                except WebSocketDisconnect:
+                    raise
+                except Exception as exc:
+                    logger.exception("queued chat turn failed")
+                    try:
+                        await ws.send_json({"event": "error", "message": str(exc)})
+                    except Exception:
+                        pass
+        except WebSocketDisconnect:
+            raise
+        finally:
+            chat_runner = None
+            if cancel_request_id:
+                completed_id = cancel_request_id
+                cancel_request_id = None
+                try:
+                    await ws.send_json({
+                        "event": "cancel.completed",
+                        "cancel_id": completed_id,
+                    })
+                except Exception:
+                    pass
+
+    async def _enqueue_chat_message(msg: dict[str, Any], *, steer: bool) -> None:
+        nonlocal chat_runner
+        message_id = str(msg.get("message_id") or uuid.uuid4())
+        running = chat_runner is not None and not chat_runner.done()
+        queued = dict(msg, message_id=message_id, _was_queued=running)
+        pending_chat_messages.append(queued)
+        if running:
+            await ws.send_json({
+                "event": "message.queued",
+                "message_id": message_id,
+                "text": queued.get("text", ""),
+                "position": len(pending_chat_messages),
+                "steering": steer,
+            })
+            if steer:
+                state.cancel_requested.set()
+                if state.session:
+                    state.session.cancel()
+        else:
+            chat_runner = asyncio.create_task(_drain_chat_queue())
 
     # Store WebSocket ref for live agent event streaming
     state._ws_ref = ws
@@ -6102,89 +6238,41 @@ async def websocket_endpoint(ws: WebSocket):
                 except Exception as e:
                     await ws.send_json({"event": "error", "message": str(e)})
 
-            elif command == "message":
+            elif command in {"message", "steer"}:
                 text = msg.get("text", "").strip()
                 if not text:
                     continue
                 if not state.session:
                     await ws.send_json({"event": "error", "message": "No backend selected"})
                     continue
-                if state.active_thread and state.active_thread.is_alive():
-                    await ws.send_json({"event": "error", "message": "Already running"})
-                    continue
-
-                # Parse attached images (base64 from frontend paste/upload)
-                images = None
-                raw_images = msg.get("images", [])
-                if raw_images:
-                    import base64 as _b64
-                    images = []
-                    for img in raw_images:
-                        data = img.get("data", "")
-                        media_type = img.get("media_type", "image/png")
-                        try:
-                            images.append((_b64.b64decode(data), media_type))
-                        except Exception:
-                            pass
-
-                # session_mode was removed from SessionRecord in the April-2026 refocus.
-                # Always "code" now (the only mode).
-                session_mode = "code"
-                session_role = (
-                    state.project.current_session.session_role
-                    if state.project.current_session else "generator"
-                )
-                if not state.project.current_session:
-                    state.ensure_persisted_current_session(session_role=session_role)
-
-                # Auto-title session from first message
-                if not state._first_message_sent:
-                    state.project.update_session_title(text)
-
-                # Sprint workflow is opt-in. The wrap only runs when (a) the master
-                # setting is on AND (b) an active sprint contract exists. Otherwise
-                # the message goes through unmodified — same as Claude Code / Codex.
-                text_for_session = text
-                if not state._first_message_sent and state.harness_enabled():
-                    harness_summary = state.get_harness_summary(state.project.project_path)
-                    has_active_sprint = bool(
-                        harness_summary.get("active_sprint_id")
-                        and harness_summary.get("contract_status") in {"approved", "needs_revision"}
-                    )
-                    if has_active_sprint:
-                        text_for_session = state.wrap_user_message_for_harness(
-                            user_msg=text,
-                            session_mode=session_mode,
-                            session_role=session_role,
-                        )
-                state._first_message_sent = True
-
-                state.cancel_requested.clear()
-                state.session.reset_cancel()
-                display_events = await _run_session_streaming(
-                    ws,
-                    state.session,
-                    text_for_session,
-                    images=images,
-                    display_user_msg=text,
-                    session_mode=session_mode,
-                    session_role=session_role,
-                )
-
-                # Save session after each message exchange (with display events for replay)
-                state.project.save_current_session(state.session, display_events=display_events)
-                # Send updated session list
-                await ws.send_json({
-                    "event": "sessions_updated",
-                    "sessions": state.project.list_sessions(),
-                    "current_session_id": state.project.current_session.id if state.project.current_session else "",
-                })
+                await _enqueue_chat_message(msg, steer=command == "steer")
+                continue
 
             elif command == "cancel":
+                cancel_id = str(msg.get("cancel_id") or uuid.uuid4())
+                cleared_ids = [
+                    str(item.get("message_id") or "") for item in pending_chat_messages
+                ]
+                pending_chat_messages.clear()
+                await ws.send_json({
+                    "event": "cancel.requested",
+                    "cancel_id": cancel_id,
+                })
                 state.cancel_requested.set()
                 if state.session:
                     state.session.cancel()
-                await ws.send_json({"event": "status_msg", "message": "Cancelling..."})
+                if cleared_ids:
+                    await ws.send_json({
+                        "event": "message.queue_cleared",
+                        "message_ids": cleared_ids,
+                    })
+                if chat_runner is not None and not chat_runner.done():
+                    cancel_request_id = cancel_id
+                else:
+                    await ws.send_json({
+                        "event": "cancel.completed",
+                        "cancel_id": cancel_id,
+                    })
 
             elif command == "mission_start":
                 # Toggle-driven Mission entry. Always creates a fresh chat
@@ -8051,6 +8139,13 @@ async def websocket_endpoint(ws: WebSocket):
         logger.info("WebSocket disconnected")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
+    finally:
+        pending_chat_messages.clear()
+        if chat_runner is not None and not chat_runner.done():
+            state.cancel_requested.set()
+            if state.session:
+                state.session.cancel()
+            chat_runner.cancel()
 
 
 async def _run_session_streaming(
@@ -8239,7 +8334,7 @@ async def _run_session_streaming(
                     logger.debug("mission spec extraction failed: %s", _e)
 
             if event_type == "status":
-                stats = event.get("stats", {})
+                stats = event.get("stats") or {}
                 model = event.get("model", "")
                 in_tok = stats.get("input_tokens", 0)
                 out_tok = stats.get("output_tokens", 0)

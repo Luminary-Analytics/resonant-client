@@ -1,5 +1,11 @@
 # Model-aware agent prompt architecture
 
+This prompt design implements the canonical
+[agentic harness north star](agentic-harness-north-star.md). Prompt overlays may
+compensate for model behavior, but capabilities, modality routing, lifecycle,
+evidence, and recovery belong to the runtime. Optimize prompt behavior for
+correct completion and time to a trustworthy result before token efficiency.
+
 Resonant uses one durable agent contract with small model-family and execution-
 role overlays. This avoids maintaining several giant prompts that drift apart,
 while still giving GLM, DeepSeek, and less-characterized open models the

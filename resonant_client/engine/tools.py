@@ -7,6 +7,8 @@ Tools run server-side (same machine as the engine).
 
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import time
@@ -1493,6 +1495,77 @@ def _run_subprocess_with_cancel(
     stdin=None,
     cancel_event: Optional[threading.Event] = None,
 ):
+    def _create_windows_kill_job(process):
+        if sys.platform != "win32":
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _BasicLimitInfo(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                    ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD),
+                ]
+
+            class _IoCounters(ctypes.Structure):
+                _fields_ = [
+                    ("ReadOperationCount", ctypes.c_ulonglong),
+                    ("WriteOperationCount", ctypes.c_ulonglong),
+                    ("OtherOperationCount", ctypes.c_ulonglong),
+                    ("ReadTransferCount", ctypes.c_ulonglong),
+                    ("WriteTransferCount", ctypes.c_ulonglong),
+                    ("OtherTransferCount", ctypes.c_ulonglong),
+                ]
+
+            class _ExtendedLimitInfo(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _BasicLimitInfo),
+                    ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            job = kernel32.CreateJobObjectW(None, None)
+            if not job:
+                return None
+            info = _ExtendedLimitInfo()
+            info.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+            configured = kernel32.SetInformationJobObject(
+                job, 9, ctypes.byref(info), ctypes.sizeof(info),
+            )
+            assigned = configured and kernel32.AssignProcessToJobObject(job, int(process._handle))
+            if not assigned:
+                kernel32.CloseHandle(job)
+                return None
+            return job
+        except Exception:
+            return None
+
+    def _close_windows_job(job):
+        if not job or sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(job)
+        except Exception:
+            pass
+
+    process_group_args = (
+        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        if sys.platform == "win32"
+        else {"start_new_session": True}
+    )
     proc = subprocess.Popen(
         cmd,
         shell=shell,
@@ -1501,17 +1574,49 @@ def _run_subprocess_with_cancel(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=text,
+        **process_group_args,
     )
+    windows_job = _create_windows_kill_job(proc)
+
+    def _terminate_tree():
+        if sys.platform == "win32" and windows_job:
+            try:
+                import ctypes
+                ctypes.WinDLL("kernel32", use_last_error=True).TerminateJobObject(windows_job, 1)
+            except Exception:
+                pass
+            return
+        if proc.poll() is not None:
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    check=False,
+                )
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                try:
+                    proc.wait(timeout=0.75)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
 
     watcher = None
+    process_finished = threading.Event()
     if cancel_event is not None:
         def _watch_cancel():
-            cancel_event.wait()
-            if proc.poll() is None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+            while not process_finished.is_set():
+                if cancel_event.wait(timeout=0.1):
+                    _terminate_tree()
+                    return
 
         watcher = threading.Thread(target=_watch_cancel, daemon=True)
         watcher.start()
@@ -1520,22 +1625,40 @@ def _run_subprocess_with_cancel(
         stdout, stderr = proc.communicate(timeout=timeout)
         return proc.returncode, stdout, stderr, False
     except subprocess.TimeoutExpired:
-        proc.kill()
+        _terminate_tree()
         stdout, stderr = proc.communicate()
         return proc.returncode, stdout, stderr, True
     finally:
+        process_finished.set()
         if watcher:
-            watcher.join(timeout=0)
+            watcher.join(timeout=0.25)
+        _close_windows_job(windows_job)
+
+
+def _normalize_managed_bash_command(command: str) -> str:
+    """Keep background-launch syntax inside Resonant's managed lifecycle."""
+    managed_cmd = str(command or "")
+    if sys.platform == "win32":
+        # Detached `start /B` children outlive cmd.exe and retain its pipes,
+        # making the agent impossible to steer. Keep the command foreground
+        # and under the process group that cancellation can terminate.
+        managed_cmd = re.sub(
+            r"(?i)\bstart\s+(?:\"[^\"]*\"\s+)?/b\s+",
+            "",
+            managed_cmd,
+        )
+    return managed_cmd
 
 
 def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
     cmd = args.get("command", "")
+    managed_cmd = _normalize_managed_bash_command(cmd)
     timeout = args.get("timeout", 30)
     cwd = args.get("cwd", os.getcwd())
 
     try:
         returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
-            cmd,
+            managed_cmd,
             shell=True,
             text=True,
             timeout=timeout,

@@ -123,6 +123,12 @@ class ResonantApp {
         this.ws = null;
         this.reconnectAttempts = 0;
         this.isRunning = false;
+        this._queuedMessages = new Map();
+        this._steerInterrupted = false;
+        this._cancelInFlight = null;
+        this._cancelInterrupted = false;
+        this._cancelWatchdog = null;
+        this._cancelCardBaseline = null;
         this.planMode = false;
 
         // Streaming state
@@ -161,6 +167,8 @@ class ResonantApp {
         // dim line below the assistant's prose at session.end.
         this._currentTurn = this._freshTurnAggregate();
         this._activeTask = null;
+        this._liveRun = null;
+        this._liveRunTimer = null;
         this.activeTaskCard = null;
         this.activeTaskActivityEl = null;
         this.activeTaskResultEl = null;
@@ -887,7 +895,7 @@ class ResonantApp {
         // a small inline prompt right after cancel, asking whether they
         // want to exit the mission entirely (A1 fix).
         this.stopBtn.addEventListener('click', () => {
-            this.send({ command: 'cancel' });
+            this._requestCancel();
             this._maybeOfferMissionExitOnCancel();
         });
 
@@ -901,7 +909,7 @@ class ResonantApp {
         // Terminal bar — stop all
         this.terminalStopAll.addEventListener('click', (e) => {
             e.stopPropagation();
-            this.send({ command: 'cancel' });
+            this._requestCancel();
         });
 
         // Terminal bar — event delegation for individual stop buttons
@@ -909,7 +917,7 @@ class ResonantApp {
             const stopBtn = e.target.closest('.terminal-entry-stop');
             if (stopBtn) {
                 e.stopPropagation();
-                this.send({ command: 'cancel' });
+                this._requestCancel();
             }
         });
 
@@ -1330,6 +1338,98 @@ class ResonantApp {
 
     // ── Send Message ────────────────────────────────────────────
 
+    _prepareTurnUI(text, images = []) {
+        if (this._renderTimer) {
+            clearTimeout(this._renderTimer);
+            this._renderTimer = null;
+        }
+        this._lastStreamParseAt = 0;
+        this.streamBuffer = '';
+        this.isStreaming = false;
+        this.currentMessageEl = null;
+        this.currentStepEvent = null;
+        this.stepToolCalls = [];
+        this.stepToolResults = [];
+        this.stepIsInlineOnly = true;
+        this.stepRendered = false;
+        this.collapsedGroup = [];
+        this._liveCollapsedGroup = null;
+        this._currentTurn = this._freshTurnAggregate();
+        this._resetTaskCardState();
+        this.addUserMessage(text, images);
+        this._resetAgentRunSummary(text);
+        this._blockToolRows = new Map();
+        this.subagentDepth = 0;
+        this.subagentContainer = null;
+        this.clearTerminals();
+        this._removeLiveAgentTodoStrip();
+    }
+
+    _clearComposerAfterSend() {
+        this.userInput.value = '';
+        this.userInput.style.height = 'auto';
+        this._syncComposerGutter?.();
+        this.attachedImages = [];
+        this.renderAttachedImages();
+    }
+
+    _queueSteerMessage(text) {
+        const messageId = (globalThis.crypto?.randomUUID?.() || `steer-${Date.now()}-${Math.random()}`);
+        const images = this.attachedImages.map((image) => ({ ...image }));
+        const msg = { command: 'steer', text, message_id: messageId };
+        if (images.length) {
+            msg.images = images.map((image) => ({
+                data: image.data,
+                media_type: image.media_type,
+            }));
+        }
+        this._renderQueuedMessage(messageId, text, images);
+        this.send(msg);
+        this._clearComposerAfterSend();
+        this.userInput.focus();
+    }
+
+    _renderQueuedMessage(messageId, text, images = []) {
+        const item = document.createElement('section');
+        item.className = 'steer-queue-item';
+        item.dataset.messageId = messageId;
+        item.innerHTML = `
+            <span class="steer-queue-icon" aria-hidden="true"><i></i></span>
+            <span class="steer-queue-copy"><strong>Steering next</strong><small>${this.escapeHtml(text)}</small></span>
+            <span class="steer-queue-position">Queued</span>
+        `;
+        this.chatMessages.appendChild(item);
+        this._queuedMessages.set(messageId, { el: item, text, images });
+        this.scrollToBottom();
+    }
+
+    handleMessageQueued(event) {
+        const queued = this._queuedMessages.get(event.message_id);
+        if (!queued) return;
+        const label = queued.el.querySelector('.steer-queue-position');
+        if (label) label.textContent = event.steering
+            ? 'Interrupting safely'
+            : `Queued ${event.position || ''}`.trim();
+        queued.el.classList.add('is-acknowledged');
+    }
+
+    handleMessageStarted(event) {
+        const queued = this._queuedMessages.get(event.message_id);
+        const text = queued?.text || event.text || 'Continue';
+        const images = queued?.images || [];
+        queued?.el?.remove();
+        this._queuedMessages.delete(event.message_id);
+        this._prepareTurnUI(text, images);
+        this.setRunning(true);
+    }
+
+    handleMessageQueueCleared(event) {
+        (event.message_ids || []).forEach((messageId) => {
+            this._queuedMessages.get(messageId)?.el?.remove();
+            this._queuedMessages.delete(messageId);
+        });
+    }
+
     sendMessage(options = {}) {
         const autoRetry = !!(options && options.autoRetry === true);
         if (!autoRetry) this._autoFallbackDepth = 0;
@@ -1366,7 +1466,10 @@ class ResonantApp {
             }
         }
 
-        if (this.isRunning) return;
+        if (this.isRunning) {
+            this._queueSteerMessage(text);
+            return;
+        }
 
         // /plan slash-prefix routes the message to the intent flow instead of
         // a one-shot Session.run. Strip the prefix and forward.
@@ -1395,36 +1498,7 @@ class ResonantApp {
             return;
         }
 
-        // Reset streaming state
-        if (this._renderTimer) {
-            clearTimeout(this._renderTimer);
-            this._renderTimer = null;
-        }
-        this._lastStreamParseAt = 0;
-        this.streamBuffer = '';
-        this.isStreaming = false;
-        this.currentMessageEl = null;
-        this.currentStepEvent = null;
-        this.stepToolCalls = [];
-        this.stepToolResults = [];
-        this.stepIsInlineOnly = true;
-        this.stepRendered = false;
-        this.collapsedGroup = [];
-        this._liveCollapsedGroup = null;
-        this._currentTurn = this._freshTurnAggregate();
-        this._resetTaskCardState();
-
-        // Reset stale task state before creating the new turn card. Creating
-        // the card first and then resetting discarded its reference, so the
-        // first response event opened a synthetic card labelled "Task".
-        this.addUserMessage(text, this.attachedImages);
-        this._resetAgentRunSummary(text);
-
-        this._blockToolRows = new Map();
-        this.subagentDepth = 0;
-        this.subagentContainer = null;
-        this.clearTerminals();
-        this._removeLiveAgentTodoStrip();
+        this._prepareTurnUI(text, this.attachedImages);
 
         // Send to server (include images if attached)
         const msg = { command: 'message', text };
@@ -1436,12 +1510,7 @@ class ResonantApp {
         }
         this.send(msg);
 
-        // Clear input and attachments
-        this.userInput.value = '';
-        this.userInput.style.height = 'auto';
-        this._syncComposerGutter?.();
-        this.attachedImages = [];
-        this.renderAttachedImages();
+        this._clearComposerAfterSend();
         this.setRunning(true);
     }
 
@@ -4322,14 +4391,94 @@ class ResonantApp {
         return `${specMd}\n\n**Time budget:** ${label}\n`;
     }
 
+    _requestCancel() {
+        if (!this.isRunning || this._cancelInFlight) return;
+        const cancelId = (globalThis.crypto?.randomUUID?.() || `cancel-${Date.now()}-${Math.random()}`);
+        this._cancelInFlight = cancelId;
+        this._cancelCardBaseline = new Set(this.chatMessages.querySelectorAll('.task-card'));
+        this.stopBtn.disabled = true;
+        this.stopBtn.classList.add('is-stopping');
+        this.stopBtn.title = 'Stopping agent and running tools...';
+        this.stopBtn.setAttribute('aria-label', 'Stopping agent and running tools');
+        this._setLiveRunPhase('Stopping', 'Cancelling the model and running tools');
+        this.send({ command: 'cancel', cancel_id: cancelId });
+        clearTimeout(this._cancelWatchdog);
+        this._cancelWatchdog = setTimeout(() => {
+            if (this._cancelInFlight === cancelId) {
+                this._setLiveRunPhase('Still stopping', 'Waiting for a running tool to exit safely');
+                this.showStatusMessage('Still stopping the active tool safely...');
+            }
+        }, 5000);
+    }
+
+    handleCancelRequested(event) {
+        if (this._cancelInFlight && event.cancel_id !== this._cancelInFlight) return;
+        this._setLiveRunPhase('Stopping', 'Draining the active session');
+    }
+
+    _finishCancelledTask() {
+        const task = this._activeTask;
+        if (task) {
+            task.card.classList.remove('task-card-running');
+            task.card.classList.add('task-card-stopped');
+            task.stateEl.className = 'task-card-state is-stopped';
+            task.stateEl.textContent = 'Stopped';
+            this._completeLiveRun(true);
+            this._collapseTaskActivity({});
+            this._setActiveTask(null);
+        }
+        this.removeThinking();
+        this.finalizeToolActivityGroup();
+        this.clearTerminals();
+        this.isStreaming = false;
+        this.currentMessageEl = null;
+        this.setRunning(false);
+    }
+
+    _removeEmptyCancelArtifacts() {
+        const baseline = this._cancelCardBaseline || new Set();
+        this.chatMessages.querySelectorAll('.task-card[data-user-message="synthetic"]').forEach((card) => {
+            if (baseline.has(card)) return;
+            const activity = card.querySelector('.task-activity')?.textContent?.trim() || '';
+            const result = card.querySelector('.task-result')?.textContent?.trim() || '';
+            const footer = card.querySelector('.task-card-footer')?.textContent?.trim() || '';
+            if (!activity && !result && !footer) card.remove();
+        });
+        this._cancelCardBaseline = null;
+    }
+
+    handleCancelCompleted(event) {
+        if (this._cancelInFlight && event.cancel_id !== this._cancelInFlight) return;
+        clearTimeout(this._cancelWatchdog);
+        this._cancelWatchdog = null;
+        this._finishCancelledTask();
+        this._removeEmptyCancelArtifacts();
+        this._cancelInFlight = null;
+        this._cancelInterrupted = false;
+        this.stopBtn.disabled = false;
+        this.stopBtn.classList.remove('is-stopping');
+        this.stopBtn.title = 'Stop the agent';
+        this.stopBtn.setAttribute('aria-label', 'Stop the agent');
+    }
+
     setRunning(running) {
         this.isRunning = running;
-        this.sendBtn.style.display = running ? 'none' : 'flex';
+        this.sendBtn.style.display = 'flex';
         this.stopBtn.style.display = running ? 'flex' : 'none';
-        this.userInput.disabled = running;
-        if (!running) {
-            this.userInput.focus();
-        }
+        this.userInput.disabled = false;
+        this.userInput.placeholder = running
+            ? 'Steer the running agent or queue a follow-up...'
+            : 'Ask Resonant to build, inspect, or fix...';
+        const sendLabel = running
+            ? 'Steer agent (Enter) — Shift+Enter for newline'
+            : 'Send message (Enter) — Shift+Enter for newline';
+        this.sendBtn.title = sendLabel;
+        this.sendBtn.setAttribute('aria-label', sendLabel);
+        this.sendBtn.classList.toggle('is-steering', running);
+        this.userInput.closest('.input-wrapper')?.classList.toggle('is-running', running);
+        if (running) this._startLiveRun();
+        else this._stopLiveRun();
+        this.userInput.focus();
     }
 
     // ── Terminal Bar ─────────────────────────────────────────────
@@ -4874,6 +5023,21 @@ class ResonantApp {
                 break;
             case 'session.end':
                 this.handleSessionEnd(event);
+                break;
+            case 'message.queued':
+                this.handleMessageQueued(event);
+                break;
+            case 'message.started':
+                this.handleMessageStarted(event);
+                break;
+            case 'message.queue_cleared':
+                this.handleMessageQueueCleared(event);
+                break;
+            case 'cancel.requested':
+                this.handleCancelRequested(event);
+                break;
+            case 'cancel.completed':
+                this.handleCancelCompleted(event);
                 break;
             case 'error':
                 this.handleError(event);
@@ -6296,6 +6460,8 @@ class ResonantApp {
         }
         // Store tool mode for potential UI use
         this.currentToolMode = toolMode;
+        this._startLiveRun(event);
+        this._setLiveRunPhase('Reasoning', `Preparing ${event.model || 'the model'}`);
     }
 
     handleStepStart(event) {
@@ -6307,6 +6473,11 @@ class ResonantApp {
         this.isStreaming = false;
         this._currentStepHeaderEl = null;
         this._currentStepToolCounts = {};
+        this._setLiveRunPhase(
+            event.step > 1 ? 'Continuing' : 'Reasoning',
+            event.label || `Agent step ${event.step || 1}`,
+            event.step || 1,
+        );
 
         // Skip the thinking indicator if a live tool group is already on screen —
         // its spinner already signals the agent is working. Re-adding here causes
@@ -6811,6 +6982,8 @@ class ResonantApp {
 
     handleTextDelta(event) {
         this.removeThinking();
+        this._advanceLiveMilestone('report', 'Communicate progress');
+        this._setLiveRunPhase('Composing', 'Streaming the latest update');
         this.stepIsInlineOnly = false;
 
         // Text streaming means tools are done — clear terminal bar
@@ -7007,6 +7180,18 @@ class ResonantApp {
         const name = event.name || '';
         const callId = event.call_id || '';
         const nameLower = name.toLowerCase();
+        const readTools = new Set(['file_read', 'glob', 'grep', 'git_status', 'git_diff']);
+        const writeTools = new Set(['file_write', 'file_edit', 'apply_patch', 'git_commit']);
+        const validationTools = new Set(['bash', 'computer_screenshot', 'browser_screenshot']);
+        if (readTools.has(nameLower)) {
+            this._advanceLiveMilestone('inspect', 'Inspect the project');
+        } else if (writeTools.has(nameLower)) {
+            this._advanceLiveMilestone('change', 'Implement the changes');
+        } else if (validationTools.has(nameLower)) {
+            this._advanceLiveMilestone('verify', 'Verify the result');
+        }
+        const toolLabel = (getToolInfo(name).label || name || 'tool').replace(/\s+/g, ' ').trim();
+        this._setLiveRunPhase('Using tools', toolLabel);
 
         // UX fix #7 — accumulate tool-call count for the per-turn aggregate
         // so the run-card can report something honest like "3 steps · 7 tools"
@@ -8723,10 +8908,12 @@ class ResonantApp {
             done,
             total,
         };
+        this._setLiveRunTodos(raw, done, total);
         this._syncLiveAgentTodoStrip(done, total, raw);
     }
 
     _syncLiveAgentTodoStrip(done, total, items) {
+        if (this._liveRun && this._liveRun.active) return;
         if (this.isReplaying || total <= 0) return;
         const target = this.getRenderTarget();
         if (!target) return;
@@ -9155,6 +9342,8 @@ class ResonantApp {
     }
 
     _finishActiveTask(event = {}) {
+        if (!this._activeTask) return;
+        this._completeLiveRun(!!this._agentRunErrored);
         this._renderTaskCompletionSummary(event);
         this._collapseTaskActivity(event);
         this._setActiveTask(null);
@@ -9173,6 +9362,23 @@ class ResonantApp {
 
         // Flush collapsed group
         this.flushCollapsedGroup();
+
+        if (this._cancelInFlight || this._cancelInterrupted) {
+            this._finishCancelledTask();
+            this._cancelInterrupted = false;
+            this.scrollToBottom();
+            return;
+        }
+
+        if (this._steerInterrupted) {
+            this._completeLiveRun(false);
+            this._collapseTaskActivity(event);
+            this._setActiveTask(null);
+            this._steerInterrupted = false;
+            this.setRunning(false);
+            this.scrollToBottom();
+            return;
+        }
 
         const totalElapsed = event.total_elapsed || 0;
         const totalSteps = event.total_steps || 0;
@@ -9435,6 +9641,13 @@ class ResonantApp {
         const agentType = event.agent_type || '';
         const prompt = event.prompt || '';
         const activityId = `task:${event.call_id || Date.now()}`;
+        this._updateLiveSubtask(activityId, {
+            label: agentType || 'Sub-task',
+            prompt,
+            status: 'running',
+            startedAt: Date.now(),
+        });
+        this._setLiveRunPhase('Delegating', agentType || 'Sub-task running');
         this.agentActivities.set(activityId, {
             id: activityId,
             kind: 'subagent',
@@ -9491,6 +9704,12 @@ class ResonantApp {
         const steps = event.steps || 0;
         const elapsed = event.elapsed || 0;
         const activityId = `task:${event.call_id || ''}`;
+        this._updateLiveSubtask(activityId, {
+            label: agentType || 'Sub-task',
+            status: 'done',
+            steps,
+            elapsed,
+        });
         const activity = this.agentActivities.get(activityId);
         if (activity) {
             activity.status = 'done';
@@ -9538,6 +9757,26 @@ class ResonantApp {
         this.removeThinking();
         this._finalizeLiveCollapsedGroup();
         this.ensureStepRendered();
+
+        if (event.message === 'Interrupted' && this._cancelInFlight) {
+            this._cancelInterrupted = true;
+            this._setLiveRunPhase('Stopping', 'The active run has been interrupted');
+            return;
+        }
+
+        const isSteerInterrupt = event.message === 'Interrupted' && this._queuedMessages.size > 0;
+        if (isSteerInterrupt) {
+            const task = this._activeTask;
+            if (task) {
+                task.card.classList.remove('task-card-running');
+                task.card.classList.add('task-card-steered');
+                task.stateEl.className = 'task-card-state is-steered';
+                task.stateEl.textContent = 'Steered';
+                this._setLiveRunPhase('Steered', 'Applying your new direction');
+                this._steerInterrupted = true;
+            }
+            return;
+        }
 
         // v0.3.2 — release the mission_start in-flight guard on error so a
         // failed mission_start doesn't leave the user locked out of retries
@@ -10239,6 +10478,11 @@ class ResonantApp {
         result.className = 'task-result';
         result.hidden = true;
 
+        const live = document.createElement('section');
+        live.className = 'live-run-surface';
+        live.hidden = true;
+        live.setAttribute('aria-live', 'polite');
+
         const footer = document.createElement('div');
         footer.className = 'task-card-footer';
         footer.hidden = true;
@@ -10246,6 +10490,7 @@ class ResonantApp {
         card.appendChild(header);
         card.appendChild(activity);
         card.appendChild(result);
+        card.appendChild(live);
         card.appendChild(footer);
         this.chatMessages.appendChild(card);
 
@@ -10254,6 +10499,7 @@ class ResonantApp {
             stateEl: state,
             activityEl: activity,
             resultEl: result,
+            liveEl: live,
             footerEl: footer,
             requestText,
             startedAt: performance.now(),
@@ -10370,7 +10616,186 @@ class ResonantApp {
         return el;
     }
 
+    _startLiveRun(event = {}) {
+        if (this.isReplaying) return;
+        const task = this._activeTask;
+        if (!task || !task.liveEl) return;
+        if (this._liveRun && this._liveRun.active && this._liveRun.el === task.liveEl) {
+            if (event.model) this._liveRun.model = event.model;
+            this._renderLiveRun();
+            return;
+        }
+        if (this._liveRunTimer) clearInterval(this._liveRunTimer);
+        this._liveRun = {
+            active: true,
+            el: task.liveEl,
+            startedAt: Date.now(),
+            phase: 'Starting',
+            detail: 'Preparing the workspace and model',
+            step: 0,
+            model: event.model || this.lastModel || '',
+            milestones: [{ id: 'analyze', text: 'Understand the request', status: 'running' }],
+            modelTodos: false,
+            subtasks: new Map(),
+        };
+        task.liveEl.hidden = false;
+        task.liveEl.classList.remove('is-finishing', 'is-error');
+        this._renderLiveRun();
+        this._liveRunTimer = setInterval(() => this._updateLiveRunClock(), 1000);
+    }
+
+    _stopLiveRun() {
+        if (this._liveRunTimer) clearInterval(this._liveRunTimer);
+        this._liveRunTimer = null;
+        if (this._liveRun && this._liveRun.active) {
+            this._liveRun.active = false;
+            if (this._liveRun.el) this._liveRun.el.hidden = true;
+        }
+        this._liveRun = null;
+    }
+
+    _completeLiveRun(errored = false) {
+        const run = this._liveRun;
+        if (!run || !run.el) return;
+        if (this._liveRunTimer) clearInterval(this._liveRunTimer);
+        this._liveRunTimer = null;
+        run.active = false;
+        run.phase = errored ? 'Stopped' : 'Complete';
+        run.detail = errored ? 'The run ended before completion' : 'Finalizing the result';
+        run.milestones = run.milestones.map((item) => ({
+            ...item,
+            status: errored && item.status === 'running' ? 'error' : 'done',
+        }));
+        if (errored) run.el.classList.add('is-error');
+        this._renderLiveRun();
+        run.el.classList.add('is-finishing');
+        setTimeout(() => {
+            if (run.el) run.el.hidden = true;
+            if (this._liveRun === run) this._liveRun = null;
+        }, 420);
+    }
+
+    _setLiveRunPhase(phase, detail = '', step = null) {
+        const run = this._liveRun;
+        if (!run || !run.active) return;
+        run.phase = phase || run.phase;
+        run.detail = detail || run.detail;
+        if (step !== null) run.step = step;
+        // Keep a visibly active final step when all evidence-derived milestones
+        // have completed but the model is still reasoning or composing.
+        if (!run.modelTodos && run.milestones.length
+            && run.milestones.every((item) => item.status === 'done')) {
+            let finalStep = run.milestones.find((item) => item.id === 'finalize');
+            if (!finalStep) {
+                finalStep = { id: 'finalize', text: 'Finish the response', status: 'running' };
+                run.milestones.push(finalStep);
+            } else {
+                finalStep.status = 'running';
+            }
+        }
+        this._renderLiveRun();
+    }
+
+    _advanceLiveMilestone(id, text) {
+        const run = this._liveRun;
+        if (!run || !run.active || run.modelTodos) return;
+        const current = run.milestones.find((item) => item.status === 'running');
+        if (current && current.id !== id) current.status = 'done';
+        let item = run.milestones.find((entry) => entry.id === id);
+        if (!item) {
+            item = { id, text, status: 'running' };
+            run.milestones.push(item);
+        } else if (item.status !== 'done') {
+            item.status = 'running';
+        }
+        this._renderLiveRun();
+    }
+
+    _setLiveRunTodos(items, done, total) {
+        const run = this._liveRun;
+        if (!run || !run.active || total <= 0) return;
+        run.modelTodos = true;
+        run.milestones = (items || []).map((item, index) => ({
+            id: `todo-${index}`,
+            text: item.text || `Task ${index + 1}`,
+            status: item.done ? 'done' : (index === done ? 'running' : 'pending'),
+        }));
+        this._renderLiveRun();
+    }
+
+    _updateLiveSubtask(id, patch) {
+        const run = this._liveRun;
+        if (!run || !run.active) return;
+        const previous = run.subtasks.get(id) || { id };
+        run.subtasks.set(id, { ...previous, ...patch, id });
+        this._renderLiveRun();
+    }
+
+    _updateLiveRunClock() {
+        const run = this._liveRun;
+        if (!run || !run.el) return;
+        const elapsed = run.el.querySelector('[data-live-elapsed]');
+        if (elapsed) elapsed.textContent = this._formatRunDuration((Date.now() - run.startedAt) / 1000);
+        run.el.querySelectorAll('[data-subtask-elapsed]').forEach((el) => {
+            const item = run.subtasks.get(el.dataset.subtaskElapsed);
+            if (item && item.status === 'running') {
+                el.textContent = this._formatRunDuration((Date.now() - item.startedAt) / 1000);
+            }
+        });
+    }
+
+    _renderLiveRun() {
+        const run = this._liveRun;
+        if (!run || !run.el) return;
+        const elapsedSeconds = Math.max(0, (Date.now() - run.startedAt) / 1000);
+        const complete = run.milestones.filter((item) => item.status === 'done').length;
+        const total = run.milestones.length;
+        const pct = total ? Math.round((complete / total) * 100) : 0;
+        const subtasks = Array.from(run.subtasks.values());
+        const activeSubtasks = subtasks.filter((item) => item.status === 'running').length;
+        const wasOpen = !!run.el.querySelector('details')?.open;
+        const milestoneOrder = { analyze: 0, inspect: 1, change: 2, verify: 3, report: 4, finalize: 5 };
+        const orderedMilestones = [...run.milestones].sort((a, b) => (
+            (milestoneOrder[a.id] ?? 99) - (milestoneOrder[b.id] ?? 99)
+        ));
+        const milestoneHtml = orderedMilestones.map((item) => {
+            const glyph = item.status === 'done' ? '\u2713' : item.status === 'error' ? '!' : item.status === 'running' ? '' : '\u00b7';
+            return `<li class="live-run-todo is-${item.status}"><span class="live-run-check">${glyph}</span><span>${this.escapeHtml(item.text)}</span></li>`;
+        }).join('');
+        const subtaskHtml = subtasks.map((item) => {
+            const meta = item.status === 'done'
+                ? `${item.steps || 0} steps \u00b7 ${this._formatRunDuration(item.elapsed || 0)}`
+                : this._formatRunDuration((Date.now() - (item.startedAt || Date.now())) / 1000);
+            return `<li class="live-run-subtask is-${item.status}">
+                <span class="live-run-subtask-pulse"></span>
+                <span class="live-run-subtask-copy"><strong>${this.escapeHtml(item.label || 'Sub-task')}</strong><small>${this.escapeHtml((item.prompt || '').slice(0, 96))}</small></span>
+                <span class="live-run-subtask-meta" data-subtask-elapsed="${this.escapeHtml(item.id)}">${meta}</span>
+            </li>`;
+        }).join('');
+        run.el.innerHTML = `
+            <div class="live-run-head">
+                <span class="live-run-orbit" aria-hidden="true"><i></i><b></b></span>
+                <span class="live-run-copy"><strong>Resonant is working</strong><small>${this.escapeHtml(run.phase)} \u00b7 ${this.escapeHtml(run.detail)}</small></span>
+                <span class="live-run-meta">${run.step ? `Step ${run.step} \u00b7 ` : ''}<span data-live-elapsed>${this._formatRunDuration(elapsedSeconds)}</span></span>
+            </div>
+            <div class="live-run-progress" style="--live-run-progress:${pct}%"><span></span></div>
+            <details class="live-run-details" ${(wasOpen || total > 1 || subtasks.length) ? 'open' : ''}>
+                <summary><span>Run details</span><span>${complete}/${total} tasks${subtasks.length ? ` \u00b7 ${activeSubtasks} active sub-task${activeSubtasks === 1 ? '' : 's'}` : ''}</span></summary>
+                <div class="live-run-detail-grid">
+                    <section><h4>Task list</h4><ol class="live-run-todos">${milestoneHtml}</ol></section>
+                    ${subtasks.length ? `<section><h4>Sub-tasks</h4><ol class="live-run-subtasks">${subtaskHtml}</ol></section>` : ''}
+                </div>
+            </details>
+        `;
+        run.el.hidden = false;
+        this.scrollToBottom();
+    }
+
     addThinking() {
+        if (this._liveRun && this._liveRun.active) {
+            this._setLiveRunPhase('Reasoning', 'Working through the next action');
+            return;
+        }
         const el = document.createElement('div');
         el.className = 'thinking-indicator';
         el.setAttribute('data-thinking', 'true');

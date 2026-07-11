@@ -1,5 +1,13 @@
 # Resonant Client — Roadmap
 
+The current roadmap is governed by the
+[agentic harness north star](docs/agentic-harness-north-star.md). The highest
+priority is a capability-driven, multimodal-ready, durable runtime for
+long-running open-model coding tasks. Correct completion, verification,
+maintainability, and wall-clock performance rank above token or compute
+efficiency. The dated release and cluster histories below remain useful records
+but do not override that direction.
+
 Post-refocus, the client is a single-purpose agentic coder: Ollama + `deepseek-v4-pro:cloud` on the Mac Studio (`10.0.0.133`), with a clean Agent + Settings UI. The original 8 clusters below were the foundation (shipped pre-v0.2.0); see the "Post-refocus state" section further down for the v0.3.x–v0.6.x evolution.
 
 ## Project direction (2026-05, set at v0.6.3)

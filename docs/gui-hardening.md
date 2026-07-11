@@ -67,15 +67,20 @@ Settings changes now apply to runtime state instead of only writing JSON:
 
 ## Cancellation Model
 
-Cancellation is now cooperative and real across the main runtime:
+Cancellation is acknowledged and real across the main runtime:
 
 - `Session` has an internal cancellation event
 - backend streaming paths accept cancellation
-- subprocess-backed tools terminate on cancel
+- subprocess-backed tools terminate their managed process trees on cancel,
+  including normalized Windows `start /B` variants
 - background tasks call `session.cancel()`
-- server mode cancel is implemented instead of stubbed
+- the WebSocket emits `cancel.requested` and `cancel.completed`
+- the GUI remains in an explicit Stopping state until completion
+- queued follow-ups are cleared by a full stop
 
-The goal is not force-kill semantics for every possible tool, but a consistent cooperative stop path that works for the core session loop and the long-running subprocess paths.
+Cooperative cancellation remains the first signal, followed by process-tree
+termination for managed subprocesses. Adapters for future tools must implement
+the same lifecycle and must not report completion while work remains active.
 
 ## Replay And Terminal State
 

@@ -2,6 +2,12 @@
 
 **The Ollama-native agentic coding desktop app — purpose-built for GLM, DeepSeek, and other open-source local models.**
 
+Resonant optimizes first for correct, production-quality outcomes, reliable
+completion, strong verification, and wall-clock time to a trustworthy result.
+Token and compute efficiency are secondary diagnostics. See the canonical
+[agentic harness north star](docs/agentic-harness-north-star.md) for the product
+and engineering contract that governs new work.
+
 If you want to code with Anthropic models, reach for [Claude Code](https://claude.com/product/claude-code). If you want OpenAI, reach for [Codex](https://github.com/openai/codex). For GLM, DeepSeek, and any open Ollama model, this is the tool.
 
 ```
@@ -23,7 +29,7 @@ Anthropic and OpenAI both ship excellent first-party agentic coders for their ow
 The product surface is shaped by the deepseek/Ollama path:
 - Single backend, single trust path — every feature is exercised by every user
 - Mission flow tuned for grill-style interviews that DeepSeek Pro/Flash do well
-- Cycle guards + `await_user` escape hatch so smaller open models don't waste your tokens
+- Cycle guards + `await_user` escape hatch so open models recover from unproductive loops without losing useful work
 - Mac Studio at `10.0.0.133:11434` is the canonical Ollama host (override anywhere)
 
 ## Features
@@ -178,6 +184,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module-by-module reference.
 ```
 resonant_client/
 ├── backends.py              # OllamaBackend (single backend; v0.4.0 cut Anthropic / OpenAI / etc.)
+├── capabilities.py          # Model capability profiles + Ollama metadata enrichment
+├── content.py               # Typed multimodal content + text-only fallbacks
 ├── events.py                # EngineEvent / ClientCommand enums
 ├── protocol.py              # Tool prompt building, JSON/XML parsing
 ├── tui.py                   # Terminal UI

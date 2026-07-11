@@ -74,6 +74,29 @@ def test_current_user_message_is_not_duplicated_in_ollama_payload():
     assert user_messages == [{"role": "user", "content": "continue"}]
 
 
+def test_text_only_ollama_payload_represents_attached_image_in_text():
+    backend = OllamaBackend("http://stub", "deepseek-v4-pro:cloud")
+    done_chunk = json.dumps({"done": True}).encode() + b"\n"
+    history = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "media_type": "image/png", "data": "aGVsbG8="},
+            {"type": "text", "text": "inspect this"},
+        ],
+    }]
+
+    payload = _capture_stream_payload(
+        backend,
+        [done_chunk],
+        conversation_history=history,
+    )
+
+    user = next(message for message in payload["messages"] if message["role"] == "user")
+    assert "images" not in user
+    assert "No textual representation is available" in user["content"]
+    assert "inspect this" in user["content"]
+
+
 def test_deepseek_thinking_omits_unsupported_sampling_controls():
     backend = OllamaBackend("http://stub", "deepseek-v4-pro:cloud", thinking="high")
 

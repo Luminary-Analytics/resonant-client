@@ -1,5 +1,13 @@
 # Long-Running Agents — 4-Phase Plan
 
+> **Historical plan.** This document records the original phased proposal and
+> is not the current product contract. Mission persistence, autonomous loops,
+> live progress, steering, queued follow-ups, and full-session cancellation
+> have since shipped or materially changed. Use
+> [`agentic-harness-north-star.md`](agentic-harness-north-star.md) for current
+> priorities and architecture. Unchecked boxes below describe the plan at the
+> time it was written, not necessarily current implementation status.
+
 ## Vision
 
 A user types a feature idea. The system grills them with questions until shared

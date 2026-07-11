@@ -2,6 +2,13 @@
 
 This document describes every major module, data flow, and extension point in `resonant-client`. It is written so that any LLM or developer can pick up the codebase and contribute effectively.
 
+The canonical product priorities and forward architecture are defined in
+[`docs/agentic-harness-north-star.md`](docs/agentic-harness-north-star.md).
+Architecture changes should optimize for correct results, completion
+reliability, verification, maintainability, and wall-clock performance before
+token or compute efficiency. Historical implementation notes in this guide do
+not override that contract.
+
 ## Overview
 
 Resonant Client is an **Ollama-native agentic-coding desktop app** — an
@@ -30,6 +37,16 @@ It runs as a frameless desktop app (pywebview) or in a browser, providing:
   missions and surfaced back into future ones. This is the project's
   differentiating feature; see [`docs/self-improvement-loop.md`](docs/self-improvement-loop.md).
 - An optional **sprint workflow** (planner / generator / evaluator with an autonomous orchestrator) — off by default; opt in via Settings → General
+
+Two model-adapter foundations are deliberately backend-independent:
+
+- `resonant_client/capabilities.py` defines the effective model profile
+  (context, modalities, tools, reasoning, structured output, continuation, and
+  concurrency) and enriches it from Ollama runtime metadata.
+- `resonant_client/content.py` normalizes text, image, audio, video, document,
+  file, and diagnostic parts. Backend adapters pass supported native parts and
+  render explicit fallbacks for unsupported modalities; evidence is never
+  silently dropped.
 
 **Project conventions:** Resonant reads `AGENTS.md` from the project root (the cross-tool standard adopted by Codex CLI, OpenCode, Cursor, and OpenHands). Legacy `RESONANT.md` and Anthropic's `CLAUDE.md` are also recognized as fallbacks.
 

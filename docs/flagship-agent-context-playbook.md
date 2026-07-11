@@ -1,9 +1,13 @@
 # GLM-5.2 and DeepSeek V4 Pro agent-context playbook
 
+Status: active model-family playbook subordinate to the canonical
+[agentic harness north star](agentic-harness-north-star.md). The objective is
+maximum useful context and time to a trustworthy result—not minimum token use.
+
 This is the operating plan for making Resonant's two flagship open-model
 agents reliable over long coding sessions. It separates **capacity** (how many
-tokens the endpoint accepts) from **useful context** (the smallest stable set
-of facts that lets the model act correctly).
+tokens the endpoint accepts) from **useful context** (the complete, organized,
+non-duplicative evidence needed to act correctly).
 
 ## Current runtime profile
 
@@ -91,8 +95,9 @@ and `next_actions`.
   those controls do not apply.
 - Use Max for planning, reflection, verification, and repair; High can be used
   for implementation when latency matters.
-- Keep the current 65,536 output-token clamp until the Ollama cloud endpoint is
-  proven to accept more reliably.
+- Do not impose a Resonant generation-token clamp. Let the provider's native
+  context and output behavior govern normal turns; recover from actual endpoint
+  failures rather than pre-emptively shortening useful work.
 - Continue salvaging leaked DSML tool-call tokens and validate every argument
   against the advertised tool schema before execution.
 
@@ -113,13 +118,14 @@ medians rather than single runs. The first useful experiment matrix is:
 | Variable | GLM-5.2 | DeepSeek V4 Pro |
 |---|---|---|
 | Effort | High vs Max | High vs Max |
-| Context cap | 256K vs full advertised | 256K vs full advertised |
+| Context assembly | focused working set vs broad working set | atomic evidence packets vs broad working set |
 | Repo map | on vs off | on vs off |
 | Tool-output eviction | 8 vs 16 recent results | 8 vs 16 recent results |
 
-Optimize for convergence first, then malformed-call rate, then edit success,
-then latency. Do not choose a profile solely because it consumes more context
-or thinking tokens.
+Optimize for correct completion first, then verification confidence and
+maintainability, then recovery reliability and wall-clock time. Tokens and
+compute remain secondary diagnostics; use them to explain behavior, not to
+override a better result.
 
 ## Remaining high-value work
 

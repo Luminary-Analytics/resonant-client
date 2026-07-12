@@ -74,6 +74,10 @@ class EngineEvent(str, Enum):
     # Task list progress (markdown `- [ ]` / `- [x]` in assistant text)
     TODOS_UPDATED = "todos.updated"
 
+    # Live user direction injected into an already-running agent loop at the
+    # next safe step boundary. Unlike CANCEL, this preserves the active turn.
+    STEER_APPLIED = "steer.applied"
+
 
 # ── Client → Engine commands ───────────────────────────────────────────
 

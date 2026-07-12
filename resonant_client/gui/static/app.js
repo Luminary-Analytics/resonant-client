@@ -124,7 +124,6 @@ class ResonantApp {
         this.reconnectAttempts = 0;
         this.isRunning = false;
         this._queuedMessages = new Map();
-        this._steerInterrupted = false;
         this._cancelInFlight = null;
         this._cancelInterrupted = false;
         this._cancelWatchdog = null;
@@ -1436,12 +1435,41 @@ class ResonantApp {
         if (!queued) return;
         const label = queued.el.querySelector('.steer-queue-position');
         const heading = queued.el.querySelector('.steer-queue-copy strong');
-        if (heading) heading.textContent = event.steering ? 'Steering next' : 'Follow-up queued';
+        if (heading) heading.textContent = event.steering ? 'Steering current run' : 'Follow-up queued';
         if (label) label.textContent = event.steering
-            ? 'Interrupting safely'
+            ? 'Waiting for next step'
             : `Queued ${event.position || ''}`.trim();
         queued.el.classList.add('is-acknowledged');
         queued.el.classList.toggle('is-steering', !!event.steering);
+    }
+
+    handleSteerApplied(event) {
+        const queued = this._queuedMessages.get(event.message_id);
+        if (!this.chatMessages.querySelector(`[data-steer-note-id="${CSS.escape(event.message_id || '')}"]`)) {
+            const note = document.createElement('div');
+            note.className = 'live-steer-note';
+            note.dataset.steerNoteId = event.message_id || '';
+            note.innerHTML = `
+                <span><small>You steered</small>${this.escapeHtml(event.text || '')}</span>
+                <strong>Applied to current run</strong>
+            `;
+            this.chatMessages.appendChild(note);
+        }
+        if (queued) {
+            const heading = queued.el.querySelector('.steer-queue-copy strong');
+            const label = queued.el.querySelector('.steer-queue-position');
+            if (heading) heading.textContent = 'Steer applied';
+            if (label) label.textContent = 'In current context';
+            queued.el.classList.remove('is-promoting');
+            queued.el.classList.add('is-applied');
+            setTimeout(() => {
+                queued.el.remove();
+                this._queuedMessages.delete(event.message_id);
+                this._syncComposerQueue();
+            }, 900);
+        }
+        this._setLiveRunPhase('Steered', 'Working with your added direction', event.step || null);
+        this.scrollToBottom();
     }
 
     handleMessageStarted(event) {
@@ -4446,6 +4474,9 @@ class ResonantApp {
 
     handleCancelRequested(event) {
         if (this._cancelInFlight && event.cancel_id !== this._cancelInFlight) return;
+        this._queuedMessages.forEach((queued) => queued.el?.remove());
+        this._queuedMessages.clear();
+        this._syncComposerQueue();
         this._setLiveRunPhase('Stopping', 'Draining the active session');
     }
 
@@ -5064,6 +5095,9 @@ class ResonantApp {
                 break;
             case 'message.queue_cleared':
                 this.handleMessageQueueCleared(event);
+                break;
+            case 'steer.applied':
+                this.handleSteerApplied(event);
                 break;
             case 'cancel.requested':
                 this.handleCancelRequested(event);
@@ -9408,16 +9442,6 @@ class ResonantApp {
             return;
         }
 
-        if (this._steerInterrupted) {
-            this._completeLiveRun(false);
-            this._collapseTaskActivity(event);
-            this._setActiveTask(null);
-            this._steerInterrupted = false;
-            this.setRunning(false);
-            this.scrollToBottom();
-            return;
-        }
-
         const totalElapsed = event.total_elapsed || 0;
         const totalSteps = event.total_steps || 0;
 
@@ -9800,20 +9824,6 @@ class ResonantApp {
         if (event.message === 'Interrupted' && this._cancelInFlight) {
             this._cancelInterrupted = true;
             this._setLiveRunPhase('Stopping', 'The active run has been interrupted');
-            return;
-        }
-
-        const isSteerInterrupt = event.message === 'Interrupted' && this._queuedMessages.size > 0;
-        if (isSteerInterrupt) {
-            const task = this._activeTask;
-            if (task) {
-                task.card.classList.remove('task-card-running');
-                task.card.classList.add('task-card-steered');
-                task.stateEl.className = 'task-card-state is-steered';
-                task.stateEl.textContent = 'Steered';
-                this._setLiveRunPhase('Steered', 'Applying your new direction');
-                this._steerInterrupted = true;
-            }
             return;
         }
 

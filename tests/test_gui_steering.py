@@ -9,9 +9,16 @@ from resonant_client.gui import app as gui_app
 class _CancellableSession:
     def __init__(self):
         self.cancelled = threading.Event()
+        self.steered = threading.Event()
+        self.steering_messages = []
 
     def cancel(self):
         self.cancelled.set()
+
+    def steer(self, text, *, message_id=""):
+        self.steering_messages.append((message_id, text))
+        self.steered.set()
+        return True
 
 
 def test_await_user_choice_is_acknowledged_immediately():
@@ -37,7 +44,7 @@ def test_await_user_choice_is_acknowledged_immediately():
     gui_app.state.user_input_response.clear()
 
 
-def test_websocket_accepts_steer_while_a_chat_turn_is_still_running(monkeypatch):
+def test_websocket_injects_steer_without_cancelling_active_turn(monkeypatch):
     first_started = threading.Event()
     release_first = threading.Event()
     processed = []
@@ -71,20 +78,16 @@ def test_websocket_accepts_steer_while_a_chat_turn_is_still_running(monkeypatch)
                 "event": "message.queued",
                 "message_id": "steer-1",
                 "text": "change direction",
-                "position": 1,
+                "position": 0,
                 "steering": True,
             }
-            assert session.cancelled.wait(1), "steer did not interrupt the active turn"
+            assert session.steered.wait(1), "steer was not handed to the active session"
+            assert session.steering_messages == [("steer-1", "change direction")]
+            assert not session.cancelled.is_set()
 
             release_first.set()
-            started = websocket.receive_json()
-            assert started == {
-                "event": "message.started",
-                "message_id": "steer-1",
-                "text": "change direction",
-            }
 
-    assert processed == ["first", "change direction"]
+    assert processed == ["first"]
 
 
 def test_websocket_queues_followup_without_interrupting_active_turn(monkeypatch):
@@ -172,19 +175,16 @@ def test_queued_followup_can_be_promoted_to_steer(monkeypatch):
                 "event": "message.queued",
                 "message_id": "promote-1",
                 "text": "change direction",
-                "position": 1,
+                "position": 0,
                 "steering": True,
             }
-            assert session.cancelled.wait(1)
+            assert session.steered.wait(1)
+            assert session.steering_messages == [("promote-1", "change direction")]
+            assert not session.cancelled.is_set()
 
             release_first.set()
-            assert websocket.receive_json() == {
-                "event": "message.started",
-                "message_id": "promote-1",
-                "text": "change direction",
-            }
 
-    assert processed == ["first", "change direction"]
+    assert processed == ["first"]
 
 
 def test_stop_clears_queued_followups(monkeypatch):

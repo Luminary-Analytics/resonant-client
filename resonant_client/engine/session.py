@@ -14,6 +14,7 @@ import time
 import logging
 import threading
 import platform as plat
+import queue
 import uuid as _uuid
 from pathlib import Path
 from typing import Iterator, Optional, Callable
@@ -497,6 +498,7 @@ class Session:
         self._last_context_sources: dict[str, dict] = {}
         self._compression_count = 0
         self._cancel_event = cancel_event or threading.Event()
+        self._steering_queue: queue.SimpleQueue[dict[str, str]] = queue.SimpleQueue()
         self.project_path: Optional[str] = None  # Set externally for path resolution
         # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed)
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
@@ -701,10 +703,41 @@ class Session:
     def cancel(self):
         """Request cooperative cancellation for the current run."""
         self._cancel_event.set()
+        self.discard_steering()
 
     def reset_cancel(self):
         """Clear any pending cancellation request before starting a new run."""
         self._cancel_event.clear()
+
+    def steer(self, text: str, *, message_id: str = "") -> bool:
+        """Queue live user direction for the current agentic run.
+
+        Steering is deliberately independent from cancellation. A backend
+        inference or tool already in flight is allowed to finish; ``run``
+        consumes this queue at its next safe loop boundary and adds the new
+        direction to the same conversation history.
+        """
+        direction = str(text or "").strip()
+        if not direction:
+            return False
+        self._steering_queue.put({
+            "message_id": str(message_id or ""),
+            "text": direction,
+        })
+        return True
+
+    def _drain_steering(self) -> list[dict[str, str]]:
+        """Return all steering messages currently waiting, without blocking."""
+        messages: list[dict[str, str]] = []
+        while True:
+            try:
+                messages.append(self._steering_queue.get_nowait())
+            except queue.Empty:
+                return messages
+
+    def discard_steering(self) -> None:
+        """Drop steering that can no longer belong to an active run."""
+        self._drain_steering()
 
     def _log_event(self, event: dict) -> None:
         """Log an event to the JSONL logger if configured."""
@@ -1010,6 +1043,38 @@ class Session:
         empty_response_retries = 0
         step_limit_reached = False
 
+        def consume_steering() -> list[dict[str, str]]:
+            """Fold pending live direction into this same agentic turn."""
+            nonlocal active_goal, current_msg
+            messages = self._drain_steering()
+            if not messages:
+                return []
+
+            directions = []
+            for item in messages:
+                direction = item["text"]
+                directions.append(direction)
+                self.conversation_history.append({
+                    "role": "user",
+                    "content": (
+                        "<user_steer>\n"
+                        f"{direction}\n"
+                        "</user_steer>"
+                    ),
+                })
+            combined = "\n\n".join(directions)
+            active_goal = (
+                f"{active_goal}\n\nAdditional live user direction:\n{combined}"
+            )
+            current_msg = (
+                "The user added the following direction while this task was "
+                "running. Incorporate it into the work already in progress. "
+                "Preserve useful completed work; do not restart the task.\n\n"
+                f"{combined}\n\n"
+                + self._goal_recitation(active_goal)
+            )
+            return messages
+
         def completion_payload(total_elapsed: float, total_steps: int) -> dict:
             assistant_text = "\n\n".join(turn_text_blocks).strip()
             changed_files = unique_strings(turn_changed_files)
@@ -1132,6 +1197,13 @@ class Session:
             if self.cancel_requested:
                 yield from self._cancelled_events(total_start, exec_step)
                 return
+            for steering in consume_steering():
+                yield make_event(
+                    EngineEvent.STEER_APPLIED,
+                    message_id=steering["message_id"],
+                    text=steering["text"],
+                    step=exec_step + 1,
+                )
             # A single specialist turn can add dozens of tool results, so
             # enforce the real backend window before every inference step.
             if should_compress(
@@ -1894,6 +1966,20 @@ class Session:
 
             # ── Continue or stop ──
             yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+
+            # A steer that arrived during this inference or tool batch belongs
+            # to the same turn. Consume it before normal completion so even a
+            # just-finished answer can be revised with the new direction.
+            applied_steering = consume_steering()
+            if applied_steering:
+                for steering in applied_steering:
+                    yield make_event(
+                        EngineEvent.STEER_APPLIED,
+                        message_id=steering["message_id"],
+                        text=steering["text"],
+                        step=exec_step + 1,
+                    )
+                continue
 
             if (
                 not has_tool_calls

@@ -5914,6 +5914,10 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
         session_mode=session_mode,
         session_role=session_role,
     )
+    # Close the run's steering window before the next serialized chat turn.
+    # This catches the tiny race where direction arrives after the engine's
+    # final safe boundary but before the websocket runner marks itself idle.
+    state.session.discard_steering()
 
     state.project.save_current_session(state.session, display_events=display_events)
     await ws.send_json({
@@ -5969,7 +5973,7 @@ async def websocket_endpoint(ws: WebSocket):
                 except Exception:
                     pass
 
-    async def _enqueue_chat_message(msg: dict[str, Any], *, steer: bool) -> None:
+    async def _enqueue_chat_message(msg: dict[str, Any]) -> None:
         nonlocal chat_runner
         message_id = str(msg.get("message_id") or uuid.uuid4())
         running = chat_runner is not None and not chat_runner.done()
@@ -5981,12 +5985,8 @@ async def websocket_endpoint(ws: WebSocket):
                 "message_id": message_id,
                 "text": queued.get("text", ""),
                 "position": len(pending_chat_messages),
-                "steering": steer,
+                "steering": False,
             })
-            if steer:
-                state.cancel_requested.set()
-                if state.session:
-                    state.session.cancel()
         else:
             chat_runner = asyncio.create_task(_drain_chat_queue())
 
@@ -6242,14 +6242,32 @@ async def websocket_endpoint(ws: WebSocket):
                 except Exception as e:
                     await ws.send_json({"event": "error", "message": str(e)})
 
-            elif command in {"message", "steer"}:
+            elif command == "message":
                 text = msg.get("text", "").strip()
                 if not text:
                     continue
                 if not state.session:
                     await ws.send_json({"event": "error", "message": "No backend selected"})
                     continue
-                await _enqueue_chat_message(msg, steer=command == "steer")
+                await _enqueue_chat_message(msg)
+                continue
+
+            elif command == "steer":
+                text = str(msg.get("text") or "").strip()
+                message_id = str(msg.get("message_id") or uuid.uuid4())
+                running = chat_runner is not None and not chat_runner.done()
+                if not text or not state.session:
+                    continue
+                if running and state.session.steer(text, message_id=message_id):
+                    await ws.send_json({
+                        "event": "message.queued",
+                        "message_id": message_id,
+                        "text": text,
+                        "position": 0,
+                        "steering": True,
+                    })
+                else:
+                    await _enqueue_chat_message(dict(msg, command="message"))
                 continue
 
             elif command == "steer_queued":
@@ -6268,17 +6286,25 @@ async def websocket_endpoint(ws: WebSocket):
                     })
                     continue
                 queued = pending_chat_messages.pop(queued_index)
-                pending_chat_messages.insert(0, queued)
+                steering_text = str(queued.get("text") or "").strip()
+                accepted = bool(
+                    state.session
+                    and state.session.steer(steering_text, message_id=message_id)
+                )
+                if not accepted:
+                    pending_chat_messages.insert(queued_index, queued)
+                    await ws.send_json({
+                        "event": "ui_notice",
+                        "message": "The active run could not accept that steering message.",
+                    })
+                    continue
                 await ws.send_json({
                     "event": "message.queued",
                     "message_id": message_id,
-                    "text": queued.get("text", ""),
-                    "position": 1,
+                    "text": steering_text,
+                    "position": 0,
                     "steering": True,
                 })
-                state.cancel_requested.set()
-                if state.session:
-                    state.session.cancel()
                 continue
 
             elif command == "cancel":

@@ -96,6 +96,13 @@ def test_running_composer_supports_steering_and_visible_queue_state():
     assert "this._queueFollowUpMessage(text);" in source
     assert "this._promoteQueuedMessage(messageId);" in source
     assert "command: 'steer_queued'" in source
+    assert "case 'steer.applied':" in source
+    assert "Waiting for next step" in source
+    assert "In current context" in source
+    assert "Applied to current run" in source
+    assert ".live-steer-note" in styles
+    assert "Interrupting safely" not in source
+    assert "this._steerInterrupted" not in source
     assert "case 'message.queued':" in source
     assert "case 'message.started':" in source
     assert "this.userInput.disabled = false;" in source

@@ -11883,6 +11883,25 @@ body.is-window-dragging * {
 .steer-queue-promote:hover { background: rgba(255,255,255,.07); color: #f5f3ff; }
 .steer-queue-promote:disabled { cursor: wait; color: #5eead4; }
 .steer-queue-item.is-steering { border-color: rgba(45,212,191,.30); }
+.steer-queue-item.is-applied { border-color: rgba(94,234,212,.42); background: rgba(94,234,212,.08); }
+
+.live-steer-note {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 16px;
+    width: min(720px, calc(100% - 24px));
+    margin: 14px 0 14px auto;
+    padding: 10px 12px;
+    border: 1px solid rgba(45,212,191,.26);
+    border-radius: 10px;
+    background: rgba(45,212,191,.07);
+    color: var(--text);
+    font-size: 12.5px;
+}
+.live-steer-note span { min-width: 0; overflow-wrap: anywhere; }
+.live-steer-note small { display: block; margin-bottom: 3px; color: #5eead4; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
+.live-steer-note strong { flex: 0 0 auto; color: var(--muted); font-size: 10px; font-weight: 600; white-space: nowrap; }
 
 @media (prefers-reduced-motion: reduce) {
     .steer-queue-icon::before { animation: none !important; }

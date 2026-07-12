@@ -26,6 +26,8 @@ import uuid
 from datetime import date
 from typing import Any, Callable, Optional
 
+from resonant_client.processes import background_process_kwargs
+
 from starlette.applications import Starlette
 from starlette.routing import Route, WebSocketRoute, Mount
 from starlette.staticfiles import StaticFiles
@@ -2266,6 +2268,7 @@ class AppState:
                 text=True,
                 capture_output=True,
                 timeout=20,
+                **background_process_kwargs(),
             )
             output = "\n".join(
                 part for part in (str(completed.stdout or "").strip(), str(completed.stderr or "").strip()) if part
@@ -2437,6 +2440,7 @@ class AppState:
                     text=True,
                     capture_output=True,
                     timeout=25,
+                    **background_process_kwargs(),
                 )
             except Exception as exc:
                 validation_artifacts.append(self._truncate_text(f"Auto validation failed to start: {exc}", max_chars=220))
@@ -8428,6 +8432,7 @@ def _git_run(*args: str, cwd: str | None = None) -> tuple[int, str]:
             capture_output=True, text=True, timeout=15,
             cwd=cwd or state.project.project_path,
             shell=(sys.platform == "win32"),
+            **background_process_kwargs(),
         )
         return result.returncode, (result.stdout + result.stderr).strip()
     except Exception as e:

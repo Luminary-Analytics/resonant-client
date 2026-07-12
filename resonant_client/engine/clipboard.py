@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 
 # ── Text clipboard ─────────────────────────────────────────────────────
 
@@ -40,6 +42,7 @@ def read_clipboard_text() -> str:
                 ["powershell", "-NoProfile", "-Command", "Get-Clipboard -Raw"],
                 capture_output=True, text=True, timeout=5,
                 encoding="utf-8", errors="replace",
+                **background_process_kwargs(),
             )
             return (result.stdout or "").rstrip("\r\n")
         elif sys.platform == "darwin":
@@ -73,7 +76,10 @@ def write_clipboard_text(text: str) -> None:
 
     if sys.platform == "win32":
         # Use clip.exe — pipe text via stdin
-        proc = subprocess.run(["clip"], input=text, text=True, encoding="utf-8")
+        proc = subprocess.run(
+            ["clip"], input=text, text=True, encoding="utf-8",
+            **background_process_kwargs(),
+        )
         if proc.returncode != 0:
             raise RuntimeError("clip.exe failed")
     elif sys.platform == "darwin":
@@ -183,6 +189,7 @@ if ($img -ne $null) {{
         result = subprocess.run(
             ["powershell", "-NoProfile", "-Command", ps_script],
             capture_output=True, text=True, timeout=10,
+            **background_process_kwargs(),
         )
         output = result.stdout.strip()
         if output == "OK" and os.path.exists(tmp):

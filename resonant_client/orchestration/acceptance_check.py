@@ -57,6 +57,8 @@ import subprocess
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from resonant_client.processes import background_process_kwargs
+
 from ..gui.roadmap import AcceptanceCriterion
 
 logger = logging.getLogger(__name__)
@@ -162,6 +164,7 @@ class BashRunner:
                     text=True,
                     timeout=self.timeout_seconds,
                     check=False,
+                    **background_process_kwargs(),
                 )
             else:
                 # Platform default shell. On Linux/macOS this is bash
@@ -175,6 +178,7 @@ class BashRunner:
                     text=True,
                     timeout=self.timeout_seconds,
                     check=False,
+                    **background_process_kwargs(),
                 )
             return proc.returncode, proc.stdout, proc.stderr
         except subprocess.TimeoutExpired as exc:

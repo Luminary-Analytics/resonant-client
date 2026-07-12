@@ -53,12 +53,19 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     assert "Finish the response" in source
     assert ".live-run-orbit" in styles
     assert ".live-run-subtasks" in styles
+    assert "this.liveRunSurface = document.getElementById('live-run-surface');" in source
+    assert "detailsOpen: true" in source
+    assert "run.detailsOpen = event.currentTarget.open;" in source
+    assert "if (run.renderKey === renderKey) return;" in source
+    assert "elapsed clocks update" in source
+    assert ".input-bar > .live-run-surface" in styles
+    assert "scrollbar-gutter: stable" in styles
 
     card_start = source.index("    _beginTaskCard(")
     card_end = source.index("\n    _ensureTaskCard", card_start)
     card_body = source[card_start:card_end]
-    assert card_body.index("card.appendChild(result);") < card_body.index("card.appendChild(live);")
-    assert card_body.index("card.appendChild(live);") < card_body.index("card.appendChild(footer);")
+    assert "card.appendChild(live);" not in card_body
+    assert "liveEl: this.liveRunSurface" in card_body
 
 
 def test_streaming_text_does_not_use_a_lonely_blinking_cursor():

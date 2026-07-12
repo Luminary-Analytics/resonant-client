@@ -17,6 +17,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 
 # (linter_name, base_argv). The file path is appended at lint time.
 LinterSpec = tuple[str, list[str]]
@@ -132,6 +134,7 @@ def lint_file(
             shell=False,
             encoding="utf-8",
             errors="replace",
+            **background_process_kwargs(),
         )
     except FileNotFoundError:
         return {"linter": name, "ok": True, "errors": "", "skipped_reason": f"{name} not installed"}

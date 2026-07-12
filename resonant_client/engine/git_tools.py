@@ -18,6 +18,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 from .tools import ToolResult
 
 
@@ -37,6 +39,7 @@ def _run_git(args: list[str], cwd: Path | str, *, timeout: float = 30.0) -> tupl
             errors="replace",
             timeout=timeout,
             shell=False,
+            **background_process_kwargs(),
         )
         return proc.returncode, proc.stdout or "", proc.stderr or ""
     except subprocess.TimeoutExpired:
@@ -271,6 +274,7 @@ def git_commit(
             errors="replace",
             timeout=30.0,
             shell=False,
+            **background_process_kwargs(),
         )
     except subprocess.TimeoutExpired:
         return {"error": "git commit timed out"}

@@ -43,6 +43,8 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from resonant_client.processes import background_process_kwargs
+
 from ..engine.tools import AGENT_TOOLS
 from ..gui.autonomous_loop import (
     DaemonHooks,
@@ -207,6 +209,7 @@ def make_git_get_commit_sha(project_path: str) -> Callable[[], Optional[str]]:
                 text=True,
                 timeout=5.0,
                 check=False,
+                **background_process_kwargs(),
             )
             if proc.returncode != 0:
                 return None
@@ -242,6 +245,7 @@ def make_git_validate_sha(project_path: str) -> Callable[[str], bool]:
                 text=True,
                 timeout=5.0,
                 check=False,
+                **background_process_kwargs(),
             )
             return proc.returncode == 0
         except (subprocess.TimeoutExpired, OSError):

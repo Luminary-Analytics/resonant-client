@@ -35,6 +35,8 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 from .tools import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -678,6 +680,7 @@ Write-Output $result.Text
                 result = subprocess.run(
                     ["powershell", "-NoProfile", "-Command", ps_script],
                     capture_output=True, text=True, timeout=15,
+                    **background_process_kwargs(),
                 )
                 os.unlink(tmp)
                 text = result.stdout.strip()
@@ -721,6 +724,7 @@ def exec_open_application(args: dict, start: float) -> ToolResult:
                 subprocess.Popen(
                     ["cmd", "/c", "start", "", app_name],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    **background_process_kwargs(),
                 )
             except Exception:
                 import os

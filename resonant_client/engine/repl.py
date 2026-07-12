@@ -26,6 +26,8 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 from .tools import ToolResult
 
 
@@ -77,6 +79,7 @@ class ReplProcess:
                 encoding="utf-8",
                 errors="replace",
                 shell=False,
+                **background_process_kwargs(),
             )
         except FileNotFoundError as e:
             raise RuntimeError(f"{self.lang} executable not found: {e}") from e

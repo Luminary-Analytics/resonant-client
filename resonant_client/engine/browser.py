@@ -21,6 +21,9 @@ import sys
 import time
 import urllib.request
 from typing import Optional
+
+from resonant_client.processes import background_process_kwargs
+
 from .tools import ToolResult
 
 logger = logging.getLogger(__name__)
@@ -258,6 +261,7 @@ class BrowserManager:
                 out = subprocess.run(
                     ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"],
                     capture_output=True, text=True, timeout=8,
+                    **background_process_kwargs(),
                 )
                 return "chrome.exe" in (out.stdout or "").lower()
             target = "Google Chrome" if sys.platform == "darwin" else "chrome"
@@ -273,7 +277,10 @@ class BrowserManager:
         try:
             if sys.platform.startswith("win"):
                 cmd = ["taskkill", "/IM", "chrome.exe"] + (["/F"] if force else [])
-                subprocess.run(cmd, capture_output=True, timeout=12)
+                subprocess.run(
+                    cmd, capture_output=True, timeout=12,
+                    **background_process_kwargs(),
+                )
             elif sys.platform == "darwin":
                 if force:
                     subprocess.run(["pkill", "-9", "-x", "Google Chrome"], capture_output=True, timeout=12)

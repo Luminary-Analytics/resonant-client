@@ -22,6 +22,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 from .tools import ToolResult
 
 
@@ -194,7 +196,13 @@ class Recorder:
     def _make_ffmpeg_encoder(self):
         # Check ffmpeg present
         try:
-            subprocess.run(["ffmpeg", "-version"], capture_output=True, timeout=3, check=False)
+            subprocess.run(
+                ["ffmpeg", "-version"],
+                capture_output=True,
+                timeout=3,
+                check=False,
+                **background_process_kwargs(),
+            )
         except (FileNotFoundError, subprocess.TimeoutExpired):
             return None
 
@@ -218,7 +226,8 @@ class Recorder:
                         "-i", "-",
                         "-vcodec", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
                         str(self.path),
-                    ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    ], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       **background_process_kwargs())
                 try:
                     self.proc.stdin.write(bytes(sct_img.bgra))
                 except (BrokenPipeError, OSError):

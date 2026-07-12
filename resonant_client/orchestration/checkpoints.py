@@ -10,6 +10,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from resonant_client.processes import background_process_kwargs
+
 
 class CheckpointError(RuntimeError):
     pass
@@ -96,6 +98,7 @@ class IterationCheckpointStore:
                 capture_output=True,
                 text=True,
                 check=False,
+                **background_process_kwargs(),
             )
             if probe.returncode != 0:
                 remove_after.append(rel)
@@ -177,6 +180,7 @@ class IterationCheckpointStore:
             encoding="utf-8",
             errors="replace",
             check=False,
+            **background_process_kwargs(),
         )
         if check and result.returncode != 0:
             raise CheckpointError(result.stderr.strip() or f"git {' '.join(args)} failed")

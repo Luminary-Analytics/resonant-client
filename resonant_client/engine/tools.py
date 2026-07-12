@@ -17,6 +17,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 from .truncation import (
     GREP_MAX_LINE_LENGTH,
     render_truncation_footer,
@@ -1561,11 +1563,7 @@ def _run_subprocess_with_cancel(
         except Exception:
             pass
 
-    process_group_args = (
-        {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
-        if sys.platform == "win32"
-        else {"start_new_session": True}
-    )
+    process_group_args = background_process_kwargs(new_process_group=True)
     proc = subprocess.Popen(
         cmd,
         shell=shell,
@@ -1596,6 +1594,7 @@ def _run_subprocess_with_cancel(
                     stderr=subprocess.DEVNULL,
                     timeout=5,
                     check=False,
+                    **background_process_kwargs(),
                 )
             else:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)

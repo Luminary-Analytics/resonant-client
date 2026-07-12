@@ -17,6 +17,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 
 def find_test_target(project_path: Path | str, edited_file: Path | str) -> Optional[Path]:
     """Locate a likely test file for `edited_file`. Returns absolute path or None."""
@@ -133,6 +135,7 @@ def run_tests_for_edit(
             shell=False,
             encoding="utf-8",
             errors="replace",
+            **background_process_kwargs(),
         )
     except FileNotFoundError:
         return {

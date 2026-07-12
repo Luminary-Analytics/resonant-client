@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 logger = logging.getLogger(__name__)
 
 
@@ -141,6 +143,7 @@ class HookRunner:
                     timeout=30,
                     env=env,
                     cwd=context.get("project_path", None),
+                    **background_process_kwargs(),
                 )
                 combined.output += result.stdout
                 combined.exit_code = result.returncode

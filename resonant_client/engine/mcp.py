@@ -13,6 +13,8 @@ import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
+from resonant_client.processes import background_process_kwargs
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,6 +96,7 @@ class MCPConnection:
                 text=True,
                 env=env,
                 shell=(sys.platform == "win32"),
+                **background_process_kwargs(),
             )
 
             # Send initialize request

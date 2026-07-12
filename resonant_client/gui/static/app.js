@@ -257,6 +257,7 @@ class ResonantApp {
         this.chatContainer = document.getElementById('chat-container');
         this.welcomeScreen = document.getElementById('welcome-screen');
         this.inputBar = document.getElementById('input-bar');
+        this.liveRunSurface = document.getElementById('live-run-surface');
         this.userInput = document.getElementById('user-input');
         this.sendBtn = document.getElementById('send-btn');
         this.stopBtn = document.getElementById('stop-btn');
@@ -10478,11 +10479,6 @@ class ResonantApp {
         result.className = 'task-result';
         result.hidden = true;
 
-        const live = document.createElement('section');
-        live.className = 'live-run-surface';
-        live.hidden = true;
-        live.setAttribute('aria-live', 'polite');
-
         const footer = document.createElement('div');
         footer.className = 'task-card-footer';
         footer.hidden = true;
@@ -10490,7 +10486,6 @@ class ResonantApp {
         card.appendChild(header);
         card.appendChild(activity);
         card.appendChild(result);
-        card.appendChild(live);
         card.appendChild(footer);
         this.chatMessages.appendChild(card);
 
@@ -10499,7 +10494,7 @@ class ResonantApp {
             stateEl: state,
             activityEl: activity,
             resultEl: result,
-            liveEl: live,
+            liveEl: this.liveRunSurface,
             footerEl: footer,
             requestText,
             startedAt: performance.now(),
@@ -10637,11 +10632,13 @@ class ResonantApp {
             milestones: [{ id: 'analyze', text: 'Understand the request', status: 'running' }],
             modelTodos: false,
             subtasks: new Map(),
+            detailsOpen: true,
         };
         task.liveEl.hidden = false;
         task.liveEl.classList.remove('is-finishing', 'is-error');
         this._renderLiveRun();
         this._liveRunTimer = setInterval(() => this._updateLiveRunClock(), 1000);
+        this.scrollToBottom();
     }
 
     _stopLiveRun() {
@@ -10747,13 +10744,29 @@ class ResonantApp {
     _renderLiveRun() {
         const run = this._liveRun;
         if (!run || !run.el) return;
+        const previousDetails = run.el.querySelector('details');
+        if (previousDetails) run.detailsOpen = previousDetails.open;
+        // Streaming models can emit hundreds of text deltas while the visible
+        // run state remains unchanged. Replacing the entire dock for each one
+        // restarts its animations and makes the surface flash. Only rebuild
+        // when user-visible state has actually changed; elapsed clocks update
+        // their own text nodes in _updateLiveRunClock().
+        const renderKey = JSON.stringify({
+            phase: run.phase,
+            detail: run.detail,
+            step: run.step,
+            milestones: run.milestones,
+            subtasks: Array.from(run.subtasks.values()),
+            detailsOpen: run.detailsOpen,
+        });
+        if (run.renderKey === renderKey) return;
+        run.renderKey = renderKey;
         const elapsedSeconds = Math.max(0, (Date.now() - run.startedAt) / 1000);
         const complete = run.milestones.filter((item) => item.status === 'done').length;
         const total = run.milestones.length;
         const pct = total ? Math.round((complete / total) * 100) : 0;
         const subtasks = Array.from(run.subtasks.values());
         const activeSubtasks = subtasks.filter((item) => item.status === 'running').length;
-        const wasOpen = !!run.el.querySelector('details')?.open;
         const milestoneOrder = { analyze: 0, inspect: 1, change: 2, verify: 3, report: 4, finalize: 5 };
         const orderedMilestones = [...run.milestones].sort((a, b) => (
             (milestoneOrder[a.id] ?? 99) - (milestoneOrder[b.id] ?? 99)
@@ -10779,7 +10792,7 @@ class ResonantApp {
                 <span class="live-run-meta">${run.step ? `Step ${run.step} \u00b7 ` : ''}<span data-live-elapsed>${this._formatRunDuration(elapsedSeconds)}</span></span>
             </div>
             <div class="live-run-progress" style="--live-run-progress:${pct}%"><span></span></div>
-            <details class="live-run-details" ${(wasOpen || total > 1 || subtasks.length) ? 'open' : ''}>
+            <details class="live-run-details" ${run.detailsOpen ? 'open' : ''}>
                 <summary><span>Run details</span><span>${complete}/${total} tasks${subtasks.length ? ` \u00b7 ${activeSubtasks} active sub-task${activeSubtasks === 1 ? '' : 's'}` : ''}</span></summary>
                 <div class="live-run-detail-grid">
                     <section><h4>Task list</h4><ol class="live-run-todos">${milestoneHtml}</ol></section>
@@ -10787,8 +10800,10 @@ class ResonantApp {
                 </div>
             </details>
         `;
+        run.el.querySelector('.live-run-details')?.addEventListener('toggle', (event) => {
+            run.detailsOpen = event.currentTarget.open;
+        });
         run.el.hidden = false;
-        this.scrollToBottom();
     }
 
     addThinking() {

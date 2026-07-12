@@ -6252,6 +6252,35 @@ async def websocket_endpoint(ws: WebSocket):
                 await _enqueue_chat_message(msg, steer=command == "steer")
                 continue
 
+            elif command == "steer_queued":
+                message_id = str(msg.get("message_id") or "")
+                queued_index = next(
+                    (
+                        index for index, item in enumerate(pending_chat_messages)
+                        if str(item.get("message_id") or "") == message_id
+                    ),
+                    None,
+                )
+                if queued_index is None:
+                    await ws.send_json({
+                        "event": "ui_notice",
+                        "message": "That follow-up has already started or is no longer queued.",
+                    })
+                    continue
+                queued = pending_chat_messages.pop(queued_index)
+                pending_chat_messages.insert(0, queued)
+                await ws.send_json({
+                    "event": "message.queued",
+                    "message_id": message_id,
+                    "text": queued.get("text", ""),
+                    "position": 1,
+                    "steering": True,
+                })
+                state.cancel_requested.set()
+                if state.session:
+                    state.session.cancel()
+                continue
+
             elif command == "cancel":
                 cancel_id = str(msg.get("cancel_id") or uuid.uuid4())
                 cleared_ids = [
@@ -7937,6 +7966,10 @@ async def websocket_endpoint(ws: WebSocket):
                 # decides what to do with it.
                 state.user_input_result[0] = msg.get("response", "")
                 state.user_input_response.set()
+                await ws.send_json({
+                    "event": "user_input_received",
+                    "response": state.user_input_result[0],
+                })
 
             # ── Settings ────────────────────────────────────
             elif command == "get_settings":

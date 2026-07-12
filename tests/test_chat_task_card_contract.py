@@ -93,14 +93,41 @@ def test_running_composer_supports_steering_and_visible_queue_state():
     source = APP_JS.read_text(encoding="utf-8")
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
-    assert "this._queueSteerMessage(text);" in source
-    assert "command: 'steer'" in source
+    assert "this._queueFollowUpMessage(text);" in source
+    assert "this._promoteQueuedMessage(messageId);" in source
+    assert "command: 'steer_queued'" in source
     assert "case 'message.queued':" in source
     assert "case 'message.started':" in source
     assert "this.userInput.disabled = false;" in source
-    assert "Steer the running agent or queue a follow-up" in source
+    assert "Write a follow-up for the running agent" in source
+    assert "Queue follow-up (Enter)" in source
+    assert "steer-queue-promote" in source
+    assert ".composer-queue" in styles
     assert ".steer-queue-item" in styles
-    assert ".send-btn.is-steering" in styles
+    assert ".steer-queue-promote" in styles
+    assert ".send-btn.is-steering" not in styles
+
+
+def test_await_user_marks_and_cleans_recommended_option():
+    source = APP_JS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "await-user-recommended" in source
+    assert "Recommended</span>" in source
+    assert "reply(option.value);" in source
+    assert ".await-user-chip.is-recommended" in styles
+    assert ".await-user-recommended" in styles
+    assert "await-user-confirmation" in source
+    assert "Resuming agent&hellip;" in source
+    assert "if (answered) return;" in source
+
+
+def test_live_run_shell_is_stable_across_updates():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "if (!run.domReady || !run.el.querySelector('.live-run-head'))" in source
+    assert "run.el.querySelector('.live-run-copy small').textContent" in source
+    assert "run.el.querySelector('.live-run-todos').innerHTML" in source
 
 
 def test_stop_button_uses_acknowledged_cancel_lifecycle():

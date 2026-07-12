@@ -7369,6 +7369,25 @@ body {
     border-color: var(--brand);
 }
 
+.await-user-chip.is-recommended {
+    border-color: color-mix(in srgb, var(--brand) 58%, var(--border));
+    background: color-mix(in srgb, var(--brand) 10%, var(--bg-elevated));
+}
+
+.await-user-recommended {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--brand) 18%, transparent);
+    color: color-mix(in srgb, var(--brand) 72%, white);
+    font-size: 9.5px;
+    font-weight: 700;
+    letter-spacing: .025em;
+    text-transform: uppercase;
+}
+
 .await-user-input-row {
     display: flex;
     gap: 8px;
@@ -7412,8 +7431,41 @@ body {
 .await-user-send:hover { opacity: 0.85; }
 
 .await-user-answered {
-    opacity: 0.55;
+    opacity: 1;
 }
+
+.await-user-confirmation {
+    display: grid;
+    grid-template-columns: 22px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(94, 234, 212, .22);
+    border-radius: 9px;
+    background: rgba(94, 234, 212, .06);
+}
+
+.await-user-confirmation-check {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    color: #071a17;
+    background: #5eead4;
+    font-size: 12px;
+    font-weight: 800;
+}
+
+.await-user-confirmation small,
+.await-user-confirmation strong { display: block; }
+.await-user-confirmation small { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; }
+.await-user-confirmation strong { margin-top: 2px; color: var(--text); font-size: 12px; }
+.await-user-confirmation-status { color: #5eead4; font-size: 11px; white-space: nowrap; }
+.await-user-chips[hidden],
+.await-user-input-row[hidden] { display: none; }
 
 /* v0.3.4 — Help → Save Diagnostics confirmation toast. Inline in the
    chat panel so the user definitely sees it; auto-dismiss isn't worth
@@ -11746,17 +11798,15 @@ body.is-window-dragging * {
     box-shadow: 0 20px 80px rgba(0,0,0,.36), 0 0 0 1px rgba(45,212,191,.06);
 }
 
-.send-btn.is-steering {
-    color: #06201c;
-    background: linear-gradient(135deg, #5eead4, #2dd4bf);
-    box-shadow: 0 5px 18px rgba(45,212,191,.2);
+.composer-queue {
+    display: grid;
+    gap: 6px;
+    width: 100%;
+    max-width: var(--content-max-width);
+    margin: 0 auto 8px;
 }
 
-.send-btn.is-steering:hover,
-.input-wrapper:focus-within .send-btn.is-steering:not(:disabled) {
-    color: #031411;
-    background: linear-gradient(135deg, #99f6e4, #5eead4);
-}
+.composer-queue[hidden] { display: none; }
 
 .stop-btn.is-stopping {
     opacity: .72;
@@ -11773,12 +11823,12 @@ body.is-window-dragging * {
     grid-template-columns: 30px minmax(0, 1fr) auto;
     align-items: center;
     gap: 10px;
-    width: min(760px, calc(100% - 36px));
-    margin: -22px auto 34px;
-    padding: 10px 12px;
-    border: 1px solid rgba(45,212,191,.17);
-    border-radius: 10px;
-    background: linear-gradient(135deg, rgba(45,212,191,.075), rgba(124,108,248,.055));
+    width: 100%;
+    margin: 0;
+    padding: 9px 11px;
+    border: 1px solid rgba(255,255,255,.12);
+    border-radius: 12px;
+    background: rgba(22,22,24,.96);
     color: var(--muted);
     box-shadow: inset 0 1px 0 rgba(255,255,255,.025);
 }
@@ -11818,6 +11868,21 @@ body.is-window-dragging * {
 .steer-queue-copy small { margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .steer-queue-position { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
 .steer-queue-item.is-acknowledged .steer-queue-position { color: #5eead4; }
+.steer-queue-actions { display: inline-flex; align-items: center; gap: 9px; }
+.steer-queue-promote {
+    padding: 4px 9px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: #aaa4b9;
+    font: inherit;
+    font-size: 11px;
+    font-weight: 650;
+    cursor: pointer;
+}
+.steer-queue-promote:hover { background: rgba(255,255,255,.07); color: #f5f3ff; }
+.steer-queue-promote:disabled { cursor: wait; color: #5eead4; }
+.steer-queue-item.is-steering { border-color: rgba(45,212,191,.30); }
 
 @media (prefers-reduced-motion: reduce) {
     .steer-queue-icon::before { animation: none !important; }

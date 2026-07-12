@@ -261,6 +261,7 @@ class ResonantApp {
         this.userInput = document.getElementById('user-input');
         this.sendBtn = document.getElementById('send-btn');
         this.stopBtn = document.getElementById('stop-btn');
+        this.composerQueue = document.getElementById('composer-queue');
         this.modelSelector = document.getElementById('model-selector');
         this.thinkingModeSelector = document.getElementById('thinking-mode-selector');
         this.headerStatus = document.getElementById('header-status');
@@ -1374,10 +1375,10 @@ class ResonantApp {
         this.renderAttachedImages();
     }
 
-    _queueSteerMessage(text) {
-        const messageId = (globalThis.crypto?.randomUUID?.() || `steer-${Date.now()}-${Math.random()}`);
+    _queueFollowUpMessage(text) {
+        const messageId = (globalThis.crypto?.randomUUID?.() || `followup-${Date.now()}-${Math.random()}`);
         const images = this.attachedImages.map((image) => ({ ...image }));
-        const msg = { command: 'steer', text, message_id: messageId };
+        const msg = { command: 'message', text, message_id: messageId };
         if (images.length) {
             msg.images = images.map((image) => ({
                 data: image.data,
@@ -1396,22 +1397,51 @@ class ResonantApp {
         item.dataset.messageId = messageId;
         item.innerHTML = `
             <span class="steer-queue-icon" aria-hidden="true"><i></i></span>
-            <span class="steer-queue-copy"><strong>Steering next</strong><small>${this.escapeHtml(text)}</small></span>
-            <span class="steer-queue-position">Queued</span>
+            <span class="steer-queue-copy"><strong>Follow-up queued</strong><small>${this.escapeHtml(text)}</small></span>
+            <span class="steer-queue-actions">
+                <span class="steer-queue-position">Queued</span>
+                <button type="button" class="steer-queue-promote">Steer</button>
+            </span>
         `;
-        this.chatMessages.appendChild(item);
-        this._queuedMessages.set(messageId, { el: item, text, images });
-        this.scrollToBottom();
+        item.querySelector('.steer-queue-promote')?.addEventListener('click', () => {
+            this._promoteQueuedMessage(messageId);
+        });
+        (this.composerQueue || this.chatMessages).appendChild(item);
+        if (this.composerQueue) this.composerQueue.hidden = false;
+        this._queuedMessages.set(messageId, { el: item, text, images, steer: false });
+        this._syncComposerGutter?.();
+    }
+
+    _promoteQueuedMessage(messageId) {
+        const queued = this._queuedMessages.get(messageId);
+        if (!queued || queued.steer) return;
+        queued.steer = true;
+        queued.el.classList.add('is-promoting');
+        const button = queued.el.querySelector('.steer-queue-promote');
+        if (button) {
+            button.disabled = true;
+            button.textContent = 'Steering';
+        }
+        this.send({ command: 'steer_queued', message_id: messageId });
+    }
+
+    _syncComposerQueue() {
+        if (!this.composerQueue) return;
+        this.composerQueue.hidden = this.composerQueue.children.length === 0;
+        this._syncComposerGutter?.();
     }
 
     handleMessageQueued(event) {
         const queued = this._queuedMessages.get(event.message_id);
         if (!queued) return;
         const label = queued.el.querySelector('.steer-queue-position');
+        const heading = queued.el.querySelector('.steer-queue-copy strong');
+        if (heading) heading.textContent = event.steering ? 'Steering next' : 'Follow-up queued';
         if (label) label.textContent = event.steering
             ? 'Interrupting safely'
             : `Queued ${event.position || ''}`.trim();
         queued.el.classList.add('is-acknowledged');
+        queued.el.classList.toggle('is-steering', !!event.steering);
     }
 
     handleMessageStarted(event) {
@@ -1420,6 +1450,7 @@ class ResonantApp {
         const images = queued?.images || [];
         queued?.el?.remove();
         this._queuedMessages.delete(event.message_id);
+        this._syncComposerQueue();
         this._prepareTurnUI(text, images);
         this.setRunning(true);
     }
@@ -1429,6 +1460,7 @@ class ResonantApp {
             this._queuedMessages.get(messageId)?.el?.remove();
             this._queuedMessages.delete(messageId);
         });
+        this._syncComposerQueue();
     }
 
     sendMessage(options = {}) {
@@ -1468,7 +1500,7 @@ class ResonantApp {
         }
 
         if (this.isRunning) {
-            this._queueSteerMessage(text);
+            this._queueFollowUpMessage(text);
             return;
         }
 
@@ -4468,14 +4500,13 @@ class ResonantApp {
         this.stopBtn.style.display = running ? 'flex' : 'none';
         this.userInput.disabled = false;
         this.userInput.placeholder = running
-            ? 'Steer the running agent or queue a follow-up...'
+            ? 'Write a follow-up for the running agent...'
             : 'Ask Resonant to build, inspect, or fix...';
         const sendLabel = running
-            ? 'Steer agent (Enter) — Shift+Enter for newline'
+            ? 'Queue follow-up (Enter) — Shift+Enter for newline'
             : 'Send message (Enter) — Shift+Enter for newline';
         this.sendBtn.title = sendLabel;
         this.sendBtn.setAttribute('aria-label', sendLabel);
-        this.sendBtn.classList.toggle('is-steering', running);
         this.userInput.closest('.input-wrapper')?.classList.toggle('is-running', running);
         if (running) this._startLiveRun();
         else this._stopLiveRun();
@@ -5174,6 +5205,9 @@ class ResonantApp {
                 // back via the `user_input` WS command and unblocks
                 // the agent.
                 this.handleAwaitUser(event);
+                break;
+            case 'user_input_received':
+                this.handleUserInputReceived(event);
                 break;
             case 'tool_permission':
                 this.handleToolPermission(event);
@@ -10007,13 +10041,28 @@ class ResonantApp {
         const options = Array.isArray(event && event.options) ? event.options : [];
         if (!question) return;
 
+        const normalizedOptions = options.map((option) => {
+            const raw = String(option || '').trim();
+            const recommended = /\s*\(recommended\)\s*$/i.test(raw);
+            return {
+                value: raw.replace(/\s*\(recommended\)\s*$/i, '').trim(),
+                recommended,
+            };
+        }).filter((option) => option.value);
+
         const wrap = document.createElement('div');
         wrap.className = 'await-user-prompt';
+        wrap.dataset.awaitUserState = 'waiting';
 
         // Chips for options. Plain textarea + Send for free-text.
-        const chipsHTML = options.length > 0
+        const chipsHTML = normalizedOptions.length > 0
             ? `<div class="await-user-chips">${
-                options.map(o => `<button type="button" class="await-user-chip">${this.escapeHtml(o)}</button>`).join('')
+                normalizedOptions.map((option, index) => `
+                    <button type="button" class="await-user-chip${option.recommended ? ' is-recommended' : ''}" data-option-index="${index}">
+                        <span>${this.escapeHtml(option.value)}</span>
+                        ${option.recommended ? '<span class="await-user-recommended">Recommended</span>' : ''}
+                    </button>
+                `).join('')
               }</div>`
             : '';
 
@@ -10026,25 +10075,43 @@ class ResonantApp {
             ${chipsHTML}
             <div class="await-user-input-row">
                 <textarea class="await-user-input" rows="2"
-                    placeholder="${options.length > 0 ? 'Or type a different answer…' : 'Type your answer…'}"></textarea>
+                    placeholder="${normalizedOptions.length > 0 ? 'Or type a different answer…' : 'Type your answer…'}"></textarea>
                 <button type="button" class="await-user-send">Send</button>
             </div>
         `;
 
+        let answered = false;
         const reply = (text) => {
+            if (answered) return;
+            answered = true;
             // One-shot — disable the whole prompt after answering so
             // the user can't accidentally double-send. The backend
             // immediately resumes; we don't need an "answer received"
             // animation.
+            wrap.dataset.awaitUserState = 'submitting';
             wrap.classList.add('await-user-answered');
             wrap.querySelectorAll('button, textarea').forEach(el => el.disabled = true);
-            const textarea = wrap.querySelector('.await-user-input');
-            if (textarea && text !== textarea.value) textarea.value = text;
+            const controls = wrap.querySelector('.await-user-chips');
+            const inputRow = wrap.querySelector('.await-user-input-row');
+            if (controls) controls.hidden = true;
+            if (inputRow) inputRow.hidden = true;
+            const confirmation = document.createElement('div');
+            confirmation.className = 'await-user-confirmation';
+            confirmation.innerHTML = `
+                <span class="await-user-confirmation-check" aria-hidden="true">&#10003;</span>
+                <span><small>Selected</small><strong>${this.escapeHtml(text)}</strong></span>
+                <span class="await-user-confirmation-status">Resuming agent&hellip;</span>
+            `;
+            wrap.appendChild(confirmation);
+            this._setLiveRunPhase('Continuing', 'Applying your selection');
             this.send({ command: 'user_input', response: text });
         };
 
         wrap.querySelectorAll('.await-user-chip').forEach(btn => {
-            btn.addEventListener('click', () => reply(btn.textContent || ''));
+            btn.addEventListener('click', () => {
+                const option = normalizedOptions[Number(btn.dataset.optionIndex)];
+                if (option) reply(option.value);
+            });
         });
 
         const textarea = wrap.querySelector('.await-user-input');
@@ -10062,7 +10129,20 @@ class ResonantApp {
 
         this.chatMessages.appendChild(wrap);
         this.scrollToBottom();
-        setTimeout(() => textarea.focus(), 100);
+        setTimeout(() => {
+            if (!answered) textarea.focus();
+        }, 100);
+    }
+
+    handleUserInputReceived(_event) {
+        const pending = Array.from(this.chatMessages.querySelectorAll(
+            '.await-user-prompt[data-await-user-state="submitting"]',
+        )).at(-1);
+        if (!pending) return;
+        pending.dataset.awaitUserState = 'received';
+        const status = pending.querySelector('.await-user-confirmation-status');
+        if (status) status.textContent = 'Agent resumed';
+        this._setLiveRunPhase('Continuing', 'Working from your selection');
     }
 
     // ── DOM Helpers ─────────────────────────────────────────────
@@ -10814,24 +10894,50 @@ class ResonantApp {
                 <span class="live-run-subtask-meta" data-subtask-elapsed="${this.escapeHtml(item.id)}">${meta}</span>
             </li>`;
         }).join('');
-        run.el.innerHTML = `
-            <div class="live-run-head">
-                <span class="live-run-orbit" aria-hidden="true"><i></i><b></b></span>
-                <span class="live-run-copy"><strong>Resonant is working</strong><small>${this.escapeHtml(run.phase)} \u00b7 ${this.escapeHtml(run.detail)}</small></span>
-                <span class="live-run-meta">${run.step ? `Step ${run.step} \u00b7 ` : ''}<span data-live-elapsed>${this._formatRunDuration(elapsedSeconds)}</span></span>
-            </div>
-            <div class="live-run-progress" style="--live-run-progress:${pct}%"><span></span></div>
-            <details class="live-run-details" ${run.detailsOpen ? 'open' : ''}>
-                <summary><span>Run details</span><span>${complete}/${total} tasks${subtasks.length ? ` \u00b7 ${activeSubtasks} active sub-task${activeSubtasks === 1 ? '' : 's'}` : ''}</span></summary>
-                <div class="live-run-detail-grid">
-                    <section><h4>Task list</h4><ol class="live-run-todos">${milestoneHtml}</ol></section>
-                    ${subtasks.length ? `<section><h4>Sub-tasks</h4><ol class="live-run-subtasks">${subtaskHtml}</ol></section>` : ''}
+        // Keep the animated shell mounted for the entire run. Replacing this
+        // subtree on every phase/tool event restarts its CSS animations and
+        // presents as hard flicker. Updates below patch only changing nodes.
+        if (!run.domReady || !run.el.querySelector('.live-run-head')) {
+            run.el.innerHTML = `
+                <div class="live-run-head">
+                    <span class="live-run-orbit" aria-hidden="true"><i></i><b></b></span>
+                    <span class="live-run-copy"><strong>Resonant is working</strong><small></small></span>
+                    <span class="live-run-meta"><span data-live-step></span><span data-live-elapsed></span></span>
                 </div>
-            </details>
-        `;
-        run.el.querySelector('.live-run-details')?.addEventListener('toggle', (event) => {
-            run.detailsOpen = event.currentTarget.open;
-        });
+                <div class="live-run-progress"><span></span></div>
+                <details class="live-run-details" open>
+                    <summary><span>Run details</span><span data-live-counts></span></summary>
+                    <div class="live-run-detail-grid">
+                        <section><h4>Task list</h4><ol class="live-run-todos"></ol></section>
+                        <section data-live-subtasks-section hidden><h4>Sub-tasks</h4><ol class="live-run-subtasks"></ol></section>
+                    </div>
+                </details>
+            `;
+            const details = run.el.querySelector('.live-run-details');
+            details.open = run.detailsOpen;
+            details.addEventListener('toggle', (event) => {
+                run.detailsOpen = event.currentTarget.open;
+            });
+            run.domReady = true;
+        }
+
+        run.el.querySelector('.live-run-copy small').textContent = `${run.phase} \u00b7 ${run.detail}`;
+        run.el.querySelector('[data-live-step]').textContent = run.step ? `Step ${run.step} \u00b7 ` : '';
+        run.el.querySelector('[data-live-elapsed]').textContent = this._formatRunDuration(elapsedSeconds);
+        run.el.querySelector('.live-run-progress').style.setProperty('--live-run-progress', `${pct}%`);
+        run.el.querySelector('[data-live-counts]').textContent = `${complete}/${total} tasks${subtasks.length ? ` \u00b7 ${activeSubtasks} active sub-task${activeSubtasks === 1 ? '' : 's'}` : ''}`;
+
+        const milestoneKey = JSON.stringify(orderedMilestones);
+        if (run.milestoneRenderKey !== milestoneKey) {
+            run.el.querySelector('.live-run-todos').innerHTML = milestoneHtml;
+            run.milestoneRenderKey = milestoneKey;
+        }
+        const subtaskKey = JSON.stringify(subtasks);
+        if (run.subtaskRenderKey !== subtaskKey) {
+            run.el.querySelector('.live-run-subtasks').innerHTML = subtaskHtml;
+            run.subtaskRenderKey = subtaskKey;
+        }
+        run.el.querySelector('[data-live-subtasks-section]').hidden = subtasks.length === 0;
         run.el.hidden = false;
     }
 

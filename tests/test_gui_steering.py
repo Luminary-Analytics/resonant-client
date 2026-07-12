@@ -14,6 +14,29 @@ class _CancellableSession:
         self.cancelled.set()
 
 
+def test_await_user_choice_is_acknowledged_immediately():
+    gui_app.state.user_input_response.clear()
+    gui_app.state.user_input_result[0] = ""
+
+    with TestClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"command": "user_input", "response": "Recommended choice"})
+            received = None
+            for _ in range(4):
+                candidate = websocket.receive_json()
+                if candidate.get("event") == "user_input_received":
+                    received = candidate
+                    break
+            assert received == {
+                "event": "user_input_received",
+                "response": "Recommended choice",
+            }
+
+    assert gui_app.state.user_input_result[0] == "Recommended choice"
+    assert gui_app.state.user_input_response.is_set()
+    gui_app.state.user_input_response.clear()
+
+
 def test_websocket_accepts_steer_while_a_chat_turn_is_still_running(monkeypatch):
     first_started = threading.Event()
     release_first = threading.Event()
@@ -58,6 +81,106 @@ def test_websocket_accepts_steer_while_a_chat_turn_is_still_running(monkeypatch)
             assert started == {
                 "event": "message.started",
                 "message_id": "steer-1",
+                "text": "change direction",
+            }
+
+    assert processed == ["first", "change direction"]
+
+
+def test_websocket_queues_followup_without_interrupting_active_turn(monkeypatch):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    processed = []
+    session = _CancellableSession()
+
+    async def fake_process(_ws, message):
+        processed.append(message["text"])
+        if len(processed) == 1:
+            first_started.set()
+            await asyncio.to_thread(release_first.wait, 5)
+
+    monkeypatch.setattr(gui_app, "_process_chat_message", fake_process)
+    monkeypatch.setattr(gui_app.state, "available_backends", [object()])
+    monkeypatch.setattr(gui_app.state, "backend", object())
+    monkeypatch.setattr(gui_app.state, "session", session)
+    monkeypatch.setattr(gui_app.state, "codebase_index", object())
+
+    with TestClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"command": "message", "text": "first"})
+            assert first_started.wait(2)
+
+            websocket.send_json({
+                "command": "message",
+                "text": "do this afterward",
+                "message_id": "followup-1",
+            })
+            assert websocket.receive_json() == {
+                "event": "message.queued",
+                "message_id": "followup-1",
+                "text": "do this afterward",
+                "position": 1,
+                "steering": False,
+            }
+            assert not session.cancelled.wait(0.1)
+
+            release_first.set()
+            assert websocket.receive_json() == {
+                "event": "message.started",
+                "message_id": "followup-1",
+                "text": "do this afterward",
+            }
+
+    assert processed == ["first", "do this afterward"]
+
+
+def test_queued_followup_can_be_promoted_to_steer(monkeypatch):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    processed = []
+    session = _CancellableSession()
+
+    async def fake_process(_ws, message):
+        processed.append(message["text"])
+        if len(processed) == 1:
+            first_started.set()
+            await asyncio.to_thread(release_first.wait, 5)
+
+    monkeypatch.setattr(gui_app, "_process_chat_message", fake_process)
+    monkeypatch.setattr(gui_app.state, "available_backends", [object()])
+    monkeypatch.setattr(gui_app.state, "backend", object())
+    monkeypatch.setattr(gui_app.state, "session", session)
+    monkeypatch.setattr(gui_app.state, "codebase_index", object())
+
+    with TestClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"command": "message", "text": "first"})
+            assert first_started.wait(2)
+            websocket.send_json({
+                "command": "message",
+                "text": "change direction",
+                "message_id": "promote-1",
+            })
+            assert websocket.receive_json()["steering"] is False
+            assert not session.cancelled.is_set()
+
+            websocket.send_json({
+                "command": "steer_queued",
+                "message_id": "promote-1",
+            })
+            assert websocket.receive_json() == {
+                "event": "message.queued",
+                "message_id": "promote-1",
+                "text": "change direction",
+                "position": 1,
+                "steering": True,
+            }
+            assert session.cancelled.wait(1)
+
+            release_first.set()
+            assert websocket.receive_json() == {
+                "event": "message.started",
+                "message_id": "promote-1",
                 "text": "change direction",
             }
 

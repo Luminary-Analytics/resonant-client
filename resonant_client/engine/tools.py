@@ -270,6 +270,9 @@ AGENT_TOOLS = [
                 "export include or exclude tool calls?'), choosing between "
                 "valid implementation paths ('use sqlite or just JSON?'), "
                 "asking where to put new files when conventions are unclear. "
+                "When you provide options, state which one you recommend via "
+                "recommended_option so the user does not have to infer your "
+                "preference. "
                 "Do NOT use for things you can answer yourself by reading code "
                 "(file paths, API shapes, existing function names). The user's "
                 "answer is returned as the tool result."
@@ -285,6 +288,10 @@ AGENT_TOOLS = [
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional quick-reply choices. When provided, the user sees them as one-click chips. Keep to 2-5 options. Omit for free-text questions."
+                    },
+                    "recommended_option": {
+                        "type": "string",
+                        "description": "The exact entry from options that you recommend. Set this whenever options are provided and you have a preferred path. The UI marks it as Recommended."
                     },
                 },
                 "required": ["question"]

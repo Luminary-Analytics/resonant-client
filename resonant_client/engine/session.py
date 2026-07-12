@@ -1559,6 +1559,23 @@ class Session:
                     awu_start = _time.time()
                     question = fn_args.get("question") or ""
                     options = fn_args.get("options") or []
+                    recommended = re.sub(
+                        r"\s*\(recommended\)\s*$", "",
+                        str(fn_args.get("recommended_option") or ""),
+                        flags=re.IGNORECASE,
+                    ).strip()
+                    if recommended and options:
+                        annotated_options = []
+                        for option in options:
+                            option_text = str(option)
+                            clean_option = re.sub(
+                                r"\s*\(recommended\)\s*$", "", option_text,
+                                flags=re.IGNORECASE,
+                            ).strip()
+                            if clean_option.casefold() == recommended.casefold():
+                                option_text = f"{clean_option} (Recommended)"
+                            annotated_options.append(option_text)
+                        options = annotated_options
                     if on_user_input:
                         try:
                             answer = on_user_input(question, options)

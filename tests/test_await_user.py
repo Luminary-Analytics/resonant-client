@@ -48,6 +48,12 @@ class TestAwaitUserToolRegistration:
         assert "options" in params["properties"]
         assert "options" not in params.get("required", [])
 
+    def test_schema_supports_explicit_recommendation(self):
+        schema = next(t for t in AGENT_TOOLS if t["function"]["name"] == "await_user")
+        params = schema["function"]["parameters"]
+        assert params["properties"]["recommended_option"]["type"] == "string"
+        assert "recommended_option" not in params.get("required", [])
+
 
 # ── Session dispatch ─────────────────────────────────────────────────────
 
@@ -119,6 +125,34 @@ class TestAwaitUserDispatch:
             "options": ["alpha", "beta", "gamma"],
         })
         assert captured["options"] == ["alpha", "beta", "gamma"]
+
+    def test_recommended_option_is_annotated_for_all_frontends(self):
+        captured = {}
+
+        def cb(question, options):
+            captured["options"] = list(options)
+            return options[1]
+
+        _run_with_callback(cb, {
+            "question": "Which path?",
+            "options": ["alpha", "beta", "gamma"],
+            "recommended_option": "beta",
+        })
+        assert captured["options"] == ["alpha", "beta (Recommended)", "gamma"]
+
+    def test_recommended_option_matching_is_case_insensitive(self):
+        captured = {}
+
+        def cb(question, options):
+            captured["options"] = list(options)
+            return options[0]
+
+        _run_with_callback(cb, {
+            "question": "Which path?",
+            "options": ["SQLite", "PostgreSQL"],
+            "recommended_option": "sqlite",
+        })
+        assert captured["options"] == ["SQLite (Recommended)", "PostgreSQL"]
 
     def test_answer_lands_in_tool_result_event(self):
         events = _run_with_callback(lambda q, o: "user-said-this")

@@ -6474,6 +6474,9 @@ class ResonantApp {
         this.isStreaming = false;
         this._currentStepHeaderEl = null;
         this._currentStepToolCounts = {};
+        if ((event.step || 1) > 1) {
+            this._advanceLiveMilestone('reason', 'Reason through the next agent step');
+        }
         this._setLiveRunPhase(
             event.step > 1 ? 'Continuing' : 'Reasoning',
             event.label || `Agent step ${event.step || 1}`,
@@ -9648,6 +9651,7 @@ class ResonantApp {
             status: 'running',
             startedAt: Date.now(),
         });
+        this._advanceLiveMilestone('delegate', 'Coordinate sub-tasks');
         this._setLiveRunPhase('Delegating', agentType || 'Sub-task running');
         this.agentActivities.set(activityId, {
             id: activityId,
@@ -10672,22 +10676,43 @@ class ResonantApp {
         }, 420);
     }
 
+    _liveRunFallbackTask(phase, detail = '') {
+        const normalized = String(phase || '').toLowerCase();
+        if (normalized.includes('stop')) return 'Stop the active run';
+        if (normalized === 'delegating') return 'Coordinate sub-tasks';
+        if (normalized === 'steered') return 'Apply your new direction';
+        if (normalized === 'composing') return 'Finish the response';
+        if (normalized === 'continuing') return 'Reason through the next agent step';
+        if (normalized === 'reasoning' || normalized === 'starting') return 'Reason through the next action';
+        return detail || phase || 'Continue the task';
+    }
+
     _setLiveRunPhase(phase, detail = '', step = null) {
         const run = this._liveRun;
         if (!run || !run.active) return;
         run.phase = phase || run.phase;
         run.detail = detail || run.detail;
         if (step !== null) run.step = step;
-        // Keep a visibly active final step when all evidence-derived milestones
-        // have completed but the model is still reasoning or composing.
-        if (!run.modelTodos && run.milestones.length
-            && run.milestones.every((item) => item.status === 'done')) {
+        // When evidence-derived milestones are complete, keep one fallback
+        // task active and synchronize its label with the real phase above.
+        // Previously this was permanently named "Finish the response", even
+        // when the agent had returned to reasoning on a later step.
+        if (!run.modelTodos && run.milestones.length) {
+            const fallbackText = this._liveRunFallbackTask(run.phase, run.detail);
+            const evidenceMilestones = run.milestones.filter((item) => item.id !== 'finalize');
+            const hasActiveEvidence = evidenceMilestones.some((item) => item.status === 'running');
             let finalStep = run.milestones.find((item) => item.id === 'finalize');
-            if (!finalStep) {
-                finalStep = { id: 'finalize', text: 'Finish the response', status: 'running' };
-                run.milestones.push(finalStep);
-            } else {
-                finalStep.status = 'running';
+            if (finalStep && finalStep.status === 'running') {
+                finalStep.text = fallbackText;
+            } else if (!hasActiveEvidence
+                && evidenceMilestones.every((item) => item.status === 'done')) {
+                if (!finalStep) {
+                    finalStep = { id: 'finalize', text: fallbackText, status: 'running' };
+                    run.milestones.push(finalStep);
+                } else {
+                    finalStep.text = fallbackText;
+                    finalStep.status = 'running';
+                }
             }
         }
         this._renderLiveRun();
@@ -10702,7 +10727,8 @@ class ResonantApp {
         if (!item) {
             item = { id, text, status: 'running' };
             run.milestones.push(item);
-        } else if (item.status !== 'done') {
+        } else {
+            item.text = text || item.text;
             item.status = 'running';
         }
         this._renderLiveRun();
@@ -10767,7 +10793,10 @@ class ResonantApp {
         const pct = total ? Math.round((complete / total) * 100) : 0;
         const subtasks = Array.from(run.subtasks.values());
         const activeSubtasks = subtasks.filter((item) => item.status === 'running').length;
-        const milestoneOrder = { analyze: 0, inspect: 1, change: 2, verify: 3, report: 4, finalize: 5 };
+        const milestoneOrder = {
+            analyze: 0, inspect: 1, change: 2, verify: 3,
+            reason: 4, delegate: 5, report: 6, finalize: 7,
+        };
         const orderedMilestones = [...run.milestones].sort((a, b) => (
             (milestoneOrder[a.id] ?? 99) - (milestoneOrder[b.id] ?? 99)
         ));

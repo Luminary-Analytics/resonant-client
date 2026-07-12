@@ -10577,6 +10577,8 @@ body {
 .live-run-surface[hidden] { display: none; }
 .live-run-surface.is-finishing { opacity: 0; transform: translateY(4px); }
 .input-bar > .live-run-surface {
+    order: -1;
+    flex: 0 0 auto;
     width: 100%;
     max-width: var(--content-max-width);
     margin: 0 auto 8px;
@@ -10828,6 +10830,8 @@ body {
     right: 0;
     bottom: 0;
     z-index: 8;
+    flex-direction: column;
+    align-items: stretch;
     padding: 0 24px 12px;
     border-top: 0;
     background: linear-gradient(to top, var(--bg) 0%, var(--bg) 76%, rgba(17,17,17,0));

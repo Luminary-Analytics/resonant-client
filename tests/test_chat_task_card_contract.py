@@ -51,6 +51,11 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     assert "_setLiveRunTodos(items, done, total)" in source
     assert "_updateLiveSubtask(id, patch)" in source
     assert "Finish the response" in source
+    assert "Reason through the next action" in source
+    assert "finalStep.text = fallbackText;" in source
+    assert "item.text = text || item.text;" in source
+    assert "this._advanceLiveMilestone('reason', 'Reason through the next agent step');" in source
+    assert "this._advanceLiveMilestone('delegate', 'Coordinate sub-tasks');" in source
     assert ".live-run-orbit" in styles
     assert ".live-run-subtasks" in styles
     assert "this.liveRunSurface = document.getElementById('live-run-surface');" in source
@@ -60,6 +65,13 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     assert "elapsed clocks update" in source
     assert ".input-bar > .live-run-surface" in styles
     assert "scrollbar-gutter: stable" in styles
+    live_dock_rule = styles[styles.index(".input-bar > .live-run-surface {"):]
+    live_dock_rule = live_dock_rule[:live_dock_rule.index("}")]
+    assert "order: -1" in live_dock_rule
+    input_bar_override = styles.index(".input-bar {\n    position: absolute;")
+    input_bar_body = styles[input_bar_override:styles.index("}", input_bar_override)]
+    assert "flex-direction: column" in input_bar_body
+    assert "align-items: stretch" in input_bar_body
 
     card_start = source.index("    _beginTaskCard(")
     card_end = source.index("\n    _ensureTaskCard", card_start)

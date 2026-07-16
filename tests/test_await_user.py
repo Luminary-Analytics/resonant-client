@@ -134,7 +134,47 @@ class TestAwaitUserDispatch:
             "question": "Pick one",
             "options": ["alpha", "beta", "gamma"],
         })
-        assert captured["options"] == ["alpha", "beta", "gamma"]
+        assert captured["options"] == ["alpha (Recommended)", "beta", "gamma"]
+
+    def test_invalid_recommendation_falls_back_to_first_option(self):
+        captured = {}
+
+        def cb(question, options):
+            captured["options"] = list(options)
+            return options[0]
+
+        _run_with_callback(cb, {
+            "question": "Pick one",
+            "options": ["alpha", "beta", "gamma"],
+            "recommended_option": "not one of the options",
+        })
+        assert captured["options"] == ["alpha (Recommended)", "beta", "gamma"]
+
+    def test_option_level_recommendation_is_preserved_without_field(self):
+        captured = {}
+
+        def cb(question, options):
+            captured["options"] = list(options)
+            return options[1]
+
+        _run_with_callback(cb, {
+            "question": "Pick one",
+            "options": ["alpha", "beta (recommended)", "gamma"],
+        })
+        assert captured["options"] == ["alpha", "beta (Recommended)", "gamma"]
+
+    def test_multiple_option_markers_are_normalized_to_exactly_one(self):
+        captured = {}
+
+        def cb(question, options):
+            captured["options"] = list(options)
+            return options[0]
+
+        _run_with_callback(cb, {
+            "question": "Pick one",
+            "options": ["alpha (Recommended)", "beta (Recommended)", "gamma"],
+        })
+        assert captured["options"] == ["alpha (Recommended)", "beta", "gamma"]
 
     def test_recommended_option_is_annotated_for_all_frontends(self):
         captured = {}

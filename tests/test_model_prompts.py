@@ -49,6 +49,7 @@ def test_profiles_share_contract_but_have_distinct_guidance():
         assert "focused Grill Me style" in prompt
         assert "Every question directed to the user must use `await_user`" in prompt
         assert "set `recommended_option` to the exact option" in prompt
+        assert "List that recommended option first" in prompt
     assert "MODEL PROFILE: GLM 5.x" in glm
     assert "MODEL PROFILE: DEEPSEEK" in deepseek
     assert "OPEN MODEL (CONSERVATIVE)" in generic

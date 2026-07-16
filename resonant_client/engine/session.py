@@ -1636,18 +1636,34 @@ class Session:
                         str(fn_args.get("recommended_option") or ""),
                         flags=re.IGNORECASE,
                     ).strip()
-                    if recommended and options:
-                        annotated_options = []
-                        for option in options:
-                            option_text = str(option)
+                    if options:
+                        clean_options = []
+                        marked_index = None
+                        for index, option in enumerate(options):
+                            option_text = str(option).strip()
+                            was_marked = bool(re.search(
+                                r"\s*\(recommended\)\s*$", option_text,
+                                flags=re.IGNORECASE,
+                            ))
                             clean_option = re.sub(
                                 r"\s*\(recommended\)\s*$", "", option_text,
                                 flags=re.IGNORECASE,
                             ).strip()
-                            if clean_option.casefold() == recommended.casefold():
-                                option_text = f"{clean_option} (Recommended)"
-                            annotated_options.append(option_text)
-                        options = annotated_options
+                            clean_options.append(clean_option)
+                            if was_marked and marked_index is None:
+                                marked_index = index
+
+                        recommended_index = next((
+                            index for index, option in enumerate(clean_options)
+                            if recommended and option.casefold() == recommended.casefold()
+                        ), None)
+                        if recommended_index is None:
+                            recommended_index = marked_index if marked_index is not None else 0
+
+                        options = [
+                            f"{option} (Recommended)" if index == recommended_index else option
+                            for index, option in enumerate(clean_options)
+                        ]
                     if on_user_input:
                         try:
                             answer = on_user_input(question, options)

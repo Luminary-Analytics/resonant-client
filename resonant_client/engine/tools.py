@@ -295,11 +295,11 @@ AGENT_TOOLS = [
                     "options": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional concise quick-reply choices, displayed as separate full-width rows. Keep to 2-5 options and put detail in the option instead of the question. Omit for free-text questions."
+                        "description": "Optional concise quick-reply choices, displayed as separate full-width rows. Keep to 2-5 options, put your recommended option first, and put detail in the option instead of the question. Omit for free-text questions."
                     },
                     "recommended_option": {
                         "type": "string",
-                        "description": "The exact entry from options that you recommend. Set this whenever options are provided and you have a preferred path. The UI marks it as Recommended."
+                        "description": "The exact entry from options that you recommend. Always set this when options are provided. The UI marks it as Recommended; if omitted or invalid, the engine recommends the first option."
                     },
                 },
                 "required": ["question"]

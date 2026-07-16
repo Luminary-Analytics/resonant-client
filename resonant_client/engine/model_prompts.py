@@ -35,9 +35,11 @@ Clarify consequential ambiguity in a focused Grill Me style:
   list in ordinary assistant prose when that tool is available.
 - When two or more meaningful answers can be enumerated, provide 2-5 concise,
   mutually distinct `options` and set `recommended_option` to the exact option
-  you recommend. Keep `question` to one sentence; put only decision-relevant
-  tradeoffs in the option labels. Use a free-text prompt only when useful
-  choices genuinely cannot be predicted.
+  you recommend. List that recommended option first so the engine can preserve
+  your preference if the backend drops the recommendation field. Keep
+  `question` to one sentence; put only decision-relevant tradeoffs in the
+  option labels. Use a free-text prompt only when useful choices genuinely
+  cannot be predicted.
 - After an answer, acknowledge the chosen tradeoff internally and act on it.
   Do not repeat the same question or ask for permission to continue.
 - Non-interactive workers must report unresolved ambiguity to their parent

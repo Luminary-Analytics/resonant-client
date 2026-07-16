@@ -263,8 +263,17 @@ AGENT_TOOLS = [
         "function": {
             "name": "await_user",
             "description": (
-                "Pause and ask the user a focused question when you genuinely "
-                "need information you can't find by reading code. Use this "
+                "Last-resort clarification tool. Before using it, inspect the "
+                "relevant code, docs, tests, configuration, project instructions, "
+                "and git history. Resolve implementation details from established "
+                "project patterns and proceed with reasonable reversible defaults. "
+                "Use this only when a missing requirement or external fact remains "
+                "unknowable, materially changes the result, and would be costly to "
+                "assume incorrectly. Do not use it to ask for confirmation, permission "
+                "to continue, an obvious next step, or a preference the repository "
+                "already implies. When asked for a recommendation, make the best "
+                "evidence-based recommendation yourself instead of using this tool "
+                "to hand the judgment back to the user. Use this "
                 "for EVERY question directed to the user instead of asking in "
                 "ordinary assistant text, and INSTEAD of cycling through "
                 "speculative searches. Examples of "
@@ -300,6 +309,10 @@ AGENT_TOOLS = [
                     "recommended_option": {
                         "type": "string",
                         "description": "The exact entry from options that you recommend. Always set this when options are provided. The UI marks it as Recommended; if omitted or invalid, the engine recommends the first option."
+                    },
+                    "unresolved_reason": {
+                        "type": "string",
+                        "description": "Private one-sentence audit note naming what repository evidence you inspected and why it cannot answer this material question. Always provide this before asking; it is not shown in the decision prompt."
                     },
                 },
                 "required": ["question"]

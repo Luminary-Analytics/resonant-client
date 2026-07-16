@@ -47,6 +47,10 @@ def test_profiles_share_contract_but_have_distinct_guidance():
         assert "Long-running work" in prompt
         assert "Every assignment must state the objective" in prompt
         assert "focused Grill Me style" in prompt
+        assert "Default to investigating and acting, not interviewing" in prompt
+        assert "Resolve implementation details yourself" in prompt
+        assert "give your best\n  evidence-based recommendation" in prompt
+        assert "at most one focused clarification round" in prompt
         assert "Every question directed to the user must use `await_user`" in prompt
         assert "set `recommended_option` to the exact option" in prompt
         assert "List that recommended option first" in prompt

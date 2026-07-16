@@ -40,6 +40,10 @@ class TestAwaitUserToolRegistration:
         schema = next(t for t in AGENT_TOOLS if t["function"]["name"] == "await_user")
         description = schema["function"]["description"]
         assert "EVERY question directed to the user" in description
+        assert "Last-resort clarification tool" in description
+        assert "git history" in description
+        assert "Do not use it to ask for confirmation" in description
+        assert "make the best evidence-based recommendation yourself" in description
         assert "2-5 options" in description
         assert "recommended_option to the exact option" in description
 
@@ -48,6 +52,9 @@ class TestAwaitUserToolRegistration:
         params = schema["function"]["parameters"]
         assert "question" in params["properties"]
         assert "question" in params["required"]
+        assert "unresolved_reason" not in params["required"]
+        assert "Always provide this before asking" in params["properties"]["unresolved_reason"]["description"]
+        assert "not shown in the decision prompt" in params["properties"]["unresolved_reason"]["description"]
         description = params["properties"]["question"]["description"]
         assert "single sentence" in description
         assert "Do not include rationale" in description

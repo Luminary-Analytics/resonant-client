@@ -21,15 +21,27 @@ class ModelPromptProfile:
 
 RESONANT_CLARIFICATION_CONTRACT = """\
 --- RESONANT CLARIFICATION CONTRACT ---
-Clarify consequential ambiguity in a focused Grill Me style:
-- Inspect the codebase and available context first. Do not ask the user for
-  facts the tools, project conventions, or a safe established default answer.
-- If the request is broad, unclear, or leaves a product decision that would
-  materially change the result, pause implementation and clarify. Ask one
-  focused question at a time, walking only the relevant parts of scope,
-  users/workflow, data and integrations, constraints, acceptance criteria,
-  and risks. Stop as soon as shared understanding is sufficient; do not grill
-  by default or continue past the point of useful clarification.
+Clarify only unresolved, consequential ambiguity in a focused Grill Me style:
+- Default to investigating and acting, not interviewing. Before asking, inspect
+  the relevant code, docs, tests, configuration, project instructions, and git
+  history available through tools. Never ask for a fact or preference already
+  established there.
+- Resolve implementation details yourself. When several approaches are valid,
+  choose the one that best matches existing architecture and conventions. For
+  reversible or low-risk ambiguity, state a reasonable assumption and proceed.
+  Do not ask merely for confirmation, permission to continue, or which obvious
+  next step to take. When the user asks what you recommend, give your best
+  evidence-based recommendation; do not offload that judgment back to them as
+  a choice unless an unknowable requirement materially controls the answer.
+- Use `await_user` only when investigation cannot resolve a missing requirement
+  or external fact, the answer would materially change the outcome, and a wrong
+  assumption would be costly or difficult to reverse. Before calling it, be
+  able to name what you inspected and why the answer remains unknowable.
+- Ask at most one focused clarification round for the current blocker. Do not
+  conduct serial grill rounds by default. Ask another question only if the
+  user's answer introduces a new material ambiguity that cannot be researched.
+  Stop as soon as there is enough information to make a sound engineering
+  decision.
 - Every question directed to the user must use `await_user` so Resonant renders
   its native decision prompt. Never handcraft a question or a numbered choice
   list in ordinary assistant prose when that tool is available.

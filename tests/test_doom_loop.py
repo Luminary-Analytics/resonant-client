@@ -463,7 +463,7 @@ class TestRelativeThresholds:
 #
 # Pre-T2.6 the windowed guard hard-stopped immediately on hitting the
 # threshold. Now it has a two-stage pattern matching the strict
-# trailing doom-loop: nudge once (recommend await_user), THEN hard-stop
+# trailing doom-loop: nudge once (recommend independent recovery), THEN hard-stop
 # only if the cycle continues. Gives the agent one turn to pivot.
 
 
@@ -539,7 +539,7 @@ class TestWindowedNudge:
         # exception during the run path.
         assert isinstance(session2._windowed_cycle_nudged, bool)
 
-    def test_windowed_nudge_message_recommends_await_user(self):
+    def test_windowed_nudge_recommends_independent_recovery(self):
         # Drive enough turns to trip the windowed guard. _VaryingArgsBackend
         # alternates two args so a full 6-7 turns are needed before any
         # signature hits 3 occurrences in the window.
@@ -549,16 +549,16 @@ class TestWindowedNudge:
         with patch("resonant_client.engine.session.execute_tool") as mock_exec:
             mock_exec.return_value = ToolResult(output="x", is_error=False, elapsed=0.0)
             list(session.run("explore"))
-        # At some point the agent received a message containing
-        # `await_user`. Find it.
+        # The recovery message must redirect the agent without prompting the user.
         nudge_msgs = [
             m for m in backend.user_msgs_received
-            if "await_user" in m.lower()
+            if "cycling" in m.lower() and "do not ask what to do next" in m.lower()
         ]
         assert len(nudge_msgs) >= 1, (
-            f"Expected at least one await_user nudge in {len(backend.user_msgs_received)} "
+            f"Expected at least one independent recovery nudge in {len(backend.user_msgs_received)} "
             f"user messages: {backend.user_msgs_received}"
         )
+        assert all("await_user" not in message.lower() for message in nudge_msgs)
 
     def test_windowed_nudge_only_fires_once_per_turn(self):
         # The nudge is gated on `not self._windowed_cycle_nudged`. Once
@@ -572,7 +572,7 @@ class TestWindowedNudge:
             list(session.run("explore"))
         nudge_msgs = [
             m for m in backend.user_msgs_received
-            if "await_user" in m.lower() and "cycling" in m.lower()
+            if "cycling" in m.lower() and "do not ask what to do next" in m.lower()
         ]
         # At most one windowed-nudge per turn (per run() call). Note
         # this counts only the WINDOWED nudge specifically (which says

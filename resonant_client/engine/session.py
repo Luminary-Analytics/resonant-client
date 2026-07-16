@@ -84,6 +84,28 @@ CYCLE_WINDOW_REPEAT = 3
 # so legitimate "mkdir + ls + cat" sequences don't trip it.
 READ_ONLY_TOOLS = frozenset({"glob", "grep", "file_read"})
 WRITE_TOOLS = frozenset({"file_write", "file_edit", "file_replace"})
+
+_OPEN_ENDED_NEXT_STEP_PATTERNS = (
+    r"\bwhat(?:'s| is|s) (?:the )?next\b",
+    r"\bwhat(?:'s| is|s) the next move\b",
+    r"\bwhat should (?:i|we) do next\b",
+    r"\bhow should (?:i|we) proceed\b",
+    r"\bshould (?:i|we) (?:continue|proceed|keep going)\b",
+    r"\b(?:do you want|would you like) me to\b",
+)
+
+
+def _is_open_ended_next_step_question(question: str) -> bool:
+    """Reject permission/continuation prompts that should be final prose."""
+    normalized = re.sub(
+        r"\s+", " ", str(question or "").replace("’", "'")
+    ).strip().casefold()
+    return any(re.search(pattern, normalized) for pattern in _OPEN_ENDED_NEXT_STEP_PATTERNS)
+
+
+PREFLIGHT_RESEARCH_TOOLS = READ_ONLY_TOOLS | frozenset({
+    "batch", "git_status", "git_diff", "git_log", "skill_view",
+})
 CHURN_LIMIT = 14   # generous — gives room for "explore THEN write" patterns
 
 # A cloud model can occasionally terminate a successful HTTP stream with only
@@ -1042,6 +1064,7 @@ class Session:
         self._windowed_cycle_nudged = False
         empty_response_retries = 0
         step_limit_reached = False
+        implementation_started = False
 
         def consume_steering() -> list[dict[str, str]]:
             """Fold pending live direction into this same agentic turn."""
@@ -1505,6 +1528,12 @@ class Session:
                 call_id = item.get("call_id", "")
                 fn_args = item.get("_normalized_arguments", {})
                 argument_error = item.get("_argument_error", "")
+                if (
+                    fn_name
+                    and fn_name != "await_user"
+                    and fn_name not in PREFLIGHT_RESEARCH_TOOLS
+                ):
+                    implementation_started = True
                 if argument_error:
                     turn_failed_tools.append(fn_name)
                     result_output = (
@@ -1631,6 +1660,22 @@ class Session:
                     awu_start = _time.time()
                     question = fn_args.get("question") or ""
                     options = fn_args.get("options") or []
+                    urgency = str(fn_args.get("urgency") or "alignment").strip().casefold()
+                    suppressed_reason = ""
+                    if _is_open_ended_next_step_question(question):
+                        suppressed_reason = (
+                            "Generic continuation and next-step questions are not shown to "
+                            "the user. Complete the current task and present the outcome. "
+                            "Put optional recommendations or next steps in the final response "
+                            "as statements, not questions."
+                        )
+                    elif implementation_started and urgency != "catastrophic":
+                        suppressed_reason = (
+                            "Implementation has already started, so ordinary clarification is "
+                            "closed. Resolve the issue using repository evidence and the safest "
+                            "reasonable assumption, then continue. Only an imminent destructive, "
+                            "security, or irreversible blocker may pause the user now."
+                        )
                     recommended = re.sub(
                         r"\s*\(recommended\)\s*$", "",
                         str(fn_args.get("recommended_option") or ""),
@@ -1664,7 +1709,9 @@ class Session:
                             f"{option} (Recommended)" if index == recommended_index else option
                             for index, option in enumerate(clean_options)
                         ]
-                    if on_user_input:
+                    if suppressed_reason:
+                        answer = f"(question suppressed by Resonant policy: {suppressed_reason})"
+                    elif on_user_input:
                         try:
                             answer = on_user_input(question, options)
                         except Exception as exc:
@@ -1682,7 +1729,10 @@ class Session:
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
                                     output=awu_result.output, is_error=False,
-                                    elapsed=awu_elapsed, metadata={"question": question},
+                                    elapsed=awu_elapsed, metadata={
+                                        "question": question,
+                                        "suppressed": bool(suppressed_reason),
+                                    },
                                     denied=False)
                     self.conversation_history.append({
                         "role": "tool_call", "name": fn_name,
@@ -1938,17 +1988,17 @@ class Session:
                 )
                 # v0.4.11 (T2.6) — two-stage windowed guard:
                 # - Hard-stop fires when count hits threshold AND we
-                #   already injected the await_user nudge on a prior
+                #   already injected the cycle-recovery nudge on a prior
                 #   turn (nudge was ignored — kill the run).
                 # - Otherwise, the post-tool-call block below injects
-                #   a one-shot await_user nudge into the next user
+                #   a one-shot recovery nudge into the next user
                 #   message, giving the agent a turn to pivot.
                 if wrep_count >= _cycle_repeat_threshold and self._windowed_cycle_nudged:
                     args_repr = wrep_args if len(wrep_args) <= 80 else wrep_args[:77] + "..."
                     terminal_error = (
                         f"Stopped: `{wrep_tool}` with args `{args_repr}` was "
                         f"called {wrep_count} times in the last {CYCLE_WINDOW} "
-                        f"steps despite a prior nudge to call `await_user`. "
+                        f"steps despite a prior cycle-recovery nudge. "
                         f"The agent is stuck. Try rephrasing your request, "
                         f"giving more concrete context, or switching to a "
                         f"stronger model."
@@ -2065,10 +2115,10 @@ class Session:
                         f"You've called `{wrep_tool}` with args `{args_repr}` "
                         f"{wrep_count} times in the last {CYCLE_WINDOW} steps "
                         f"(varying details slightly each time). You're cycling "
-                        f"through probes instead of converging. STOP and call "
-                        f"`await_user` with a focused question — what specifically "
-                        f"are you trying to find? — OR summarize what you've "
-                        f"learned so far and answer the user. If you call "
+                        f"through probes instead of converging. STOP, reassess the "
+                        f"available evidence, and choose a different approach, or "
+                        f"summarize what you've learned and answer the user with the "
+                        f"best supported outcome. Do not ask what to do next. If you call "
                         f"`{wrep_tool}` once more with similar args, the run "
                         f"will be hard-stopped."
                     )

@@ -51,6 +51,10 @@ def test_profiles_share_contract_but_have_distinct_guidance():
         assert "Resolve implementation details yourself" in prompt
         assert "give your best\n  evidence-based recommendation" in prompt
         assert "at most one focused clarification round" in prompt
+        assert "Clarification has a preflight window" in prompt
+        assert "Once implementation starts, own the task through completion" in prompt
+        assert "Never end with a question such as" in prompt
+        assert "Recommendations\" or \"Next steps\" section" in prompt
         assert "Every question directed to the user must use `await_user`" in prompt
         assert "set `recommended_option` to the exact option" in prompt
         assert "List that recommended option first" in prompt

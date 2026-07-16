@@ -44,6 +44,8 @@ class TestAwaitUserToolRegistration:
         assert "git history" in description
         assert "Do not use it to ask for confirmation" in description
         assert "make the best evidence-based recommendation yourself" in description
+        assert "After implementation starts" in description
+        assert "Never ask what is next" in description
         assert "2-5 options" in description
         assert "recommended_option to the exact option" in description
 
@@ -70,6 +72,12 @@ class TestAwaitUserToolRegistration:
         params = schema["function"]["parameters"]
         assert params["properties"]["recommended_option"]["type"] == "string"
         assert "recommended_option" not in params.get("required", [])
+
+    def test_schema_reserves_post_start_questions_for_catastrophes(self):
+        schema = next(t for t in AGENT_TOOLS if t["function"]["name"] == "await_user")
+        urgency = schema["function"]["parameters"]["properties"]["urgency"]
+        assert urgency["enum"] == ["alignment", "catastrophic"]
+        assert "Ordinary blockers" in urgency["description"]
 
 
 # ── Session dispatch ─────────────────────────────────────────────────────
@@ -109,6 +117,43 @@ class _AwaitUserBackend:
             yield (EVENT_DONE, {"text": "got it"})
 
 
+class _WriteThenAwaitBackend:
+    """Write once, then request input on the next agent iteration."""
+
+    name = "write-then-await"
+    model = "stub-model"
+    tool_mode = "native"
+    handles_tools = False
+
+    def __init__(self, path, question, urgency="alignment"):
+        self.path = str(path)
+        self.question = question
+        self.urgency = urgency
+        self.calls = 0
+
+    def stream(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield (EVENT_TOOL_CALL, {
+                "name": "file_write",
+                "arguments": json.dumps({"path": self.path, "content": "done\n"}),
+                "call_id": "write-1",
+            })
+        elif self.calls == 2:
+            yield (EVENT_TOOL_CALL, {
+                "name": "await_user",
+                "arguments": json.dumps({
+                    "question": self.question,
+                    "urgency": self.urgency,
+                }),
+                "call_id": "await-2",
+            })
+        else:
+            yield (EVENT_DONE, {"text": "completed"})
+            return
+        yield (EVENT_DONE, {})
+
+
 def _run_with_callback(callback, tool_args=None):
     """Run a Session that calls await_user once with the given args
     and the given callback. Returns the list of yielded events."""
@@ -118,6 +163,83 @@ def _run_with_callback(callback, tool_args=None):
 
 
 class TestAwaitUserDispatch:
+    @pytest.mark.parametrize("question", [
+        "What's next?",
+        "What's the next move?",
+        "What should we do next?",
+        "How should I proceed?",
+        "Should I continue?",
+        "Would you like me to add more tests?",
+    ])
+    def test_generic_next_step_questions_are_suppressed(self, question):
+        callback = MagicMock(return_value="should-not-be-used")
+        events = _run_with_callback(callback, {"question": question})
+
+        callback.assert_not_called()
+        result = next(
+            event for event in events
+            if event.get("event") == "tool.result" and event.get("name") == "await_user"
+        )
+        assert "question suppressed by Resonant policy" in result["output"]
+        assert result["metadata"]["suppressed"] is True
+
+    def test_ordinary_question_after_implementation_is_suppressed(self, tmp_path):
+        callback = MagicMock(return_value="should-not-be-used")
+        backend = _WriteThenAwaitBackend(
+            tmp_path / "result.txt",
+            "Which implementation should I try now?",
+        )
+        events = list(Session(backend, max_steps=5, auto_approve=True).run(
+            "Implement it", on_user_input=callback,
+        ))
+
+        callback.assert_not_called()
+        result = next(
+            event for event in events
+            if event.get("event") == "tool.result" and event.get("name") == "await_user"
+        )
+        assert "Implementation has already started" in result["output"]
+        assert result["metadata"]["suppressed"] is True
+
+    def test_failed_implementation_attempt_still_closes_alignment(self, tmp_path):
+        callback = MagicMock(return_value="should-not-be-used")
+        backend = _WriteThenAwaitBackend(
+            tmp_path / "result.txt",
+            "Which recovery strategy best preserves existing behavior?",
+        )
+        failed = ToolResult(output="write failed", is_error=True, elapsed=0.0)
+        with patch("resonant_client.engine.session.execute_tool", return_value=failed):
+            events = list(Session(backend, max_steps=5, auto_approve=True).run(
+                "Implement it", on_user_input=callback,
+            ))
+
+        callback.assert_not_called()
+        result = next(
+            event for event in events
+            if event.get("event") == "tool.result" and event.get("name") == "await_user"
+        )
+        assert "Implementation has already started" in result["output"]
+        assert result["metadata"]["suppressed"] is True
+
+    def test_catastrophic_question_after_implementation_reaches_user(self, tmp_path):
+        callback = MagicMock(return_value="stop")
+        backend = _WriteThenAwaitBackend(
+            tmp_path / "result.txt",
+            "Continuing will irreversibly destroy production data; should execution stop?",
+            urgency="catastrophic",
+        )
+        events = list(Session(backend, max_steps=5, auto_approve=True).run(
+            "Implement it", on_user_input=callback,
+        ))
+
+        callback.assert_called_once()
+        result = next(
+            event for event in events
+            if event.get("event") == "tool.result" and event.get("name") == "await_user"
+        )
+        assert result["output"] == "stop"
+        assert result["metadata"]["suppressed"] is False
+
     def test_callback_invoked_with_question(self):
         captured = {}
 

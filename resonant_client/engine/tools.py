@@ -273,7 +273,11 @@ AGENT_TOOLS = [
                 "to continue, an obvious next step, or a preference the repository "
                 "already implies. When asked for a recommendation, make the best "
                 "evidence-based recommendation yourself instead of using this tool "
-                "to hand the judgment back to the user. Use this "
+                "to hand the judgment back to the user. Ask during initial alignment, "
+                "before implementation starts. After implementation starts, use this "
+                "only for an imminent catastrophic and irreversible blocker. Never ask "
+                "what is next, whether to continue, or whether the user wants another "
+                "task performed; finish and state optional recommendations instead. Use this "
                 "for EVERY question directed to the user instead of asking in "
                 "ordinary assistant text, and INSTEAD of cycling through "
                 "speculative searches. Examples of "
@@ -313,6 +317,11 @@ AGENT_TOOLS = [
                     "unresolved_reason": {
                         "type": "string",
                         "description": "Private one-sentence audit note naming what repository evidence you inspected and why it cannot answer this material question. Always provide this before asking; it is not shown in the decision prompt."
+                    },
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["alignment", "catastrophic"],
+                        "description": "Use alignment only during preflight before implementation. Use catastrophic after implementation starts only for imminent destructive data loss, security exposure, or another irreversible consequence. Ordinary blockers, failed commands, and next-step uncertainty are not catastrophic."
                     },
                 },
                 "required": ["question"]

@@ -10046,16 +10046,52 @@ class ResonantApp {
      * when the tool was called with options; otherwise a plain
      * textarea with a Send button.
      */
+    _conciseAwaitUserQuestion(question) {
+        const normalized = String(question || '')
+            .replace(/\r\n?/g, '\n')
+            .replace(/[ \t]+/g, ' ')
+            .trim();
+        if (!normalized) return '';
+
+        // Models occasionally put rationale and duplicated option descriptions
+        // into `question`. Keep only the paragraph that actually asks one.
+        const blocks = normalized.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+        const questionBlock = blocks.find((block) => block.includes('?'));
+        let concise = questionBlock || blocks[0] || normalized;
+        if (questionBlock) {
+            const sentences = questionBlock.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [];
+            const directQuestions = sentences.filter((sentence) => sentence.includes('?'));
+            if (directQuestions.length > 0) concise = directQuestions.join(' ');
+        } else {
+            concise = concise.split(/(?<=[.!])\s+/)[0];
+        }
+
+        concise = concise
+            .replace(/^\s*(?:q(?:uestion)?\s*)?(?:[-:\u2013\u2014]+\s*)/i, '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (concise.length > 240) {
+            concise = `${concise.slice(0, 236).replace(/\s+\S*$/, '')}\u2026`;
+        }
+        return concise;
+    }
+
     handleAwaitUser(event) {
         const question = (event && event.question) || '';
         const options = Array.isArray(event && event.options) ? event.options : [];
         if (!question) return;
 
-        const normalizedOptions = options.map((option) => {
+        const conciseQuestion = this._conciseAwaitUserQuestion(question);
+
+        const normalizedOptions = options.map((option, index) => {
             const raw = String(option || '').trim();
             const recommended = /\s*\(recommended\)\s*$/i.test(raw);
+            const value = raw.replace(/\s*\(recommended\)\s*$/i, '').trim();
+            const markerMatch = value.match(/^\s*(?:option\s+)?([a-z]|\d+)\s*(?:[.)]|[-:\u2013\u2014])\s*/i);
             return {
-                value: raw.replace(/\s*\(recommended\)\s*$/i, '').trim(),
+                value,
+                label: markerMatch ? value.slice(markerMatch[0].length).trim() : value,
+                marker: markerMatch ? markerMatch[1].toUpperCase() : String.fromCharCode(65 + index),
                 recommended,
             };
         }).filter((option) => option.value);
@@ -10069,7 +10105,8 @@ class ResonantApp {
             ? `<div class="await-user-chips">${
                 normalizedOptions.map((option, index) => `
                     <button type="button" class="await-user-chip${option.recommended ? ' is-recommended' : ''}" data-option-index="${index}">
-                        <span>${this.escapeHtml(option.value)}</span>
+                        <span class="await-user-option-key" aria-hidden="true">${this.escapeHtml(option.marker)}</span>
+                        <span class="await-user-option-label">${this.escapeHtml(option.label)}</span>
                         ${option.recommended ? '<span class="await-user-recommended">Recommended</span>' : ''}
                     </button>
                 `).join('')
@@ -10081,7 +10118,7 @@ class ResonantApp {
                 <span class="await-user-icon" aria-hidden="true">❓</span>
                 <span class="await-user-label">Agent needs your input</span>
             </div>
-            <div class="await-user-question">${this.escapeHtml(question)}</div>
+            <div class="await-user-question">${this.escapeHtml(conciseQuestion)}</div>
             ${chipsHTML}
             <div class="await-user-input-row">
                 <textarea class="await-user-input" rows="2"
@@ -10726,7 +10763,7 @@ class ResonantApp {
             milestones: [{ id: 'analyze', text: 'Understand the request', status: 'running' }],
             modelTodos: false,
             subtasks: new Map(),
-            detailsOpen: true,
+            detailsOpen: false,
         };
         task.liveEl.hidden = false;
         task.liveEl.classList.remove('is-finishing', 'is-error');
@@ -10860,8 +10897,6 @@ class ResonantApp {
     _renderLiveRun() {
         const run = this._liveRun;
         if (!run || !run.el) return;
-        const previousDetails = run.el.querySelector('details');
-        if (previousDetails) run.detailsOpen = previousDetails.open;
         // Streaming models can emit hundreds of text deltas while the visible
         // run state remains unchanged. Replacing the entire dock for each one
         // restarts its animations and makes the surface flash. Only rebuild
@@ -10909,24 +10944,34 @@ class ResonantApp {
         // presents as hard flicker. Updates below patch only changing nodes.
         if (!run.domReady || !run.el.querySelector('.live-run-head')) {
             run.el.innerHTML = `
-                <div class="live-run-head">
+                <button type="button" class="live-run-head live-run-toggle" aria-expanded="false" aria-label="Show run details">
                     <span class="live-run-orbit" aria-hidden="true"><i></i><b></b></span>
                     <span class="live-run-copy"><strong>Resonant is working</strong><small></small></span>
                     <span class="live-run-meta"><span data-live-step></span><span data-live-elapsed></span></span>
-                </div>
-                <div class="live-run-progress"><span></span></div>
-                <details class="live-run-details" open>
-                    <summary><span>Run details</span><span data-live-counts></span></summary>
-                    <div class="live-run-detail-grid">
-                        <section><h4>Task list</h4><ol class="live-run-todos"></ol></section>
-                        <section data-live-subtasks-section hidden><h4>Sub-tasks</h4><ol class="live-run-subtasks"></ol></section>
+                    <span class="live-run-chevron" aria-hidden="true"></span>
+                </button>
+                <div class="live-run-body" hidden>
+                    <div class="live-run-progress"><span></span></div>
+                    <div class="live-run-details">
+                        <div class="live-run-details-summary"><span>Run details</span><span data-live-counts></span></div>
+                        <div class="live-run-detail-grid">
+                            <section><h4>Task list</h4><ol class="live-run-todos"></ol></section>
+                            <section data-live-subtasks-section hidden><h4>Sub-tasks</h4><ol class="live-run-subtasks"></ol></section>
+                        </div>
                     </div>
-                </details>
+                </div>
             `;
-            const details = run.el.querySelector('.live-run-details');
-            details.open = run.detailsOpen;
-            details.addEventListener('toggle', (event) => {
-                run.detailsOpen = event.currentTarget.open;
+            const toggle = run.el.querySelector('.live-run-toggle');
+            const body = run.el.querySelector('.live-run-body');
+            const setDetailsOpen = (open) => {
+                run.detailsOpen = open;
+                toggle.setAttribute('aria-expanded', String(open));
+                toggle.setAttribute('aria-label', open ? 'Hide run details' : 'Show run details');
+                body.hidden = !open;
+            };
+            setDetailsOpen(run.detailsOpen);
+            toggle.addEventListener('click', () => {
+                setDetailsOpen(!run.detailsOpen);
             });
             run.domReady = true;
         }

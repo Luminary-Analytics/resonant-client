@@ -36,11 +36,21 @@ class TestAwaitUserToolRegistration:
         names = [t["function"]["name"] for t in AGENT_TOOLS]
         assert "await_user" in names
 
+    def test_tool_description_routes_all_user_questions_to_native_prompt(self):
+        schema = next(t for t in AGENT_TOOLS if t["function"]["name"] == "await_user")
+        description = schema["function"]["description"]
+        assert "EVERY question directed to the user" in description
+        assert "2-5 options" in description
+        assert "recommended_option to the exact option" in description
+
     def test_schema_has_required_question(self):
         schema = next(t for t in AGENT_TOOLS if t["function"]["name"] == "await_user")
         params = schema["function"]["parameters"]
         assert "question" in params["properties"]
         assert "question" in params["required"]
+        description = params["properties"]["question"]["description"]
+        assert "single sentence" in description
+        assert "Do not include rationale" in description
 
     def test_schema_has_optional_options(self):
         schema = next(t for t in AGENT_TOOLS if t["function"]["name"] == "await_user")

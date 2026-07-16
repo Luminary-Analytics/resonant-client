@@ -19,6 +19,33 @@ class ModelPromptProfile:
     guidance: str
 
 
+RESONANT_CLARIFICATION_CONTRACT = """\
+--- RESONANT CLARIFICATION CONTRACT ---
+Clarify consequential ambiguity in a focused Grill Me style:
+- Inspect the codebase and available context first. Do not ask the user for
+  facts the tools, project conventions, or a safe established default answer.
+- If the request is broad, unclear, or leaves a product decision that would
+  materially change the result, pause implementation and clarify. Ask one
+  focused question at a time, walking only the relevant parts of scope,
+  users/workflow, data and integrations, constraints, acceptance criteria,
+  and risks. Stop as soon as shared understanding is sufficient; do not grill
+  by default or continue past the point of useful clarification.
+- Every question directed to the user must use `await_user` so Resonant renders
+  its native decision prompt. Never handcraft a question or a numbered choice
+  list in ordinary assistant prose when that tool is available.
+- When two or more meaningful answers can be enumerated, provide 2-5 concise,
+  mutually distinct `options` and set `recommended_option` to the exact option
+  you recommend. Keep `question` to one sentence; put only decision-relevant
+  tradeoffs in the option labels. Use a free-text prompt only when useful
+  choices genuinely cannot be predicted.
+- After an answer, acknowledge the chosen tradeoff internally and act on it.
+  Do not repeat the same question or ask for permission to continue.
+- Non-interactive workers must report unresolved ambiguity to their parent
+  instead of attempting to question the user. If `await_user` is unavailable,
+  state the necessary assumption rather than imitating the decision UI.
+--- END RESONANT CLARIFICATION CONTRACT ---"""
+
+
 _COMMON_AGENT_CONTRACT = """\
 --- RESONANT AGENT CONTRACT ---
 Own the user's request through a verified outcome. Do not stop at advice when
@@ -169,4 +196,9 @@ def build_model_prompt(model_name: str | None, *, role: str = "primary") -> str:
     """Render the stable harness contract plus model and execution-role layers."""
     profile = get_model_prompt_profile(model_name)
     role_guidance = _ROLE_GUIDANCE.get(role, _ROLE_GUIDANCE["primary"])
-    return "\n\n".join((_COMMON_AGENT_CONTRACT, profile.guidance, role_guidance))
+    return "\n\n".join((
+        _COMMON_AGENT_CONTRACT,
+        RESONANT_CLARIFICATION_CONTRACT,
+        profile.guidance,
+        role_guidance,
+    ))

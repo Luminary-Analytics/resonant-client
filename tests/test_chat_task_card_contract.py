@@ -59,8 +59,13 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     assert ".live-run-orbit" in styles
     assert ".live-run-subtasks" in styles
     assert "this.liveRunSurface = document.getElementById('live-run-surface');" in source
-    assert "detailsOpen: true" in source
-    assert "run.detailsOpen = event.currentTarget.open;" in source
+    assert "detailsOpen: false" in source
+    assert "class=\"live-run-head live-run-toggle\"" in source
+    assert "class=\"live-run-body\" hidden" in source
+    assert "setDetailsOpen(!run.detailsOpen);" in source
+    assert "toggle.setAttribute('aria-expanded', String(open));" in source
+    assert ".live-run-body[hidden]" in styles
+    assert '.live-run-head[aria-expanded="true"] .live-run-chevron' in styles
     assert "if (run.renderKey === renderKey) return;" in source
     assert "elapsed clocks update" in source
     assert ".input-bar > .live-run-surface" in styles
@@ -127,6 +132,18 @@ def test_await_user_marks_and_cleans_recommended_option():
     assert "await-user-confirmation" in source
     assert "Resuming agent&hellip;" in source
     assert "if (answered) return;" in source
+
+
+def test_await_user_renders_concise_question_and_aligned_choice_rows():
+    source = APP_JS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "_conciseAwaitUserQuestion(question)" in source
+    assert "const conciseQuestion = this._conciseAwaitUserQuestion(question);" in source
+    assert "await-user-option-key" in source
+    assert "await-user-option-label" in source
+    assert "grid-template-columns: minmax(0, 1fr);" in styles
+    assert "grid-template-columns: 24px minmax(0, 1fr) auto;" in styles
 
 
 def test_live_run_shell_is_stable_across_updates():

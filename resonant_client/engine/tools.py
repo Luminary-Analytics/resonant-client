@@ -265,14 +265,16 @@ AGENT_TOOLS = [
             "description": (
                 "Pause and ask the user a focused question when you genuinely "
                 "need information you can't find by reading code. Use this "
-                "INSTEAD of cycling through speculative searches. Examples of "
+                "for EVERY question directed to the user instead of asking in "
+                "ordinary assistant text, and INSTEAD of cycling through "
+                "speculative searches. Examples of "
                 "good uses: clarifying ambiguous requirements ('should the "
                 "export include or exclude tool calls?'), choosing between "
                 "valid implementation paths ('use sqlite or just JSON?'), "
                 "asking where to put new files when conventions are unclear. "
-                "When you provide options, state which one you recommend via "
-                "recommended_option so the user does not have to infer your "
-                "preference. "
+                "When meaningful answers can be enumerated, provide 2-5 options "
+                "and set recommended_option to the exact option you recommend "
+                "so Resonant renders its native recommended-answer prompt. "
                 "Do NOT use for things you can answer yourself by reading code "
                 "(file paths, API shapes, existing function names). The user's "
                 "answer is returned as the tool result."
@@ -282,12 +284,18 @@ AGENT_TOOLS = [
                 "properties": {
                     "question": {
                         "type": "string",
-                        "description": "A specific, focused question. Bad: 'what should I do next'. Good: 'should the /export command include tool-call activity, or only user/assistant messages?'"
+                        "description": (
+                            "One concise, specific question, written as a single sentence. "
+                            "Do not include rationale, analysis, recommendations, or repeat "
+                            "the option descriptions here. Bad: 'what should I do next'. "
+                            "Good: 'Should the /export command include tool-call activity, "
+                            "or only user/assistant messages?'"
+                        )
                     },
                     "options": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional quick-reply choices. When provided, the user sees them as one-click chips. Keep to 2-5 options. Omit for free-text questions."
+                        "description": "Optional concise quick-reply choices, displayed as separate full-width rows. Keep to 2-5 options and put detail in the option instead of the question. Omit for free-text questions."
                     },
                     "recommended_option": {
                         "type": "string",

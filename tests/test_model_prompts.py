@@ -43,8 +43,12 @@ def test_profiles_share_contract_but_have_distinct_guidance():
 
     for prompt in (glm, deepseek, generic):
         assert "RESONANT AGENT CONTRACT" in prompt
+        assert "RESONANT CLARIFICATION CONTRACT" in prompt
         assert "Long-running work" in prompt
         assert "Every assignment must state the objective" in prompt
+        assert "focused Grill Me style" in prompt
+        assert "Every question directed to the user must use `await_user`" in prompt
+        assert "set `recommended_option` to the exact option" in prompt
     assert "MODEL PROFILE: GLM 5.x" in glm
     assert "MODEL PROFILE: DEEPSEEK" in deepseek
     assert "OPEN MODEL (CONSERVATIVE)" in generic

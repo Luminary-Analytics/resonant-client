@@ -1519,6 +1519,15 @@ class Session:
                 for item in tool_calls
                 if item.get("call_id") and (item.get("reasoning_content") or item.get("thinking"))
             }
+            provider_metadata_by_call_id = {
+                item.get("call_id", ""): {
+                    key: item[key]
+                    for key in ("assistant_content", "response_id", "response_tool_calls")
+                    if key in item
+                }
+                for item in tool_calls
+                if item.get("call_id")
+            }
             for item in tool_calls:
                 if self.cancel_requested:
                     yield from self._cancelled_events(total_start, exec_step)
@@ -1917,11 +1926,15 @@ class Session:
                     return
 
             # ── Status ──
-            if reasoning_by_call_id:
+            if reasoning_by_call_id or provider_metadata_by_call_id:
                 for entry in self.conversation_history:
-                    reasoning = reasoning_by_call_id.get(entry.get("call_id", ""))
-                    if entry.get("role") == "tool_call" and reasoning:
+                    if entry.get("role") != "tool_call":
+                        continue
+                    call_id = entry.get("call_id", "")
+                    reasoning = reasoning_by_call_id.get(call_id)
+                    if reasoning:
                         entry["reasoning_content"] = reasoning
+                    entry.update(provider_metadata_by_call_id.get(call_id, {}))
 
             yield make_event(EngineEvent.STATUS,
                             model=done_model, stats=done_stats,

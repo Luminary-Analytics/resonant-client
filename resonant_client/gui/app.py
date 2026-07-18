@@ -37,6 +37,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..events import EngineEvent, make_event
 from ..backends import (
     CodexCliBackend,
+    KimiBackend,
     OllamaBackend,
     codex_cli_model_labels,
     resolve_codex_cli_path,
@@ -3307,6 +3308,8 @@ class AppState:
         """
         if not self.available_backends:
             self.detect_backends()
+        if self.backend_spec and self.backend_spec.backend_type == "kimi":
+            return "kimi", self.backend_spec.model or KimiBackend.DEFAULT_MODEL
         ollama_models = self.available_backends.get("ollama", {}).get("models", [])
         # Prefer pro-class models for escalation if present.
         for stronger in ("deepseek-v4-pro:cloud", "deepseek-v4:cloud"):
@@ -3318,7 +3321,10 @@ class AppState:
             return "ollama", running_model
         if ollama_models:
             return "ollama", ollama_models[0]
-        raise ValueError("No Ollama models available for harness escalation")
+        kimi_models = self.available_backends.get("kimi", {}).get("models", [])
+        if kimi_models:
+            return "kimi", kimi_models[0]
+        raise ValueError("No model available for harness escalation")
 
     def wrap_user_message_for_harness(
         self,
@@ -4485,6 +4491,19 @@ class AppState:
                 "cli_path": codex_cli,
             }
 
+        kimi_key, kimi_source, kimi_env, kimi_setting = self._api_key_details(
+            "kimi", "MOONSHOT_API_KEY"
+        )
+        if kimi_key:
+            available["kimi"] = {
+                "url": os.environ.get("MOONSHOT_BASE_URL", KimiBackend.DEFAULT_BASE_URL),
+                "models": list(KimiBackend.MODELS),
+                "model_labels": {KimiBackend.DEFAULT_MODEL: "Kimi K3"},
+                "api_key_source": kimi_source,
+                "api_key_env": kimi_env,
+                "api_key_setting": kimi_setting,
+            }
+
         self.available_backends = available
         return available
 
@@ -4510,6 +4529,14 @@ class AppState:
         if not self.available_backends:
             self.detect_backends()
         project_path = os.path.normpath(project_path or self.project.project_path)
+
+        if (
+            self.backend_spec
+            and self.backend_spec.backend_type == "kimi"
+            and self.available_backends.get("kimi")
+        ):
+            model = self.backend_spec.model or KimiBackend.DEFAULT_MODEL
+            return "kimi", model
 
         info = self.available_backends.get("ollama")
         if not info:
@@ -4621,6 +4648,16 @@ class AppState:
         forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_BACKEND", "") or "").strip()
         forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_MODEL", "") or "").strip()
         if forced_backend.lower() in {"disabled", "none", "off", "false", "no"}:
+            return "", ""
+
+        if self.backend_spec and self.backend_spec.backend_type == "kimi":
+            ollama_models = self.available_backends.get("ollama", {}).get("models", [])
+            if ollama_models:
+                retry_model = next(
+                    (item for item in ("glm-5.2:cloud", "deepseek-v4-pro:cloud") if item in ollama_models),
+                    ollama_models[0],
+                )
+                return "ollama", retry_model
             return "", ""
 
         info = self.available_backends.get("ollama")
@@ -5121,10 +5158,32 @@ class AppState:
             spec.permission_mode = self.permission_mode
             return spec
 
+        if backend_type == "kimi":
+            info = self.available_backends.get("kimi") or {}
+            api_key, source, env_var, setting = self._api_key_details(
+                "kimi", "MOONSHOT_API_KEY"
+            )
+            if not api_key:
+                raise ValueError(
+                    "Kimi API key required. Add it in Settings -> Kimi API or set "
+                    "MOONSHOT_API_KEY."
+                )
+            models = info.get("models") or list(KimiBackend.MODELS)
+            spec = BackendSpec(
+                backend_type="kimi",
+                model=model or self._resolve_default_model(models) or KimiBackend.DEFAULT_MODEL,
+                base_url=info.get("url") or KimiBackend.DEFAULT_BASE_URL,
+                api_key_source=source,
+                api_key_env=env_var,
+                api_key_setting=setting,
+                thinking_mode="max",
+            )
+            return spec
+
         if backend_type != "ollama":
             raise ValueError(
                 f"Backend '{backend_type}' is not supported. Resonant Client "
-                f"supports Ollama and Codex."
+                f"supports Ollama, Kimi, and Codex."
             )
 
         info = self.available_backends.get("ollama")
@@ -5446,7 +5505,7 @@ class AppState:
         backend_order = []
         if configured_backend:
             backend_order.append(configured_backend)
-        backend_order.extend(k for k in ("ollama", "codex") if k not in backend_order)
+        backend_order.extend(k for k in ("ollama", "kimi", "codex") if k not in backend_order)
 
         for backend_type in backend_order:
             info = self.available_backends.get(backend_type) or {}
@@ -5578,9 +5637,20 @@ class AppState:
         elif self.session:
             self.apply_permission_mode(self.permission_mode, session=self.session)
 
+        if self.backend_spec and self.backend_spec.backend_type == "kimi":
+            kimi_key, _, _, _ = self._api_key_details("kimi", "MOONSHOT_API_KEY")
+            if not kimi_key:
+                fallback_type, fallback_model = self.default_chat_backend_choice()
+                if fallback_type and fallback_model:
+                    self.swap_backend(fallback_type, fallback_model)
+                else:
+                    self.backend = None
+                    self.backend_spec = None
+                    self.session = None
+
         if (
             self.backend_spec and
-            self.backend_spec.backend_type == "ollama" and
+            self.backend_spec.backend_type in {"ollama", "kimi"} and
             section in {"api_keys", "engram", "general", "network"}
         ):
             try:
@@ -8402,7 +8472,12 @@ async def _run_session_streaming(
                 in_tok = stats.get("input_tokens", 0)
                 out_tok = stats.get("output_tokens", 0)
                 if (in_tok or out_tok) and state.settings.get("cost_tracking", "enabled", True):
-                    cost = state.costs.record_usage(model, in_tok, out_tok)
+                    cost = state.costs.record_usage(
+                        model,
+                        in_tok,
+                        out_tok,
+                        stats.get("cached_tokens", 0),
+                    )
                     stats["cost_usd"] = round(cost, 6)
                     stats["session_cost_usd"] = state.costs.get_session_cost()["cost_usd"]
                     # v0.5.9a2 — route this status event into the

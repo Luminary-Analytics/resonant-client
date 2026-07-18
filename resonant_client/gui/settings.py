@@ -41,11 +41,8 @@ DEFAULTS = {
         # carry those keys load fine — Python dict tolerance ignores
         # unknown keys; nothing reads them anymore.
     },
-    # v0.4.0 — kept as empty dict to preserve schema compatibility
-    # with older settings.json files. Anthropic / OpenAI key fields
-    # were removed from the Settings UI; the field stays so a stored
-    # `api_keys: {}` from any version loads without a migration step.
-    "api_keys": {},
+    # Secrets are masked before settings are sent to the frontend.
+    "api_keys": {"kimi": ""},
     "hooks": [],
     "mcp_servers": {},
     "lsp_servers": {},

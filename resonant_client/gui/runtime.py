@@ -104,8 +104,15 @@ class BackendSpec:
                 cwd=self.cwd or None,
                 permission_mode=self.permission_mode or None,
             )
+        if backend_type == "kimi":
+            return create_backend(
+                "kimi",
+                model=self.model,
+                api_key=self.resolve_api_key(settings),
+                base_url=self.base_url or None,
+            )
 
         raise ValueError(
             f"Backend '{backend_type}' is not supported. Resonant Client "
-            f"supports Ollama and Codex."
+            f"supports Ollama, Kimi, and Codex."
         )

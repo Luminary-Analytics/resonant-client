@@ -85,6 +85,8 @@ class ModelCapabilities:
 
 def default_context_window(model: str) -> int:
     lower = str(model or "").lower()
+    if lower.startswith("kimi-k3"):
+        return 1_048_576
     if lower == "glm-5.2:cloud":
         return 999_424
     if lower in {"deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"}:
@@ -107,7 +109,13 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
     reasoning_levels: tuple[str, ...] = ()
     concurrency: int | None = None
 
-    if "glm-5" in lower:
+    if "kimi-k3" in lower:
+        modalities.add("image")
+        native_tools = True
+        parallel_tools = True
+        reasoning_levels = ("max",)
+        concurrency = 4
+    elif "glm-5" in lower:
         native_tools = True
         parallel_tools = True
         structured_output = not lower.endswith(":cloud")

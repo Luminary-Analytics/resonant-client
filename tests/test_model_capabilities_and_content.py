@@ -15,9 +15,12 @@ from resonant_client.content import (
 def test_flagship_profiles_expose_large_context_and_agentic_capabilities():
     glm = infer_model_capabilities("glm-5.2:cloud")
     deepseek = infer_model_capabilities("deepseek-v4-pro:cloud")
+    kimi = infer_model_capabilities("kimi-k3")
 
     assert glm.context_window == 999_424
     assert deepseek.context_window == 1_048_576
+    assert kimi.context_window == 1_048_576
+    assert kimi.supports("vision") and kimi.supports("tools")
     assert glm.supports("tools") and glm.supports("parallel_tool_calls")
     assert deepseek.supports("reasoning")
     assert not glm.supports("structured_outputs")

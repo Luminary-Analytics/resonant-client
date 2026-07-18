@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.9.8"
-description = "Ollama-native agentic coding desktop app — purpose-built for GLM, DeepSeek, and other open-source local models"
+version = "0.9.9"
+description = "Local-first multimodal coding agent for Ollama models and Kimi K3"
 readme = "README.md"
 # v0.6.2 — relicensed Proprietary → MIT. Resonant Client is now an
 # open-source flagship for local-first self-improving autonomous
@@ -31,11 +31,7 @@ dependencies = [
     "httpx>=0.27.0",
 ]
 
-# v0.4.0 — Anthropic / OpenAI / Claude Code / Codex / Resonant Engine /
-# MLX / LM Studio backends were cut. Resonant Client is now an
-# Ollama-only client. If you want Anthropic models, use Claude Code;
-# for OpenAI, use Codex. The previous `[claude]` and `[openai]` extras
-# groups were removed along with their backend modules.
+# Kimi uses the existing httpx dependency directly; no provider SDK is needed.
 [project.optional-dependencies]
 server = ["websockets>=12.0"]
 browser = ["playwright>=1.40.0"]

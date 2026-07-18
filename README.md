@@ -1,6 +1,6 @@
 # Resonant Client
 
-**The Ollama-native agentic coding desktop app — purpose-built for GLM, DeepSeek, and other open-source local models.**
+**A local-first multimodal coding agent for Ollama models and Kimi K3.**
 
 Resonant optimizes first for correct, production-quality outcomes, reliable
 completion, strong verification, and wall-clock time to a trustworthy result.
@@ -8,7 +8,10 @@ Token and compute efficiency are secondary diagnostics. See the canonical
 [agentic harness north star](docs/agentic-harness-north-star.md) for the product
 and engineering contract that governs new work.
 
-If you want to code with Anthropic models, reach for [Claude Code](https://claude.com/product/claude-code). If you want OpenAI, reach for [Codex](https://github.com/openai/codex). For GLM, DeepSeek, and any open Ollama model, this is the tool.
+Ollama remains the free local-first default. Kimi K3 is available through
+Moonshot's direct API for testing the same Resonant harness against its native
+multimodal, tool-calling, and long-context capabilities. Codex can also be used
+through an installed Codex CLI.
 
 ```
 ┌──────────────────────────┐                ┌─────────────────────────┐
@@ -26,8 +29,8 @@ If you want to code with Anthropic models, reach for [Claude Code](https://claud
 
 Anthropic and OpenAI both ship excellent first-party agentic coders for their own models. Nothing matches that quality if you're already in their ecosystem. But there's no equivalent purpose-built tool for the **open-source local model** ecosystem — DeepSeek's V4 family running through Ollama, in particular. This is that tool.
 
-The product surface is shaped by the deepseek/Ollama path:
-- Single backend, single trust path — every feature is exercised by every user
+The product surface is shaped by the open-model/Ollama path:
+- Small provider surface with shared session, tool, and verification contracts
 - Mission flow tuned for grill-style interviews that DeepSeek Pro/Flash do well
 - Cycle guards + `await_user` escape hatch so open models recover from unproductive loops without losing useful work
 - Mac Studio at `10.0.0.133:11434` is the canonical Ollama host (override anywhere)
@@ -72,6 +75,7 @@ The product surface is shaped by the deepseek/Ollama path:
 
 ### Engine
 - Native Ollama tool calling via `/api/chat` with streaming
+- Direct Kimi K3 streaming with native tools, base64 vision, reasoning continuity, and automatic cache accounting
 - Adaptive text-mode fallback for models without native tool support
 - Three-tier permission model (suggest / auto-edit / full-auto)
 - Path sandbox tied to the project root
@@ -107,12 +111,14 @@ pip install -e ".[all,dev]"         # Everything + tests
 
 ## Prerequisites
 
-1. **Ollama running somewhere reachable.** Mac Studio at `10.0.0.133:11434` is the canonical default; localhost works too. Install from [ollama.com](https://ollama.com/download), then `ollama serve`.
-2. **At least one model pulled:**
+Choose at least one model provider:
+
+1. **Ollama:** run Ollama somewhere reachable. Install from [ollama.com](https://ollama.com/download), then `ollama serve` and pull a model:
    ```bash
    ollama pull glm-5.2:cloud             # flagship — 756B, 1M context
    ollama pull deepseek-v4-pro:cloud     # secondary tier, separate cloud quota
    ```
+2. **Kimi K3:** create a key in the [Kimi API platform](https://platform.kimi.ai/), then add it under **Settings -> Kimi API** or set `MOONSHOT_API_KEY`. Select **Kimi API -> Kimi K3** from the model menu.
 3. **Bundled installer:** Windows 10+ (x64). Source install: Python 3.11+ on Windows / macOS / Linux.
 
 If Ollama isn't reachable on first launch, the welcome screen renders a setup wizard with the URL field, install link, and pull commands. You never have to leave the window to get unstuck.
@@ -122,6 +128,10 @@ If Ollama isn't reachable on first launch, the welcome screen renders a setup wi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `OLLAMA_HOST` | `http://10.0.0.133:11434` | Ollama base URL |
+| `MOONSHOT_API_KEY` | none | Kimi API key; a key stored in Settings takes precedence |
+| `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API base URL |
+| `RESONANT_KIMI_CONNECT_TIMEOUT_SEC` | `15` | Kimi connection timeout |
+| `RESONANT_KIMI_READ_TIMEOUT_SEC` | `600` | Kimi streaming read timeout |
 | `RESONANT_OLLAMA_NUM_CTX` | model-aware | Override Ollama context size (cloud GLM-5.2/DeepSeek V4 use their advertised ~1M windows; local models stay conservative) |
 | `RESONANT_OLLAMA_NUM_BATCH` | `512` | Ollama batch size |
 | `RESONANT_OLLAMA_NUM_GPU` | `99` | Ollama GPU layers |
@@ -183,7 +193,7 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for module-by-module reference.
 
 ```
 resonant_client/
-├── backends.py              # OllamaBackend (single backend; v0.4.0 cut Anthropic / OpenAI / etc.)
+├── backends.py              # Ollama, Kimi K3, and Codex CLI providers
 ├── capabilities.py          # Model capability profiles + Ollama metadata enrichment
 ├── content.py               # Typed multimodal content + text-only fallbacks
 ├── events.py                # EngineEvent / ClientCommand enums

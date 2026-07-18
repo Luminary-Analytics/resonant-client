@@ -1,12 +1,9 @@
 """
 Backend abstraction for Resonant Client.
 
-v0.4.0 — Ollama-native. Anthropic / OpenAI / Claude Code / Codex /
-Resonant Engine / MLX / LM Studio backends were removed in this
-release. Users with those models should reach for upstream tools
-(Claude Code, Codex) which are purpose-built for them. The single
-backend is OllamaBackend, with native tool calling via /api/chat
-and streaming. Yields a common event stream the engine consumes.
+Ollama is the local-first default, Kimi connects directly to Moonshot's
+OpenAI-compatible API, and Codex delegates to the installed CLI. Every
+provider yields the common event stream consumed by the session engine.
 """
 
 import json
@@ -26,7 +23,7 @@ from typing import Iterator, Tuple
 import httpx
 
 from .protocol import build_tool_system_prompt, parse_dsml_tool_calls, parse_tool_calls
-from .content import content_text, ollama_message_content, text_fallback
+from .content import content_text, normalize_content, ollama_message_content, text_fallback
 from .capabilities import (
     ModelCapabilities,
     default_context_window,
@@ -1813,6 +1810,377 @@ _CODEX_PERMISSION_PROFILES = {
 }
 
 
+class KimiBackend:
+    """Kimi K3 through Moonshot's OpenAI-compatible streaming API."""
+
+    DEFAULT_BASE_URL = "https://api.moonshot.ai/v1"
+    DEFAULT_MODEL = "kimi-k3"
+    MODELS = (DEFAULT_MODEL,)
+    RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = DEFAULT_MODEL,
+        *,
+        base_url: str = DEFAULT_BASE_URL,
+        transport=None,
+    ):
+        if not str(api_key or "").strip():
+            raise ValueError(
+                "Kimi API key required. Add it in Settings -> Kimi API or set "
+                "MOONSHOT_API_KEY."
+            )
+        self.api_key = str(api_key).strip()
+        self.model = str(model or self.DEFAULT_MODEL).strip()
+        self.base_url = str(base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        self.name = "kimi"
+        self.handles_tools = False
+        self.thinking_mode = "max"
+        self._transport = transport
+        self._capabilities = ModelCapabilities(
+            model=self.model,
+            context_window=1_048_576,
+            modalities=("text", "image"),
+            native_tools=True,
+            parallel_tools=True,
+            structured_output=None,
+            reasoning_levels=("max",),
+            prompt_caching=True,
+            native_continuation=True,
+            max_safe_concurrency=4,
+            source="provider",
+        )
+        self._timeout = httpx.Timeout(
+            connect=float(os.environ.get("RESONANT_KIMI_CONNECT_TIMEOUT_SEC", "15")),
+            read=float(os.environ.get("RESONANT_KIMI_READ_TIMEOUT_SEC", "600")),
+            write=60.0,
+            pool=60.0,
+        )
+
+    @property
+    def effective_context_tokens(self) -> int:
+        return 1_048_576
+
+    @property
+    def capability_profile(self) -> ModelCapabilities:
+        return self._capabilities
+
+    @classmethod
+    def list_available_models(
+        cls,
+        api_key: str,
+        *,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 5.0,
+    ) -> list[str]:
+        """Return Kimi chat models, falling back to the documented K3 ID."""
+        if not str(api_key or "").strip():
+            return []
+        try:
+            response = httpx.get(
+                f"{str(base_url or cls.DEFAULT_BASE_URL).rstrip('/')}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=timeout,
+            )
+            response.raise_for_status()
+            model_ids = [
+                str(item.get("id") or "").strip()
+                for item in response.json().get("data", [])
+                if isinstance(item, dict)
+            ]
+            models = [model_id for model_id in model_ids if model_id.startswith("kimi-k3")]
+            return models or list(cls.MODELS)
+        except Exception:
+            return list(cls.MODELS)
+
+    @staticmethod
+    def _api_content(content) -> str | list[dict]:
+        parts: list[dict] = []
+        for part in normalize_content(content):
+            part_type = part.get("type")
+            if part_type == "text":
+                text = str(part.get("text") or "")
+                if text:
+                    parts.append({"type": "text", "text": text})
+                continue
+            if part_type == "image":
+                data = _clean_image_b64(part.get("data", ""))
+                if data:
+                    media_type = str(part.get("media_type") or "image/png")
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{media_type};base64,{data}"},
+                    })
+                    description = str(
+                        part.get("description") or part.get("caption") or ""
+                    ).strip()
+                    if description:
+                        parts.append({"type": "text", "text": f"Image description: {description}"})
+                    continue
+            parts.append({"type": "text", "text": text_fallback(part)})
+        if not parts:
+            return ""
+        if all(part.get("type") == "text" for part in parts):
+            return "\n\n".join(str(part.get("text") or "") for part in parts)
+        return parts
+
+    def _messages(self, conversation_history: list, instructions: str, user_msg: str) -> list[dict]:
+        messages: list[dict] = [{"role": "system", "content": instructions}]
+        emitted_responses: set[str] = set()
+
+        for index, turn in enumerate(conversation_history):
+            role = str(turn.get("role") or "")
+            content = turn.get("content", "")
+            if role == "assistant":
+                next_turn = conversation_history[index + 1] if index + 1 < len(conversation_history) else {}
+                if (
+                    next_turn.get("role") == "tool_call"
+                    and next_turn.get("assistant_content") == content
+                ):
+                    continue
+                messages.append({"role": "assistant", "content": content})
+            elif role == "user":
+                messages.append({"role": "user", "content": self._api_content(content)})
+            elif role == "tool_call":
+                response_id = str(turn.get("response_id") or turn.get("call_id") or "")
+                if response_id in emitted_responses:
+                    continue
+                emitted_responses.add(response_id)
+                response_calls = turn.get("response_tool_calls")
+                if not isinstance(response_calls, list) or not response_calls:
+                    response_calls = [{
+                        "id": turn.get("call_id") or _new_call_id(
+                            str(turn.get("name") or ""),
+                            str(turn.get("arguments") or "{}"),
+                        ),
+                        "type": "function",
+                        "function": {
+                            "name": turn.get("name", ""),
+                            "arguments": turn.get("arguments", "{}"),
+                        },
+                    }]
+                tool_calls = []
+                for call in response_calls:
+                    function = call.get("function") if isinstance(call, dict) else {}
+                    function = function if isinstance(function, dict) else {}
+                    arguments = function.get("arguments", "{}")
+                    if not isinstance(arguments, str):
+                        arguments = json.dumps(arguments, ensure_ascii=False)
+                    tool_calls.append({
+                        "id": str(call.get("id") or ""),
+                        "type": "function",
+                        "function": {
+                            "name": str(function.get("name") or ""),
+                            "arguments": arguments,
+                        },
+                    })
+                assistant_message = {
+                    "role": "assistant",
+                    "content": turn.get("assistant_content", ""),
+                    "tool_calls": tool_calls,
+                }
+                reasoning = turn.get("reasoning_content") or turn.get("thinking")
+                if reasoning:
+                    assistant_message["reasoning_content"] = reasoning
+                messages.append(assistant_message)
+            elif role == "tool_result":
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": str(turn.get("call_id") or ""),
+                    "content": str(content or ""),
+                })
+                image = turn.get("image")
+                image_data = _safe_image_b64(image)
+                if image_data:
+                    media_type = str((image or {}).get("media_type") or "image/png")
+                    messages.append({
+                        "role": "user",
+                        "content": [{
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{media_type};base64,{image_data}"},
+                        }],
+                    })
+
+        history_has_current_user = any(
+            turn.get("role") == "user"
+            and _message_text(turn.get("content", "")).strip() == _message_text(user_msg).strip()
+            for turn in conversation_history[-3:]
+        )
+        if not history_has_current_user:
+            messages.append({"role": "user", "content": self._api_content(user_msg)})
+        return messages
+
+    def _payload(
+        self,
+        user_msg: str,
+        conversation_history: list,
+        instructions: str,
+        tools: list,
+        max_tokens: int | None,
+    ) -> dict:
+        payload = {
+            "model": self.model,
+            "messages": self._messages(conversation_history, instructions, user_msg),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "reasoning_effort": "max",
+        }
+        if tools:
+            payload["tools"] = _convert_tools_for_ollama(tools)
+        if max_tokens:
+            payload["max_completion_tokens"] = min(max(1, int(max_tokens)), 1_048_576)
+        return payload
+
+    @staticmethod
+    def _error_message(response: httpx.Response) -> str:
+        try:
+            body = response.read().decode("utf-8", errors="replace").strip()
+            parsed = json.loads(body)
+            detail = parsed.get("error", {}).get("message") if isinstance(parsed, dict) else ""
+            return str(detail or body or f"HTTP {response.status_code}")[:500]
+        except Exception:
+            return f"HTTP {response.status_code}"
+
+    def stream(
+        self,
+        user_msg: str,
+        conversation_history: list,
+        instructions: str,
+        tools: list,
+        max_tokens: int | None = None,
+        cancel_event=None,
+    ) -> Iterator[Tuple[str, dict]]:
+        payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens)
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        tool_calls: dict[int, dict] = {}
+        usage: dict = {}
+        response_id = ""
+
+        try:
+            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+                for attempt in range(3):
+                    if cancel_event is not None and cancel_event.is_set():
+                        return
+                    with client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        headers=headers,
+                        json=payload,
+                    ) as response:
+                        if response.status_code >= 400:
+                            message = self._error_message(response)
+                            if response.status_code in self.RETRYABLE_STATUS and attempt < 2:
+                                delay = 1.5 * (2 ** attempt)
+                                yield (EVENT_BACKEND_STATUS, {
+                                    "kind": "kimi_retry",
+                                    "status_code": response.status_code,
+                                    "attempt": attempt + 1,
+                                    "max": 3,
+                                    "model": self.model,
+                                    "backoff_seconds": delay,
+                                    "body_preview": message,
+                                })
+                                if _wait_with_cancel(delay, cancel_event):
+                                    return
+                                continue
+                            yield (EVENT_ERROR, {
+                                "message": f"Kimi API request failed ({response.status_code}): {message}"
+                            })
+                            return
+
+                        for line in response.iter_lines():
+                            if cancel_event is not None and cancel_event.is_set():
+                                return
+                            line = str(line or "").strip()
+                            if not line.startswith("data:"):
+                                continue
+                            raw = line[5:].strip()
+                            if not raw or raw == "[DONE]":
+                                continue
+                            try:
+                                event = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            response_id = str(event.get("id") or response_id)
+                            if isinstance(event.get("usage"), dict):
+                                usage = event["usage"]
+                            choices = event.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta") or {}
+                            reasoning = str(delta.get("reasoning_content") or "")
+                            if reasoning:
+                                reasoning_parts.append(reasoning)
+                            text_delta = str(delta.get("content") or "")
+                            if text_delta:
+                                content_parts.append(text_delta)
+                                yield (EVENT_TEXT_DELTA, {"delta": text_delta})
+                            for fragment in delta.get("tool_calls") or []:
+                                index = int(fragment.get("index", 0) or 0)
+                                current = tool_calls.setdefault(index, {
+                                    "id": "", "name": "", "arguments": "",
+                                })
+                                if fragment.get("id"):
+                                    current["id"] = str(fragment["id"])
+                                function = fragment.get("function") or {}
+                                if function.get("name"):
+                                    current["name"] += str(function["name"])
+                                if function.get("arguments"):
+                                    current["arguments"] += str(function["arguments"])
+                        break
+
+            complete_calls = []
+            for index, call in sorted(tool_calls.items()):
+                arguments = call["arguments"] or "{}"
+                call_id = call["id"] or _new_call_id(call["name"], arguments, index)
+                complete_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {"name": call["name"], "arguments": arguments},
+                })
+            reasoning_content = "".join(reasoning_parts)
+            assistant_content = "".join(content_parts)
+            stable_response_id = response_id or _new_call_id(
+                self.model, assistant_content + reasoning_content, 0
+            )
+            for call in complete_calls:
+                yield (EVENT_TOOL_CALL, {
+                    "name": call["function"]["name"],
+                    "arguments": call["function"]["arguments"],
+                    "call_id": call["id"],
+                    "reasoning_content": reasoning_content,
+                    "assistant_content": assistant_content,
+                    "response_id": stable_response_id,
+                    "response_tool_calls": complete_calls,
+                })
+
+            prompt_details = usage.get("prompt_tokens_details") or {}
+            stats = {
+                "input_tokens": int(usage.get("prompt_tokens") or 0),
+                "output_tokens": int(usage.get("completion_tokens") or 0),
+                "cached_tokens": int(prompt_details.get("cached_tokens") or 0),
+            }
+            yield (EVENT_DONE, {
+                "model": self.model,
+                "stats": stats,
+                "cognitive_state": None,
+            })
+        except httpx.TimeoutException:
+            yield (EVENT_ERROR, {"message": "Kimi API request timed out."})
+        except httpx.HTTPError as exc:
+            yield (EVENT_ERROR, {"message": f"Kimi API connection failed: {type(exc).__name__}"})
+        except Exception as exc:
+            logger.exception("Kimi stream failed")
+            yield (EVENT_ERROR, {"message": f"Kimi stream failed: {type(exc).__name__}"})
+
+
 class CodexCliBackend:
     """Subscription/API-auth backed Codex CLI execution."""
 
@@ -2061,16 +2429,8 @@ def create_backend(
 ):
     """Create a backend instance.
 
-    v0.4.0 — Resonant Client is now an Ollama-native client. Anthropic /
-    OpenAI / Claude Code / Codex / Resonant Engine / MLX / LM Studio
-    backends were removed; users with those models should reach for the
-    upstream tools (Claude Code, Codex, etc.) which are purpose-built
-    for them. LM Studio support may return as a future addition once
-    the Ollama path is fully tuned.
-
-    Extra kwargs (`api_key`, `base_url`, `cwd`, `permission_mode`,
-    `local_root`) are accepted but ignored — kept in the signature so
-    older callers don't crash on the way through.
+    Ollama remains the local-first default. Kimi uses Moonshot's direct,
+    OpenAI-compatible endpoint; Codex delegates to the installed CLI.
     """
     if backend_type == "codex":
         return CodexCliBackend(
@@ -2079,10 +2439,16 @@ def create_backend(
             sandbox=os.environ.get("RESONANT_CODEX_SANDBOX") or None,
             permission_mode=permission_mode,
         )
+    if backend_type == "kimi":
+        return KimiBackend(
+            api_key=api_key or "",
+            model=model or KimiBackend.DEFAULT_MODEL,
+            base_url=base_url or KimiBackend.DEFAULT_BASE_URL,
+        )
     if backend_type != "ollama":
         raise ValueError(
             f"Unsupported backend {backend_type!r}. Resonant Client supports "
-            f"Ollama and Codex."
+            f"Ollama, Kimi, and Codex."
         )
     if not model:
         raise ValueError("Model name required for Ollama backend")

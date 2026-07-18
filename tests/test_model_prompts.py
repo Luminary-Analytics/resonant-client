@@ -28,6 +28,7 @@ from tests.streaming_stub import StreamingBackend
         ("zai/glm-5", "glm"),
         ("deepseek-v4-pro:cloud", "deepseek"),
         ("DeepSeek_R1", "deepseek"),
+        ("kimi-k3", "kimi"),
         ("qwen3-coder:30b", "generic"),
         (None, "generic"),
     ],
@@ -40,8 +41,9 @@ def test_profiles_share_contract_but_have_distinct_guidance():
     glm = build_model_prompt("glm-5.2:cloud")
     deepseek = build_model_prompt("deepseek-v4-pro:cloud")
     generic = build_model_prompt("qwen3-coder")
+    kimi = build_model_prompt("kimi-k3")
 
-    for prompt in (glm, deepseek, generic):
+    for prompt in (glm, deepseek, generic, kimi):
         assert "RESONANT AGENT CONTRACT" in prompt
         assert "RESONANT CLARIFICATION CONTRACT" in prompt
         assert "Long-running work" in prompt
@@ -60,8 +62,9 @@ def test_profiles_share_contract_but_have_distinct_guidance():
         assert "List that recommended option first" in prompt
     assert "MODEL PROFILE: GLM 5.x" in glm
     assert "MODEL PROFILE: DEEPSEEK" in deepseek
+    assert "MODEL PROFILE: KIMI K3" in kimi
     assert "OPEN MODEL (CONSERVATIVE)" in generic
-    assert len({glm, deepseek, generic}) == 3
+    assert len({glm, deepseek, generic, kimi}) == 4
 
 
 def test_unknown_role_falls_back_to_primary():

@@ -497,12 +497,14 @@ class ResonantApp {
 
     _renderStatusServers() {
         const backends = this.backends || {};
+        const backendLabels = this._getBackendLabels();
         const rows = [];
         for (const [key, info] of Object.entries(backends)) {
             const models = Array.isArray(info?.models) ? info.models : [];
             const active = key === this.currentBackendName;
             const detail = info?.url || (key === 'ollama' ? 'Ollama endpoint' : 'Model server');
-            const label = active && this.currentModelName ? `${key} / ${this.currentModelName}` : key;
+            const providerLabel = backendLabels[key] || key;
+            const label = active && this.currentModelName ? `${providerLabel} / ${this.currentModelName}` : providerLabel;
             rows.push(this._statusRow({
                 dot: active ? 'ok' : 'muted',
                 title: label,
@@ -5848,6 +5850,33 @@ class ResonantApp {
 
         const ollamaInfo = backends && backends.ollama;
         if (!ollamaInfo) {
+            const alternatives = ['kimi', 'codex']
+                .flatMap(backend => (backends?.[backend]?.models || []).map(model => ({ backend, model })));
+            if (alternatives.length) {
+                label.textContent = 'Pick a model';
+                const card = document.createElement('div');
+                card.className = 'backend-group-cards single';
+                for (const item of alternatives) {
+                    const row = document.createElement('div');
+                    row.className = 'backend-card';
+                    row.dataset.backend = item.backend;
+                    row.dataset.model = item.model;
+                    const provider = item.backend === 'kimi' ? 'Kimi API' : 'Codex';
+                    const detail = backends[item.backend]?.url || `${provider} provider`;
+                    row.innerHTML = `
+                        <div class="backend-card-icon">${item.backend === 'kimi' ? 'K' : 'C'}</div>
+                        <div class="backend-card-info">
+                            <div class="backend-card-name">${this.escapeHtml(item.model)}</div>
+                            <div class="backend-card-detail">${this.escapeHtml(detail)}</div>
+                            <div class="backend-card-pills"><span class="backend-pill backend-pill-ok">${provider}</span></div>
+                        </div>
+                        <div class="backend-card-dot"></div>`;
+                    row.addEventListener('click', () => this.selectBackend(item.backend, item.model));
+                    card.appendChild(row);
+                }
+                list.appendChild(card);
+                return;
+            }
             this._renderOllamaSetupWizard(list, label);
             return;
         }
@@ -6268,6 +6297,10 @@ class ResonantApp {
         // v0.4.0 — single backend, single group. Old multi-backend
         // grouping (Local / Subscriptions / APIs) is gone.
         return {
+            kimi: {
+                label: 'Kimi API',
+                backends: ['kimi'],
+            },
             codex: {
                 label: 'Codex',
                 backends: ['codex'],
@@ -6280,7 +6313,7 @@ class ResonantApp {
     }
 
     _getBackendLabels() {
-        return { codex: 'Codex', ollama: 'Ollama' };
+        return { codex: 'Codex', kimi: 'Kimi API', ollama: 'Ollama' };
     }
 
     _getPreferredBackendSelection(backends) {
@@ -6290,7 +6323,7 @@ class ResonantApp {
         if (preferredConfiguredBackend && backends?.[preferredConfiguredBackend]?.models?.length) {
             backendOrder.push(preferredConfiguredBackend);
         }
-        for (const candidate of ['ollama', 'codex']) {
+        for (const candidate of ['ollama', 'kimi', 'codex']) {
             if (!backendOrder.includes(candidate)) backendOrder.push(candidate);
         }
         for (const backend of backendOrder) {
@@ -8178,13 +8211,14 @@ class ResonantApp {
                     { key: 'default_backend', label: 'Default backend', type: 'select',
                       options: [
                           { value: 'ollama', label: 'Ollama' },
+                          { value: 'kimi', label: 'Kimi API' },
                           { value: 'codex', label: 'Codex' },
                           { value: '', label: 'Auto' },
                       ]
                     },
                     { key: 'default_model', label: 'Default model', type: 'text',
-                      placeholder: 'e.g. glm-5.2:cloud or gpt-5.5',
-                      hint: 'Leave blank to use the chosen backend default. Ollama uses glm-5.2:cloud when available; Codex uses gpt-5.5 when available.' },
+                      placeholder: 'e.g. glm-5.2:cloud, kimi-k3, or gpt-5.5',
+                      hint: 'Leave blank to use the chosen backend default. Ollama prefers glm-5.2:cloud, Kimi uses kimi-k3, and Codex prefers gpt-5.5.' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },
@@ -8251,9 +8285,13 @@ class ResonantApp {
                     { key: 'ollama_url', label: 'Ollama URL (e.g. http://10.0.0.133:11434)', type: 'text' },
                 ]
             },
-            // v0.4.0 — `api_keys` section dropped (Anthropic / OpenAI
-            // backends were cut). Settings still loads old JSONs that
-            // had this section; the runtime just ignores them.
+            {
+                id: 'api_keys', title: 'Kimi API', open: false,
+                fields: [
+                    { key: 'kimi', label: 'Moonshot API key', type: 'password',
+                      hint: 'Stored locally in ~/.resonant/settings.json. MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
+                ]
+            },
             {
                 id: 'cost_tracking', title: 'Cost Tracking',
                 fields: [
@@ -11128,7 +11166,7 @@ class ResonantApp {
      */
     handleBackendStatus(event) {
         if (!event || !event.kind) return;
-        if (event.kind === 'ollama_retry' || event.kind === 'ollama_timeout') {
+        if (event.kind === 'ollama_retry' || event.kind === 'ollama_timeout' || event.kind === 'kimi_retry') {
             // v0.6.4 (F6) — ollama_timeout (a slow open-phase call
             // being retried) shares the transient retry banner; the
             // renderer phrases it differently from a 5xx retry.

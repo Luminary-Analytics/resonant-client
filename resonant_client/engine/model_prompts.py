@@ -158,6 +158,22 @@ Use a research-first, phase-gated workflow:
 --- END MODEL PROFILE ---"""
 
 
+_KIMI_GUIDANCE = """\
+--- MODEL PROFILE: KIMI K3 ---
+Use K3's long-context, multimodal, and native-tool strengths deliberately:
+- Keep the system prompt and established conversation prefix stable so the
+  provider's automatic context cache can reuse it across agent steps.
+- Preserve exact tool identifiers and arguments across long tool chains. Read
+  tool results as new evidence and continue the active plan without restarting.
+- Use images as inspectable evidence when supplied, but corroborate visual
+  conclusions with repository files, logs, or executable checks when possible.
+- Spend the fixed deep-reasoning budget on consequential architecture and
+  debugging decisions; keep user-visible progress and final output concise.
+- Before finishing, reconcile the implementation and verification evidence
+  against the full request rather than relying on the large context window.
+--- END MODEL PROFILE ---"""
+
+
 _GENERIC_GUIDANCE = """\
 --- MODEL PROFILE: OPEN MODEL (CONSERVATIVE) ---
 Favor reliability over cleverness:
@@ -175,6 +191,7 @@ Favor reliability over cleverness:
 
 
 _PROFILES = {
+    "kimi": ModelPromptProfile("kimi", "Kimi K3", _KIMI_GUIDANCE),
     "glm": ModelPromptProfile("glm", "GLM 5.x", _GLM_GUIDANCE),
     "deepseek": ModelPromptProfile("deepseek", "DeepSeek", _DEEPSEEK_GUIDANCE),
     "generic": ModelPromptProfile(
@@ -211,6 +228,8 @@ nodes, and return a result the orchestrator can verify and integrate.
 def detect_model_family(model_name: str | None) -> str:
     """Classify a backend model identifier into a prompt family."""
     normalized = (model_name or "").strip().lower().replace("_", "-")
+    if "kimi-k3" in normalized:
+        return "kimi"
     if "deepseek" in normalized:
         return "deepseek"
     if "glm" in normalized and any(token in normalized for token in ("glm-5", "glm5")):

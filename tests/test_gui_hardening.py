@@ -74,6 +74,23 @@ def _load_app_module(monkeypatch, cwd: Path):
                 "permission_mode": None,
             },
         ),
+        (
+            BackendSpec(
+                backend_type="kimi",
+                model="kimi-k3",
+                base_url="https://api.moonshot.ai/v1",
+                api_key_source="settings",
+                api_key_setting="kimi",
+            ),
+            {"api_keys": {"kimi": "stored-key"}},
+            {},
+            ("kimi",),
+            {
+                "model": "kimi-k3",
+                "api_key": "stored-key",
+                "base_url": "https://api.moonshot.ai/v1",
+            },
+        ),
     ],
 )
 def test_backend_spec_recreates_expected_backend(monkeypatch, spec, settings_data, env, expected_args, expected_kwargs):

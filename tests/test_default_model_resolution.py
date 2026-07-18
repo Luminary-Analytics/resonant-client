@@ -18,8 +18,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from resonant_client.gui.app import AppState
 
 
@@ -127,6 +125,7 @@ class TestDefaultChatBackendChoice:
         state = AppState.__new__(AppState)
         state.available_backends = {
             "ollama": {"models": ["glm-5.2:cloud"]},
+            "kimi": {"models": ["kimi-k3"]},
             "codex": {"models": ["gpt-5.5", "gpt-5.4-mini"]},
         }
         state.settings = MagicMock()
@@ -145,6 +144,11 @@ class TestDefaultChatBackendChoice:
         state = self._state(default_backend="codex", default_model="gpt-5.5")
 
         assert state.default_chat_backend_choice() == ("codex", "gpt-5.5")
+
+    def test_honors_kimi_default_backend(self):
+        state = self._state(default_backend="kimi", default_model="kimi-k3")
+
+        assert state.default_chat_backend_choice() == ("kimi", "kimi-k3")
 
     def test_auto_uses_codex_when_ollama_unavailable(self):
         state = self._state(default_backend="", default_model="")

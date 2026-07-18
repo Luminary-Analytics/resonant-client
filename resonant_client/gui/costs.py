@@ -29,6 +29,8 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
     "gpt-5.4":                       {"input": 5.0,   "output": 20.0},
     "o3":                            {"input": 10.0,  "output": 40.0},
     "o4-mini":                       {"input": 1.10,  "output": 4.40},
+    # Moonshot AI reports cached input separately, so use its lower cache rate.
+    "kimi-k3":                       {"input": 3.0,   "cached_input": 0.30, "output": 15.0},
     # Local models (free)
     "local":                         {"input": 0.0,   "output": 0.0},
 }
@@ -60,10 +62,23 @@ class CostTracker:
         self._session_cost = 0.0
         self._load()
 
-    def record_usage(self, model: str, input_tokens: int, output_tokens: int) -> float:
+    def record_usage(
+        self,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        cached_tokens: int = 0,
+    ) -> float:
         """Record token usage, returns cost in USD for this call."""
         pricing = _match_pricing(model)
-        cost = (input_tokens * pricing["input"] + output_tokens * pricing["output"]) / 1_000_000
+        cached = min(max(0, int(cached_tokens or 0)), max(0, int(input_tokens or 0)))
+        uncached = max(0, int(input_tokens or 0) - cached)
+        cached_rate = pricing.get("cached_input", pricing["input"])
+        cost = (
+            uncached * pricing["input"]
+            + cached * cached_rate
+            + output_tokens * pricing["output"]
+        ) / 1_000_000
         today = date.today().isoformat()
 
         with self._lock:

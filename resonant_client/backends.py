@@ -1957,10 +1957,11 @@ class KimiBackend:
             elif role == "user":
                 messages.append({"role": "user", "content": self._api_content(content)})
             elif role == "tool_call":
-                response_id = str(turn.get("response_id") or turn.get("call_id") or "")
-                if response_id in emitted_responses:
-                    continue
-                emitted_responses.add(response_id)
+                response_id = str(turn.get("response_id") or "")
+                if response_id:
+                    if response_id in emitted_responses:
+                        continue
+                    emitted_responses.add(response_id)
                 response_calls = turn.get("response_tool_calls")
                 if not isinstance(response_calls, list) or not response_calls:
                     response_calls = [{

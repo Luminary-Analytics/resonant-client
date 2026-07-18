@@ -152,6 +152,35 @@ def test_kimi_reconstructs_complete_assistant_tool_message_unchanged():
     ]
 
 
+def test_kimi_preserves_repeated_legacy_tool_call_ids_as_separate_turns():
+    history = [
+        {"role": "user", "content": "Inspect twice"},
+        {
+            "role": "tool_call", "name": "read", "arguments": '{"path":"a"}',
+            "call_id": "call-reused", "content": "Called read",
+        },
+        {"role": "tool_result", "call_id": "call-reused", "content": "first"},
+        {"role": "assistant", "content": "Check it again."},
+        {
+            "role": "tool_call", "name": "read", "arguments": '{"path":"a"}',
+            "call_id": "call-reused", "content": "Called read",
+        },
+        {"role": "tool_result", "call_id": "call-reused", "content": "second"},
+    ]
+
+    messages = KimiBackend("key")._messages(history, "system", "Inspect twice")
+    tool_assistants = [message for message in messages if message.get("tool_calls")]
+
+    assert len(tool_assistants) == 2
+    assert [message["role"] for message in messages] == [
+        "system", "user", "assistant", "tool", "assistant", "assistant", "tool",
+        "user",
+    ]
+    assert [message["tool_call_id"] for message in messages if message["role"] == "tool"] == [
+        "call-reused", "call-reused",
+    ]
+
+
 def test_kimi_converts_base64_images_to_openai_content_parts():
     content = [
         {"type": "image", "media_type": "image/png", "data": "aGVsbG8="},

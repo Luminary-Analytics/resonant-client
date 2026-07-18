@@ -161,10 +161,21 @@ Use a research-first, phase-gated workflow:
 _KIMI_GUIDANCE = """\
 --- MODEL PROFILE: KIMI K3 ---
 Use K3's long-context, multimodal, and native-tool strengths deliberately:
+- Run long tasks through five durable phases: map the repository, form the
+  plan, execute coherent changes, verify the complete behavior, then deliver
+  the outcome. Move phases when the evidence is sufficient, never because a
+  tool-call count was reached.
 - Keep the system prompt and established conversation prefix stable so the
   provider's automatic context cache can reuse it across agent steps.
+- Resonant initially exposes a compact core tool set. When a specialized
+  capability is needed, call `search_tools` once with a precise capability
+  query, then call the loaded tool directly. Do not repeatedly rediscover the
+  same tool or use tool search as repository search.
 - Preserve exact tool identifiers and arguments across long tool chains. Read
   tool results as new evidence and continue the active plan without restarting.
+- Extensive read-only investigation is valid when the repository demands it.
+  Converge based on findings, reuse settled evidence, and pivot from a repeated
+  unproductive probe without treating exploration depth as a failure.
 - Use images as inspectable evidence when supplied, but corroborate visual
   conclusions with repository files, logs, or executable checks when possible.
 - Spend the fixed deep-reasoning budget on consequential architecture and

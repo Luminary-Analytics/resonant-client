@@ -252,12 +252,37 @@ AGENT_TOOLS = [
             }
         }
     },
-    # v0.3.5 — `await_user` lets the agent ask the human a focused question
-    # when stuck rather than burning steps on speculative searches. Pairs
-    # with the cycle guards from v0.3.3: when the model would be about to
-    # cycle through `dir`/`glob` variations searching for context, it can
-    # instead call await_user("Where is the API code located? frontend/api
-    # or backend/api?") and get a concrete answer in one step.
+    # `await_user` is reserved for focused, consequential questions whose
+    # answers cannot be established from repository evidence.
+    {
+        "type": "function",
+        "function": {
+            "name": "search_tools",
+            "description": (
+                "Discover specialized Resonant tools that are not in the current core tool set. "
+                "Search by capability such as browser interaction, desktop control, git writes, "
+                "process management, clipboard, recording, or Python/Node REPL. Call once with a "
+                "specific capability query, then use the returned tools directly."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Specific capability needed, for example 'click and inspect a browser page'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 12,
+                        "default": 8,
+                        "description": "Maximum matching tool definitions to load.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {

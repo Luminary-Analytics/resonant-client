@@ -360,6 +360,30 @@ class TestCompress:
         )
         assert last_user in new_history
 
+    def test_compress_preserves_dynamically_loaded_tool_definitions(self):
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "browser_click",
+                "description": "Click a browser element.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        history = [
+            {"role": "user", "content": "load browser tools"},
+            {"role": "tool_catalog", "tools": [tool], "content": "loaded"},
+            {"role": "assistant", "content": "ready"},
+        ] + _build_long_history(
+            n_user_pairs=KEEP_RECENT_TURNS + 2,
+            msg_chars=200,
+        )
+        backend = _StubBackend(deltas=["Summary"])
+
+        new_history, _ = compress(_StubSession(history, backend), max_tokens=10)
+
+        catalog = next(entry for entry in new_history if entry.get("role") == "tool_catalog")
+        assert catalog["tools"] == [tool]
+
     def test_summary_failure_returns_original(self):
         history = _build_long_history(n_user_pairs=KEEP_RECENT_TURNS + 2,
                                       msg_chars=200)

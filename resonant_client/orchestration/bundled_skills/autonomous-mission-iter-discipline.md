@@ -23,7 +23,7 @@ When the autonomous mission daemon dispatches a Phase-1 sub-mission to work on a
 
 ## Per-iter must-NOT-haves
 
-1. **Don't repeat-tool with identical args 3+ times in a row.** The cycle guard (v0.4.11) will fire. Pivot, ask for help via `await_user`, or summarize what you found and stop.
+1. **Don't repeat an unproductive tool call without reassessing its result.** Resonant may provide a one-time advisory nudge, but it does not terminate long-running work based on call counts. Pivot when evidence shows the probe cannot help; use `await_user` only for consequential user intent that tools cannot establish.
 2. **Don't rely on side-effects from the previous iter's IMPLEMENT specialist.** Each iter starts fresh; explicitly check the file/state you need.
 3. **Don't claim `verdict=satisfied` if there are unpassed `[bash]` or `[chrome]` criteria.** The daemon's cross-check (v0.5.9a3) will catch you and downgrade with structured `verdict_overridden=True` provenance, which is worse than honestly reporting `continue`.
 

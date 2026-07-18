@@ -24,10 +24,10 @@ from resonant_client.engine.compression import (
 
 class TestModelContextBudgetExact:
     def test_flash_exact(self):
-        assert model_context_budget("deepseek-v4-flash:cloud") == 1_048_576
+        assert model_context_budget("deepseek-v4-flash:cloud") == 917_504
 
     def test_pro_exact(self):
-        assert model_context_budget("deepseek-v4-pro:cloud") == 1_048_576
+        assert model_context_budget("deepseek-v4-pro:cloud") == 917_504
 
     def test_generic_v4(self):
         assert model_context_budget("deepseek-v4:cloud") == 48_000
@@ -35,23 +35,23 @@ class TestModelContextBudgetExact:
     def test_glm_5_2_flagship_exact(self):
         # v0.6.5 — the flagship gets an explicit pro-tier budget rather
         # than falling through to the generic 100K default.
-        assert model_context_budget("glm-5.2:cloud") == 999_424
+        assert model_context_budget("glm-5.2:cloud") == 874_496
 
     def test_case_insensitive(self):
         # The Ollama model selector tends to lowercase but tools could
         # pass mixed case; the lookup must not care.
-        assert model_context_budget("DeepSeek-V4-Flash:cloud") == 1_048_576
-        assert model_context_budget("DEEPSEEK-V4-PRO:CLOUD") == 1_048_576
+        assert model_context_budget("DeepSeek-V4-Flash:cloud") == 917_504
+        assert model_context_budget("DEEPSEEK-V4-PRO:CLOUD") == 917_504
 
 
 class TestModelContextBudgetFamily:
     def test_unknown_deepseek_flash_falls_back_to_flash_tier(self):
         # A future variant like "deepseek-v5-flash:cloud" should still
         # be treated as a flash-class model (small budget).
-        assert model_context_budget("deepseek-v5-flash:cloud") == 1_048_576
+        assert model_context_budget("deepseek-v5-flash:cloud") == 917_504
 
     def test_unknown_deepseek_pro_falls_back_to_pro_tier(self):
-        assert model_context_budget("deepseek-v5-pro:cloud") == 1_048_576
+        assert model_context_budget("deepseek-v5-pro:cloud") == 917_504
 
     def test_bare_deepseek_uses_mid_tier(self):
         # "deepseek" without flash/pro suffix → mid (48K)
@@ -60,8 +60,8 @@ class TestModelContextBudgetFamily:
     def test_any_glm_uses_flagship_budget(self):
         # v0.6.5 — all GLM cloud tiers carry large (≥200K) windows, so
         # any "glm" resolves to the flagship budget, not the default.
-        assert model_context_budget("glm-5.1:cloud") == 999_424
-        assert model_context_budget("glm-4.7:cloud") == 999_424
+        assert model_context_budget("glm-5.1:cloud") == 874_496
+        assert model_context_budget("glm-4.7:cloud") == 874_496
 
     def test_unknown_model_uses_default(self):
         assert model_context_budget("llama3:70b") == DEFAULT_MAX_CONTEXT_TOKENS
@@ -76,8 +76,8 @@ class TestModelContextBudgetEdgeCases:
         assert model_context_budget(None) == DEFAULT_MAX_CONTEXT_TOKENS
 
     def test_runtime_context_window_overrides_stale_model_table(self):
-        assert model_context_budget("glm-5.2:cloud", context_window=32_768) == 32_768
-        assert model_context_budget("unknown", context_window=131_072) == 131_072
+        assert model_context_budget("glm-5.2:cloud", context_window=32_768) == 24_576
+        assert model_context_budget("unknown", context_window=131_072) == 114_688
 
 
 # ── should_compress with model_name ─────────────────────────────────────

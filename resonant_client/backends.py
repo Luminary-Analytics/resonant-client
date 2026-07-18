@@ -1956,6 +1956,10 @@ class KimiBackend:
                 messages.append({"role": "assistant", "content": content})
             elif role == "user":
                 messages.append({"role": "user", "content": self._api_content(content)})
+            elif role == "tool_catalog":
+                definitions = _convert_tools_for_ollama(turn.get("tools") or [])
+                if definitions:
+                    messages.append({"role": "system", "tools": definitions})
             elif role == "tool_call":
                 response_id = str(turn.get("response_id") or "")
                 if response_id:

@@ -62,11 +62,9 @@ class ToolBoundaryViolation(Exception):
 
 
 # ── Doom Loop Detection ────────────────────────────────────────────────
-# Catch agents that fall into a tight repetition loop — calling the same tool
-# with the same args over and over, getting the same result and never moving
-# forward. We give the model one corrective nudge first, then hard-stop.
-DOOM_LOOP_THRESHOLD = 4   # N identical tool+args calls in a row → hard stop
-DOOM_LOOP_NUDGE_AT = 2    # First repeat → inject a "try a different approach" prompt
+# Repetition signals are advisory only. They can redirect an unproductive
+# model, but never terminate a run that may be doing valid long-horizon work.
+DOOM_LOOP_NUDGE_AT = 2
 
 # v0.3.3 — sliding-window cycle detection. The strict trailing-identical
 # check above only catches `tool A → tool A → tool A` back-to-back. Real
@@ -76,14 +74,26 @@ DOOM_LOOP_NUDGE_AT = 2    # First repeat → inject a "try a different approach"
 CYCLE_WINDOW = 12
 CYCLE_WINDOW_REPEAT = 3
 
-# v0.3.3 — read-only churn cap. The agent tool taxonomy lets us
-# distinguish "looked at the world" from "changed the world." If we see
-# CHURN_LIMIT consecutive read-only tools with zero writes, the agent is
-# spinning — abort the turn. `bash`/`batch`/`task` are treated as
-# *uncertain* (could mutate) and neither increment nor reset the counter,
-# so legitimate "mkdir + ls + cat" sequences don't trip it.
+KIMI_CORE_TOOL_NAMES = frozenset({
+    "search_tools",
+    "bash",
+    "file_read",
+    "file_write",
+    "file_edit",
+    "glob",
+    "grep",
+    "batch",
+    "git_status",
+    "git_diff",
+    "git_log",
+    "task",
+    "skill_view",
+    "await_user",
+})
+
+# Read-only tools are classified for preflight behavior only. There is no
+# lookup cap: large repositories can legitimately require extensive discovery.
 READ_ONLY_TOOLS = frozenset({"glob", "grep", "file_read"})
-WRITE_TOOLS = frozenset({"file_write", "file_edit", "file_replace"})
 
 _OPEN_ENDED_NEXT_STEP_PATTERNS = (
     r"\bwhat(?:'s| is|s) (?:the )?next\b",
@@ -104,10 +114,8 @@ def _is_open_ended_next_step_question(question: str) -> bool:
 
 
 PREFLIGHT_RESEARCH_TOOLS = READ_ONLY_TOOLS | frozenset({
-    "batch", "git_status", "git_diff", "git_log", "skill_view",
+    "batch", "git_status", "git_diff", "git_log", "skill_view", "search_tools",
 })
-CHURN_LIMIT = 14   # generous — gives room for "explore THEN write" patterns
-
 # A cloud model can occasionally terminate a successful HTTP stream with only
 # hidden reasoning metadata and no user-visible text or tool call. Treating
 # that as completed produces a blank answer and a misleading green "Done".
@@ -121,18 +129,10 @@ PROMISE_CONTINUATION_LIMIT = 2
 # Flash is faster and burns tokens, so the default 3-in-12 stays.
 # Other models fall through to the defaults.
 #
-# Same logic for CHURN_LIMIT — pro takes a more thorough exploration
-# pass before committing, so the default 14 was too aggressive.
 _CYCLE_REPEAT_OVERRIDES: dict[str, int] = {
     "deepseek-v4-pro:cloud": 4,    # more tolerance for deliberate retries
     # flash + generic deepseek + everything else → CYCLE_WINDOW_REPEAT (3)
 }
-
-_CHURN_LIMIT_OVERRIDES: dict[str, int] = {
-    "deepseek-v4-pro:cloud": 20,   # room for thorough pre-write exploration
-    # flash + generic deepseek + everything else → CHURN_LIMIT (14)
-}
-
 
 def cycle_window_repeat_for_model(model_name: str | None) -> int:
     """Return the cycle-window repeat threshold for `model_name`.
@@ -156,23 +156,6 @@ def cycle_window_repeat_for_model(model_name: str | None) -> int:
     return CYCLE_WINDOW_REPEAT
 
 
-def churn_limit_for_model(model_name: str | None) -> int:
-    """Return the read-only-churn limit for `model_name`.
-
-    Same matching strategy as `cycle_window_repeat_for_model`. Higher =
-    more tolerance for "explore extensively, then write" patterns.
-    Pro gets 20; flash and everything else stay at 14.
-    """
-    if not model_name:
-        return CHURN_LIMIT
-    lower = model_name.lower()
-    if lower in _CHURN_LIMIT_OVERRIDES:
-        return _CHURN_LIMIT_OVERRIDES[lower]
-    if "deepseek" in lower and "pro" in lower:
-        return _CHURN_LIMIT_OVERRIDES["deepseek-v4-pro:cloud"]
-    return CHURN_LIMIT
-
-
 def _count_trailing_identical_tool_calls(history: list) -> int:
     """How many of the most recent tool calls (within the current turn) are identical."""
     sig = None
@@ -192,11 +175,6 @@ def _count_trailing_identical_tool_calls(history: list) -> int:
             break  # Only count within the current turn
         # tool_result / assistant entries are skipped — they sit between calls
     return count
-
-
-def _check_doom_loop(history: list, threshold: int = DOOM_LOOP_THRESHOLD) -> bool:
-    """Check if the last N tool calls are identical (same name + same args)."""
-    return _count_trailing_identical_tool_calls(history) >= threshold
 
 
 def _windowed_cycle_repeat(history: list, *, window: int = CYCLE_WINDOW) -> tuple[int, str, str]:
@@ -227,34 +205,6 @@ def _windowed_cycle_repeat(history: list, *, window: int = CYCLE_WINDOW) -> tupl
     if not counts:
         return 0, "", ""
     return counts[last_winner], last_winner[0], last_winner[1]
-
-
-def _count_read_only_churn(history: list) -> int:
-    """Count consecutive trailing read-only tool calls within the current
-    turn, capped by the most recent write. bash/batch/task are treated
-    as uncertain (could mutate) — they neither extend nor truncate the
-    read-only streak.
-
-    Iteration is reverse-chronological: we accumulate read-only calls as
-    the streak, and stop when we hit a write (the streak is "since the
-    last productive action") or the user-message turn boundary.
-    """
-    streak = 0
-    for entry in reversed(history):
-        role = entry.get("role")
-        if role == "user":
-            break
-        if role != "tool_call":
-            continue
-        name = entry.get("name", "")
-        if name in WRITE_TOOLS:
-            # Most recent write found — everything before it is a previous
-            # streak that doesn't matter; return what we accumulated AFTER it.
-            break
-        if name in READ_ONLY_TOOLS:
-            streak += 1
-        # else (bash/batch/task/etc.) — uncertain, neither break nor count
-    return streak
 
 
 # ── System Instructions ────────────────────────────────────────────────
@@ -534,14 +484,8 @@ class Session:
         # Doom-loop guards: file path → hash of last feedback we injected
         self._lint_feedback_cache: dict[str, str] = {}
         self._test_feedback_cache: dict[str, str] = {}
-        # Per-turn flag: did we already inject the corrective doom-loop nudge?
+        # Per-turn flags prevent advisory repetition guidance from spamming.
         self._doom_loop_nudged: bool = False
-        # v0.4.11 (T2.6) — same one-shot pattern for the windowed cycle
-        # guard. When the windowed signature multiset hits one less than
-        # the hard-stop threshold, inject a one-time "call await_user
-        # instead" nudge BEFORE the hard-stop fires. The nudge gives the
-        # agent one turn to pivot — call await_user, switch tools, or
-        # summarize what it has — before the cycle guard kills the run.
         self._windowed_cycle_nudged: bool = False
         self._read_result_cache: dict[str, dict[str, object]] = {}
 
@@ -664,6 +608,72 @@ class Session:
             base = base + self.mcp_tools
         return base
 
+    @property
+    def provider_tools(self) -> list[dict]:
+        """Return the initial tool inventory advertised to the backend.
+
+        Kimi K3 performs better with a small stable core and dynamically loaded
+        specialist definitions. Explicit specialist allowlists are already
+        compact and must be passed through unchanged.
+        """
+        if (
+            str(getattr(self.backend, "name", "") or "").casefold() != "kimi"
+            or self._allowed_tools is not None
+        ):
+            return self.tools
+        return [
+            tool for tool in self.tools
+            if tool.get("function", {}).get("name") in KIMI_CORE_TOOL_NAMES
+        ]
+
+    def _search_tool_catalog(self, query: str, limit: int = 8) -> list[dict]:
+        """Rank full tool definitions for Kimi's on-demand tool loading."""
+        terms = {
+            term for term in re.findall(r"[a-z0-9_]+", str(query or "").casefold())
+            if len(term) > 1
+        }
+        aliases = {
+            "web": {"browser"},
+            "page": {"browser"},
+            "ui": {"browser", "computer"},
+            "desktop": {"computer", "window", "screen"},
+            "python": {"repl_python"},
+            "node": {"repl_node"},
+            "javascript": {"repl_node"},
+            "terminal": {"bash", "process"},
+            "shell": {"bash", "process"},
+            "plugin": {"mcp"},
+        }
+        expanded = set(terms)
+        for term in tuple(terms):
+            expanded.update(aliases.get(term, set()))
+
+        ranked: list[tuple[int, str, dict]] = []
+        for tool in self.tools:
+            function = tool.get("function", {})
+            name = str(function.get("name") or "")
+            if not name or name == "search_tools":
+                continue
+            description = str(function.get("description") or "")
+            haystack = f"{name} {description}".casefold()
+            name_terms = set(re.findall(r"[a-z0-9_]+", name.casefold()))
+            score = 0
+            for term in expanded:
+                if term == name.casefold():
+                    score += 12
+                elif term in name_terms or name.casefold().startswith(term):
+                    score += 8
+                elif term in name.casefold():
+                    score += 5
+                elif term in haystack:
+                    score += 2
+            if score:
+                ranked.append((score, name, tool))
+
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        safe_limit = min(12, max(1, int(limit or 8)))
+        return [tool for _, _, tool in ranked[:safe_limit]]
+
     def should_plan(self, user_msg: str) -> bool:
         """Use a quick LLM classification to decide if this request needs planning."""
         try:
@@ -780,6 +790,8 @@ class Session:
         """
         from .sandbox import PathSandbox
 
+        if tool_name == "search_tools":
+            return True
         if self.autonomy_tier == "suggest":
             return PathSandbox.is_read_only_tool(tool_name)
         elif self.autonomy_tier == "auto-edit":
@@ -1058,7 +1070,7 @@ class Session:
         total_start = time.time()
         executing_plan = False
         last_tool_used = None
-        # One corrective nudge per turn before the doom-loop hard-stop fires.
+        # Repetition guidance is one-shot per turn and never terminates work.
         self._doom_loop_nudged = False
         # v0.4.11 (T2.6) — same per-turn reset for the windowed-cycle nudge.
         self._windowed_cycle_nudged = False
@@ -1301,7 +1313,7 @@ class Session:
                     user_msg=current_msg,
                     conversation_history=self.conversation_history,
                     instructions=instructions,
-                    tools=[] if is_planning else self.tools,
+                    tools=[] if is_planning else self.provider_tools,
                     max_tokens=self.max_tokens,
                     cancel_event=self._cancel_event,
                 ):
@@ -1651,7 +1663,63 @@ class Session:
                     continue
 
                 # Execute the tool
-                if fn_name == "task":
+                if fn_name == "search_tools":
+                    search_start = time.time()
+                    matches = self._search_tool_catalog(
+                        str(fn_args.get("query") or ""),
+                        fn_args.get("limit", 8),
+                    )
+                    summaries = [
+                        {
+                            "name": tool.get("function", {}).get("name", ""),
+                            "description": tool.get("function", {}).get("description", ""),
+                        }
+                        for tool in matches
+                    ]
+                    result_output = json.dumps(
+                        {
+                            "matches": summaries,
+                            "instruction": (
+                                "The matching tool definitions are now loaded. "
+                                "Call the needed tool directly."
+                                if matches else
+                                "No matching specialized tools were found. Refine the capability query."
+                            ),
+                        },
+                        ensure_ascii=False,
+                    )
+                    elapsed = time.time() - search_start
+                    yield make_event(
+                        EngineEvent.TOOL_RESULT,
+                        name=fn_name,
+                        call_id=call_id,
+                        output=result_output,
+                        is_error=False,
+                        elapsed=elapsed,
+                        metadata={"matches": [item["name"] for item in summaries]},
+                        denied=False,
+                    )
+                    self.conversation_history.append({
+                        "role": "tool_call",
+                        "name": fn_name,
+                        "arguments": fn_args_str,
+                        "call_id": call_id,
+                        "content": f"Called {fn_name}",
+                    })
+                    self.conversation_history.append({
+                        "role": "tool_result",
+                        "name": fn_name,
+                        "call_id": call_id,
+                        "content": result_output,
+                    })
+                    if matches:
+                        self.conversation_history.append({
+                            "role": "tool_catalog",
+                            "tools": matches,
+                            "content": "Dynamically loaded tool definitions.",
+                        })
+                    turn_successful_tools.append(fn_name)
+                elif fn_name == "task":
                     # Task tool — spawn a sub-agent session
                     yield from self._execute_task(fn_args, call_id, fn_args_str)
                     turn_successful_tools.append(fn_name)
@@ -1952,39 +2020,17 @@ class Session:
                 # For now, yield the event and let the caller decide
                 return  # Caller handles plan approval and re-calls run()
 
-            # ── Doom loop detection ──
-            # Two-stage: nudge on the first repeat, hard-stop only if the
-            # agent ignores the nudge. This avoids false positives during
-            # legitimate retry-with-same-args patterns (e.g. flaky reads)
-            # while still catching genuine stuck loops.
+            # ── Repetition signals ──
+            # These are advisory only. Long-running agents may revisit the same
+            # evidence legitimately, so repetition cannot terminate a run.
             identical_count = _count_trailing_identical_tool_calls(self.conversation_history) if has_tool_calls else 0
-
-            if has_tool_calls and identical_count >= DOOM_LOOP_THRESHOLD:
-                last_call = next(
-                    (e for e in reversed(self.conversation_history)
-                     if e.get("role") == "tool_call"),
-                    {},
-                )
-                tool_name = last_call.get("name", "the same tool")
-                terminal_error = (
-                    f"Stopped: the agent called `{tool_name}` with the same "
-                    f"arguments {identical_count} times in a row and isn't making "
-                    f"progress. Try rephrasing your request or switching to a "
-                    f"stronger model."
-                )
-                yield make_event(
-                    EngineEvent.ERROR,
-                    message=terminal_error,
-                )
-                yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
-                break
 
             # v0.3.3 — sliding-window cycle detection. Catches the looser
             # case where the agent isn't repeating *immediately* but
             # cycles through the same handful of probes (Bug #25's
             # scavenger hunt: 24 tool calls hunting for `C:\Dev\roguelite`
             # by varying findstr filters and target dirs). If any single
-            # signature appears 3× inside the last 12 calls, abort.
+            # signature appears several times inside the recent call window.
             if has_tool_calls:
                 # v0.4.9 (T2.4) — per-model thresholds. Pro gets more
                 # tolerance (legitimate "retry with intentional small
@@ -1994,55 +2040,10 @@ class Session:
                     getattr(self.backend, "model", None) if self.backend else None
                 )
                 _cycle_repeat_threshold = cycle_window_repeat_for_model(_model_for_guards)
-                _churn_threshold = churn_limit_for_model(_model_for_guards)
-
                 wrep_count, wrep_tool, wrep_args = _windowed_cycle_repeat(
                     self.conversation_history, window=CYCLE_WINDOW
                 )
-                # v0.4.11 (T2.6) — two-stage windowed guard:
-                # - Hard-stop fires when count hits threshold AND we
-                #   already injected the cycle-recovery nudge on a prior
-                #   turn (nudge was ignored — kill the run).
-                # - Otherwise, the post-tool-call block below injects
-                #   a one-shot recovery nudge into the next user
-                #   message, giving the agent a turn to pivot.
-                if wrep_count >= _cycle_repeat_threshold and self._windowed_cycle_nudged:
-                    args_repr = wrep_args if len(wrep_args) <= 80 else wrep_args[:77] + "..."
-                    terminal_error = (
-                        f"Stopped: `{wrep_tool}` with args `{args_repr}` was "
-                        f"called {wrep_count} times in the last {CYCLE_WINDOW} "
-                        f"steps despite a prior cycle-recovery nudge. "
-                        f"The agent is stuck. Try rephrasing your request, "
-                        f"giving more concrete context, or switching to a "
-                        f"stronger model."
-                    )
-                    yield make_event(
-                        EngineEvent.ERROR,
-                        message=terminal_error,
-                    )
-                    yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
-                    break
-
-                # v0.3.3 — read-only churn cap. N consecutive lookups
-                # (glob/grep/file_read) with zero writes means the agent
-                # is *exploring* without ever *acting*. bash/batch/task
-                # are uncertain so they don't increment, which preserves
-                # legitimate "explore → mkdir → write" patterns.
-                churn = _count_read_only_churn(self.conversation_history)
-                if churn >= _churn_threshold:
-                    terminal_error = (
-                        f"Stopped: {churn} consecutive read-only lookups "
-                        f"(glob / grep / file_read) without writing anything. "
-                        f"The agent is stuck exploring instead of producing. "
-                        f"Try a more concrete request or rephrase the goal."
-                    )
-                    yield make_event(
-                        EngineEvent.ERROR,
-                        message=terminal_error,
-                    )
-                    yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
-                    break
-
+                # The post-tool-call block below may inject one recovery hint.
             # ── Continue or stop ──
             yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
 
@@ -2093,7 +2094,7 @@ class Session:
                 collected_text = []
 
                 # Early-warning nudge: if the agent is starting to repeat itself,
-                # tell it to try a different approach BEFORE the hard stop fires.
+                # tell it to try a different approach without ending the run.
                 # One nudge per turn — we don't want to spam the conversation.
                 if identical_count >= DOOM_LOOP_NUDGE_AT and not self._doom_loop_nudged:
                     last_call = next(
@@ -2114,8 +2115,7 @@ class Session:
                 # doom-loop nudge above only catches back-to-back
                 # identical calls; the windowed variant catches the
                 # looser "varying probes for the same thing" pattern.
-                # Trigger one notch below the hard-stop threshold so
-                # the agent gets ONE turn to pivot before the kill.
+                # Trigger once when a recent signature starts dominating.
                 # Doom-loop nudge wins if both fire on the same turn —
                 # no need to stack messages.
                 elif (
@@ -2131,9 +2131,8 @@ class Session:
                         f"through probes instead of converging. STOP, reassess the "
                         f"available evidence, and choose a different approach, or "
                         f"summarize what you've learned and answer the user with the "
-                        f"best supported outcome. Do not ask what to do next. If you call "
-                        f"`{wrep_tool}` once more with similar args, the run "
-                        f"will be hard-stopped."
+                        f"best supported outcome. Do not ask what to do next. "
+                        f"Continue independently; this is guidance, not a run limit."
                     )
                     self._windowed_cycle_nudged = True
                 else:

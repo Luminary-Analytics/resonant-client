@@ -70,9 +70,9 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "picture of what currently exists, not to change anything. Use file_read, "
             "glob, grep, and browser_* read tools. Do NOT call file_write, file_edit, "
             "bash, or any state-mutating tool.\n\n"
-            "Stay focused: you have a small step budget. Read the 2-4 files most "
-            "relevant to the goal, then STOP and write a concrete summary. Do not "
-            "explore the whole repo. The summary you produce becomes context for "
+            "Stay focused on evidence relevant to the goal. Map broadly enough to "
+            "avoid false assumptions, then use targeted reads and write a concrete "
+            "summary once the evidence is sufficient. The summary becomes context for "
             "the next specialist — if you don't summarize, downstream work fails.\n\n"
             "End your response with a 3-6 line summary covering: relevant file "
             "paths, key function/class names, observed behavior or constraints, "
@@ -81,19 +81,18 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             # but rarely called. The specialist needs to know when to
             # prefer it over more searching.
             "─── ESCAPE HATCH: `await_user` ───\n\n"
-            "If you've made 5+ tool calls and you still don't have a clear "
-            "picture (the codebase is ambiguous, multiple plausible files match, "
-            "the goal itself is under-specified), STOP exploring and call "
-            "`await_user` with a focused question. Examples:\n"
+            "If repository evidence cannot resolve a consequential ambiguity in "
+            "the user's requirement, call `await_user` with a focused question. "
+            "Do not ask because discovery is taking many calls; large repositories "
+            "may require extensive read-only investigation. Examples:\n"
             "- Good: `await_user(\"I see auth code in both /web/auth/ and "
             "/services/identity/. Which one is the live path?\")`\n"
             "- Good: `await_user(\"The goal mentions 'the export feature' but "
             "I see /export/ and /shared/exports/. Which?\")`\n"
             "- Bad: `await_user(\"What should I do next?\")` — too vague\n"
             "- Bad: calling await_user before trying any reads at all\n\n"
-            "One good question is faster and cheaper than 10 more grep calls. "
-            "The cycle guard (engine/session.py) will hard-stop you anyway "
-            "around the 12-call mark — better to ask first."
+            "Ask only about unknowable user intent. Keep investigating facts the "
+            "repository, tools, or local environment can establish."
         ),
         tool_allowlist=READ_ONLY_TOOLS | _AWAIT_USER,
         max_steps=8,
@@ -128,10 +127,10 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             # requirements. One focused question to the user is much
             # cheaper.
             "─── ESCAPE HATCH: `await_user` ───\n\n"
-            "If you hit a real ambiguity in the goal — two valid implementations "
-            "of the same requirement, missing details that could go either way, "
-            "a naming or location choice that the user clearly cares about — "
-            "STOP and call `await_user` with a focused question. Examples:\n"
+            "During initial alignment, if evidence cannot resolve a material product "
+            "requirement and a wrong assumption would be costly to reverse, call "
+            "`await_user` with a focused question. Once implementation begins, resolve "
+            "ordinary ambiguity from code and established patterns. Examples:\n"
             "- Good: `await_user(\"Should /export include tool-call activity, or "
             "only user/assistant messages?\")`\n"
             "- Good: `await_user(\"Use sqlite or just JSON for the local cache?\", "
@@ -140,9 +139,9 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "src/utils/ or src/core/?\")`\n"
             "- Bad: `await_user(\"Should I keep going?\")` — vague status check\n"
             "- Bad: asking about something you can answer by reading 1-2 files\n\n"
-            "Use `await_user` for choices the USER cares about. Use file_read / "
-            "glob / grep for things the CODE will tell you. The cycle guard "
-            "will hard-stop you around 12 repeated probes — asking is faster."
+            "Use `await_user` only for consequential choices the USER must make. Use "
+            "file_read / glob / grep for facts the CODE can establish; there is no "
+            "lookup-count limit."
         ),
         tool_allowlist=ALL_EDIT_TOOLS,
         # v0.3.3 — bumped from 24 to 50. The two new cycle guards in
@@ -408,10 +407,9 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "Use `await_user` if a `[chrome]` criterion is genuinely "
             "ambiguous (can't tell what URL to hit, the assertion is "
             "under-specified, the dev server's port isn't documented). "
-            "One focused question is faster than five guess-and-check "
-            "browser navigations. The cycle guards still apply — you have "
-            "a 20-step budget and the windowed dedup will hard-stop you "
-            "if you keep browsing the same page over and over."
+            "Investigate documented URLs, running processes, and project configuration "
+            "first. Repeated calls may trigger advisory guidance but never terminate "
+            "the run; use the evidence to pivot when a probe is unproductive."
         ),
         tool_allowlist=(
             READ_ONLY_TOOLS

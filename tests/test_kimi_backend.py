@@ -181,6 +181,83 @@ def test_kimi_preserves_repeated_legacy_tool_call_ids_as_separate_turns():
     ]
 
 
+def test_kimi_session_advertises_compact_core_tools():
+    backend = SimpleNamespace(name="kimi", model="kimi-k3")
+    session = Session(backend=backend)
+    full_names = {tool["function"]["name"] for tool in session.tools}
+    provider_names = {tool["function"]["name"] for tool in session.provider_tools}
+
+    assert "search_tools" in provider_names
+    assert {"file_read", "file_edit", "bash", "task"} <= provider_names
+    assert "browser_click" in full_names
+    assert "browser_click" not in provider_names
+    assert len(provider_names) < len(full_names) / 2
+
+
+def test_tool_search_finds_specialized_capabilities():
+    session = Session(backend=SimpleNamespace(name="kimi", model="kimi-k3"))
+
+    matches = session._search_tool_catalog("click and inspect a browser page", limit=6)
+    names = {tool["function"]["name"] for tool in matches}
+
+    assert "browser_click" in names
+    assert names & {"browser_read", "browser_screenshot"}
+
+
+def test_kimi_emits_dynamic_catalog_as_system_tool_declarations():
+    tool = {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "Click a browser element.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    history = [{"role": "tool_catalog", "tools": [tool], "content": "loaded"}]
+
+    messages = KimiBackend("key")._messages(history, "system", "Continue")
+
+    catalog = next(message for message in messages if message.get("tools"))
+    assert catalog == {"role": "system", "tools": [tool]}
+
+
+def test_session_search_tools_loads_catalog_for_next_kimi_step():
+    class Backend:
+        name = "kimi"
+        model = "kimi-k3"
+        handles_tools = False
+
+        def __init__(self):
+            self.calls = 0
+            self.advertised: list[set[str]] = []
+
+        def stream(self, **kwargs):
+            self.calls += 1
+            self.advertised.append({
+                tool["function"]["name"] for tool in kwargs.get("tools", [])
+            })
+            if self.calls == 1:
+                yield EVENT_TOOL_CALL, {
+                    "name": "search_tools",
+                    "arguments": '{"query":"browser click","limit":4}',
+                    "call_id": "search-1",
+                }
+            else:
+                yield EVENT_TEXT_DELTA, {"delta": "Loaded."}
+            yield EVENT_DONE, {"model": self.model, "stats": {}, "cognitive_state": None}
+
+    backend = Backend()
+    session = Session(backend=backend, max_steps=2, auto_approve=True)
+
+    list(session.run("Use the browser"))
+
+    catalog = next(turn for turn in session.conversation_history if turn["role"] == "tool_catalog")
+    names = {tool["function"]["name"] for tool in catalog["tools"]}
+    assert "browser_click" in names
+    assert "search_tools" in backend.advertised[0]
+    assert "browser_click" not in backend.advertised[0]
+
+
 def test_kimi_converts_base64_images_to_openai_content_parts():
     content = [
         {"type": "image", "media_type": "image/png", "data": "aGVsbG8="},

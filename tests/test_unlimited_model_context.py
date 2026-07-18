@@ -19,7 +19,7 @@ def test_all_interactive_and_harness_roles_have_no_generation_cap():
     assert set(AppState.HARNESS_ROLE_MAX_TOKENS.values()) == {None}
 
 
-def test_cloud_models_use_their_complete_advertised_context_windows():
-    assert model_context_budget("glm-5.2:cloud") == 999_424
-    assert model_context_budget("deepseek-v4-pro:cloud") == 1_048_576
-    assert model_context_budget("deepseek-v4-flash:cloud") == 1_048_576
+def test_cloud_models_reserve_output_headroom_inside_advertised_windows():
+    assert model_context_budget("glm-5.2:cloud") == 874_496
+    assert model_context_budget("deepseek-v4-pro:cloud") == 917_504
+    assert model_context_budget("deepseek-v4-flash:cloud") == 917_504

@@ -235,11 +235,11 @@ class TestAwaitUserDiscoverability:
         assert "await_user" in block
 
     def test_explore_gives_concrete_trigger(self):
-        # The block must give a quantitative trigger condition. Without
-        # it, the model has no signal for WHEN to escape.
+        # Clarification is evidence-driven, never triggered by a lookup count.
         block = get_specialist(NodeSpecialization.EXPLORE).system_block.lower()
-        # Trigger phrases that say "after N tool calls" or similar.
-        assert "5+ tool calls" in block or "5 tool calls" in block
+        assert "repository evidence cannot resolve" in block
+        assert "many calls" in block
+        assert "5+ tool calls" not in block
 
     def test_explore_distinguishes_good_vs_bad_use(self):
         # Concrete examples are what makes the difference between "tool
@@ -256,7 +256,8 @@ class TestAwaitUserDiscoverability:
         # The key insight: ask user when the USER cares; read code when
         # the CODE will tell you. Pin this distinction.
         block = get_specialist(NodeSpecialization.IMPLEMENT).system_block.lower()
-        assert "user cares" in block or "code will tell" in block
+        assert "user must make" in block
+        assert "code can establish" in block
 
     def test_plan_recommends_asking_before_decomposing(self):
         # For the planner the right time to ask is BEFORE the JSON plan

@@ -15,7 +15,9 @@ CHARS_PER_TOKEN = 4
 # Default thresholds
 DEFAULT_MAX_CONTEXT_TOKENS = 100_000
 KEEP_RECENT_TURNS = 6  # Keep last N user+assistant pairs verbatim
-CONTEXT_HEADROOM_RATIO = 1.0
+CONTEXT_HEADROOM_RATIO = 0.875
+MIN_OUTPUT_RESERVE_TOKENS = 8_192
+MAX_OUTPUT_RESERVE_TOKENS = 131_072
 KEEP_RECENT_TOOL_RESULTS = 8
 EVICT_TOOL_RESULT_OVER_CHARS = 1_200
 
@@ -37,8 +39,13 @@ EVICT_TOOL_RESULT_OVER_CHARS = 1_200
 # rather not compress unnecessarily) and unknown smaller models
 # (the model itself will tell us via OOM).
 def _budget_for_window(context_window: int) -> int:
-    """Use the complete provider-advertised context window."""
-    return max(4_096, int(context_window))
+    """Reserve generation and schema headroom inside the provider window."""
+    window = max(4_096, int(context_window))
+    reserve = min(
+        MAX_OUTPUT_RESERVE_TOKENS,
+        max(MIN_OUTPUT_RESERVE_TOKENS, int(window * (1 - CONTEXT_HEADROOM_RATIO))),
+    )
+    return max(4_096, window - reserve)
 
 
 _MODEL_CONTEXT_BUDGETS: dict[str, int] = {
@@ -208,6 +215,19 @@ def _build_summary_prompt(old_messages: list) -> str:
     )
 
 
+def _merged_tool_catalog(entries: list) -> list[dict]:
+    """Keep the latest dynamically loaded definition for each tool name."""
+    by_name: dict[str, dict] = {}
+    for entry in entries:
+        if entry.get("role") != "tool_catalog":
+            continue
+        for tool in entry.get("tools") or []:
+            name = str(tool.get("function", {}).get("name") or "")
+            if name:
+                by_name[name] = tool
+    return list(by_name.values())
+
+
 def compress(
     session,
     backend=None,
@@ -270,6 +290,15 @@ def compress(
 
     old_messages = history[:split_idx]
     recent_messages = history[split_idx:]
+    old_catalog = _merged_tool_catalog(old_messages)
+    recent_catalog_names = {
+        str(tool.get("function", {}).get("name") or "")
+        for tool in _merged_tool_catalog(recent_messages)
+    }
+    preserved_catalog = [
+        tool for tool in old_catalog
+        if tool.get("function", {}).get("name") not in recent_catalog_names
+    ]
 
     # Use the backend to generate a summary
     summary_prompt = _build_summary_prompt(old_messages)
@@ -300,6 +329,12 @@ def compress(
             "content": f"[Previous conversation summary]\n{summary.strip()}\n[End summary — recent messages follow]",
         }
     ]
+    if preserved_catalog:
+        compressed.append({
+            "role": "tool_catalog",
+            "tools": preserved_catalog,
+            "content": "Dynamically loaded tool definitions preserved across compression.",
+        })
     compressed.extend(recent_messages)
 
     logger.info(

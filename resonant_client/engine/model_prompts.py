@@ -1,9 +1,4 @@
-"""Model-family prompt profiles for the Resonant agent harness.
-
-The invariant contract lives here once.  Small family overlays adapt the
-operating style without forking the whole system prompt per model, which keeps
-prompt maintenance tractable and preserves a large byte-stable prefix.
-"""
+"""Stable, model-neutral prompt contracts for the Resonant agent harness."""
 
 from __future__ import annotations
 
@@ -124,91 +119,39 @@ follow-up question.
 --- END RESONANT AGENT CONTRACT ---"""
 
 
-_GLM_GUIDANCE = """\
---- MODEL PROFILE: GLM 5.x ---
-Use GLM's long-horizon and interleaved tool reasoning deliberately:
-- Build a broad map once, then use targeted searches and reads as the working
-  set. A large context window is not a reason to dump entire repositories.
-- Keep phase goals and dependencies explicit across long tool chains. After
-  every result, decide whether it confirms the current approach or requires a
-  plan update before taking the next action.
-- Fan out independent discovery or verification when tools permit it, then
-  synthesize the returned evidence before editing.
-- Keep user-visible reasoning to concise conclusions and progress. Spend the
-  deeper reasoning budget on architecture, debugging, and verification.
-- Before finishing a long phase, reconcile the checklist against the original
-  request and run an end-to-end check, not only isolated unit checks.
---- END MODEL PROFILE ---"""
-
-
-_DEEPSEEK_GUIDANCE = """\
---- MODEL PROFILE: DEEPSEEK ---
-Use a research-first, phase-gated workflow:
-- Establish repository facts before decomposing the solution. Once the facts
-  are sufficient, commit to a concise plan and move from research to action.
-- Separate planning, implementation, and verification. Do not mix speculative
-  edits into exploration or declare success from implementation alone.
-- Continue from each tool result instead of restating or restarting the plan.
-  Preserve exact identifiers, paths, and constraints discovered earlier.
-- Emit strict tool arguments and honor any requested output schema exactly.
-  If a call is rejected, correct the specific schema or evidence error before
-  retrying; do not spray variants.
-- Prefer small atomic edits with focused checks, followed by a broader final
-  validation after the complete change is assembled.
---- END MODEL PROFILE ---"""
-
-
-_KIMI_GUIDANCE = """\
---- MODEL PROFILE: KIMI K3 ---
-Use K3's long-context, multimodal, and native-tool strengths deliberately:
-- Run long tasks through five durable phases: map the repository, form the
-  plan, execute coherent changes, verify the complete behavior, then deliver
-  the outcome. Move phases when the evidence is sufficient, never because a
-  tool-call count was reached.
-- Keep the system prompt and established conversation prefix stable so the
-  provider's automatic context cache can reuse it across agent steps.
-- Resonant initially exposes a compact core tool set. When a specialized
-  capability is needed, call `search_tools` once with a precise capability
-  query, then call the loaded tool directly. Do not repeatedly rediscover the
-  same tool or use tool search as repository search.
-- Preserve exact tool identifiers and arguments across long tool chains. Read
-  tool results as new evidence and continue the active plan without restarting.
-- Extensive read-only investigation is valid when the repository demands it.
-  Converge based on findings, reuse settled evidence, and pivot from a repeated
-  unproductive probe without treating exploration depth as a failure.
-- Use images as inspectable evidence when supplied, but corroborate visual
-  conclusions with repository files, logs, or executable checks when possible.
-- Spend the fixed deep-reasoning budget on consequential architecture and
-  debugging decisions; keep user-visible progress and final output concise.
-- Before finishing, reconcile the implementation and verification evidence
-  against the full request rather than relying on the large context window.
---- END MODEL PROFILE ---"""
-
-
-_GENERIC_GUIDANCE = """\
---- MODEL PROFILE: OPEN MODEL (CONSERVATIVE) ---
-Favor reliability over cleverness:
+_ADAPTIVE_GUIDANCE = """\
+--- EXECUTION PROFILE: ADAPTIVE AGENT ---
+Use the same evidence-driven workflow regardless of model identity:
 - Keep the active checklist short and take one evidence-backed decision at a
   time. Batch only clearly independent reads.
+- Move through repository mapping, planning, coherent implementation, and
+  complete verification based on evidence rather than tool-call counts.
 - Use narrow searches, explicit paths, small edits, and immediate focused
   verification so errors are cheap to locate and repair.
+- When Resonant exposes a compact tool catalog, call `search_tools` once with
+  a precise capability query, then call the loaded tool directly. Do not use
+  tool discovery as repository search or repeatedly rediscover the same tool.
+- Extensive read-only investigation is valid when the repository requires it.
+  Reuse settled evidence and pivot when a probe becomes unproductive.
 - Do not guess missing tool arguments or repository facts. Inspect first; if a
   real product decision remains and no safe default exists, surface it clearly.
 - Delegate only when the assignment is self-contained and the returned result
   can be checked locally. Otherwise keep the work in the primary context.
 - Before finishing, compare the actual diff and test evidence with every part
   of the user's request.
---- END MODEL PROFILE ---"""
+--- END EXECUTION PROFILE ---"""
 
 
 _PROFILES = {
-    "kimi": ModelPromptProfile("kimi", "Kimi K3", _KIMI_GUIDANCE),
-    "glm": ModelPromptProfile("glm", "GLM 5.x", _GLM_GUIDANCE),
-    "deepseek": ModelPromptProfile("deepseek", "DeepSeek", _DEEPSEEK_GUIDANCE),
+    # Family labels remain available for telemetry and prompt inspection, but
+    # behavior is deliberately model-neutral.
+    "kimi": ModelPromptProfile("kimi", "Kimi K3", _ADAPTIVE_GUIDANCE),
+    "glm": ModelPromptProfile("glm", "GLM 5.x", _ADAPTIVE_GUIDANCE),
+    "deepseek": ModelPromptProfile("deepseek", "DeepSeek", _ADAPTIVE_GUIDANCE),
     "generic": ModelPromptProfile(
         "generic",
-        "Open model (conservative)",
-        _GENERIC_GUIDANCE,
+        "Adaptive model",
+        _ADAPTIVE_GUIDANCE,
     ),
 }
 

@@ -390,20 +390,25 @@ class OllamaBackend:
         # for this backend instance. If any option differs between requests, Ollama may
         # UNLOAD and RELOAD the model. Tune via env once per process, not per call.
         #
-        # Defaults are tuned for the Mac Studio (256GB unified memory) running deepseek-v4-flash:
-        # 32k context (1M is the model's max but is wasteful for typical sessions),
-        # 1024 batch size to keep the GPU fed, num_gpu=99 forces all layers onto Metal.
-        # Override via RESONANT_OLLAMA_NUM_CTX/NUM_BATCH/NUM_GPU when needed.
+        # Keep options stable across requests. Context is capability-derived;
+        # machine-specific GPU and batch tuning is opt-in through environment
+        # variables so downloaded builds inherit Ollama's platform defaults.
         configured_num_ctx = os.environ.get("RESONANT_OLLAMA_NUM_CTX", "").strip()
         try:
             num_ctx = int(configured_num_ctx) if configured_num_ctx else self._default_num_ctx(model)
         except ValueError:
             num_ctx = self._default_num_ctx(model)
-        self._ollama_options = {
-            "num_gpu": int(os.environ.get("RESONANT_OLLAMA_NUM_GPU", "99")),
-            "num_batch": int(os.environ.get("RESONANT_OLLAMA_NUM_BATCH", "1024")),
-            "num_ctx": max(4_096, num_ctx),
-        }
+        self._ollama_options = {"num_ctx": max(4_096, num_ctx)}
+        for env_name, option_name in (
+            ("RESONANT_OLLAMA_NUM_GPU", "num_gpu"),
+            ("RESONANT_OLLAMA_NUM_BATCH", "num_batch"),
+        ):
+            raw_option = os.environ.get(env_name, "").strip()
+            if raw_option:
+                try:
+                    self._ollama_options[option_name] = int(raw_option)
+                except ValueError:
+                    logger.warning("Ignoring invalid %s=%r", env_name, raw_option)
         # Thinking-mode. Sent as `options.think` (verified to work via
         # that path on glm-5.2:cloud, 2026-06-17). The internal token is
         # low/med/high; "med" is the deepseek spelling of the middle
@@ -424,23 +429,8 @@ class OllamaBackend:
         else:
             # Unknown value — drop silently rather than poisoning the dict
             self.thinking_mode = None
-        # Keep models warm — first-load on a 284B MoE is several minutes.
-        # Pin the vendor-tested sampling distribution. DeepSeek's thinking
-        # mode ignores sampling controls, so omit them there.
-        model_lower = self.model.lower()
-        if "glm-5" in model_lower:
-            self._ollama_options.update({"temperature": 1.0, "top_p": 0.95})
-        elif "deepseek-v4" in model_lower and self._ollama_think is None:
-            self._ollama_options.update({"temperature": 1.0, "top_p": 1.0})
-
         self._ollama_keep_alive = (os.environ.get("RESONANT_OLLAMA_KEEP_ALIVE", "120m").strip() or "120m")
-        # deepseek-v4 with thinking can take a while; raise read timeout.
-        # v0.6.4 (F6) — read timeout 240 → 300. A rigorous-grill cold
-        # call on deepseek-v4-pro:cloud is legitimately a multi-minute
-        # call (long prompt + deep reasoning); the v0.6.3 field run hit
-        # the 240s ceiling. 300s gives headroom without waiting absurdly
-        # long on a genuinely dead connection — and F6's timeout-retry
-        # gives a slow-but-transient call a second chance regardless.
+        # Long reasoning and cold model loads can legitimately take minutes.
         self._ollama_http_timeout = float(os.environ.get("RESONANT_OLLAMA_HTTP_TIMEOUT_SEC", "360"))
         self._ollama_http_read_timeout = float(
             os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
@@ -606,28 +596,6 @@ class OllamaBackend:
         "rnj-1",
     }
 
-    # Cloud models to offer even if not yet pulled locally.
-    # v0.6.5 — glm-5.2:cloud is the flagship (756B, 1M context, native
-    # tool calling). Listed first so it surfaces at the top of the
-    # picker. The deepseek-v4-pro/flash tiers stay just below as the
-    # secondary high-quality option — pro's PLAN_DEEP convergence is
-    # well characterized (docs/v0.5.1-smoke-results.md) and the
-    # deepseek pair sits on a separate cloud quota, so it doubles as
-    # the 503 fallback for the GLM flagship.
-    CLOUD_MODELS = [
-        "glm-5.2:cloud",
-        "deepseek-v4-pro:cloud",
-        "deepseek-v4-flash:cloud",
-        "deepseek-v3.2:cloud",
-        "minimax-m2.7:cloud",
-        "minimax-m2.5:cloud",
-        "nemotron-3-super:cloud",
-        "kimi-k2.5:cloud",
-        "glm-5.1:cloud",
-        "glm-4.7-flash:cloud",
-        "qwen3.5:cloud",
-        "gemma4:cloud",
-    ]
     _KNOWN_NO_TOOL_SUPPORT = {
         # Text-only, no native tool calling
         "llama2", "llama3",  # Pre-3.1
@@ -653,15 +621,17 @@ class OllamaBackend:
             logger.info(f"Tool support for {self.model}: {result} (cached)")
             return result
 
-        # Check known model lists (strip tag suffixes like :7b, :latest)
+        # Conservative family knowledge avoids an extra network probe for
+        # established Ollama templates. Unknown models still use runtime
+        # metadata and a live tool probe below.
         base_model = self.model.split(":")[0].lower()
         if base_model in self._KNOWN_TOOL_SUPPORT:
             OllamaBackend._tool_support_cache[self.model] = True
-            logger.info(f"Tool support for {self.model}: True (known)")
+            logger.info(f"Tool support for {self.model}: True (fallback)")
             return True
         if base_model in self._KNOWN_NO_TOOL_SUPPORT:
             OllamaBackend._tool_support_cache[self.model] = False
-            logger.info(f"Tool support for {self.model}: False (known)")
+            logger.info(f"Tool support for {self.model}: False (fallback)")
             return False
 
         # Check Ollama model info endpoint for template/capabilities hints
@@ -886,7 +856,7 @@ class OllamaBackend:
             governor.release()
 
     def list_models(self) -> list:
-        """Return list of available model names, including cloud models."""
+        """Return the models reported by the configured Ollama endpoint."""
         local: list[str] = []
         try:
             resp = httpx.get(f"{self.base_url}/api/tags", timeout=5)
@@ -895,10 +865,6 @@ class OllamaBackend:
                      if not any(kw in m["name"].lower() for kw in ("embed", "bert", "bge", "nomic"))]
         except Exception:
             pass
-        local_set = {m.lower() for m in local}
-        for cloud in self.CLOUD_MODELS:
-            if cloud.lower() not in local_set:
-                local.append(cloud)
         return local
 
     def classify(self, prompt: str, max_tokens: int = 50) -> str:
@@ -1813,6 +1779,7 @@ _CODEX_PERMISSION_PROFILES = {
 class KimiBackend:
     """Kimi K3 through Moonshot's OpenAI-compatible streaming API."""
 
+    supports_dynamic_tool_catalog = True
     DEFAULT_BASE_URL = "https://api.moonshot.ai/v1"
     DEFAULT_MODEL = "kimi-k3"
     MODELS = (DEFAULT_MODEL,)

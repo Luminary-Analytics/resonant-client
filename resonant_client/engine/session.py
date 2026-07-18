@@ -74,7 +74,7 @@ DOOM_LOOP_NUDGE_AT = 2
 CYCLE_WINDOW = 12
 CYCLE_WINDOW_REPEAT = 3
 
-KIMI_CORE_TOOL_NAMES = frozenset({
+CORE_TOOL_NAMES = frozenset({
     "search_tools",
     "bash",
     "file_read",
@@ -122,37 +122,13 @@ PREFLIGHT_RESEARCH_TOOLS = READ_ONLY_TOOLS | frozenset({
 EMPTY_RESPONSE_RETRY_LIMIT = 2
 PROMISE_CONTINUATION_LIMIT = 2
 
-# v0.4.9 (T2.4) — per-model overrides for the cycle-guard thresholds.
-# DeepSeek pro is more deliberate (longer thinking pauses between
-# tools, often retries the same probe with intentional small variations
-# while reasoning); the default 3-in-12 window flagged legitimate work.
-# Flash is faster and burns tokens, so the default 3-in-12 stays.
-# Other models fall through to the defaults.
-#
-_CYCLE_REPEAT_OVERRIDES: dict[str, int] = {
-    "deepseek-v4-pro:cloud": 4,    # more tolerance for deliberate retries
-    # flash + generic deepseek + everything else → CYCLE_WINDOW_REPEAT (3)
-}
-
 def cycle_window_repeat_for_model(model_name: str | None) -> int:
-    """Return the cycle-window repeat threshold for `model_name`.
+    """Return the model-neutral advisory cycle threshold.
 
-    Match strategy:
-      1. Exact case-insensitive match against `_CYCLE_REPEAT_OVERRIDES`
-      2. Family-fallback heuristic for deepseek-pro variants
-      3. Default to `CYCLE_WINDOW_REPEAT` (3)
-
-    Higher = more tolerant. Pro gets 4 (allows up to 3 legitimate retries
-    of the same probe before tripping); flash and everything else stay
-    at the conservative 3.
+    ``model_name`` remains accepted for compatibility with integrations that
+    already call this helper. Repetition is behavioral evidence rather than a
+    reason to encode policy for named models.
     """
-    if not model_name:
-        return CYCLE_WINDOW_REPEAT
-    lower = model_name.lower()
-    if lower in _CYCLE_REPEAT_OVERRIDES:
-        return _CYCLE_REPEAT_OVERRIDES[lower]
-    if "deepseek" in lower and "pro" in lower:
-        return _CYCLE_REPEAT_OVERRIDES["deepseek-v4-pro:cloud"]
     return CYCLE_WINDOW_REPEAT
 
 
@@ -612,22 +588,22 @@ class Session:
     def provider_tools(self) -> list[dict]:
         """Return the initial tool inventory advertised to the backend.
 
-        Kimi K3 performs better with a small stable core and dynamically loaded
-        specialist definitions. Explicit specialist allowlists are already
-        compact and must be passed through unchanged.
+        Backends that support dynamic catalogs get a small stable core and can
+        load specialist definitions on demand. Explicit specialist allowlists
+        are already compact and pass through unchanged.
         """
         if (
-            str(getattr(self.backend, "name", "") or "").casefold() != "kimi"
+            not bool(getattr(self.backend, "supports_dynamic_tool_catalog", False))
             or self._allowed_tools is not None
         ):
             return self.tools
         return [
             tool for tool in self.tools
-            if tool.get("function", {}).get("name") in KIMI_CORE_TOOL_NAMES
+            if tool.get("function", {}).get("name") in CORE_TOOL_NAMES
         ]
 
     def _search_tool_catalog(self, query: str, limit: int = 8) -> list[dict]:
-        """Rank full tool definitions for Kimi's on-demand tool loading."""
+        """Rank full tool definitions for on-demand tool loading."""
         terms = {
             term for term in re.findall(r"[a-z0-9_]+", str(query or "").casefold())
             if len(term) > 1

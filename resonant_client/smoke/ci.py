@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Optional
 
 from .baseline import BaselineDiff, diff_against_baseline, load_baseline
-from .runner import MODELS, SmokeResult, run_smoke
+from .runner import SmokeResult, resolve_model_id, run_smoke
 from .specs import get_spec, list_spec_names
 from .variance import VarianceReport, summarize_runs
 
@@ -177,11 +177,6 @@ def run_ci_suite(
       and compute a diff. Missing baselines are fine — just no diff.
     - `on_spec_complete(spec_name, spec_result)` fires after each spec.
     """
-    if model_label not in MODELS:
-        raise ValueError(
-            f"Unknown model label {model_label!r}. "
-            f"Valid: {', '.join(sorted(MODELS))}"
-        )
     if not spec_names:
         raise ValueError("spec_names must contain at least one spec")
     if n < 1:
@@ -237,7 +232,7 @@ def run_ci_suite(
     total_elapsed = time.time() - started_at
     return CISuiteResult(
         model_label=model_label,
-        model_id=MODELS[model_label],
+        model_id=resolve_model_id(model_label),
         started_at_epoch=started_at,
         total_elapsed_seconds=total_elapsed,
         spec_results=spec_results,

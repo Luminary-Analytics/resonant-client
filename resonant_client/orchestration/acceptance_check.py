@@ -489,14 +489,9 @@ def run_bash_check(
 # Default vision model per the v0.5.0 design (open question #11
 # resolution). Configurable via Settings → Vision model; the default
 # below is what `detect_backends` checks for at mission start.
-# v0.5.0a9 — switched default from qwen2.5vl:7b → qwen3-vl:8b.
-# qwen3-vl is Alibaba's explicit successor (DeepStack ViT fusion,
-# Interleaved-MRoPE, expanded OCR for 32 langs); same VRAM class,
-# same Apache-2 license, on Ollama today, and already 2x more pulls
-# than qwen2.5vl per the Ollama library. Pre-GA web research +
-# Mac Studio pull validated the choice. Users can override via
-# Settings → Vision → default_model.
-DEFAULT_VISION_MODEL = "qwen3-vl:8b"
+# Empty means discover the first runtime-reported vision-capable model.
+# Users can still pin a model in Settings → Vision → default_model.
+DEFAULT_VISION_MODEL = ""
 
 
 @dataclass
@@ -504,7 +499,7 @@ class VisionRunner:
     """Asks an Ollama vision-capable model whether an image matches
     a question. Returns (verdict, raw_response). Production wraps
     httpx; tests stub via the `_call` hook."""
-    ollama_url: str = "http://10.0.0.133:11434"
+    ollama_url: str = "http://127.0.0.1:11434"
     model: str = DEFAULT_VISION_MODEL
     timeout_seconds: float = 60.0
     # Override hook for tests. Receives (model, prompt, image_b64);
@@ -520,7 +515,8 @@ class VisionRunner:
         before running a [vision] check (graceful degradation)."""
         if self._list_models is not None:
             try:
-                return self.model in self._list_models()
+                names = self._list_models()
+                return self._select_available_model(names)
             except Exception:
                 return False
         try:
@@ -531,11 +527,27 @@ class VisionRunner:
             )
             resp.raise_for_status()
             data = resp.json()
-            names = {m.get("name", "") for m in data.get("models", [])}
-            return self.model in names
+            names = [m.get("name", "") for m in data.get("models", [])]
+            return self._select_available_model(names)
         except Exception as exc:
             logger.debug("VisionRunner.is_available probe failed: %s", exc)
             return False
+
+    def _select_available_model(self, names: list[str]) -> bool:
+        """Resolve an explicit model or the first detected vision model."""
+        available = [str(name) for name in names if str(name)]
+        if self.model:
+            return self.model in available
+        from ..capabilities import infer_model_capabilities
+
+        selected = next(
+            (name for name in available if infer_model_capabilities(name).supports("vision")),
+            "",
+        )
+        if selected:
+            self.model = selected
+            return True
+        return False
 
     def ask(self, image_bytes: bytes, question: str) -> tuple[bool, str]:
         """Send the image + question, parse the model's yes/no.
@@ -638,10 +650,10 @@ def run_vision_check(
 
     runner = runner or VisionRunner()
     if not runner.is_available():
+        model_hint = f"Model {runner.model!r}" if runner.model else "A vision-capable model"
         return CheckResult.errored(
-            f"vision model {runner.model!r} not available at "
-            f"{runner.ollama_url}. Pull it with `ollama pull {runner.model}` "
-            f"or set a different model in Settings → Vision."
+            f"{model_hint} is not available at {runner.ollama_url}. "
+            "Install one or set an explicit model in Settings → Vision."
         )
 
     if not image_bytes:

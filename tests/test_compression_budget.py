@@ -30,7 +30,7 @@ class TestModelContextBudgetExact:
         assert model_context_budget("deepseek-v4-pro:cloud") == 917_504
 
     def test_generic_v4(self):
-        assert model_context_budget("deepseek-v4:cloud") == 48_000
+        assert model_context_budget("deepseek-v4:cloud") == 24_576
 
     def test_glm_5_2_flagship_exact(self):
         # v0.6.5 — the flagship gets an explicit pro-tier budget rather
@@ -48,24 +48,21 @@ class TestModelContextBudgetFamily:
     def test_unknown_deepseek_flash_falls_back_to_flash_tier(self):
         # A future variant like "deepseek-v5-flash:cloud" should still
         # be treated as a flash-class model (small budget).
-        assert model_context_budget("deepseek-v5-flash:cloud") == 917_504
+        assert model_context_budget("deepseek-v5-flash:cloud") == 24_576
 
     def test_unknown_deepseek_pro_falls_back_to_pro_tier(self):
-        assert model_context_budget("deepseek-v5-pro:cloud") == 917_504
+        assert model_context_budget("deepseek-v5-pro:cloud") == 114_688
 
     def test_bare_deepseek_uses_mid_tier(self):
-        # "deepseek" without flash/pro suffix → mid (48K)
-        assert model_context_budget("deepseek-coder:33b") == 48_000
+        assert model_context_budget("deepseek-coder:33b") == 24_576
 
-    def test_any_glm_uses_flagship_budget(self):
-        # v0.6.5 — all GLM cloud tiers carry large (≥200K) windows, so
-        # any "glm" resolves to the flagship budget, not the default.
-        assert model_context_budget("glm-5.1:cloud") == 874_496
-        assert model_context_budget("glm-4.7:cloud") == 874_496
+    def test_family_fallbacks_are_conservative(self):
+        assert model_context_budget("glm-5.1:cloud") == 114_688
+        assert model_context_budget("glm-4.7:cloud") == 24_576
 
-    def test_unknown_model_uses_default(self):
-        assert model_context_budget("llama3:70b") == DEFAULT_MAX_CONTEXT_TOKENS
-        assert model_context_budget("qwen2.5-coder:32b") == DEFAULT_MAX_CONTEXT_TOKENS
+    def test_unknown_model_uses_conservative_capability_default(self):
+        assert model_context_budget("llama3:70b") == 24_576
+        assert model_context_budget("qwen2.5-coder:32b") == 24_576
 
 
 class TestModelContextBudgetEdgeCases:

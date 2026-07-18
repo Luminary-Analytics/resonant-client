@@ -462,13 +462,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub_list.set_defaults(func=_cmd_list_specs)
 
     spec_choices = list_spec_names()
-    model_choices = sorted(MODELS)
-
     sub_run = sub.add_parser(
         "run", help="Run a single smoke against (spec, model).",
     )
     sub_run.add_argument("--spec", choices=spec_choices, required=True)
-    sub_run.add_argument("--model", choices=model_choices, required=True)
+    sub_run.add_argument("--model", required=True, help="Model id or legacy shorthand")
     sub_run.add_argument("--timeout-minutes", type=int, default=25,
                          help="Outer harness deadline (default: 25)")
     sub_run.add_argument("--out", default=None,
@@ -490,7 +488,7 @@ def build_parser() -> argparse.ArgumentParser:
         "variance", help="Run N smokes and report variance.",
     )
     sub_var.add_argument("--spec", choices=spec_choices, required=True)
-    sub_var.add_argument("--model", choices=model_choices, required=True)
+    sub_var.add_argument("--model", required=True, help="Model id or legacy shorthand")
     sub_var.add_argument("--n", type=int, default=3,
                          help="How many runs (default: 3)")
     sub_var.add_argument("--timeout-minutes", type=int, default=25,
@@ -521,7 +519,7 @@ def build_parser() -> argparse.ArgumentParser:
         "set", help="Promote a variance JSON to the baseline.",
     )
     bl_set.add_argument("--spec", choices=spec_choices, required=True)
-    bl_set.add_argument("--model", choices=model_choices, required=True)
+    bl_set.add_argument("--model", required=True)
     bl_set.add_argument("--from", dest="source", required=True,
                         help="Path to the variance JSON to promote.")
     bl_set.add_argument("--force", action="store_true",
@@ -537,14 +535,14 @@ def build_parser() -> argparse.ArgumentParser:
         "show", help="Print the rolled-up stats for a (spec, model) baseline.",
     )
     bl_show.add_argument("--spec", choices=spec_choices, required=True)
-    bl_show.add_argument("--model", choices=model_choices, required=True)
+    bl_show.add_argument("--model", required=True)
     bl_show.set_defaults(func=_cmd_baseline_show)
 
     bl_rm = baseline_sub.add_parser(
         "rm", help="Delete a baseline.",
     )
     bl_rm.add_argument("--spec", choices=spec_choices, required=True)
-    bl_rm.add_argument("--model", choices=model_choices, required=True)
+    bl_rm.add_argument("--model", required=True)
     bl_rm.set_defaults(func=_cmd_baseline_rm)
 
     # ── ci subcommand (v0.5.5a3) ─────────────────────────────────
@@ -552,7 +550,7 @@ def build_parser() -> argparse.ArgumentParser:
         "ci",
         help="Run a curated suite for CI / cron environments.",
     )
-    sub_ci.add_argument("--model", choices=model_choices, required=True)
+    sub_ci.add_argument("--model", required=True, help="Model id or legacy shorthand")
     sub_ci.add_argument(
         "--specs", default=None,
         help=("Comma-separated spec names to run "

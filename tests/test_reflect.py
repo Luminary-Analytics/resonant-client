@@ -81,7 +81,7 @@ def _stub_vision_pass(answer: str = "yes") -> VisionRunner:
 
     return VisionRunner(
         _call=_call,
-        _list_models=lambda: [VisionRunner().model],  # default model is "available"
+        _list_models=lambda: ["test-vision-model"],
     )
 
 

@@ -1,102 +1,82 @@
 # Resonant Client
 
-**A local-first multimodal coding agent for Ollama models and Kimi K3.**
+**A provider-adaptive multimodal coding agent for local and hosted models.**
 
-Resonant optimizes first for correct, production-quality outcomes, reliable
-completion, strong verification, and wall-clock time to a trustworthy result.
-Token and compute efficiency are secondary diagnostics. See the canonical
-[agentic harness north star](docs/agentic-harness-north-star.md) for the product
-and engineering contract that governs new work.
+Resonant gives different model providers the same durable coding harness:
+repository-aware system prompts, native tools, focused clarification, long-task
+state, verification, and a desktop workflow modeled after OpenCode. Product
+behavior is capability-driven; named models are not silently promoted or given
+different operating rules.
 
-Ollama remains the free local-first default. Kimi K3 is available through
-Moonshot's direct API for testing the same Resonant harness against its native
-multimodal, tool-calling, and long-context capabilities. Codex can also be used
-through an installed Codex CLI.
+See [docs/agentic-harness-north-star.md](docs/agentic-harness-north-star.md)
+for the engineering contract that governs harness changes.
 
-```
-┌──────────────────────────┐                ┌─────────────────────────┐
-│  resonant-client         │                │  Ollama                 │
-│                          │                │                         │
-│  • Mission flow          │   HTTP /api    │  • glm-5.2 (flagship)   │
-│  • Plan-graph specialists│ ──────────────>│  • deepseek-v4-pro/flash│
-│  • Cycle guards          │   LAN / WAN    │  • Any open model       │
-│  • await_user tool       │                │                         │
-│  • Diagnostics ZIP       │                │  Mac Studio / local     │
-└──────────────────────────┘                └─────────────────────────┘
-```
+## Provider Support
 
-## Why this exists
+- **Ollama:** the zero-credential local-first default. Models are discovered
+  from the configured endpoint.
+- **Kimi:** Moonshot's API with native tools, multimodal content, reasoning
+  continuity, retries, and cache accounting.
+- **Codex:** an installed Codex CLI, using the same project and permission
+  boundaries.
 
-Anthropic and OpenAI both ship excellent first-party agentic coders for their own models. Nothing matches that quality if you're already in their ecosystem. But there's no equivalent purpose-built tool for the **open-source local model** ecosystem — DeepSeek's V4 family running through Ollama, in particular. This is that tool.
-
-The product surface is shaped by the open-model/Ollama path:
-- Small provider surface with shared session, tool, and verification contracts
-- Mission flow tuned for grill-style interviews that DeepSeek Pro/Flash do well
-- Cycle guards + `await_user` escape hatch so open models recover from unproductive loops without losing useful work
-- Mac Studio at `10.0.0.133:11434` is the canonical Ollama host (override anywhere)
+Provider adapters may translate wire formats, reasoning tokens, and message
+roles. The system prompt, agent loop, clarification policy, and verification
+contract stay model-neutral.
 
 ## Features
 
-### Mission flow (long-running agents)
-- **Grill-me interview** to refine the spec before any code is written
-- **Plan → implement → verify** specialist pipeline with `working_subdir` propagation across siblings
-- **Cycle guards** that catch tool-call loops (windowed signature dedup + read-only churn cap)
-- **`await_user` tool** so the agent can ask focused questions instead of cycling through speculative searches
-- **Spec dispatch** to the planner with the full structured spec, not just a paraphrase
+### Agent harness
 
-### Autonomous mission daemon (v0.5.x)
-- **Roadmap-driven outer loop** that picks unchecked items, dispatches Phase-1 sub-missions, runs REFLECT every K iters, and exits via 7 priority-ordered stop rules
-- **Resume after interrupt** — server restart / crash / sleep doesn't lose mission progress
-- **Human-in-the-loop forks** — when REFLECT can't autonomously decide (e.g. path-mismatch), the daemon parks and surfaces a structured decision card to the GUI
-- **Per-specialist Ollama routing** — pin pro for REFLECT/PLAN_DEEP, flash for IMPLEMENT/EXPLORE, via `general.specialist_model_overrides` in settings or `RESONANT_SPECIALIST_<NAME>_MODEL` env vars
-- **Pause-after-iter + Stop** — graceful (finish current iter, exit) vs abrupt (cancel in-flight)
-- **Live activity inspector** — header badge shows `running REFLECT · 12s` so you can tell stuck-vs-slow at a glance
+- Stable model-neutral system prompt with project instruction layering
+- Focused Grill Me clarification only when repository evidence cannot resolve a
+  consequential ambiguity
+- Native `await_user` multiple-choice prompts with a required recommended option
+- Long-running checklist, context compression, resumable sessions, and steering
+- Tool calling with adaptive text fallback when native tools are unavailable
+- Capability-aware context windows, reasoning controls, tools, and vision
+- Multimodal attachments with safe handling for text-only models
+- Focused and end-to-end verification before completion
 
-### Smoke harness (`resonant-smoke`)
-- `resonant-smoke run --spec wordcount --model pro` — single autonomous run against a bundled spec
-- `resonant-smoke variance --n 5` — per-spec convergence + iter-duration variance
-- `resonant-smoke baseline {set,list,show,rm}` + `--diff-baseline` flag — exit non-zero on regressions
-- `resonant-smoke ci` — curated suite for cron / GitHub Actions
-- 5 bundled specs: `minimal`, `wordcount`, `roguelite`, `jsonlines`, `refactor-py`
+### Tools and extensions
 
-### Diagnostics + cost tracking (v0.5.9+)
-- Per-iter cost attribution with per-model breakdown (e.g. pro for REFLECT + flash for IMPLEMENT shown as separate chips)
-- Daily cost tracking with budget alerts
-- **Help → Save Diagnostics ZIP** now bundles `costs.json`, per-iteration metadata files, and `mission-summary.json` index alongside the redacted logs
+- File, search, shell, git, batch, task, skill, and user-input tools
+- User-configured MCP servers
+- Skills, plugins, LSP status, and project instructions
+- BrowserOS as the default browser MCP
+- Permission modes and a project-root path sandbox
+- Optional codebase indexing, RAG, and Engram memory
 
-### Desktop GUI
-- Frameless native window via pywebview
-- Project picker per mission so the agent always writes where you expect
-- Chat-header project path display with unsafe-folder warnings
-- Live plan-graph view in the preview panel
-- Inline diff review for every file edit
-- **Help → Save Diagnostics ZIP** — bundles redacted logs / intent audits / settings into a single ZIP for GitHub issues
-- Cmd palette (Ctrl/Cmd+K), keyboard shortcuts, dark/light themes
+### Desktop client
 
-### Engine
-- Native Ollama tool calling via `/api/chat` with streaming
-- Direct Kimi K3 streaming with native tools, base64 vision, reasoning continuity, and automatic cache accounting
-- Adaptive text-mode fallback for models without native tool support
-- Three-tier permission model (suggest / auto-edit / full-auto)
-- Path sandbox tied to the project root
-- Codebase indexing + RAG with incremental hashing
-- Optional Engram memory across sessions
+- Native frameless window with project and session navigation
+- Folder picker for opening projects
+- Runtime provider/model picker without pinned model policy
+- Inline file diff review
+- Collapsible long-task status and recommended decision prompts
+- Diagnostics export and cost tracking
+- Signed Windows update feed with in-app update checks
 
-### Auto-update (Windows)
-- Bundled installer + WinSparkle polls the appcast every 24 hours
-- Every release is EdDSA-signed end-to-end (embedded public key verifies the download)
+### Optional orchestration
+
+The sprint and autonomous workflows remain optional and off by default. They
+provide planner, generator, evaluator, specialist, and recovery flows for users
+who need structured long-running execution. Specialist model overrides are
+explicit user configuration; Resonant does not silently switch models by role.
 
 ## Install
 
-### Recommended — Windows installer
+### Windows installer
 
-Download the latest `resonant-setup-X.Y.Z.exe` from the [Releases page](https://github.com/Luminary-Analytics/resonant-client/releases) and run it.
+Download the latest `resonant-setup-X.Y.Z.exe` from the
+[Releases page](https://github.com/Luminary-Analytics/resonant-client/releases).
 
-- Installs to `%LOCALAPPDATA%\Programs\Resonant Client\` (no admin / UAC prompt)
-- Adds Start Menu shortcut "Resonant Client"
-- Future updates land automatically; new versions are EdDSA-signed and verified before install
+- Installs without an administrator prompt
+- Adds a Start Menu shortcut
+- Checks the signed appcast for future updates
 
-First-install only: Windows SmartScreen will show "Unrecognized publisher" — click "More info" → "Run anyway". The v0.x line is unsigned for now; code signing planned for v1.0+.
+Windows SmartScreen may show "Unrecognized publisher" for the v0.x line. Code
+signing is planned for v1.0.
 
 ### Source install
 
@@ -104,137 +84,90 @@ First-install only: Windows SmartScreen will show "Unrecognized publisher" — c
 git clone https://github.com/Luminary-Analytics/resonant-client.git
 cd resonant-client
 
-pip install -e .                    # Core (TUI only)
-pip install -e ".[gui]"             # Desktop GUI (recommended)
-pip install -e ".[all,dev]"         # Everything + tests
+pip install -e .
+pip install -e ".[gui]"
+pip install -e ".[all,dev]"
 ```
 
-## Prerequisites
+Python 3.11 or newer is required.
 
-Choose at least one model provider:
+## Configure A Provider
 
-1. **Ollama:** run Ollama somewhere reachable. Install from [ollama.com](https://ollama.com/download), then `ollama serve` and pull a model:
-   ```bash
-   ollama pull glm-5.2:cloud             # flagship — 756B, 1M context
-   ollama pull deepseek-v4-pro:cloud     # secondary tier, separate cloud quota
-   ```
-2. **Kimi K3:** create a key in the [Kimi API platform](https://platform.kimi.ai/), then add it under **Settings -> Kimi API** or set `MOONSHOT_API_KEY`. Select **Kimi API -> Kimi K3** from the model menu.
-3. **Bundled installer:** Windows 10+ (x64). Source install: Python 3.11+ on Windows / macOS / Linux.
+### Ollama
 
-If Ollama isn't reachable on first launch, the welcome screen renders a setup wizard with the URL field, install link, and pull commands. You never have to leave the window to get unstuck.
+Install [Ollama](https://ollama.com/download), start it, and pull a model:
 
-### Browser tools with BrowserOS
+```bash
+ollama serve
+ollama pull your-model
+```
 
-[BrowserOS](https://github.com/browseros-ai/BrowserOS) is Resonant's default browser MCP. Install and open BrowserOS, visit `chrome://browseros/mcp`, then copy its Server URL into **Settings -> MCP Servers -> browseros** and click **Connect**. The usual local endpoint is `http://127.0.0.1:9239/mcp`.
+Resonant probes `http://127.0.0.1:11434` by default. Set `OLLAMA_HOST` or use
+**Settings > Network** for a remote endpoint.
 
-Resonant does not bundle Playwright or launch a debug Chrome instance. Browser capabilities come from BrowserOS or another user-configured stdio/streamable HTTP MCP server, and connected MCP tools are available to the primary agent and capable specialists.
+### Kimi
 
-### Environment variables
+Create a key in the [Kimi API platform](https://platform.kimi.ai/), then add it
+under **Settings > Kimi API** or set `MOONSHOT_API_KEY`.
+
+### Codex
+
+Install and authenticate the Codex CLI. Resonant detects the executable and
+offers the models exposed by that provider adapter.
+
+## Browser Tools
+
+[BrowserOS](https://github.com/browseros-ai/BrowserOS) is Resonant's default
+browser MCP. In BrowserOS, open `chrome://browseros/mcp`, copy the server URL,
+and configure it under **Settings > MCP Servers > browseros**. The usual local
+endpoint is `http://127.0.0.1:9239/mcp`.
+
+Resonant does not bundle Playwright or launch a debug Chrome instance. Browser
+capabilities come from BrowserOS or another user-configured stdio or streamable
+HTTP MCP server.
+
+## Environment Variables
 
 | Variable | Default | Description |
-|----------|---------|-------------|
-| `OLLAMA_HOST` | `http://10.0.0.133:11434` | Ollama base URL |
-| `MOONSHOT_API_KEY` | none | Kimi API key; a key stored in Settings takes precedence |
-| `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API base URL |
-| `RESONANT_KIMI_CONNECT_TIMEOUT_SEC` | `15` | Kimi connection timeout |
-| `RESONANT_KIMI_READ_TIMEOUT_SEC` | `600` | Kimi streaming read timeout |
-| `RESONANT_OLLAMA_NUM_CTX` | model-aware | Override Ollama context size (cloud GLM-5.2/DeepSeek V4 use their advertised ~1M windows; local models stay conservative) |
-| `RESONANT_OLLAMA_NUM_BATCH` | `512` | Ollama batch size |
-| `RESONANT_OLLAMA_NUM_GPU` | `99` | Ollama GPU layers |
-| `RESONANT_OLLAMA_KEEP_ALIVE` | `60m` | How long Ollama keeps the model loaded |
-| `RESONANT_OLLAMA_HTTP_TIMEOUT_SEC` | `180` | Streaming timeout |
-| `RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `120` | Read timeout |
+|---|---|---|
+| `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama base URL |
+| `RESONANT_DEFAULT_BACKEND` | `ollama` | Explicit default provider |
+| `RESONANT_DEFAULT_MODEL` | auto-discovered | Explicit default model |
+| `MOONSHOT_API_KEY` | none | Kimi API key |
+| `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API URL |
+| `RESONANT_OLLAMA_NUM_CTX` | capability-derived | Ollama context override |
+| `RESONANT_OLLAMA_NUM_BATCH` | Ollama default | Optional batch override |
+| `RESONANT_OLLAMA_NUM_GPU` | Ollama default | Optional GPU layer override |
+| `RESONANT_OLLAMA_KEEP_ALIVE` | `120m` | Ollama keep-alive |
+| `RESONANT_OLLAMA_HTTP_TIMEOUT_SEC` | `360` | Ollama request timeout |
+| `RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `300` | Ollama stream read timeout |
 
-The `~/.resonant/settings.json` file (managed via Settings → Network in the GUI) overrides env vars when set.
+Persistent configuration lives in `~/.resonant/settings.json` and is managed
+through the desktop Settings view.
 
-## Usage
-
-### GUI (recommended)
+## Run
 
 ```bash
 resonant-gui
-# Native frameless window opens; pick a project folder; pick a model; go.
+resonant --backend ollama --model your-model
+resonant --ollama-url http://192.168.1.20:11434 --model your-model
 ```
 
-### TUI
+## Develop
 
 ```bash
-resonant                                          # auto-detect
-resonant --backend ollama --model glm-5.2:cloud
-resonant --backend ollama --api http://10.0.0.133:11434 --model deepseek-v4-pro:cloud
+pytest -q
+ruff check resonant_client tests
+node --check resonant_client/gui/static/app.js
 ```
 
-### Slash commands
-
-| Command | Description |
-|---------|-------------|
-| `/help` | Show help |
-| `/quit` | Exit |
-| `/cd <dir>` | Change working directory |
-| `/clear` | Clear conversation history |
-| `/status` | Show backend status |
-| `/approve on\|off` | Toggle tool approval mode |
-
-## Mission flow at a glance
-
-1. Click the **🎯 Mission** toggle in the chat header (or "Or start a Mission" on the empty state).
-2. Type the project folder + describe the feature.
-3. The grill-me interviewer asks clarifying questions one at a time with recommendations.
-4. When you have shared understanding, the model emits a `## Final spec` block.
-5. Click **Build this roadmap** — the spec is dispatched to the plan-graph runner.
-6. Specialists (plan → implement → verify) run with cycle guards + `await_user` escape; their working subdir is propagated across siblings so they don't scavenger-hunt each other's files.
-7. When you hit a bug, **Help → Save Diagnostics ZIP** bundles the audit log into a redacted ZIP you can drop into a GitHub issue.
-
-## Testing
+The smoke harness accepts either a legacy shorthand or any Ollama model ID:
 
 ```bash
-pytest                              # all tests
-pytest -m unit                      # fast unit tests
-pytest tests/test_mission.py        # one module
+resonant-smoke run --spec wordcount --model your-model
+resonant-smoke variance --spec wordcount --model your-model --n 3
 ```
-
-## Architecture
-
-See [ARCHITECTURE.md](ARCHITECTURE.md) for module-by-module reference.
-
-```
-resonant_client/
-├── backends.py              # Ollama, Kimi K3, and Codex CLI providers
-├── capabilities.py          # Model capability profiles + Ollama metadata enrichment
-├── content.py               # Typed multimodal content + text-only fallbacks
-├── events.py                # EngineEvent / ClientCommand enums
-├── protocol.py              # Tool prompt building, JSON/XML parsing
-├── tui.py                   # Terminal UI
-├── network_defaults.py      # Mac Studio Ollama URL resolution chain
-├── engine/
-│   ├── session.py           # Agentic loop, cycle guards, await_user dispatch
-│   ├── tools.py             # Tool definitions + execution routing
-│   ├── sandbox.py           # Permission levels and tool allowlists
-│   ├── mcp.py               # stdio + streamable HTTP MCP tools
-│   ├── computer.py          # Desktop automation
-│   └── ...
-├── orchestration/
-│   ├── plan_graph.py        # PlanNode (with working_subdir field)
-│   ├── runner.py            # LocalSpecialistRunner + working_subdir propagation
-│   ├── walker.py            # GraphWalker
-│   └── specialists.py       # plan / implement / verify / repair / research / explore
-└── gui/
-    ├── app.py               # Starlette + WebSocket
-    ├── diagnostics.py       # Help → Save Diagnostics bundle (redacted logs ZIP)
-    ├── sessions.py          # ProjectManager + safe-default project path
-    ├── settings.py          # ~/.resonant/settings.json
-    ├── templates/index.html # Frameless desktop app shell
-    └── static/{app.js,styles.css}
-```
-
-## v0.4.0 — what changed
-
-This release narrowed Resonant Client to a single backend (Ollama). The Anthropic, OpenAI, Claude Code, Codex, Resonant Engine, MLX, and LM Studio backends were removed along with their dependencies and UI surface. Roughly 1,700 lines of backend code went away; the model-selector dropdown collapsed from a multi-section grouped list to a flat picker with DeepSeek flagship variants pinned to the top; the Settings UI lost its API-key fields; and the welcome screen gained an Ollama setup wizard for first-run users.
-
-If you were using a non-Ollama backend through Resonant Client, v0.4.0 is a hard cut — there's no migration path because the upstream tools (Claude Code, Codex) are better at their respective stacks anyway. v0.3.5 remains downloadable on the [Releases page](https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.3.5) if you need the old multi-backend behavior.
-
-LM Studio support may return as a future addition once the Ollama path is fully tuned.
 
 ## License
 
-MIT — see [LICENSE](./LICENSE). Resonant Client is open source: an open-source flagship for local-first, self-improving autonomous coding. Contributions welcome.
+MIT. See [LICENSE](LICENSE).

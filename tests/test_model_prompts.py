@@ -37,7 +37,7 @@ def test_detect_model_family(model_name, expected):
     assert detect_model_family(model_name) == expected
 
 
-def test_profiles_share_contract_but_have_distinct_guidance():
+def test_profiles_share_model_neutral_guidance():
     glm = build_model_prompt("glm-5.2:cloud")
     deepseek = build_model_prompt("deepseek-v4-pro:cloud")
     generic = build_model_prompt("qwen3-coder")
@@ -60,11 +60,8 @@ def test_profiles_share_contract_but_have_distinct_guidance():
         assert "Every question directed to the user must use `await_user`" in prompt
         assert "set `recommended_option` to the exact option" in prompt
         assert "List that recommended option first" in prompt
-    assert "MODEL PROFILE: GLM 5.x" in glm
-    assert "MODEL PROFILE: DEEPSEEK" in deepseek
-    assert "MODEL PROFILE: KIMI K3" in kimi
-    assert "OPEN MODEL (CONSERVATIVE)" in generic
-    assert len({glm, deepseek, generic, kimi}) == 4
+    assert all("EXECUTION PROFILE: ADAPTIVE AGENT" in prompt for prompt in (glm, deepseek, generic, kimi))
+    assert len({glm, deepseek, generic, kimi}) == 1
 
 
 def test_unknown_role_falls_back_to_primary():
@@ -82,7 +79,7 @@ def test_system_prompt_layers_model_role_and_project_context():
         role_instructions="Read only src/parser.py",
     )
 
-    assert "MODEL PROFILE: DEEPSEEK" in prompt
+    assert "EXECUTION PROFILE: ADAPTIVE AGENT" in prompt
     assert "ROLE: SUB-AGENT" in prompt
     assert "SCOPED ROLE INSTRUCTIONS" in prompt
     assert "Read only src/parser.py" in prompt
@@ -95,7 +92,7 @@ def test_plan_mode_keeps_model_profile_and_disables_tools():
         plan_mode=True,
         model_name="glm-5.2:cloud",
     )
-    assert "MODEL PROFILE: GLM 5.x" in prompt
+    assert "EXECUTION PROFILE: ADAPTIVE AGENT" in prompt
     assert "CURRENT MODE: PLAN" in prompt
     assert "Do not call tools" in prompt
     assert "RESONANT TOOL NOTES" not in prompt

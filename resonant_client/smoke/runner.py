@@ -45,6 +45,14 @@ MODELS: dict[str, str] = {
 }
 
 
+def resolve_model_id(model_label: str) -> str:
+    """Resolve a legacy shorthand or accept a provider model id directly."""
+    normalized = str(model_label or "").strip()
+    if not normalized:
+        raise ValueError("model must not be empty")
+    return MODELS.get(normalized, normalized)
+
+
 # ── Result container ───────────────────────────────────────────────────
 
 
@@ -385,7 +393,7 @@ def run_smoke(
 
     Parameters:
     - `spec_name`: must be in SPECS (use `list_spec_names()` to enumerate)
-    - `model_label`: must be in MODELS
+    - `model_label`: a legacy shorthand or any Ollama model identifier
     - `smoke_timeout_minutes`: outer deadline so a stuck mission doesn't
       pin the harness forever. Independent of the spec's own time
       budget (which the daemon enforces internally).
@@ -396,13 +404,8 @@ def run_smoke(
       the auto-bootstrap. Tests use these to inject stubs without
       hitting the network.
     """
-    if model_label not in MODELS:
-        raise ValueError(
-            f"Unknown model label {model_label!r}. "
-            f"Valid: {', '.join(sorted(MODELS))}"
-        )
     spec: SmokeSpec = get_spec(spec_name)
-    model_id = MODELS[model_label]
+    model_id = resolve_model_id(model_label)
 
     if project_path is None:
         project_path = make_fresh_project(

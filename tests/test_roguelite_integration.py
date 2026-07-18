@@ -161,7 +161,7 @@ def _vision_stub(answer: str) -> VisionRunner:
 
     return VisionRunner(
         _call=_call,
-        _list_models=lambda: [VisionRunner().model],
+        _list_models=lambda: ["test-vision-model"],
     )
 
 

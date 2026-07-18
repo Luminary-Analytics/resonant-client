@@ -228,8 +228,6 @@ class AppState:
 
     def _migrate_stale_defaults(self) -> None:
         """
-        After the April-2026 refocus, the flagship is Ollama + glm-5.2
-        (v0.6.5 — was deepseek-v4-pro v0.5.2–v0.6.4, flash before that).
         Settings persisted from earlier versions may still pin "default_backend"
         to "resonant" or other backends that the user picked once and forgot
         about. We override only when the saved value points at a now-deprecated
@@ -244,15 +242,6 @@ class AppState:
                     self.settings.set("general", "default_backend", "ollama")
                 except Exception:
                     pass
-            current_model = str(self.settings.get("general", "default_model", "") or "").strip()
-            if not current_model and current_backend in ("", "ollama"):
-                try:
-                    # v0.6.5 — glm-5.2:cloud is the flagship default
-                    # for new users. Tracks
-                    # `network_defaults.get_default_model()`.
-                    self.settings.set("general", "default_model", "glm-5.2:cloud")
-                except Exception:
-                    pass
         except Exception:
             pass
 
@@ -260,7 +249,7 @@ class AppState:
         """
         If `general.big_context_profile` is true and the user has NOT manually
         set RESONANT_OLLAMA_NUM_CTX/NUM_BATCH via env, bump them to the
-        deepseek-v4-flash 1M-context profile (131072 ctx, 2048 batch).
+        large-repository profile (131072 ctx, 2048 batch).
 
         Env-var overrides win — we only set defaults if env is unset.
         """
@@ -2059,8 +2048,7 @@ class AppState:
         target_path = os.path.normpath(project_path or self.project.project_path or os.getcwd())
         candidates = [
             Path(target_path) / ".venv" / "bin" / "python",
-            self.resolve_local_coding_model_python(),
-            Path("/opt/homebrew/bin/python3.11"),
+            Path(target_path) / ".venv" / "Scripts" / "python.exe",
             Path(sys.executable).resolve(),
         ]
         for candidate in candidates:
@@ -3282,50 +3270,19 @@ class AppState:
             "score": score,
         }
 
-    @staticmethod
-    def resolve_local_coding_model_root() -> Path:
-        return Path(
-            os.environ.get("LOCAL_CODING_MODEL_ROOT", "/Users/richbellantoni/Repos/LocalCodingModel")
-        ).expanduser().resolve()
-
-    def resolve_local_coding_model_python(self) -> Path:
-        root = self.resolve_local_coding_model_root()
-        venv_python = root / ".venv" / "bin" / "python"
-        if venv_python.exists():
-            return venv_python
-        return Path(sys.executable).resolve()
-
     def select_harness_teacher(
         self,
         *,
         session_role: str,
         reason: str = "",
     ) -> tuple[str, str]:
-        """v0.4.0 — harness teacher escalation no longer has a frontier
-        CLI to escalate to (Claude Code / Codex were cut). Always
-        return the current Ollama backend with a stronger model than
-        the running one when available — `deepseek-v4-pro:cloud` if
-        the user has it, otherwise the running model is the ceiling.
-        """
-        if not self.available_backends:
-            self.detect_backends()
-        if self.backend_spec and self.backend_spec.backend_type == "kimi":
-            return "kimi", self.backend_spec.model or KimiBackend.DEFAULT_MODEL
-        ollama_models = self.available_backends.get("ollama", {}).get("models", [])
-        # Prefer pro-class models for escalation if present.
-        for stronger in ("deepseek-v4-pro:cloud", "deepseek-v4:cloud"):
-            if stronger in ollama_models:
-                return "ollama", stronger
-        # Fall back to whatever the running backend is using.
-        running_model = getattr(self.backend, "model", "") if self.backend else ""
-        if running_model:
-            return "ollama", running_model
-        if ollama_models:
-            return "ollama", ollama_models[0]
-        kimi_models = self.available_backends.get("kimi", {}).get("models", [])
-        if kimi_models:
-            return "kimi", kimi_models[0]
-        raise ValueError("No model available for harness escalation")
+        """Resolve recovery through configured providers, never named models."""
+        forced_backend = str(os.environ.get("RESONANT_HARNESS_TEACHER_BACKEND", "") or "").strip()
+        forced_model = str(os.environ.get("RESONANT_HARNESS_TEACHER_MODEL", "") or "").strip()
+        if forced_backend:
+            spec = self.build_backend_spec(forced_backend, model=forced_model or None)
+            return spec.backend_type, spec.model
+        return self.select_harness_backend(session_role=session_role)
 
     def wrap_user_message_for_harness(
         self,
@@ -4472,12 +4429,6 @@ class AppState:
             models = [m["name"] for m in data.get("models", [])
                       if not any(kw in m["name"].lower()
                                  for kw in ("embed", "bert", "bge", "nomic"))]
-            # Append cloud models that aren't already pulled locally so
-            # the user sees them as options even on a fresh Ollama.
-            local_set = {m.lower() for m in models}
-            for cloud in OllamaBackend.CLOUD_MODELS:
-                if cloud.lower() not in local_set:
-                    models.append(cloud)
             if models:
                 available["ollama"] = {"url": ollama_url, "models": models}
         except Exception:
@@ -4514,71 +4465,42 @@ class AppState:
         session_role: str,
         project_path: Optional[str] = None,
     ) -> tuple[str, str]:
-        """v0.4.0 — single-backend (Ollama). All harness roles share the
-        same backend; only the *model* varies based on role + the user's
-        forced overrides via `RESONANT_HARNESS_<ROLE>_MODEL`. Cut the
-        whole multi-backend preference walk that existed pre-v0.4.0
-        — there's only one backend now.
-
-        Default model selection:
-        - planner / evaluator → `deepseek-v4-pro:cloud` if available
-          (more deliberate, better reasoning) else flash
-        - generator → `deepseek-v4-flash:cloud` (faster turnaround)
-        - falls through to whatever the running backend is using or
-          the first available Ollama model
-        """
+        """Select a harness backend from explicit configuration or active state."""
         if not self.available_backends:
             self.detect_backends()
         project_path = os.path.normpath(project_path or self.project.project_path)
-
-        if (
-            self.backend_spec
-            and self.backend_spec.backend_type == "kimi"
-            and self.available_backends.get("kimi")
-        ):
-            model = self.backend_spec.model or KimiBackend.DEFAULT_MODEL
-            return "kimi", model
-
-        info = self.available_backends.get("ollama")
-        if not info:
-            raise ValueError(
-                "No Ollama backend available — start Ollama (or fix the URL) "
-                "before running a harness role."
-            )
-        models = list(info.get("models") or [])
-
         role_env = session_role.upper()
+        forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_BACKEND", "") or "").strip()
         forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_MODEL", "") or "").strip()
-
-        if forced_model:
-            spec = self.build_backend_spec("ollama", model=forced_model, project_path=project_path)
+        if forced_backend or forced_model:
+            retry_backend = forced_backend
+            if not retry_backend and self.backend_spec:
+                retry_backend = self.backend_spec.backend_type
+            if not retry_backend:
+                return "", ""
+            spec = self.build_backend_spec(
+                retry_backend,
+                model=forced_model or None,
+                project_path=project_path,
+            )
             return spec.backend_type, spec.model
+        if self.backend_spec and self.available_backends.get(self.backend_spec.backend_type):
+            model = forced_model or self.backend_spec.model
+            if model:
+                return self.backend_spec.backend_type, model
 
-        # Role-specific model preference order.
-        role_preference = {
-            "planner": ["deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"],
-            "evaluator": ["deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"],
-            "generator": ["deepseek-v4-flash:cloud", "deepseek-v4-pro:cloud"],
-        }.get(session_role, ["deepseek-v4-flash:cloud"])
-
-        chosen_model = ""
-        # Honor the running backend's model first if it's still in the list.
-        if (self.backend_spec and self.backend_spec.backend_type == "ollama"
-                and self.backend_spec.model in models):
-            chosen_model = self.backend_spec.model
-        else:
-            for candidate in role_preference:
-                if candidate in models:
-                    chosen_model = candidate
-                    break
-            if not chosen_model and models:
-                chosen_model = models[0]
-
-        if not chosen_model:
-            raise ValueError(f"No model available for harness role '{session_role}'")
-
-        spec = self.build_backend_spec("ollama", model=chosen_model, project_path=project_path)
-        return spec.backend_type, spec.model
+        configured_backend = str(
+            self.settings.get("general", "default_backend", "") or ""
+        ).strip()
+        candidates = [configured_backend, "ollama", "kimi", "codex"]
+        for backend_type in dict.fromkeys(item for item in candidates if item):
+            models = list(self.available_backends.get(backend_type, {}).get("models") or [])
+            if not models:
+                continue
+            model = forced_model or models[0]
+            spec = self.build_backend_spec(backend_type, model=model, project_path=project_path)
+            return spec.backend_type, spec.model
+        raise ValueError(f"No model available for harness role '{session_role}'")
 
     def _harness_generator_needs_frontier_repair(self, project_path: Optional[str] = None) -> bool:
         project_path = os.path.normpath(project_path or self.project.project_path)
@@ -4636,12 +4558,7 @@ class AppState:
         failed_backend: str = "",
         project_path: Optional[str] = None,
     ) -> tuple[str, str]:
-        """v0.4.0 — single-backend means cross-backend retry is gone.
-        Retry uses the *other* deepseek model: pro→flash if pro failed,
-        flash→pro if flash failed. Returns ("", "") when no retry
-        candidate exists (e.g. only one model available, or env override
-        disables it).
-        """
+        """Return only an explicitly configured retry target."""
         if not self.available_backends:
             self.detect_backends()
         project_path = os.path.normpath(project_path or self.project.project_path)
@@ -4651,39 +4568,13 @@ class AppState:
         if forced_backend.lower() in {"disabled", "none", "off", "false", "no"}:
             return "", ""
 
-        if self.backend_spec and self.backend_spec.backend_type == "kimi":
-            ollama_models = self.available_backends.get("ollama", {}).get("models", [])
-            if ollama_models:
-                retry_model = next(
-                    (item for item in ("glm-5.2:cloud", "deepseek-v4-pro:cloud") if item in ollama_models),
-                    ollama_models[0],
-                )
-                return "ollama", retry_model
-            return "", ""
-
-        info = self.available_backends.get("ollama")
-        if not info:
-            return "", ""
-        models = list(info.get("models") or [])
-
-        # Honor explicit override.
-        if forced_model:
-            spec = self.build_backend_spec("ollama", model=forced_model, project_path=project_path)
+        if forced_backend:
+            spec = self.build_backend_spec(
+                forced_backend,
+                model=forced_model or None,
+                project_path=project_path,
+            )
             return spec.backend_type, spec.model
-
-        # Pick the OTHER deepseek tier as the retry. If the failed run
-        # was on flash, escalate to pro; if it was on pro, fall back to
-        # flash for a faster second pass.
-        running_model = getattr(self.backend, "model", "") if self.backend else ""
-        retry_pairs = [
-            ("deepseek-v4-flash:cloud", "deepseek-v4-pro:cloud"),
-            ("deepseek-v4-pro:cloud", "deepseek-v4-flash:cloud"),
-        ]
-        for primary, retry in retry_pairs:
-            if running_model == primary and retry in models:
-                spec = self.build_backend_spec("ollama", model=retry, project_path=project_path)
-                return spec.backend_type, spec.model
-
         return "", ""
 
     def get_harness_role_timeout_seconds(self, session_role: str) -> float | None:
@@ -4985,81 +4876,39 @@ class AppState:
             session_role=normalized_role,
             reason=reason,
         )
-        root = self.resolve_local_coding_model_root()
-        python = self.resolve_local_coding_model_python()
-        script_path = root / "scripts" / "collect_harness_teacher_response.py"
-        if not script_path.exists():
-            raise FileNotFoundError(f"Harness teacher collector not found: {script_path}")
-
-        command = [
-            str(python),
-            str(script_path),
-            "--provider",
-            provider,
-            "--model",
-            model,
-            "--project-path",
-            target_path,
-            "--reason",
-            reason,
-            "--failed-role",
-            normalized_role,
-        ]
-        if objective.strip():
-            command.extend(["--objective", objective.strip()])
-
         harness = HarnessWorkspace(target_path)
         harness.ensure_layout()
-
-        record: dict[str, Any] | None = None
+        recovery_prompt = "\n".join(
+            part for part in (
+                "Recover the stalled Resonant harness run using repository and harness evidence.",
+                f"Failed role: {normalized_role}",
+                f"Failure reason: {reason.strip() or 'unspecified'}",
+                f"Objective: {objective.strip()}" if objective.strip() else "",
+                "Diagnose the failure, make the necessary progress, and emit the required resonant-harness update.",
+            ) if part
+        )
         try:
-            import subprocess as _sp
-
-            result = _sp.run(
-                command,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            stdout_lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-            if not stdout_lines:
-                raise ValueError("Harness teacher collector returned no JSON output")
-            record = json.loads(stdout_lines[-1])
-            response = record.get("response") or {}
-            recommended_role = self.normalize_session_role(
-                "code",
-                str(response.get("recommended_role") or normalized_role),
-            )
-            assistant_markdown = str(response.get("assistant_response_markdown") or "").strip()
-            if not assistant_markdown:
-                raise ValueError("Harness teacher response is missing assistant_response_markdown")
-
-            cleaned_text, harness_payload, parse_error = self.extract_harness_update(
-                text=assistant_markdown,
-                session_mode="code",
-                session_role=recommended_role,
-            )
-            if parse_error:
-                raise ValueError(parse_error)
-            if harness_payload is None:
-                raise ValueError("Harness teacher response did not emit a resonant-harness block")
-
-            status_message = self.apply_harness_update(
-                session_mode="code",
-                session_role=recommended_role,
-                payload=harness_payload,
+            result = self.run_harness_role_once(
                 project_path=target_path,
-                assistant_text=cleaned_text,
-                user_request=str(record.get("recovery_request") or reason),
+                session_role=normalized_role,
+                prompt=recovery_prompt,
+                backend_type=provider,
+                model=model,
             )
-
+            if result.get("error"):
+                raise RuntimeError(str(result["error"]))
             applied_record = {
-                **record,
+                "record_type": "harness_recovery",
+                "teacher_provider": provider,
+                "teacher_model": model,
+                "project_path": target_path,
+                "failed_role": normalized_role,
+                "reason": reason,
+                "objective": objective.strip(),
                 "status": "applied",
-                "recommended_role": recommended_role,
-                "parsed_payload": harness_payload,
-                "cleaned_assistant_text": cleaned_text,
-                "status_message": status_message,
+                "recommended_role": normalized_role,
+                "result": result.get("result", ""),
+                "steps": result.get("steps", 0),
                 "applied_at": time.time(),
             }
             harness.append_teacher_escalation(applied_record)
@@ -5070,18 +4919,17 @@ class AppState:
                     "teacher_model": model,
                     "failed_role": normalized_role,
                     "reason": reason,
-                    "recommended_role": recommended_role,
+                    "recommended_role": normalized_role,
                     "status": "applied",
-                    "recovery_kind": response.get("recovery_kind", ""),
                 },
             )
             return {
-                "result": cleaned_text,
+                "result": result.get("result", ""),
                 "error": "",
                 "teacher_provider": provider,
                 "teacher_model": model,
-                "recommended_role": recommended_role,
-                "status_message": status_message,
+                "recommended_role": normalized_role,
+                "status_message": "Harness recovery applied",
                 "record": applied_record,
             }
         except Exception as exc:
@@ -5095,7 +4943,6 @@ class AppState:
                 "objective": objective.strip(),
                 "status": "failed",
                 "error": str(exc),
-                "captured_record": record,
                 "captured_at": time.time(),
             }
             harness.append_teacher_escalation(failure_record)
@@ -5147,9 +4994,6 @@ class AppState:
                 spec.permission_mode = self.permission_mode
             return spec
 
-        # v0.4.0 — Ollama is the only supported backend. Reject anything
-        # else with a message that points the user at the right tool
-        # rather than silently failing.
         if backend_type == "codex":
             info = self.available_backends.get("codex") or {}
             models = info.get("models") or CodexCliBackend.list_available_models()
@@ -5191,7 +5035,7 @@ class AppState:
         if not info:
             raise ValueError(
                 "Ollama is not reachable. Check the URL in Settings → Network "
-                "(default Mac Studio: http://10.0.0.133:11434) and that "
+                "(default: http://127.0.0.1:11434) and that "
                 "`ollama serve` is running."
             )
 
@@ -5199,11 +5043,6 @@ class AppState:
         selected_model = model or self._resolve_default_model(models)
         spec = BackendSpec(backend_type="ollama", model=selected_model)
         spec.url = info.get("url", "")
-        # v0.6.5 — seed the per-model default thinking level on a freshly
-        # built spec (no prior spec/session to inherit from). GLM-5.x
-        # defaults to high-effort thinking; create_backend / swap_backend
-        # still let a preserved per-session choice (including an explicit
-        # "off") win on rebuilds, so this only sets the initial default.
         if not spec.thinking_mode:
             spec.thinking_mode = default_thinking_for_model(selected_model)
         return spec
@@ -5240,8 +5079,7 @@ class AppState:
         for m in models:
             if m.lower() == configured_lower:
                 return m
-        # Configured model isn't currently available (not pulled, not
-        # in CLOUD_MODELS, etc.). Fall back to first detected so the
+        # Configured model isn't currently available. Fall back to first detected so the
         # session can still spin up — silent fallback matches the
         # pre-v0.5.7 behavior so we don't introduce a new failure mode.
         return models[0]
@@ -5304,41 +5142,29 @@ class AppState:
             changes the override mid-session.
         """
         override = self._resolve_specialist_model_override(specialization)
-        # We can only override an Ollama backend (the only supported
-        # backend in v0.4.0+). Defensive: if some future codepath
-        # somehow gets here with a non-Ollama default, fall through to
-        # the default rather than crashing.
-        if not isinstance(self.backend, OllamaBackend):
-            logger.warning(
-                "specialist override requested for %s but default backend "
-                "is %s; falling through",
-                specialization, type(self.backend).__name__,
-            )
+        if not override:
             return None
         try:
-            # Reuse base_url + thinking from the default backend so
-            # only the model changes. `thinking_mode` is the normalized
-            # form (None / "low" / "med" / "high") that OllamaBackend
-            # accepts back via its constructor.
-            base_url = self.backend.base_url
-            thinking = getattr(self.backend, "thinking_mode", None)
-            target_model = override or self.backend.model
-            hard_reasoning_phase = (specialization or "").strip().lower() in {
-                "plan_deep", "reflect", "verify", "repair",
-            }
-            flagship = any(
-                marker in target_model.lower()
-                for marker in ("glm-5.2", "deepseek-v4")
+            if isinstance(self.backend, OllamaBackend):
+                return OllamaBackend(
+                    base_url=self.backend.base_url,
+                    model=override,
+                    thinking=getattr(self.backend, "thinking_mode", None),
+                )
+            active_spec = getattr(self, "backend_spec", None)
+            if active_spec:
+                spec = self.build_backend_spec(
+                    active_spec.backend_type,
+                    model=override,
+                    project_path=self.project.project_path,
+                )
+                spec.thinking_mode = active_spec.thinking_mode
+                return spec.create_backend(self.settings)
+            logger.warning(
+                "specialist override requested for %s without a reproducible backend spec",
+                specialization,
             )
-            if hard_reasoning_phase and flagship and thinking not in {None, "off"}:
-                thinking = "max"
-            if not override and thinking == getattr(self.backend, "thinking_mode", None):
-                return None
-            return OllamaBackend(
-                base_url=base_url,
-                model=target_model,
-                thinking=thinking,
-            )
+            return None
         except Exception:
             logger.exception(
                 "failed to build specialist backend for %s (model=%s); "

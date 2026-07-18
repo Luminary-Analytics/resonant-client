@@ -667,7 +667,7 @@ def make_check_context_factory(
     `[vision]` criteria error out gracefully.
     """
     bash_timeout = 60.0
-    vision_url = "http://10.0.0.133:11434"
+    vision_url = "http://127.0.0.1:11434"
     # v0.5.0a9 — keep the default in sync with
     # acceptance_check.DEFAULT_VISION_MODEL so the GUI and the
     # daemon agree on the fallback when settings.vision is unset.

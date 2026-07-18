@@ -3851,30 +3851,12 @@ class ResonantApp {
         // and known quirks of other open models on Ollama.
         const modelVal = (this.modelSelector && this.modelSelector.value) || '';
         const backendType = modelVal.indexOf(':') > 0 ? modelVal.substring(0, modelVal.indexOf(':')) : '';
-        const modelName = modelVal.indexOf(':') > 0 ? modelVal.substring(modelVal.indexOf(':') + 1) : '';
         let modelHintHTML = '';
         if (!backendType) {
             modelHintHTML = `
                 <div class="mission-composer-hint mission-composer-hint-warn">
                     <span aria-hidden="true">⚠</span>
                     Pick a model first — the autonomous session needs Ollama to run the interview.
-                </div>`;
-        } else if (backendType === 'ollama' && /qwen/i.test(modelName)) {
-            modelHintHTML = `
-                <div class="mission-composer-hint mission-composer-hint-info">
-                    <span aria-hidden="true">ℹ</span>
-                    Heads up: Qwen sometimes formats the spec loosely. If the
-                    "Build this roadmap" button doesn't appear, exit and retry,
-                    or switch to <strong>deepseek-v4-pro:cloud</strong> for more
-                    reliable spec emission.
-                </div>`;
-        } else if (backendType === 'ollama' && /deepseek-v4-flash/i.test(modelName)) {
-            modelHintHTML = `
-                <div class="mission-composer-hint mission-composer-hint-info">
-                    <span aria-hidden="true">⚡</span>
-                    Flash is fast — great for short missions. For multi-specialist
-                    work, <strong>deepseek-v4-pro:cloud</strong> usually produces a
-                    more thorough spec.
                 </div>`;
         }
 
@@ -5861,31 +5843,20 @@ class ResonantApp {
 
         label.textContent = 'Pick an Ollama model';
 
-        // Pin the flagship + secondary cloud tiers to the top.
-        // glm-5.2:cloud is THE flagship (v0.6.5); the deepseek-v4
-        // tiers stay pinned just below it as the secondary option.
-        const FLAGSHIP_MODEL = 'glm-5.2:cloud';
-        const pinnedOrder = [
-            FLAGSHIP_MODEL,
-            'deepseek-v4-pro:cloud',
-            'deepseek-v4-flash:cloud',
-            'deepseek-v4:cloud',
-        ];
-        const pinned = pinnedOrder.filter(m => models.includes(m));
-        const others = models.filter(m => !pinned.includes(m));
-        const ordered = [...pinned, ...others];
+        const configuredDefault = (this.settings?.general?.default_model || '').trim();
+        const ordered = models;
 
         const card = document.createElement('div');
         card.className = 'backend-group-cards single';
 
         for (const model of ordered) {
-            const isFlagship = model === FLAGSHIP_MODEL;
+            const isConfiguredDefault = configuredDefault === model;
             const row = document.createElement('div');
             row.className = 'backend-card';
             row.dataset.backend = 'ollama';
             row.dataset.model = model;
             const pills = [];
-            if (isFlagship) pills.push('<span class="backend-pill backend-pill-rec">Recommended</span>');
+            if (isConfiguredDefault) pills.push('<span class="backend-pill backend-pill-rec">Default</span>');
             if (model.endsWith(':cloud')) pills.push('<span class="backend-pill backend-pill-ok">Cloud</span>');
             else pills.push('<span class="backend-pill backend-pill-ok">Local</span>');
             row.innerHTML = `
@@ -5914,7 +5885,7 @@ class ResonantApp {
         const reason = opts.reason || 'unreachable';
         const triedUrl = opts.url
             || (this.settings && this.settings.network && this.settings.network.ollama_url)
-            || 'http://10.0.0.133:11434';
+            || 'http://127.0.0.1:11434';
 
         label.textContent = 'Set up Ollama';
 
@@ -5930,28 +5901,24 @@ class ResonantApp {
                 <span>${this.escapeHtml(headline)}</span>
             </div>
             <p class="ollama-wizard-blurb">
-                Resonant Client is purpose-built for GLM, DeepSeek, and other
-                open-source models running through Ollama. If you want
-                Anthropic models, reach for <strong>Claude Code</strong>; for
-                OpenAI, reach for <strong>Codex</strong>.
+                Resonant uses the models exposed by your configured Ollama
+                endpoint. Model capabilities are detected at runtime.
             </p>
 
             <div class="ollama-wizard-step">
                 <div class="ollama-wizard-step-title">1. Ollama URL</div>
                 <div class="ollama-wizard-row">
                     <input type="text" class="ollama-wizard-url" value="${this.escapeHtml(triedUrl)}"
-                        placeholder="http://10.0.0.133:11434" spellcheck="false" autocomplete="off">
+                        placeholder="http://127.0.0.1:11434" spellcheck="false" autocomplete="off">
                     <button type="button" class="ollama-wizard-test">Test</button>
                 </div>
                 <div class="ollama-wizard-quick-row">
                     <span class="ollama-wizard-quick-label">Quick fill:</span>
-                    <button type="button" class="ollama-wizard-quick" data-url="http://10.0.0.133:11434"
-                        title="Mac Studio (canonical Resonant deployment)">Mac Studio</button>
-                    <button type="button" class="ollama-wizard-quick" data-url="http://localhost:11434"
-                        title="Ollama on this machine (dev / single-host setups)">localhost</button>
+                    <button type="button" class="ollama-wizard-quick" data-url="http://127.0.0.1:11434"
+                        title="Ollama on this machine">localhost</button>
                 </div>
                 <div class="ollama-wizard-hint" id="ollama-wizard-hint">
-                    Default: <code>http://10.0.0.133:11434</code> (Mac Studio).
+                    Default: <code>http://127.0.0.1:11434</code>.
                     Override via <code>OLLAMA_HOST</code> env or fill above.
                 </div>
             </div>
@@ -5967,12 +5934,8 @@ class ResonantApp {
             <div class="ollama-wizard-step">
                 <div class="ollama-wizard-step-title">3. Pull a model</div>
                 <div class="ollama-wizard-cmd">
-                    <code>ollama pull glm-5.2:cloud</code>
-                    <span class="ollama-wizard-cmd-note">— flagship (756B, 1M context), the default</span>
-                </div>
-                <div class="ollama-wizard-cmd">
-                    <code>ollama pull deepseek-v4-pro:cloud</code>
-                    <span class="ollama-wizard-cmd-note">— secondary tier, separate cloud quota</span>
+                    Browse <a href="https://ollama.com/search" target="_blank" rel="noopener">Ollama models</a>,
+                    then run <code>ollama pull &lt;model&gt;</code>
                 </div>
             </div>
         `;
@@ -6075,7 +6038,7 @@ class ResonantApp {
             hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code> — found ${count} model${count === 1 ? '' : 's'}.`;
             hint.className = 'ollama-wizard-hint ollama-wizard-hint-ok';
         } else if (ok) {
-            hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code>, but no models pulled yet. Try <code>ollama pull glm-5.2:cloud</code>.`;
+            hint.innerHTML = `✓ Reachable at <code>${this.escapeHtml(url)}</code>, but no models are installed yet.`;
             hint.className = 'ollama-wizard-hint ollama-wizard-hint-warn';
         } else {
             hint.innerHTML = `✗ <code>${this.escapeHtml(url)}</code> unreachable. Is <code>ollama serve</code> running on that host?`;
@@ -6177,7 +6140,7 @@ class ResonantApp {
                 <button class="onboarding-dismiss" aria-label="Dismiss" title="Dismiss">&times;</button>
             </div>
             <h3 class="onboarding-title">A laser-focused agentic IDE</h3>
-            <p class="onboarding-sub">Resonant is built around <strong>GLM-5.2 on Ollama</strong> &mdash; a 1M-context flagship for agentic coding, with the deepseek-v4 tiers a click away.</p>
+            <p class="onboarding-sub">Resonant adapts its coding harness to the capabilities of your configured model and provider.</p>
             <ul class="onboarding-list">
                 <li><span class="onboarding-bullet">⚡</span><span><strong>Batch + sub-agents</strong> &mdash; ask the model to fan out reads or spawn isolated investigations</span></li>
                 <li><span class="onboarding-bullet">🔍</span><span><strong>Auto-lint &amp; auto-test on edit</strong> &mdash; toggle in Settings &rarr; General</span></li>
@@ -6301,34 +6264,9 @@ class ResonantApp {
             if (preferredConfiguredModel && modelsForBackend.includes(preferredConfiguredModel)) {
                 return { backend, model: preferredConfiguredModel };
             }
-            if (backend === 'codex') {
-                for (const flagship of ['gpt-5.5', 'gpt-5.4-mini', 'gpt-5.3-codex-spark']) {
-                    if (modelsForBackend.includes(flagship)) return { backend, model: flagship };
-                }
-                return { backend, model: modelsForBackend[0] };
-            }
-            for (const flagship of ['glm-5.2:cloud', 'deepseek-v4-pro:cloud', 'deepseek-v4-flash:cloud', 'deepseek-v4:cloud']) {
-                if (modelsForBackend.includes(flagship)) return { backend, model: flagship };
-            }
             return { backend, model: modelsForBackend[0] };
         }
         return null;
-        // v0.4.0 — Ollama-only. Pick the configured default model if
-        // it's pulled, otherwise the first deepseek flagship variant
-        // we can find, otherwise the first available model.
-        if (!backends?.ollama?.models?.length) return null;
-        const models = backends.ollama.models;
-        const configuredModel = this.settings?.general?.default_model || '';
-        if (configuredModel && models.includes(configuredModel)) {
-            return { backend: 'ollama', model: configuredModel };
-        }
-        // v0.6.5 — glm-5.2:cloud is the flagship (see
-        // network_defaults.py:get_default_model). The deepseek-v4
-        // tiers are the secondary fallback when GLM-5.2 isn't pulled.
-        for (const flagship of ['glm-5.2:cloud', 'deepseek-v4-pro:cloud', 'deepseek-v4-flash:cloud', 'deepseek-v4:cloud']) {
-            if (models.includes(flagship)) return { backend: 'ollama', model: flagship };
-        }
-        return { backend: 'ollama', model: models[0] };
     }
 
     _populateSelectWithGroupedModels(selectEl, backends, currentBackend, currentModel) {
@@ -8186,8 +8124,8 @@ class ResonantApp {
                       ]
                     },
                     { key: 'default_model', label: 'Default model', type: 'text',
-                      placeholder: 'e.g. glm-5.2:cloud, kimi-k3, or gpt-5.5',
-                      hint: 'Leave blank to use the chosen backend default. Ollama prefers glm-5.2:cloud, Kimi uses kimi-k3, and Codex prefers gpt-5.5.' },
+                      placeholder: 'Model identifier from your provider',
+                      hint: 'Leave blank to use the first model reported by the chosen backend.' },
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },
@@ -8202,7 +8140,7 @@ class ResonantApp {
                       hint: 'After every file_edit/file_write, run the test command on the matching test file. Failures are injected back as a follow-up turn.' },
                     { key: 'auto_test_command', label: 'Auto-test command', type: 'text',
                       hint: 'Default: "pytest -x". For JS/TS: "npx jest" or "npx vitest run".' },
-                    { key: 'big_context_profile', label: 'Big-context profile (GLM-5.2 / deepseek 1M)', type: 'toggle',
+                    { key: 'big_context_profile', label: 'Large-context profile', type: 'toggle',
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
                       hint: 'Off by default. Enable to use Resonant\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.resonant/, not in your repo.' },
@@ -8251,7 +8189,7 @@ class ResonantApp {
                     // v0.4.0 — Ollama is the only backend. Default Mac Studio
                     // location is 10.0.0.133:11434; leave blank to use the
                     // OLLAMA_HOST env var or auto-detect.
-                    { key: 'ollama_url', label: 'Ollama URL (e.g. http://10.0.0.133:11434)', type: 'text' },
+                    { key: 'ollama_url', label: 'Ollama URL (e.g. http://127.0.0.1:11434)', type: 'text' },
                 ]
             },
             {
@@ -8339,10 +8277,7 @@ class ResonantApp {
                 }
             } else if (section.id === 'model_evaluations') {
                 const dashboard = this.evaluationDashboard || {};
-                const models = dashboard.models || [
-                    { label: 'glm', model: 'glm-5.2:cloud' },
-                    { label: 'pro', model: 'deepseek-v4-pro:cloud' },
-                ];
+                const models = dashboard.models || [];
                 const specs = dashboard.specs || ['minimal'];
                 const records = dashboard.records || [];
                 const turnSummary = dashboard.turn_summary || {};
@@ -9403,13 +9338,11 @@ class ResonantApp {
     _selectAlternateModelValue() {
         if (!this.modelSelector) return false;
         const current = this.modelSelector.value || '';
-        const preferred = /glm/i.test(current)
-            ? ['deepseek-v4-pro:cloud', 'deepseek-v4-flash:cloud']
-            : ['glm-5.2:cloud', 'deepseek-v4-pro:cloud'];
         const options = Array.from(this.modelSelector.options || []);
-        const target = preferred
-            .map((model) => options.find((option) => option.value.endsWith(`:${model}`)))
-            .find((option) => option && option.value !== current);
+        const currentBackend = current.split(':', 1)[0];
+        const target = options.find((option) =>
+            option.value !== current && option.value.split(':', 1)[0] === currentBackend
+        ) || options.find((option) => option.value !== current);
         if (!target) return false;
         this.modelSelector.value = target.value;
         this.modelSelector.dispatchEvent(new Event('change'));
@@ -11247,14 +11180,7 @@ class ResonantApp {
         const model = event.model || 'the model';
         const attempts = event.attempts || 4;
 
-        // Suggest a model on a SEPARATE cloud quota so switching
-        // dodges the storm. GLM-5.2 (flagship) and the deepseek tiers
-        // are independent quotas; deepseek pro/flash also differ from
-        // each other.
-        let altSuggestion = 'a different model';
-        if (/glm/i.test(model)) altSuggestion = 'deepseek-v4-pro:cloud';
-        else if (/pro/i.test(model)) altSuggestion = 'deepseek-v4-flash:cloud';
-        else if (/flash/i.test(model)) altSuggestion = 'deepseek-v4-pro:cloud';
+        const altSuggestion = 'another configured model';
 
         // v0.6.4 (F6) — status_code 0 + reason "timeout" is the
         // timeout-exhausted flavor (the open-phase retries all timed

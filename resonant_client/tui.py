@@ -31,7 +31,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.key_binding import KeyBindings
 
 from .events import EngineEvent
-from .network_defaults import get_default_backend, get_default_model
+from .network_defaults import get_default_backend, get_default_model, resolve_ollama_url
 from .backends import create_backend, OllamaBackend
 from .engine import Session
 
@@ -1227,7 +1227,7 @@ def main():
         epilog="""
 Examples:
   %(prog)s --backend ollama --model llama3.1:70b   # Use specific Ollama model
-  %(prog)s --ollama-url http://10.0.0.133:11434   # Ollama on LAN
+  %(prog)s --ollama-url http://192.168.1.20:11434 # Ollama on LAN
   %(prog)s --dir ~/projects/myapp                 # Set working directory
 """,
     )
@@ -1262,7 +1262,7 @@ Examples:
         os.chdir(args.dir)
 
     # ── Resolve URL and detect Ollama ──
-    ollama_url = (args.ollama_url or os.environ.get("OLLAMA_HOST", "http://10.0.0.133:11434")).rstrip("/")
+    ollama_url = resolve_ollama_url(args.ollama_url)
 
     console.print(f"\n  [{C_DIM}]{G_THINK} Scanning Ollama[/{C_DIM}]")
     available = _detect_backends(None, ollama_url, None)

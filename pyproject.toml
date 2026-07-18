@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "resonant-client"
 version = "0.9.13"
-description = "Local-first multimodal coding agent for Ollama models and Kimi K3"
+description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
 # v0.6.2 — relicensed Proprietary → MIT. Resonant Client is now an
-# open-source flagship for local-first self-improving autonomous
+# open-source harness for local-first self-improving autonomous
 # coding. See LICENSE at the repo root.
 license = {text = "MIT"}
 requires-python = ">=3.11"

@@ -30,11 +30,7 @@ DEFAULTS = {
         "autonomy_external_paths": [],   # empty → use the defaults from autonomy.py
     },
     "network": {
-        # v0.4.0 — Mac Studio at 10.0.0.133 is the canonical Ollama
-        # host per the user's infra; left empty by default so a fresh
-        # install probes the env / network defaults rather than
-        # hard-coding a private IP. Welcome-screen wizard prompts for
-        # the URL on first run when Ollama isn't reachable.
+        # Empty means use OLLAMA_HOST or the local endpoint default.
         "ollama_url": "",
         # v0.4.4 (T1.4) — `resonant_api_url` and `remote_engine_ws_url`
         # were dropped here. Pre-v0.4.0 settings.json files that still

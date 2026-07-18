@@ -83,13 +83,6 @@ class BackendSpec:
 
     def create_backend(self, settings=None):
         backend_type = self.backend_type
-
-        # v0.4.0 — Ollama is the only supported backend. The factory
-        # in `backends.create_backend` raises a friendly ValueError
-        # for any other backend_type that points the user at the
-        # right upstream tool (Claude Code, Codex). Old BackendSpec
-        # JSONs that still hold `claude` / `openai` / etc. will hit
-        # that error here and the welcome wizard will redirect.
         if backend_type == "ollama":
             return create_backend(
                 "ollama",

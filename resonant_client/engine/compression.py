@@ -7,6 +7,8 @@ into a compact form while keeping recent turns intact.
 
 import logging
 
+from ..capabilities import infer_model_capabilities
+
 logger = logging.getLogger(__name__)
 
 # Rough estimate: 1 token ≈ 4 chars
@@ -48,48 +50,17 @@ def _budget_for_window(context_window: int) -> int:
     return max(4_096, window - reserve)
 
 
-_MODEL_CONTEXT_BUDGETS: dict[str, int] = {
-    "deepseek-v4-flash:cloud": _budget_for_window(1_048_576),
-    "deepseek-v4:cloud": 48_000,          # generic mid-tier
-    "deepseek-v4-pro:cloud": _budget_for_window(1_048_576),
-    "glm-5.2:cloud": _budget_for_window(999_424),  # Ollama Cloud: 976K
-}
-
-
 def model_context_budget(
     model_name: str | None,
     *,
     context_window: int | None = None,
 ) -> int:
-    """Return the compress-threshold for `model_name`.
-
-    Match strategy (in order):
-      1. Exact case-insensitive match against `_MODEL_CONTEXT_BUDGETS`
-      2. Family-fallback heuristic: "deepseek" with "flash"/"pro" uses
-         that tier's budget; any "glm" uses the flagship budget
-      3. Default to `DEFAULT_MAX_CONTEXT_TOKENS` (the pre-T2.1 behavior)
-
-    Returns the integer threshold; never raises.
-    """
+    """Return a compression threshold from runtime or inferred capabilities."""
     if context_window:
         return _budget_for_window(context_window)
     if not model_name:
         return DEFAULT_MAX_CONTEXT_TOKENS
-    lower = model_name.lower()
-    if lower in _MODEL_CONTEXT_BUDGETS:
-        return _MODEL_CONTEXT_BUDGETS[lower]
-    if "deepseek" in lower:
-        if "flash" in lower:
-            return _MODEL_CONTEXT_BUDGETS["deepseek-v4-flash:cloud"]
-        if "pro" in lower:
-            return _MODEL_CONTEXT_BUDGETS["deepseek-v4-pro:cloud"]
-        # Bare "deepseek" without flash/pro suffix → mid-tier
-        return _MODEL_CONTEXT_BUDGETS["deepseek-v4:cloud"]
-    # GLM cloud tiers all carry large (≥200K) upstream windows — treat
-    # any glm-* like the flagship budget rather than the generic default.
-    if "glm" in lower:
-        return _MODEL_CONTEXT_BUDGETS["glm-5.2:cloud"]
-    return DEFAULT_MAX_CONTEXT_TOKENS
+    return _budget_for_window(infer_model_capabilities(model_name).context_window)
 
 
 def estimate_tokens(history: list) -> int:

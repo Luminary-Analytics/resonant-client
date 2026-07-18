@@ -48,7 +48,7 @@ def _capture_stream_payload(backend, chunks, **stream_kwargs):
     return captured
 
 
-def test_thinking_is_top_level_and_glm_sampling_is_vendor_pinned():
+def test_thinking_is_top_level_without_model_specific_sampling():
     backend = OllamaBackend("http://stub", "glm-5.2", thinking="high")
     done_chunk = json.dumps({"done": True}).encode() + b"\n"
 
@@ -56,8 +56,8 @@ def test_thinking_is_top_level_and_glm_sampling_is_vendor_pinned():
 
     assert payload["think"] == "high"
     assert "think" not in payload["options"]
-    assert payload["options"]["temperature"] == 1.0
-    assert payload["options"]["top_p"] == 0.95
+    assert "temperature" not in payload["options"]
+    assert "top_p" not in payload["options"]
 
 
 def test_current_user_message_is_not_duplicated_in_ollama_payload():

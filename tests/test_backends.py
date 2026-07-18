@@ -1330,17 +1330,6 @@ class TestGlmFlagshipWiring:
         backend = _make_backend("glm-5.2:cloud")
         assert backend._detect_tool_support() is True
 
-    @pytest.mark.unit
-    def test_glm_5_2_is_first_in_cloud_models(self):
-        assert OllamaBackend.CLOUD_MODELS[0] == "glm-5.2:cloud"
-
-    @pytest.mark.unit
-    def test_deepseek_tiers_still_offered(self):
-        # The flagship swap keeps the deepseek tiers one click away.
-        assert "deepseek-v4-pro:cloud" in OllamaBackend.CLOUD_MODELS
-        assert "deepseek-v4-flash:cloud" in OllamaBackend.CLOUD_MODELS
-
-
 class TestThinkingWireValues:
     """v0.6.5 — thinking is compatible with tools on GLM-5.2, but the
     wire value is MODEL-DEPENDENT (verified live 2026-06-17): deepseek

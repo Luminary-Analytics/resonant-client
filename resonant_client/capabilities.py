@@ -1,4 +1,4 @@
-"""Capability profiles for Ollama-hosted open models.
+"""Capability profiles for models across Resonant providers.
 
 Profiles combine conservative family knowledge with runtime metadata from
 ``/api/show``. Product behavior should query these capabilities instead of

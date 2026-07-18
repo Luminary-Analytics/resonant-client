@@ -193,7 +193,9 @@ def _browseros_tool(name="click"):
 
 
 def test_kimi_session_advertises_compact_core_tools():
-    backend = SimpleNamespace(name="kimi", model="kimi-k3")
+    backend = SimpleNamespace(
+        name="kimi", model="kimi-k3", supports_dynamic_tool_catalog=True,
+    )
     session = Session(backend=backend)
     session.mcp_tools = [_browseros_tool()]
     full_names = {tool["function"]["name"] for tool in session.tools}
@@ -236,6 +238,7 @@ def test_session_search_tools_loads_catalog_for_next_kimi_step():
         name = "kimi"
         model = "kimi-k3"
         handles_tools = False
+        supports_dynamic_tool_catalog = True
 
         def __init__(self):
             self.calls = 0

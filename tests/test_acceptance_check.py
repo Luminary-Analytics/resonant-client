@@ -325,7 +325,7 @@ class TestVisionRunnerYesNoParsing:
     def _runner_with_response(self, raw: str) -> VisionRunner:
         return VisionRunner(
             _call=lambda model, prompt, img: raw,
-            _list_models=lambda: [DEFAULT_VISION_MODEL],
+            _list_models=lambda: ["test-vision-model"],
         )
 
     def test_yes_at_start_passes(self):
@@ -398,7 +398,7 @@ class TestVisionRunnerCallHookErrors:
 
         r = VisionRunner(
             _call=boom,
-            _list_models=lambda: [DEFAULT_VISION_MODEL],
+            _list_models=lambda: ["test-vision-model"],
         )
         verdict, raw = r.ask(b"img", "?")
         assert verdict is False
@@ -412,7 +412,7 @@ class TestRunVisionCheck:
     def test_passes_when_model_says_yes(self):
         r = VisionRunner(
             _call=lambda m, p, i: "YES, perfectly centered.",
-            _list_models=lambda: [DEFAULT_VISION_MODEL],
+            _list_models=lambda: ["test-vision-model"],
         )
         c = AcceptanceCriterion(type="vision", text="The button is centered horizontally")
         result = run_vision_check(c, b"\x89PNG...", runner=r)
@@ -422,7 +422,7 @@ class TestRunVisionCheck:
     def test_fails_when_model_says_no(self):
         r = VisionRunner(
             _call=lambda m, p, i: "NO, button is left-aligned.",
-            _list_models=lambda: [DEFAULT_VISION_MODEL],
+            _list_models=lambda: ["test-vision-model"],
         )
         c = AcceptanceCriterion(type="vision", text="centered?")
         result = run_vision_check(c, b"img", runner=r)
@@ -439,7 +439,7 @@ class TestRunVisionCheck:
     def test_errors_on_empty_image(self):
         r = VisionRunner(
             _call=lambda m, p, i: "YES",
-            _list_models=lambda: [DEFAULT_VISION_MODEL],
+            _list_models=lambda: ["test-vision-model"],
         )
         c = AcceptanceCriterion(type="vision", text="?")
         result = run_vision_check(c, b"", runner=r)
@@ -460,7 +460,7 @@ class TestRunVisionCheck:
         long_response = "YES " + "x" * 1000
         r = VisionRunner(
             _call=lambda m, p, i: long_response,
-            _list_models=lambda: [DEFAULT_VISION_MODEL],
+            _list_models=lambda: ["test-vision-model"],
         )
         c = AcceptanceCriterion(type="vision", text="?")
         result = run_vision_check(c, b"img", runner=r)
@@ -508,7 +508,7 @@ class TestDispatch:
         # Stub vision model returns YES + claims to be available
         runner = VisionRunner(
             _call=lambda m, p, i: "YES centered",
-            _list_models=lambda: [DEFAULT_VISION_MODEL],
+            _list_models=lambda: ["test-vision-model"],
         )
         c = AcceptanceCriterion(type="vision", text="centered?")
         ctx = CheckContext(

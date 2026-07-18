@@ -22,7 +22,7 @@ See `docs/long-running-agents-phase-2-implementation.md` for the
 broader autonomous-mission architecture this harness exercises.
 """
 from .specs import SPECS, SmokeSpec, get_spec, list_spec_names
-from .runner import SmokeResult, run_smoke, MODELS
+from .runner import SmokeResult, run_smoke, resolve_model_id, MODELS
 from .variance import VarianceReport, run_variance, summarize_runs
 from .flaky import FlakyPlannerBackend
 from .report import render_run_markdown, render_variance_markdown
@@ -49,6 +49,7 @@ __all__ = [
     "list_spec_names",
     "SmokeResult",
     "run_smoke",
+    "resolve_model_id",
     "MODELS",
     "VarianceReport",
     "run_variance",

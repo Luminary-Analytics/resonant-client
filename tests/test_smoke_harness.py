@@ -23,6 +23,7 @@ from resonant_client.smoke import (
     list_spec_names,
     render_run_markdown,
     render_variance_markdown,
+    resolve_model_id,
     summarize_runs,
 )
 from resonant_client.smoke.cli import _print_run_result, build_parser
@@ -124,6 +125,9 @@ class TestSmokeResult:
 
     def test_glm_flagship_is_a_first_class_smoke_model(self):
         assert MODELS["glm"] == "glm-5.2:cloud"
+
+    def test_arbitrary_model_ids_do_not_require_registry_changes(self):
+        assert resolve_model_id("registry.example/new-model:latest") == "registry.example/new-model:latest"
 
     def test_to_dict_includes_derived_fields(self):
         r = _make_result(iter_durations=[100.0, 200.0])
@@ -305,12 +309,12 @@ class TestCLIParser:
                 ["run", "--spec", "totally-fake", "--model", "pro"]
             )
 
-    def test_run_subcommand_rejects_unknown_model(self):
+    def test_run_subcommand_accepts_arbitrary_model_id(self):
         parser = build_parser()
-        with pytest.raises(SystemExit):
-            parser.parse_args(
-                ["run", "--spec", "minimal", "--model", "claude-haiku"]
-            )
+        args = parser.parse_args(
+            ["run", "--spec", "minimal", "--model", "registry/new-model:latest"]
+        )
+        assert args.model == "registry/new-model:latest"
 
     def test_variance_subcommand_default_n_is_three(self):
         parser = build_parser()

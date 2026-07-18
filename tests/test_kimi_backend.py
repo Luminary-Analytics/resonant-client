@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from resonant_client.backends import (
+    EVENT_BACKEND_STATUS,
     EVENT_DONE,
     EVENT_ERROR,
     EVENT_TEXT_DELTA,
@@ -198,8 +199,60 @@ def test_kimi_errors_do_not_expose_api_key():
     events = list(backend.stream("Hi", [], "system", [], None))
     error = next(data["message"] for event, data in events if event == EVENT_ERROR)
 
-    assert "Invalid token" in error
+    assert "rejected the API key" in error
     assert "do-not-leak" not in error
+
+
+def test_kimi_quota_error_is_actionable_and_not_retried():
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(429, json={
+            "error": {
+                "message": (
+                    "Account org-private is suspended due to insufficient balance; "
+                    "please recharge your account"
+                ),
+                "type": "exceeded_current_quota_error",
+            }
+        })
+
+    backend = KimiBackend("secret-key", transport=httpx.MockTransport(handler))
+    events = list(backend.stream("Hi", [], "system", [], None))
+
+    assert requests == 1
+    assert not any(event == EVENT_BACKEND_STATUS for event, _ in events)
+    error = next(data["message"] for event, data in events if event == EVENT_ERROR)
+    assert "insufficient balance" in error
+    assert "Recharge" in error
+    assert "org-private" not in error
+
+
+def test_kimi_rate_limit_remains_retryable(monkeypatch):
+    requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return httpx.Response(429, json={
+                "error": {"message": "Rate limit exceeded", "type": "rate_limit_error"}
+            })
+        return httpx.Response(200, text=_sse_response([
+            {"id": "chatcmpl-retry", "choices": [{"delta": {"content": "OK"}}]},
+        ]))
+
+    monkeypatch.setattr("resonant_client.backends._wait_with_cancel", lambda *_: False)
+    backend = KimiBackend("secret-key", transport=httpx.MockTransport(handler))
+    events = list(backend.stream("Hi", [], "system", [], None))
+
+    assert requests == 2
+    retry = next(data for event, data in events if event == EVENT_BACKEND_STATUS)
+    assert retry["kind"] == "kimi_retry"
+    assert retry["status_code"] == 429
+    assert (EVENT_TEXT_DELTA, {"delta": "OK"}) in events
 
 
 def test_kimi_cost_uses_cached_input_discount(tmp_path):

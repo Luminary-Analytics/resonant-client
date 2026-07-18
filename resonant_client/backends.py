@@ -1817,6 +1817,20 @@ class KimiBackend:
     DEFAULT_MODEL = "kimi-k3"
     MODELS = (DEFAULT_MODEL,)
     RETRYABLE_STATUS = {408, 409, 429, 500, 502, 503, 504}
+    _QUOTA_ERROR_TYPES = {
+        "billing_not_active",
+        "exceeded_current_quota_error",
+        "insufficient_quota",
+        "insufficient_quota_error",
+    }
+    _QUOTA_MESSAGE_MARKERS = (
+        "billing",
+        "insufficient balance",
+        "insufficient credit",
+        "quota",
+        "recharge",
+        "suspended",
+    )
 
     def __init__(
         self,
@@ -2033,14 +2047,48 @@ class KimiBackend:
         return payload
 
     @staticmethod
-    def _error_message(response: httpx.Response) -> str:
+    def _error_details(response: httpx.Response) -> tuple[str, str]:
         try:
             body = response.read().decode("utf-8", errors="replace").strip()
             parsed = json.loads(body)
-            detail = parsed.get("error", {}).get("message") if isinstance(parsed, dict) else ""
-            return str(detail or body or f"HTTP {response.status_code}")[:500]
+            error = parsed.get("error", {}) if isinstance(parsed, dict) else {}
+            error = error if isinstance(error, dict) else {}
+            error_type = str(error.get("type") or "").strip().lower()
+            detail = str(error.get("message") or body or f"HTTP {response.status_code}")
+            return error_type, detail[:500]
         except Exception:
-            return f"HTTP {response.status_code}"
+            return "", f"HTTP {response.status_code}"
+
+    @classmethod
+    def _is_quota_error(cls, error_type: str, message: str) -> bool:
+        normalized_type = str(error_type or "").strip().lower()
+        normalized_message = str(message or "").strip().lower()
+        return (
+            normalized_type in cls._QUOTA_ERROR_TYPES
+            or any(marker in normalized_message for marker in cls._QUOTA_MESSAGE_MARKERS)
+        )
+
+    @classmethod
+    def _is_retryable_error(cls, status_code: int, error_type: str, message: str) -> bool:
+        if status_code not in cls.RETRYABLE_STATUS:
+            return False
+        return status_code != 429 or not cls._is_quota_error(error_type, message)
+
+    @classmethod
+    def _user_error_message(
+        cls,
+        status_code: int,
+        error_type: str,
+        message: str,
+    ) -> str:
+        if status_code == 429 and cls._is_quota_error(error_type, message):
+            return (
+                "Kimi account billing is inactive or has insufficient balance. "
+                "Recharge the account or review its plan and billing details, then retry."
+            )
+        if status_code in {401, 403}:
+            return "Kimi rejected the API key. Check the key in Settings -> Kimi API."
+        return f"Kimi API request failed ({status_code}): {message}"
 
     def stream(
         self,
@@ -2075,8 +2123,18 @@ class KimiBackend:
                         json=payload,
                     ) as response:
                         if response.status_code >= 400:
-                            message = self._error_message(response)
-                            if response.status_code in self.RETRYABLE_STATUS and attempt < 2:
+                            error_type, message = self._error_details(response)
+                            retryable = self._is_retryable_error(
+                                response.status_code, error_type, message
+                            )
+                            logger.warning(
+                                "Kimi API request failed: status=%d type=%s retryable=%s model=%s",
+                                response.status_code,
+                                error_type or "unknown",
+                                retryable,
+                                self.model,
+                            )
+                            if retryable and attempt < 2:
                                 delay = 1.5 * (2 ** attempt)
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": "kimi_retry",
@@ -2091,7 +2149,9 @@ class KimiBackend:
                                     return
                                 continue
                             yield (EVENT_ERROR, {
-                                "message": f"Kimi API request failed ({response.status_code}): {message}"
+                                "message": self._user_error_message(
+                                    response.status_code, error_type, message
+                                )
                             })
                             return
 

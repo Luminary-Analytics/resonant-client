@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.9.9"
+version = "0.9.10"
 description = "Local-first multimodal coding agent for Ollama models and Kimi K3"
 readme = "README.md"
 # v0.6.2 — relicensed Proprietary → MIT. Resonant Client is now an

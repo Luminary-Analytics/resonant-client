@@ -42,8 +42,21 @@ def test_research_cannot_edit_or_run_shell():
     profile = get_specialist(NodeSpecialization.RESEARCH)
     assert "file_write" not in profile.tool_allowlist
     assert "bash" not in profile.tool_allowlist
-    # But CAN browse
-    assert "browser_navigate" in profile.tool_allowlist
+    assert profile.allow_mcp
+
+
+def test_connected_mcp_tools_reach_capable_specialists_only():
+    tools = [
+        {"function": {"name": "file_read"}},
+        {"function": {"name": "mcp_browseros_navigate_page"}},
+    ]
+    research = filter_tools_for_specialist(NodeSpecialization.RESEARCH, tools)
+    plan = filter_tools_for_specialist(NodeSpecialization.PLAN, tools)
+
+    assert {tool["function"]["name"] for tool in research} == {
+        "file_read", "mcp_browseros_navigate_page",
+    }
+    assert {tool["function"]["name"] for tool in plan} == {"file_read"}
 
 
 def test_implement_has_full_edit_powers():

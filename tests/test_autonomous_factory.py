@@ -200,7 +200,7 @@ class TestBuildReflectGoal:
         goal = build_reflect_goal(rm, result)
         assert "[chrome]" in goal
         assert "click button" in goal
-        assert "browser_navigate" in goal
+        assert "mcp_browseros_" in goal
 
     def test_chrome_pending_section_omitted_when_empty(self):
         rm = _build_test_roadmap([("bash", "x", True)])

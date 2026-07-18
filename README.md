@@ -123,6 +123,12 @@ Choose at least one model provider:
 
 If Ollama isn't reachable on first launch, the welcome screen renders a setup wizard with the URL field, install link, and pull commands. You never have to leave the window to get unstuck.
 
+### Browser tools with BrowserOS
+
+[BrowserOS](https://github.com/browseros-ai/BrowserOS) is Resonant's default browser MCP. Install and open BrowserOS, visit `chrome://browseros/mcp`, then copy its Server URL into **Settings -> MCP Servers -> browseros** and click **Connect**. The usual local endpoint is `http://127.0.0.1:9239/mcp`.
+
+Resonant does not bundle Playwright or launch a debug Chrome instance. Browser capabilities come from BrowserOS or another user-configured stdio/streamable HTTP MCP server, and connected MCP tools are available to the primary agent and capable specialists.
+
 ### Environment variables
 
 | Variable | Default | Description |
@@ -204,7 +210,7 @@ resonant_client/
 │   ├── session.py           # Agentic loop, cycle guards, await_user dispatch
 │   ├── tools.py             # Tool definitions + execution routing
 │   ├── sandbox.py           # Permission levels and tool allowlists
-│   ├── browser.py           # Playwright browser tools
+│   ├── mcp.py               # stdio + streamable HTTP MCP tools
 │   ├── computer.py          # Desktop automation
 │   └── ...
 ├── orchestration/

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.9.12"
+version = "0.9.13"
 description = "Local-first multimodal coding agent for Ollama models and Kimi K3"
 readme = "README.md"
 # v0.6.2 — relicensed Proprietary → MIT. Resonant Client is now an
@@ -34,7 +34,6 @@ dependencies = [
 # Kimi uses the existing httpx dependency directly; no provider SDK is needed.
 [project.optional-dependencies]
 server = ["websockets>=12.0"]
-browser = ["playwright>=1.40.0"]
 desktop = ["pyautogui>=0.9.54", "mss>=9.0.0", "Pillow>=10.0.0"]
 gui = [
     "starlette>=0.40.0",
@@ -50,7 +49,6 @@ gui = [
 ]
 all = [
     "websockets>=12.0",
-    "playwright>=1.40.0",
     "pyautogui>=0.9.54",
     "mss>=9.0.0",
     "Pillow>=10.0.0",

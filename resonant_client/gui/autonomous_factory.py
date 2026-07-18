@@ -317,8 +317,9 @@ def build_reflect_goal(
         lines.append("## [chrome] criteria you need to validate")
         lines.append("")
         lines.append(
-            "Drive the browser via `browser_navigate`, `browser_click`, "
-            "`browser_type`, `browser_js`. Mark each criterion via "
+            "Drive the browser through a connected browser MCP. BrowserOS is "
+            "the default and exposes tools with an `mcp_browseros_` prefix. "
+            "Inspect the available schemas instead of assuming tool names. Mark each criterion via "
             "`file_edit` to the roadmap (flip the checkbox `[ ]` → "
             "`[x]` and append a short evidence note)."
         )
@@ -551,6 +552,7 @@ def make_reflect_runner(
     cancel_event: Optional[threading.Event] = None,
     on_session_event: Optional[Callable[[dict], None]] = None,
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
+    mcp_manager: Any = None,
 ) -> Callable[..., FullReflectOutcome]:
     """Build a callable suitable for `DaemonHooks.run_full_reflect`.
 
@@ -571,12 +573,13 @@ def make_reflect_runner(
     runner = LocalSpecialistRunner(
         backend=backend,
         project_path=project_path,
-        all_tools=list(AGENT_TOOLS),
+        all_tools=list(AGENT_TOOLS) + (mcp_manager.get_all_tools() if mcp_manager else []),
         project_instructions=project_instructions or "",
         settings=settings,
         cancel_event=cancel_event,
         on_session_event=on_session_event,
         specialist_backend_resolver=specialist_backend_resolver,
+        mcp_manager=mcp_manager,
     )
 
     def _run_reflect(
@@ -722,6 +725,7 @@ def build_autonomous_mission_hooks(
     image_provider: Optional[Callable[[], Optional[bytes]]] = None,
     planner_specialization: Optional[str] = None,
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
+    mcp_manager: Any = None,
     enable_skill_extraction: bool = True,
     enable_skill_curator: bool = True,
     enable_skill_loader: bool = True,
@@ -925,6 +929,7 @@ def build_autonomous_mission_hooks(
             cancel_event=daemon_stop_event,
             on_session_event=on_session_event,
             specialist_backend_resolver=specialist_backend_resolver,
+            mcp_manager=mcp_manager,
         ),
         check_context_factory=make_check_context_factory(
             project_path=project_path,

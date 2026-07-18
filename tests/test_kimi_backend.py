@@ -181,38 +181,48 @@ def test_kimi_preserves_repeated_legacy_tool_call_ids_as_separate_turns():
     ]
 
 
+def _browseros_tool(name="click"):
+    return {
+        "type": "function",
+        "function": {
+            "name": f"mcp_browseros_{name}",
+            "description": f"BrowserOS {name.replace('_', ' ')} capability.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
 def test_kimi_session_advertises_compact_core_tools():
     backend = SimpleNamespace(name="kimi", model="kimi-k3")
     session = Session(backend=backend)
+    session.mcp_tools = [_browseros_tool()]
     full_names = {tool["function"]["name"] for tool in session.tools}
     provider_names = {tool["function"]["name"] for tool in session.provider_tools}
 
     assert "search_tools" in provider_names
     assert {"file_read", "file_edit", "bash", "task"} <= provider_names
-    assert "browser_click" in full_names
-    assert "browser_click" not in provider_names
+    assert "mcp_browseros_click" in full_names
+    assert "mcp_browseros_click" not in provider_names
     assert len(provider_names) < len(full_names) / 2
 
 
 def test_tool_search_finds_specialized_capabilities():
     session = Session(backend=SimpleNamespace(name="kimi", model="kimi-k3"))
+    session.mcp_tools = [
+        _browseros_tool("click"),
+        _browseros_tool("get_page_content"),
+        _browseros_tool("take_screenshot"),
+    ]
 
     matches = session._search_tool_catalog("click and inspect a browser page", limit=6)
     names = {tool["function"]["name"] for tool in matches}
 
-    assert "browser_click" in names
-    assert names & {"browser_read", "browser_screenshot"}
+    assert "mcp_browseros_click" in names
+    assert names & {"mcp_browseros_get_page_content", "mcp_browseros_take_screenshot"}
 
 
 def test_kimi_emits_dynamic_catalog_as_system_tool_declarations():
-    tool = {
-        "type": "function",
-        "function": {
-            "name": "browser_click",
-            "description": "Click a browser element.",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    }
+    tool = _browseros_tool()
     history = [{"role": "tool_catalog", "tools": [tool], "content": "loaded"}]
 
     messages = KimiBackend("key")._messages(history, "system", "Continue")
@@ -248,14 +258,15 @@ def test_session_search_tools_loads_catalog_for_next_kimi_step():
 
     backend = Backend()
     session = Session(backend=backend, max_steps=2, auto_approve=True)
+    session.mcp_tools = [_browseros_tool()]
 
     list(session.run("Use the browser"))
 
     catalog = next(turn for turn in session.conversation_history if turn["role"] == "tool_catalog")
     names = {tool["function"]["name"] for tool in catalog["tools"]}
-    assert "browser_click" in names
+    assert "mcp_browseros_click" in names
     assert "search_tools" in backend.advertised[0]
-    assert "browser_click" not in backend.advertised[0]
+    assert "mcp_browseros_click" not in backend.advertised[0]
 
 
 def test_kimi_converts_base64_images_to_openai_content_parts():

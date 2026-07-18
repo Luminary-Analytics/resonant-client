@@ -364,13 +364,14 @@ class AppState:
             self._intent_service = IntentService(
                 project_path=self.project.project_path,
                 backend=self.backend,
-                all_tools=list(AGENT_TOOLS),
+                all_tools=list(AGENT_TOOLS) + self.mcp_manager.get_all_tools(),
                 project_instructions=(self._project_instructions or ""),
                 settings=self.settings,
                 on_event=on_event or (lambda ev: None),
                 # v0.5.8a1 — wire the per-specialist Ollama model
                 # resolver. None override → default backend.
                 specialist_backend_resolver=self._build_specialist_backend,
+                mcp_manager=self.mcp_manager,
             )
             self._intent_service_signature = signature
         elif on_event is not None:
@@ -7493,41 +7494,6 @@ async def websocket_endpoint(ws: WebSocket):
                 mode = msg.get("mode", "bypass")
                 state.apply_permission_mode(mode)
 
-            elif command == "connect_browser":
-                # v0.6.5 — one-click "open Chrome in debug mode for the
-                # agent". Attaches to an already-debug Chrome, else launches
-                # the real Chrome with the debug port. `force_relaunch` closes
-                # the user's running Chrome and reopens it in debug mode (the
-                # single-instance lock case). Runs in a thread so the
-                # launch/close can't block the event loop; result flows back
-                # as a browser_status event.
-                force = bool(msg.get("force_relaunch"))
-                profile = msg.get("profile") or None
-                await ws.send_json({"event": "browser_status", "status": "connecting"})
-                from ..engine.browser import get_browser
-                mgr = get_browser()
-
-                def _connect():
-                    if force:
-                        return mgr.relaunch_in_debug(profile=profile)
-                    return mgr.connect_or_launch_chrome(profile=profile)
-
-                try:
-                    result = await asyncio.get_event_loop().run_in_executor(None, _connect)
-                except Exception as e:
-                    result = f"Error: {e}"
-                if mgr.is_connected:
-                    status = "connected"
-                elif "never came up" in (result or ""):
-                    status = "needs_relaunch"
-                else:
-                    status = "error"
-                await ws.send_json({
-                    "event": "browser_status",
-                    "status": status,
-                    "detail": (result or "")[:300],
-                })
-
             elif command == "get_session_replay_events":
                 # Fetch full display_events for any session without switching the active one.
                 target_id = msg.get("session_id", "")
@@ -8138,6 +8104,7 @@ async def websocket_endpoint(ws: WebSocket):
                     # Update session tools
                     if state.session:
                         state.session.mcp_tools = state.mcp_manager.get_all_tools()
+                    state._intent_service = None
                     servers = state.mcp_manager.list_servers()
                     await ws.send_json({"event": "mcp_list", "servers": servers, "connected": success})
 
@@ -8147,6 +8114,7 @@ async def websocket_endpoint(ws: WebSocket):
                     state.mcp_manager.disconnect(server_name)
                     if state.session:
                         state.session.mcp_tools = state.mcp_manager.get_all_tools()
+                    state._intent_service = None
                     servers = state.mcp_manager.list_servers()
                     await ws.send_json({"event": "mcp_list", "servers": servers})
 

@@ -34,10 +34,8 @@ _AWAIT_USER = frozenset({"await_user"})
 # `task` here — sub-agent recursion is the orchestrator's job, not a specialist's.
 ALL_EDIT_TOOLS = READ_ONLY_TOOLS | FILE_WRITE_TOOLS | EXEC_TOOLS | _AWAIT_USER
 
-# Web fetching for `research` — tighter than the full edit set, no shell.
-RESEARCH_TOOLS = READ_ONLY_TOOLS | _AWAIT_USER | frozenset({
-    "browser_navigate", "browser_click", "browser_type",
-})
+# Research remains read-only locally. External capabilities come from MCP.
+RESEARCH_TOOLS = READ_ONLY_TOOLS | _AWAIT_USER
 
 # Tools that `verify` is allowed to call. Reads + bash for tests, no edits.
 VERIFY_TOOLS = READ_ONLY_TOOLS | _AWAIT_USER | frozenset({"bash"})
@@ -55,6 +53,7 @@ class SpecialistProfile:
     tool_allowlist: frozenset
     max_steps: int
     confidence_threshold: float  # below this → orchestrator spawns a verify sibling
+    allow_mcp: bool = False
 
 
 # ── Registry ─────────────────────────────────────────────────────────────
@@ -68,7 +67,8 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
         system_block=(
             "You are an explorer. Your job is to read code and docs to build a clear "
             "picture of what currently exists, not to change anything. Use file_read, "
-            "glob, grep, and browser_* read tools. Do NOT call file_write, file_edit, "
+            "glob, grep, and connected MCP tools when external context is needed. "
+            "Do NOT call file_write, file_edit, "
             "bash, or any state-mutating tool.\n\n"
             "Stay focused on evidence relevant to the goal. Map broadly enough to "
             "avoid false assumptions, then use targeted reads and write a concrete "
@@ -97,6 +97,7 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
         tool_allowlist=READ_ONLY_TOOLS | _AWAIT_USER,
         max_steps=8,
         confidence_threshold=0.7,
+        allow_mcp=True,
     ),
 
     NodeSpecialization.IMPLEMENT: SpecialistProfile(
@@ -152,6 +153,7 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
         # safety net.
         max_steps=50,
         confidence_threshold=0.6,
+        allow_mcp=True,
     ),
 
     NodeSpecialization.VERIFY: SpecialistProfile(
@@ -196,6 +198,7 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
         tool_allowlist=VERIFY_TOOLS,
         max_steps=12,
         confidence_threshold=0.8,
+        allow_mcp=True,
     ),
 
     NodeSpecialization.REPAIR: SpecialistProfile(
@@ -210,6 +213,7 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
         tool_allowlist=ALL_EDIT_TOOLS,
         max_steps=24,  # v0.3.3 — bumped from 16; cycle guards backstop runaways
         confidence_threshold=0.7,
+        allow_mcp=True,
     ),
 
     NodeSpecialization.RESEARCH: SpecialistProfile(
@@ -224,6 +228,7 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
         tool_allowlist=RESEARCH_TOOLS,
         max_steps=10,
         confidence_threshold=0.7,
+        allow_mcp=True,
     ),
 
     # v0.5.0a4 — REFLECT specialist for Autonomous Mission convergence.
@@ -262,10 +267,10 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "cannot override these results — they're the convergence "
             "ground truth.\n\n"
             "The remaining types are your job:\n"
-            "- `[chrome]` — drive the browser yourself: `browser_navigate` "
-            "  to the URL the criterion mentions, `browser_click` / "
-            "  `browser_type` for any interaction, `browser_js` or "
-            "  `browser_screenshot` to read back the assertion. When "
+            "- `[chrome]` — drive the browser through a connected browser MCP. "
+            "  BrowserOS tools use the `mcp_browseros_` prefix; inspect the "
+            "  available tool schemas for navigation, interaction, page content, "
+            "  and screenshots. Another user-configured browser MCP is valid. When "
             "  you've validated it, write the result into the roadmap "
             "  with `file_edit` (mark the checkbox `[ ]` → `[x]` and "
             "  append `*(<short evidence>)*` after the criterion text).\n"
@@ -417,14 +422,11 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             | frozenset({
                 "file_edit",            # write roadmap checkbox + evidence
                 "bash",                 # git log/rev-parse, ad-hoc fallbacks
-                "browser_navigate",     # [chrome] checks
-                "browser_click",
-                "browser_type",
-                "browser_select",
             })
         ),
         max_steps=20,
         confidence_threshold=0.7,
+        allow_mcp=True,
     ),
 
     NodeSpecialization.PLAN: SpecialistProfile(
@@ -546,8 +548,8 @@ SPECIALISTS: dict[str, SpecialistProfile] = {
             "dependencies on earlier subgoals.\n\n"
             "─── CRITICAL CONTRAST WITH `bash` / `file_edit` ───\n\n"
             "You DO NOT have `bash`, `file_edit`, or `file_write`. Tools you "
-            "DO have (`file_read`, `glob`, `grep`, `await_user` + browser "
-            "read tools) are for CONTEXT-GATHERING ONLY. Never emit a "
+            "DO have (`file_read`, `glob`, `grep`, `await_user`) are for "
+            "CONTEXT-GATHERING ONLY. Never emit a "
             "`<tool_call>` block as your final output — that's the "
             "implementer's job. Your final output is the JSON envelope.\n\n"
             "─── ESCAPE HATCH: `await_user` ───\n\n"
@@ -640,6 +642,6 @@ def filter_tools_for_specialist(specialization: str, tools: list[dict]) -> list[
     out = []
     for t in tools:
         name = t.get("function", {}).get("name", "")
-        if name in allowed:
+        if name in allowed or (profile.allow_mcp and name.startswith("mcp_")):
             out.append(t)
     return out

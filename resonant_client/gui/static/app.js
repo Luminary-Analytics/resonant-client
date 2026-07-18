@@ -249,7 +249,6 @@ class ResonantApp {
         this.lspItems = [];
         this.resonantPlugins = [];
         this.pluginSummary = {};
-        this.browserStatus = { status: 'idle', detail: '' };
 
         // DOM refs
         this.chatMessages = document.getElementById('chat-messages');
@@ -321,14 +320,6 @@ class ResonantApp {
 
         // Header indicator refs
         this.gitBadge = document.getElementById('git-badge');
-        const _chromeBtn = document.getElementById('connect-chrome-btn');
-        if (_chromeBtn) {
-            _chromeBtn.addEventListener('click', () => {
-                this.send({ command: 'connect_browser' });
-                this._setChromeBtnState('connecting');
-                this._setBrowserStatus('connecting', '');
-            });
-        }
         this.gitBranchName = document.getElementById('git-branch-name');
         this.gitChangesCount = document.getElementById('git-changes-count');
         this.harnessBadge = document.getElementById('harness-badge');
@@ -465,11 +456,6 @@ class ResonantApp {
         this.ws.send(JSON.stringify({ command: 'plugin_list' }));
     }
 
-    _setBrowserStatus(status, detail) {
-        this.browserStatus = { status: status || 'idle', detail: detail || '' };
-        this._renderStatusPopover();
-    }
-
     _statusPill(status) {
         const normalized = String(status || '').toLowerCase();
         const klass = normalized.includes('error') || normalized.includes('fail') || normalized.includes('unreachable') || normalized === 'offline'
@@ -520,21 +506,6 @@ class ResonantApp {
                 meta: this._statusPill('offline'),
             }));
         }
-        const browser = this.browserStatus || { status: 'idle', detail: '' };
-        const browserState = browser.status === 'connected'
-            ? 'connected'
-            : browser.status === 'connecting'
-                ? 'pending'
-                : browser.status === 'error' || browser.status === 'needs_relaunch'
-                    ? 'attention'
-                    : 'idle';
-        rows.push(this._statusRow({
-            dot: browser.status === 'connected' ? 'ok' : browser.status === 'error' || browser.status === 'needs_relaunch' ? 'warn' : 'muted',
-            title: 'Browser automation',
-            detail: browser.detail || 'Optional Chrome debug bridge',
-            meta: this._statusPill(browserState),
-            action: '<button class="status-row-action" type="button" data-status-action="connect-browser">Connect</button>',
-        }));
         return rows.join('');
     }
 
@@ -549,10 +520,13 @@ class ResonantApp {
             });
         }
         return servers.map((server) => this._statusRow({
-            dot: server.connected ? 'ok' : server.enabled === false ? 'muted' : 'warn',
+            dot: server.connected ? 'ok' : server.error ? 'bad' : server.enabled === false ? 'muted' : 'warn',
             title: server.name || 'MCP server',
-            detail: server.command || '',
-            meta: this._statusPill(server.connected ? `${server.tools || 0} tools` : (server.enabled === false ? 'disabled' : 'disconnected')),
+            detail: server.error || server.endpoint || server.url || server.command || '',
+            meta: this._statusPill(server.connected ? `${server.tools || 0} tools` : (server.error ? 'error' : server.enabled === false ? 'disabled' : 'disconnected')),
+            action: !server.connected && server.enabled !== false
+                ? `<button class="status-row-action" type="button" data-status-mcp="${this.escapeHtml(server.name || '')}">Connect</button>`
+                : '',
         })).join('');
     }
 
@@ -652,7 +626,6 @@ class ResonantApp {
             </div>
             <div class="status-popover-list">${(renderers[tab] || renderers.servers)()}</div>
             <div class="status-popover-footer">
-                <button type="button" data-status-action="connect-browser">Browser automation</button>
                 <button type="button" data-status-action="open-settings">Settings</button>
             </div>`;
     }
@@ -1045,14 +1018,13 @@ class ResonantApp {
                 this.closeStatusPopover();
                 return;
             }
-            const action = e.target.closest('[data-status-action]');
-            if (action?.dataset.statusAction === 'connect-browser') {
-                this.send({ command: 'connect_browser' });
-                this._setChromeBtnState('connecting');
-                this._setBrowserStatus('connecting', '');
+            const mcpConnect = e.target.closest('[data-status-mcp]');
+            if (mcpConnect?.dataset.statusMcp) {
+                this.send({ command: 'mcp_connect', name: mcpConnect.dataset.statusMcp });
                 this.closeStatusPopover();
                 return;
             }
+            const action = e.target.closest('[data-status-action]');
             if (action?.dataset.statusAction === 'open-settings') {
                 this.switchView('settings');
                 this.closeStatusPopover();
@@ -5283,9 +5255,6 @@ class ResonantApp {
             case 'resume_prompt':
                 this.applyResumePrompt(event.prompt || '');
                 break;
-            case 'browser_status':
-                this._onBrowserStatus(event);
-                break;
             case 'sessions_updated':
                 this.sessions = event.sessions || [];
                 if (event.all_sessions) this.allSessions = event.all_sessions;
@@ -8467,14 +8436,28 @@ class ResonantApp {
                 if (servers.length === 0) {
                     bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No MCP servers configured</span></div>`;
                 } else {
-                    bodyHtml = servers.map(([name, cfg]) => `
-                        <div class="settings-row">
-                            <span class="settings-row-label">${name}: <code style="font-size:11px">${cfg.command || ''}</code></span>
-                            <button class="btn-sm mcp-connect-btn" data-server="${name}" style="font-size:11px">Connect</button>
-                        </div>
-                    `).join('');
+                    bodyHtml = servers.map(([name, rawCfg]) => {
+                        const cfg = rawCfg && typeof rawCfg === 'object' ? rawCfg : {};
+                        const transport = cfg.transport || (cfg.url ? 'http' : 'stdio');
+                        const runtime = (this.mcpServers || []).find(server => server.name === name);
+                        const connected = Boolean(runtime?.connected);
+                        const error = runtime?.error || '';
+                        const endpoint = transport === 'http'
+                            ? `<input class="settings-input mcp-url-input" type="url" data-server="${this.escapeHtml(name)}" value="${this.escapeHtml(cfg.url || '')}" aria-label="${this.escapeHtml(name)} MCP server URL" />`
+                            : `<code style="font-size:11px">${this.escapeHtml([cfg.command, ...(cfg.args || [])].filter(Boolean).join(' '))}</code>`;
+                        return `
+                            <div class="settings-row mcp-settings-row">
+                                <span class="settings-row-label"><strong>${this.escapeHtml(name)}</strong><small style="display:block;color:var(--dim)">${this.escapeHtml(transport)}</small></span>
+                                <div class="settings-row-value" style="display:flex;flex-direction:column;align-items:stretch;gap:4px;min-width:0;flex:1">${endpoint}${error ? `<small style="color:var(--danger)">${this.escapeHtml(error)}</small>` : ''}</div>
+                                <button class="btn-sm mcp-connect-btn" data-server="${this.escapeHtml(name)}" style="font-size:11px" ${connected ? 'disabled' : ''}>${connected ? `${runtime.tools || 0} tools` : 'Connect'}</button>
+                            </div>`;
+                    }).join('');
                 }
-                bodyHtml += `<div class="settings-row" style="margin-top:8px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Edit MCP servers in ~/.resonant/settings.json</span></div>`;
+                bodyHtml += `
+                    <div class="settings-row" style="margin-top:8px">
+                        <span class="settings-row-label" style="color:var(--dim);font-size:11px">BrowserOS: copy the Server URL from <code>chrome://browseros/mcp</code>. Other MCP servers remain user configurable.</span>
+                        <button class="btn-sm mcp-add-http-btn" type="button">Add HTTP MCP</button>
+                    </div>`;
             } else if (section.custom) {
                 bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">Configure in settings.json</span></div>`;
             } else if (section.fields) {
@@ -8604,6 +8587,32 @@ class ResonantApp {
                 btn.disabled = true;
                 btn.textContent = 'Loading...';
                 this.send({ command: 'get_prompt_inspector' });
+            });
+        });
+        this.settingsBody.querySelectorAll('.mcp-url-input').forEach(input => {
+            input.addEventListener('change', () => {
+                const serverName = input.dataset.server;
+                const current = this.settings?.mcp_servers?.[serverName] || {};
+                this.send({
+                    command: 'update_settings',
+                    section: 'mcp_servers',
+                    key: serverName,
+                    value: { ...current, transport: 'http', url: input.value.trim(), enabled: true },
+                });
+            });
+        });
+        this.settingsBody.querySelector('.mcp-add-http-btn')?.addEventListener('click', () => {
+            const requestedName = window.prompt('MCP server name');
+            if (!requestedName) return;
+            const serverName = requestedName.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+            if (!serverName) return;
+            const url = window.prompt('Streamable HTTP MCP URL', 'http://127.0.0.1:3000/mcp');
+            if (!url) return;
+            this.send({
+                command: 'update_settings',
+                section: 'mcp_servers',
+                key: serverName,
+                value: { transport: 'http', url: url.trim(), enabled: true },
             });
         });
         const evaluationStart = this.settingsBody.querySelector('.evaluation-start');
@@ -11232,65 +11241,6 @@ class ResonantApp {
      * affordances: jump to the model selector (the alt deepseek tier
      * hits a different cloud quota), and dismiss.
      */
-    // ── Connect Chrome (debug mode) ──────────────────────────────────
-
-    _setChromeBtnState(state) {
-        const btn = document.getElementById('connect-chrome-btn');
-        const label = document.getElementById('connect-chrome-label');
-        if (!btn) return;
-        btn.classList.remove('is-connecting', 'is-connected', 'is-error');
-        if (state === 'connecting') { btn.classList.add('is-connecting'); if (label) label.textContent = 'Connecting…'; }
-        else if (state === 'connected') { btn.classList.add('is-connected'); if (label) label.textContent = 'Chrome ✓'; }
-        else { if (state === 'error') btn.classList.add('is-error'); if (label) label.textContent = 'Chrome'; }
-    }
-
-    _onBrowserStatus(event) {
-        const status = event.status;
-        this._setBrowserStatus(status || 'idle', event.detail || '');
-        if (status === 'connecting') { this._setChromeBtnState('connecting'); return; }
-        if (status === 'connected') {
-            this._setChromeBtnState('connected');
-            this._dismissChromeRelaunchChip();
-            return;
-        }
-        // needs_relaunch OR error → offer the one-click relaunch.
-        this._setChromeBtnState('error');
-        this._showChromeRelaunchChip(event.detail || '', status === 'error');
-    }
-
-    _dismissChromeRelaunchChip() {
-        const el = document.getElementById('chrome-relaunch-chip');
-        if (el) el.remove();
-    }
-
-    _showChromeRelaunchChip(detail, isError) {
-        this._dismissChromeRelaunchChip();
-        if (!this.chatMessages) return;
-        const chip = document.createElement('div');
-        chip.className = 'backend-status-banner chrome-relaunch-chip';
-        chip.id = 'chrome-relaunch-chip';
-        const msg = isError
-            ? `Couldn't open Chrome in debug mode: ${this.escapeHtml((detail || 'unknown error').slice(0, 200))}`
-            : 'Your Chrome is open without debug mode, so the agent can’t attach. Relaunch it in debug mode? Chrome reopens and restores your tabs.';
-        chip.innerHTML = `
-            <span class="backend-status-icon" aria-hidden="true">🌐</span>
-            <span class="backend-status-text">${msg}
-                <span class="backend-status-hint">Closes &amp; reopens your Chrome on the same profile, with the debug port on.</span>
-            </span>
-            <span class="backend-status-actions">
-                <button type="button" class="backend-status-btn chrome-relaunch-go">Relaunch in debug mode</button>
-                <button type="button" class="backend-status-btn chrome-relaunch-dismiss" aria-label="Dismiss">&times;</button>
-            </span>`;
-        chip.querySelector('.chrome-relaunch-go').addEventListener('click', () => {
-            this.send({ command: 'connect_browser', force_relaunch: true });
-            this._setChromeBtnState('connecting');
-            this._dismissChromeRelaunchChip();
-        });
-        chip.querySelector('.chrome-relaunch-dismiss').addEventListener('click', () => this._dismissChromeRelaunchChip());
-        this.chatMessages.appendChild(chip);
-        this.scrollToBottom();
-    }
-
     _renderOllamaExhaustedChip(event) {
         if (!this.chatMessages) return;
         const status = event.status_code || 503;

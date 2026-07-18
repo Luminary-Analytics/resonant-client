@@ -15,10 +15,10 @@ Architecture: a thin TOOL CHEST, not a parallel agent runtime
 
 REFLECT runs as a normal specialist Session via the existing
 plan-graph runner. Inside that Session it can call any tool in its
-allowlist (browser_navigate, browser_click, browser_screenshot,
-bash, etc.). For [chrome] criteria, REFLECT drives the browser
-AGENTICALLY — the model decides what to click, what to assert, what
-JS to run — using the engine tools that already exist.
+allowlist (connected MCP tools, bash, etc.). For [chrome] criteria,
+REFLECT drives the browser AGENTICALLY — the model decides what to
+click and what to assert through BrowserOS or another user-configured
+browser MCP.
 
 This module exists for the DETERMINISTIC parts:
 
@@ -620,8 +620,8 @@ def run_vision_check(
 ) -> CheckResult:
     """Run a [vision] acceptance check.
 
-    REFLECT is responsible for capturing the screenshot (via
-    `browser_screenshot` for web or `computer_screenshot` for
+    REFLECT is responsible for capturing the screenshot (via a
+    connected browser MCP for web or `computer_screenshot` for
     desktop) and passing the bytes here. The criterion's `text` is
     the question we ask the vision model.
 
@@ -672,8 +672,8 @@ class CheckContext:
     the criterion itself. Constructed once per REFLECT pass.
 
     `image_provider` is a callable REFLECT supplies that produces
-    the screenshot bytes for [vision] checks — usually wraps
-    `browser_screenshot` (for web missions) or `computer_screenshot`
+    the screenshot bytes for [vision] checks — usually wraps a browser
+    MCP screenshot tool (for web missions) or `computer_screenshot`
     (for desktop). Returning None means "no screenshot yet" and
     [vision] checks return CheckResult.errored.
     """

@@ -26,11 +26,9 @@ Bundled deps:
                        runtime on Windows, which is pre-installed on
                        Windows 11 and Win10 1809+ (the vast majority).
 
-NOT bundled (deferred):
-- playwright         — adds 150+ MB and a Chromium download. Will be a
-                       one-click "Install browser tools" button in
-                       Settings → Tools that runs `playwright install`
-                       post-install.
+NOT bundled (runtime-optional):
+- Browser automation — supplied by user-configured MCP servers. BrowserOS
+                       is the default profile and runs outside Resonant.
 - opencv-python      — runtime-optional in engine/recording.py (wrapped
                        in try/except). Users who want screen recording
                        can `pip install opencv-python` themselves.
@@ -151,7 +149,7 @@ excludes = [
     "numpy",            # only pulled by some optional cv2 paths we excluded
     "scipy",
     "pandas",
-    "playwright",       # explicitly deferred (see header)
+    "playwright",       # browser automation belongs to external MCP servers
     "cv2",              # runtime-optional, not bundled
     "uiautomation",     # runtime-optional, not bundled
 ]

@@ -10,8 +10,6 @@ WRITE_TOOL_NAMES = frozenset({"file_edit", "file_write", "file_replace"})
 VALIDATION_TOOL_NAMES = frozenset({
     "bash",
     "batch",
-    "browser_read",
-    "browser_screenshot",
     "computer_screenshot",
 })
 

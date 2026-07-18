@@ -208,6 +208,7 @@ class LocalSpecialistRunner:
         on_session_event: Optional[Callable[[dict], None]] = None,
         audit_logger: Optional[Callable[..., None]] = None,
         specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
+        mcp_manager: Any = None,
     ):
         self.backend = backend
         self.project_path = project_path
@@ -220,6 +221,7 @@ class LocalSpecialistRunner:
         self.on_session_event = on_session_event or (lambda ev: None)
         # Per-tool-call audit hook (Phase 4 wires this).
         self.audit_logger = audit_logger
+        self.mcp_manager = mcp_manager
         # v0.5.8a1 — per-specialist backend routing. Optional callable
         # that maps a NodeSpecialization (the string value, e.g. "reflect"
         # or "plan_deep") to a backend instance. Returns None to fall
@@ -339,6 +341,7 @@ class LocalSpecialistRunner:
         # Hand the settings through so autonomy.check_floor can pick up custom
         # protected branches / budget cap / external paths during tool dispatch.
         session._settings_ref = self.settings
+        session._mcp_manager = self.mcp_manager
 
         result = self._drive_session(session, node, graph)
 

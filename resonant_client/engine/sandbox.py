@@ -14,8 +14,6 @@ from typing import Optional
 READ_ONLY_TOOLS = frozenset({
     "file_read", "glob", "grep",
     "skill_view",
-    "browser_read", "browser_screenshot", "browser_js",
-    "browser_scroll", "browser_hover", "browser_wait", "browser_back", "browser_tabs",
     "computer_screenshot",
     "git_status", "git_diff", "git_log",
     "monitors_list", "clipboard_read", "process_list",

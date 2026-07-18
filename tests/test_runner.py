@@ -43,7 +43,7 @@ def _make_runner(events_to_yield=None, **overrides):
     fake_tools = [{"function": {"name": n}} for n in (
         "file_read", "glob", "grep",
         "file_write", "file_edit", "bash",
-        "browser_navigate", "browser_click", "browser_type",
+        "mcp_browseros_navigate_page", "mcp_browseros_click",
     )]
 
     runner = LocalSpecialistRunner(

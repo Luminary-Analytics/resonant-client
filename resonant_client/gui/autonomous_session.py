@@ -748,6 +748,7 @@ def _spawn_autonomous_daemon(
         image_provider=image_provider,
         planner_specialization=planner_spec,
         specialist_backend_resolver=specialist_resolver,
+        mcp_manager=getattr(state, "mcp_manager", None),
     )
 
     config = AutonomousMissionConfig(

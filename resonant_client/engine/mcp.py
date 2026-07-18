@@ -1,31 +1,50 @@
-"""
-MCP (Model Context Protocol) Server Integration for Resonant Engine.
+"""Model Context Protocol server integration.
 
-Manages connections to MCP servers and routes tool calls to them.
-MCP tools are exposed with the prefix: mcp_<server>_<tool>
+Resonant supports local stdio servers and streamable HTTP servers. Tools are
+exposed to models with the stable prefix ``mcp_<server>_<tool>``.
 """
+
+from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import threading
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
+import httpx
+
+from resonant_client import __version__
 from resonant_client.processes import background_process_kwargs
 
 logger = logging.getLogger(__name__)
 
+MCP_PROTOCOL_VERSION = "2024-11-05"
+
 
 @dataclass
 class MCPServerConfig:
-    """Configuration for an MCP server."""
+    """Configuration for an stdio or streamable HTTP MCP server."""
+
     name: str
-    command: str  # Command to start the server
+    command: str = ""
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
+    transport: str = "stdio"
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def is_http(self) -> bool:
+        return self.transport in {"http", "streamable_http"}
+
+    @property
+    def endpoint(self) -> str:
+        return self.url if self.is_http else " ".join([self.command, *self.args]).strip()
 
     def to_dict(self) -> dict:
         return {
@@ -34,22 +53,36 @@ class MCPServerConfig:
             "args": self.args,
             "env": self.env,
             "enabled": self.enabled,
+            "transport": "http" if self.is_http else "stdio",
+            "url": self.url,
+            "headers": self.headers,
         }
 
     @classmethod
     def from_dict(cls, name: str, data: dict) -> "MCPServerConfig":
+        data = data if isinstance(data, dict) else {}
+        url = str(data.get("url", "")).strip()
+        transport = str(data.get("transport", "")).strip().lower()
+        if transport in {"streamable-http", "streamable_http"}:
+            transport = "http"
+        if not transport:
+            transport = "http" if url else "stdio"
         return cls(
             name=name,
-            command=data.get("command", ""),
-            args=data.get("args", []),
-            env=data.get("env", {}),
-            enabled=data.get("enabled", True),
+            command=str(data.get("command", "")).strip(),
+            args=list(data.get("args", [])),
+            env=dict(data.get("env", {})),
+            enabled=bool(data.get("enabled", True)),
+            transport=transport,
+            url=url,
+            headers=dict(data.get("headers", {})),
         )
 
 
 @dataclass
 class MCPTool:
     """A tool provided by an MCP server."""
+
     server_name: str
     name: str
     description: str = ""
@@ -60,7 +93,6 @@ class MCPTool:
         return f"mcp_{self.server_name}_{self.name}"
 
     def to_openai_function(self) -> dict:
-        """Convert to OpenAI function calling format."""
         return {
             "type": "function",
             "function": {
@@ -72,70 +104,112 @@ class MCPTool:
 
 
 class MCPConnection:
-    """Manages a single MCP server connection via stdio."""
+    """Manage one stdio or streamable HTTP MCP connection."""
 
-    def __init__(self, config: MCPServerConfig):
+    def __init__(
+        self,
+        config: MCPServerConfig,
+        *,
+        http_transport: httpx.BaseTransport | None = None,
+    ):
         self.config = config
         self._process: Optional[subprocess.Popen] = None
+        self._http_client: httpx.Client | None = None
+        self._http_transport = http_transport
+        self._session_id = ""
+        self._protocol_version = MCP_PROTOCOL_VERSION
         self._tools: list[MCPTool] = []
         self._lock = threading.Lock()
         self._request_id = 0
         self.connected = False
+        self.last_error = ""
 
     def connect(self) -> bool:
-        """Start the MCP server process and initialize."""
+        """Open the configured transport, initialize MCP, and discover tools."""
+        if not self.config.enabled:
+            self.last_error = "Server is disabled"
+            return False
+        self.last_error = ""
         try:
-            env = {**dict(__import__('os').environ), **self.config.env}
-            cmd = [self.config.command] + self.config.args
+            if self.config.is_http:
+                if not self.config.url:
+                    raise ValueError("HTTP MCP server requires a URL")
+                self._http_client = httpx.Client(
+                    transport=self._http_transport,
+                    timeout=httpx.Timeout(15.0, connect=3.0),
+                    follow_redirects=True,
+                )
+            else:
+                if not self.config.command:
+                    raise ValueError("stdio MCP server requires a command")
+                env = {**dict(os.environ), **self.config.env}
+                self._process = subprocess.Popen(
+                    [self.config.command, *self.config.args],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    shell=(sys.platform == "win32"),
+                    **background_process_kwargs(),
+                )
 
-            self._process = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                env=env,
-                shell=(sys.platform == "win32"),
-                **background_process_kwargs(),
+            init_result = self._send_request(
+                "initialize",
+                {
+                    "protocolVersion": MCP_PROTOCOL_VERSION,
+                    "capabilities": {},
+                    "clientInfo": {"name": "resonant", "version": __version__},
+                },
+            )
+            if not init_result or "capabilities" not in init_result:
+                raise RuntimeError("MCP initialize returned no capabilities")
+            self._protocol_version = str(
+                init_result.get("protocolVersion") or MCP_PROTOCOL_VERSION
             )
 
-            # Send initialize request
-            init_result = self._send_request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "resonant", "version": "0.1.0"},
-            })
-
-            if init_result and "capabilities" in init_result:
-                # Send initialized notification
-                self._send_notification("notifications/initialized", {})
-
-                # Fetch tools
-                tools_result = self._send_request("tools/list", {})
-                if tools_result and "tools" in tools_result:
-                    self._tools = [
-                        MCPTool(
-                            server_name=self.config.name,
-                            name=t["name"],
-                            description=t.get("description", ""),
-                            input_schema=t.get("inputSchema", {}),
-                        )
-                        for t in tools_result["tools"]
-                    ]
-                self.connected = True
-                logger.info(f"MCP server '{self.config.name}' connected with {len(self._tools)} tools")
-                return True
-
-        except Exception as e:
-            logger.error(f"Failed to connect MCP server '{self.config.name}': {e}")
+            self._send_notification("notifications/initialized", {})
+            tools_result = self._send_request("tools/list", {}) or {}
+            self._tools = [
+                MCPTool(
+                    server_name=self.config.name,
+                    name=tool["name"],
+                    description=tool.get("description", ""),
+                    input_schema=tool.get("inputSchema", {}),
+                )
+                for tool in tools_result.get("tools", [])
+                if tool.get("name")
+            ]
+            self.connected = True
+            logger.info(
+                "MCP server '%s' connected over %s with %d tools",
+                self.config.name,
+                "HTTP" if self.config.is_http else "stdio",
+                len(self._tools),
+            )
+            return True
+        except Exception as exc:
+            self.last_error = str(exc)
+            logger.error("Failed to connect MCP server '%s': %s", self.config.name, exc)
             self.disconnect()
+            return False
 
-        return False
-
-    def disconnect(self):
-        """Stop the MCP server process."""
+    def disconnect(self) -> None:
+        """Close the active transport and clear discovered tools."""
         self.connected = False
         self._tools = []
+        if self._http_client:
+            try:
+                if self._session_id:
+                    self._http_client.delete(
+                        self.config.url,
+                        headers=self._http_headers(),
+                    )
+            except Exception:
+                pass
+            self._http_client.close()
+            self._http_client = None
+            self._session_id = ""
         if self._process:
             try:
                 self._process.terminate()
@@ -148,141 +222,178 @@ class MCPConnection:
             self._process = None
 
     def call_tool(self, tool_name: str, arguments: dict) -> dict:
-        """Call a tool on this MCP server."""
-        result = self._send_request("tools/call", {
-            "name": tool_name,
-            "arguments": arguments,
-        })
-        if result is None:
-            return {"error": "No response from MCP server"}
-        return result
+        result = self._send_request(
+            "tools/call",
+            {"name": tool_name, "arguments": arguments},
+        )
+        return result if result is not None else {"error": "No response from MCP server"}
 
     @property
     def tools(self) -> list[MCPTool]:
         return self._tools
 
     def _send_request(self, method: str, params: dict) -> Optional[dict]:
-        """Send a JSON-RPC request and wait for response."""
-        if not self._process or self._process.poll() is not None:
-            return None
-
         with self._lock:
             self._request_id += 1
-            req_id = self._request_id
+            request_id = self._request_id
+            request = {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }
+            response = self._send_payload(request, expect_response=True)
 
-        request = {
-            "jsonrpc": "2.0",
-            "id": req_id,
-            "method": method,
-            "params": params,
-        }
+        if not response:
+            return None
+        if "error" in response:
+            logger.error("MCP error from '%s': %s", self.config.name, response["error"])
+            return None
+        result = response.get("result")
+        return result if isinstance(result, dict) else None
 
+    def _send_notification(self, method: str, params: dict) -> None:
+        notification = {"jsonrpc": "2.0", "method": method, "params": params}
         try:
-            msg = json.dumps(request) + "\n"
-            self._process.stdin.write(msg)
-            self._process.stdin.flush()
+            self._send_payload(notification, expect_response=False)
+        except Exception as exc:
+            logger.error("MCP notification error from '%s': %s", self.config.name, exc)
 
-            # Read response line
-            line = self._process.stdout.readline()
-            if not line:
-                return None
+    def _send_payload(self, payload: dict, *, expect_response: bool) -> dict | None:
+        if self.config.is_http:
+            return self._send_http_payload(payload, expect_response=expect_response)
+        return self._send_stdio_payload(payload, expect_response=expect_response)
 
-            response = json.loads(line.strip())
-            if "result" in response:
-                return response["result"]
-            if "error" in response:
-                logger.error(f"MCP error: {response['error']}")
-                return None
-
-        except Exception as e:
-            logger.error(f"MCP request error: {e}")
-
-        return None
-
-    def _send_notification(self, method: str, params: dict):
-        """Send a JSON-RPC notification (no response expected)."""
+    def _send_stdio_payload(self, payload: dict, *, expect_response: bool) -> dict | None:
         if not self._process or self._process.poll() is not None:
-            return
+            return None
+        assert self._process.stdin is not None
+        self._process.stdin.write(json.dumps(payload) + "\n")
+        self._process.stdin.flush()
+        if not expect_response:
+            return None
+        assert self._process.stdout is not None
+        line = self._process.stdout.readline()
+        return json.loads(line.strip()) if line else None
 
-        notification = {
-            "jsonrpc": "2.0",
-            "method": method,
-            "params": params,
+    def _send_http_payload(self, payload: dict, *, expect_response: bool) -> dict | None:
+        if not self._http_client:
+            return None
+        response = self._http_client.post(
+            self.config.url,
+            headers=self._http_headers(),
+            json=payload,
+        )
+        response.raise_for_status()
+        session_id = response.headers.get("Mcp-Session-Id")
+        if session_id:
+            self._session_id = session_id
+        if not expect_response or not response.content:
+            return None
+        return self._parse_http_response(response, payload.get("id"))
+
+    def _http_headers(self) -> dict[str, str]:
+        headers = {
+            "Accept": "application/json, text/event-stream",
+            "Content-Type": "application/json",
+            "MCP-Protocol-Version": self._protocol_version,
+            **self.config.headers,
         }
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
+        return headers
 
-        try:
-            msg = json.dumps(notification) + "\n"
-            self._process.stdin.write(msg)
-            self._process.stdin.flush()
-        except Exception as e:
-            logger.error(f"MCP notification error: {e}")
+    @staticmethod
+    def _parse_http_response(response: httpx.Response, request_id: Any) -> dict | None:
+        content_type = response.headers.get("content-type", "").lower()
+        if "text/event-stream" not in content_type:
+            data = response.json()
+            return data if isinstance(data, dict) else None
+
+        for line in response.text.splitlines():
+            if not line.startswith("data:"):
+                continue
+            raw = line[5:].strip()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and (request_id is None or data.get("id") == request_id):
+                return data
+        return None
 
 
 class MCPManager:
-    """Manages multiple MCP server connections."""
+    """Manage user-configured MCP server connections."""
 
     def __init__(self, settings=None):
         self._settings = settings
         self._connections: dict[str, MCPConnection] = {}
+        self._errors: dict[str, str] = {}
         self._lock = threading.Lock()
 
     def connect(self, server_name: str, config: Optional[MCPServerConfig] = None) -> bool:
-        """Connect to an MCP server."""
         if not config and self._settings:
             servers = self._settings.get("mcp_servers") or {}
             if server_name in servers:
                 config = MCPServerConfig.from_dict(server_name, servers[server_name])
-
         if not config:
-            logger.error(f"No config for MCP server '{server_name}'")
+            logger.error("No config for MCP server '%s'", server_name)
+            return False
+        if not config.enabled:
+            logger.info("MCP server '%s' is disabled", server_name)
             return False
 
         with self._lock:
-            # Disconnect existing
-            if server_name in self._connections:
-                self._connections[server_name].disconnect()
+            old = self._connections.pop(server_name, None)
+        if old:
+            old.disconnect()
 
-            conn = MCPConnection(config)
-            if conn.connect():
-                self._connections[server_name] = conn
-                return True
+        connection = MCPConnection(config)
+        if not connection.connect():
+            with self._lock:
+                self._errors[server_name] = connection.last_error or "Connection failed"
             return False
-
-    def disconnect(self, server_name: str):
-        """Disconnect an MCP server."""
         with self._lock:
-            conn = self._connections.pop(server_name, None)
-            if conn:
-                conn.disconnect()
+            self._connections[server_name] = connection
+            self._errors.pop(server_name, None)
+        return True
 
-    def disconnect_all(self):
-        """Disconnect all MCP servers."""
+    def disconnect(self, server_name: str) -> None:
         with self._lock:
-            for conn in self._connections.values():
-                conn.disconnect()
+            connection = self._connections.pop(server_name, None)
+            self._errors.pop(server_name, None)
+        if connection:
+            connection.disconnect()
+
+    def disconnect_all(self) -> None:
+        with self._lock:
+            connections = list(self._connections.values())
             self._connections.clear()
+        for connection in connections:
+            connection.disconnect()
 
     def get_all_tools(self) -> list[dict]:
-        """Get all tools from all connected MCP servers in OpenAI function format."""
-        tools = []
         with self._lock:
-            for conn in self._connections.values():
-                if conn.connected:
-                    tools.extend(t.to_openai_function() for t in conn.tools)
-        return tools
+            connections = list(self._connections.values())
+        return [
+            tool.to_openai_function()
+            for connection in connections
+            if connection.connected
+            for tool in connection.tools
+        ]
 
     def call_tool(self, prefixed_name: str, arguments: dict) -> dict:
-        """Call an MCP tool by its prefixed name (mcp_server_tool)."""
         if not prefixed_name.startswith("mcp_"):
             return {"error": f"Invalid MCP tool name: {prefixed_name}"}
 
         suffix = prefixed_name[4:]
         candidates: set[str] = set()
-
         if self._settings:
             configured = self._settings.get("mcp_servers") or {}
             candidates.update(configured.keys())
-
         with self._lock:
             candidates.update(self._connections.keys())
 
@@ -294,43 +405,41 @@ class MCPManager:
                 server_name = candidate
                 tool_name = suffix[len(prefix):]
                 break
-
         if not server_name or not tool_name:
             return {"error": f"Invalid MCP tool name: {prefixed_name}"}
 
         with self._lock:
-            conn = self._connections.get(server_name)
-
-        if not conn or not conn.connected:
+            connection = self._connections.get(server_name)
+        if not connection or not connection.connected:
             return {"error": f"MCP server '{server_name}' not connected"}
-
-        return conn.call_tool(tool_name, arguments)
+        return connection.call_tool(tool_name, arguments)
 
     def health_check(self) -> dict:
-        """Return health status of all configured servers."""
-        result = {}
         with self._lock:
-            for name, conn in self._connections.items():
-                result[name] = {
-                    "connected": conn.connected,
-                    "tools": len(conn.tools),
-                }
-        return result
+            return {
+                name: {"connected": conn.connected, "tools": len(conn.tools)}
+                for name, conn in self._connections.items()
+            }
 
     def list_servers(self) -> list[dict]:
-        """List all servers with their status."""
         servers = []
-        # From settings
-        if self._settings:
-            configured = self._settings.get("mcp_servers") or {}
-            for name, data in configured.items():
-                with self._lock:
-                    conn = self._connections.get(name)
-                servers.append({
+        configured = self._settings.get("mcp_servers") if self._settings else {}
+        for name, data in (configured or {}).items():
+            config = MCPServerConfig.from_dict(name, data)
+            with self._lock:
+                connection = self._connections.get(name)
+                error = self._errors.get(name, "")
+            servers.append(
+                {
                     "name": name,
-                    "command": data.get("command", ""),
-                    "enabled": data.get("enabled", True),
-                    "connected": conn.connected if conn else False,
-                    "tools": len(conn.tools) if conn and conn.connected else 0,
-                })
+                    "transport": "http" if config.is_http else "stdio",
+                    "url": config.url,
+                    "command": config.command,
+                    "endpoint": config.endpoint,
+                    "enabled": config.enabled,
+                    "connected": connection.connected if connection else False,
+                    "tools": len(connection.tools) if connection and connection.connected else 0,
+                    "error": error,
+                }
+            )
         return servers

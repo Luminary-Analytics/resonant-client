@@ -1826,11 +1826,24 @@ class Session:
                     import time as _time
                     mcp_start = _time.time()
                     mcp_result = self._mcp_manager.call_tool(fn_name, fn_args)
-                    mcp_output = str(mcp_result.get("content", mcp_result))
+                    content = mcp_result.get("content")
+                    if isinstance(content, list):
+                        text_parts = [
+                            item.get("text", "")
+                            for item in content
+                            if isinstance(item, dict) and item.get("type") == "text"
+                        ]
+                        mcp_output = "\n".join(part for part in text_parts if part)
+                        if not mcp_output:
+                            mcp_output = json.dumps(content, ensure_ascii=False)
+                    elif isinstance(content, str):
+                        mcp_output = content
+                    else:
+                        mcp_output = json.dumps(mcp_result, ensure_ascii=False, default=str)
                     from .tools import ToolResult
                     result = ToolResult(
                         output=mcp_output,
-                        is_error="error" in mcp_result,
+                        is_error=bool(mcp_result.get("isError") or "error" in mcp_result),
                         elapsed=_time.time() - mcp_start,
                     )
 

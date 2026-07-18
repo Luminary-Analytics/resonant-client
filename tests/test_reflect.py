@@ -43,6 +43,7 @@ from resonant_client.orchestration.reflect import (
 from resonant_client.orchestration.specialists import (
     SPECIALISTS,
     SpecialistProfile,
+    filter_tools_for_specialist,
     get_specialist,
 )
 
@@ -107,16 +108,11 @@ class TestReflectSpecialistRegistration:
         profile = get_specialist(NodeSpecialization.REFLECT)
         assert "file_edit" in profile.tool_allowlist
 
-    def test_reflect_has_browser_tools_for_chrome(self):
+    def test_reflect_accepts_connected_browser_mcp_tools(self):
         profile = get_specialist(NodeSpecialization.REFLECT)
-        # All four core browser-interaction tools needed for [chrome]
-        # criteria — without these the model can't drive the page.
-        assert "browser_navigate" in profile.tool_allowlist
-        assert "browser_click" in profile.tool_allowlist
-        assert "browser_type" in profile.tool_allowlist
-        # Read-only browser tools come via READ_ONLY_TOOLS:
-        assert "browser_screenshot" in profile.tool_allowlist
-        assert "browser_js" in profile.tool_allowlist
+        assert profile.allow_mcp
+        tools = [{"function": {"name": "mcp_browseros_take_screenshot"}}]
+        assert filter_tools_for_specialist(NodeSpecialization.REFLECT, tools) == tools
 
     def test_reflect_has_bash_for_git(self):
         # bash is required for `git log` / `git rev-parse` (commit

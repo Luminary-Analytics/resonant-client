@@ -116,7 +116,7 @@ End-to-end runtime: ~3-5 minutes on `windows-latest` GitHub-hosted runner.
 
 **Excludes (explicitly NOT bundled):**
 - `pywebview` — requires WebView2 runtime on the target machine. v0.x ships browser-only mode (installer pops `localhost:8909` in default browser). Re-add for v1.0+ if pywebview UX is desired.
-- `playwright` — adds 150+ MB and a Chromium download. Will be a one-click "Install browser tools" button in Settings → Tools that runs `playwright install` post-install.
+- Browser automation runs through user-configured MCP servers and is not bundled. BrowserOS is the default streamable HTTP profile.
 - `cv2` (`opencv-python`) — runtime-optional in `engine/recording.py` (wrapped in try/except). Users who want screen recording can `pip install opencv-python` after install.
 - `uiautomation` — runtime-optional in `engine/accessibility.py`.
 - `tkinter`, `matplotlib`, `numpy`, `scipy`, `pandas`, `PyQt5` — pulled transitively but not used.

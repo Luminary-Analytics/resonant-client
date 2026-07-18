@@ -44,7 +44,14 @@ DEFAULTS = {
     # Secrets are masked before settings are sent to the frontend.
     "api_keys": {"kimi": ""},
     "hooks": [],
-    "mcp_servers": {},
+    "mcp_servers": {
+        "browseros": {
+            "transport": "http",
+            "url": "http://127.0.0.1:9239/mcp",
+            "enabled": True,
+            "description": "Default browser MCP. Copy the server URL from chrome://browseros/mcp.",
+        },
+    },
     "lsp_servers": {},
     "plugins": {},
     "keyboard_shortcuts": {},

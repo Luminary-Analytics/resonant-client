@@ -125,14 +125,27 @@ class CostTracker:
     def get_all_costs(self) -> dict:
         """Return full cost data for display."""
         with self._lock:
+            daily = {
+                key: {**value, "cost_usd": round(float(value.get("cost_usd", 0.0)), 4)}
+                for key, value in self._daily.items()
+            }
+            total = {
+                "input_tokens": sum(int(value.get("input_tokens", 0)) for value in self._daily.values()),
+                "output_tokens": sum(int(value.get("output_tokens", 0)) for value in self._daily.values()),
+                "cost_usd": round(sum(float(value.get("cost_usd", 0.0)) for value in self._daily.values()), 4),
+            }
             return {
                 "session": {
                     "input_tokens": self._session_input,
                     "output_tokens": self._session_output,
                     "cost_usd": round(self._session_cost, 4),
                 },
-                "today": self._get_daily_cost_unlocked(),
-                "daily": {k: {**v, "cost_usd": round(v["cost_usd"], 4)} for k, v in self._daily.items()},
+                "today": daily.get(
+                    date.today().isoformat(),
+                    {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
+                ),
+                "total": total,
+                "daily": daily,
             }
 
     def _load(self) -> None:

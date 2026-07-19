@@ -221,6 +221,7 @@ class ResonantApp {
         // View state
         this.currentView = 'agents';
         this.settings = {};
+        this.costData = null;
         this.promptInspector = null;
         this.evaluationDashboard = null;
         this.iterationCheckpoints = [];
@@ -1374,10 +1375,14 @@ class ResonantApp {
             <span class="steer-queue-actions">
                 <span class="steer-queue-position">Queued</span>
                 <button type="button" class="steer-queue-promote">Steer</button>
+                <button type="button" class="steer-queue-remove" aria-label="Remove queued follow-up" title="Remove queued follow-up">&times;</button>
             </span>
         `;
         item.querySelector('.steer-queue-promote')?.addEventListener('click', () => {
             this._promoteQueuedMessage(messageId);
+        });
+        item.querySelector('.steer-queue-remove')?.addEventListener('click', () => {
+            this._removeQueuedMessage(messageId);
         });
         (this.composerQueue || this.chatMessages).appendChild(item);
         if (this.composerQueue) this.composerQueue.hidden = false;
@@ -1396,6 +1401,17 @@ class ResonantApp {
             button.textContent = 'Steering';
         }
         this.send({ command: 'steer_queued', message_id: messageId });
+    }
+
+    _removeQueuedMessage(messageId) {
+        const queued = this._queuedMessages.get(messageId);
+        if (!queued || queued.removing) return;
+        queued.removing = true;
+        queued.el.classList.add('is-removing');
+        queued.el.querySelectorAll('button').forEach(button => { button.disabled = true; });
+        const label = queued.el.querySelector('.steer-queue-position');
+        if (label) label.textContent = 'Removing';
+        this.send({ command: 'remove_queued', message_id: messageId });
     }
 
     _syncComposerQueue() {
@@ -1463,6 +1479,25 @@ class ResonantApp {
             this._queuedMessages.delete(messageId);
         });
         this._syncComposerQueue();
+    }
+
+    handleMessageRemoved(event) {
+        const queued = this._queuedMessages.get(event.message_id);
+        queued?.el?.remove();
+        this._queuedMessages.delete(event.message_id);
+        this._syncComposerQueue();
+    }
+
+    handleMessageRemoveFailed(event) {
+        const queued = this._queuedMessages.get(event.message_id);
+        if (queued) {
+            queued.removing = false;
+            queued.el.classList.remove('is-removing');
+            queued.el.querySelectorAll('button').forEach(button => { button.disabled = false; });
+            const label = queued.el.querySelector('.steer-queue-position');
+            if (label) label.textContent = queued.steer ? 'Waiting for next step' : 'Queued';
+        }
+        this.showToastMessage(event.message || 'That follow-up could not be removed.');
     }
 
     sendMessage(options = {}) {
@@ -5052,6 +5087,12 @@ class ResonantApp {
             case 'message.queue_cleared':
                 this.handleMessageQueueCleared(event);
                 break;
+            case 'message.removed':
+                this.handleMessageRemoved(event);
+                break;
+            case 'message.remove_failed':
+                this.handleMessageRemoveFailed(event);
+                break;
             case 'steer.applied':
                 this.handleSteerApplied(event);
                 break;
@@ -5544,7 +5585,8 @@ class ResonantApp {
                 this.showStatusMessage(`Checkpoint unavailable: ${event.error || 'unknown error'}`);
                 break;
             case 'costs':
-                // Update cost display
+                this.costData = event.data || null;
+                if (this.currentView === 'settings') this.renderSettingsView();
                 break;
             case 'git_status':
                 this.handleGitStatus(event.data);
@@ -8086,6 +8128,7 @@ class ResonantApp {
                 break;
             case 'settings':
                 this.settingsView.style.display = 'flex';
+                this.send({ command: 'get_costs' });
                 this.send({ command: 'evaluation_list' });
                 this.send({ command: 'checkpoint_list' });
                 if (!this.settings || !Object.keys(this.settings).length) {
@@ -8099,6 +8142,98 @@ class ResonantApp {
 
     // ── Settings View ────────────────────────────────────────────
 
+    _formatUsageTokens(value) {
+        const tokens = Math.max(0, Number(value) || 0);
+        if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 1 : 2)}M`;
+        if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 100_000 ? 0 : 1)}K`;
+        return Math.round(tokens).toLocaleString();
+    }
+
+    _formatUsageCost(value) {
+        const cost = Math.max(0, Number(value) || 0);
+        if (cost > 0 && cost < 0.01) return `$${cost.toFixed(4)}`;
+        return `$${cost.toFixed(2)}`;
+    }
+
+    _renderCostDashboard(data) {
+        const costs = this.costData;
+        const enabled = data.enabled !== false;
+        const budget = Math.max(0, Number(data.budget_alert_usd) || 0);
+        const controls = `
+            <div class="settings-row">
+                <span class="settings-row-label">Enable cost tracking</span>
+                <div class="settings-row-value">
+                    <label class="cost-tracking-toggle"><input type="checkbox" ${enabled ? 'checked' : ''} data-section="cost_tracking" data-key="enabled" /> ${enabled ? 'On' : 'Off'}</label>
+                </div>
+            </div>
+            <div class="settings-row">
+                <span class="settings-row-label">Daily budget alert ($)</span>
+                <div class="settings-row-value">
+                    <input class="settings-input" type="number" min="0" step="0.01" value="${budget || ''}" data-section="cost_tracking" data-key="budget_alert_usd" placeholder="None" />
+                    <div class="settings-row-hint">Shows an alert after tracked daily spend crosses this amount.</div>
+                </div>
+            </div>
+        `;
+        if (!costs) {
+            return `${controls}<div class="cost-dashboard-loading"><span></span>Loading usage history&hellip;</div>`;
+        }
+
+        const emptyUsage = { input_tokens: 0, output_tokens: 0, cost_usd: 0 };
+        const today = costs.today || emptyUsage;
+        const session = costs.session || emptyUsage;
+        const dailyEntries = Object.entries(costs.daily || {}).sort(([a], [b]) => b.localeCompare(a));
+        const total = costs.total || dailyEntries.reduce((sum, [, value]) => ({
+            input_tokens: sum.input_tokens + Number(value.input_tokens || 0),
+            output_tokens: sum.output_tokens + Number(value.output_tokens || 0),
+            cost_usd: sum.cost_usd + Number(value.cost_usd || 0),
+        }), { ...emptyUsage });
+        const totalTokens = item => Number(item.input_tokens || 0) + Number(item.output_tokens || 0);
+        const statCard = (label, item, detail) => `
+            <article class="cost-stat-card">
+                <span class="cost-stat-label">${label}</span>
+                <strong>${this._formatUsageCost(item.cost_usd)}</strong>
+                <span class="cost-stat-tokens">${this._formatUsageTokens(totalTokens(item))} tokens</span>
+                <small>${this._formatUsageTokens(item.input_tokens)} in &middot; ${this._formatUsageTokens(item.output_tokens)} out${detail ? ` &middot; ${detail}` : ''}</small>
+            </article>
+        `;
+        const budgetPercent = budget > 0 ? Math.min(100, (Number(today.cost_usd || 0) / budget) * 100) : 0;
+        const budgetHtml = budget > 0 ? `
+            <div class="cost-budget" aria-label="Daily budget usage">
+                <div><span>Daily alert usage</span><strong>${Math.round(budgetPercent)}% of ${this._formatUsageCost(budget)}</strong></div>
+                <div class="cost-budget-track"><span style="width:${budgetPercent}%"></span></div>
+            </div>
+        ` : '';
+        const historyRows = dailyEntries.slice(0, 14).map(([day, item]) => `
+            <div class="cost-history-row">
+                <time datetime="${this.escapeHtml(day)}">${this.escapeHtml(day)}</time>
+                <span>${this._formatUsageTokens(item.input_tokens)}</span>
+                <span>${this._formatUsageTokens(item.output_tokens)}</span>
+                <strong>${this._formatUsageCost(item.cost_usd)}</strong>
+            </div>
+        `).join('');
+
+        return `
+            ${controls}
+            <div class="cost-dashboard${enabled ? '' : ' is-paused'}">
+                <div class="cost-dashboard-head">
+                    <div><strong>Usage overview</strong><span>${enabled ? 'Tracking active' : 'Tracking paused; history is preserved'}</span></div>
+                    <button type="button" class="btn-sm cost-refresh-btn">Refresh</button>
+                </div>
+                <div class="cost-stat-grid">
+                    ${statCard('Today', today, '')}
+                    ${statCard('Current session', session, '')}
+                    ${statCard('Tracked total', total, `${dailyEntries.length} day${dailyEntries.length === 1 ? '' : 's'}`)}
+                </div>
+                ${budgetHtml}
+                <div class="cost-history">
+                    <div class="cost-history-title"><strong>Recent daily usage</strong><span>Input</span><span>Output</span><span>Cost</span></div>
+                    ${historyRows || '<div class="cost-history-empty">No token usage has been recorded yet.</div>'}
+                </div>
+                <p class="cost-dashboard-note">Local and Ollama-hosted models still report tokens when available, but show $0 unless a per-token price is configured.</p>
+            </div>
+        `;
+    }
+
     renderSettingsView() {
         if (!this.settingsBody) return;
 
@@ -8109,6 +8244,13 @@ class ResonantApp {
         );
 
         const sections = [
+            {
+                id: 'cost_tracking', title: 'Usage & Cost', open: true,
+                fields: [
+                    { key: 'enabled', label: 'Enable cost tracking', type: 'toggle' },
+                    { key: 'budget_alert_usd', label: 'Daily budget alert ($)', type: 'number' },
+                ]
+            },
             {
                 id: 'general', title: 'General', open: true,
                 fields: [
@@ -8200,13 +8342,6 @@ class ResonantApp {
                 ]
             },
             {
-                id: 'cost_tracking', title: 'Cost Tracking',
-                fields: [
-                    { key: 'enabled', label: 'Enable cost tracking', type: 'toggle' },
-                    { key: 'budget_alert_usd', label: 'Daily budget alert ($)', type: 'number' },
-                ]
-            },
-            {
                 id: 'engram', title: 'Memory (Engram)',
                 fields: [
                     { key: 'enabled', label: 'Enable memory', type: 'toggle' },
@@ -8230,7 +8365,9 @@ class ResonantApp {
             el.dataset.settingsSection = section.id;
 
             let bodyHtml = '';
-            if (section.id === 'rag') {
+            if (section.id === 'cost_tracking') {
+                bodyHtml = this._renderCostDashboard(data);
+            } else if (section.id === 'rag') {
                 const rag = this.ragStats || {};
                 const indexed = rag.total_files > 0;
                 bodyHtml = `
@@ -8487,6 +8624,14 @@ class ResonantApp {
                     value: '',
                     clear_secret: true,
                 });
+            });
+        });
+
+        this.settingsBody.querySelectorAll('.cost-refresh-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                btn.disabled = true;
+                btn.textContent = 'Refreshing...';
+                this.send({ command: 'get_costs' });
             });
         });
 

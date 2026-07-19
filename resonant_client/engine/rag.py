@@ -68,6 +68,7 @@ class IndexEntry:
     summary: str = ""   # Brief content summary
     imports: list[str] = field(default_factory=list)   # Import statements
     last_indexed: float = 0.0
+    mtime_ns: int = 0  # Filesystem identity for fast unchanged-file detection
 
     def to_dict(self) -> dict:
         return {
@@ -116,6 +117,8 @@ class CodebaseIndex:
         self._indexing = False
         self._last_full_index: float = 0.0
         self._index_file = self.project_path / ".resonant" / "index.json"
+        self._repo_map_cache: dict[int, str] = {}
+        self._repo_map_generation = 0
 
         # Try loading cached index
         self._load_cache()
@@ -144,6 +147,8 @@ class CodebaseIndex:
         self._indexing = True
         start = time.time()
         stats = {"files_scanned": 0, "files_indexed": 0, "files_skipped": 0, "errors": 0}
+        current_paths: set[str] = set()
+        metadata_changed = False
 
         try:
             for dirpath, dirnames, filenames in os.walk(self.project_path):
@@ -171,7 +176,8 @@ class CodebaseIndex:
 
                     # Skip large files
                     try:
-                        size = os.path.getsize(full_path)
+                        file_stat = os.stat(full_path)
+                        size = file_stat.st_size
                         if size > MAX_FILE_SIZE or size == 0:
                             stats["files_skipped"] += 1
                             continue
@@ -180,6 +186,16 @@ class CodebaseIndex:
                         continue
 
                     rel_path = os.path.relpath(full_path, self.project_path).replace("\\", "/")
+                    current_paths.add(rel_path)
+
+                    existing = self._entries.get(rel_path)
+                    if (
+                        not force
+                        and existing
+                        and existing.size == size
+                        and existing.mtime_ns == file_stat.st_mtime_ns
+                    ):
+                        continue
 
                     # Check if file has changed
                     try:
@@ -188,13 +204,21 @@ class CodebaseIndex:
                         stats["errors"] += 1
                         continue
 
-                    existing = self._entries.get(rel_path)
                     if not force and existing and existing.hash == content_hash:
+                        existing.size = size
+                        existing.mtime_ns = file_stat.st_mtime_ns
+                        metadata_changed = True
                         continue  # Unchanged
 
                     # Index the file
                     try:
-                        entry = self._index_file_content(full_path, rel_path, content_hash)
+                        entry = self._index_file_content(
+                            full_path,
+                            rel_path,
+                            content_hash,
+                            file_size=size,
+                            mtime_ns=file_stat.st_mtime_ns,
+                        )
                         with self._lock:
                             self._entries[rel_path] = entry
                         stats["files_indexed"] += 1
@@ -204,20 +228,17 @@ class CodebaseIndex:
 
             self._last_full_index = time.time()
 
-            # Remove entries for deleted files
-            current_paths = set()
-            for dirpath, dirnames, filenames in os.walk(self.project_path):
-                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
-                for f in filenames:
-                    p = os.path.relpath(os.path.join(dirpath, f), self.project_path).replace("\\", "/")
-                    current_paths.add(p)
-
+            # Remove entries for deleted, excluded, empty, or newly oversized
+            # files using paths collected during the primary walk.
             with self._lock:
                 stale = [p for p in self._entries if p not in current_paths]
                 for p in stale:
                     del self._entries[p]
                 if stale:
                     stats["files_removed"] = len(stale)
+                if stats["files_indexed"] or stale or metadata_changed:
+                    self._repo_map_cache.clear()
+                    self._repo_map_generation += 1
 
             # Save cache
             self._save_cache()
@@ -284,8 +305,13 @@ class CodebaseIndex:
         lightweight rather than a full AST renderer.  Files referenced by many
         peers rank first, followed by shallow entrypoints and symbol-rich files.
         """
+        cache_key = max(100, int(max_tokens))
         with self._lock:
+            cached = self._repo_map_cache.get(cache_key)
+            if cached is not None:
+                return cached
             entries = list(self._entries.values())
+            generation = self._repo_map_generation
         if not entries:
             return ""
 
@@ -298,22 +324,38 @@ class CodebaseIndex:
                 Path(no_ext).name.lower(),
             }
 
+        # Resolve imports through an inverted identity index. The previous
+        # implementation compared every import against every file (O(F^2));
+        # suffix candidates preserve those matches in roughly
+        # O(imports * path depth).
+        identity_targets: dict[str, set[str]] = {}
+        for target, names in identities.items():
+            for name in names:
+                identity_targets.setdefault(name, set()).add(target)
+
         inbound = {entry.path: 0 for entry in entries}
         for source in entries:
             for raw_import in source.imports:
                 imported = raw_import.strip("./").replace("\\", "/").lower()
                 imported_dotted = imported.replace("/", ".")
-                for target, names in identities.items():
+                candidates = {imported, imported_dotted}
+                slash_parts = imported.split("/")
+                dotted_parts = imported_dotted.split(".")
+                candidates.update(
+                    "/".join(slash_parts[index:])
+                    for index in range(1, len(slash_parts))
+                )
+                candidates.update(
+                    ".".join(dotted_parts[index:])
+                    for index in range(1, len(dotted_parts))
+                )
+                targets: set[str] = set()
+                for candidate in candidates:
+                    targets.update(identity_targets.get(candidate, ()))
+                for target in targets:
                     if target == source.path:
                         continue
-                    if any(
-                        imported == name
-                        or imported_dotted == name
-                        or imported.endswith("/" + name)
-                        or imported_dotted.endswith("." + name)
-                        for name in names
-                    ):
-                        inbound[target] += 1
+                    inbound[target] += 1
 
         def rank(entry: IndexEntry) -> tuple[float, str]:
             depth = entry.path.count("/")
@@ -327,16 +369,24 @@ class CodebaseIndex:
 
         lines = ["--- REPO MAP (dependency-weighted, signatures only) ---"]
         budget_chars = max(400, int(max_tokens) * 4)
+        used_chars = len(lines[0]) + 1
         for entry in sorted(entries, key=rank):
             symbols = ", ".join(entry.symbols[:8]) or "(no indexed symbols)"
             line = f"- {entry.path}: {symbols}"
             if inbound[entry.path]:
                 line += f" [referenced by {inbound[entry.path]} file(s)]"
-            if sum(len(item) + 1 for item in lines) + len(line) > budget_chars:
+            if used_chars + len(line) > budget_chars:
                 break
             lines.append(line)
+            used_chars += len(line) + 1
         lines.append("--- END REPO MAP ---")
-        return "\n".join(lines)
+        result = "\n".join(lines)
+        with self._lock:
+            # Do not let an in-flight build overwrite an invalidation from a
+            # concurrent background reindex.
+            if generation == self._repo_map_generation:
+                self._repo_map_cache[cache_key] = result
+        return result
 
     def get_stats(self) -> dict:
         """Return index statistics."""
@@ -358,7 +408,15 @@ class CodebaseIndex:
 
     # ── Internal: File Indexing ──────────────────────────────────────
 
-    def _index_file_content(self, full_path: str, rel_path: str, content_hash: str) -> IndexEntry:
+    def _index_file_content(
+        self,
+        full_path: str,
+        rel_path: str,
+        content_hash: str,
+        *,
+        file_size: int | None = None,
+        mtime_ns: int = 0,
+    ) -> IndexEntry:
         """Index a single file's content."""
         try:
             with open(full_path, "r", encoding="utf-8", errors="replace") as f:
@@ -369,6 +427,7 @@ class CodebaseIndex:
                 language=_detect_language(rel_path),
                 size=0, lines=0, hash=content_hash,
                 last_indexed=time.time(),
+                mtime_ns=mtime_ns,
             )
 
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
@@ -382,13 +441,14 @@ class CodebaseIndex:
         return IndexEntry(
             path=rel_path,
             language=language,
-            size=len(content.encode("utf-8")),
+            size=file_size if file_size is not None else len(content.encode("utf-8")),
             lines=lines,
             hash=content_hash,
             symbols=symbols,
             imports=imports,
             summary=summary,
             last_indexed=time.time(),
+            mtime_ns=mtime_ns,
         )
 
     def _hash_file(self, path: str) -> str:
@@ -535,6 +595,7 @@ class CodebaseIndex:
                         "summary": e.summary,
                         "imports": e.imports,
                         "last_indexed": e.last_indexed,
+                        "mtime_ns": e.mtime_ns,
                     }
                     for path, e in self._entries.items()
                 },
@@ -567,6 +628,7 @@ class CodebaseIndex:
                     summary=edata.get("summary", ""),
                     imports=edata.get("imports", []),
                     last_indexed=edata.get("last_indexed", 0),
+                    mtime_ns=edata.get("mtime_ns", 0),
                 )
             logger.info(f"Loaded {len(self._entries)} entries from index cache")
         except Exception as e:

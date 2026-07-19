@@ -100,7 +100,9 @@ def test_running_composer_supports_steering_and_visible_queue_state():
 
     assert "this._queueFollowUpMessage(text);" in source
     assert "this._promoteQueuedMessage(messageId);" in source
+    assert "this._removeQueuedMessage(messageId);" in source
     assert "command: 'steer_queued'" in source
+    assert "command: 'remove_queued'" in source
     assert "case 'steer.applied':" in source
     assert "Waiting for next step" in source
     assert "In current context" in source
@@ -117,6 +119,7 @@ def test_running_composer_supports_steering_and_visible_queue_state():
     assert ".composer-queue" in styles
     assert ".steer-queue-item" in styles
     assert ".steer-queue-promote" in styles
+    assert ".steer-queue-remove" in styles
     assert ".send-btn.is-steering" not in styles
 
 

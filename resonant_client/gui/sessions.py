@@ -9,12 +9,40 @@ import hashlib
 import json
 import logging
 import os
+import re
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Sidebar refreshes are frequent and a project can accumulate hundreds of
+# session files.  Keep parsed metadata in-process, keyed by the file identity
+# that matters for freshness.  Session histories remain on disk; this cache is
+# deliberately small and stores only the lightweight summary dictionaries.
+_SUMMARY_CACHE_MAX = 2048
+_summary_cache: OrderedDict[str, tuple[int, int, Optional[dict]]] = OrderedDict()
+_summary_cache_lock = threading.Lock()
+
+_SUMMARY_STRING_PATTERNS = {
+    key: re.compile(rf'"{key}"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+    for key in ("id", "title", "backend_type", "model", "session_role")
+}
+_SUMMARY_NUMBER_PATTERNS = {
+    key: re.compile(rf'"{key}"\s*:\s*([\d.]+)')
+    for key in ("created_at", "updated_at", "message_count")
+}
+_PINNED_PATTERN = re.compile(r'"pinned"\s*:\s*(true|false)')
+_MISSION_STATE_PATTERN = re.compile(
+    r'"mission_state"\s*:\s*(\{[^{}]*\})', re.DOTALL
+)
+_MISSION_PHASE_PATTERN = re.compile(r'"phase"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"')
+_MISSION_SEED_PATTERN = re.compile(
+    r'"seed_feature"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"'
+)
 
 PLAYGROUND_PROJECT_NAME = "Playground"
 
@@ -263,7 +291,48 @@ def _sessions_dir(project_path: str) -> Path:
     return _project_dir(project_path) / "sessions"
 
 
-def _read_session_summary(filepath: Path) -> Optional[dict]:
+def _decode_json_string(value: str) -> str:
+    """Decode the contents of a JSON string captured without its quotes."""
+    try:
+        return json.loads(f'"{value}"')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return value
+
+
+def _copy_summary(summary: Optional[dict]) -> Optional[dict]:
+    """Return a caller-safe copy without paying for a general deep copy."""
+    if summary is None:
+        return None
+    copied = summary.copy()
+    if isinstance(copied.get("mission_state"), dict):
+        copied["mission_state"] = copied["mission_state"].copy()
+    return copied
+
+
+def _invalidate_session_summary(filepath: Path) -> None:
+    key = os.path.abspath(os.fspath(filepath))
+    with _summary_cache_lock:
+        _summary_cache.pop(key, None)
+
+
+def _cache_session_summary(filepath: Path, summary: Optional[dict]) -> None:
+    """Prime a freshly written session summary and bound cache growth."""
+    try:
+        stat = filepath.stat()
+    except OSError:
+        _invalidate_session_summary(filepath)
+        return
+
+    key = os.path.abspath(os.fspath(filepath))
+    value = (stat.st_mtime_ns, stat.st_size, _copy_summary(summary))
+    with _summary_cache_lock:
+        _summary_cache[key] = value
+        _summary_cache.move_to_end(key)
+        while len(_summary_cache) > _SUMMARY_CACHE_MAX:
+            _summary_cache.popitem(last=False)
+
+
+def _parse_session_summary(filepath: Path) -> Optional[dict]:
     """Read only metadata fields from a session file without parsing full history.
 
     Session files can be large (100KB+) due to conversation_history and
@@ -275,14 +344,13 @@ def _read_session_summary(filepath: Path) -> Optional[dict]:
         with open(filepath, "r", encoding="utf-8") as f:
             prefix = f.read(4096)
 
-        import re
         summary = {}
-        for key in ("id", "title", "backend_type", "model", "session_role"):
-            m = re.search(rf'"{key}"\s*:\s*"([^"]*)"', prefix)
+        for key, pattern in _SUMMARY_STRING_PATTERNS.items():
+            m = pattern.search(prefix)
             if m:
-                summary[key] = m.group(1)
-        for key in ("created_at", "updated_at", "message_count"):
-            m = re.search(rf'"{key}"\s*:\s*([\d.]+)', prefix)
+                summary[key] = _decode_json_string(m.group(1))
+        for key, pattern in _SUMMARY_NUMBER_PATTERNS.items():
+            m = pattern.search(prefix)
             if m:
                 val = m.group(1)
                 summary[key] = float(val) if "." in val else int(val)
@@ -293,20 +361,20 @@ def _read_session_summary(filepath: Path) -> Optional[dict]:
         # indent-2 JSON layout. If mission_state is present but malformed,
         # we fall through to the full-parse path so we never silently
         # mis-classify a mission as a regular session.
-        m = re.search(r'"pinned"\s*:\s*(true|false)', prefix)
+        m = _PINNED_PATTERN.search(prefix)
         if m:
             summary["pinned"] = m.group(1) == "true"
 
         if '"mission_state"' in prefix:
-            ms_match = re.search(r'"mission_state"\s*:\s*(\{[^{}]*\})', prefix, re.DOTALL)
+            ms_match = _MISSION_STATE_PATTERN.search(prefix)
             if ms_match:
                 ms_block = ms_match.group(1)
-                phase_m = re.search(r'"phase"\s*:\s*"([^"]+)"', ms_block)
-                seed_m = re.search(r'"seed_feature"\s*:\s*"((?:\\"|[^"])*)"', ms_block)
+                phase_m = _MISSION_PHASE_PATTERN.search(ms_block)
+                seed_m = _MISSION_SEED_PATTERN.search(ms_block)
                 if phase_m:
                     summary["mission_state"] = {
-                        "phase": phase_m.group(1),
-                        "seed_feature": (seed_m.group(1) if seed_m else "").replace('\\"', '"'),
+                        "phase": _decode_json_string(phase_m.group(1)),
+                        "seed_feature": _decode_json_string(seed_m.group(1)) if seed_m else "",
                     }
             elif '"mission_state": null' not in prefix:
                 # Mission state is present but didn't fit our small-dict
@@ -325,6 +393,51 @@ def _read_session_summary(filepath: Path) -> Optional[dict]:
         return record.to_summary()
     except Exception:
         return None
+
+
+def _read_session_summary(
+    filepath: Path,
+    *,
+    file_stat: Optional[os.stat_result] = None,
+) -> Optional[dict]:
+    """Return cached session metadata when the file has not changed."""
+    try:
+        stat = file_stat or filepath.stat()
+    except OSError:
+        _invalidate_session_summary(filepath)
+        return None
+
+    key = os.path.abspath(os.fspath(filepath))
+    with _summary_cache_lock:
+        cached = _summary_cache.get(key)
+        if cached and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            _summary_cache.move_to_end(key)
+            return _copy_summary(cached[2])
+
+    summary = _parse_session_summary(filepath)
+    with _summary_cache_lock:
+        _summary_cache[key] = (stat.st_mtime_ns, stat.st_size, _copy_summary(summary))
+        _summary_cache.move_to_end(key)
+        while len(_summary_cache) > _SUMMARY_CACHE_MAX:
+            _summary_cache.popitem(last=False)
+    return _copy_summary(summary)
+
+
+def _session_files_by_mtime(directory: Path) -> list[tuple[Path, os.stat_result]]:
+    """Enumerate session files with one stat call each, newest first."""
+    files: list[tuple[Path, os.stat_result]] = []
+    try:
+        candidates = directory.glob("*.json")
+        for filepath in candidates:
+            try:
+                files.append((filepath, filepath.stat()))
+            except OSError:
+                # A session can be deleted concurrently with a sidebar refresh.
+                continue
+    except OSError:
+        return []
+    files.sort(key=lambda item: item[1].st_mtime_ns, reverse=True)
+    return files
 
 
 class SessionRecord:
@@ -490,7 +603,9 @@ class SessionRecord:
         try:
             with open(filepath, "w", encoding="utf-8") as f:
                 json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+            _cache_session_summary(filepath, self.to_summary())
         except Exception as e:
+            _invalidate_session_summary(filepath)
             logger.error(f"Failed to save session {self.id}: {e}")
 
     def delete(self):
@@ -498,6 +613,7 @@ class SessionRecord:
         filepath = _sessions_dir(self.project_path) / f"{self.id}.json"
         try:
             filepath.unlink(missing_ok=True)
+            _invalidate_session_summary(filepath)
         except Exception as e:
             logger.error(f"Failed to delete session {self.id}: {e}")
 
@@ -643,8 +759,8 @@ class ProjectManager:
         if not d.exists():
             return sessions
 
-        for filepath in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-            summary = _read_session_summary(filepath)
+        for filepath, stat in _session_files_by_mtime(d):
+            summary = _read_session_summary(filepath, file_stat=stat)
             if summary:
                 sessions.append(summary)
 
@@ -674,8 +790,8 @@ class ProjectManager:
             d = _sessions_dir(path)
             if not d.exists():
                 continue
-            for filepath in sorted(d.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
-                summary = _read_session_summary(filepath)
+            for filepath, stat in _session_files_by_mtime(d):
+                summary = _read_session_summary(filepath, file_stat=stat)
                 if summary:
                     summary["project_name"] = os.path.basename(path)
                     summary["project_path"] = path
@@ -750,6 +866,7 @@ class ProjectManager:
         filepath = _sessions_dir(self.project_path) / f"{session_id}.json"
         if filepath.exists():
             filepath.unlink()
+        _invalidate_session_summary(filepath)
         if self.current_session and self.current_session.id == session_id:
             self.current_session = None
 

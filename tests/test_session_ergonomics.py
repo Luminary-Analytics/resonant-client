@@ -7,12 +7,10 @@ Currently covers:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from resonant_client.gui import sessions as sessions_mod
-from resonant_client.gui.sessions import ProjectManager, SessionRecord
+from resonant_client.gui.sessions import ProjectManager
 
 
 @pytest.fixture
@@ -111,3 +109,60 @@ class TestForkSession:
         forked = pm.fork_session(rec.id, 1)
         # Kept 2 user messages
         assert forked.message_count == 2
+
+
+class TestSessionSummaryCache:
+    def test_unchanged_session_is_parsed_once(self, isolated_resonant_home, monkeypatch):
+        pm = ProjectManager("/dev/proj")
+        rec = pm.create_session(backend_type="ollama", model="glm")
+        rec.title = 'Quoted "title"'
+        rec.save()
+
+        # Model a fresh process where files exist but the process cache is cold.
+        with sessions_mod._summary_cache_lock:
+            sessions_mod._summary_cache.clear()
+
+        real_parse = sessions_mod._parse_session_summary
+        parse_calls = []
+
+        def counted_parse(filepath):
+            parse_calls.append(filepath)
+            return real_parse(filepath)
+
+        monkeypatch.setattr(sessions_mod, "_parse_session_summary", counted_parse)
+
+        first = pm.list_sessions()
+        second = pm.list_sessions()
+
+        assert first == second
+        assert first[0]["title"] == 'Quoted "title"'
+        assert len(parse_calls) == 1
+
+    def test_save_primes_fresh_summary_without_reparse(
+        self, isolated_resonant_home, monkeypatch
+    ):
+        pm = ProjectManager("/dev/proj")
+        rec = pm.create_session(backend_type="ollama", model="glm")
+        rec.title = "Updated title"
+
+        def unexpected_parse(_filepath):
+            raise AssertionError("freshly saved metadata should already be cached")
+
+        monkeypatch.setattr(sessions_mod, "_parse_session_summary", unexpected_parse)
+        rec.save()
+
+        assert pm.list_sessions()[0]["title"] == "Updated title"
+
+    def test_callers_cannot_mutate_cached_summary(self, isolated_resonant_home):
+        pm = ProjectManager("/dev/proj")
+        rec = pm.create_session(backend_type="ollama", model="glm")
+        rec.start_mission("Build it")
+        rec.save()
+
+        first = pm.list_sessions()
+        first[0]["title"] = "corrupted"
+        first[0]["mission_state"]["phase"] = "corrupted"
+
+        second = pm.list_sessions()
+        assert second[0]["title"] == "New session"
+        assert second[0]["mission_state"]["phase"] == "drafting"

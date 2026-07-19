@@ -21,6 +21,7 @@ import sys
 import threading
 import time
 import difflib
+from collections import deque
 from pathlib import Path
 import uuid
 from datetime import date
@@ -6204,6 +6205,35 @@ async def websocket_endpoint(ws: WebSocket):
                 })
                 continue
 
+            elif command == "remove_queued":
+                message_id = str(msg.get("message_id") or "")
+                queued_index = next(
+                    (
+                        index for index, item in enumerate(pending_chat_messages)
+                        if str(item.get("message_id") or "") == message_id
+                    ),
+                    None,
+                )
+                removed = False
+                if queued_index is not None:
+                    pending_chat_messages.pop(queued_index)
+                    removed = True
+                elif state.session and hasattr(state.session, "remove_steering"):
+                    removed = bool(state.session.remove_steering(message_id))
+
+                if removed:
+                    await ws.send_json({
+                        "event": "message.removed",
+                        "message_id": message_id,
+                    })
+                else:
+                    await ws.send_json({
+                        "event": "message.remove_failed",
+                        "message_id": message_id,
+                        "message": "That follow-up has already started or was already applied.",
+                    })
+                continue
+
             elif command == "cancel":
                 cancel_id = str(msg.get("cancel_id") or uuid.uuid4())
                 cleared_ids = [
@@ -7406,7 +7436,29 @@ async def websocket_endpoint(ws: WebSocket):
                         await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
                 record = state.project.load_session(session_id)
                 if record:
-                    # Recreate backend + session with saved conversation history
+                    # Replay the saved conversation immediately. Backend startup
+                    # can take seconds (or fail when a provider is offline), but
+                    # neither condition should prevent users from opening and
+                    # reading an existing session.
+                    await ws.send_json({
+                        "event": "session_loaded",
+                        "session_id": record.id,
+                        "title": record.title,
+                        "backend_type": record.backend_type,
+                        "model": record.model,
+                        "message_count": record.message_count,
+                        "session_mode": "code",
+                        "session_role": record.session_role or "generator",
+                        "display_events": record.display_events,
+                        "sessions": state.project.list_sessions(),
+                        "current_session_id": record.id,
+                        "runtime_pending": bool(record.backend_type),
+                    })
+
+                    # Recreate backend + session with saved conversation history.
+                    # The websocket remains serialized, so a prompt submitted
+                    # during this short window is processed only after runtime
+                    # setup completes.
                     try:
                         backend_type = record.backend_type
                         model = record.model
@@ -7428,24 +7480,17 @@ async def websocket_endpoint(ws: WebSocket):
                             state.session.conversation_history = record.conversation_history
                         state._first_message_sent = record.message_count > 0
 
-                        # Send session_loaded with display events for replay
-                        await ws.send_json({
-                            "event": "session_loaded",
-                            "session_id": record.id,
-                            "title": record.title,
-                            "backend_type": record.backend_type,
-                            "model": record.model,
-                            "message_count": record.message_count,
-                            "session_mode": "code",
-                            "session_role": record.session_role or "generator",
-                            "display_events": record.display_events,
-                            "sessions": state.project.list_sessions(),
-                            "current_session_id": record.id,
-                        })
-                        # Send lightweight init refresh (skip re-detecting backends)
-                        await ws.send_json(state.get_init_data(refresh_only=True))
                     except Exception as e:
-                        await ws.send_json({"event": "error", "message": str(e)})
+                        state.backend = None
+                        state.backend_spec = None
+                        state.session = None
+                        await ws.send_json({
+                            "event": "status_msg",
+                            "message": f"Session loaded. Its runtime is unavailable: {e}",
+                        })
+                    # Send lightweight init refresh (skip re-detecting backends)
+                    # even when runtime setup fails so navigation stays coherent.
+                    await ws.send_json(state.get_init_data(refresh_only=True))
                 else:
                     await ws.send_json({"event": "error", "message": f"Session {session_id} not found"})
 
@@ -8075,6 +8120,57 @@ async def websocket_endpoint(ws: WebSocket):
             chat_runner.cancel()
 
 
+_STREAM_DELTA_COALESCE_SECONDS = 0.012
+_STREAM_DELTA_MAX_CHARS = 16_384
+_COALESCIBLE_STREAM_EVENTS = frozenset({"text.delta", "thinking.delta"})
+
+
+def _get_coalesced_stream_event(
+    event_queue: queue.Queue,
+    deferred_events: deque,
+    *,
+    timeout: float = 0.5,
+) -> Any:
+    """Read one event, combining adjacent token deltas into a small frame.
+
+    Local models can emit hundreds of tiny chunks per second. Sending every
+    chunk through an executor hop, JSON encoder, WebSocket frame, and DOM event
+    adds substantial overhead without improving perceived latency. A 12ms
+    window keeps streaming responsive while preserving strict event order.
+    """
+    if deferred_events:
+        event = deferred_events.popleft()
+    else:
+        event = event_queue.get(timeout=timeout)
+
+    if not isinstance(event, dict) or event.get("event") not in _COALESCIBLE_STREAM_EVENTS:
+        return event
+
+    event_type = event.get("event")
+    combined = dict(event)
+    parts = [str(event.get("delta") or "")]
+    character_count = len(parts[0])
+    deadline = time.monotonic() + _STREAM_DELTA_COALESCE_SECONDS
+
+    while character_count < _STREAM_DELTA_MAX_CHARS:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            next_event = event_queue.get(timeout=remaining)
+        except queue.Empty:
+            break
+        if not isinstance(next_event, dict) or next_event.get("event") != event_type:
+            deferred_events.append(next_event)
+            break
+        delta = str(next_event.get("delta") or "")
+        parts.append(delta)
+        character_count += len(delta)
+
+    combined["delta"] = "".join(parts)
+    return combined
+
+
 async def _run_session_streaming(
     ws: WebSocket,
     session: Session,
@@ -8178,10 +8274,16 @@ async def _run_session_streaming(
     # because text.done captures the final text; status/session.start are ephemeral)
     SKIP_FOR_REPLAY = {"text.delta", "thinking.delta", "session.start", "status"}
 
+    deferred_events: deque = deque()
+
     def _get_event():
         while True:
             try:
-                return event_queue.get(timeout=0.5)
+                return _get_coalesced_stream_event(
+                    event_queue,
+                    deferred_events,
+                    timeout=0.5,
+                )
             except queue.Empty:
                 continue
 

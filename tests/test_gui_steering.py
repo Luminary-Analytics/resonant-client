@@ -4,6 +4,7 @@ import threading
 from starlette.testclient import TestClient
 
 from resonant_client.gui import app as gui_app
+from resonant_client.engine.session import Session
 
 
 class _CancellableSession:
@@ -185,6 +186,59 @@ def test_queued_followup_can_be_promoted_to_steer(monkeypatch):
             release_first.set()
 
     assert processed == ["first"]
+
+
+def test_queued_followup_can_be_removed_without_interrupting_active_turn(monkeypatch):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    processed = []
+    session = _CancellableSession()
+
+    async def fake_process(_ws, message):
+        processed.append(message["text"])
+        first_started.set()
+        await asyncio.to_thread(release_first.wait, 5)
+
+    monkeypatch.setattr(gui_app, "_process_chat_message", fake_process)
+    monkeypatch.setattr(gui_app.state, "available_backends", [object()])
+    monkeypatch.setattr(gui_app.state, "backend", object())
+    monkeypatch.setattr(gui_app.state, "session", session)
+    monkeypatch.setattr(gui_app.state, "codebase_index", object())
+
+    with TestClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"command": "message", "text": "first"})
+            assert first_started.wait(2)
+            websocket.send_json({
+                "command": "message",
+                "text": "remove me",
+                "message_id": "remove-1",
+            })
+            assert websocket.receive_json()["event"] == "message.queued"
+
+            websocket.send_json({"command": "remove_queued", "message_id": "remove-1"})
+            assert websocket.receive_json() == {
+                "event": "message.removed",
+                "message_id": "remove-1",
+            }
+            assert not session.cancelled.is_set()
+            release_first.set()
+
+    assert processed == ["first"]
+
+
+def test_pending_steering_can_be_removed_by_message_id():
+    session = Session(object())
+    assert session.steer("one", message_id="steer-1")
+    assert session.steer("two", message_id="steer-2")
+    assert session.steer("three", message_id="steer-3")
+
+    assert session.remove_steering("steer-2") is True
+    assert session.remove_steering("missing") is False
+    assert session._drain_steering() == [
+        {"message_id": "steer-1", "text": "one"},
+        {"message_id": "steer-3", "text": "three"},
+    ]
 
 
 def test_stop_clears_queued_followups(monkeypatch):

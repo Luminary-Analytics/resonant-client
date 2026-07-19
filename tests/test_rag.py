@@ -7,21 +7,15 @@ summary building, incremental indexing, filtering, thread safety, and edge cases
 """
 
 import json
-import os
 import threading
 import time
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from resonant_client.engine.rag import (
     CodebaseIndex,
     IndexEntry,
-    INDEXABLE_EXTENSIONS,
     MAX_FILE_SIZE,
-    SKIP_DIRS,
-    SearchResult,
     _build_summary,
     _detect_language,
     _extract_imports,
@@ -784,10 +778,23 @@ class TestIncrementalIndexing:
     @pytest.mark.integration
     def test_unchanged_files_not_reindexed(self, tmp_project):
         idx = CodebaseIndex(tmp_project)
-        stats1 = idx.index()
+        idx.index()
         stats2 = idx.index()
         # Second run should index 0 files (all unchanged)
         assert stats2["files_indexed"] == 0
+
+    @pytest.mark.integration
+    def test_unchanged_files_reuse_cached_hashes(self, tmp_project, monkeypatch):
+        idx = CodebaseIndex(tmp_project)
+        idx.index()
+
+        def unexpected_hash(_path):
+            raise AssertionError("unchanged files should not be opened and hashed")
+
+        monkeypatch.setattr(idx, "_hash_file", unexpected_hash)
+        stats = idx.index()
+
+        assert stats["files_indexed"] == 0
 
     @pytest.mark.integration
     def test_changed_file_reindexed(self, tmp_project):
@@ -814,6 +821,22 @@ class TestIncrementalIndexing:
         idx.index()
         stats = idx.index(force=True)
         assert stats["files_indexed"] > 0
+
+    @pytest.mark.integration
+    def test_reindex_invalidates_cached_repo_map(self, tmp_project):
+        idx = CodebaseIndex(tmp_project)
+        idx.index()
+        before = idx.get_repo_map(max_tokens=10_000)
+
+        (tmp_project / "new_module.py").write_text(
+            "def newly_indexed_symbol():\n    return True\n",
+            encoding="utf-8",
+        )
+        idx.index()
+        after = idx.get_repo_map(max_tokens=10_000)
+
+        assert "newly_indexed_symbol" not in before
+        assert "newly_indexed_symbol" in after
 
 
 # ======================================================================
@@ -879,7 +902,7 @@ class TestMaxFileSize:
         big.write_text("x = 1\n" * (MAX_FILE_SIZE // 5), encoding="utf-8")
 
         idx = CodebaseIndex(tmp_project)
-        stats = idx.index()
+        idx.index()
         assert not any("huge.py" in p for p in idx._entries)
 
     @pytest.mark.integration

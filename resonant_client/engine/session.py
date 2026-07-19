@@ -447,6 +447,7 @@ class Session:
         self._compression_count = 0
         self._cancel_event = cancel_event or threading.Event()
         self._steering_queue: queue.SimpleQueue[dict[str, str]] = queue.SimpleQueue()
+        self._steering_lock = threading.Lock()
         self.project_path: Optional[str] = None  # Set externally for path resolution
         # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed)
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
@@ -728,20 +729,41 @@ class Session:
         direction = str(text or "").strip()
         if not direction:
             return False
-        self._steering_queue.put({
-            "message_id": str(message_id or ""),
-            "text": direction,
-        })
+        with self._steering_lock:
+            self._steering_queue.put({
+                "message_id": str(message_id or ""),
+                "text": direction,
+            })
         return True
 
     def _drain_steering(self) -> list[dict[str, str]]:
         """Return all steering messages currently waiting, without blocking."""
+        with self._steering_lock:
+            return self._drain_steering_unlocked()
+
+    def _drain_steering_unlocked(self) -> list[dict[str, str]]:
+        """Drain steering while ``_steering_lock`` is already held."""
         messages: list[dict[str, str]] = []
         while True:
             try:
                 messages.append(self._steering_queue.get_nowait())
             except queue.Empty:
                 return messages
+
+    def remove_steering(self, message_id: str) -> bool:
+        """Remove one live direction if the agent has not consumed it yet."""
+        target = str(message_id or "")
+        if not target:
+            return False
+        with self._steering_lock:
+            queued = self._drain_steering_unlocked()
+            removed = False
+            for item in queued:
+                if not removed and item.get("message_id") == target:
+                    removed = True
+                    continue
+                self._steering_queue.put(item)
+            return removed
 
     def discard_steering(self) -> None:
         """Drop steering that can no longer belong to an active run."""

@@ -6,6 +6,7 @@ and coordinates between backends and tools.
 """
 
 import hashlib
+import base64
 import json
 import os
 import re
@@ -17,7 +18,7 @@ import platform as plat
 import queue
 import uuid as _uuid
 from pathlib import Path
-from typing import Iterator, Optional, Callable
+from typing import Any, Callable, Iterator, Optional
 
 from ..backends import (
     EVENT_TEXT_DELTA,
@@ -35,6 +36,8 @@ from .tools import (
     get_tool_icon,
 )
 from .agents import get_agent_type
+from .agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
+from .artifacts import ArtifactKind, ArtifactStore
 from .compression import (
     CONTEXT_HEADROOM_RATIO,
     compress,
@@ -42,7 +45,7 @@ from .compression import (
     model_context_budget,
     should_compress,
 )
-from .hooks import HookRunner, HookType
+from .hooks import HookResult, HookRunner, HookType
 from .model_prompts import build_model_prompt, get_model_prompt_profile
 from .tool_arguments import ToolArgumentError, normalize_tool_arguments
 from .turn_outcomes import (
@@ -116,6 +119,27 @@ def _is_open_ended_next_step_question(question: str) -> bool:
 PREFLIGHT_RESEARCH_TOOLS = READ_ONLY_TOOLS | frozenset({
     "batch", "git_status", "git_diff", "git_log", "skill_view", "search_tools",
 })
+
+_READ_ONLY_COMMAND_PREFIXES = (
+    "git status", "git diff", "git log", "git show", "git branch --show-current",
+    "rg ", "grep ", "find ", "ls", "dir", "get-childitem", "select-string",
+    "python -m pytest --collect-only", "pytest --collect-only",
+)
+
+
+def _tool_may_mutate_workspace(tool_name: str, arguments: dict) -> bool:
+    if tool_name in WRITE_TOOL_NAMES or tool_name in {"git_commit", "git_branch_create"}:
+        return True
+    if tool_name == "batch":
+        calls = arguments.get("calls") or []
+        return any(
+            _tool_may_mutate_workspace(str(call.get("name") or ""), call.get("arguments") or {})
+            for call in calls if isinstance(call, dict)
+        )
+    if tool_name != "bash":
+        return False
+    command = str(arguments.get("command") or "").strip().casefold()
+    return not any(command.startswith(prefix) for prefix in _READ_ONLY_COMMAND_PREFIXES)
 # A cloud model can occasionally terminate a successful HTTP stream with only
 # hidden reasoning metadata and no user-visible text or tool call. Treating
 # that as completed produces a blank answer and a misleading green "Done".
@@ -418,6 +442,7 @@ class Session:
         cancel_event: Optional[threading.Event] = None,
         role_instructions: Optional[str] = None,
         prompt_role: str = "primary",
+        pause_event: Optional[threading.Event] = None,
     ):
         self.backend = backend
         try:
@@ -446,6 +471,7 @@ class Session:
         self._last_context_sources: dict[str, dict] = {}
         self._compression_count = 0
         self._cancel_event = cancel_event or threading.Event()
+        self._pause_event = pause_event or threading.Event()
         self._steering_queue: queue.SimpleQueue[dict[str, str]] = queue.SimpleQueue()
         self._steering_lock = threading.Lock()
         self.project_path: Optional[str] = None  # Set externally for path resolution
@@ -453,6 +479,17 @@ class Session:
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
         self.sandbox = None  # PathSandbox, set externally
         self.event_logger = None  # EventLogger, set externally for JSONL logging
+        self.agent_registry: Optional[AgentRegistry] = None
+        self.agent_id: str = ""
+        self.artifact_store: Optional[ArtifactStore] = None
+        self.checkpoint_store = None
+        self.checkpoint_display_provider = None
+        self.flight_recorder = None
+        self.context_broker = None
+        self.model_role_router = None
+        self.model_role: str = prompt_role or "primary"
+        self.worktree_manager = None
+        self.capability_packs = None
         self.execution_policy = None  # ExecutionPolicy, set externally
         # Auto-feedback loops (set externally by AppState.build_session from settings)
         self.auto_lint_enabled: bool = False
@@ -465,6 +502,7 @@ class Session:
         self._doom_loop_nudged: bool = False
         self._windowed_cycle_nudged: bool = False
         self._read_result_cache: dict[str, dict[str, object]] = {}
+        self._last_checkpoint_tool_call: str = ""
 
     @property
     def is_subagent(self) -> bool:
@@ -559,6 +597,15 @@ class Session:
         self._engram = parent._engram
         self._codebase_index = parent._codebase_index
         self._skill_context_provider = parent._skill_context_provider
+        self.agent_registry = parent.agent_registry
+        self.artifact_store = parent.artifact_store
+        self.checkpoint_store = parent.checkpoint_store
+        self.checkpoint_display_provider = parent.checkpoint_display_provider
+        self.flight_recorder = parent.flight_recorder
+        self.context_broker = parent.context_broker
+        self.model_role_router = parent.model_role_router
+        self.worktree_manager = parent.worktree_manager
+        self.capability_packs = parent.capability_packs
         pl = parent.event_logger
         if pl and getattr(pl, "enabled", False):
             try:
@@ -714,6 +761,13 @@ class Session:
         self._cancel_event.set()
         self.discard_steering()
 
+    def pause(self) -> None:
+        """Pause at the next safe agent-loop boundary."""
+        self._pause_event.set()
+
+    def resume(self) -> None:
+        self._pause_event.clear()
+
     def reset_cancel(self):
         """Clear any pending cancellation request before starting a new run."""
         self._cancel_event.clear()
@@ -774,6 +828,16 @@ class Session:
         if self.event_logger:
             try:
                 self.event_logger.log(event)
+            except Exception:
+                pass
+        if self.agent_registry and self.agent_id:
+            try:
+                self.agent_registry.append_event(self.agent_id, event)
+            except Exception:
+                pass
+        if self.flight_recorder:
+            try:
+                self.flight_recorder.record(event, agent_id=self.agent_id)
             except Exception:
                 pass
 
@@ -896,6 +960,30 @@ class Session:
         return prepared
 
     def _cancelled_events(self, total_start: float, total_steps: int) -> Iterator[dict]:
+        if self.agent_registry and self.agent_id:
+            try:
+                record = self.agent_registry.get(self.agent_id)
+                if record and not AgentStatus(record.status).terminal:
+                    self.agent_registry.transition(
+                        self.agent_id, AgentStatus.CANCELLED, current_action="",
+                    )
+            except Exception:
+                logger.debug("Unable to finalize cancelled agent", exc_info=True)
+        if self.flight_recorder:
+            try:
+                self.flight_recorder.close("cancelled", total_steps=total_steps)
+            except Exception:
+                pass
+        if self.hook_runner:
+            self.hook_runner.emit(
+                HookType.SESSION_ERROR,
+                {
+                    "project_path": self.project_path or "",
+                    "agent_id": self.agent_id,
+                    "reason": "cancelled",
+                    "steps": total_steps,
+                },
+            )
         yield make_event(EngineEvent.ERROR, message="Interrupted")
         yield make_event(
             EngineEvent.SESSION_END,
@@ -1054,18 +1142,69 @@ class Session:
         last_done_stats = None
         last_done_model = getattr(self.backend, "model", "") if self.backend else ""
 
+        if self.agent_registry and not self.agent_id:
+            try:
+                record = self.agent_registry.create(
+                    agent_type="primary" if not self.is_subagent else self.prompt_role,
+                    prompt=user_msg,
+                    parent_id=getattr(self.parent_session, "agent_id", "") or "",
+                    model=last_done_model,
+                    role=self.model_role,
+                    workspace=self.project_path or "",
+                    policy=self.autonomy_tier,
+                    max_steps=self.max_steps,
+                )
+                self.agent_id = record.id
+                self.agent_registry.attach_control(
+                    self.agent_id,
+                    cancel_event=self._cancel_event,
+                    pause_event=self._pause_event,
+                    steer=lambda message: self.steer(message),
+                )
+                self.agent_registry.transition(self.agent_id, AgentStatus.RUNNING)
+            except Exception:
+                logger.debug("Unable to register durable agent", exc_info=True)
+
+        input_artifacts = []
+        if images and self.artifact_store:
+            for index, (image_bytes, media_type) in enumerate(images, start=1):
+                try:
+                    suffix = ".png" if media_type == "image/png" else ".jpg" if media_type == "image/jpeg" else ".bin"
+                    input_artifacts.append(self.artifact_store.put_bytes(
+                        image_bytes,
+                        kind=ArtifactKind.IMAGE,
+                        label=f"User image {index}",
+                        source=self.agent_id or "user",
+                        media_type=media_type,
+                        suffix=suffix,
+                        metadata={"input_index": index},
+                    ))
+                except Exception:
+                    logger.debug("Unable to persist input image artifact", exc_info=True)
+
         # Store one normalized content contract now. Backend adapters decide
         # which parts are native and which require an honest text fallback.
-        self.conversation_history.append({
+        user_entry = {
             "role": "user",
             "content": build_user_content(user_msg, images),
-        })
+        }
+        if input_artifacts:
+            user_entry["artifacts"] = [artifact.to_dict() for artifact in input_artifacts]
+        self.conversation_history.append(user_entry)
 
         iteration = 0
         exec_step = 0
         current_msg = user_msg
         active_goal = user_msg
         total_start = time.time()
+        # Older embedders supplied a runner with only the original
+        # run_hooks(PRE/POST_TOOL) surface. Keep that contract intact while
+        # treating all newer lifecycle emissions as no-ops for that runner.
+        if self.hook_runner and not callable(getattr(self.hook_runner, "emit", None)):
+            try:
+                self.hook_runner.emit = lambda *args, **kwargs: HookResult(allowed=True)
+            except Exception:
+                logger.debug("Legacy hook runner cannot accept lifecycle adapter")
         executing_plan = False
         last_tool_used = None
         # Repetition guidance is one-shot per turn and never terminates work.
@@ -1161,6 +1300,32 @@ class Session:
             return
 
         tool_mode = getattr(self.backend, 'tool_mode', 'native')
+        if self.flight_recorder:
+            try:
+                system_prompt = get_system_instructions(
+                    plan_mode=self.plan_mode,
+                    project_instructions=self.project_instructions,
+                    working_directory=self.project_path,
+                    model_name=getattr(self.backend, "model", ""),
+                    prompt_role=self.prompt_role,
+                    role_instructions=self.role_instructions,
+                )
+                self.flight_recorder.configure(
+                    backend=getattr(self.backend, "name", ""),
+                    model=getattr(self.backend, "model", ""),
+                    model_role=self.model_role,
+                    prompt=user_msg,
+                    system_prompt=system_prompt,
+                    tools=self.provider_tools,
+                    provider_options={"max_tokens": self.max_tokens, "tool_mode": tool_mode},
+                    capability_profile={
+                        "multimodal_input": bool(input_artifacts),
+                        "artifact_bus": self.artifact_store is not None,
+                        "durable_agents": self.agent_registry is not None,
+                    },
+                )
+            except Exception:
+                logger.debug("Unable to configure flight recorder", exc_info=True)
         _start_event = make_event(EngineEvent.SESSION_START,
                         plan_mode=self.plan_mode,
                         backend=self.backend.name,
@@ -1168,6 +1333,33 @@ class Session:
                         tool_mode=tool_mode)
         self._log_event(_start_event)
         yield _start_event
+        for artifact in input_artifacts:
+            artifact_event = make_event(
+                EngineEvent.ARTIFACT_CREATED,
+                artifact_id=artifact.id,
+                kind=artifact.kind,
+                media_type=artifact.media_type,
+                size=artifact.size,
+                label=artifact.label,
+                path=artifact.path,
+            )
+            self._log_event(artifact_event)
+            yield artifact_event
+
+        if self.hook_runner:
+            hook = self.hook_runner.emit(
+                HookType.SESSION_START,
+                {
+                    "project_path": self.project_path or "",
+                    "agent_id": self.agent_id,
+                    "model": getattr(self.backend, "model", ""),
+                    "role": self.model_role,
+                    "user_prompt": user_msg,
+                },
+            )
+            if not hook.continue_run:
+                yield make_event(EngineEvent.ERROR, message=hook.reason or "Stopped by session hook")
+                return
 
         # Log session metadata for JSONL replay
         self._log_event({
@@ -1215,6 +1407,17 @@ class Session:
                     turn_sources["skills"] = skill_text
             except Exception as e:
                 logger.warning(f"Interactive skill lookup failed: {e}")
+        if self.context_broker:
+            try:
+                explicit_items = self.context_broker.resolve_mentions(user_msg)
+                explicit_context = self.context_broker.render(explicit_items)
+                turn_context += explicit_context
+                if explicit_context:
+                    turn_sources["explicit"] = explicit_context
+                    for item in explicit_items:
+                        turn_sources[f"attachment:{item.id}"] = item.content
+            except Exception as e:
+                logger.warning("Explicit context resolution failed: %s", e)
         self._last_context_sources = {
             name: {
                 "characters": len(text),
@@ -1230,6 +1433,8 @@ class Session:
             if self.cancel_requested:
                 yield from self._cancelled_events(total_start, exec_step)
                 return
+            while self._pause_event.is_set() and not self.cancel_requested:
+                time.sleep(0.05)
             for steering in consume_steering():
                 yield make_event(
                     EngineEvent.STEER_APPLIED,
@@ -1245,6 +1450,18 @@ class Session:
                 context_window=context_window,
             ):
                 try:
+                    if self.hook_runner:
+                        pre_compact = self.hook_runner.emit(
+                            HookType.PRE_COMPACT,
+                            {
+                                "project_path": self.project_path or "",
+                                "agent_id": self.agent_id,
+                                "history_entries": len(self.conversation_history),
+                                "history_tokens": estimate_tokens(self.conversation_history),
+                            },
+                        )
+                        if not pre_compact.allowed:
+                            raise RuntimeError(pre_compact.reason or "Compaction blocked by hook")
                     old_count = len(self.conversation_history)
                     old_tokens = estimate_tokens(self.conversation_history)
                     compressed, summary = compress(
@@ -1263,6 +1480,17 @@ class Session:
                             new_tokens=estimate_tokens(compressed),
                             summary_preview=summary[:200],
                         )
+                        if self.hook_runner:
+                            self.hook_runner.emit(
+                                HookType.POST_COMPACT,
+                                {
+                                    "project_path": self.project_path or "",
+                                    "agent_id": self.agent_id,
+                                    "old_entries": old_count,
+                                    "new_entries": len(compressed),
+                                    "summary": summary,
+                                },
+                            )
                 except Exception as e:
                     logger.warning(f"Context compression failed: {e}")
             yield make_event(EngineEvent.CONTEXT_STATE, **self.context_snapshot())
@@ -1298,6 +1526,25 @@ class Session:
 
             # Keep retrieved context stable throughout this tool loop.
             instructions += turn_context
+
+            if self.hook_runner:
+                before_model = self.hook_runner.emit(
+                    HookType.BEFORE_MODEL,
+                    {
+                        "project_path": self.project_path or "",
+                        "agent_id": self.agent_id,
+                        "model": backend_model or "",
+                        "role": self.model_role,
+                        "step": exec_step,
+                        "message": current_msg,
+                    },
+                )
+                if before_model.additional_context:
+                    instructions += "\n\n" + before_model.additional_context
+                if not before_model.allowed or not before_model.continue_run:
+                    terminal_error = before_model.reason or "Model call blocked by hook"
+                    yield make_event(EngineEvent.ERROR, message=terminal_error)
+                    break
 
             # ── Stream from backend ──
             collected_text = []
@@ -1398,6 +1645,25 @@ class Session:
             # ── Process collected text ──
             full_text = "".join(collected_text).strip()
             full_text = strip_tool_call_tags(full_text)
+            if self.hook_runner:
+                after_model = self.hook_runner.emit(
+                    HookType.AFTER_MODEL,
+                    {
+                        "project_path": self.project_path or "",
+                        "agent_id": self.agent_id,
+                        "model": done_model or backend_model or "",
+                        "role": self.model_role,
+                        "step": exec_step,
+                        "text": full_text,
+                        "tool_calls": tool_calls,
+                        "stats": done_stats or {},
+                    },
+                )
+                if after_model.additional_context:
+                    self.conversation_history.append({
+                        "role": "user",
+                        "content": f"[Lifecycle feedback]\n{after_model.additional_context}",
+                    })
 
             if not full_text and not tool_calls:
                 empty_response_retries += 1
@@ -1589,7 +1855,12 @@ class Session:
                 if self.hook_runner:
                     hook_result = self.hook_runner.run_hooks(
                         HookType.PRE_TOOL_USE,
-                        context={"tool_args": fn_args},
+                        context={
+                            "tool_args": fn_args,
+                            "project_path": self.project_path or "",
+                            "agent_id": self.agent_id,
+                            "call_id": call_id,
+                        },
                         tool_name=fn_name,
                     )
                     if not hook_result.allowed:
@@ -1609,6 +1880,14 @@ class Session:
                             "content": result_output,
                         })
                         continue
+                    if hook_result.modified_args is not None:
+                        fn_args = hook_result.modified_args
+                        fn_args_str = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
+                    if hook_result.additional_context:
+                        self.conversation_history.append({
+                            "role": "user",
+                            "content": f"[Pre-tool lifecycle context]\n{hook_result.additional_context}",
+                        })
 
                 # Execution policy check (declarative rules, evaluated first)
                 if self.execution_policy:
@@ -1643,6 +1922,25 @@ class Session:
                     else:
                         approved = self.auto_approve  # Fallback to legacy flag
 
+                if not approved and self.hook_runner:
+                    permission_hook = self.hook_runner.emit(
+                        HookType.PERMISSION_REQUEST,
+                        {
+                            "tool_name": fn_name,
+                            "tool_args": fn_args,
+                            "project_path": self.project_path or "",
+                            "agent_id": self.agent_id,
+                            "call_id": call_id,
+                        },
+                    )
+                    if permission_hook.decision in {"allow", "approve"}:
+                        approved = True
+                    elif permission_hook.decision in {"deny", "block"}:
+                        approved = False
+                    if permission_hook.modified_args is not None:
+                        fn_args = permission_hook.modified_args
+                        fn_args_str = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
+
                 if not approved:
                     result_output = "Tool execution denied by user."
                     yield make_event(EngineEvent.TOOL_RESULT,
@@ -1659,6 +1957,48 @@ class Session:
                         "content": result_output,
                     })
                     continue
+
+                # Universal recovery boundary. This is tied to the conversation
+                # cursor and created before any tool likely to mutate files.
+                if (
+                    self.checkpoint_store
+                    and call_id != self._last_checkpoint_tool_call
+                    and _tool_may_mutate_workspace(fn_name, fn_args)
+                ):
+                    try:
+                        checkpoint = self.checkpoint_store.create(
+                            conversation_history=self.conversation_history,
+                            display_events=(
+                                self.checkpoint_display_provider()
+                                if callable(self.checkpoint_display_provider) else []
+                            ),
+                            reason=f"Before {fn_name}",
+                            agent_id=self.agent_id,
+                            tool_name=fn_name,
+                            metadata={"call_id": call_id, "arguments": fn_args},
+                        )
+                        self._last_checkpoint_tool_call = call_id
+                        checkpoint_event = make_event(
+                            EngineEvent.CHECKPOINT_CREATED,
+                            checkpoint_id=checkpoint.id,
+                            reason=checkpoint.reason,
+                            agent_id=self.agent_id,
+                            tool_name=fn_name,
+                            sequence=checkpoint.sequence,
+                        )
+                        self._log_event(checkpoint_event)
+                        yield checkpoint_event
+                        if self.hook_runner:
+                            self.hook_runner.emit(
+                                HookType.CHECKPOINT_CREATED,
+                                {
+                                    "project_path": self.project_path or "",
+                                    "agent_id": self.agent_id,
+                                    "checkpoint": checkpoint.to_dict(),
+                                },
+                            )
+                    except Exception as exc:
+                        logger.warning("Session checkpoint failed before %s: %s", fn_name, exc)
 
                 # Execute the tool
                 if fn_name == "search_tools":
@@ -1721,6 +2061,9 @@ class Session:
                     # Task tool — spawn a sub-agent session
                     yield from self._execute_task(fn_args, call_id, fn_args_str)
                     turn_successful_tools.append(fn_name)
+                elif fn_name == "task_batch":
+                    yield from self._execute_task_batch(fn_args, call_id, fn_args_str)
+                    turn_successful_tools.append(fn_name)
                 elif fn_name == "await_user":
                     # v0.3.5 — pause and ask the user. Synchronously
                     # waits via the on_user_input callback. The GUI
@@ -1735,6 +2078,18 @@ class Session:
                     awu_start = _time.time()
                     question = fn_args.get("question") or ""
                     options = fn_args.get("options") or []
+                    if self.hook_runner:
+                        input_hook = self.hook_runner.emit(
+                            HookType.USER_INPUT_REQUEST,
+                            {
+                                "project_path": self.project_path or "",
+                                "agent_id": self.agent_id,
+                                "question": question,
+                                "options": options,
+                            },
+                        )
+                        if input_hook.additional_context:
+                            question = f"{question}\n\n{input_hook.additional_context}".strip()
                     urgency = str(fn_args.get("urgency") or "alignment").strip().casefold()
                     suppressed_reason = ""
                     if _is_open_ended_next_step_question(question):
@@ -1930,6 +2285,36 @@ class Session:
                     )
                     event_metadata = dict(result.metadata)
                     event_metadata.update(context_meta)
+                    if self.artifact_store and isinstance(result.output, str) and len(result.output) > 50_000:
+                        try:
+                            artifact = self.artifact_store.put_text(
+                                result.output,
+                                kind=(ArtifactKind.TERMINAL if fn_name == "bash" else ArtifactKind.TEXT),
+                                label=f"{fn_name} result",
+                                source=call_id,
+                                metadata={"tool_name": fn_name, "call_id": call_id},
+                            )
+                            reference = self.artifact_store.reference(artifact)
+                            history_output = f"{history_output[:4000]}\n\n{reference}"
+                            event_metadata["artifact"] = artifact.to_dict()
+                        except Exception:
+                            logger.debug("Unable to persist oversized tool result", exc_info=True)
+
+                    if self.artifact_store and result.metadata.get("screenshot_b64"):
+                        try:
+                            media_type = result.metadata.get("media_type", "image/png")
+                            artifact = self.artifact_store.put_bytes(
+                                base64.b64decode(result.metadata["screenshot_b64"]),
+                                kind=ArtifactKind.IMAGE,
+                                label=f"{fn_name} screenshot",
+                                source=call_id,
+                                media_type=media_type,
+                                suffix=".png" if media_type == "image/png" else ".bin",
+                                metadata={"tool_name": fn_name, "call_id": call_id},
+                            )
+                            event_metadata["artifact"] = artifact.to_dict()
+                        except Exception:
+                            logger.debug("Unable to persist screenshot artifact", exc_info=True)
 
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
@@ -1992,9 +2377,37 @@ class Session:
                     if self.hook_runner:
                         self.hook_runner.run_hooks(
                             HookType.POST_TOOL_USE,
-                            context={"tool_args": fn_args, "result": result.output[:500]},
+                            context={
+                                "tool_args": fn_args,
+                                "result": result.output,
+                                "is_error": result.is_error,
+                                "project_path": self.project_path or "",
+                                "agent_id": self.agent_id,
+                                "call_id": call_id,
+                            },
                             tool_name=fn_name,
                         )
+                        if fn_name in VALIDATION_TOOL_NAMES:
+                            validation_hook = self.hook_runner.emit(
+                                HookType.VALIDATION_COMPLETE,
+                                {
+                                    "project_path": self.project_path or "",
+                                    "agent_id": self.agent_id,
+                                    "tool_name": fn_name,
+                                    "result": result.output,
+                                    "is_error": result.is_error,
+                                    "changed_files": list(turn_changed_files),
+                                },
+                                tool_name=fn_name,
+                            )
+                            if not validation_hook.allowed:
+                                self.conversation_history.append({
+                                    "role": "user",
+                                    "content": (
+                                        "[Validation gate rejected completion]\n"
+                                        f"{validation_hook.reason or validation_hook.error}"
+                                    ),
+                                })
 
                     if self.cancel_requested or result.metadata.get("cancelled"):
                         yield from self._cancelled_events(total_start, exec_step)
@@ -2151,6 +2564,30 @@ class Session:
                 current_msg += "\n\n" + self._goal_recitation(active_goal)
                 continue
             else:
+                if self.hook_runner:
+                    completion_gate = self.hook_runner.emit(
+                        HookType.TASK_COMPLETED,
+                        {
+                            "project_path": self.project_path or "",
+                            "agent_id": self.agent_id,
+                            "role": self.model_role,
+                            "goal": active_goal,
+                            "response": full_text,
+                            "changed_files": unique_strings(turn_changed_files),
+                            "validation_tools": unique_strings(turn_validation_tools),
+                            "successful_tools": unique_strings(turn_successful_tools),
+                            "failed_tools": unique_strings(turn_failed_tools),
+                        },
+                    )
+                    if not completion_gate.allowed or completion_gate.retry:
+                        iteration -= 1
+                        current_msg = (
+                            "A deterministic completion gate rejected this result. "
+                            "Address the following requirement, validate it, and try "
+                            "completion again:\n\n"
+                            f"{completion_gate.reason or completion_gate.error or completion_gate.additional_context}"
+                        )
+                        continue
                 break
 
         total_elapsed = time.time() - total_start
@@ -2167,16 +2604,57 @@ class Session:
             yield make_event(EngineEvent.ERROR, message=terminal_error)
 
         final_steps = exec_step if exec_step > 0 else iteration
-        yield make_event(EngineEvent.SESSION_END,
-                        total_elapsed=total_elapsed,
-                        total_steps=final_steps,
-                        **completion_payload(total_elapsed, final_steps))
+        final_payload = completion_payload(total_elapsed, final_steps)
+        if self.agent_registry and self.agent_id and not self.is_subagent:
+            try:
+                evidence = final_payload.get("evidence") or {}
+                handoff = AgentHandoff(
+                    outcome=str(final_payload.get("outcome") or "completed"),
+                    summary="\n\n".join(turn_text_blocks).strip(),
+                    evidence=[
+                        f"{evidence.get('tool_calls', 0)} tool calls",
+                        f"{final_steps} steps",
+                    ],
+                    changed_files=list(evidence.get("changed_files") or []),
+                    validation=list(evidence.get("validation_tools") or []),
+                    blockers=[terminal_error] if terminal_error else [],
+                )
+                self.agent_registry.complete(self.agent_id, handoff)
+            except Exception:
+                logger.debug("Unable to finalize primary agent record", exc_info=True)
+        if self.flight_recorder:
+            try:
+                self.flight_recorder.close(
+                    "failed" if terminal_error else "completed",
+                    outcome=final_payload.get("outcome"),
+                )
+            except Exception:
+                pass
+        if self.hook_runner:
+            self.hook_runner.emit(
+                HookType.SESSION_END,
+                {
+                    "project_path": self.project_path or "",
+                    "agent_id": self.agent_id,
+                    "outcome": final_payload.get("outcome"),
+                    "steps": final_steps,
+                    "elapsed": total_elapsed,
+                },
+            )
+        yield make_event(
+            EngineEvent.SESSION_END,
+            total_elapsed=total_elapsed,
+            total_steps=final_steps,
+            **final_payload,
+        )
 
     def _execute_task(
         self,
         fn_args: dict,
         call_id: str,
         fn_args_str: str,
+        *,
+        append_parent_history: bool = True,
     ) -> Iterator[dict]:
         """
         Execute the 'task' tool — spawn a sub-agent with isolated session.
@@ -2189,10 +2667,12 @@ class Session:
 
         All sub-agent events are yielded through the parent for TUI display.
         """
-        prompt = fn_args.get("prompt", "")
-        agent_type_name = fn_args.get("agent_type", "explore")
+        prompt = str(fn_args.get("prompt", "") or "").strip()
+        agent_type_name = str(fn_args.get("agent_type", "explore") or "explore")
 
         agent_type = get_agent_type(agent_type_name)
+        if not agent_type and self.capability_packs:
+            agent_type = self.capability_packs.get_agent_type(agent_type_name)
         if not agent_type:
             result_output = f"Error: Unknown agent type '{agent_type_name}'. Use: build, explore, or plan."
             yield make_event(EngineEvent.TOOL_RESULT,
@@ -2211,33 +2691,156 @@ class Session:
             return
 
         # Filter tools — remove 'task' to prevent recursion
+        model_role = str(fn_args.get("model_role") or agent_type.model_role or "primary")
+        requested_isolation = str(
+            fn_args.get("isolation") or agent_type.default_isolation or "shared"
+        )
+        try:
+            requested_max_steps = int(fn_args.get("max_steps") or agent_type.max_steps or 0)
+        except (TypeError, ValueError):
+            requested_max_steps = 0
+        worker_max_steps = requested_max_steps if requested_max_steps > 0 else None
+
         allowed_tools = agent_type.filter_tools(AGENT_TOOLS)
-        allowed_tools = [t for t in allowed_tools
-                        if t.get("function", {}).get("name") != "task"]
+        allowed_tools = [
+            tool for tool in allowed_tools
+            if tool.get("function", {}).get("name") not in {"task", "task_batch"}
+        ]
 
         # Notify TUI of sub-agent start
-        yield make_event(EngineEvent.SUBAGENT_START,
-                        agent_type=agent_type_name,
-                        prompt=prompt,
-                        call_id=call_id)
+        child_cancel = threading.Event()
+        child_pause = threading.Event()
+        worker_done = threading.Event()
+        workspace = self.project_path or ""
+        lease = None
+        if (
+            requested_isolation == "worktree"
+            and self.worktree_manager
+            and getattr(self.worktree_manager, "available", False)
+        ):
+            try:
+                if self.hook_runner:
+                    worktree_hook = self.hook_runner.emit(
+                        HookType.WORKTREE_CREATE,
+                        {
+                            "project_path": self.project_path or "",
+                            "parent_agent_id": self.agent_id,
+                            "agent_type": agent_type_name,
+                            "prompt": prompt,
+                        },
+                    )
+                    if not worktree_hook.allowed:
+                        raise RuntimeError(worktree_hook.reason or "Worktree creation blocked")
+                lease = self.worktree_manager.create(call_id or _uuid.uuid4().hex[:10])
+                workspace = lease.path
+            except Exception as exc:
+                logger.warning("Worktree isolation unavailable; using shared workspace: %s", exc)
+                lease = None
 
-        # Create child session
+        record = None
+        if self.agent_registry:
+            try:
+                record = self.agent_registry.create(
+                    agent_type=agent_type_name,
+                    prompt=prompt,
+                    parent_id=self.agent_id,
+                    model=getattr(self.backend, "model", ""),
+                    role=model_role,
+                    workspace=workspace,
+                    policy=self.autonomy_tier,
+                    max_steps=worker_max_steps,
+                    metadata={
+                        "call_id": call_id,
+                        "isolation": "worktree" if lease else "shared",
+                        "worktree": lease.to_dict() if lease else None,
+                    },
+                )
+            except Exception:
+                logger.debug("Unable to persist child agent", exc_info=True)
+
+        agent_id = record.id if record else f"task:{call_id or _uuid.uuid4().hex[:8]}"
+        if self.hook_runner:
+            created_hook = self.hook_runner.emit(
+                HookType.TASK_CREATED,
+                {
+                    "project_path": workspace,
+                    "agent_id": agent_id,
+                    "parent_agent_id": self.agent_id,
+                    "agent_type": agent_type_name,
+                    "model_role": model_role,
+                    "prompt": prompt,
+                },
+            )
+            if not created_hook.allowed:
+                if record:
+                    self.agent_registry.fail(agent_id, created_hook.reason or "Task blocked by hook")
+                result_output = f"Sub-agent blocked by lifecycle hook: {created_hook.reason}"
+                yield make_event(
+                    EngineEvent.TOOL_RESULT, name="task", call_id=call_id,
+                    output=result_output, is_error=True, elapsed=0.0,
+                    metadata={"agent_id": agent_id}, denied=True,
+                )
+                return
+
+        yield make_event(
+            EngineEvent.SUBAGENT_START,
+            agent_type=agent_type_name,
+            agent_id=agent_id,
+            parent_agent_id=self.agent_id,
+            model_role=model_role,
+            isolation="worktree" if lease else "shared",
+            workspace=workspace,
+            prompt=prompt,
+            call_id=call_id,
+        )
+
+        child_backend = (
+            self.model_role_router.backend_for(model_role, self.backend)
+            if self.model_role_router else self.backend
+        )
         child = Session(
-            backend=self.backend,
+            backend=child_backend,
+            max_steps=worker_max_steps,
             max_tokens=self.max_tokens,
             auto_approve=True,  # Sub-agents auto-approve (no interactive prompts)
             parent_session=self,
             allowed_tools=allowed_tools,
             role_instructions=agent_type.system_prompt,
             prompt_role="subagent",
-            cancel_event=self._cancel_event,
+            cancel_event=child_cancel,
+            pause_event=child_pause,
         )
         child.copy_execution_context_from(self)
+        child.agent_id = agent_id
+        child.model_role = model_role
+        if workspace:
+            child.project_path = workspace
+            from .sandbox import PathSandbox
+            child.sandbox = PathSandbox(workspace, enabled=True)
+        if record and self.agent_registry:
+            self.agent_registry.attach_control(
+                agent_id,
+                cancel_event=child_cancel,
+                pause_event=child_pause,
+                steer=lambda message: child.steer(message),
+            )
+            self.agent_registry.transition(agent_id, AgentStatus.RUNNING)
+
+        def _inherit_parent_cancel() -> None:
+            while not worker_done.wait(0.1):
+                if self.cancel_requested:
+                    child_cancel.set()
+                    return
+
+        threading.Thread(target=_inherit_parent_cancel, daemon=True).start()
 
         # Run the sub-agent, collecting text output and forwarding events
         collected_text = []
         sub_start = time.time()
         sub_steps = 0
+        changed_files: list[str] = []
+        validation: list[str] = []
+        errors: list[str] = []
 
         for event in child.run(
             user_msg=prompt,
@@ -2245,10 +2848,16 @@ class Session:
             on_choice=None,
         ):
             etype = event.get("event", "")
+            if record and self.agent_registry:
+                try:
+                    self.agent_registry.append_event(agent_id, event)
+                except Exception:
+                    pass
 
             # Forward relevant events for TUI display (with nesting indicator)
             event["_subagent"] = True
             event["_agent_type"] = agent_type_name
+            event["_agent_id"] = agent_id
 
             if etype in (
                 EngineEvent.TEXT_DELTA.value,
@@ -2269,22 +2878,108 @@ class Session:
 
             if etype == EngineEvent.STEP_END.value:
                 sub_steps += 1
+            elif etype == EngineEvent.TOOL_CALL.value:
+                name = str(event.get("name") or "")
+                args = event.get("arguments") or {}
+                if name in WRITE_TOOL_NAMES and isinstance(args, dict) and args.get("path"):
+                    value = str(args["path"])
+                    if value not in changed_files:
+                        changed_files.append(value)
+            elif etype == EngineEvent.TOOL_RESULT.value:
+                name = str(event.get("name") or "")
+                if name in VALIDATION_TOOL_NAMES:
+                    outcome = "failed" if event.get("is_error") else "passed"
+                    validation.append(f"{name}: {outcome}")
+            elif etype == EngineEvent.ERROR.value:
+                errors.append(str(event.get("message") or "Worker error"))
 
+        worker_done.set()
         sub_elapsed = time.time() - sub_start
-        result_output = "\n\n".join(collected_text) if collected_text else "(no output)"
+        full_output = "\n\n".join(collected_text) if collected_text else "(no output)"
+        artifact_refs: list[str] = []
+        if len(full_output) > 8000 and self.artifact_store:
+            artifact = self.artifact_store.put_text(
+                full_output,
+                kind=ArtifactKind.TEXT,
+                label=f"{agent_type_name} handoff",
+                source=agent_id,
+                metadata={"agent_id": agent_id, "call_id": call_id},
+            )
+            artifact_refs.append(self.artifact_store.reference(artifact))
 
-        # Truncate very long sub-agent output
-        if len(result_output) > 8000:
-            result_output = result_output[:8000] + "\n\n... (truncated)"
+        if lease:
+            try:
+                lease = self.worktree_manager.finalize(
+                    lease, message=f"Resonant {agent_type_name} agent {agent_id}",
+                )
+                lease = self.worktree_manager.integrate(lease)
+                for path in lease.changed_files or []:
+                    if path not in changed_files:
+                        changed_files.append(path)
+                artifact_refs.append(
+                    f"worktree branch={lease.branch} commit={lease.commit or '(none)'} "
+                    f"status={lease.status} path={lease.path}"
+                )
+                if lease.status in {"unchanged", "integrated"}:
+                    self.worktree_manager.remove(lease, delete_branch=True)
+            except Exception as exc:
+                errors.append(f"Worktree integration: {exc}")
+
+        outcome = "failed" if errors else "completed"
+        summary = full_output if len(full_output) <= 4000 else full_output[:4000].rstrip() + "..."
+        handoff = AgentHandoff(
+            outcome=outcome,
+            summary=summary,
+            evidence=[f"{sub_steps} worker steps", f"{sub_elapsed:.1f}s elapsed"],
+            changed_files=changed_files,
+            validation=validation,
+            blockers=errors,
+            recommended_next_action=(
+                "Review and integrate the retained worktree branch."
+                if lease and lease.status == "awaiting_integration"
+                else "Review the evidence and continue the parent task."
+            ),
+            artifacts=artifact_refs,
+        )
+        result_output = handoff.to_context()
+
+        completion_allowed = True
+        if self.hook_runner:
+            stop_hook = self.hook_runner.emit(
+                HookType.SUBAGENT_STOP,
+                {
+                    "project_path": workspace,
+                    "agent_id": agent_id,
+                    "parent_agent_id": self.agent_id,
+                    "agent_type": agent_type_name,
+                    "handoff": handoff.to_dict(),
+                },
+            )
+            completion_allowed = stop_hook.allowed
+            if not completion_allowed:
+                handoff.blockers.append(stop_hook.reason or "Completion blocked by hook")
+                handoff.outcome = "failed"
+                result_output = handoff.to_context()
+
+        if record and self.agent_registry:
+            if completion_allowed and not errors:
+                self.agent_registry.complete(agent_id, handoff)
+            else:
+                self.agent_registry.fail(
+                    agent_id,
+                    "; ".join(handoff.blockers) or "Worker failed",
+                )
 
         # Notify TUI of sub-agent completion
         yield make_event(EngineEvent.SUBAGENT_END,
                         agent_type=agent_type_name,
+                        agent_id=agent_id,
                         call_id=call_id,
                         steps=sub_steps,
                         elapsed=sub_elapsed,
-                        result_preview=result_output[:200],
-                        result=result_output)
+                        result_preview=full_output[:200],
+                        result=full_output,
+                        handoff=handoff.to_dict())
 
         # Return result to parent context
         yield make_event(EngineEvent.TOOL_RESULT,
@@ -2294,17 +2989,148 @@ class Session:
                         elapsed=sub_elapsed,
                         metadata={
                             "agent_type": agent_type_name,
+                            "agent_id": agent_id,
+                            "model_role": model_role,
+                            "isolation": "worktree" if lease else "shared",
+                            "handoff": handoff.to_dict(),
                             "steps": sub_steps,
                         },
                         denied=False)
 
         # Add to parent conversation history
-        self.conversation_history.append({
-            "role": "tool_call", "name": "task",
-            "arguments": fn_args_str, "call_id": call_id,
-            "content": f"Called task ({agent_type_name})",
-        })
-        self.conversation_history.append({
-            "role": "tool_result", "call_id": call_id,
-            "content": result_output,
-        })
+        if append_parent_history:
+            self.conversation_history.append({
+                "role": "tool_call", "name": "task",
+                "arguments": fn_args_str, "call_id": call_id,
+                "content": f"Called task ({agent_type_name})",
+            })
+            self.conversation_history.append({
+                "role": "tool_result", "call_id": call_id,
+                "content": result_output,
+            })
+
+    def _execute_task_batch(
+        self,
+        fn_args: dict,
+        call_id: str,
+        fn_args_str: str,
+    ) -> Iterator[dict]:
+        """Fan out independent workers and serialize their handoffs."""
+        tasks = [item for item in (fn_args.get("tasks") or []) if isinstance(item, dict)][:4]
+        if len(tasks) < 2:
+            output = "task_batch requires between two and four task specifications."
+            yield make_event(
+                EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
+                output=output, is_error=True, denied=True, elapsed=0.0,
+            )
+            self.conversation_history.extend([
+                {"role": "tool_call", "name": "task_batch", "arguments": fn_args_str,
+                 "call_id": call_id, "content": "Called task_batch"},
+                {"role": "tool_result", "call_id": call_id, "content": output},
+            ])
+            return
+
+        if self.hook_runner:
+            gate = self.hook_runner.emit(
+                HookType.PRE_TOOL_BATCH,
+                {
+                    "project_path": self.project_path or "",
+                    "agent_id": self.agent_id,
+                    "call_id": call_id,
+                    "tasks": tasks,
+                },
+            )
+            if not gate.allowed:
+                output = f"Task batch blocked by hook: {gate.reason or gate.error or 'denied'}"
+                yield make_event(
+                    EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
+                    output=output, is_error=True, denied=True, elapsed=0.0,
+                )
+                return
+
+        channel: queue.Queue[tuple[int, dict | None]] = queue.Queue()
+        outputs: dict[int, str] = {}
+        started = time.time()
+
+        def run_worker(index: int, spec: dict[str, Any]) -> None:
+            child_args = dict(spec)
+            if str(child_args.get("agent_type") or "") == "build":
+                child_args["isolation"] = "worktree"
+            child_call_id = f"{call_id}:{index + 1}"
+            try:
+                for event in self._execute_task(
+                    child_args,
+                    child_call_id,
+                    json.dumps(child_args, ensure_ascii=False),
+                    append_parent_history=False,
+                ):
+                    if (
+                        event.get("event") == EngineEvent.TOOL_RESULT.value
+                        and event.get("name") == "task"
+                        and event.get("call_id") == child_call_id
+                    ):
+                        outputs[index] = str(event.get("output") or "")
+                        continue
+                    event["_batch_index"] = index
+                    channel.put((index, event))
+            except Exception as exc:
+                outputs[index] = f"Worker failed: {exc}"
+                channel.put((index, make_event(
+                    EngineEvent.ERROR,
+                    message=f"Parallel worker {index + 1} failed: {exc}",
+                    _agent_id=f"batch:{child_call_id}",
+                )))
+            finally:
+                channel.put((index, None))
+
+        threads = []
+        for index, spec in enumerate(tasks):
+            thread = threading.Thread(
+                target=run_worker,
+                args=(index, spec),
+                name=f"resonant-agent-{index + 1}",
+                daemon=True,
+            )
+            threads.append(thread)
+            thread.start()
+
+        finished = 0
+        while finished < len(threads):
+            _, event = channel.get()
+            if event is None:
+                finished += 1
+            else:
+                yield event
+        for thread in threads:
+            thread.join(timeout=0.1)
+
+        sections = []
+        for index, spec in enumerate(tasks):
+            label = str(spec.get("agent_type") or "worker")
+            sections.append(
+                f"Worker {index + 1} ({label}):\n{outputs.get(index, '(no handoff)')}"
+            )
+        output = "\n\n".join(sections)
+        elapsed = time.time() - started
+        self.conversation_history.extend([
+            {"role": "tool_call", "name": "task_batch", "arguments": fn_args_str,
+             "call_id": call_id, "content": f"Called task_batch ({len(tasks)} workers)"},
+            {"role": "tool_result", "call_id": call_id, "content": output},
+        ])
+        if self.hook_runner:
+            self.hook_runner.emit(
+                HookType.POST_TOOL_BATCH,
+                {
+                    "project_path": self.project_path or "",
+                    "agent_id": self.agent_id,
+                    "call_id": call_id,
+                    "tasks": tasks,
+                    "outputs": outputs,
+                    "elapsed": elapsed,
+                },
+            )
+        yield make_event(
+            EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
+            output=output, is_error=False, denied=False, elapsed=elapsed,
+            metadata={"workers": len(tasks), "parallel": True},
+        )

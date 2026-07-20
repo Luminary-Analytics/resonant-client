@@ -123,6 +123,9 @@ class ResonantApp {
         this.ws = null;
         this.reconnectAttempts = 0;
         this.isRunning = false;
+        // Selection is not activity: the selected session can be idle,
+        // working, or blocked on the user. Keep transient live state here.
+        this._sessionActivity = new Map();
         this._queuedMessages = new Map();
         this._cancelInFlight = null;
         this._cancelInterrupted = false;
@@ -200,6 +203,13 @@ class ResonantApp {
         this.agentActivityOrder = [];
         this.agentActivityStack = [];
         this.contextState = null;
+        this.runtimeView = 'agents';
+        this.runtimeAgents = [];
+        this.runtimeTimeline = [];
+        this.runtimeTraces = [];
+        this.runtimeArtifacts = [];
+        this.runtimePacks = [];
+        this.contextProviders = [];
 
         // Preview panel state
         this.previewOpen = false;
@@ -1039,10 +1049,12 @@ class ResonantApp {
         // Permission dialog
         document.getElementById('permission-allow').addEventListener('click', () => {
             this.send({ command: 'approve', approved: true });
+            this._setSessionActivity('working');
             document.getElementById('permission-dialog').style.display = 'none';
         });
         document.getElementById('permission-deny').addEventListener('click', () => {
             this.send({ command: 'approve', approved: false });
+            this._setSessionActivity('working');
             document.getElementById('permission-dialog').style.display = 'none';
         });
 
@@ -1107,6 +1119,10 @@ class ResonantApp {
         });
         document.getElementById('context-cockpit-refresh')?.addEventListener('click', () => {
             this.send({ command: 'get_context_state' });
+            this.send({ command: 'context_catalog' });
+        });
+        document.querySelectorAll('.runtime-view-tab').forEach((button) => {
+            button.addEventListener('click', () => this.switchRuntimeView(button.dataset.runtimeView));
         });
 
         // Plan-graph toolbar buttons
@@ -1915,6 +1931,7 @@ class ResonantApp {
             : null;
         s.iterCount = 0;
         s.lastVerdict = 'continue';
+        this._setSessionActivity('working');
 
         this._renderAutonomousBanner('start', event);
         this._refreshMissionBadge('autonomous_running', '');
@@ -2087,6 +2104,7 @@ class ResonantApp {
         // v0.5.9a1 — clear the activity line so the post-run badge
         // doesn't show "running REFLECT · 8m elapsed" forever.
         s.activity = null;
+        this._setSessionActivity('idle');
 
         // Stop the live-update tick and dismiss the badge.
         if (this._autonomousBadgeTimer) {
@@ -2109,6 +2127,7 @@ class ResonantApp {
     }
 
     handleAutonomousMissionFailed(event) {
+        this._setSessionActivity('idle');
         if (this._autonomousBadgeTimer) {
             clearInterval(this._autonomousBadgeTimer);
             this._autonomousBadgeTimer = null;
@@ -2144,6 +2163,7 @@ class ResonantApp {
         if (!intentId) {
             return;
         }
+        this._setSessionActivity('needs-input');
         // Track active decision card so we can dismiss / replace it
         // cleanly (e.g. if the daemon emits a SECOND request in the
         // same iter). One card at a time per mission.
@@ -2197,6 +2217,7 @@ class ResonantApp {
                 option_id: optionId,
                 response_text: notes,
             });
+            this._setSessionActivity('working');
             // Optimistic UI: disable the controls + flip the title
             // so the user sees their click landed. The daemon's
             // `autonomous_human_decision_received` event later
@@ -2352,6 +2373,7 @@ class ResonantApp {
                 s.activity.started_at = epoch;
             }
         }
+        this._setSessionActivity(s.activity.phase === 'parked' ? 'needs-input' : 'working');
         this._updateAutonomousBadgeState();
     }
 
@@ -2361,6 +2383,7 @@ class ResonantApp {
      * chip so the chat retains a marker of the user's choice.
      */
     handleAutonomousHumanDecisionReceived(event) {
+        this._setSessionActivity('working');
         const card = document.getElementById('autonomous-decision-card');
         if (!card) return;
         const optionId = (event && event.option_id) || '';
@@ -4518,6 +4541,7 @@ class ResonantApp {
 
     setRunning(running) {
         this.isRunning = running;
+        this._setSessionActivity(running ? 'working' : 'idle');
         this.sendBtn.style.display = 'flex';
         this.stopBtn.style.display = running ? 'flex' : 'none';
         this.userInput.disabled = false;
@@ -5607,6 +5631,64 @@ class ResonantApp {
                 this.contextState = event;
                 this.renderContextCockpit();
                 break;
+            case 'context.catalog':
+                this.contextProviders = event.providers || [];
+                this.renderContextCockpit();
+                break;
+            case 'agent.created':
+            case 'agent.updated':
+            case 'agent.completed':
+            case 'agent.steered':
+            case 'agent.control_ack':
+                if (event.agent) this.upsertRuntimeAgent(event.agent);
+                this.renderRuntimeView();
+                break;
+            case 'agent.runtime_list':
+                this.runtimeAgents = event.agents || [];
+                this.syncRuntimeAgents();
+                this.renderRuntimeView();
+                break;
+            case 'agent.runtime_detail':
+                this.showRuntimeAgentDetail(event.agent, event.transcript || []);
+                break;
+            case 'session.timeline_list':
+                this.runtimeTimeline = event.checkpoints || [];
+                this.renderRuntimeView();
+                break;
+            case 'session.timeline_comparison':
+                this.showRuntimePayload('Checkpoint comparison', event.data || {});
+                break;
+            case 'session.timeline_restored':
+                this.showStatusMessage('Checkpoint restored');
+                if (event.display_events) {
+                    this.chatMessages.innerHTML = '';
+                    this._resetTaskCardState();
+                    this.replayDisplayEvents(event.display_events);
+                }
+                this.send({ command: 'session_timeline_list' });
+                break;
+            case 'flight.recorder_list':
+                this.runtimeTraces = event.runs || [];
+                this.renderRuntimeView();
+                break;
+            case 'flight.recorder_detail':
+                this.showRuntimePayload('Run trace', { manifest: event.manifest, events: event.events });
+                break;
+            case 'flight.recorder_comparison':
+                this.showRuntimePayload('Trajectory comparison', event.data || {});
+                break;
+            case 'artifact.list':
+                this.runtimeArtifacts = event.artifacts || [];
+                this.renderRuntimeView();
+                break;
+            case 'artifact.created':
+                if (event.artifact) this.runtimeArtifacts.unshift(event.artifact);
+                this.renderRuntimeView();
+                break;
+            case 'capability.pack_list':
+                this.runtimePacks = event.packs || [];
+                this.renderRuntimeView();
+                break;
             case 'mcp_list':
                 this.mcpServers = event.servers || [];
                 this.mcpHealth = event.health || {};
@@ -6504,6 +6586,7 @@ class ResonantApp {
     // ── Step Handling ────────────────────────────────────────────
 
     handleSessionStart(event) {
+        this._setSessionActivity('working');
         // Show tool mode indicator for adaptive backends
         const toolMode = event.tool_mode || 'native';
         if (toolMode === 'text') {
@@ -7877,8 +7960,14 @@ class ResonantApp {
         // plan pane clears any pending indicator.
         this._currentPreviewPane = pane;
         if (isPlan) this._clearPlanTabUnread();
-        if (isAgents) this._clearAgentTabUnread();
-        if (isContext) this.send({ command: 'get_context_state' });
+        if (isAgents) {
+            this._clearAgentTabUnread();
+            this.refreshRuntimeView();
+        }
+        if (isContext) {
+            this.send({ command: 'get_context_state' });
+            this.send({ command: 'context_catalog' });
+        }
     }
 
     /**
@@ -8047,6 +8136,11 @@ class ResonantApp {
         this.agentActivityOrder = [];
         this.agentActivityStack = [];
         this.contextState = null;
+        this.runtimeAgents = [];
+        this.runtimeTimeline = [];
+        this.runtimeTraces = [];
+        this.runtimeArtifacts = [];
+        this.runtimePacks = [];
         this.renderAgentActivityTree();
         this.renderContextCockpit();
 
@@ -9702,6 +9796,9 @@ class ResonantApp {
             <div class="context-list-row"><span>${this.escapeHtml(item.name || 'tool')} <small>#${item.index}</small></span><strong>${Number(item.estimated_tokens || 0).toLocaleString()}</strong></div>
         `).join('');
         const todos = state.todos || [];
+        const providers = (this.contextProviders || []).map(item =>
+            `<button class="context-provider-chip" type="button" data-syntax="${this.escapeHtml(item.syntax || '')}" title="Insert into the composer">${this.escapeHtml(item.syntax || item.name)}</button>`
+        ).join('');
         body.innerHTML = `
             <div class="context-hero">
                 <div><strong>${total.toLocaleString()}</strong><span>estimated tokens</span></div>
@@ -9722,7 +9819,14 @@ class ResonantApp {
             <section class="context-card"><h4>Prompt layers</h4>${layers || '<div class="context-empty-row">No prompt layers</div>'}</section>
             <section class="context-card"><h4>Largest tool payloads</h4>${payloads || '<div class="context-empty-row">No tool results</div>'}</section>
             <section class="context-card"><h4>Durable task state</h4><div class="context-empty-row">${todos.length ? `${todos.filter(item => item.done).length}/${todos.length} todos complete` : 'No active todo ledger'}</div></section>
+            <section class="context-card"><h4>Explicit attachments</h4><div class="context-provider-list">${providers || '<span class="context-empty-row">No providers available</span>'}</div><p class="context-provider-help">Insert a provider, replace <code>selector</code>, and send. Attachments carry provenance into the model context.</p></section>
         `;
+        body.querySelectorAll('.context-provider-chip').forEach((button) => button.addEventListener('click', () => {
+            const syntax = button.dataset.syntax || '';
+            this.userInput.value = `${this.userInput.value}${this.userInput.value ? ' ' : ''}${syntax}`;
+            this.userInput.focus();
+            this._syncComposerGutter?.();
+        }));
     }
 
     trackPlanAgentEvent(event) {
@@ -9756,7 +9860,148 @@ class ResonantApp {
         this._markAgentTabUnread();
     }
 
+    switchRuntimeView(view) {
+        this.runtimeView = view || 'agents';
+        document.querySelectorAll('.runtime-view-tab').forEach((button) => {
+            button.classList.toggle('active', button.dataset.runtimeView === this.runtimeView);
+        });
+        this.refreshRuntimeView();
+    }
+
+    refreshRuntimeView() {
+        const commands = {
+            agents: 'agent_runtime_list',
+            timeline: 'session_timeline_list',
+            traces: 'flight_recorder_list',
+            artifacts: 'artifact_list',
+            packs: 'capability_pack_list',
+        };
+        this.send({ command: commands[this.runtimeView] || commands.agents });
+        this.renderRuntimeView();
+    }
+
+    upsertRuntimeAgent(agent) {
+        const index = this.runtimeAgents.findIndex((item) => item.id === agent.id);
+        if (index >= 0) this.runtimeAgents[index] = agent;
+        else this.runtimeAgents.unshift(agent);
+        this.syncRuntimeAgents();
+    }
+
+    syncRuntimeAgents() {
+        this.runtimeAgents.forEach((agent) => {
+            const existing = this.agentActivities.get(agent.id) || {};
+            if (!this.agentActivities.has(agent.id)) this.agentActivityOrder.push(agent.id);
+            this.agentActivities.set(agent.id, {
+                ...existing,
+                id: agent.id,
+                kind: agent.role || 'agent',
+                label: agent.agent_type || agent.role || 'agent',
+                prompt: agent.prompt || '',
+                parentId: agent.parent_id || '',
+                status: agent.status || 'queued',
+                startedAt: Number(agent.created_at || 0) * 1000,
+                finishedAt: ['completed', 'failed', 'cancelled', 'stuck'].includes(agent.status)
+                    ? Number(agent.updated_at || 0) * 1000 : 0,
+                steps: agent.steps,
+                handoff: agent.handoff ? JSON.stringify(agent.handoff, null, 2) : agent.error || '',
+                runtime: agent,
+            });
+        });
+    }
+
+    renderRuntimeView() {
+        const tree = document.getElementById('agent-activity-tree');
+        const count = document.getElementById('agent-activity-count');
+        if (!tree) return;
+        if (this.runtimeView === 'agents') {
+            this.renderAgentActivityTree();
+            return;
+        }
+        const collections = {
+            timeline: this.runtimeTimeline,
+            traces: this.runtimeTraces,
+            artifacts: this.runtimeArtifacts,
+            packs: this.runtimePacks,
+        };
+        const items = collections[this.runtimeView] || [];
+        if (count) count.textContent = `${items.length} ${this.runtimeView}`;
+        if (!items.length) {
+            tree.innerHTML = `<div class="agent-activity-empty">No ${this.escapeHtml(this.runtimeView)} recorded yet.</div>`;
+            return;
+        }
+        if (this.runtimeView === 'timeline') {
+            tree.innerHTML = items.map((item) => `
+                <article class="runtime-card" data-checkpoint-id="${this.escapeHtml(item.id)}">
+                    <div><strong>${this.escapeHtml(item.reason || item.id)}</strong><small>#${Number(item.sequence || 0)} · ${new Date(Number(item.created_at || 0) * 1000).toLocaleString()}</small></div>
+                    <span>${this.escapeHtml(item.tool_name || (item.workspace_ref ? 'git snapshot' : 'archive snapshot'))}</span>
+                    <div class="runtime-actions"><button data-action="compare">Compare</button><button data-action="conversation">Restore chat</button><button data-action="files">Restore files</button><button data-action="both">Restore both</button></div>
+                </article>`).join('');
+            tree.querySelectorAll('.runtime-card').forEach((card) => {
+                card.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => {
+                    const action = button.dataset.action;
+                    if (action === 'compare') this.send({ command: 'session_timeline_compare', checkpoint_id: card.dataset.checkpointId });
+                    else this.send({ command: 'session_timeline_restore', checkpoint_id: card.dataset.checkpointId, mode: action });
+                }));
+            });
+            return;
+        }
+        if (this.runtimeView === 'traces') {
+            tree.innerHTML = items.map((item) => `
+                <article class="runtime-card" data-run-id="${this.escapeHtml(item.run_id)}">
+                    <div><strong>${this.escapeHtml(item.model || item.run_id)}</strong><small>${this.escapeHtml(item.model_role || 'primary')} · ${this.escapeHtml(item.status || '')}</small></div>
+                    <span>${new Date(Number(item.updated_at || 0) * 1000).toLocaleString()}</span>
+                    <div class="runtime-actions"><button data-action="inspect">Inspect</button><button data-action="export">Export OTLP</button></div>
+                </article>`).join('');
+            tree.querySelectorAll('.runtime-card').forEach((card) => {
+                card.querySelector('[data-action="inspect"]')?.addEventListener('click', () => this.send({ command: 'flight_recorder_detail', run_id: card.dataset.runId }));
+                card.querySelector('[data-action="export"]')?.addEventListener('click', () => this.send({ command: 'flight_recorder_export', run_id: card.dataset.runId }));
+            });
+            return;
+        }
+        if (this.runtimeView === 'artifacts') {
+            tree.innerHTML = items.map((item) => `
+                <article class="runtime-card">
+                    <div><strong>${this.escapeHtml(item.label || item.id)}</strong><small>${this.escapeHtml(item.kind || '')} · ${Number(item.size || 0).toLocaleString()} bytes</small></div>
+                    <span title="${this.escapeHtml(item.path || '')}">${this.escapeHtml((item.path || '').split(/[\\/]/).pop() || '')}</span>
+                </article>`).join('');
+            return;
+        }
+        tree.innerHTML = items.map((item) => `
+            <article class="runtime-card">
+                <div><strong>${this.escapeHtml(item.name || item.id)}</strong><small>v${this.escapeHtml(item.version || '0.0.0')}</small></div>
+                <span>${this.escapeHtml(item.description || '')}</span>
+                <div class="runtime-badges"><b class="${item.enabled ? 'is-on' : ''}">${item.enabled ? 'enabled' : 'disabled'}</b><b class="${item.trusted ? 'is-on' : ''}">${item.trusted ? 'trusted' : 'untrusted'}</b><b>${(item.agents || []).length} agents</b><b>${(item.skills || []).length} skills</b></div>
+            </article>`).join('');
+    }
+
+    showRuntimePayload(title, payload) {
+        const detail = document.getElementById('agent-handoff-detail');
+        if (!detail) return;
+        detail.innerHTML = `<div class="agent-handoff-header"><strong>${this.escapeHtml(title)}</strong><button class="agent-handoff-close" type="button">×</button></div><pre>${this.escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
+        detail.style.display = 'block';
+        detail.querySelector('.agent-handoff-close')?.addEventListener('click', () => { detail.style.display = 'none'; });
+    }
+
+    showRuntimeAgentDetail(agent, transcript) {
+        if (!agent) return;
+        this.showRuntimePayload(agent.agent_type || 'Agent', { agent, transcript });
+        const detail = document.getElementById('agent-handoff-detail');
+        const controls = document.createElement('div');
+        controls.className = 'runtime-control-bar';
+        controls.innerHTML = `<button data-action="pause">Pause</button><button data-action="resume">Resume</button><button data-action="cancel" class="is-danger">Cancel</button><input aria-label="Steer agent" placeholder="Add direction without cancelling"><button data-action="steer">Steer</button>`;
+        detail?.appendChild(controls);
+        controls.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => {
+            const input = controls.querySelector('input');
+            this.send({ command: 'agent_runtime_control', agent_id: agent.id, action: button.dataset.action, text: input?.value || '' });
+            if (button.dataset.action === 'steer' && input) input.value = '';
+        }));
+    }
+
     renderAgentActivityTree() {
+        if (this.runtimeView !== 'agents') {
+            this.renderRuntimeView();
+            return;
+        }
         const tree = document.getElementById('agent-activity-tree');
         const count = document.getElementById('agent-activity-count');
         const badge = document.getElementById('agents-tab-badge');
@@ -9792,7 +10037,11 @@ class ResonantApp {
             `;
         }).join('');
         tree.querySelectorAll('.agent-activity-node').forEach(node => {
-            node.addEventListener('click', () => this.showAgentHandoff(node.dataset.activityId));
+            node.addEventListener('click', () => {
+                const item = this.agentActivities.get(node.dataset.activityId);
+                if (item?.runtime) this.send({ command: 'agent_runtime_detail', agent_id: item.runtime.id });
+                else this.showAgentHandoff(node.dataset.activityId);
+            });
         });
     }
 
@@ -9903,7 +10152,9 @@ class ResonantApp {
             activity.status = 'done';
             activity.steps = steps;
             activity.finishedAt = activity.startedAt + elapsed * 1000;
-            activity.handoff = event.result || event.result_preview || '';
+            activity.handoff = event.handoff
+                ? JSON.stringify(event.handoff, null, 2)
+                : event.result || event.result_preview || '';
             this.agentActivities.set(activityId, activity);
             this.agentActivityStack = this.agentActivityStack.filter(id => id !== activityId);
             this.renderAgentActivityTree();
@@ -9992,6 +10243,7 @@ class ResonantApp {
     // ── Permission ──────────────────────────────────────────────
 
     handleToolPermission(event) {
+        this._setSessionActivity('needs-input');
         const name = event.name || '';
         const args = event.arguments || {};
         const review = event.review || null;
@@ -10133,6 +10385,7 @@ class ResonantApp {
 
         const onDecide = (approved) => {
             this.send({ command: 'approve', approved });
+            this._setSessionActivity('working');
             block.querySelectorAll('button').forEach(b => b.disabled = true);
             const summary = document.createElement('div');
             summary.className = 'inline-diff-summary ' + (approved ? 'accepted' : 'rejected');
@@ -10205,6 +10458,7 @@ class ResonantApp {
         const question = (event && event.question) || '';
         const options = Array.isArray(event && event.options) ? event.options : [];
         if (!question) return;
+        this._setSessionActivity('needs-input');
 
         const conciseQuestion = this._conciseAwaitUserQuestion(question);
 
@@ -10276,6 +10530,7 @@ class ResonantApp {
             `;
             wrap.appendChild(confirmation);
             this._setLiveRunPhase('Continuing', 'Applying your selection');
+            this._setSessionActivity('working');
             this.send({ command: 'user_input', response: text });
         };
 
@@ -10307,6 +10562,7 @@ class ResonantApp {
     }
 
     handleUserInputReceived(_event) {
+        this._setSessionActivity('working');
         const pending = Array.from(this.chatMessages.querySelectorAll(
             '.await-user-prompt[data-await-user-state="submitting"]',
         )).at(-1);
@@ -12132,15 +12388,10 @@ class ResonantApp {
             ? `<span class="session-project-tag">${this.escapeHtml(roleLabel)}</span> \u00B7 `
             : '';
 
-        const isActive = session.id === this.currentSessionId;
-        // v0.6.5 \u2014 autonomous (long-running) sessions are badged inline
-        // instead of living in a separate "Missions" group.
-        const ms = session.mission_state;
-        const isRunning = !!ms && ['drafting', 'planning_dispatched', 'executing', 'reviewing'].includes(ms.phase || '');
-        const dotCls = isActive ? 'is-active' : (isRunning ? 'is-running' : (session.pinned ? 'is-pinned' : 'is-idle'));
+        const indicator = this._sessionIndicator(session);
         const autoBadge = '';
         el.innerHTML = `
-            <div class="agent-row-title"><span class="agent-row-dot ${dotCls}" aria-hidden="true"></span>${this.escapeHtml(session.title || 'New session')}</div>
+            <div class="agent-row-title"><span class="agent-row-status is-${indicator.state}" role="img" aria-label="${indicator.label}" title="${indicator.label}"><span aria-hidden="true"></span></span>${this.escapeHtml(session.title || 'New session')}</div>
             <div class="agent-row-date">${autoBadge}${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
             <div class="agent-row-actions">
                 <button class="agent-menu-btn" title="More actions">&#8943;</button>
@@ -12172,6 +12423,47 @@ class ResonantApp {
         });
 
         return el;
+    }
+
+    /** Resolve the semantic lifecycle shown beside a session title. */
+    _sessionIndicator(session) {
+        const explicit = this._sessionActivity.get(session.id);
+        if (explicit === 'needs-input') return { state: explicit, label: 'Needs your input' };
+        if (explicit === 'working') return { state: explicit, label: 'Resonant is working' };
+
+        const phase = String(session?.mission_state?.phase || '').toLowerCase();
+        const isOrphan = (this._autonomousOrphans || []).some((item) =>
+            item && (item.session_id === session.id || item.id === session.id)
+        );
+        if (isOrphan) return { state: 'needs-input', label: 'Needs your attention' };
+        if (['planning_dispatched', 'executing', 'reviewing', 'autonomous_running'].includes(phase)) {
+            return { state: 'working', label: 'Resonant is working' };
+        }
+        return { state: 'idle', label: 'Idle' };
+    }
+
+    /** Update one row in place so activity changes never rebuild the list. */
+    _setSessionActivity(state, sessionId = this.currentSessionId) {
+        if (!sessionId) return;
+        const normalized = state === 'needs-input' ? state : (state === 'working' ? state : 'idle');
+        const previous = this._sessionActivity.get(sessionId) || 'idle';
+        if (normalized === 'idle') this._sessionActivity.delete(sessionId);
+        else this._sessionActivity.set(sessionId, normalized);
+        if (previous === normalized) return;
+
+        const row = this.sessionList?.querySelector(
+            `.agent-row[data-session-id="${CSS.escape(sessionId)}"]`,
+        );
+        const marker = row?.querySelector('.agent-row-status');
+        if (!marker) return;
+        const labels = {
+            working: 'Resonant is working',
+            'needs-input': 'Needs your input',
+            idle: 'Idle',
+        };
+        marker.className = `agent-row-status is-${normalized}`;
+        marker.setAttribute('aria-label', labels[normalized]);
+        marker.title = labels[normalized];
     }
 
     showSessionContextMenu(e, session) {

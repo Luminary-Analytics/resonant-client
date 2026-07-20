@@ -227,8 +227,53 @@ AGENT_TOOLS = [
                         "enum": ["build", "explore", "plan"],
                         "description": "Type of agent: 'explore' (fast, read-only), 'plan' (analyze, no edits), 'build' (full coding)"
                     },
+                    "model_role": {
+                        "type": "string",
+                        "enum": ["plan", "explore", "implement", "apply", "test", "review", "vision", "summarize"],
+                        "description": "Optional explicit quality-pipeline role; defaults from agent_type"
+                    },
+                    "isolation": {
+                        "type": "string",
+                        "enum": ["shared", "worktree"],
+                        "description": "Workspace isolation. Writing agents default to a git worktree when available"
+                    },
+                    "max_steps": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional bounded step budget for this worker"
+                    },
                 },
                 "required": ["prompt", "agent_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_batch",
+            "description": (
+                "Run two to four independent sub-agents concurrently. Read-only workers may "
+                "share the project; every writing worker is forced into its own git worktree. "
+                "Use this only for bounded tasks that do not depend on each other's output."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array", "minItems": 2, "maxItems": 4,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {"type": "string"},
+                                "agent_type": {"type": "string", "enum": ["build", "explore", "plan"]},
+                                "model_role": {"type": "string", "enum": ["plan", "explore", "implement", "apply", "test", "review", "vision", "summarize"]},
+                                "max_steps": {"type": "integer", "minimum": 1}
+                            },
+                            "required": ["prompt", "agent_type"]
+                        }
+                    }
+                },
+                "required": ["tasks"]
             }
         }
     },

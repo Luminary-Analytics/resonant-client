@@ -673,6 +673,14 @@ def _detect_language(path: str) -> str:
 
 def _extract_symbols(content: str, language: str) -> list[str]:
     """Extract function/class/type names from source code."""
+    try:
+        from .code_intelligence import parse_code
+
+        parsed = parse_code(content, language)
+        if parsed.symbols:
+            return parsed.symbols[:50]
+    except Exception:
+        pass
     symbols = []
 
     if language == "python":
@@ -720,6 +728,14 @@ def _extract_symbols(content: str, language: str) -> list[str]:
 
 def _extract_imports(content: str, language: str) -> list[str]:
     """Extract import/include statements."""
+    try:
+        from .code_intelligence import parse_code
+
+        parsed = parse_code(content, language)
+        if parsed.imports:
+            return parsed.imports[:30]
+    except Exception:
+        pass
     imports = []
 
     if language == "python":

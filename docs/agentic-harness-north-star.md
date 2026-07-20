@@ -2,7 +2,7 @@
 
 Status: canonical product and engineering contract
 Audience: contributors, maintainers, coding agents, and model adapters
-Last updated: 2026-07-11
+Last updated: 2026-07-19
 
 This document defines what Resonant is optimizing for and the architectural
 direction that should guide new work. When a historical plan, release note, or
@@ -168,11 +168,23 @@ honesty. Track:
 7. Capability-based model routing and recovery policies.
 8. Cross-model long-horizon and multimodal evaluation baselines.
 
-Implementation status as of 2026-07-11:
+Implementation status as of 2026-07-19:
 
 - Capability profiles and Ollama runtime enrichment: foundation implemented.
 - Typed multimodal content and honest text-only fallback: foundation implemented.
-- Durable task ledger and artifact receipts: next implementation slice.
+- Durable agent registry, transcripts, controls, and structured handoffs: implemented.
+- Conversation-linked workspace checkpoint timeline and three-mode rewind: implemented.
+- Structured lifecycle hooks and worktree-isolated parallel writers: implemented.
+- Flight recorder, causal comparison, and OTLP-compatible export: implemented.
+- Provenance-aware context broker plus AST/Tree-sitter repository orientation: implemented.
+- Explicit model-role routing at visible phase boundaries: implemented.
+- Trusted capability packs spanning agents, skills, hooks, MCP, and UI metadata: implemented.
+- Modality-neutral artifact bus and capability-negotiated delivery: implemented foundation.
+
+See [`docs/modern-agent-runtime.md`](modern-agent-runtime.md) for the runtime
+contract and extension guide. Restarting work from durable checkpoints after a
+process restart remains the next reliability layer; interrupted worker evidence
+is preserved and surfaced as `stuck` today.
 
 Each slice must remain useful independently, include contract tests, and preserve
 existing chat and tool behavior.

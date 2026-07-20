@@ -18,12 +18,10 @@ on Ollama running on the Mac Studio at `10.0.0.133`** (756B, 1M context,
 native tool calling). The `deepseek-v4-pro` / `flash` tiers remain one
 click away in the model picker as the secondary high-quality option.
 
-> **Single-backend.** The v0.4.0 refocus cut every non-Ollama backend
-> (Anthropic, OpenAI, Claude Code, Codex, Resonant Engine, MLX, LM
-> Studio). Resonant Client is now an Ollama-only client. If you want
-> Anthropic models use Claude Code; for OpenAI use Codex. Some older
-> docs/comments still reference the cut backends — treat this section
-> as authoritative.
+> **Provider-adaptive runtime.** Ollama is the local-first flagship path.
+> Kimi and an installed Codex CLI are supported adapters. The system prompt,
+> tool loop, checkpointing, worker contract, evidence model, and verification
+> rules remain provider-neutral; routing is explicit at phase boundaries.
 
 It runs as a frameless desktop app (pywebview) or in a browser, providing:
 
@@ -37,6 +35,10 @@ It runs as a frameless desktop app (pywebview) or in a browser, providing:
   missions and surfaced back into future ones. This is the project's
   differentiating feature; see [`docs/self-improvement-loop.md`](docs/self-improvement-loop.md).
 - An optional **sprint workflow** (planner / generator / evaluator with an autonomous orchestrator) — off by default; opt in via Settings → General
+- A durable worker control plane, universal rewind timeline, isolated parallel
+  writers, flight recorder, explicit context attachments, capability packs,
+  and modality-neutral artifact bus. See
+  [`docs/modern-agent-runtime.md`](docs/modern-agent-runtime.md).
 
 Two model-adapter foundations are deliberately backend-independent:
 
@@ -50,10 +52,10 @@ Two model-adapter foundations are deliberately backend-independent:
 
 **Project conventions:** Resonant reads `AGENTS.md` from the project root (the cross-tool standard adopted by Codex CLI, OpenCode, Cursor, and OpenHands). Legacy `RESONANT.md` and Anthropic's `CLAUDE.md` are also recognized as fallbacks.
 
-**Per-project state** lives at `~/.resonant/projects/<sha1(project_path)[:12]>/`,
-NOT in the user's repo — plan-graphs, intents, harness state, curator
-state. Skills live at `~/.resonant/skills/`. Mirrors Claude Code's
-`~/.claude/projects/<proj>/` pattern.
+**Per-project state** lives under `~/.resonant/projects/<project-hash>/`, not
+in the user's repo: sessions, plan graphs, intents, harness state, workers,
+artifacts, checkpoints, traces, and managed worktrees. Skills live at
+`~/.resonant/skills/`.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -67,10 +69,10 @@ state. Skills live at `~/.resonant/skills/`. Mirrors Claude Code's
 │                     engine/session.py                          │
 │  Agentic loop: stream → parse → execute tools → repeat        │
 ├──────────────┬───────────────┬────────────────────────────────┤
-│  backends.py │  engine/      │  orchestration/                │
-│  OllamaBackend│  tools.py    │  plan-graph, specialists,       │
-│  (only       │  bash, file_* │  autonomous missions,          │
-│   backend)   │  glob, grep   │  the self-improvement loop      │
+│  providers   │  engine/      │  orchestration/                │
+│  Ollama/Kimi │  tools.py    │  plan-graph, specialists,       │
+│  /Codex CLI  │  durable run │  autonomous missions,          │
+│              │  services    │  the self-improvement loop      │
 │  + CLOUD_    │  task (sub)   │  (skills / extractor / curator  │
 │   MODELS     │  batch        │   / loader)                    │
 └──────────────┴───────────────┴────────────────────────────────┘
@@ -85,7 +87,8 @@ The client is laser-focused on **the Agent (agentic-coding) experience**. Remove
 - **Workspaces / Command Center / Fleet** (`#command-center`, `command_*` WebSocket commands, `command_coordinator`, `command_projects`, `command_tasks`, `org_chart`, fleet worktree isolation)
 - **Automations / Scheduler** (`#schedule-view`, `scheduler.py`, `schedule_*` commands)
 - **Background agents / Dispatch** (`#dispatch-view`, `task_runner.py`, `dispatch*` commands)
-- **All non-Ollama backends** (v0.4.0) — Anthropic, OpenAI, Claude Code, Codex, Resonant Engine, MLX, LM Studio
+- **The former broad backend matrix** (v0.4.0) — later releases selectively
+  restored Kimi and Codex adapters behind the provider-neutral runtime.
 
 Everything else (the agentic loop, all 25+ tools, RAG, MCP, harness, sub-agents via the Task tool, browser/computer-use, autonomous missions, the self-improvement loop) is preserved.
 
@@ -93,8 +96,8 @@ Everything else (the agentic loop, all 25+ tools, RAG, MCP, harness, sub-agents 
 
 ### `backends.py` — Backend Abstraction
 
-`OllamaBackend` is the **only** backend (v0.4.0 cut the rest). It
-implements `stream()`, `health()`, `list_models()`, `classify()`.
+`OllamaBackend` implements the flagship local/open-model path. Kimi and Codex
+CLI adapters implement the same streaming contract through `gui/runtime.py`.
 
 | Class | Protocol | Notes |
 |-------|----------|-------|
@@ -104,7 +107,9 @@ implements `stream()`, `health()`, `list_models()`, `classify()`.
 
 **Cloud models:** `OllamaBackend.CLOUD_MODELS` lists models routed via Ollama's cloud (`:cloud` tag). The flagship `glm-5.2:cloud` is listed first (v0.6.5 — 756B, 1M context, native tools). The `deepseek-v4-pro:cloud` / `deepseek-v4-flash:cloud` tiers follow as the secondary option (pro's PLAN_DEEP convergence is well characterized — see `docs/v0.5.1-smoke-results.md`).
 
-**Backend priority** (`select_harness_backend` in `gui/app.py`): there is only one backend; per-harness-role model preference is pro for planner/evaluator, flash for the generator role (a deliberate fast-iter trade-off for the test harness). Override with `RESONANT_HARNESS_<ROLE>_MODEL`.
+**Role routing** (`engine/model_roles.py`): provider/model overrides are explicit
+per role and applied only at visible worker boundaries. If a configured route
+cannot be built, the active backend remains in use.
 
 ### `network_defaults.py` — Default backend/model resolution
 
@@ -389,7 +394,7 @@ python -m resonant_client.gui.server --port 8765
 # Browser-only mode
 python -m resonant_client.gui.server --port 8765 --browser
 
-# Override the default model (Ollama is the only backend)
+# Override the default Ollama model
 RESONANT_DEFAULT_MODEL=deepseek-v4-flash:cloud python -m resonant_client.gui.server --port 8765
 
 # Tune Ollama for the Mac Studio (already defaults to 32k ctx / 1024 batch / 120m keep-alive)

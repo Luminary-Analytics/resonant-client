@@ -868,19 +868,16 @@ body {
 }
 .proj-tree-folder svg { display: block; }
 .proj-tree-header.current .proj-tree-folder { color: var(--brand); }
-.agent-row-dot {
+.agent-row-status {
     display: inline-block;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
+    position: relative;
+    width: 12px;
+    height: 12px;
     margin-right: 7px;
     vertical-align: middle;
-    background: var(--dimmer);
     flex-shrink: 0;
 }
-.agent-row-dot.is-active { background: var(--ok); }
-.agent-row-dot.is-pinned { background: var(--brand); }
-.agent-row-dot.is-running { background: var(--brand); }
+.agent-row-status > span { position: absolute; inset: 0; }
 /* v0.6.5 — inline "Auto" marker on long-running (autonomous) sessions in
    the unified projects+sessions list. */
 .agent-row-auto { color: var(--brand2); font-weight: 500; }
@@ -5729,6 +5726,103 @@ body {
     min-height: 0;
     background: var(--bg);
 }
+
+.runtime-view-tabs {
+    display: flex;
+    gap: 3px;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+.runtime-view-tab {
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--muted);
+    padding: 5px 7px;
+    font: inherit;
+    font-size: 10px;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.runtime-view-tab:hover,
+.runtime-view-tab.active {
+    color: var(--text);
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.runtime-card {
+    display: grid;
+    gap: 8px;
+    margin: 7px 8px;
+    padding: 11px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--panel-bg, #111) 94%, var(--accent) 6%);
+}
+
+.runtime-card > div:first-child {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.runtime-card small,
+.runtime-card > span {
+    color: var(--muted);
+    font-size: 10px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.runtime-actions,
+.runtime-badges,
+.runtime-control-bar,
+.context-provider-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.runtime-actions button,
+.runtime-control-bar button,
+.context-provider-chip {
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text);
+    padding: 5px 8px;
+    font: inherit;
+    font-size: 10px;
+    cursor: pointer;
+}
+
+.runtime-actions button:hover,
+.runtime-control-bar button:hover,
+.context-provider-chip:hover {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.runtime-control-bar {
+    margin-top: 10px;
+}
+
+.runtime-control-bar input {
+    flex: 1 1 150px;
+    min-width: 0;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--input-bg, #111);
+    color: var(--text);
+    padding: 6px 8px;
+}
+
+.runtime-control-bar .is-danger { color: var(--danger, #ff6b72); }
+.runtime-badges b { padding: 2px 6px; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: 9px; }
+.runtime-badges b.is-on { color: var(--accent); }
+.context-provider-help { color: var(--muted); font-size: 10px; line-height: 1.4; }
 .agent-activity-toolbar {
     display: flex;
     justify-content: space-between;
@@ -10478,17 +10572,62 @@ body {
     color: var(--brand2);
 }
 
-.agent-row-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 2px;
-    background: #3a3a3a;
+.agent-row-status {
+    width: 13px;
+    height: 13px;
+    margin-right: 1px;
 }
 
-.agent-row-dot.is-active,
-.agent-row-dot.is-running {
+/* Idle: a quiet, hollow presence mark. */
+.agent-row-status.is-idle > span {
+    inset: 3px;
+    border: 1.5px solid #55545b;
+    border-radius: 50%;
+    background: transparent;
+}
+
+/* Working: a luminous core with a measured orbit—visible without flicker. */
+.agent-row-status.is-working > span {
+    inset: 4px;
+    border-radius: 50%;
     background: var(--brand2);
-    box-shadow: 0 0 0 3px rgba(0,214,201,.12);
+    box-shadow: 0 0 7px color-mix(in srgb, var(--brand2) 65%, transparent);
+}
+
+.agent-row-status.is-working::before {
+    content: '';
+    position: absolute;
+    inset: 1px;
+    border: 1.5px solid color-mix(in srgb, var(--brand2) 26%, transparent);
+    border-top-color: var(--brand2);
+    border-right-color: color-mix(in srgb, var(--brand2) 72%, transparent);
+    border-radius: 50%;
+    animation: session-status-orbit 1.35s linear infinite;
+}
+
+/* Needs input: warm, unmistakable, and intentionally static. */
+.agent-row-status.is-needs-input > span {
+    inset: 1px;
+    display: grid;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--warn) 74%, transparent);
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--warn) 16%, var(--bg-sidebar));
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--warn) 10%, transparent);
+}
+
+.agent-row-status.is-needs-input > span::after {
+    content: '?';
+    color: var(--warn);
+    font-size: 8px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+@keyframes session-status-orbit { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+    .agent-row-status.is-working::before { animation: none; }
 }
 
 .agent-row-actions {

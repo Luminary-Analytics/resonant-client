@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.9.15"
+version = "0.10.0"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
 # v0.6.2 — relicensed Proprietary → MIT. Resonant Client is now an
@@ -62,6 +62,9 @@ dev = [
     "pytest-cov>=6.0.0",
     "pytest-xdist>=3.5.0",
     "ruff>=0.3.0",
+]
+code-intelligence = [
+    "tree-sitter-language-pack>=0.7.0",
 ]
 
 [tool.pytest.ini_options]

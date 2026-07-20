@@ -4395,12 +4395,96 @@ class AppState:
         session._mcp_manager = self.mcp_manager
         session._engram = engram or self.engram
         session._codebase_index = codebase_index or self.codebase_index
-        from ..orchestration.skill_loader import build_skill_context
-        session._skill_context_provider = lambda query: build_skill_context(
-            query,
-            project_path=target_path,
-            max_skills=6,
+        from ..engine.agent_runtime import AgentRegistry
+        from ..engine.artifacts import ArtifactStore
+        from ..engine.checkpoint_timeline import SessionCheckpointStore
+        from ..engine.capability_packs import CapabilityPackManager
+        from ..engine.context_broker import ContextBroker
+        from ..engine.flight_recorder import FlightRecorder
+        from ..engine.model_roles import ModelRoleRouter
+        from ..engine.worktrees import WorktreeManager
+
+        artifact_store = ArtifactStore(target_path)
+        agent_registry = AgentRegistry(
+            target_path,
+            on_event=self._push_ws_event,
+            artifact_store=artifact_store,
         )
+        runtime_session_id = str(
+            getattr(session.event_logger, "session_id", "") or uuid.uuid4().hex[:12]
+        )
+        checkpoint_store = SessionCheckpointStore(
+            target_path,
+            session_id=runtime_session_id,
+        )
+        flight_recorder = FlightRecorder(
+            target_path,
+            run_id=f"run_{runtime_session_id}",
+            metadata={"session_mode": session.prompt_role},
+        )
+        worktree_manager = WorktreeManager(target_path)
+
+        def _role_backend_factory(profile):
+            active_spec = self.backend_spec
+            backend_type = profile.backend_type or (
+                active_spec.backend_type if active_spec else getattr(session.backend, "name", "ollama")
+            )
+            spec = self.build_backend_spec(
+                backend_type,
+                model=profile.model or getattr(session.backend, "model", ""),
+                project_path=target_path,
+            )
+            if profile.thinking_mode:
+                spec.thinking_mode = profile.thinking_mode
+            return spec.create_backend(self.settings)
+
+        role_router = ModelRoleRouter(
+            self.settings.get("model_roles") or {},
+            backend_factory=_role_backend_factory,
+        )
+        context_broker = ContextBroker(
+            target_path,
+            agent_registry=agent_registry,
+            checkpoint_store=checkpoint_store,
+            artifact_store=artifact_store,
+            codebase_index=session._codebase_index,
+        )
+        capability_packs = CapabilityPackManager(
+            target_path,
+            configured=self.settings.get("plugins") or {},
+        )
+        capability_packs.discover()
+        self.hook_runner.add_hooks(capability_packs.hook_definitions())
+        # Trusted packs may contribute MCP servers. They are connected with an
+        # explicit config object, so no untrusted manifest reaches execution.
+        from ..engine.mcp import MCPServerConfig
+        for server_name, server_data in capability_packs.mcp_servers().items():
+            try:
+                self.mcp_manager.connect(
+                    server_name,
+                    MCPServerConfig.from_dict(server_name, server_data),
+                )
+            except Exception:
+                logger.warning("Capability-pack MCP connection failed: %s", server_name, exc_info=True)
+        session.mcp_tools = self.mcp_manager.get_all_tools()
+        session.agent_registry = agent_registry
+        session.artifact_store = artifact_store
+        session.checkpoint_store = checkpoint_store
+        session.checkpoint_display_provider = lambda: list(
+            getattr(self.project.current_session, "display_events", []) or []
+        )
+        session.flight_recorder = flight_recorder
+        session.context_broker = context_broker
+        session.model_role_router = role_router
+        session.worktree_manager = worktree_manager
+        session.capability_packs = capability_packs
+        session._settings_ref = self.settings
+        from ..orchestration.skill_loader import build_skill_context
+        def _combined_skill_context(query):
+            built_in = build_skill_context(query, project_path=target_path, max_skills=6)
+            return (getattr(built_in, "block", "") or "") + capability_packs.skill_context(query)
+
+        session._skill_context_provider = _combined_skill_context
         session.auto_approve = self._session_auto_approve()
         return session
 
@@ -7242,6 +7326,152 @@ async def websocket_endpoint(ws: WebSocket):
                 }
                 await ws.send_json({"event": "context.state", **data})
 
+            elif command == "agent_runtime_list":
+                registry = getattr(state.session, "agent_registry", None) if state.session else None
+                agents = [record.to_dict() for record in registry.list()] if registry else []
+                await ws.send_json({"event": "agent.runtime_list", "agents": agents})
+
+            elif command == "agent_runtime_detail":
+                registry = getattr(state.session, "agent_registry", None) if state.session else None
+                agent_id = str(msg.get("agent_id") or "")
+                record = registry.get(agent_id) if registry else None
+                await ws.send_json({
+                    "event": "agent.runtime_detail",
+                    "agent": record.to_dict() if record else None,
+                    "transcript": registry.transcript(agent_id) if record else [],
+                })
+
+            elif command == "agent_runtime_control":
+                registry = getattr(state.session, "agent_registry", None) if state.session else None
+                agent_id = str(msg.get("agent_id") or "")
+                action = str(msg.get("action") or "")
+                if not registry or not registry.get(agent_id):
+                    await ws.send_json({"event": "error", "message": "Agent is no longer available"})
+                    continue
+                try:
+                    if action == "pause":
+                        record = registry.request_pause(agent_id)
+                    elif action == "resume":
+                        record = registry.resume(agent_id)
+                    elif action == "cancel":
+                        record = registry.request_cancel(agent_id)
+                    elif action == "steer":
+                        record = registry.steer(agent_id, str(msg.get("text") or ""))
+                    else:
+                        raise ValueError(f"Unknown agent action: {action}")
+                    await ws.send_json({"event": "agent.control_ack", "agent": record.to_dict(), "action": action})
+                    await ws.send_json({"event": "agent.runtime_list", "agents": [item.to_dict() for item in registry.list()]})
+                except (KeyError, ValueError) as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+
+            elif command == "session_timeline_list":
+                store = getattr(state.session, "checkpoint_store", None) if state.session else None
+                values = [item.to_dict() for item in store.list()] if store else []
+                await ws.send_json({"event": "session.timeline_list", "checkpoints": values})
+
+            elif command == "session_timeline_compare":
+                try:
+                    store = getattr(state.session, "checkpoint_store", None)
+                    data = await asyncio.get_event_loop().run_in_executor(
+                        None, store.compare, str(msg.get("checkpoint_id") or "")
+                    )
+                    await ws.send_json({"event": "session.timeline_comparison", "data": data})
+                except Exception as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+
+            elif command == "session_timeline_restore":
+                try:
+                    if chat_runner is not None and not chat_runner.done():
+                        raise RuntimeError("Stop the active run before restoring a checkpoint")
+                    store = getattr(state.session, "checkpoint_store", None)
+                    checkpoint_id = str(msg.get("checkpoint_id") or "")
+                    mode = str(msg.get("mode") or "both")
+                    data = await asyncio.get_event_loop().run_in_executor(
+                        None, store.restore, checkpoint_id, mode
+                    )
+                    if mode in {"conversation", "both"}:
+                        state.session.conversation_history = data.get("conversation_history") or []
+                        if state.project.current_session:
+                            state.project.current_session.conversation_history = list(state.session.conversation_history)
+                            state.project.current_session.display_events = list(data.get("display_events") or [])
+                            state.project.current_session.save()
+                    if state.session.hook_runner:
+                        from ..engine.hooks import HookType
+                        state.session.hook_runner.emit(
+                            HookType.CHECKPOINT_RESTORED,
+                            {"checkpoint_id": checkpoint_id, "mode": mode, "project_path": state.project.project_path},
+                        )
+                    await ws.send_json({
+                        "event": "session.timeline_restored",
+                        "data": data,
+                        "display_events": data.get("display_events") or [],
+                    })
+                except Exception as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+
+            elif command == "flight_recorder_list":
+                from ..engine.flight_recorder import FlightRecorder
+                await ws.send_json({
+                    "event": "flight.recorder_list",
+                    "runs": FlightRecorder.list_runs(state.project.project_path),
+                })
+
+            elif command == "flight_recorder_detail":
+                try:
+                    from ..engine.flight_recorder import FlightRecorder
+                    recorder = FlightRecorder.open_run(state.project.project_path, str(msg.get("run_id") or ""))
+                    await ws.send_json({
+                        "event": "flight.recorder_detail",
+                        "manifest": recorder.manifest.to_dict(),
+                        "events": recorder.events(),
+                    })
+                except Exception as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+
+            elif command == "flight_recorder_compare":
+                try:
+                    from ..engine.flight_recorder import FlightRecorder
+                    left = FlightRecorder.open_run(state.project.project_path, str(msg.get("left") or ""))
+                    right = FlightRecorder.open_run(state.project.project_path, str(msg.get("right") or ""))
+                    await ws.send_json({"event": "flight.recorder_comparison", "data": FlightRecorder.compare(left, right)})
+                except Exception as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+
+            elif command == "flight_recorder_export":
+                try:
+                    from ..engine.flight_recorder import FlightRecorder
+                    recorder = FlightRecorder.open_run(state.project.project_path, str(msg.get("run_id") or ""))
+                    artifact = state.session.artifact_store.put_text(
+                        json.dumps(recorder.export_otel(), indent=2),
+                        kind="trace", label=f"{recorder.run_id} OTLP export", source=recorder.run_id,
+                        media_type="application/json",
+                    )
+                    await ws.send_json({"event": "artifact.created", "artifact": artifact.to_dict()})
+                except Exception as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+
+            elif command == "artifact_list":
+                store = getattr(state.session, "artifact_store", None) if state.session else None
+                await ws.send_json({
+                    "event": "artifact.list",
+                    "artifacts": [item.to_dict() for item in reversed(store.list())] if store else [],
+                })
+
+            elif command == "capability_pack_list":
+                manager = getattr(state.session, "capability_packs", None) if state.session else None
+                await ws.send_json({
+                    "event": "capability.pack_list",
+                    "packs": [item.to_dict() for item in manager.discover()] if manager else [],
+                    "catalog": manager.context_catalog() if manager else {},
+                })
+
+            elif command == "context_catalog":
+                broker = getattr(state.session, "context_broker", None) if state.session else None
+                await ws.send_json({
+                    "event": "context.catalog",
+                    "providers": broker.catalog() if broker else [],
+                })
+
             elif command == "checkpoint_list":
                 try:
                     from ..orchestration.checkpoints import IterationCheckpointStore
@@ -8193,6 +8423,10 @@ async def _run_session_streaming(
 
     # Record the user message as a display event
     display_events.append({"event": "user_message", "text": display_user_msg or user_msg})
+    persisted_events = list(
+        getattr(state.project.current_session, "display_events", []) or []
+    )
+    session.checkpoint_display_provider = lambda: persisted_events + list(display_events)
 
     def on_permission(tool_name, tool_args):
         """Push permission request to frontend with diff review data."""
@@ -8293,6 +8527,7 @@ async def _run_session_streaming(
             event = await loop.run_in_executor(None, _get_event)
             if event is None:
                 break
+            session._log_event(event)
             # Enrich file_edit events with diff lines for frontend rendering
             if event.get("event") == EngineEvent.TOOL_CALL.value and event.get("name") == "file_edit":
                 args = event.get("arguments", {})
@@ -8447,6 +8682,9 @@ async def _run_session_streaming(
                 await ws.send_json({"event": "error", "message": f"Failed to apply harness update: {exc}"})
     finally:
         state.active_thread = None
+        session.checkpoint_display_provider = lambda: list(
+            getattr(state.project.current_session, "display_events", []) or []
+        )
 
     return display_events
 

@@ -37,6 +37,13 @@ contract stay model-neutral.
 - Capability-aware context windows, reasoning controls, tools, and vision
 - Multimodal attachments with safe handling for text-only models
 - Focused and end-to-end verification before completion
+- Durable sub-agent registry with transcripts, handoffs, live controls, and
+  concurrent worktree-isolated writers
+- Universal file/conversation checkpoints with files-only, chat-only, or full rewind
+- Reproducible flight recorder with causal trajectory comparison and OTLP export
+- Provenance-aware `@file`, `@symbol`, `@diff`, `@checkpoint`, `@agent`, and
+  `@artifact` context attachments
+- Trusted capability packs combining agents, skills, hooks, MCP, recipes, and UI metadata
 
 ### Tools and extensions
 
@@ -55,6 +62,7 @@ contract stay model-neutral.
 - Inline file diff review
 - Collapsible long-task status and recommended decision prompts
 - Diagnostics export and cost tracking
+- Agents/Timeline/Traces/Artifacts/Packs runtime inspector
 - Signed Windows update feed with in-app update checks
 
 ### Optional orchestration
@@ -160,6 +168,9 @@ pytest -q
 ruff check resonant_client tests
 node --check resonant_client/gui/static/app.js
 ```
+
+The durable runtime architecture and extension contracts are documented in
+[docs/modern-agent-runtime.md](docs/modern-agent-runtime.md).
 
 The smoke harness accepts either a legacy shorthand or any Ollama model ID:
 

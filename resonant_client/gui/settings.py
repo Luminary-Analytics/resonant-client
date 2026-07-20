@@ -50,6 +50,17 @@ DEFAULTS = {
     },
     "lsp_servers": {},
     "plugins": {},
+    "model_roles": {},
+    "agent_runtime": {
+        "persist": True,
+        "worktree_writers": True,
+        "max_parallel_readers": 4,
+        "max_parallel_writers": 2,
+    },
+    "artifacts": {
+        "persist": True,
+        "inline_text_limit": 8000,
+    },
     "keyboard_shortcuts": {},
     "cost_tracking": {
         "enabled": True,

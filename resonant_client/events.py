@@ -48,6 +48,15 @@ class EngineEvent(str, Enum):
     # Sub-agent lifecycle
     SUBAGENT_START = "subagent.start"         # Sub-agent spawned
     SUBAGENT_END = "subagent.end"             # Sub-agent completed
+    AGENT_CREATED = "agent.created"           # Durable agent registered
+    AGENT_UPDATED = "agent.updated"           # Durable agent state changed
+    AGENT_COMPLETED = "agent.completed"       # Durable handoff available
+    AGENT_STEERED = "agent.steered"           # Direction queued/applied to worker
+
+    # Durable artifacts and recovery
+    ARTIFACT_CREATED = "artifact.created"
+    CHECKPOINT_CREATED = "checkpoint.created"
+    CHECKPOINT_RESTORED = "checkpoint.restored"
 
     # Context management
     COMPRESSION = "context.compression"      # Context was compressed

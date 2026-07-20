@@ -17,6 +17,9 @@ class AgentType:
     allowed_tools: list[str]
     system_prompt: str
     model: Optional[str] = None  # None = inherit from parent
+    model_role: str = "primary"
+    default_isolation: str = "shared"
+    max_steps: Optional[int] = None
 
     def filter_tools(self, all_tools: list[dict]) -> list[dict]:
         """Filter tool definitions to only those allowed for this agent."""
@@ -53,6 +56,8 @@ RULES:
 
 HANDOFF: Return outcome, files changed, verification and exact results, risks,
 and the parent's recommended next action.""",
+        model_role="implement",
+        default_isolation="worktree",
     ),
 
     "explore": AgentType(
@@ -78,6 +83,7 @@ RULES:
 
 HANDOFF: Return findings, evidence locations, implications, unresolved risks,
 and the parent's recommended next action.""",
+        model_role="explore",
     ),
 
     "plan": AgentType(
@@ -101,6 +107,7 @@ RULES:
 
 HANDOFF: Return the grounded plan, evidence used, risks, and the first action the
 parent should take.""",
+        model_role="plan",
     ),
 }
 

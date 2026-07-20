@@ -170,3 +170,48 @@ def test_stop_button_uses_acknowledged_cancel_lifecycle():
     assert "_removeEmptyCancelArtifacts()" in source
     assert "if (!activity && !result && !footer) card.remove();" in source
     assert ".stop-btn.is-stopping" in styles
+
+
+def test_session_list_has_semantic_activity_indicators():
+    source = APP_JS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "this._sessionActivity = new Map();" in source
+    assert "_sessionIndicator(session)" in source
+    assert "_setSessionActivity(state, sessionId = this.currentSessionId)" in source
+    assert "state: 'working', label: 'Resonant is working'" in source
+    assert "state: 'needs-input', label: 'Needs your attention'" in source
+    assert "return { state: 'idle', label: 'Idle' };" in source
+    assert 'class="agent-row-status is-${indicator.state}"' in source
+    assert 'role="img" aria-label="${indicator.label}"' in source
+
+    # Selection and pinning are row attributes, not lifecycle states.
+    session_row_start = source.index("    _createTreeSessionRow(session) {")
+    session_row_end = source.index("\n    showSessionContextMenu", session_row_start)
+    session_row = source[session_row_start:session_row_end]
+    assert "is-active" not in session_row
+    assert "is-pinned" not in session_row
+
+    assert ".agent-row-status.is-idle" in styles
+    assert ".agent-row-status.is-working::before" in styles
+    assert ".agent-row-status.is-needs-input" in styles
+    assert "@keyframes session-status-orbit" in styles
+
+
+def test_user_blocking_events_update_session_indicator():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    await_start = source.index("    handleAwaitUser(event) {")
+    await_end = source.index("\n    handleUserInputReceived", await_start)
+    await_body = source[await_start:await_end]
+    assert "this._setSessionActivity('needs-input');" in await_body
+    assert "this._setSessionActivity('working');" in await_body
+
+    permission_start = source.index("    handleToolPermission(event) {")
+    permission_end = source.index("\n    /** Render an inline diff card", permission_start)
+    assert "this._setSessionActivity('needs-input');" in source[permission_start:permission_end]
+
+    activity_start = source.index("    handleAutonomousActivity(event) {")
+    activity_end = source.index("\n    /**", activity_start)
+    activity_body = source[activity_start:activity_end]
+    assert "s.activity.phase === 'parked' ? 'needs-input' : 'working'" in activity_body

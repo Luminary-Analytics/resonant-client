@@ -1,11 +1,13 @@
 # Instructions
 
-This is the Resonant Client project — an Ollama-native agentic coding desktop app, purpose-built for DeepSeek and other open-source local models.
+This is Resonant Client: a provider-adaptive agentic coding desktop app. Its
+flagship mission is making open models served through Ollama excellent at
+difficult, long-running coding work; Kimi and Codex adapters are also supported
+through the same model-neutral runtime contract.
 
-**Positioning rule (since v0.4.0):**
-- Want Anthropic? Reach for Claude Code.
-- Want OpenAI? Reach for Codex.
-- Want DeepSeek / Ollama? This is the tool.
+**Positioning rule:** Resonant owns the durable harness—context, tools,
+workers, evidence, recovery, and user control. Provider adapters translate wire
+formats and capabilities; they do not fork the product contract.
 
 # Conventions
 
@@ -17,20 +19,20 @@ This is the Resonant Client project — an Ollama-native agentic coding desktop 
 - Tool execution lives in `engine/tools.py` (engine path) or is dispatched by `engine/session.py` for tool-side-effects like `await_user`; never add tool logic to TUI or GUI layers
 - Comments matter. Capture **why**, especially when the answer involves a bug-discovery story (Bug #25, the cycle guards, the working_subdir story). Future LLMs reading the code rely on this.
 
-# Architecture (v0.4.0)
+# Architecture (v0.10.0)
 
 ```
 resonant_client/
-├── backends.py              # OllamaBackend ONLY (other backends cut in v0.4.0)
+├── backends.py              # Provider adapters and model capability discovery
 ├── network_defaults.py      # resolve_ollama_url chain (env → settings → Mac Studio)
 ├── events.py                # EngineEvent / ClientCommand enums
 ├── protocol.py              # Tool prompt building, JSON/XML parsing
-├── tui.py                   # Terminal UI (Rich + prompt-toolkit) — Ollama-only
+├── tui.py                   # Terminal UI (Rich + prompt-toolkit)
 ├── engine/
-│   ├── session.py           # Agentic loop, cycle guards, await_user dispatch
+│   ├── session.py           # Agentic loop, durable workers, checkpoints, lifecycle
 │   ├── tools.py             # AGENT_TOOLS list + execute_tool dispatch
 │   ├── sandbox.py           # Permission levels, READ_ONLY/FILE_WRITE/EXEC tool sets
-│   └── ...                  # browser, computer, diff_review, rag, hooks, mcp, memory
+│   └── ...                  # artifacts, agents, context, traces, hooks, MCP, worktrees
 ├── orchestration/           # plan-graph multi-specialist runner (v0.3.5)
 │   ├── plan_graph.py        # PlanNode (with v0.3.5 working_subdir field)
 │   ├── runner.py            # LocalSpecialistRunner + working_subdir propagation
@@ -46,9 +48,14 @@ resonant_client/
     └── static/{app.js,styles.css}
 ```
 
-# Backend (single)
+# Providers and flagship models
 
-- **Ollama** — local LLMs with adaptive tool-calling (native or XML fallback). The canonical default URL is `http://10.0.0.133:11434` (Mac Studio in the user's infra). Override via `OLLAMA_HOST` env or `network.ollama_url` in `~/.resonant/settings.json`.
+- **Ollama** — local/open models with adaptive tool-calling (native or text fallback).
+- **Kimi** — Moonshot API adapter with the same harness contract.
+- **Codex** — installed CLI adapter for users who explicitly choose it.
+
+The default Ollama endpoint is `http://127.0.0.1:11434`. Override it with
+`OLLAMA_HOST` or `network.ollama_url` in `~/.resonant/settings.json`.
 
 Model tier guidance:
 
@@ -115,7 +122,12 @@ per tier.
 - **`await_user` is universally available** to all specialists (implement / explore / verify / repair / research / plan). The escape hatch must be available everywhere.
 - **Cycle guards trip BEFORE the step cap.** The 24/50/etc. step caps still exist as a final safety net but the windowed signature guard catches loops at 3 occurrences in 12 calls.
 - **Diagnostics ZIP redaction is overzealous on purpose.** False positives produce a slightly less informative log line; false negatives leak credentials.
-- **One backend.** v0.4.0 cut the multi-backend story to focus on the deepseek path. Anthropic / OpenAI users have purpose-built tools elsewhere.
+- **Routing is explicit.** Model changes happen only at visible phase/worker
+  boundaries through configured roles; never silently during a model turn.
+- **Durable state is external to the repo.** Agent records, artifacts,
+  checkpoints, traces, and managed worktrees live under `~/.resonant/projects`.
+- **Writer isolation is conservative.** Parallel writers use worktrees and
+  never stash, reset, or merge into a dirty user checkout.
 
 # Documentation map for future humans / LLMs
 
@@ -129,6 +141,8 @@ per tier.
 - **`docs/mission-cross-model-test-plan.md`** — Chrome MCP E2E test plans + per-model verdicts (now historical — v0.4.0 collapsed to single model family)
 - **`docs/v0.4.0-cut.md`** — what was removed and why (read this if you wonder why a backend module is missing)
 - **`docs/v0.4.x-deepseek-harness-roadmap.md`** — backlog of deepseek-specific optimizations (Tier 1 + Tier 2 done; Tier 3 deferred to v0.5.x)
+- **`docs/modern-agent-runtime.md`** — durable workers, checkpoints, hooks,
+  traces, context broker, model roles, capability packs, and artifact bus
 
 If you're an LLM continuing this work after a context reset, the reading order is:
 

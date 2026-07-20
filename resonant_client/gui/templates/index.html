@@ -550,7 +550,13 @@
                     </div>
                     <div id="agent-activity-pane" class="agent-activity-pane" style="display:none">
                         <div class="agent-activity-toolbar">
-                            <span>Run activity</span>
+                            <div class="runtime-view-tabs" role="tablist" aria-label="Agent runtime views">
+                                <button type="button" class="runtime-view-tab active" data-runtime-view="agents">Agents</button>
+                                <button type="button" class="runtime-view-tab" data-runtime-view="timeline">Timeline</button>
+                                <button type="button" class="runtime-view-tab" data-runtime-view="traces">Traces</button>
+                                <button type="button" class="runtime-view-tab" data-runtime-view="artifacts">Artifacts</button>
+                                <button type="button" class="runtime-view-tab" data-runtime-view="packs">Packs</button>
+                            </div>
                             <span class="agent-activity-count" id="agent-activity-count">0 workers</span>
                         </div>
                         <div id="agent-activity-tree" class="agent-activity-tree">

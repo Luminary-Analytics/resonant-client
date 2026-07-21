@@ -232,6 +232,19 @@ AGENT_TOOLS = [
                         "enum": ["plan", "explore", "implement", "apply", "test", "review", "vision", "summarize"],
                         "description": "Optional explicit quality-pipeline role; defaults from agent_type"
                     },
+                    "director_task_id": {
+                        "type": "string",
+                        "description": "Required in Director Mode: ID of the ready task being dispatched"
+                    },
+                    "worker_id": {
+                        "type": "string",
+                        "description": "Optional configured worker ID; the Director scheduler selects one when omitted"
+                    },
+                    "artifact_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Durable input artifact IDs to deliver to this worker, including future multimodal inputs"
+                    },
                     "isolation": {
                         "type": "string",
                         "enum": ["shared", "worktree"],
@@ -267,6 +280,9 @@ AGENT_TOOLS = [
                                 "prompt": {"type": "string"},
                                 "agent_type": {"type": "string", "enum": ["build", "explore", "plan"]},
                                 "model_role": {"type": "string", "enum": ["plan", "explore", "implement", "apply", "test", "review", "vision", "summarize"]},
+                                "director_task_id": {"type": "string"},
+                                "worker_id": {"type": "string"},
+                                "artifact_ids": {"type": "array", "items": {"type": "string"}},
                                 "max_steps": {"type": "integer", "minimum": 1}
                             },
                             "required": ["prompt", "agent_type"]
@@ -1012,6 +1028,104 @@ AGENT_TOOLS = [
                 "required": ["repl_id"]
             }
         }
+    },
+]
+
+
+# Opt-in supervisory tools. These are appended only to a root session with an
+# active DirectorRun, keeping the ordinary single-agent prompt and behavior
+# byte-for-byte compatible.
+DIRECTOR_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "director_plan",
+            "description": (
+                "Create or replace the durable Director task graph. Every task must be bounded, "
+                "have explicit dependencies, and include objective, role, scope, and acceptance evidence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "title": {"type": "string"},
+                                "objective": {"type": "string"},
+                                "role": {"type": "string", "enum": ["plan", "explore", "implement", "apply", "test", "review", "vision", "summarize"]},
+                                "agent_type": {"type": "string", "enum": ["build", "explore", "plan"]},
+                                "dependencies": {"type": "array", "items": {"type": "string"}},
+                                "write_scope": {"type": "array", "items": {"type": "string"}},
+                                "acceptance_checks": {"type": "array", "items": {"type": "string"}},
+                                "required_capabilities": {"type": "array", "items": {"type": "string"}},
+                                "artifact_ids": {"type": "array", "items": {"type": "string"}},
+                                "preferred_worker_id": {"type": "string"},
+                            },
+                            "required": ["id", "objective", "role", "agent_type"],
+                        },
+                    }
+                },
+                "required": ["tasks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_status",
+            "description": "Read the current durable task graph, ready work, assignments, evidence, and decisions.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_validate",
+            "description": "Attach deterministic validation evidence from an observed tool result to a Director task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "passed": {"type": "boolean"},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["task_id", "name", "passed", "evidence"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_decide",
+            "description": (
+                "Accept, revise, reassign, block, escalate, or integrate one worker result. "
+                "Acceptance and integration fail closed unless all required evidence gates pass."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "action": {"type": "string", "enum": ["accept", "revise", "reassign", "block", "escalate", "integrate"]},
+                    "reason": {"type": "string"},
+                    "evidence": {"type": "array", "items": {"type": "string"}},
+                    "requested_changes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["task_id", "action", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_complete",
+            "description": "Complete the Director run after every task is accepted or integrated.",
+            "parameters": {"type": "object", "properties": {}},
+        },
     },
 ]
 

@@ -29,7 +29,10 @@ _summary_cache_lock = threading.Lock()
 
 _SUMMARY_STRING_PATTERNS = {
     key: re.compile(rf'"{key}"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"')
-    for key in ("id", "title", "backend_type", "model", "session_role")
+    for key in (
+        "id", "title", "backend_type", "model", "session_role", "orchestration_mode",
+        "director_run_id",
+    )
 }
 _SUMMARY_NUMBER_PATTERNS = {
     key: re.compile(rf'"{key}"\s*:\s*([\d.]+)')
@@ -464,6 +467,9 @@ class SessionRecord:
         thinking_mode: str = "",
         mission_state: Optional[dict] = None,
         pinned: bool = False,
+        orchestration_mode: str = "single",
+        director_config: Optional[dict] = None,
+        director_run_id: str = "",
     ):
         self.id = session_id or str(uuid.uuid4())[:8]
         self.title = title
@@ -500,6 +506,11 @@ class SessionRecord:
         #   "autonomous_started_at"   — epoch float at autonomous dispatch
         self.mission_state: Optional[dict] = mission_state
         self.pinned: bool = bool(pinned)
+        self.orchestration_mode = (
+            "director" if orchestration_mode == "director" else "single"
+        )
+        self.director_config: dict = dict(director_config or {})
+        self.director_run_id = str(director_run_id or "")
 
     def to_dict(self) -> dict:
         # Field order matters: small metadata fields go FIRST so the
@@ -522,6 +533,9 @@ class SessionRecord:
             "thinking_mode": self.thinking_mode,
             "mission_state": self.mission_state,
             "pinned": self.pinned,
+            "orchestration_mode": self.orchestration_mode,
+            "director_config": self.director_config,
+            "director_run_id": self.director_run_id,
             "conversation_history": self.conversation_history,
             "display_events": self.display_events,
         }
@@ -542,6 +556,8 @@ class SessionRecord:
             # render it in the Missions group with the right phase badge.
             "mission_state": self.mission_state,
             "pinned": self.pinned,
+            "orchestration_mode": self.orchestration_mode,
+            "director_run_id": self.director_run_id,
         }
 
     @classmethod
@@ -561,6 +577,9 @@ class SessionRecord:
             thinking_mode=data.get("thinking_mode", ""),
             mission_state=data.get("mission_state"),
             pinned=data.get("pinned", False),
+            orchestration_mode=data.get("orchestration_mode", "single"),
+            director_config=data.get("director_config") or {},
+            director_run_id=data.get("director_run_id", ""),
         )
 
     # ── Mission helpers ────────────────────────────────────────────────
@@ -805,6 +824,8 @@ class ProjectManager:
         backend_type: str = "",
         model: str = "",
         session_role: str = "generator",
+        orchestration_mode: str = "single",
+        director_config: Optional[dict] = None,
     ) -> SessionRecord:
         """Create a new session for the current project."""
         record = SessionRecord(
@@ -813,6 +834,8 @@ class ProjectManager:
             model=model,
             title="New session",
             session_role=session_role,
+            orchestration_mode=orchestration_mode,
+            director_config=director_config,
         )
         record.save()
         self.current_session = record
@@ -847,6 +870,11 @@ class ProjectManager:
                 1 for m in engine_session.conversation_history
                 if m.get("role") == "user"
             )
+            director_run = getattr(engine_session, "director_run", None)
+            if director_run is not None:
+                self.current_session.orchestration_mode = "director"
+                self.current_session.director_config = director_run.config.to_dict()
+                self.current_session.director_run_id = director_run.id
 
         if display_events:
             self.current_session.display_events.extend(display_events)
@@ -924,6 +952,11 @@ class ProjectManager:
             display_events=sliced_events,
             message_count=msg_count,
             thinking_mode=getattr(source, "thinking_mode", "") or "",
+            orchestration_mode=source.orchestration_mode,
+            director_config=source.director_config,
+            # A fork receives the configuration, but starts a new durable run
+            # so its task graph cannot mutate the source session's history.
+            director_run_id="",
         )
         new_record.save()
         self.current_session = new_record

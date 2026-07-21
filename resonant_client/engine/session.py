@@ -7,6 +7,7 @@ and coordinates between backends and tools.
 
 import hashlib
 import base64
+import copy
 import json
 import os
 import re
@@ -32,6 +33,7 @@ from ..content import build_user_content
 from .tools import (
     AGENT_TOOLS,
     BATCH_ALLOWED_TOOL_NAMES,
+    DIRECTOR_TOOLS,
     execute_tool,
     get_tool_icon,
 )
@@ -487,6 +489,8 @@ class Session:
         self.flight_recorder = None
         self.context_broker = None
         self.model_role_router = None
+        self.director_run = None
+        self.benchmark_store = None
         self.model_role: str = prompt_role or "primary"
         self.worktree_manager = None
         self.capability_packs = None
@@ -628,6 +632,19 @@ class Session:
         if self._allowed_tools is not None:
             return self._allowed_tools
         base = AGENT_TOOLS
+        if self.director_run is not None and not self.is_subagent:
+            base = copy.deepcopy(base)
+            for tool in base:
+                function = tool.get("function") or {}
+                if function.get("name") == "task_batch":
+                    tasks_schema = function["parameters"]["properties"]["tasks"]
+                    tasks_schema["maxItems"] = self.director_run.config.max_parallel_workers
+                    function["description"] = (
+                        "Run independent ready Director tasks concurrently, up to the configured "
+                        "worker-pool limit. Writing tasks always use isolated git worktrees."
+                    )
+                    break
+            base = base + DIRECTOR_TOOLS
         if self.mcp_tools:
             base = base + self.mcp_tools
         return base
@@ -1141,6 +1158,27 @@ class Session:
         empty_response_attempts = 0
         last_done_stats = None
         last_done_model = getattr(self.backend, "model", "") if self.backend else ""
+
+        if self.director_run is not None and not self.is_subagent:
+            try:
+                from .director import DirectorPhase, DirectorRun
+
+                if self.director_run.phase in {
+                    DirectorPhase.COMPLETED.value,
+                    DirectorPhase.FAILED.value,
+                    DirectorPhase.CANCELLED.value,
+                }:
+                    prior = self.director_run
+                    self.director_run = DirectorRun(
+                        self.project_path or prior.project_path,
+                        config=prior.config,
+                        on_event=prior._on_event,
+                    )
+                    self.role_instructions = self.director_run.system_prompt()
+                if not self.director_run.objective:
+                    self.director_run.set_objective(user_msg)
+            except Exception:
+                logger.debug("Unable to initialize Director turn", exc_info=True)
 
         if self.agent_registry and not self.agent_id:
             try:
@@ -2064,6 +2102,9 @@ class Session:
                 elif fn_name == "task_batch":
                     yield from self._execute_task_batch(fn_args, call_id, fn_args_str)
                     turn_successful_tools.append(fn_name)
+                elif fn_name.startswith("director_") and self.director_run is not None:
+                    yield from self._execute_director_tool(fn_name, fn_args, call_id, fn_args_str)
+                    turn_successful_tools.append(fn_name)
                 elif fn_name == "await_user":
                     # v0.3.5 — pause and ask the user. Synchronously
                     # waits via the on_user_input callback. The GUI
@@ -2605,6 +2646,24 @@ class Session:
 
         final_steps = exec_step if exec_step > 0 else iteration
         final_payload = completion_payload(total_elapsed, final_steps)
+        if self.benchmark_store and not self.is_subagent:
+            try:
+                telemetry = final_payload.get("telemetry") or {}
+                evidence = final_payload.get("evidence") or {}
+                self.benchmark_store.record(
+                    mode="director" if self.director_run else "single",
+                    objective=active_goal,
+                    outcome=str(final_payload.get("outcome") or "unknown"),
+                    elapsed_seconds=total_elapsed,
+                    steps=final_steps,
+                    tool_calls=int(telemetry.get("tool_calls") or 0),
+                    validation_tools=len(evidence.get("validation_tools") or []),
+                    changed_files=len(evidence.get("changed_files") or []),
+                    director_run_id=getattr(self.director_run, "id", ""),
+                    provider_stats=telemetry.get("provider_stats") or {},
+                )
+            except Exception:
+                logger.debug("Unable to record mode benchmark", exc_info=True)
         if self.agent_registry and self.agent_id and not self.is_subagent:
             try:
                 evidence = final_payload.get("evidence") or {}
@@ -2669,6 +2728,45 @@ class Session:
         """
         prompt = str(fn_args.get("prompt", "") or "").strip()
         agent_type_name = str(fn_args.get("agent_type", "explore") or "explore")
+        director_task_id = str(fn_args.get("director_task_id") or "").strip()
+        worker_id = str(fn_args.get("worker_id") or "").strip()
+        director_task = None
+        if self.director_run is not None:
+            if not director_task_id:
+                yield from self._director_task_error(
+                    call_id, fn_args_str,
+                    "Director Mode requires director_task_id for every delegated task.",
+                )
+                return
+            try:
+                director_task = self.director_run.tasks[director_task_id]
+                if not worker_id:
+                    worker_id = self.director_run.select_worker(director_task_id).id
+                else:
+                    configured_worker = next(
+                        (item for item in self.director_run.config.workers if item.id == worker_id),
+                        None,
+                    )
+                    if configured_worker is None:
+                        raise ValueError(f"Unknown configured worker: {worker_id}")
+                    if not configured_worker.supports(
+                        director_task.role, director_task.required_capabilities,
+                    ):
+                        raise ValueError(
+                            f"Worker {worker_id} is not eligible for role "
+                            f"{director_task.role} and required capabilities"
+                        )
+                prompt = prompt or director_task.objective
+                agent_type_name = director_task.agent_type
+                fn_args["agent_type"] = agent_type_name
+                fn_args["model_role"] = director_task.role
+                if director_task.artifact_ids and not fn_args.get("artifact_ids"):
+                    fn_args["artifact_ids"] = list(director_task.artifact_ids)
+                if director_task.write_scope:
+                    fn_args["isolation"] = "worktree"
+            except Exception as exc:
+                yield from self._director_task_error(call_id, fn_args_str, str(exc))
+                return
 
         agent_type = get_agent_type(agent_type_name)
         if not agent_type and self.capability_packs:
@@ -2706,6 +2804,20 @@ class Session:
             tool for tool in allowed_tools
             if tool.get("function", {}).get("name") not in {"task", "task_batch"}
         ]
+        try:
+            child_backend = (
+                self.model_role_router.backend_for(
+                    model_role, self.backend, worker_id=worker_id,
+                )
+                if self.model_role_router else self.backend
+            )
+        except Exception as exc:
+            yield from self._director_task_error(
+                call_id,
+                fn_args_str,
+                f"Worker backend {worker_id or model_role} is unavailable: {exc}",
+            )
+            return
 
         # Notify TUI of sub-agent start
         child_cancel = threading.Event()
@@ -2753,12 +2865,27 @@ class Session:
                         "call_id": call_id,
                         "isolation": "worktree" if lease else "shared",
                         "worktree": lease.to_dict() if lease else None,
+                        "director_task_id": director_task_id,
+                        "worker_id": worker_id,
                     },
                 )
             except Exception:
                 logger.debug("Unable to persist child agent", exc_info=True)
 
         agent_id = record.id if record else f"task:{call_id or _uuid.uuid4().hex[:8]}"
+        if director_task is not None:
+            try:
+                self.director_run.mark_dispatched(
+                    director_task_id, worker_id=worker_id, agent_id=agent_id,
+                )
+            except Exception as exc:
+                if lease:
+                    try:
+                        self.worktree_manager.remove(lease, delete_branch=False)
+                    except Exception:
+                        pass
+                yield from self._director_task_error(call_id, fn_args_str, str(exc))
+                return
         if self.hook_runner:
             created_hook = self.hook_runner.emit(
                 HookType.TASK_CREATED,
@@ -2787,6 +2914,8 @@ class Session:
             agent_type=agent_type_name,
             agent_id=agent_id,
             parent_agent_id=self.agent_id,
+            director_task_id=director_task_id,
+            worker_id=worker_id,
             model_role=model_role,
             isolation="worktree" if lease else "shared",
             workspace=workspace,
@@ -2794,10 +2923,30 @@ class Session:
             call_id=call_id,
         )
 
-        child_backend = (
-            self.model_role_router.backend_for(model_role, self.backend)
-            if self.model_role_router else self.backend
+        worker_profile = (
+            self.model_role_router.worker_profile(worker_id)
+            if self.model_role_router and worker_id else None
         )
+        worker_instructions = agent_type.system_prompt
+        if worker_profile and worker_profile.system_suffix:
+            worker_instructions = f"{worker_instructions}\n\n{worker_profile.system_suffix}".strip()
+        worker_images: list[tuple[bytes, str]] = []
+        artifact_context: list[str] = []
+        for artifact_id in (fn_args.get("artifact_ids") or []):
+            artifact = self.artifact_store.get(str(artifact_id)) if self.artifact_store else None
+            if artifact is None:
+                errors_message = f"Unknown input artifact: {artifact_id}"
+                artifact_context.append(errors_message)
+                continue
+            if artifact.kind == "image":
+                try:
+                    worker_images.append((Path(artifact.path).read_bytes(), artifact.media_type))
+                except OSError:
+                    artifact_context.append(f"Unreadable image artifact: {artifact.id}")
+            else:
+                artifact_context.append(self.artifact_store.reference(artifact))
+        if artifact_context:
+            prompt = f"{prompt}\n\nINPUT ARTIFACTS:\n" + "\n".join(artifact_context)
         child = Session(
             backend=child_backend,
             max_steps=worker_max_steps,
@@ -2805,7 +2954,7 @@ class Session:
             auto_approve=True,  # Sub-agents auto-approve (no interactive prompts)
             parent_session=self,
             allowed_tools=allowed_tools,
-            role_instructions=agent_type.system_prompt,
+            role_instructions=worker_instructions,
             prompt_role="subagent",
             cancel_event=child_cancel,
             pause_event=child_pause,
@@ -2846,6 +2995,7 @@ class Session:
             user_msg=prompt,
             on_permission=None,
             on_choice=None,
+            images=worker_images or None,
         ):
             etype = event.get("event", "")
             if record and self.agent_registry:
@@ -2912,7 +3062,8 @@ class Session:
                 lease = self.worktree_manager.finalize(
                     lease, message=f"Resonant {agent_type_name} agent {agent_id}",
                 )
-                lease = self.worktree_manager.integrate(lease)
+                if director_task is None:
+                    lease = self.worktree_manager.integrate(lease)
                 for path in lease.changed_files or []:
                     if path not in changed_files:
                         changed_files.append(path)
@@ -2961,6 +3112,27 @@ class Session:
                 handoff.outcome = "failed"
                 result_output = handoff.to_context()
 
+        if director_task is not None:
+            try:
+                self.director_run.record_handoff(
+                    director_task_id,
+                    handoff.to_dict(),
+                    worktree=lease.to_dict() if lease else None,
+                )
+                for item in validation:
+                    name, _, outcome_text = item.partition(":")
+                    self.director_run.record_validation(
+                        director_task_id,
+                        name=name.strip() or "validation",
+                        passed=outcome_text.strip() == "passed",
+                        evidence=item,
+                        source="worker.tool_result",
+                    )
+            except Exception as exc:
+                handoff.blockers.append(f"Director handoff recording failed: {exc}")
+                handoff.outcome = "failed"
+                result_output = handoff.to_context()
+
         if record and self.agent_registry:
             if completion_allowed and not errors:
                 self.agent_registry.complete(agent_id, handoff)
@@ -2993,6 +3165,8 @@ class Session:
                             "model_role": model_role,
                             "isolation": "worktree" if lease else "shared",
                             "handoff": handoff.to_dict(),
+                            "director_task_id": director_task_id,
+                            "worker_id": worker_id,
                             "steps": sub_steps,
                         },
                         denied=False)
@@ -3009,6 +3183,106 @@ class Session:
                 "content": result_output,
             })
 
+    def _director_task_error(
+        self,
+        call_id: str,
+        fn_args_str: str,
+        message: str,
+    ) -> Iterator[dict]:
+        output = f"Director dispatch rejected: {message}"
+        yield make_event(
+            EngineEvent.TOOL_RESULT,
+            name="task",
+            call_id=call_id,
+            output=output,
+            is_error=True,
+            elapsed=0.0,
+            metadata={"director_run_id": getattr(self.director_run, "id", "")},
+            denied=True,
+        )
+        self.conversation_history.extend([
+            {"role": "tool_call", "name": "task", "arguments": fn_args_str,
+             "call_id": call_id, "content": "Called task"},
+            {"role": "tool_result", "name": "task", "call_id": call_id,
+             "content": output},
+        ])
+
+    def _execute_director_tool(
+        self,
+        name: str,
+        args: dict[str, Any],
+        call_id: str,
+        args_json: str,
+    ) -> Iterator[dict]:
+        run = self.director_run
+        started = time.time()
+        is_error = False
+        try:
+            if name == "director_plan":
+                tasks = run.create_plan(args.get("tasks") or [])
+                payload = {"run": run.to_dict(), "created_tasks": [item.id for item in tasks]}
+            elif name == "director_status":
+                payload = run.to_dict()
+            elif name == "director_validate":
+                task = run.record_validation(
+                    str(args.get("task_id") or ""),
+                    name=str(args.get("name") or "validation"),
+                    passed=bool(args.get("passed")),
+                    evidence=str(args.get("evidence") or ""),
+                    source="director.observed",
+                )
+                payload = {"task": task.to_dict(), "gate": run.acceptance_gate(task.id)}
+            elif name == "director_decide":
+                action = str(args.get("action") or "")
+                task_id = str(args.get("task_id") or "")
+                if action == "accept" and run.config.auto_integrate and run.tasks[task_id].worktree:
+                    args = {**args, "action": "integrate"}
+                    action = "integrate"
+                if action == "integrate":
+                    allowed, reasons = run.acceptance_gate(task_id)
+                    if not allowed:
+                        raise ValueError("Integration gate rejected the decision: " + "; ".join(reasons))
+                    task = run.tasks[task_id]
+                    if task.worktree:
+                        from .worktrees import WorktreeLease
+                        lease = WorktreeLease(**task.worktree)
+                        lease = self.worktree_manager.integrate(lease)
+                        task.worktree = lease.to_dict()
+                        if lease.status not in {"integrated", "unchanged"}:
+                            run._save()
+                            raise ValueError(
+                                "Worktree is ready but the primary checkout is not clean; "
+                                "integration was deferred without changing user work."
+                            )
+                        self.worktree_manager.remove(lease, delete_branch=True)
+                task = run.decide(args)
+                payload = {"task": task.to_dict(), "gate": run.acceptance_gate(task.id)}
+            elif name == "director_complete":
+                run.complete()
+                payload = run.to_dict()
+            else:
+                raise ValueError(f"Unknown Director tool: {name}")
+            output = json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception as exc:
+            is_error = True
+            output = f"Director operation failed: {exc}"
+        self.conversation_history.extend([
+            {"role": "tool_call", "name": name, "arguments": args_json,
+             "call_id": call_id, "content": f"Called {name}"},
+            {"role": "tool_result", "name": name, "call_id": call_id,
+             "content": output},
+        ])
+        yield make_event(
+            EngineEvent.TOOL_RESULT,
+            name=name,
+            call_id=call_id,
+            output=output,
+            is_error=is_error,
+            elapsed=time.time() - started,
+            metadata={"director_run_id": getattr(run, "id", "")},
+            denied=is_error,
+        )
+
     def _execute_task_batch(
         self,
         fn_args: dict,
@@ -3016,9 +3290,10 @@ class Session:
         fn_args_str: str,
     ) -> Iterator[dict]:
         """Fan out independent workers and serialize their handoffs."""
-        tasks = [item for item in (fn_args.get("tasks") or []) if isinstance(item, dict)][:4]
+        limit = self.director_run.config.max_parallel_workers if self.director_run else 4
+        tasks = [item for item in (fn_args.get("tasks") or []) if isinstance(item, dict)][:limit]
         if len(tasks) < 2:
-            output = "task_batch requires between two and four task specifications."
+            output = f"task_batch requires between two and {limit} task specifications."
             yield make_event(
                 EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
                 output=output, is_error=True, denied=True, elapsed=0.0,
@@ -3042,6 +3317,43 @@ class Session:
             )
             if not gate.allowed:
                 output = f"Task batch blocked by hook: {gate.reason or gate.error or 'denied'}"
+                yield make_event(
+                    EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
+                    output=output, is_error=True, denied=True, elapsed=0.0,
+                )
+                return
+
+        if self.director_run is not None:
+            active_counts: dict[str, int] = {}
+            try:
+                for spec in tasks:
+                    director_task_id = str(spec.get("director_task_id") or "")
+                    if not director_task_id:
+                        raise ValueError("Every Director batch item requires director_task_id")
+                    worker_id = str(spec.get("worker_id") or "")
+                    if not worker_id:
+                        worker = self.director_run.select_worker(
+                            director_task_id, active_counts=active_counts,
+                        )
+                        worker_id = worker.id
+                        spec["worker_id"] = worker_id
+                    configured = next(
+                        (item for item in self.director_run.config.workers if item.id == worker_id),
+                        None,
+                    )
+                    if configured is None:
+                        raise ValueError(f"Unknown configured worker: {worker_id}")
+                    active_counts[worker_id] = active_counts.get(worker_id, 0) + 1
+                    if (
+                        configured.max_parallel is not None
+                        and active_counts[worker_id] > configured.max_parallel
+                    ):
+                        raise ValueError(
+                            f"Worker {worker_id} exceeds its parallel capacity "
+                            f"of {configured.max_parallel}"
+                        )
+            except Exception as exc:
+                output = f"Director batch rejected: {exc}"
                 yield make_event(
                     EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
                     output=output, is_error=True, denied=True, elapsed=0.0,

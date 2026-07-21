@@ -215,3 +215,21 @@ def test_user_blocking_events_update_session_indicator():
     activity_end = source.index("\n    /**", activity_start)
     activity_body = source[activity_start:activity_end]
     assert "s.activity.phase === 'parked' ? 'needs-input' : 'working'" in activity_body
+
+
+def test_settings_navigation_is_idempotent_and_background_events_cannot_close_it():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "Navigation controls must be idempotent." in source
+    assert "this.switchView('settings');" in source
+    assert "this.switchView(view);" in source
+    assert "view === 'settings' && this.currentView === 'settings'" not in source
+
+    show_start = source.index("    showChatInterface({ force = false } = {}) {")
+    show_end = source.index("\n    /** First-run onboarding card", show_start)
+    show_body = source[show_start:show_end]
+    assert "if (!force && this.currentView !== 'agents') return;" in show_body
+
+    new_start = source.index("    startNewSession() {")
+    new_end = source.index("\n    showNewSessionSetup()", new_start)
+    assert "if (this.currentView !== 'agents') this.switchView('agents');" in source[new_start:new_end]

@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-07-19
+Last updated: 2026-07-21
 
 This document describes the runtime Resonant uses for long-horizon coding with
 GLM, DeepSeek, and future open models. The design favors correct, verified
@@ -26,6 +26,7 @@ by `gui/app.py::_wire_session` and inherited by child sessions:
 | Flight recorder | `engine/flight_recorder.py` | Reproducible manifests, append-only events, comparison, OTLP JSON export |
 | Context broker | `engine/context_broker.py` | Provenance-aware explicit `@provider:selector` attachments |
 | Model roles | `engine/model_roles.py` | Explicit plan/explore/implement/test/review/vision boundaries and configured routing |
+| Director Mode | `engine/director.py` | Opt-in frontier supervision, durable dependency graph, adaptive worker pools, evidence gates, and outcome benchmarks |
 | Capability packs | `engine/capability_packs.py` | One trusted package for agents, skills, hooks, MCP, commands, recipes, and UI metadata |
 | Code intelligence | `engine/code_intelligence.py` | Python AST and optional Tree-sitter symbols, imports, and calls |
 | Lifecycle hooks | `engine/hooks.py` | Structured JSON decisions around models, tools, batches, permissions, workers, compaction, checkpoints, and validation |
@@ -43,12 +44,38 @@ inspectable after completion or failure. A process restart marks nonterminal
 records as `stuck` because their threads cannot survive, while preserving all
 evidence for recovery.
 
-`task_batch` runs two to four independent workers concurrently. Build workers
-are forced into Git worktrees. They commit their isolated result, then compete
-for one serialized integration lock. Integration proceeds only when the user's
-checkout is clean; otherwise the branch and worktree remain for review. Read
-workers may safely share the project. Child cancellation is independent, while
-parent cancellation still propagates to every child.
+`task_batch` runs two to four independent workers concurrently in ordinary
+single-agent sessions. Director Mode may raise that boundary to its explicitly
+configured worker-pool limit. Build workers are forced into Git worktrees. In
+single-agent mode they commit and compete for one serialized integration lock.
+In Director Mode, a writer's finalized branch remains isolated until the
+frontier Director records passing evidence and explicitly integrates it.
+Integration proceeds only when the user's checkout is clean; otherwise the
+branch and worktree remain for review. Read workers may safely share the
+project. Child cancellation is independent, while parent cancellation still
+propagates to every child.
+
+## Director Mode
+
+Director Mode is opt-in and session-local. A selected frontier model owns a
+durable dependency graph and delegates bounded work to a user-selected pool of
+cheaper or specialized models. The ordinary single-agent prompt, tools, and
+execution path are unchanged while the mode is off.
+
+The Director must plan, dispatch only ready tasks, inspect structured handoffs,
+attach deterministic validation evidence, revise or reassign weak work, pass a
+fail-closed acceptance gate, and integrate isolated writer branches. Each
+attempt stays auditable; failed evidence from a prior attempt remains in history
+without poisoning a corrected revision. Scheduler decisions honor role and
+modality capabilities, preferred workers, concurrency, and project-local
+verified performance. No implicit token, context, output, time, or cost cap is
+introduced.
+
+The Agents panel includes a Director view with the current phase, frontier
+model, worker pool, task dependencies, assignments, validation counts, and a
+project-local single-agent versus Director outcome comparison. See
+[`director-mode.md`](director-mode.md) for the complete contract and extension
+guide.
 
 The Agents pane is the runtime control surface. It exposes current and past
 workers, transcripts and handoffs, plus pause, resume, cancel, and non-cancelling

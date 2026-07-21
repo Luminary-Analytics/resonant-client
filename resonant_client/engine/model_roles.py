@@ -62,6 +62,7 @@ class ModelRoleRouter:
         self,
         config: dict[str, Any] | None = None,
         *,
+        workers: list[dict[str, Any]] | None = None,
         backend_factory: Callable[[ModelRoleProfile], Any] | None = None,
     ):
         raw = config or {}
@@ -73,19 +74,53 @@ class ModelRoleRouter:
             merged["role"] = role
             self._profiles[role] = ModelRoleProfile(**merged)
         self._backend_factory = backend_factory
+        self._workers: dict[str, ModelRoleProfile] = {}
+        for index, value in enumerate(workers or []):
+            if not isinstance(value, dict):
+                continue
+            worker_id = str(value.get("id") or f"worker-{index + 1}").strip()
+            if not worker_id:
+                continue
+            self._workers[worker_id] = ModelRoleProfile(
+                role=str(value.get("role") or "implement"),
+                backend_type=str(value.get("backend_type") or value.get("backend") or ""),
+                model=str(value.get("model") or ""),
+                thinking_mode=str(value.get("thinking_mode") or ""),
+                max_steps=(
+                    int(value["max_steps"])
+                    if value.get("max_steps") not in (None, "") else None
+                ),
+                permission_mode=str(value.get("permission_mode") or ""),
+                system_suffix=str(value.get("system_suffix") or ""),
+                require_independent_review=bool(value.get("require_independent_review", False)),
+            )
 
     def profile(self, role: ModelRole | str) -> ModelRoleProfile:
         value = role.value if isinstance(role, ModelRole) else str(role or "primary")
         return self._profiles.get(value, self._profiles[ModelRole.PRIMARY.value])
 
-    def backend_for(self, role: ModelRole | str, fallback: Any) -> Any:
-        profile = self.profile(role)
+    def worker_profile(self, worker_id: str) -> ModelRoleProfile | None:
+        return self._workers.get(str(worker_id or ""))
+
+    def backend_for(
+        self,
+        role: ModelRole | str,
+        fallback: Any,
+        *,
+        worker_id: str = "",
+    ) -> Any:
+        profile = self.worker_profile(worker_id) or self.profile(role)
         if not self._backend_factory or not (profile.backend_type or profile.model):
             return fallback
         try:
             return self._backend_factory(profile)
         except Exception:
+            if worker_id:
+                raise
             return fallback
 
     def to_dict(self) -> dict[str, dict[str, Any]]:
         return {role: profile.to_dict() for role, profile in self._profiles.items()}
+
+    def workers_to_dict(self) -> dict[str, dict[str, Any]]:
+        return {worker_id: profile.to_dict() for worker_id, profile in self._workers.items()}

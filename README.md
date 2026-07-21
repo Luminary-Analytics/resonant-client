@@ -63,6 +63,7 @@ contract stay model-neutral.
 - Collapsible long-task status and recommended decision prompts
 - Diagnostics export and cost tracking
 - Agents/Timeline/Traces/Artifacts/Packs runtime inspector
+- Opt-in Director Mode: use a frontier model to plan, review, and safely integrate work from a selected pool of open or lower-cost worker models
 - Signed Windows update feed with in-app update checks
 
 ### Optional orchestration

@@ -419,6 +419,10 @@
                                             </div>
                                         </div>
                                     </div>
+                                    <button class="director-mode-btn" id="director-mode-btn" type="button" title="Configure a frontier Director and worker model pool" aria-pressed="false">
+                                        <span class="director-mode-mark" aria-hidden="true">&#10022;</span>
+                                        <span>Director</span>
+                                    </button>
                                     <button class="input-project" id="footer-project-btn" title="Current project folder — click to switch projects or open another folder">
                                         <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M1.5 4a.8.8 0 01.8-.8h2.4l1 1.1h4.8a.8.8 0 01.8.8v5a.8.8 0 01-.8.8H2.3a.8.8 0 01-.8-.8V4z" stroke="currentColor" stroke-width="1.1"/></svg>
                                         <span class="input-project-name" id="footer-project-name">project</span>
@@ -552,6 +556,7 @@
                         <div class="agent-activity-toolbar">
                             <div class="runtime-view-tabs" role="tablist" aria-label="Agent runtime views">
                                 <button type="button" class="runtime-view-tab active" data-runtime-view="agents">Agents</button>
+                                <button type="button" class="runtime-view-tab" data-runtime-view="director">Director</button>
                                 <button type="button" class="runtime-view-tab" data-runtime-view="timeline">Timeline</button>
                                 <button type="button" class="runtime-view-tab" data-runtime-view="traces">Traces</button>
                                 <button type="button" class="runtime-view-tab" data-runtime-view="artifacts">Artifacts</button>

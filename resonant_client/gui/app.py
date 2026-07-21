@@ -4401,6 +4401,7 @@ class AppState:
         from ..engine.capability_packs import CapabilityPackManager
         from ..engine.context_broker import ContextBroker
         from ..engine.flight_recorder import FlightRecorder
+        from ..engine.director import DirectorBenchmarkStore, DirectorConfig, DirectorRun
         from ..engine.model_roles import ModelRoleRouter
         from ..engine.worktrees import WorktreeManager
 
@@ -4438,8 +4439,13 @@ class AppState:
                 spec.thinking_mode = profile.thinking_mode
             return spec.create_backend(self.settings)
 
+        record = self.project.current_session
+        director_config = DirectorConfig.from_dict(
+            getattr(record, "director_config", {}) if record else {}
+        )
         role_router = ModelRoleRouter(
             self.settings.get("model_roles") or {},
+            workers=[worker.to_dict() for worker in director_config.workers],
             backend_factory=_role_backend_factory,
         )
         context_broker = ContextBroker(
@@ -4476,6 +4482,35 @@ class AppState:
         session.flight_recorder = flight_recorder
         session.context_broker = context_broker
         session.model_role_router = role_router
+        session.benchmark_store = DirectorBenchmarkStore(target_path)
+        if director_config.enabled:
+            run_id = str(getattr(record, "director_run_id", "") or "") if record else ""
+            try:
+                director_run = (
+                    DirectorRun.load(
+                        target_path, run_id, on_event=self._push_ws_event,
+                    )
+                    if run_id else None
+                )
+            except (OSError, ValueError, KeyError):
+                logger.warning("Director run %s could not be restored; starting a new run", run_id)
+                director_run = None
+            if director_run is None:
+                director_run = DirectorRun(
+                    target_path,
+                    config=director_config,
+                    on_event=self._push_ws_event,
+                )
+            session.director_run = director_run
+            director_prompt = director_run.system_prompt()
+            session.role_instructions = "\n\n".join(
+                value for value in (session.role_instructions, director_prompt) if value
+            )
+            if record:
+                record.orchestration_mode = "director"
+                record.director_config = director_config.to_dict()
+                record.director_run_id = director_run.id
+                record.save()
         session.worktree_manager = worktree_manager
         session.capability_packs = capability_packs
         session._settings_ref = self.settings
@@ -5270,6 +5305,8 @@ class AppState:
         session_role: str = "generator",
         max_tokens: Optional[int] = None,
         allowed_tools: Optional[list[dict[str, Any]]] = None,
+        director_config: Optional[dict[str, Any]] = None,
+        director_run_id: str = "",
     ) -> Session:
         effective_root = os.path.normpath(project_path or self.project.project_path)
         session_mode = self.normalize_session_mode(session_mode)
@@ -5282,6 +5319,17 @@ class AppState:
         backend = backend or (spec.create_backend(self.settings) if spec else None)
         if backend is None:
             raise ValueError("Backend or backend spec is required to build a session")
+
+        # Director Mode is session-local. Explicit values are persisted before
+        # wiring; otherwise a resumed record restores its own configuration.
+        record = self.project.current_session
+        if record and director_config is not None:
+            from ..engine.director import DirectorConfig
+            normalized = DirectorConfig.from_dict(director_config)
+            record.director_config = normalized.to_dict()
+            record.orchestration_mode = "director" if normalized.enabled else "single"
+            record.director_run_id = str(director_run_id or "")
+            record.save()
 
         if self._normalize_path(effective_root) == self._normalize_path(self.project.project_path):
             project_instructions = self._project_instructions or load_project_instructions(effective_root)
@@ -5648,6 +5696,22 @@ class AppState:
             "all_sessions": self.project.list_all_sessions(),
             "current_session_id": self.project.current_session.id if self.project.current_session else "",
             "current_session_role": self.project.current_session.session_role if self.project.current_session else "generator",
+            "orchestration_mode": (
+                self.project.current_session.orchestration_mode
+                if self.project.current_session else "single"
+            ),
+            "director_config": (
+                self.project.current_session.director_config
+                if self.project.current_session else {}
+            ),
+            "director_run": (
+                self.session.director_run.to_dict()
+                if self.session and getattr(self.session, "director_run", None) else None
+            ),
+            "director_benchmark": (
+                self.session.benchmark_store.comparison()
+                if self.session and getattr(self.session, "benchmark_store", None) else None
+            ),
             "current_thinking_mode": (
                 getattr(self.backend_spec, "thinking_mode", "") if self.backend_spec else ""
             ) or (
@@ -7237,6 +7301,90 @@ async def websocket_endpoint(ws: WebSocket):
                     "cwd": state.project.project_path,
                 })
 
+            elif command == "director_configure":
+                from ..engine.director import DirectorConfig
+
+                config = DirectorConfig.from_dict(msg.get("config") or {})
+                enabled_workers = [
+                    worker for worker in config.workers
+                    if worker.enabled and worker.backend_type and worker.model
+                ]
+                if config.enabled and (
+                    not config.director_backend_type or not config.director_model
+                ):
+                    await ws.send_json({
+                        "event": "director.configure_failed",
+                        "message": "Select a Director model before enabling Director Mode.",
+                    })
+                    continue
+                if config.enabled and not enabled_workers:
+                    await ws.send_json({
+                        "event": "director.configure_failed",
+                        "message": "Select at least one worker model.",
+                    })
+                    continue
+
+                record = state.project.current_session
+                if record is None:
+                    record = state.project.create_session(
+                        backend_type=config.director_backend_type or getattr(state.backend, "name", ""),
+                        model=config.director_model or getattr(state.backend, "model", ""),
+                        session_role="generator",
+                        orchestration_mode="director" if config.enabled else "single",
+                        director_config=config.to_dict(),
+                    )
+                old_history = list(state.session.conversation_history) if state.session else []
+                record.orchestration_mode = "director" if config.enabled else "single"
+                record.director_config = config.to_dict()
+                record.director_run_id = ""
+                if config.enabled:
+                    record.backend_type = config.director_backend_type
+                    record.model = config.director_model
+                record.save()
+                try:
+                    backend_type = record.backend_type or getattr(state.backend, "name", "")
+                    model = record.model or getattr(state.backend, "model", "")
+                    if backend_type and model:
+                        await asyncio.get_event_loop().run_in_executor(
+                            None,
+                            lambda: state.create_backend(
+                                backend_type,
+                                model,
+                                session_mode="code",
+                                session_role=record.session_role or "generator",
+                            ),
+                        )
+                        state.session.conversation_history = old_history
+                    record.conversation_history = old_history
+                    record.save()
+                    await ws.send_json({
+                        "event": "director.configured",
+                        "mode": record.orchestration_mode,
+                        "config": record.director_config,
+                        "run": (
+                            state.session.director_run.to_dict()
+                            if state.session and state.session.director_run else None
+                        ),
+                    })
+                    await ws.send_json(state.get_init_data(refresh_only=True))
+                except Exception as exc:
+                    logger.exception("Director Mode configuration failed")
+                    await ws.send_json({
+                        "event": "director.configure_failed",
+                        "message": f"Director Mode configuration failed: {exc}",
+                    })
+
+            elif command == "director_status":
+                run = getattr(state.session, "director_run", None) if state.session else None
+                await ws.send_json({
+                    "event": "director.status",
+                    "run": run.to_dict() if run else None,
+                    "benchmark": (
+                        state.session.benchmark_store.comparison()
+                        if state.session and state.session.benchmark_store else None
+                    ),
+                })
+
             elif command == "switch_model":
                 model = msg.get("model", "")
                 backend_type = msg.get("backend", "")
@@ -7679,6 +7827,9 @@ async def websocket_endpoint(ws: WebSocket):
                         "message_count": record.message_count,
                         "session_mode": "code",
                         "session_role": record.session_role or "generator",
+                        "orchestration_mode": record.orchestration_mode,
+                        "director_config": record.director_config,
+                        "director_run_id": record.director_run_id,
                         "display_events": record.display_events,
                         "sessions": state.project.list_sessions(),
                         "current_session_id": record.id,

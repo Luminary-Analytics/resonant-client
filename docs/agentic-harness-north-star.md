@@ -2,7 +2,7 @@
 
 Status: canonical product and engineering contract
 Audience: contributors, maintainers, coding agents, and model adapters
-Last updated: 2026-07-19
+Last updated: 2026-07-21
 
 This document defines what Resonant is optimizing for and the architectural
 direction that should guide new work. When a historical plan, release note, or
@@ -180,8 +180,12 @@ Implementation status as of 2026-07-19:
 - Explicit model-role routing at visible phase boundaries: implemented.
 - Trusted capability packs spanning agents, skills, hooks, MCP, and UI metadata: implemented.
 - Modality-neutral artifact bus and capability-negotiated delivery: implemented foundation.
+- Opt-in frontier Director with durable task graphs, selected heterogeneous worker pools,
+  evidence-gated review, deferred worktree integration, adaptive routing, and
+  single-versus-Director outcome benchmarks: implemented foundation.
 
-See [`docs/modern-agent-runtime.md`](modern-agent-runtime.md) for the runtime
+See [`docs/modern-agent-runtime.md`](modern-agent-runtime.md) and
+[`docs/director-mode.md`](director-mode.md) for the runtime
 contract and extension guide. Restarting work from durable checkpoints after a
 process restart remains the next reliability layer; interrupted worker evidence
 is preserved and surfaced as `stuck` today.

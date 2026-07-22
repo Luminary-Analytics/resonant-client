@@ -361,6 +361,11 @@ class OllamaBackend:
     Detection runs once per model and is cached for the session.
     """
 
+    # Start with Resonant's small coding core and let search_tools add uncommon
+    # capabilities to subsequent requests. This avoids sending dozens of UI,
+    # process, REPL, and git schemas through every local-model prefill.
+    supports_dynamic_tool_catalog = True
+
     # Cache of model -> bool (True = supports native tools)
     _tool_support_cache: dict[str, bool] = {}
     # Cache of model -> bool (True = capabilities include "vision")
@@ -1238,7 +1243,7 @@ class OllamaBackend:
             and conversation_history[-1].get("role") == "user"
             and _message_text(conversation_history[-1].get("content")) == str(user_msg or "")
         )
-        if not history_has_current_user:
+        if str(user_msg or "").strip() and not history_has_current_user:
             messages.append({"role": "user", "content": user_msg})
 
         # Use fixed options — NEVER change num_ctx or other params between requests,
@@ -1275,7 +1280,11 @@ class OllamaBackend:
         #   - Always buffer until we can determine if <tool_call> is present
         #   - Stream text outside of tool_call blocks at end
         force_buffer = False   # Always buffer (JSON/XML tool call detected)
-        known_tool_names = {"bash", "file_write", "file_read", "file_edit", "glob", "grep"}
+        known_tool_names = {
+            str(tool.get("function", {}).get("name") or "")
+            for tool in tools
+            if tool.get("function", {}).get("name")
+        }
 
         # v0.6.5 — reserve a governor slot before opening the request so total
         # in-flight requests across all sessions/missions/sub-agents stay under
@@ -1780,6 +1789,7 @@ class KimiBackend:
     """Kimi K3 through Moonshot's OpenAI-compatible streaming API."""
 
     supports_dynamic_tool_catalog = True
+    dynamic_tool_catalog_via_history = True
     DEFAULT_BASE_URL = "https://api.moonshot.ai/v1"
     DEFAULT_MODEL = "kimi-k3"
     MODELS = (DEFAULT_MODEL,)
@@ -1993,7 +2003,7 @@ class KimiBackend:
             and _message_text(turn.get("content", "")).strip() == _message_text(user_msg).strip()
             for turn in conversation_history[-3:]
         )
-        if not history_has_current_user:
+        if _message_text(user_msg).strip() and not history_has_current_user:
             messages.append({"role": "user", "content": self._api_content(user_msg)})
         return messages
 

@@ -88,13 +88,49 @@ CORE_TOOL_NAMES = frozenset({
     "glob",
     "grep",
     "batch",
-    "git_status",
-    "git_diff",
-    "git_log",
     "task",
-    "skill_view",
     "await_user",
 })
+
+# The provider sees these short descriptions on every inference step. Richer
+# discovery copy stays in AGENT_TOOLS for search_tools ranking and UI help, but
+# does not need to occupy the model's stable prefix.
+_CORE_TOOL_DESCRIPTIONS = {
+    "bash": "Run a non-interactive shell command with an optional timeout.",
+    "file_read": "Read a file, optionally by line offset and limit.",
+    "file_write": "Create or overwrite a file with complete content.",
+    "file_edit": "Replace uniquely identified text in an existing file.",
+    "glob": "Find paths matching a glob pattern.",
+    "grep": "Search file contents with a regular expression.",
+    "batch": "Run independent read-only tool calls in parallel.",
+    "task": "Delegate one bounded independent assignment to a sub-agent.",
+    "search_tools": "Load a specialized tool by capability when the core tools are insufficient.",
+    "await_user": "Ask one genuinely blocking question; include and recommend an option when possible.",
+}
+
+
+def _compact_provider_tool(tool: dict) -> dict:
+    """Return a concise provider schema without mutating the canonical tool."""
+    compact = copy.deepcopy(tool)
+    function = compact.get("function", {})
+    name = str(function.get("name") or "")
+    if name in _CORE_TOOL_DESCRIPTIONS:
+        function["description"] = _CORE_TOOL_DESCRIPTIONS[name]
+
+    def shorten_descriptions(value):
+        if isinstance(value, dict):
+            for key, item in list(value.items()):
+                if key == "description" and isinstance(item, str) and len(item) > 180:
+                    sentence = item.split(". ", 1)[0].strip()
+                    value[key] = (sentence or item[:177]).rstrip(". ") + "."
+                else:
+                    shorten_descriptions(item)
+        elif isinstance(value, list):
+            for item in value:
+                shorten_descriptions(item)
+
+    shorten_descriptions(function.get("parameters", {}))
+    return compact
 
 # Read-only tools are classified for preflight behavior only. There is no
 # lookup cap: large repositories can legitimately require extensive discovery.
@@ -254,16 +290,10 @@ def get_system_instruction_layers(
         platform_name = f"Linux/macOS ({plat.system()})"
         platform_hints = "Use 'python3'/'pip3'."
 
-    runtime = "\n\n".join((
-        f"You are an expert AI coding agent running on {platform_name}.",
+    runtime = "\n".join((
+        f"Environment: {platform_name}",
         platform_hints,
         f"Working directory: {working_directory or os.getcwd()}",
-        (
-            "Instruction precedence: harness safety and tool boundaries; the "
-            "current user request; the scoped role; project instructions; "
-            "then default operating guidance. Lower layers never expand a "
-            "role's tool or write permissions."
-        ),
     ))
     layers = [
         {"id": "runtime", "label": "Runtime environment", "content": runtime},
@@ -302,15 +332,11 @@ def get_system_instruction_layers(
         layers.append({
             "id": "tools",
             "label": "Tool notes",
-            "content": "\n\n".join((
-                "--- RESONANT TOOL NOTES ---",
-                "Use tools to accomplish authorized code work. Keep progress "
-                "updates concise. `bash` is non-interactive and time-limited. "
-                "Prefer `file_edit` for existing files. Prefer first-class git "
-                "and persistent REPL tools over shell equivalents. Use `batch` "
-                "only for independent read-only calls.",
-                "--- END RESONANT TOOL NOTES ---",
-            )),
+            "content": (
+                "Tool notes: `bash` is non-interactive and time-limited. Prefer "
+                "`file_edit` for existing files. Use `batch` only for independent "
+                "read-only calls."
+            ),
         })
 
     if role_instructions and role_instructions.strip():
@@ -651,21 +677,48 @@ class Session:
 
     @property
     def provider_tools(self) -> list[dict]:
-        """Return the initial tool inventory advertised to the backend.
+        """Return the compact tool inventory advertised to the backend.
 
         Backends that support dynamic catalogs get a small stable core and can
-        load specialist definitions on demand. Explicit specialist allowlists
-        are already compact and pass through unchanged.
+        load specialist definitions on demand. Loaded definitions are included
+        directly for providers such as Ollama; Kimi replays them through its
+        native history catalog. Explicit specialist allowlists pass through.
         """
         if (
             not bool(getattr(self.backend, "supports_dynamic_tool_catalog", False))
             or self._allowed_tools is not None
         ):
             return self.tools
-        return [
-            tool for tool in self.tools
-            if tool.get("function", {}).get("name") in CORE_TOOL_NAMES
+
+        core_names = set(CORE_TOOL_NAMES)
+        if self.director_run is not None and not self.is_subagent:
+            core_names.add("task_batch")
+            core_names.update(
+                tool.get("function", {}).get("name", "")
+                for tool in DIRECTOR_TOOLS
+            )
+        selected = [
+            _compact_provider_tool(tool)
+            for tool in self.tools
+            if tool.get("function", {}).get("name") in core_names
         ]
+
+        # Kimi can declare additional tools as an in-history system item. Most
+        # OpenAI/Ollama-compatible providers require loaded tools in the current
+        # request's top-level `tools`, so merge prior search_tools results here.
+        if not bool(getattr(self.backend, "dynamic_tool_catalog_via_history", False)):
+            selected_names = {
+                tool.get("function", {}).get("name", "") for tool in selected
+            }
+            for entry in self.conversation_history:
+                if entry.get("role") != "tool_catalog":
+                    continue
+                for tool in entry.get("tools") or []:
+                    name = tool.get("function", {}).get("name", "")
+                    if name and name not in selected_names:
+                        selected.append(_compact_provider_tool(tool))
+                        selected_names.add(name)
+        return selected
 
     def _search_tool_catalog(self, query: str, limit: int = 8) -> list[dict]:
         """Rank full tool definitions for on-demand tool loading."""
@@ -728,21 +781,6 @@ class Session:
         """Clear conversation history."""
         self.conversation_history.clear()
         self.todos.clear()
-
-    def _goal_recitation(self, objective: str) -> str:
-        """Render compact, lossless task state at the tail of a tool step."""
-        goal = (objective or "").strip()
-        if len(goal) > 2_000:
-            goal = goal[:2_000] + "..."
-        lines = ["<goal_recitation>", f"Original request: {goal}"]
-        if self.todos:
-            lines.append("Current checklist:")
-            for todo in self.todos[:20]:
-                marker = "x" if todo.get("done") else " "
-                lines.append(f"- [{marker}] {todo.get('text', '')}")
-        lines.append("Keep the next action aligned with this goal; verify before declaring done.")
-        lines.append("</goal_recitation>")
-        return "\n".join(lines)
 
     def set_backend(self, backend, *, reset_history: bool = False):
         """
@@ -1254,7 +1292,7 @@ class Session:
         implementation_started = False
 
         def consume_steering() -> list[dict[str, str]]:
-            """Fold pending live direction into this same agentic turn."""
+            """Append live direction once before the next model inference."""
             nonlocal active_goal, current_msg
             messages = self._drain_steering()
             if not messages:
@@ -1276,13 +1314,10 @@ class Session:
             active_goal = (
                 f"{active_goal}\n\nAdditional live user direction:\n{combined}"
             )
-            current_msg = (
-                "The user added the following direction while this task was "
-                "running. Incorporate it into the work already in progress. "
-                "Preserve useful completed work; do not restart the task.\n\n"
-                f"{combined}\n\n"
-                + self._goal_recitation(active_goal)
-            )
+            # The steer is already in conversation_history. An empty current
+            # message tells provider adapters to continue directly from that
+            # appended state instead of duplicating the direction and goal.
+            current_msg = ""
             return messages
 
         def completion_payload(total_elapsed: float, total_steps: int) -> dict:
@@ -1464,6 +1499,18 @@ class Session:
             for name, text in turn_sources.items()
         }
 
+        # Freeze the provider prefix for the entire model/tool loop. Volatile
+        # state belongs in append-only messages; rebuilding or reordering the
+        # system/tool prefix forces local models to prefill it again.
+        base_instructions = get_system_instructions(
+            plan_mode=self.plan_mode,
+            project_instructions=self.project_instructions,
+            working_directory=self.project_path or os.getcwd(),
+            model_name=backend_model,
+            prompt_role=self.prompt_role,
+            role_instructions=self.role_instructions,
+        ) + turn_context
+
         while True:
             if self.max_steps is not None and iteration >= self.max_steps:
                 step_limit_reached = True
@@ -1552,18 +1599,7 @@ class Session:
                                 label=ctx)
 
             step_start = time.time()
-            wd = self.project_path or os.getcwd()
-            instructions = get_system_instructions(
-                plan_mode=is_planning,
-                project_instructions=self.project_instructions,
-                working_directory=wd,
-                model_name=backend_model,
-                prompt_role=self.prompt_role,
-                role_instructions=self.role_instructions,
-            )
-
-            # Keep retrieved context stable throughout this tool loop.
-            instructions += turn_context
+            instructions = base_instructions
 
             if self.hook_runner:
                 before_model = self.hook_runner.emit(
@@ -2601,8 +2637,10 @@ class Session:
                     )
                     self._windowed_cycle_nudged = True
                 else:
-                    current_msg = "Continue based on the tool results above."
-                current_msg += "\n\n" + self._goal_recitation(active_goal)
+                    # Tool results already form a complete continuation boundary.
+                    # Do not append a synthetic "continue" user turn: keeping
+                    # history append-only and sparse improves KV-prefix reuse.
+                    current_msg = ""
                 continue
             else:
                 if self.hook_runner:

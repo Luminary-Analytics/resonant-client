@@ -44,23 +44,18 @@ def test_profiles_share_model_neutral_guidance():
     kimi = build_model_prompt("kimi-k3")
 
     for prompt in (glm, deepseek, generic, kimi):
-        assert "RESONANT AGENT CONTRACT" in prompt
-        assert "RESONANT CLARIFICATION CONTRACT" in prompt
-        assert "Long-running work" in prompt
-        assert "Every assignment must state the objective" in prompt
-        assert "focused Grill Me style" in prompt
-        assert "Default to investigating and acting, not interviewing" in prompt
-        assert "Resolve implementation details yourself" in prompt
-        assert "give your best\n  evidence-based recommendation" in prompt
-        assert "at most one focused clarification round" in prompt
-        assert "Clarification has a preflight window" in prompt
-        assert "Once implementation starts, own the task through completion" in prompt
-        assert "Never end with a question such as" in prompt
-        assert "Recommendations\" or \"Next steps\" section" in prompt
-        assert "Every question directed to the user must use `await_user`" in prompt
-        assert "set `recommended_option` to the exact option" in prompt
-        assert "List that recommended option first" in prompt
-    assert all("EXECUTION PROFILE: ADAPTIVE AGENT" in prompt for prompt in (glm, deepseek, generic, kimi))
+        assert "expert coding assistant operating inside Resonant" in prompt
+        assert "Read relevant code and project instructions before editing" in prompt
+        assert "Run independent reads together" in prompt
+        assert "Never claim an action or\n  check that did not complete" in prompt
+        assert "Continue through ordinary tool failures" in prompt
+        assert "Delegate only bounded independent work" in prompt
+        assert "Use `await_user` only for one consequential requirement" in prompt
+        assert "set `recommended_option` to that exact value" in prompt
+        assert "reuse settled evidence instead of\nrediscovering it" in prompt
+        assert "Use `search_tools` once" in prompt
+        # Keep the invariant prompt small enough for fast local-model prefills.
+        assert len(prompt) < 2_500
     assert len({glm, deepseek, generic, kimi}) == 1
 
 
@@ -79,8 +74,8 @@ def test_system_prompt_layers_model_role_and_project_context():
         role_instructions="Read only src/parser.py",
     )
 
-    assert "EXECUTION PROFILE: ADAPTIVE AGENT" in prompt
-    assert "ROLE: SUB-AGENT" in prompt
+    assert "Use `search_tools` once" in prompt
+    assert "Role: isolated sub-agent" in prompt
     assert "SCOPED ROLE INSTRUCTIONS" in prompt
     assert "Read only src/parser.py" in prompt
     assert "PROJECT INSTRUCTIONS" in prompt
@@ -92,7 +87,7 @@ def test_plan_mode_keeps_model_profile_and_disables_tools():
         plan_mode=True,
         model_name="glm-5.2:cloud",
     )
-    assert "EXECUTION PROFILE: ADAPTIVE AGENT" in prompt
+    assert "expert coding assistant operating inside Resonant" in prompt
     assert "CURRENT MODE: PLAN" in prompt
     assert "Do not call tools" in prompt
     assert "RESONANT TOOL NOTES" not in prompt
@@ -144,6 +139,7 @@ def test_prompt_inspector_matches_exact_assembled_prompt():
         layer["content"] for layer in layers
     )
     assert inspected["estimated_tokens"] > 0
+    assert inspected["estimated_tokens"] < 800
     assert len(inspected["sha256"]) == 64
     assert [layer["id"] for layer in inspected["layers"]] == [
         "runtime", "model_profile", "project", "tools"

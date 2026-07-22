@@ -153,8 +153,27 @@ def test_live_run_shell_is_stable_across_updates():
     source = APP_JS.read_text(encoding="utf-8")
 
     assert "if (!run.domReady || !run.el.querySelector('.live-run-head'))" in source
-    assert "run.el.querySelector('.live-run-copy small').textContent" in source
+    assert "run.el.querySelector('[data-live-now]')" in source
+    assert "run.el.querySelector('[data-live-latest]')" in source
     assert "run.el.querySelector('.live-run-todos').innerHTML" in source
+
+
+def test_live_run_quick_summary_preserves_concrete_tool_context():
+    source = APP_JS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "_liveRunToolActivity(name, args = {})" in source
+    assert "run.toolActivities.set(callId, activity);" in source
+    assert "run.completedTools += 1;" in source
+    assert "Reviewing the result of" in source
+    assert "Building the Director task graph" in source
+    assert "Validating worker evidence" in source
+    assert 'data-live-now' in source
+    assert 'data-live-latest' in source
+    assert "Latest \\u00b7" in source
+    assert "tool${run.completedTools === 1 ? '' : 's'} finished" in source
+    assert "Working through the next action" not in source
+    assert ".live-run-latest" in styles
 
 
 def test_stop_button_uses_acknowledged_cancel_lifecycle():

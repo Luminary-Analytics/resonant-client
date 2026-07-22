@@ -45,14 +45,16 @@ def test_steer_is_applied_at_next_boundary_without_cancelling_run():
 
     assert not thread.is_alive()
     assert len(backend.prompts) == 2
-    assert "Use PostgreSQL instead" in backend.prompts[1]
-    assert "do not restart the task" in backend.prompts[1].lower()
-    assert any(
+    assert backend.prompts[1] == ""
+    steer_entries = [
+        item for item in session.conversation_history
+        if (
         item.get("role") == "user"
         and "<user_steer>" in str(item.get("content"))
         and "Use PostgreSQL instead" in str(item.get("content"))
-        for item in session.conversation_history
-    )
+        )
+    ]
+    assert len(steer_entries) == 1
     assert [event for event in events if event.get("event") == "steer.applied"] == [{
         "event": "steer.applied",
         "message_id": "steer-1",

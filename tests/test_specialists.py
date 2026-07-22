@@ -100,10 +100,9 @@ def test_assemble_system_prompt_includes_all_layers():
     assert "PROJECT CONVENTIONS" in prompt
     assert "Use Tailwind" in prompt
     assert "SPECIALIZATION: IMPLEMENT" in prompt
-    assert "RESONANT CLARIFICATION CONTRACT" in prompt
-    assert "focused Grill Me style" in prompt
-    assert "Every question directed to the user must use `await_user`" in prompt
-    assert "set `recommended_option` to the exact option" in prompt
+    assert "Use `await_user` only for one consequential requirement" in prompt
+    assert "Direct every question to the user through `await_user`" in prompt
+    assert "set `recommended_option` to that exact value" in prompt
     assert "Goal:   add dark mode toggle" in prompt
     assert "Intent: ship dark mode" in prompt
     assert "CONTEXT FROM PRIOR NODES" in prompt

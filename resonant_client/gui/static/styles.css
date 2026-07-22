@@ -10916,7 +10916,10 @@ body {
 .live-run-orbit b { right: 5px; bottom: 7px; background: #5eead4; }
 .live-run-copy { min-width: 0; }
 .live-run-copy strong { display: block; color: #f5f3ff; font-size: 12.5px; font-weight: 720; letter-spacing: .01em; }
-.live-run-copy small { display: block; margin-top: 3px; overflow: hidden; color: #aaa4b9; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.live-run-copy small { display: block; margin-top: 3px; overflow: hidden; color: #c6c1cf; font-size: 11.5px; text-overflow: ellipsis; white-space: nowrap; }
+.live-run-latest { display: block; margin-top: 3px; overflow: hidden; color: #817b8a; font-size: 10.5px; text-overflow: ellipsis; white-space: nowrap; }
+.live-run-latest[hidden] { display: none; }
+.live-run-latest.is-error { color: #d9a076; }
 .live-run-meta { color: #8f899d; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .live-run-chevron {
     width: 7px;

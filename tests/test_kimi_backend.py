@@ -206,6 +206,11 @@ def test_kimi_session_advertises_compact_core_tools():
     assert "mcp_browseros_click" in full_names
     assert "mcp_browseros_click" not in provider_names
     assert len(provider_names) < len(full_names) / 2
+    assert provider_names == {
+        "search_tools", "bash", "file_read", "file_write", "file_edit",
+        "glob", "grep", "batch", "task", "await_user",
+    }
+    assert sum(len(json.dumps(tool, sort_keys=True)) for tool in session.provider_tools) < 8_000
 
 
 def test_tool_search_finds_specialized_capabilities():
@@ -270,6 +275,7 @@ def test_session_search_tools_loads_catalog_for_next_kimi_step():
     assert "mcp_browseros_click" in names
     assert "search_tools" in backend.advertised[0]
     assert "mcp_browseros_click" not in backend.advertised[0]
+    assert "mcp_browseros_click" in backend.advertised[1]
 
 
 def test_kimi_converts_base64_images_to_openai_content_parts():

@@ -6809,9 +6809,10 @@ class ResonantApp {
         if ((event.step || 1) > 1) {
             this._advanceLiveMilestone('reason', 'Reason through the next agent step');
         }
+        const liveContext = this._liveRun?.currentAction || '';
         this._setLiveRunPhase(
             event.step > 1 ? 'Continuing' : 'Reasoning',
-            event.label || `Agent step ${event.step || 1}`,
+            event.label || liveContext || `Agent step ${event.step || 1}`,
             event.step || 1,
         );
 
@@ -7526,8 +7527,21 @@ class ResonantApp {
         } else if (validationTools.has(nameLower)) {
             this._advanceLiveMilestone('verify', 'Verify the result');
         }
-        const toolLabel = (getToolInfo(name).label || name || 'tool').replace(/\s+/g, ' ').trim();
-        this._setLiveRunPhase('Using tools', toolLabel);
+        const toolActivity = this._liveRunToolActivity(name, event.arguments || {});
+        const run = this._liveRun;
+        if (run && run.active) {
+            const activity = {
+                callId,
+                name,
+                active: toolActivity.active,
+                completed: toolActivity.completed,
+                startedAt: Date.now(),
+            };
+            run.activeTool = activity;
+            run.currentAction = activity.active;
+            if (callId) run.toolActivities.set(callId, activity);
+        }
+        this._setLiveRunPhase('Using tools', toolActivity.active);
 
         // UX fix #7 — accumulate tool-call count for the per-turn aggregate
         // so the run-card can report something honest like "3 steps · 7 tools"
@@ -7589,6 +7603,32 @@ class ResonantApp {
         // Remove from terminal bar (works for all backends and modes)
         if (!this.isReplaying && nameLower === 'bash' && callId) {
             this.trackTerminalEnd(callId);
+        }
+
+        const run = this._liveRun;
+        if (run && run.active) {
+            const activity = (callId && run.toolActivities.get(callId))
+                || (run.activeTool?.name === name ? run.activeTool : null);
+            const failed = Boolean(event.is_error || event.denied);
+            const elapsed = Number(event.elapsed || 0);
+            const completedText = activity?.completed
+                || this._liveRunToolActivity(name, {}).completed;
+            run.completedTools += 1;
+            run.lastCompleted = {
+                text: failed ? `${completedText} — needs attention` : completedText,
+                elapsed,
+                failed,
+            };
+            const activeText = activity?.active || name || 'the tool';
+            const activePhrase = `${activeText.charAt(0).toLowerCase()}${activeText.slice(1)}`;
+            run.currentAction = failed
+                ? `Investigating why ${activePhrase} failed`
+                : `Reviewing the result of ${activePhrase}`;
+            if (callId) run.toolActivities.delete(callId);
+            if (!callId || run.activeTool?.callId === callId || run.activeTool?.name === name) {
+                run.activeTool = null;
+            }
+            this._setLiveRunPhase(failed ? 'Recovering' : 'Reasoning', run.currentAction);
         }
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
@@ -10345,7 +10385,12 @@ class ResonantApp {
             startedAt: Date.now(),
         });
         this._advanceLiveMilestone('delegate', 'Coordinate sub-tasks');
-        this._setLiveRunPhase('Delegating', agentType || 'Sub-task running');
+        this._setLiveRunPhase(
+            'Delegating',
+            prompt
+                ? `Working on ${this._liveRunCompactValue(prompt, 68)}`
+                : (agentType || 'Sub-task running'),
+        );
         this.agentActivities.set(activityId, {
             id: activityId,
             kind: 'subagent',
@@ -11405,6 +11450,11 @@ class ResonantApp {
             milestones: [{ id: 'analyze', text: 'Understand the request', status: 'running' }],
             modelTodos: false,
             subtasks: new Map(),
+            toolActivities: new Map(),
+            activeTool: null,
+            currentAction: 'Preparing the workspace and model',
+            lastCompleted: null,
+            completedTools: 0,
             detailsOpen: false,
         };
         task.liveEl.hidden = false;
@@ -11456,11 +11506,73 @@ class ResonantApp {
         return detail || phase || 'Continue the task';
     }
 
+    _liveRunCompactValue(value, limit = 72) {
+        const compact = String(value || '').replace(/\s+/g, ' ').trim();
+        if (compact.length <= limit) return compact;
+        return `${compact.slice(0, Math.max(1, limit - 1)).trimEnd()}…`;
+    }
+
+    _liveRunPathLabel(value) {
+        const normalized = String(value || '').replace(/\\/g, '/').replace(/\/$/, '');
+        return this._liveRunCompactValue(normalized.split('/').pop() || normalized || 'file', 54);
+    }
+
+    _liveRunToolActivity(name, args = {}) {
+        const tool = String(name || '').toLowerCase();
+        const path = this._liveRunPathLabel(args.path || args.file_path || args.filename || '');
+        const target = this._liveRunCompactValue(args.path || args.directory || '.', 42);
+        const pattern = this._liveRunCompactValue(args.pattern || args.query || '', 44);
+        const command = this._liveRunCompactValue(args.command || args.cmd || '', 70);
+        const quoted = (value) => value ? `“${value}”` : '';
+        const activities = {
+            file_read: [`Reading ${path}`, `Read ${path}`],
+            file_write: [`Writing ${path}`, `Wrote ${path}`],
+            file_edit: [`Editing ${path}`, `Edited ${path}`],
+            apply_patch: ['Applying a workspace patch', 'Applied a workspace patch'],
+            glob: [`Finding files matching ${quoted(pattern) || 'the requested pattern'}`, `Found files matching ${quoted(pattern) || 'the requested pattern'}`],
+            grep: [`Searching ${target} for ${quoted(pattern) || 'matching code'}`, `Searched ${target} for ${quoted(pattern) || 'matching code'}`],
+            git_status: ['Checking repository status', 'Checked repository status'],
+            git_diff: ['Reviewing workspace changes', 'Reviewed workspace changes'],
+            git_commit: ['Creating a Git commit', 'Created a Git commit'],
+            bash: [`Running ${command || 'a terminal command'}`, `Ran ${command || 'a terminal command'}`],
+            browser_navigate: [`Opening ${this._liveRunCompactValue(args.url || 'a page', 58)}`, `Opened ${this._liveRunCompactValue(args.url || 'a page', 58)}`],
+            browser_read: ['Inspecting the current page', 'Inspected the current page'],
+            browser_screenshot: ['Capturing the current page', 'Captured the current page'],
+            computer_screenshot: ['Capturing the desktop', 'Captured the desktop'],
+            search_tools: [`Finding a tool for ${quoted(pattern) || 'the next action'}`, `Found tools for ${quoted(pattern) || 'the next action'}`],
+            task: [
+                args.prompt
+                    ? `Delegating ${quoted(this._liveRunCompactValue(args.prompt, 54))}`
+                    : 'Starting a delegated sub-task',
+                'Finished a delegated sub-task',
+            ],
+            task_batch: [
+                Array.isArray(args.tasks)
+                    ? `Starting ${args.tasks.length} delegated sub-tasks`
+                    : 'Starting delegated sub-tasks',
+                'Finished delegated sub-tasks',
+            ],
+            director_plan: ['Building the Director task graph', 'Built the Director task graph'],
+            director_status: ['Reviewing team progress', 'Reviewed team progress'],
+            director_validate: ['Validating worker evidence', 'Validated worker evidence'],
+            director_decide: ['Reviewing a worker result', 'Reviewed a worker result'],
+            director_complete: ['Finalizing the Director run', 'Finalized the Director run'],
+        };
+        const pair = activities[tool];
+        if (pair) return { active: pair[0], completed: pair[1] };
+        const label = this._liveRunCompactValue(
+            (getToolInfo(name).label || name || 'tool').replace(/\s+/g, ' '),
+            64,
+        );
+        return { active: `Using ${label}`, completed: `Finished ${label}` };
+    }
+
     _setLiveRunPhase(phase, detail = '', step = null) {
         const run = this._liveRun;
         if (!run || !run.active) return;
         run.phase = phase || run.phase;
         run.detail = detail || run.detail;
+        run.currentAction = run.detail;
         if (step !== null) run.step = step;
         // When evidence-derived milestones are complete, keep one fallback
         // task active and synchronize its label with the real phase above.
@@ -11548,6 +11660,9 @@ class ResonantApp {
             phase: run.phase,
             detail: run.detail,
             step: run.step,
+            currentAction: run.currentAction,
+            lastCompleted: run.lastCompleted,
+            completedTools: run.completedTools,
             milestones: run.milestones,
             subtasks: Array.from(run.subtasks.values()),
             detailsOpen: run.detailsOpen,
@@ -11588,7 +11703,11 @@ class ResonantApp {
             run.el.innerHTML = `
                 <button type="button" class="live-run-head live-run-toggle" aria-expanded="false" aria-label="Show run details">
                     <span class="live-run-orbit" aria-hidden="true"><i></i><b></b></span>
-                    <span class="live-run-copy"><strong>Resonant is working</strong><small></small></span>
+                    <span class="live-run-copy">
+                        <strong>Resonant is working</strong>
+                        <small data-live-now></small>
+                        <span class="live-run-latest" data-live-latest hidden></span>
+                    </span>
                     <span class="live-run-meta"><span data-live-step></span><span data-live-elapsed></span></span>
                     <span class="live-run-chevron" aria-hidden="true"></span>
                 </button>
@@ -11618,11 +11737,29 @@ class ResonantApp {
             run.domReady = true;
         }
 
-        run.el.querySelector('.live-run-copy small').textContent = `${run.phase} \u00b7 ${run.detail}`;
+        const nowEl = run.el.querySelector('[data-live-now]');
+        const nowText = `${run.phase} \u00b7 ${run.currentAction || run.detail}`;
+        nowEl.textContent = nowText;
+        nowEl.title = nowText;
+        const latestEl = run.el.querySelector('[data-live-latest]');
+        if (run.lastCompleted) {
+            const duration = run.lastCompleted.elapsed > 0
+                ? ` \u00b7 ${this._formatRunDuration(run.lastCompleted.elapsed)}`
+                : '';
+            const toolCount = ` \u00b7 ${run.completedTools} tool${run.completedTools === 1 ? '' : 's'} finished`;
+            latestEl.textContent = `Latest \u00b7 ${run.lastCompleted.text}${duration}${toolCount}`;
+            latestEl.title = latestEl.textContent;
+            latestEl.hidden = false;
+            latestEl.classList.toggle('is-error', Boolean(run.lastCompleted.failed));
+        } else {
+            latestEl.hidden = true;
+            latestEl.textContent = '';
+            latestEl.classList.remove('is-error');
+        }
         run.el.querySelector('[data-live-step]').textContent = run.step ? `Step ${run.step} \u00b7 ` : '';
         run.el.querySelector('[data-live-elapsed]').textContent = this._formatRunDuration(elapsedSeconds);
         run.el.querySelector('.live-run-progress').style.setProperty('--live-run-progress', `${pct}%`);
-        run.el.querySelector('[data-live-counts]').textContent = `${complete}/${total} tasks${subtasks.length ? ` \u00b7 ${activeSubtasks} active sub-task${activeSubtasks === 1 ? '' : 's'}` : ''}`;
+        run.el.querySelector('[data-live-counts]').textContent = `${complete}/${total} tasks \u00b7 ${run.completedTools} tools${subtasks.length ? ` \u00b7 ${activeSubtasks} active sub-task${activeSubtasks === 1 ? '' : 's'}` : ''}`;
 
         const milestoneKey = JSON.stringify(orderedMilestones);
         if (run.milestoneRenderKey !== milestoneKey) {
@@ -11640,7 +11777,11 @@ class ResonantApp {
 
     addThinking() {
         if (this._liveRun && this._liveRun.active) {
-            this._setLiveRunPhase('Reasoning', 'Working through the next action');
+            const run = this._liveRun;
+            const detail = run.currentAction
+                || (run.lastCompleted ? `Reviewing ${run.lastCompleted.text}` : '')
+                || 'Planning the next action';
+            this._setLiveRunPhase('Reasoning', detail);
             return;
         }
         const el = document.createElement('div');

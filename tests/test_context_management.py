@@ -42,7 +42,7 @@ def test_retrieved_context_is_stable_across_tool_steps(tmp_path):
 
     assert len(backend.full_instructions) == 2
     assert all("PINNED MEMORY" in value for value in backend.full_instructions)
-    assert all("EXECUTION PROFILE: ADAPTIVE AGENT" in value for value in backend.full_instructions)
+    assert all("expert coding assistant operating inside Resonant" in value for value in backend.full_instructions)
     assert backend.full_instructions[0] == backend.full_instructions[1]
 
 
@@ -73,7 +73,7 @@ def test_context_compression_is_rechecked_mid_turn(tmp_path):
     assert session.conversation_history[0] == compressed[0]
 
 
-def test_goal_and_checklist_are_recited_after_tool_results(tmp_path):
+def test_tool_result_continuation_does_not_repeat_goal_or_checklist(tmp_path):
     (tmp_path / "sample.txt").write_text("hello", encoding="utf-8")
     backend = _InstructionBackend(scripts=[
         [
@@ -90,7 +90,8 @@ def test_goal_and_checklist_are_recited_after_tool_results(tmp_path):
     list(session.run("Fix the parser without changing its public API"))
 
     continuation = backend.stream_calls[1]["user_msg"]
-    assert "<goal_recitation>" in continuation
-    assert "Fix the parser without changing its public API" in continuation
-    assert "- [ ] inspect behavior" in continuation
-    assert "- [x] locate file" in continuation
+    assert continuation == ""
+    assert sum(
+        "Fix the parser without changing its public API" in str(item.get("content", ""))
+        for item in session.conversation_history
+    ) == 1

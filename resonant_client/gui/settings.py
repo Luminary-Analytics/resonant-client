@@ -32,6 +32,8 @@ DEFAULTS = {
     "network": {
         # Empty means use OLLAMA_HOST or the local endpoint default.
         "ollama_url": "",
+        # Empty means use EXO_API_URL/EXO_BASE_URL or the local EXO endpoint.
+        "exo_url": "",
         # v0.4.4 (T1.4) — `resonant_api_url` and `remote_engine_ws_url`
         # were dropped here. Pre-v0.4.0 settings.json files that still
         # carry those keys load fine — Python dict tolerance ignores

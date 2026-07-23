@@ -7,6 +7,7 @@ import pytest
 from resonant_client.network_defaults import (
     default_thinking_for_model,
     get_default_model,
+    resolve_exo_url,
     resolve_ollama_url,
 )
 
@@ -104,6 +105,25 @@ class TestResolveOllamaUrlMalformedSettings:
         result = resolve_ollama_url(settings_data=None)
         assert isinstance(result, str)
         assert result.startswith("http")
+
+
+class TestResolveExoUrl:
+    def test_uses_local_default(self, monkeypatch):
+        monkeypatch.delenv("EXO_API_URL", raising=False)
+        monkeypatch.delenv("EXO_BASE_URL", raising=False)
+        assert resolve_exo_url(settings_data={}) == "http://127.0.0.1:52415/v1"
+
+    def test_env_overrides_settings_and_normalizes_v1(self, monkeypatch):
+        monkeypatch.setenv("EXO_API_URL", "http://exo-env:52415")
+        assert resolve_exo_url(
+            settings_data={"network": {"exo_url": "http://exo-settings:52415/v1"}}
+        ) == "http://exo-env:52415/v1"
+
+    def test_explicit_url_preserves_v1(self, monkeypatch):
+        monkeypatch.setenv("EXO_API_URL", "http://exo-env:52415/v1")
+        assert resolve_exo_url("http://exo-explicit:52415/v1/") == (
+            "http://exo-explicit:52415/v1"
+        )
 
 
 # v0.4.4 (T1.4) — `TestOtherResolvers` deleted. Pre-v0.4.4 it smoke-

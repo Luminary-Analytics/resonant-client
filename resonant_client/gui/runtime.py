@@ -104,8 +104,15 @@ class BackendSpec:
                 api_key=self.resolve_api_key(settings),
                 base_url=self.base_url or None,
             )
+        if backend_type == "exo":
+            return create_backend(
+                "exo",
+                model=self.model,
+                api_key=self.resolve_api_key(settings),
+                base_url=self.base_url or None,
+            )
 
         raise ValueError(
             f"Backend '{backend_type}' is not supported. Resonant Client "
-            f"supports Ollama, Kimi, and Codex."
+            f"supports Ollama, EXO, Kimi, and Codex."
         )

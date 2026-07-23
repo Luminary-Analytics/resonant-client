@@ -5981,7 +5981,7 @@ class ResonantApp {
 
         const ollamaInfo = backends && backends.ollama;
         if (!ollamaInfo) {
-            const alternatives = ['kimi', 'codex']
+            const alternatives = ['exo', 'kimi', 'codex']
                 .flatMap(backend => (backends?.[backend]?.models || []).map(model => ({ backend, model })));
             if (alternatives.length) {
                 label.textContent = 'Pick a model';
@@ -5992,10 +5992,10 @@ class ResonantApp {
                     row.className = 'backend-card';
                     row.dataset.backend = item.backend;
                     row.dataset.model = item.model;
-                    const provider = item.backend === 'kimi' ? 'Kimi API' : 'Codex';
+                    const provider = this._getBackendLabels()[item.backend] || item.backend;
                     const detail = backends[item.backend]?.url || `${provider} provider`;
                     row.innerHTML = `
-                        <div class="backend-card-icon">${item.backend === 'kimi' ? 'K' : 'C'}</div>
+                        <div class="backend-card-icon">${item.backend === 'exo' ? 'E' : (item.backend === 'kimi' ? 'K' : 'C')}</div>
                         <div class="backend-card-info">
                             <div class="backend-card-name">${this.escapeHtml(item.model)}</div>
                             <div class="backend-card-detail">${this.escapeHtml(detail)}</div>
@@ -6415,6 +6415,10 @@ class ResonantApp {
         // v0.4.0 — single backend, single group. Old multi-backend
         // grouping (Local / Subscriptions / APIs) is gone.
         return {
+            exo: {
+                label: 'EXO',
+                backends: ['exo'],
+            },
             kimi: {
                 label: 'Kimi API',
                 backends: ['kimi'],
@@ -6431,7 +6435,7 @@ class ResonantApp {
     }
 
     _getBackendLabels() {
-        return { codex: 'Codex', kimi: 'Kimi API', ollama: 'Ollama' };
+        return { codex: 'Codex', exo: 'EXO', kimi: 'Kimi API', ollama: 'Ollama' };
     }
 
     _getPreferredBackendSelection(backends) {
@@ -6441,7 +6445,7 @@ class ResonantApp {
         if (preferredConfiguredBackend && backends?.[preferredConfiguredBackend]?.models?.length) {
             backendOrder.push(preferredConfiguredBackend);
         }
-        for (const candidate of ['ollama', 'kimi', 'codex']) {
+        for (const candidate of ['ollama', 'exo', 'kimi', 'codex']) {
             if (!backendOrder.includes(candidate)) backendOrder.push(candidate);
         }
         for (const backend of backendOrder) {
@@ -8593,6 +8597,7 @@ class ResonantApp {
                     { key: 'default_backend', label: 'Default backend', type: 'select',
                       options: [
                           { value: 'ollama', label: 'Ollama' },
+                          { value: 'exo', label: 'EXO' },
                           { value: 'kimi', label: 'Kimi API' },
                           { value: 'codex', label: 'Codex' },
                           { value: '', label: 'Auto' },
@@ -8665,6 +8670,8 @@ class ResonantApp {
                     // location is 10.0.0.133:11434; leave blank to use the
                     // OLLAMA_HOST env var or auto-detect.
                     { key: 'ollama_url', label: 'Ollama URL (e.g. http://127.0.0.1:11434)', type: 'text' },
+                    { key: 'exo_url', label: 'EXO OpenAI API URL', type: 'text',
+                      hint: 'Default: http://127.0.0.1:52415/v1. EXO_API_URL and EXO_BASE_URL are also supported.' },
                 ]
             },
             {

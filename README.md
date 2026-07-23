@@ -114,6 +114,18 @@ ollama pull your-model
 Resonant probes `http://127.0.0.1:11434` by default. Set `OLLAMA_HOST` or use
 **Settings > Network** for a remote endpoint.
 
+### EXO
+
+Resonant connects directly to EXO's OpenAI-compatible API. The bundled default
+is `http://127.0.0.1:52415/v1`; change **Settings > Network > EXO OpenAI API
+URL** or set `EXO_API_URL` for another cluster.
+
+The model picker orders running models first, downloaded models second, and the
+remaining EXO catalog after them. When a downloaded model is selected but not
+running, Resonant requests the first valid EXO placement and waits for the
+instance to become ready before starting the turn. Tool calls, streaming usage,
+and OpenAI-format image content use the same agent runtime as other providers.
+
 ### Kimi
 
 Create a key in the [Kimi API platform](https://platform.kimi.ai/), then add it
@@ -140,6 +152,10 @@ HTTP MCP server.
 | Variable | Default | Description |
 |---|---|---|
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama base URL |
+| `EXO_API_URL` / `EXO_BASE_URL` | `http://127.0.0.1:52415/v1` | EXO OpenAI-compatible API URL |
+| `EXO_API_KEY` | none | Optional bearer token for an authenticated EXO proxy |
+| `RESONANT_EXO_CONNECT_TIMEOUT_SEC` | `15` | EXO connection timeout |
+| `RESONANT_EXO_READ_TIMEOUT_SEC` | `3600` | EXO generation and instance-wait read timeout |
 | `RESONANT_DEFAULT_BACKEND` | `ollama` | Explicit default provider |
 | `RESONANT_DEFAULT_MODEL` | auto-discovered | Explicit default model |
 | `MOONSHOT_API_KEY` | none | Kimi API key |

@@ -1,9 +1,9 @@
 # Instructions
 
 This is Resonant Client: a provider-adaptive agentic coding desktop app. Its
-flagship mission is making open models served through Ollama excellent at
-difficult, long-running coding work; Kimi and Codex adapters are also supported
-through the same model-neutral runtime contract.
+flagship mission is making open models served through Ollama or EXO excellent
+at difficult, long-running coding work; Kimi and Codex adapters are also
+supported through the same model-neutral runtime contract.
 
 **Positioning rule:** Resonant owns the durable harness—context, tools,
 workers, evidence, recovery, and user control. Provider adapters translate wire
@@ -24,7 +24,7 @@ formats and capabilities; they do not fork the product contract.
 ```
 resonant_client/
 ├── backends.py              # Provider adapters and model capability discovery
-├── network_defaults.py      # resolve_ollama_url chain (env → settings → Mac Studio)
+├── network_defaults.py      # Ollama/EXO endpoint resolution (env → settings → defaults)
 ├── events.py                # EngineEvent / ClientCommand enums
 ├── protocol.py              # Tool prompt building, JSON/XML parsing
 ├── tui.py                   # Terminal UI (Rich + prompt-toolkit)
@@ -51,11 +51,15 @@ resonant_client/
 # Providers and flagship models
 
 - **Ollama** — local/open models with adaptive tool-calling (native or text fallback).
+- **EXO** — distributed local inference through the OpenAI-compatible API;
+  discovers running/downloaded/catalog models and starts stopped instances.
 - **Kimi** — Moonshot API adapter with the same harness contract.
 - **Codex** — installed CLI adapter for users who explicitly choose it.
 
 The default Ollama endpoint is `http://127.0.0.1:11434`. Override it with
 `OLLAMA_HOST` or `network.ollama_url` in `~/.resonant/settings.json`.
+The default EXO endpoint is `http://127.0.0.1:52415/v1`. Override it with
+`EXO_API_URL`, `EXO_BASE_URL`, or `network.exo_url`.
 
 Model tier guidance:
 

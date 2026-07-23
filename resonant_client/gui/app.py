@@ -38,6 +38,7 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 from ..events import EngineEvent, make_event
 from ..backends import (
     CodexCliBackend,
+    ExoBackend,
     KimiBackend,
     OllamaBackend,
     codex_cli_model_labels,
@@ -45,7 +46,7 @@ from ..backends import (
 )
 from ..engine import Session, AGENT_TOOLS
 from ..engine.session import inspect_system_instructions
-from ..network_defaults import default_thinking_for_model, resolve_ollama_url
+from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url
 from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
@@ -130,9 +131,9 @@ class AppState:
         # v0.4.4 (T1.4) — `api_url` (Resonant Engine remote) and
         # `lmstudio_url` (LM Studio probe) were retired. Both backends
         # were cut in v0.4.0 but the AppState fields lingered as dead
-        # state. Only `ollama_url` survives (set by
-        # `refresh_network_defaults` from the resolution chain).
+        # state. Provider URLs are set by `refresh_network_defaults`.
         self.ollama_url = ""
+        self.exo_url = ""
         self.active_thread: Optional[threading.Thread] = None
         self.cancel_requested = threading.Event()
         # Permission / choice flow
@@ -4555,6 +4556,26 @@ class AppState:
             # Non-fatal — empty available means "show the Ollama wizard."
             pass
 
+        exo_catalog = ExoBackend.discover_models(base_url=self.exo_url, timeout=4.0)
+        exo_models = exo_catalog["models"]
+        if exo_models:
+            downloaded = set(exo_catalog["downloaded_models"])
+            running = set(exo_catalog["running_models"])
+            available["exo"] = {
+                "url": self.exo_url,
+                "models": exo_models,
+                "running_models": list(exo_catalog["running_models"]),
+                "downloaded_models": list(exo_catalog["downloaded_models"]),
+                "model_labels": {
+                    model: (
+                        f"{model} (running)" if model in running
+                        else f"{model} (downloaded)" if model in downloaded
+                        else model
+                    )
+                    for model in exo_models
+                },
+            }
+
         codex_cli = resolve_codex_cli_path()
         if codex_cli:
             available["codex"] = {
@@ -4612,7 +4633,7 @@ class AppState:
         configured_backend = str(
             self.settings.get("general", "default_backend", "") or ""
         ).strip()
-        candidates = [configured_backend, "ollama", "kimi", "codex"]
+        candidates = [configured_backend, "ollama", "exo", "kimi", "codex"]
         for backend_type in dict.fromkeys(item for item in candidates if item):
             models = list(self.available_backends.get(backend_type, {}).get("models") or [])
             if not models:
@@ -5145,10 +5166,28 @@ class AppState:
             )
             return spec
 
+        if backend_type == "exo":
+            info = self.available_backends.get("exo") or {}
+            models = info.get("models") or []
+            if not models:
+                raise ValueError(
+                    "EXO is not reachable or has no models. Check the EXO URL in "
+                    "Settings -> Network."
+                )
+            api_key, source, env_var, _ = self._api_key_details("exo", "EXO_API_KEY")
+            return BackendSpec(
+                backend_type="exo",
+                model=model or self._resolve_default_model(models),
+                base_url=info.get("url") or self.exo_url or ExoBackend.DEFAULT_BASE_URL,
+                api_key_source=source,
+                api_key_env=env_var,
+                api_key=api_key if source == "literal" else "",
+            )
+
         if backend_type != "ollama":
             raise ValueError(
                 f"Backend '{backend_type}' is not supported. Resonant Client "
-                f"supports Ollama, Kimi, and Codex."
+                f"supports Ollama, EXO, Kimi, and Codex."
             )
 
         info = self.available_backends.get("ollama")
@@ -5465,7 +5504,7 @@ class AppState:
         backend_order = []
         if configured_backend:
             backend_order.append(configured_backend)
-        backend_order.extend(k for k in ("ollama", "kimi", "codex") if k not in backend_order)
+        backend_order.extend(k for k in ("ollama", "exo", "kimi", "codex") if k not in backend_order)
 
         for backend_type in backend_order:
             info = self.available_backends.get(backend_type) or {}
@@ -5610,10 +5649,14 @@ class AppState:
 
         if (
             self.backend_spec and
-            self.backend_spec.backend_type in {"ollama", "kimi"} and
+            self.backend_spec.backend_type in {"ollama", "exo", "kimi"} and
             section in {"api_keys", "engram", "general", "network"}
         ):
             try:
+                if section == "network" and self.backend_spec.backend_type == "ollama":
+                    self.backend_spec.url = self.ollama_url
+                if section == "network" and self.backend_spec.backend_type == "exo":
+                    self.backend_spec.base_url = self.exo_url
                 self.backend = self.backend_spec.create_backend(self.settings)
                 if self.session:
                     self.session.backend = self.backend
@@ -5631,6 +5674,7 @@ class AppState:
         # backends.
         settings_data = self.settings.get_all()
         self.ollama_url = resolve_ollama_url(settings_data=settings_data)
+        self.exo_url = resolve_exo_url(settings_data=settings_data)
 
     def update_setting_value(
         self,

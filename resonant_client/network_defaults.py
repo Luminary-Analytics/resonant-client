@@ -9,6 +9,7 @@ from typing import Any, Mapping
 
 _SETTINGS_PATH = Path.home() / ".resonant" / "settings.json"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
+_DEFAULT_EXO_URL = "http://127.0.0.1:52415/v1"
 
 
 def _load_settings(path: Path | None = None) -> dict[str, Any]:
@@ -83,6 +84,27 @@ def resolve_ollama_url(
         ).strip()
         or _DEFAULT_OLLAMA_URL
     ).rstrip("/")
+
+
+def resolve_exo_url(
+    explicit: str | None = None,
+    *,
+    settings_data: Mapping[str, Any] | None = None,
+) -> str:
+    """Resolve EXO's OpenAI-compatible API base URL."""
+    value = (
+        str(explicit or "").strip()
+        or str(os.environ.get("EXO_API_URL", "") or "").strip()
+        or str(os.environ.get("EXO_BASE_URL", "") or "").strip()
+        or _get_setting(
+            "network",
+            "exo_url",
+            _DEFAULT_EXO_URL,
+            settings_data=settings_data,
+        ).strip()
+        or _DEFAULT_EXO_URL
+    ).rstrip("/")
+    return value if value.endswith("/v1") else f"{value}/v1"
 
 
 # v0.4.4 (T1.4) — `resolve_resonant_api_url` and

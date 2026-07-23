@@ -1,9 +1,10 @@
 """
 Backend abstraction for Resonant Client.
 
-Ollama is the local-first default, Kimi connects directly to Moonshot's
-OpenAI-compatible API, and Codex delegates to the installed CLI. Every
-provider yields the common event stream consumed by the session engine.
+Ollama is the local-first default, EXO provides distributed local inference,
+Kimi connects directly to Moonshot's OpenAI-compatible API, and Codex delegates
+to the installed CLI. Every provider yields the common event stream consumed by
+the session engine.
 """
 
 import json
@@ -1790,6 +1791,8 @@ class KimiBackend:
 
     supports_dynamic_tool_catalog = True
     dynamic_tool_catalog_via_history = True
+    PROVIDER_LABEL = "Kimi"
+    RETRY_EVENT_KIND = "kimi_retry"
     DEFAULT_BASE_URL = "https://api.moonshot.ai/v1"
     DEFAULT_MODEL = "kimi-k3"
     MODELS = (DEFAULT_MODEL,)
@@ -2028,6 +2031,15 @@ class KimiBackend:
             payload["max_completion_tokens"] = min(max(1, int(max_tokens)), 1_048_576)
         return payload
 
+    def _request_headers(self) -> dict[str, str]:
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "text/event-stream",
+        }
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
     @staticmethod
     def _error_details(response: httpx.Response) -> tuple[str, str]:
         try:
@@ -2082,11 +2094,7 @@ class KimiBackend:
         cancel_event=None,
     ) -> Iterator[Tuple[str, dict]]:
         payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens)
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-            "Accept": "text/event-stream",
-        }
+        headers = self._request_headers()
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
         tool_calls: dict[int, dict] = {}
@@ -2110,7 +2118,8 @@ class KimiBackend:
                                 response.status_code, error_type, message
                             )
                             logger.warning(
-                                "Kimi API request failed: status=%d type=%s retryable=%s model=%s",
+                                "%s API request failed: status=%d type=%s retryable=%s model=%s",
+                                self.PROVIDER_LABEL,
                                 response.status_code,
                                 error_type or "unknown",
                                 retryable,
@@ -2119,7 +2128,7 @@ class KimiBackend:
                             if retryable and attempt < 2:
                                 delay = 1.5 * (2 ** attempt)
                                 yield (EVENT_BACKEND_STATUS, {
-                                    "kind": "kimi_retry",
+                                    "kind": self.RETRY_EVENT_KIND,
                                     "status_code": response.status_code,
                                     "attempt": attempt + 1,
                                     "max": 3,
@@ -2215,12 +2224,292 @@ class KimiBackend:
                 "cognitive_state": None,
             })
         except httpx.TimeoutException:
-            yield (EVENT_ERROR, {"message": "Kimi API request timed out."})
+            yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} API request timed out."})
         except httpx.HTTPError as exc:
-            yield (EVENT_ERROR, {"message": f"Kimi API connection failed: {type(exc).__name__}"})
+            yield (EVENT_ERROR, {
+                "message": f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
+            })
         except Exception as exc:
-            logger.exception("Kimi stream failed")
-            yield (EVENT_ERROR, {"message": f"Kimi stream failed: {type(exc).__name__}"})
+            logger.exception("%s stream failed", self.PROVIDER_LABEL)
+            yield (EVENT_ERROR, {
+                "message": f"{self.PROVIDER_LABEL} stream failed: {type(exc).__name__}"
+            })
+
+
+class ExoBackend(KimiBackend):
+    """EXO distributed inference through its OpenAI-compatible endpoint."""
+
+    dynamic_tool_catalog_via_history = False
+    PROVIDER_LABEL = "EXO"
+    RETRY_EVENT_KIND = "exo_retry"
+    DEFAULT_BASE_URL = "http://127.0.0.1:52415/v1"
+    DEFAULT_MODEL = ""
+    MODELS: tuple[str, ...] = ()
+    _instance_locks_guard = threading.Lock()
+    _instance_locks: dict[str, threading.Lock] = {}
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        base_url: str = DEFAULT_BASE_URL,
+        api_key: str = "",
+        transport=None,
+    ):
+        selected_model = str(model or "").strip()
+        if not selected_model:
+            raise ValueError("Model name required for EXO backend")
+        self.api_key = str(api_key or "").strip()
+        self.model = selected_model
+        self.base_url = self.normalize_base_url(base_url)
+        self.name = "exo"
+        self.handles_tools = False
+        self.thinking_mode = ""
+        self._transport = transport
+        self._capabilities = ModelCapabilities(
+            model=self.model,
+            context_window=1_048_576,
+            modalities=("text", "image"),
+            native_tools=True,
+            parallel_tools=True,
+            structured_output=None,
+            reasoning_levels=(),
+            prompt_caching=False,
+            native_continuation=True,
+            max_safe_concurrency=4,
+            source="provider",
+        )
+        self._timeout = httpx.Timeout(
+            connect=float(os.environ.get("RESONANT_EXO_CONNECT_TIMEOUT_SEC", "15")),
+            read=float(os.environ.get("RESONANT_EXO_READ_TIMEOUT_SEC", "3600")),
+            write=60.0,
+            pool=60.0,
+        )
+
+    @staticmethod
+    def normalize_base_url(base_url: str | None) -> str:
+        value = str(base_url or ExoBackend.DEFAULT_BASE_URL).strip().rstrip("/")
+        return value if value.endswith("/v1") else f"{value}/v1"
+
+    @classmethod
+    def discover_models(
+        cls,
+        *,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 5.0,
+    ) -> dict[str, list[str]]:
+        """Return EXO's full catalog with downloaded models ordered first."""
+        api_base = cls.normalize_base_url(base_url)
+        server_root = api_base[:-3] if api_base.endswith("/v1") else api_base
+
+        def _fetch(url: str) -> list[str]:
+            try:
+                response = httpx.get(url, timeout=timeout)
+                response.raise_for_status()
+                payload = response.json()
+                items = payload.get("data", []) if isinstance(payload, dict) else []
+                return [
+                    str(item.get("id") or item.get("name") or "").strip()
+                    for item in items
+                    if isinstance(item, dict) and str(item.get("id") or item.get("name") or "").strip()
+                ]
+            except Exception:
+                return []
+
+        running: list[str] = []
+        try:
+            state_response = httpx.get(f"{server_root}/state", timeout=timeout)
+            state_response.raise_for_status()
+            running = sorted(cls._extract_model_ids(state_response.json().get("instances", {})))
+        except Exception:
+            # `/state` is part of EXO's native API and is also required for
+            # instance lifecycle management. Stop after one timeout when the
+            # cluster is offline instead of serially waiting on three probes.
+            return {"models": [], "running_models": [], "downloaded_models": []}
+
+        downloaded = _fetch(f"{server_root}/models?status=downloaded")
+        supported = _fetch(f"{api_base}/models")
+        ordered = list(dict.fromkeys([*running, *downloaded, *supported]))
+        return {
+            "models": ordered,
+            "running_models": running,
+            "downloaded_models": downloaded,
+        }
+
+    @classmethod
+    def list_available_models(
+        cls,
+        *,
+        base_url: str = DEFAULT_BASE_URL,
+        timeout: float = 5.0,
+    ) -> list[str]:
+        return cls.discover_models(base_url=base_url, timeout=timeout)["models"]
+
+    def _payload(
+        self,
+        user_msg: str,
+        conversation_history: list,
+        instructions: str,
+        tools: list,
+        max_tokens: int | None,
+    ) -> dict:
+        # EXO models vary widely in context/output capacity. Do not impose a
+        # harness-side completion cap or reasoning parameter.
+        payload = {
+            "model": self.model,
+            "messages": self._messages(conversation_history, instructions, user_msg),
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            payload["tools"] = _convert_tools_for_ollama(tools)
+        return payload
+
+    @classmethod
+    def _extract_model_ids(cls, value) -> set[str]:
+        model_ids: set[str] = set()
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in {"modelId", "model_id", "model"} and isinstance(child, str):
+                    model_ids.add(child.strip())
+                else:
+                    model_ids.update(cls._extract_model_ids(child))
+        elif isinstance(value, list):
+            for child in value:
+                model_ids.update(cls._extract_model_ids(child))
+        return {model_id for model_id in model_ids if model_id}
+
+    @property
+    def _server_root(self) -> str:
+        return self.base_url[:-3] if self.base_url.endswith("/v1") else self.base_url
+
+    def _model_is_running(self, client: httpx.Client) -> bool:
+        response = client.get(f"{self._server_root}/state")
+        response.raise_for_status()
+        payload = response.json()
+        instances = payload.get("instances", {}) if isinstance(payload, dict) else {}
+        return self.model in self._extract_model_ids(instances)
+
+    @classmethod
+    def _instance_lock(cls, key: str) -> threading.Lock:
+        with cls._instance_locks_guard:
+            return cls._instance_locks.setdefault(key, threading.Lock())
+
+    def _ensure_instance(self, cancel_event=None) -> bool:
+        """Start the selected EXO model if it does not already have an instance."""
+        lock_key = f"{self._server_root}\0{self.model}"
+        with self._instance_lock(lock_key):
+            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+                if self._model_is_running(client):
+                    return False
+                if cancel_event is not None and cancel_event.is_set():
+                    return False
+
+                preview_response = client.get(
+                    f"{self._server_root}/instance/previews",
+                    params={"model_id": self.model},
+                )
+                preview_response.raise_for_status()
+                payload = preview_response.json()
+                previews = payload.get("previews", []) if isinstance(payload, dict) else []
+                placement = next(
+                    (
+                        preview.get("instance")
+                        for preview in previews
+                        if isinstance(preview, dict)
+                        and not preview.get("error")
+                        and isinstance(preview.get("instance"), dict)
+                    ),
+                    None,
+                )
+                if not placement:
+                    raise RuntimeError(
+                        f"EXO could not find a valid placement for {self.model}."
+                    )
+
+                create_response = client.post(
+                    f"{self._server_root}/instance",
+                    json={"instance": placement},
+                )
+                create_response.raise_for_status()
+
+                while cancel_event is None or not cancel_event.is_set():
+                    ready = False
+                    with client.stream(
+                        "GET",
+                        f"{self._server_root}/instance/await",
+                        params={"model_id": self.model, "timeout_seconds": 5},
+                    ) as response:
+                        response.raise_for_status()
+                        for line in response.iter_lines():
+                            raw = str(line or "").strip()
+                            if raw.startswith("data:"):
+                                raw = raw[5:].strip()
+                            if not raw:
+                                continue
+                            try:
+                                event = json.loads(raw)
+                            except json.JSONDecodeError:
+                                continue
+                            if event.get("type") == "ready":
+                                ready = True
+                                break
+                    if ready or self._model_is_running(client):
+                        return True
+                return False
+
+    def stream(
+        self,
+        user_msg: str,
+        conversation_history: list,
+        instructions: str,
+        tools: list,
+        max_tokens: int | None = None,
+        cancel_event=None,
+    ) -> Iterator[Tuple[str, dict]]:
+        try:
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            yield (EVENT_BACKEND_STATUS, {
+                "kind": "exo_instance_check",
+                "model": self.model,
+            })
+            started = self._ensure_instance(cancel_event)
+            if cancel_event is not None and cancel_event.is_set():
+                return
+            if started:
+                yield (EVENT_BACKEND_STATUS, {
+                    "kind": "exo_instance_ready",
+                    "model": self.model,
+                })
+        except httpx.HTTPError as exc:
+            yield (EVENT_ERROR, {
+                "message": f"EXO instance setup failed: {type(exc).__name__}"
+            })
+            return
+        except Exception as exc:
+            logger.exception("EXO instance setup failed")
+            yield (EVENT_ERROR, {"message": str(exc) or type(exc).__name__})
+            return
+        yield from super().stream(
+            user_msg,
+            conversation_history,
+            instructions,
+            tools,
+            max_tokens=max_tokens,
+            cancel_event=cancel_event,
+        )
+
+    @classmethod
+    def _user_error_message(
+        cls,
+        status_code: int,
+        error_type: str,
+        message: str,
+    ) -> str:
+        if status_code in {401, 403}:
+            return "EXO rejected the request. Check EXO_API_KEY or the endpoint proxy."
+        return f"EXO API request failed ({status_code}): {message}"
 
 
 class CodexCliBackend:
@@ -2471,8 +2760,8 @@ def create_backend(
 ):
     """Create a backend instance.
 
-    Ollama remains the local-first default. Kimi uses Moonshot's direct,
-    OpenAI-compatible endpoint; Codex delegates to the installed CLI.
+    Ollama remains the local-first default. EXO and Kimi use OpenAI-compatible
+    endpoints; Codex delegates to the installed CLI.
     """
     if backend_type == "codex":
         return CodexCliBackend(
@@ -2487,10 +2776,16 @@ def create_backend(
             model=model or KimiBackend.DEFAULT_MODEL,
             base_url=base_url or KimiBackend.DEFAULT_BASE_URL,
         )
+    if backend_type == "exo":
+        return ExoBackend(
+            model=model or "",
+            base_url=base_url or ExoBackend.DEFAULT_BASE_URL,
+            api_key=api_key or "",
+        )
     if backend_type != "ollama":
         raise ValueError(
             f"Unsupported backend {backend_type!r}. Resonant Client supports "
-            f"Ollama, Kimi, and Codex."
+            f"Ollama, EXO, Kimi, and Codex."
         )
     if not model:
         raise ValueError("Model name required for Ollama backend")

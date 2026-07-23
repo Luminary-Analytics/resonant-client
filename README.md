@@ -155,7 +155,8 @@ HTTP MCP server.
 | `EXO_API_URL` / `EXO_BASE_URL` | `http://127.0.0.1:52415/v1` | EXO OpenAI-compatible API URL |
 | `EXO_API_KEY` | none | Optional bearer token for an authenticated EXO proxy |
 | `RESONANT_EXO_CONNECT_TIMEOUT_SEC` | `15` | EXO connection timeout |
-| `RESONANT_EXO_READ_TIMEOUT_SEC` | `3600` | EXO generation and instance-wait read timeout |
+| `RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC` | `120` | Maximum seconds without receiving EXO stream data; healthy long generations remain unlimited |
+| `RESONANT_EXO_READ_TIMEOUT_SEC` | `120` | Legacy alias for the EXO stream idle timeout |
 | `RESONANT_DEFAULT_BACKEND` | `ollama` | Explicit default provider |
 | `RESONANT_DEFAULT_MODEL` | auto-discovered | Explicit default model |
 | `MOONSHOT_API_KEY` | none | Kimi API key |

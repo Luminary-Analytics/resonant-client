@@ -5615,6 +5615,14 @@ class AppState:
         # The whole point of swap_backend: just rewire .backend on the existing
         # session, leaving conversation_history + todos + everything else intact.
         self.session.set_backend(new_backend)  # set_backend defaults to reset_history=False
+        # Keep the persisted/sidebar identity in lockstep with the live backend.
+        # Without this, the composer showed the newly selected EXO model while
+        # the session list kept advertising the model that created the session.
+        if self.project.current_session:
+            self.project.current_session.backend_type = spec.backend_type
+            self.project.current_session.model = spec.model
+            self.project.current_session.thinking_mode = spec.thinking_mode or ""
+            self.project.save_current_session(engine_session=self.session)
         return new_backend
 
     def apply_settings(self, section: str = "", key: str | None = None):

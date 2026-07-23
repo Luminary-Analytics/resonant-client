@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import threading
 from types import SimpleNamespace
 
 import httpx
 
 from resonant_client.backends import (
     EVENT_DONE,
+    EVENT_ERROR,
     EVENT_TEXT_DELTA,
     ExoBackend,
     create_backend,
@@ -194,3 +196,266 @@ def test_exo_supports_future_multimodal_content_shape():
     assert backend.capability_profile.supports("vision")
     assert converted[0]["image_url"]["url"] == "data:image/png;base64,aGVsbG8="
     assert converted[1] == {"type": "text", "text": "Inspect this screenshot"}
+
+
+def test_exo_uses_progress_idle_timeout_without_capping_total_output(monkeypatch):
+    monkeypatch.delenv("RESONANT_EXO_READ_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC", raising=False)
+
+    backend = ExoBackend("local/model")
+
+    assert backend._stream_idle_timeout == 120.0
+    assert backend._timeout.read == 120.0
+
+
+def test_exo_remote_cancel_uses_command_endpoint():
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        return httpx.Response(200, json={"message": "Command cancelled."})
+
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    assert backend._cancel_remote_generation("command-123") is True
+    assert requests == [("POST", "/v1/cancel/command-123")]
+
+
+def test_exo_stop_cancels_a_stream_blocked_waiting_for_more_output():
+    release_stream = threading.Event()
+    stream_is_blocked = threading.Event()
+    cancel_event = threading.Event()
+    requests: list[tuple[str, str]] = []
+
+    class BlockingSseStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield (
+                b'data: {"id":"command-live","choices":'
+                b'[{"delta":{"content":"Started"}}]}\n\n'
+            )
+            stream_is_blocked.set()
+            assert release_stream.wait(2.0), "remote cancel did not release stream"
+            yield b"data: [DONE]\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/state":
+            return httpx.Response(
+                200,
+                json={"instances": {"ready": {"modelId": "local/model"}}},
+            )
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, stream=BlockingSseStream())
+        if request.url.path == "/v1/cancel/command-live":
+            release_stream.set()
+            return httpx.Response(200, json={"message": "Command cancelled."})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    stream = backend.stream("Work", [], "system", [], cancel_event=cancel_event)
+
+    assert next(stream)[1]["kind"] == "exo_instance_check"
+    assert next(stream)[1]["kind"] == "exo_generation_started"
+    assert next(stream) == (EVENT_TEXT_DELTA, {"delta": "Started"})
+
+    completed = threading.Event()
+
+    def consume_until_stopped():
+        try:
+            next(stream)
+        except StopIteration:
+            completed.set()
+
+    consumer = threading.Thread(target=consume_until_stopped, daemon=True)
+    consumer.start()
+    assert stream_is_blocked.wait(1.0)
+    cancel_event.set()
+
+    assert completed.wait(2.0), "blocked backend stream did not stop promptly"
+    consumer.join(timeout=0.1)
+    assert ("POST", "/v1/cancel/command-live") in requests
+
+
+def test_exo_progress_watchdog_ignores_keepalives_and_ends_stalled_generation():
+    release_stream = threading.Event()
+    requests: list[tuple[str, str]] = []
+
+    class KeepaliveOnlyStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield (
+                b'data: {"id":"command-stalled","choices":'
+                b'[{"delta":{"content":"Started"}}]}\n\n'
+            )
+            while not release_stream.wait(0.01):
+                yield b": keepalive\n\n"
+            yield b"data: [DONE]\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/state":
+            return httpx.Response(
+                200,
+                json={"instances": {"ready": {"modelId": "local/model"}}},
+            )
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, stream=KeepaliveOnlyStream())
+        if request.url.path == "/v1/cancel/command-stalled":
+            release_stream.set()
+            return httpx.Response(200, json={"message": "Command cancelled."})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    backend._stream_idle_timeout = 0.08
+
+    events = list(backend.stream("Work", [], "system", []))
+
+    error = next(data for event, data in events if event == EVENT_ERROR)
+    assert "stopped responding" in error["message"]
+    assert ("POST", "/v1/cancel/command-stalled") in requests
+
+
+def test_exo_prefill_comment_is_visible_progress_but_keepalive_is_not():
+    backend = ExoBackend("local/model")
+
+    status = backend._provider_comment_status(
+        ': prefill_progress {"progress":0.42,"processed_tokens":420}'
+    )
+
+    assert status == {
+        "kind": "exo_prefill_progress",
+        "model": "local/model",
+        "progress": {"progress": 0.42, "processed_tokens": 420},
+    }
+    assert backend._provider_comment_status(": keepalive") is None
+
+
+def test_exo_repetition_guard_stops_degenerate_output_without_length_cap():
+    backend = ExoBackend("local/model")
+
+    assert backend._stream_abort_reason("A normal, detailed coding response.") == ""
+    assert backend._stream_abort_reason("Useful preface\n" + ".0" * 140).startswith(
+        "EXO generation was stopped"
+    )
+
+
+def test_exo_malformed_fragment_guard_is_conservative():
+    backend = ExoBackend("local/model")
+    malformed = "Useful preface\n" + "\n".join(
+        ["0.0", ":3", "a()", "-4", "00", "|:"] * 45
+    )
+    normal_code = "\n".join(
+        f"result_{index} = parse_value(values[{index}])"
+        for index in range(120)
+    )
+    numeric_table = "\n".join(str(index / 10) for index in range(200))
+
+    assert backend._looks_like_malformed_output(malformed) is True
+    assert backend._stream_abort_reason(malformed).startswith(
+        "EXO generation was stopped"
+    )
+    assert backend._stream_abort_reason(normal_code) == ""
+    assert backend._stream_abort_reason(numeric_table) == ""
+
+
+def test_exo_quarantines_malformed_assistant_history_from_future_prompts():
+    backend = ExoBackend("local/model")
+    malformed = "\n".join(["0.0", ":3", "a()", "-4", "00", "|:"] * 45)
+    history = [
+        {"role": "user", "content": "Inspect the project"},
+        {"role": "assistant", "content": malformed},
+        {"role": "user", "content": "Continue with the real task"},
+    ]
+
+    messages = backend._messages(history, "system", "")
+
+    assert [message["role"] for message in messages] == [
+        "system",
+        "user",
+        "user",
+    ]
+    assert all(malformed not in str(message.get("content")) for message in messages)
+
+
+def test_exo_malformed_stream_is_discardable_and_cancelled():
+    cancelled: list[str] = []
+    malformed = "\n".join(
+        f":{index % 17}]({(index * 7) % 31};"
+        for index in range(160)
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/state":
+            return httpx.Response(
+                200,
+                json={"instances": {"ready": {"modelId": "local/model"}}},
+            )
+        return httpx.Response(
+            200,
+            text=_sse_response([{
+                "id": "command-malformed",
+                "choices": [{"delta": {"content": malformed}}],
+            }]),
+        )
+
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    backend._cancel_remote_generation = lambda command_id: (
+        cancelled.append(command_id) or True
+    )
+
+    events = list(backend.stream("Work", [], "system", []))
+
+    error = next(data for event, data in events if event == EVENT_ERROR)
+    assert "malformed token fragments" in error["message"]
+    assert error["discard_partial_output"] is True
+    assert cancelled == ["command-malformed"]
+
+
+def test_exo_repetition_guard_surfaces_terminal_error_and_cancels():
+    cancelled: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/state":
+            return httpx.Response(
+                200,
+                json={"instances": {"ready": {"modelId": "local/model"}}},
+            )
+        return httpx.Response(
+            200,
+            text=_sse_response([
+                {
+                    "id": "command-loop",
+                    "choices": [{"delta": {"content": ".0" * 140}}],
+                },
+            ]),
+        )
+
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    backend._cancel_remote_generation = lambda command_id: (
+        cancelled.append(command_id) or True
+    )
+
+    events = list(backend.stream("Work", [], "system", []))
+
+    error = next(data for event, data in events if event == EVENT_ERROR)
+    assert "repetitious" in error["message"]
+    assert cancelled == ["command-loop"]

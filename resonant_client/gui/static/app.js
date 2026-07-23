@@ -7324,7 +7324,17 @@ class ResonantApp {
     handleTextDelta(event) {
         this.removeThinking();
         this._advanceLiveMilestone('report', 'Communicate progress');
-        this._setLiveRunPhase('Composing', 'Streaming the latest update');
+        const run = this._liveRun;
+        if (run && run.provider === 'exo') {
+            run.lastProgressAt = Date.now();
+        }
+        const activeModel = run?.model || this.currentModelName || '';
+        this._setLiveRunPhase(
+            'Composing',
+            activeModel
+                ? `Receiving output from ${activeModel}`
+                : 'Streaming the latest update',
+        );
         this.stepIsInlineOnly = false;
 
         // Text streaming means tools are done — clear terminal bar
@@ -10510,6 +10520,23 @@ class ResonantApp {
         this._finalizeLiveCollapsedGroup();
         this.ensureStepRendered();
 
+        // A provider can identify a streamed partial as malformed after enough
+        // evidence accumulates. Remove that partial message instead of leaving
+        // token soup in the conversation; the error card below remains as the
+        // durable, actionable record of what happened.
+        if (event.discard_partial_output) {
+            if (this._renderTimer) {
+                clearTimeout(this._renderTimer);
+                this._renderTimer = null;
+            }
+            if (this.currentMessageEl) {
+                this.currentMessageEl.remove();
+            }
+            this.currentMessageEl = null;
+            this.streamBuffer = '';
+            this.isStreaming = false;
+        }
+
         if (event.message === 'Interrupted' && this._cancelInFlight) {
             this._cancelInterrupted = true;
             this._setLiveRunPhase('Stopping', 'The active run has been interrupted');
@@ -11647,6 +11674,25 @@ class ResonantApp {
         if (!run || !run.el) return;
         const elapsed = run.el.querySelector('[data-live-elapsed]');
         if (elapsed) elapsed.textContent = this._formatRunDuration((Date.now() - run.startedAt) / 1000);
+        if (
+            run.provider === 'exo'
+            && run.lastProgressAt
+            && run.idleTimeoutSeconds > 0
+            && (run.phase === 'Reasoning' || run.phase === 'Composing')
+        ) {
+            const idleFor = Math.max(0, Math.floor((Date.now() - run.lastProgressAt) / 1000));
+            const remaining = Math.max(0, run.idleTimeoutSeconds - idleFor);
+            const model = this._liveRunCompactValue(run.model || 'EXO', 44);
+            const activity = idleFor < 2
+                ? `${model} is producing output`
+                : `${model} · last data ${idleFor}s ago · idle stop in ${remaining}s`;
+            const nowEl = run.el.querySelector('[data-live-now]');
+            if (nowEl) {
+                const nowText = `${run.phase} · ${activity}`;
+                nowEl.textContent = nowText;
+                nowEl.title = nowText;
+            }
+        }
         run.el.querySelectorAll('[data-subtask-elapsed]').forEach((el) => {
             const item = run.subtasks.get(el.dataset.subtaskElapsed);
             if (item && item.status === 'running') {
@@ -11918,7 +11964,60 @@ class ResonantApp {
      */
     handleBackendStatus(event) {
         if (!event || !event.kind) return;
-        if (event.kind === 'ollama_retry' || event.kind === 'ollama_timeout' || event.kind === 'kimi_retry') {
+        if (event.kind === 'exo_instance_check') {
+            this._setLiveRunPhase(
+                'Starting',
+                `Checking ${event.model || 'the selected model'} on EXO`,
+            );
+        } else if (event.kind === 'exo_instance_ready') {
+            this._setLiveRunPhase(
+                'Ready',
+                `${event.model || 'The selected model'} is loaded on EXO`,
+            );
+        } else if (event.kind === 'exo_prefill_progress') {
+            const envelope = event.progress || {};
+            const progress = envelope.PrefillProgressChunk || envelope;
+            const rawPercent = Number(
+                progress.progress
+                ?? progress.percent
+                ?? progress.percentage
+                ?? progress.fraction
+                ?? (
+                    Number(progress.total_tokens) > 0
+                        ? Number(progress.processed_tokens || 0) / Number(progress.total_tokens)
+                        : NaN
+                ),
+            );
+            const percent = Number.isFinite(rawPercent)
+                ? Math.round(rawPercent <= 1 ? rawPercent * 100 : rawPercent)
+                : null;
+            if (this._liveRun) {
+                this._liveRun.provider = 'exo';
+                this._liveRun.model = event.model || this._liveRun.model;
+                this._liveRun.lastProgressAt = Date.now();
+            }
+            this._setLiveRunPhase(
+                'Reading context',
+                percent === null
+                    ? `EXO is preparing the prompt for ${event.model || 'the model'}`
+                    : `EXO prompt prefill ${Math.max(0, Math.min(100, percent))}%`,
+            );
+        } else if (event.kind === 'exo_generation_started') {
+            const idleSeconds = Number(event.idle_timeout_seconds || 0);
+            if (this._liveRun) {
+                this._liveRun.provider = 'exo';
+                this._liveRun.model = event.model || this._liveRun.model;
+                this._liveRun.idleTimeoutSeconds = idleSeconds;
+                this._liveRun.lastProgressAt = Date.now();
+            }
+            const safeguard = idleSeconds > 0
+                ? ` · ${idleSeconds}s idle safeguard`
+                : '';
+            this._setLiveRunPhase(
+                'Reasoning',
+                `Generating with ${event.model || 'EXO'}${safeguard}`,
+            );
+        } else if (event.kind === 'ollama_retry' || event.kind === 'ollama_timeout' || event.kind === 'kimi_retry' || event.kind === 'exo_retry') {
             // v0.6.4 (F6) — ollama_timeout (a slow open-phase call
             // being retried) shares the transient retry banner; the
             // renderer phrases it differently from a 5xx retry.

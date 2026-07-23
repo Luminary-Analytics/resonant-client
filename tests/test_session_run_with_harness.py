@@ -171,6 +171,25 @@ class TestRunBackendErrorEvent:
 # ── EVENT_BACKEND_STATUS pass-through ──────────────────────────────────
 
 
+def test_error_event_forwards_partial_output_discard_signal():
+    backend = StreamingBackend(events=[
+        text_delta("malformed partial"),
+        (
+            "error",
+            {
+                "message": "malformed generation",
+                "discard_partial_output": True,
+            },
+        ),
+    ])
+    session = Session(backend=backend, max_steps=5)
+
+    events = list(session.run("hi"))
+
+    err = events_of_kind(events, "error")[0]
+    assert err["discard_partial_output"] is True
+
+
 class TestRunBackendStatusPassThrough:
     """Line 802-809 (v0.5.6a1): backend.status events are forwarded
     verbatim. The autonomous-mission daemon + GUI key off these to

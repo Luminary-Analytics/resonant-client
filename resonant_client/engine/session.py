@@ -1683,7 +1683,13 @@ class Session:
 
                     elif event_type == EVENT_ERROR:
                         terminal_error = data.get("message", "Unknown")
-                        yield make_event(EngineEvent.ERROR, message=terminal_error)
+                        yield make_event(
+                            EngineEvent.ERROR,
+                            message=terminal_error,
+                            discard_partial_output=bool(
+                                data.get("discard_partial_output", False)
+                            ),
+                        )
                         elapsed = time.time() - total_start
                         yield make_event(EngineEvent.SESSION_END,
                                         total_elapsed=elapsed,

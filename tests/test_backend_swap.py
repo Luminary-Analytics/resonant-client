@@ -16,8 +16,12 @@ These tests pin the new behavior so it doesn't regress.
 """
 
 import pytest
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from resonant_client.engine.session import Session
+from resonant_client.gui.app import AppState
+from resonant_client.gui.runtime import BackendSpec
 
 
 class _StubBackend:
@@ -148,3 +152,46 @@ class TestSetBackendSignature:
         assert rh.kind == inspect.Parameter.KEYWORD_ONLY, (
             "reset_history must be keyword-only to prevent positional misuse"
         )
+
+
+@pytest.mark.unit
+def test_app_state_swap_persists_live_backend_identity():
+    """The session list must show the same backend/model as the composer."""
+    old_backend = _StubBackend("kimi")
+    new_backend = _StubBackend("exo")
+    new_backend.model = "mlx-community/GLM-5.2-mxfp4"
+    spec = BackendSpec(
+        backend_type="exo",
+        model=new_backend.model,
+        base_url="http://exo.test:52415/v1",
+    )
+    spec.create_backend = Mock(return_value=new_backend)
+    record = SimpleNamespace(
+        backend_type="kimi",
+        model="kimi-k3",
+        thinking_mode="max",
+    )
+    project = SimpleNamespace(
+        project_path="D:/Repos/example",
+        current_session=record,
+        save_current_session=Mock(),
+    )
+    engine_session = SimpleNamespace(set_backend=Mock())
+    state = AppState.__new__(AppState)
+    state.project = project
+    state.session = engine_session
+    state.backend = old_backend
+    state.backend_spec = BackendSpec(backend_type="kimi", model="kimi-k3")
+    state.settings = SimpleNamespace()
+    state.build_backend_spec = Mock(return_value=spec)
+
+    result = state.swap_backend("exo", new_backend.model)
+
+    assert result is new_backend
+    engine_session.set_backend.assert_called_once_with(new_backend)
+    assert record.backend_type == "exo"
+    assert record.model == new_backend.model
+    assert record.thinking_mode == ""
+    project.save_current_session.assert_called_once_with(
+        engine_session=engine_session
+    )

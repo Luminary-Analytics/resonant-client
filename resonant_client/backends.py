@@ -1793,6 +1793,7 @@ class KimiBackend:
     dynamic_tool_catalog_via_history = True
     PROVIDER_LABEL = "Kimi"
     RETRY_EVENT_KIND = "kimi_retry"
+    supports_remote_cancel = False
     DEFAULT_BASE_URL = "https://api.moonshot.ai/v1"
     DEFAULT_MODEL = "kimi-k3"
     MODELS = (DEFAULT_MODEL,)
@@ -2084,6 +2085,25 @@ class KimiBackend:
             return "Kimi rejected the API key. Check the key in Settings -> Kimi API."
         return f"Kimi API request failed ({status_code}): {message}"
 
+    def _cancel_remote_generation(self, response_id: str) -> bool:
+        """Best-effort provider cancellation for an in-flight response."""
+        return False
+
+    def _stream_abort_reason(self, accumulated_text: str) -> str:
+        """Return a terminal error when provider output is pathologically repetitive."""
+        return ""
+
+    def _provider_comment_status(self, line: str) -> dict | None:
+        """Translate a provider-specific SSE comment into an operational status."""
+        return None
+
+    def _progress_idle_timeout_seconds(self) -> float:
+        """Maximum time without semantic stream progress; zero disables it."""
+        return 0.0
+
+    def _timeout_error_message(self) -> str:
+        return f"{self.PROVIDER_LABEL} API request timed out."
+
     def stream(
         self,
         user_msg: str,
@@ -2097,14 +2117,66 @@ class KimiBackend:
         headers = self._request_headers()
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
+        repetition_window = ""
+        output_guard_pending_chars = 0
         tool_calls: dict[int, dict] = {}
         usage: dict = {}
         response_id = ""
+        stream_state = {
+            "response_id": "",
+            "last_progress_at": time.monotonic(),
+            "idle_timed_out": False,
+            "response": None,
+        }
+        stream_watcher_done = threading.Event()
+        progress_idle_timeout = self._progress_idle_timeout_seconds()
+
+        # A synchronous httpx iterator cannot observe cancellation or semantic
+        # inactivity while blocked waiting for the provider. Providers with a
+        # remote cancellation API get a sidecar watcher so Stop remains
+        # responsive and keepalive-only streams cannot look healthy forever.
+        if self.supports_remote_cancel:
+            def _watch_stream_health() -> None:
+                while not stream_watcher_done.wait(0.1):
+                    user_cancelled = (
+                        cancel_event is not None and cancel_event.is_set()
+                    )
+                    progress_stalled = (
+                        progress_idle_timeout > 0
+                        and (
+                            time.monotonic()
+                            - float(stream_state.get("last_progress_at") or 0)
+                        ) >= progress_idle_timeout
+                    )
+                    if not user_cancelled and not progress_stalled:
+                        continue
+                    if progress_stalled:
+                        stream_state["idle_timed_out"] = True
+                    active_id = str(stream_state.get("response_id") or "")
+                    if active_id:
+                        self._cancel_remote_generation(active_id)
+                    # Before the first model chunk there is no command id in the
+                    # OpenAI wire format. Closing the request still cancels EXO
+                    # server-side, and also unblocks the synchronous iterator.
+                    active_response = stream_state.get("response")
+                    if active_response is not None:
+                        try:
+                            active_response.close()
+                        except Exception:
+                            pass
+                    return
+
+            threading.Thread(
+                target=_watch_stream_health,
+                name=f"{self.PROVIDER_LABEL.lower()}-cancel-watcher",
+                daemon=True,
+            ).start()
 
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
                 for attempt in range(3):
                     if cancel_event is not None and cancel_event.is_set():
+                        self._cancel_remote_generation(response_id)
                         return
                     with client.stream(
                         "POST",
@@ -2112,6 +2184,7 @@ class KimiBackend:
                         headers=headers,
                         json=payload,
                     ) as response:
+                        stream_state["response"] = response
                         if response.status_code >= 400:
                             error_type, message = self._error_details(response)
                             retryable = self._is_retryable_error(
@@ -2148,8 +2221,15 @@ class KimiBackend:
 
                         for line in response.iter_lines():
                             if cancel_event is not None and cancel_event.is_set():
+                                self._cancel_remote_generation(response_id)
                                 return
                             line = str(line or "").strip()
+                            if line.startswith(":"):
+                                status = self._provider_comment_status(line)
+                                if status:
+                                    stream_state["last_progress_at"] = time.monotonic()
+                                    yield (EVENT_BACKEND_STATUS, status)
+                                continue
                             if not line.startswith("data:"):
                                 continue
                             raw = line[5:].strip()
@@ -2160,12 +2240,25 @@ class KimiBackend:
                             except json.JSONDecodeError:
                                 continue
                             response_id = str(event.get("id") or response_id)
+                            stream_state["response_id"] = response_id
+                            if event.get("error"):
+                                error = event["error"]
+                                message = (
+                                    error.get("message", "Unknown provider error")
+                                    if isinstance(error, dict)
+                                    else str(error)
+                                )
+                                yield (EVENT_ERROR, {
+                                    "message": f"{self.PROVIDER_LABEL} generation failed: {message}"
+                                })
+                                return
                             if isinstance(event.get("usage"), dict):
                                 usage = event["usage"]
                             choices = event.get("choices") or []
                             if not choices:
                                 continue
                             delta = choices[0].get("delta") or {}
+                            stream_state["last_progress_at"] = time.monotonic()
                             reasoning = str(delta.get("reasoning_content") or "")
                             if reasoning:
                                 reasoning_parts.append(reasoning)
@@ -2173,6 +2266,24 @@ class KimiBackend:
                             if text_delta:
                                 content_parts.append(text_delta)
                                 yield (EVENT_TEXT_DELTA, {"delta": text_delta})
+                                repetition_window = (
+                                    repetition_window + text_delta
+                                )[-2048:]
+                                output_guard_pending_chars += len(text_delta)
+                                if output_guard_pending_chars >= 128:
+                                    output_guard_pending_chars = 0
+                                    abort_reason = self._stream_abort_reason(
+                                        repetition_window
+                                    )
+                                    if abort_reason:
+                                        self._cancel_remote_generation(response_id)
+                                        yield (EVENT_ERROR, {
+                                            "message": abort_reason,
+                                            "discard_partial_output": (
+                                                "malformed token fragments" in abort_reason
+                                            ),
+                                        })
+                                        return
                             for fragment in delta.get("tool_calls") or []:
                                 index = int(fragment.get("index", 0) or 0)
                                 current = tool_calls.setdefault(index, {
@@ -2186,6 +2297,11 @@ class KimiBackend:
                                 if function.get("arguments"):
                                     current["arguments"] += str(function["arguments"])
                         break
+                    stream_state["response"] = None
+
+            if stream_state["idle_timed_out"]:
+                yield (EVENT_ERROR, {"message": self._timeout_error_message()})
+                return
 
             complete_calls = []
             for index, call in sorted(tool_calls.items()):
@@ -2224,16 +2340,25 @@ class KimiBackend:
                 "cognitive_state": None,
             })
         except httpx.TimeoutException:
-            yield (EVENT_ERROR, {"message": f"{self.PROVIDER_LABEL} API request timed out."})
+            self._cancel_remote_generation(response_id)
+            yield (EVENT_ERROR, {"message": self._timeout_error_message()})
         except httpx.HTTPError as exc:
-            yield (EVENT_ERROR, {
-                "message": f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
-            })
+            if stream_state["idle_timed_out"]:
+                yield (EVENT_ERROR, {"message": self._timeout_error_message()})
+            else:
+                yield (EVENT_ERROR, {
+                    "message": f"{self.PROVIDER_LABEL} API connection failed: {type(exc).__name__}"
+                })
         except Exception as exc:
-            logger.exception("%s stream failed", self.PROVIDER_LABEL)
-            yield (EVENT_ERROR, {
-                "message": f"{self.PROVIDER_LABEL} stream failed: {type(exc).__name__}"
-            })
+            if stream_state["idle_timed_out"]:
+                yield (EVENT_ERROR, {"message": self._timeout_error_message()})
+            else:
+                logger.exception("%s stream failed", self.PROVIDER_LABEL)
+                yield (EVENT_ERROR, {
+                    "message": f"{self.PROVIDER_LABEL} stream failed: {type(exc).__name__}"
+                })
+        finally:
+            stream_watcher_done.set()
 
 
 class ExoBackend(KimiBackend):
@@ -2242,6 +2367,7 @@ class ExoBackend(KimiBackend):
     dynamic_tool_catalog_via_history = False
     PROVIDER_LABEL = "EXO"
     RETRY_EVENT_KIND = "exo_retry"
+    supports_remote_cancel = True
     DEFAULT_BASE_URL = "http://127.0.0.1:52415/v1"
     DEFAULT_MODEL = ""
     MODELS: tuple[str, ...] = ()
@@ -2279,9 +2405,18 @@ class ExoBackend(KimiBackend):
             max_safe_concurrency=4,
             source="provider",
         )
+        idle_timeout = float(
+            os.environ.get(
+                "RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC",
+                os.environ.get("RESONANT_EXO_READ_TIMEOUT_SEC", "120"),
+            )
+        )
+        self._stream_idle_timeout = idle_timeout
         self._timeout = httpx.Timeout(
             connect=float(os.environ.get("RESONANT_EXO_CONNECT_TIMEOUT_SEC", "15")),
-            read=float(os.environ.get("RESONANT_EXO_READ_TIMEOUT_SEC", "3600")),
+            # httpx applies this between received bytes, not to the total run.
+            # Healthy long-running generations remain unlimited.
+            read=idle_timeout,
             write=60.0,
             pool=60.0,
         )
@@ -2364,6 +2499,169 @@ class ExoBackend(KimiBackend):
         if tools:
             payload["tools"] = _convert_tools_for_ollama(tools)
         return payload
+
+    def _cancel_remote_generation(self, response_id: str) -> bool:
+        command_id = str(response_id or "").strip()
+        if not command_id:
+            return False
+        try:
+            with httpx.Client(timeout=5.0, transport=self._transport) as client:
+                response = client.post(
+                    f"{self.base_url}/cancel/{command_id}",
+                    headers=self._request_headers(),
+                )
+            if response.status_code in {200, 202, 204, 404, 409}:
+                return response.status_code != 404
+            response.raise_for_status()
+            return True
+        except Exception as exc:
+            logger.warning(
+                "EXO remote cancel failed for command %s: %s",
+                command_id,
+                type(exc).__name__,
+            )
+            return False
+
+    @staticmethod
+    def _repetitive_suffix_length(text: str) -> int:
+        """Return the repeated suffix size when output is clearly degenerate."""
+        tail = str(text or "")[-2048:]
+        if len(tail) < 256:
+            return 0
+        for width in range(1, 65):
+            pattern = tail[-width:]
+            if not pattern.strip():
+                continue
+            repeats = 1
+            cursor = len(tail) - (2 * width)
+            while cursor >= 0 and tail[cursor:cursor + width] == pattern:
+                repeats += 1
+                cursor -= width
+            repeated_chars = repeats * width
+            if repeats >= 6 and repeated_chars >= 256:
+                return repeated_chars
+        return 0
+
+    def _stream_abort_reason(self, accumulated_text: str) -> str:
+        repeated_chars = self._repetitive_suffix_length(accumulated_text)
+        if repeated_chars:
+            return (
+                "EXO generation was stopped after its output became repetitious "
+                f"({repeated_chars}+ repeated characters). Retry the turn or choose "
+                "another model; all text received before the loop is preserved."
+            )
+        if self._looks_like_malformed_output(accumulated_text):
+            return (
+                "EXO generation was stopped because the output degraded into "
+                "malformed token fragments. Retry in a fresh session or choose "
+                "another model; the malformed response was not added to model history."
+            )
+        return ""
+
+    @staticmethod
+    def _looks_like_malformed_output(text: str) -> bool:
+        """Conservatively identify sustained number/symbol fragment soup."""
+        sample = str(text or "")[-2048:]
+        if len(sample) < 768:
+            return False
+        visible = [char for char in sample if not char.isspace()]
+        if len(visible) < 500:
+            return False
+        alpha_ratio = sum(char.isalpha() for char in visible) / len(visible)
+        digit_punct_ratio = sum(
+            char.isdigit() or not char.isalnum() for char in visible
+        ) / len(visible)
+        nonempty_lines = [
+            line.strip() for line in sample.splitlines() if line.strip()
+        ]
+        numeric_line_ratio = sum(
+            bool(re.fullmatch(
+                r"[-+]?\d+(?:\.\d+)*(?:\s*[,;|:]\s*[-+]?\d+(?:\.\d+)*)*",
+                line,
+            ))
+            for line in nonempty_lines
+        ) / max(1, len(nonempty_lines))
+
+        # A dense, near-alphabet-free symbol stream is malformed even without
+        # line breaks. Keep the threshold high so code and JSON remain valid.
+        if numeric_line_ratio >= 0.85:
+            return False
+        if alpha_ratio < 0.10 and digit_punct_ratio > 0.88:
+            return True
+        if len(nonempty_lines) < 40:
+            return False
+        short_ratio = sum(
+            len(line) <= 16 for line in nonempty_lines
+        ) / len(nonempty_lines)
+        ordered_lengths = sorted(len(line) for line in nonempty_lines)
+        median_length = ordered_lengths[len(ordered_lengths) // 2]
+        return (
+            short_ratio >= 0.78
+            and median_length <= 8
+            and alpha_ratio < 0.35
+            and digit_punct_ratio > 0.65
+            and numeric_line_ratio < 0.85
+        )
+
+    def _messages(
+        self,
+        conversation_history: list,
+        instructions: str,
+        user_msg: str,
+    ) -> list[dict]:
+        # Never feed a known-degenerate EXO response back into the next turn.
+        # The persisted/display history remains untouched for auditability.
+        clean_history: list[dict] = []
+        quarantined_call_ids: set[str] = set()
+        for turn in conversation_history:
+            role = str(turn.get("role") or "")
+            if role == "assistant" and self._looks_like_malformed_output(
+                _message_text(turn.get("content", ""))
+            ):
+                logger.warning(
+                    "Quarantining malformed EXO assistant history (%d chars)",
+                    len(_message_text(turn.get("content", ""))),
+                )
+                continue
+            if role == "tool_call" and self._looks_like_malformed_output(
+                _message_text(turn.get("assistant_content", ""))
+            ):
+                quarantined_call_ids.add(str(turn.get("call_id") or ""))
+                for call in turn.get("response_tool_calls") or []:
+                    if isinstance(call, dict):
+                        quarantined_call_ids.add(str(call.get("id") or ""))
+                continue
+            if (
+                role == "tool_result"
+                and str(turn.get("call_id") or "") in quarantined_call_ids
+            ):
+                continue
+            clean_history.append(turn)
+        return super()._messages(clean_history, instructions, user_msg)
+
+    def _provider_comment_status(self, line: str) -> dict | None:
+        prefix = ": prefill_progress "
+        if not str(line or "").startswith(prefix):
+            return None
+        try:
+            progress = json.loads(str(line)[len(prefix):])
+        except json.JSONDecodeError:
+            progress = {}
+        return {
+            "kind": "exo_prefill_progress",
+            "model": self.model,
+            "progress": progress if isinstance(progress, dict) else {},
+        }
+
+    def _progress_idle_timeout_seconds(self) -> float:
+        return self._stream_idle_timeout
+
+    def _timeout_error_message(self) -> str:
+        seconds = int(self._stream_idle_timeout)
+        return (
+            f"EXO stopped responding for {seconds} seconds, so Resonant ended "
+            "the stalled generation. Retry the turn or check the EXO cluster."
+        )
 
     @classmethod
     def _extract_model_ids(cls, value) -> set[str]:
@@ -2482,6 +2780,11 @@ class ExoBackend(KimiBackend):
                     "kind": "exo_instance_ready",
                     "model": self.model,
                 })
+            yield (EVENT_BACKEND_STATUS, {
+                "kind": "exo_generation_started",
+                "model": self.model,
+                "idle_timeout_seconds": int(self._stream_idle_timeout),
+            })
         except httpx.HTTPError as exc:
             yield (EVENT_ERROR, {
                 "message": f"EXO instance setup failed: {type(exc).__name__}"

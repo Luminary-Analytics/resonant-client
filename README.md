@@ -33,6 +33,7 @@ contract stay model-neutral.
   consequential ambiguity
 - Native `await_user` multiple-choice prompts with a required recommended option
 - Long-running checklist, context compression, resumable sessions, and steering
+- One-click live health snapshots and non-interrupting agent progress updates
 - Tool calling with adaptive text fallback when native tools are unavailable
 - Capability-aware context windows, reasoning controls, tools, and vision
 - Multimodal attachments with safe handling for text-only models
@@ -60,7 +61,8 @@ contract stay model-neutral.
 - Folder picker for opening projects
 - Runtime provider/model picker without pinned model policy
 - Inline file diff review
-- Collapsible long-task status and recommended decision prompts
+- Collapsible long-task status with EXO connection/model-progress telemetry
+- Recommended decision prompts and a non-interrupting Check status control
 - Diagnostics export and cost tracking
 - Agents/Timeline/Traces/Artifacts/Packs runtime inspector
 - Opt-in Director Mode: use a frontier model to plan, review, and safely integrate work from a selected pool of open or lower-cost worker models
@@ -155,8 +157,9 @@ HTTP MCP server.
 | `EXO_API_URL` / `EXO_BASE_URL` | `http://127.0.0.1:52415/v1` | EXO OpenAI-compatible API URL |
 | `EXO_API_KEY` | none | Optional bearer token for an authenticated EXO proxy |
 | `RESONANT_EXO_CONNECT_TIMEOUT_SEC` | `15` | EXO connection timeout |
-| `RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC` | `120` | Maximum seconds without semantic EXO progress; transport keepalives remain visible but do not mask a stalled model, and healthy long generations remain unlimited |
-| `RESONANT_EXO_READ_TIMEOUT_SEC` | `120` | Legacy alias for the EXO stream idle timeout |
+| `RESONANT_EXO_PROGRESS_WARNING_SEC` | `120` | Informational threshold for showing that a quiet EXO generation is still working; it never stops the run |
+| `RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC` | `0` (disabled) | Optional operator-defined hard limit for seconds without semantic EXO progress; long generations are unlimited by default and remain user-stoppable |
+| `RESONANT_EXO_READ_TIMEOUT_SEC` | `0` (disabled) | Legacy alias for the optional EXO stream idle timeout |
 | `RESONANT_DEFAULT_BACKEND` | `ollama` | Explicit default provider |
 | `RESONANT_DEFAULT_MODEL` | auto-discovered | Explicit default model |
 | `MOONSHOT_API_KEY` | none | Kimi API key |

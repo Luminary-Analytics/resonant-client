@@ -2136,10 +2136,10 @@ class KimiBackend:
         progress_idle_timeout = self._progress_idle_timeout_seconds()
         last_transport_status_at = 0.0
 
-        # A synchronous httpx iterator cannot observe cancellation or semantic
-        # inactivity while blocked waiting for the provider. Providers with a
-        # remote cancellation API get a sidecar watcher so Stop remains
-        # responsive and keepalive-only streams cannot look healthy forever.
+        # A synchronous httpx iterator cannot observe cancellation or an
+        # explicitly configured semantic-idle limit while blocked waiting for
+        # the provider. Providers with a remote cancellation API get a sidecar
+        # watcher so Stop remains responsive even when generation is quiet.
         if self.supports_remote_cancel:
             def _watch_stream_health() -> None:
                 while not stream_watcher_done.wait(0.1):
@@ -2242,8 +2242,8 @@ class KimiBackend:
                                         stream_state["last_progress_at"] = now
                                     else:
                                         # Transport keepalives prove the SSE
-                                        # connection is alive, but must not
-                                        # defeat the semantic-idle watchdog.
+                                        # connection is alive without claiming
+                                        # that the model produced a new token.
                                         if now - last_transport_status_at < 10.0:
                                             continue
                                         last_transport_status_at = now
@@ -2494,18 +2494,32 @@ class ExoBackend(KimiBackend):
         self._warmup_cancel_event = threading.Event()
         self._warmup_lock = threading.Lock()
         self._warmup_started = False
-        idle_timeout = float(
-            os.environ.get(
-                "RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC",
-                os.environ.get("RESONANT_EXO_READ_TIMEOUT_SEC", "120"),
-            )
+        idle_timeout = max(
+            0.0,
+            float(
+                os.environ.get(
+                    "RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC",
+                    os.environ.get("RESONANT_EXO_READ_TIMEOUT_SEC", "0"),
+                )
+            ),
+        )
+        self._progress_warning_seconds = max(
+            0.0,
+            float(
+                os.environ.get(
+                    "RESONANT_EXO_PROGRESS_WARNING_SEC",
+                    "120",
+                )
+            ),
         )
         self._stream_idle_timeout = idle_timeout
         self._timeout = httpx.Timeout(
             connect=float(os.environ.get("RESONANT_EXO_CONNECT_TIMEOUT_SEC", "15")),
-            # httpx applies this between received bytes, not to the total run.
-            # Healthy long-running generations remain unlimited.
-            read=idle_timeout,
+            # Long EXO generations are unlimited by default. Operators can
+            # still opt into a hard semantic-idle/read deadline through the
+            # legacy environment variables above; user Stop is handled by the
+            # cancellation watcher independently of this value.
+            read=idle_timeout if idle_timeout > 0 else None,
             write=60.0,
             pool=60.0,
         )
@@ -2796,8 +2810,8 @@ class ExoBackend(KimiBackend):
                 "kind": "exo_keepalive",
                 "model": self.model,
                 # The transport is alive, but the model has not necessarily
-                # advanced. KimiBackend uses this flag to keep the semantic
-                # idle watchdog honest.
+                # advanced. KimiBackend uses this flag to report both clocks
+                # accurately without treating a quiet model as finished.
                 "_semantic_progress": False,
             }
         if not raw.startswith(prefix):
@@ -2957,6 +2971,7 @@ class ExoBackend(KimiBackend):
                 "kind": "exo_generation_started",
                 "model": self.model,
                 "idle_timeout_seconds": int(self._stream_idle_timeout),
+                "progress_warning_seconds": int(self._progress_warning_seconds),
             })
         except httpx.HTTPError as exc:
             yield (EVENT_ERROR, {

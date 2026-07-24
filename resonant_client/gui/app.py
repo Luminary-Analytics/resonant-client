@@ -80,6 +80,14 @@ _webview_window = None
 
 logger = logging.getLogger(__name__)
 
+STATUS_UPDATE_STEER = (
+    "At the next safe agent boundary, give the user a concise progress update "
+    "covering: what is complete, what you are doing now, what remains, and any "
+    "real blocker. Then continue the original task without stopping or asking "
+    "for confirmation unless you are genuinely blocked. Do not restart work "
+    "or repeat completed steps."
+)
+
 # ── Paths ─────────────────────────────────────────────────────────────
 #
 # Bug #20 fix — frozen-bundle template/static path resolution.
@@ -6348,6 +6356,35 @@ async def websocket_endpoint(ws: WebSocket):
                     await ws.send_json({"event": "error", "message": "No backend selected"})
                     continue
                 await _enqueue_chat_message(msg)
+                continue
+
+            elif command == "status_update":
+                # A status request is steering, never a replacement turn. Do
+                # not enqueue it if the active run ends during this command;
+                # that would unexpectedly start a new task after the race.
+                message_id = str(msg.get("message_id") or uuid.uuid4())
+                running = chat_runner is not None and not chat_runner.done()
+                accepted = bool(
+                    running
+                    and state.session
+                    and state.session.steer(
+                        STATUS_UPDATE_STEER,
+                        message_id=message_id,
+                    )
+                )
+                await ws.send_json({
+                    "event": (
+                        "status.update_queued"
+                        if accepted
+                        else "status.update_rejected"
+                    ),
+                    "message_id": message_id,
+                    "message": (
+                        "Agent update queued for the next safe step."
+                        if accepted
+                        else "The run ended before the agent update could be queued."
+                    ),
+                })
                 continue
 
             elif command == "steer":

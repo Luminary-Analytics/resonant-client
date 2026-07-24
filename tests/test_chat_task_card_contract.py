@@ -60,12 +60,13 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     assert ".live-run-subtasks" in styles
     assert "this.liveRunSurface = document.getElementById('live-run-surface');" in source
     assert "detailsOpen: false" in source
-    assert "class=\"live-run-head live-run-toggle\"" in source
+    assert "class=\"live-run-head\"" in source
+    assert "class=\"live-run-toggle\"" in source
     assert "class=\"live-run-body\" hidden" in source
     assert "setDetailsOpen(!run.detailsOpen);" in source
     assert "toggle.setAttribute('aria-expanded', String(open));" in source
     assert ".live-run-body[hidden]" in styles
-    assert '.live-run-head[aria-expanded="true"] .live-run-chevron' in styles
+    assert '.live-run-toggle[aria-expanded="true"] .live-run-chevron' in styles
     assert "if (run.renderKey === renderKey) return;" in source
     assert "elapsed clocks update" in source
     assert ".input-bar > .live-run-surface" in styles
@@ -174,6 +175,34 @@ def test_live_run_quick_summary_preserves_concrete_tool_context():
     assert "tool${run.completedTools === 1 ? '' : 's'} finished" in source
     assert "Working through the next action" not in source
     assert ".live-run-latest" in styles
+
+
+def test_exo_quiet_generation_status_is_informational_by_default():
+    source = APP_JS.read_text(encoding="utf-8")
+
+    assert "progressWarningSeconds: 120" in source
+    assert "EXO connection active" in source
+    assert "last model progress ${idleFor}s ago${hardLimit}" in source
+    assert "' · no automatic time limit'" in source
+    assert "idle stop in" not in source
+
+
+def test_check_status_is_immediate_deduplicated_and_non_interrupting():
+    source = APP_JS.read_text(encoding="utf-8")
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "class=\"live-run-status-check\"" in source
+    assert "_liveRunHealthText(run = this._liveRun)" in source
+    assert "_requestLiveRunStatus()" in source
+    assert "run.statusVisible = true;" in source
+    assert "['sending', 'queued'].includes(run.statusRequestState)" in source
+    assert "command: 'status_update'" in source
+    assert "case 'status.update_queued':" in source
+    assert "case 'status.update_rejected':" in source
+    assert "Agent update was not acknowledged; local health is still live" in source
+    assert "run.statusRequestId === event.message_id" in source
+    assert ".live-run-status-check" in styles
+    assert ".live-run-health" in styles
 
 
 def test_stop_button_uses_acknowledged_cancel_lifecycle():

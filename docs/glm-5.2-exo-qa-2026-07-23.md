@@ -26,8 +26,16 @@ The QA pass found and fixed five harness issues:
    now retries the uncommitted generation up to two times and removes abandoned
    partial prose before replay.
 5. EXO transport keepalives were hidden. The working indicator now distinguishes
-   an active connection from genuine model progress without allowing keepalives
-   to defeat the semantic-idle watchdog.
+   an active connection from genuine model progress.
+
+Follow-up correction, 2026-07-24: a real 36-minute GLM run demonstrated that
+120 seconds without visible semantic output is not a safe definition of a
+stalled EXO generation. The default hard semantic-idle and HTTP read limits are
+therefore disabled. Keepalives and semantic progress are reported separately;
+the user retains responsive Stop control, and operators can explicitly opt into
+a hard limit. The working card also provides an immediate local health snapshot
+and can queue a concise agent progress update at the next safe boundary without
+cancelling or replacing the run.
 
 ## Measurements
 
@@ -82,8 +90,9 @@ cached tokens and returned exactly `LONG_CONTEXT_COMPLETE` in 7.58 seconds.
   Maximum context availability should remain uncapped, but operational context
   should be selected for relevance rather than filled indiscriminately.
 - A transport keepalive proves the connection is alive but not that inference
-  advanced. The UI exposes that distinction, while only token or prefill
-  progress resets the 120-second semantic-idle safeguard.
+  advanced. The UI exposes that distinction and reports the age of the last
+  token/prefill progress. Quiet generations remain unlimited by default rather
+  than being guessed dead from elapsed time.
 - EXO runner shutdown is recoverable before tool commitment. Resonant retries
   that generation twice with the identical cache-stable request, then surfaces
   a clean terminal failure if the cluster cannot recover.
@@ -104,6 +113,9 @@ cached tokens and returned exactly `LONG_CONTEXT_COMPLETE` in 7.58 seconds.
 - Long-context beginning/middle/end retention and final-answer transition: pass.
 - Transient EXO runner-shutdown replay: deterministic test coverage.
 - Repeated runner failure: bounded to three total attempts.
+- Quiet live EXO streams: unlimited by default, with an optional operator limit.
+- Check status: immediate local telemetry plus deduplicated, non-interrupting
+  agent steering at the next safe boundary.
 
 ## Serving-side recommendations
 

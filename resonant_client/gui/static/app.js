@@ -1460,6 +1460,15 @@ class ResonantApp {
     }
 
     handleSteerApplied(event) {
+        const run = this._liveRun;
+        if (run && run.statusRequestId === event.message_id) {
+            if (run.statusRequestTimer) clearTimeout(run.statusRequestTimer);
+            run.statusRequestTimer = null;
+            run.statusRequestState = 'applied';
+            run.statusNote = 'Agent received the update request and will report in this run';
+            this._renderLiveRun();
+            return;
+        }
         const queued = this._queuedMessages.get(event.message_id);
         if (!this.chatMessages.querySelector(`[data-steer-note-id="${CSS.escape(event.message_id || '')}"]`)) {
             const note = document.createElement('div');
@@ -5120,6 +5129,12 @@ class ResonantApp {
                 break;
             case 'message.queue_cleared':
                 this.handleMessageQueueCleared(event);
+                break;
+            case 'status.update_queued':
+                this.handleStatusUpdateQueued(event);
+                break;
+            case 'status.update_rejected':
+                this.handleStatusUpdateRejected(event);
                 break;
             case 'message.removed':
                 this.handleMessageRemoved(event);
@@ -11495,6 +11510,12 @@ class ResonantApp {
             lastProgressAt: null,
             lastTransportAt: null,
             idleTimeoutSeconds: 0,
+            progressWarningSeconds: 120,
+            statusVisible: false,
+            statusRequestId: '',
+            statusRequestState: '',
+            statusRequestTimer: null,
+            statusNote: '',
         };
         task.liveEl.hidden = false;
         task.liveEl.classList.remove('is-finishing', 'is-error');
@@ -11506,6 +11527,9 @@ class ResonantApp {
     _stopLiveRun() {
         if (this._liveRunTimer) clearInterval(this._liveRunTimer);
         this._liveRunTimer = null;
+        if (this._liveRun?.statusRequestTimer) {
+            clearTimeout(this._liveRun.statusRequestTimer);
+        }
         if (this._liveRun && this._liveRun.active) {
             this._liveRun.active = false;
             if (this._liveRun.el) this._liveRun.el.hidden = true;
@@ -11518,6 +11542,7 @@ class ResonantApp {
         if (!run || !run.el) return;
         if (this._liveRunTimer) clearInterval(this._liveRunTimer);
         this._liveRunTimer = null;
+        if (run.statusRequestTimer) clearTimeout(run.statusRequestTimer);
         run.active = false;
         run.phase = errored ? 'Stopped' : 'Complete';
         run.detail = errored ? 'The run ended before completion' : 'Finalizing the result';
@@ -11674,6 +11699,97 @@ class ResonantApp {
         this._renderLiveRun();
     }
 
+    _liveRunHealthText(run = this._liveRun) {
+        if (!run) return 'No active run';
+        const now = Date.now();
+        const parts = [];
+        if (run.provider === 'exo') {
+            const transportAge = run.lastTransportAt
+                ? Math.max(0, Math.floor((now - run.lastTransportAt) / 1000))
+                : null;
+            parts.push(
+                transportAge !== null && transportAge <= 15
+                    ? 'EXO connection active'
+                    : transportAge === null
+                        ? 'Waiting for first EXO stream signal'
+                        : `No EXO stream signal for ${transportAge}s`,
+            );
+            if (run.lastProgressAt) {
+                const progressAge = Math.max(
+                    0,
+                    Math.floor((now - run.lastProgressAt) / 1000),
+                );
+                parts.push(`last model progress ${progressAge}s ago`);
+            }
+        } else {
+            parts.push(`${run.phase || 'Working'} now`);
+        }
+        if (run.step) parts.push(`step ${run.step}`);
+        parts.push(`${run.completedTools} tool${run.completedTools === 1 ? '' : 's'} finished`);
+        parts.push(`running ${this._formatRunDuration((now - run.startedAt) / 1000)}`);
+        return parts.join(' · ');
+    }
+
+    _requestLiveRunStatus() {
+        const run = this._liveRun;
+        if (!run || !run.active) {
+            this.showStatusMessage('There is no active run to check.');
+            return;
+        }
+
+        // This snapshot is synchronous and remains useful even if the model
+        // is blocked inside a long provider generation.
+        run.statusVisible = true;
+        run.statusNote = 'Local health refreshed';
+        if (['sending', 'queued'].includes(run.statusRequestState)) {
+            this._renderLiveRun();
+            return;
+        }
+
+        const messageId = (
+            globalThis.crypto?.randomUUID?.()
+            || `status-${Date.now()}-${Math.random()}`
+        );
+        run.statusRequestId = messageId;
+        run.statusRequestState = 'sending';
+        run.statusNote = 'Requesting a concise agent update';
+        this._renderLiveRun();
+        this.send({ command: 'status_update', message_id: messageId });
+
+        if (run.statusRequestTimer) clearTimeout(run.statusRequestTimer);
+        run.statusRequestTimer = setTimeout(() => {
+            if (
+                this._liveRun === run
+                && run.statusRequestId === messageId
+                && run.statusRequestState === 'sending'
+            ) {
+                run.statusRequestState = 'failed';
+                run.statusNote = 'Agent update was not acknowledged; local health is still live';
+                this._renderLiveRun();
+            }
+        }, 8000);
+    }
+
+    handleStatusUpdateQueued(event) {
+        const run = this._liveRun;
+        if (!run || run.statusRequestId !== event.message_id) return;
+        if (run.statusRequestTimer) clearTimeout(run.statusRequestTimer);
+        run.statusRequestTimer = null;
+        run.statusRequestState = 'queued';
+        run.statusNote = event.message || 'Agent update queued for the next safe step';
+        this._renderLiveRun();
+    }
+
+    handleStatusUpdateRejected(event) {
+        const run = this._liveRun;
+        if (!run || run.statusRequestId !== event.message_id) return;
+        if (run.statusRequestTimer) clearTimeout(run.statusRequestTimer);
+        run.statusRequestTimer = null;
+        run.statusRequestState = 'failed';
+        run.statusNote = event.message || 'The active run could not accept an update request';
+        this._renderLiveRun();
+    }
+
     _updateLiveRunClock() {
         const run = this._liveRun;
         if (!run || !run.el) return;
@@ -11682,13 +11798,11 @@ class ResonantApp {
         if (
             run.provider === 'exo'
             && run.lastProgressAt
-            && run.idleTimeoutSeconds > 0
             && ['Starting', 'Ready', 'Reading context', 'Reasoning', 'Composing', 'Recovering']
                 .includes(run.phase)
         ) {
             const now = Date.now();
             const idleFor = Math.max(0, Math.floor((now - run.lastProgressAt) / 1000));
-            const remaining = Math.max(0, run.idleTimeoutSeconds - idleFor);
             const model = this._liveRunCompactValue(run.model || 'EXO', 44);
             const transportAge = run.lastTransportAt
                 ? Math.max(0, Math.floor((now - run.lastTransportAt) / 1000))
@@ -11696,18 +11810,30 @@ class ResonantApp {
             const connection = transportAge !== null && transportAge <= 15
                 ? 'EXO connection active'
                 : 'waiting for EXO stream data';
+            const hardLimit = run.idleTimeoutSeconds > 0
+                ? ` · automatic stop in ${Math.max(0, run.idleTimeoutSeconds - idleFor)}s`
+                : '';
             const activity = idleFor < 2
                 ? `${model} is producing output`
-                : `${run.currentAction || run.detail} · ${connection} · last model progress ${idleFor}s ago · idle stop in ${remaining}s`;
+                : `${run.currentAction || run.detail} · ${connection} · last model progress ${idleFor}s ago${hardLimit}`;
             const nowEl = run.el.querySelector('[data-live-now]');
             if (nowEl) {
-                const phase = idleFor >= 15 && run.phase !== 'Recovering'
+                const warningAt = Math.max(15, run.progressWarningSeconds || 120);
+                const phase = idleFor >= warningAt && run.phase !== 'Recovering'
                     ? 'Still working'
                     : run.phase;
                 const nowText = `${phase} · ${activity}`;
                 nowEl.textContent = nowText;
                 nowEl.title = nowText;
             }
+        }
+        const healthEl = run.el.querySelector('[data-live-health]');
+        if (healthEl && run.statusVisible) {
+            healthEl.textContent = [
+                this._liveRunHealthText(run),
+                run.statusNote,
+            ].filter(Boolean).join(' · ');
+            healthEl.title = healthEl.textContent;
         }
         run.el.querySelectorAll('[data-subtask-elapsed]').forEach((el) => {
             const item = run.subtasks.get(el.dataset.subtaskElapsed);
@@ -11735,6 +11861,9 @@ class ResonantApp {
             milestones: run.milestones,
             subtasks: Array.from(run.subtasks.values()),
             detailsOpen: run.detailsOpen,
+            statusVisible: run.statusVisible,
+            statusRequestState: run.statusRequestState,
+            statusNote: run.statusNote,
         });
         if (run.renderKey === renderKey) return;
         run.renderKey = renderKey;
@@ -11770,16 +11899,20 @@ class ResonantApp {
         // presents as hard flicker. Updates below patch only changing nodes.
         if (!run.domReady || !run.el.querySelector('.live-run-head')) {
             run.el.innerHTML = `
-                <button type="button" class="live-run-head live-run-toggle" aria-expanded="false" aria-label="Show run details">
-                    <span class="live-run-orbit" aria-hidden="true"><i></i><b></b></span>
-                    <span class="live-run-copy">
-                        <strong>Resonant is working</strong>
-                        <small data-live-now></small>
-                        <span class="live-run-latest" data-live-latest hidden></span>
-                    </span>
-                    <span class="live-run-meta"><span data-live-step></span><span data-live-elapsed></span></span>
-                    <span class="live-run-chevron" aria-hidden="true"></span>
-                </button>
+                <div class="live-run-head">
+                    <button type="button" class="live-run-toggle" aria-expanded="false" aria-label="Show run details">
+                        <span class="live-run-orbit" aria-hidden="true"><i></i><b></b></span>
+                        <span class="live-run-copy">
+                            <strong>Resonant is working</strong>
+                            <small data-live-now></small>
+                            <span class="live-run-latest" data-live-latest hidden></span>
+                            <span class="live-run-health" data-live-health hidden></span>
+                        </span>
+                        <span class="live-run-meta"><span data-live-step></span><span data-live-elapsed></span></span>
+                        <span class="live-run-chevron" aria-hidden="true"></span>
+                    </button>
+                    <button type="button" class="live-run-status-check" title="Show live health and ask the agent for a concise update">Check status</button>
+                </div>
                 <div class="live-run-body" hidden>
                     <div class="live-run-progress"><span></span></div>
                     <div class="live-run-details">
@@ -11803,6 +11936,10 @@ class ResonantApp {
             toggle.addEventListener('click', () => {
                 setDetailsOpen(!run.detailsOpen);
             });
+            run.el.querySelector('.live-run-status-check')?.addEventListener(
+                'click',
+                () => this._requestLiveRunStatus(),
+            );
             run.domReady = true;
         }
 
@@ -11825,6 +11962,22 @@ class ResonantApp {
             latestEl.textContent = '';
             latestEl.classList.remove('is-error');
         }
+        const healthEl = run.el.querySelector('[data-live-health]');
+        healthEl.hidden = !run.statusVisible;
+        healthEl.textContent = run.statusVisible
+            ? [this._liveRunHealthText(run), run.statusNote].filter(Boolean).join(' · ')
+            : '';
+        healthEl.title = healthEl.textContent;
+        const statusButton = run.el.querySelector('.live-run-status-check');
+        const statusPending = ['sending', 'queued'].includes(run.statusRequestState);
+        statusButton.disabled = statusPending;
+        statusButton.textContent = run.statusRequestState === 'sending'
+            ? 'Checking…'
+            : run.statusRequestState === 'queued'
+                ? 'Update queued'
+                : run.statusVisible
+                    ? 'Refresh status'
+                    : 'Check status';
         run.el.querySelector('[data-live-step]').textContent = run.step ? `Step ${run.step} \u00b7 ` : '';
         run.el.querySelector('[data-live-elapsed]').textContent = this._formatRunDuration(elapsedSeconds);
         run.el.querySelector('.live-run-progress').style.setProperty('--live-run-progress', `${pct}%`);
@@ -12031,16 +12184,18 @@ class ResonantApp {
             );
         } else if (event.kind === 'exo_generation_started') {
             const idleSeconds = Number(event.idle_timeout_seconds || 0);
+            const warningSeconds = Number(event.progress_warning_seconds || 120);
             if (this._liveRun) {
                 this._liveRun.provider = 'exo';
                 this._liveRun.model = event.model || this._liveRun.model;
                 this._liveRun.idleTimeoutSeconds = idleSeconds;
+                this._liveRun.progressWarningSeconds = warningSeconds;
                 this._liveRun.lastProgressAt = Date.now();
                 this._liveRun.lastTransportAt = Date.now();
             }
             const safeguard = idleSeconds > 0
-                ? ` · ${idleSeconds}s idle safeguard`
-                : '';
+                ? ` · ${idleSeconds}s operator idle limit`
+                : ' · no automatic time limit';
             this._setLiveRunPhase(
                 'Reasoning',
                 `Generating with ${event.model || 'EXO'}${safeguard}`,

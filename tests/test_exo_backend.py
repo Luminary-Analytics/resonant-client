@@ -262,14 +262,24 @@ def test_exo_warmup_uses_short_native_tool_call():
     assert "max_completion_tokens" not in payload
 
 
-def test_exo_uses_progress_idle_timeout_without_capping_total_output(monkeypatch):
+def test_exo_has_no_default_progress_or_read_timeout(monkeypatch):
     monkeypatch.delenv("RESONANT_EXO_READ_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC", raising=False)
 
     backend = ExoBackend("local/model")
 
-    assert backend._stream_idle_timeout == 120.0
-    assert backend._timeout.read == 120.0
+    assert backend._stream_idle_timeout == 0.0
+    assert backend._progress_warning_seconds == 120.0
+    assert backend._timeout.read is None
+
+
+def test_exo_allows_an_explicit_operator_idle_timeout(monkeypatch):
+    monkeypatch.setenv("RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC", "600")
+
+    backend = ExoBackend("local/model")
+
+    assert backend._stream_idle_timeout == 600.0
+    assert backend._timeout.read == 600.0
 
 
 def test_exo_remote_cancel_uses_command_endpoint():

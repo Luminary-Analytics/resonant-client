@@ -91,6 +91,84 @@ def test_websocket_injects_steer_without_cancelling_active_turn(monkeypatch):
     assert processed == ["first"]
 
 
+def test_status_update_steers_active_run_without_cancelling_or_replacing_it(
+    monkeypatch,
+):
+    first_started = threading.Event()
+    release_first = threading.Event()
+    processed = []
+    session = _CancellableSession()
+
+    async def fake_process(_ws, message):
+        processed.append(message["text"])
+        first_started.set()
+        await asyncio.to_thread(release_first.wait, 5)
+
+    monkeypatch.setattr(gui_app, "_process_chat_message", fake_process)
+    monkeypatch.setattr(gui_app.state, "available_backends", [object()])
+    monkeypatch.setattr(gui_app.state, "backend", object())
+    monkeypatch.setattr(gui_app.state, "session", session)
+    monkeypatch.setattr(gui_app.state, "codebase_index", object())
+
+    with TestClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({"command": "message", "text": "first"})
+            assert first_started.wait(2)
+
+            websocket.send_json({
+                "command": "status_update",
+                "message_id": "status-1",
+            })
+
+            assert websocket.receive_json() == {
+                "event": "status.update_queued",
+                "message_id": "status-1",
+                "message": "Agent update queued for the next safe step.",
+            }
+            assert session.steered.wait(1)
+            assert session.steering_messages == [
+                ("status-1", gui_app.STATUS_UPDATE_STEER),
+            ]
+            assert not session.cancelled.is_set()
+
+            release_first.set()
+
+    assert processed == ["first"]
+
+
+def test_status_update_never_starts_a_replacement_turn_when_run_is_idle(
+    monkeypatch,
+):
+    processed = []
+    session = _CancellableSession()
+
+    async def fake_process(_ws, message):
+        processed.append(message["text"])
+
+    monkeypatch.setattr(gui_app, "_process_chat_message", fake_process)
+    monkeypatch.setattr(gui_app.state, "available_backends", [object()])
+    monkeypatch.setattr(gui_app.state, "backend", object())
+    monkeypatch.setattr(gui_app.state, "session", session)
+    monkeypatch.setattr(gui_app.state, "codebase_index", object())
+
+    with TestClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({
+                "command": "status_update",
+                "message_id": "status-idle",
+            })
+
+            assert websocket.receive_json() == {
+                "event": "status.update_rejected",
+                "message_id": "status-idle",
+                "message": "The run ended before the agent update could be queued.",
+            }
+
+    assert processed == []
+    assert session.steering_messages == []
+    assert not session.cancelled.is_set()
+
+
 def test_websocket_queues_followup_without_interrupting_active_turn(monkeypatch):
     first_started = threading.Event()
     release_first = threading.Event()

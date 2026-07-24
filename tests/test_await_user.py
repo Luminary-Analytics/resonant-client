@@ -23,7 +23,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from resonant_client.backends import EVENT_DONE, EVENT_TOOL_CALL
+from resonant_client.backends import EVENT_DONE, EVENT_TEXT_DELTA, EVENT_TOOL_CALL
 from resonant_client.engine.session import Session
 from resonant_client.engine.tools import AGENT_TOOLS, ToolResult
 
@@ -154,6 +154,86 @@ class _WriteThenAwaitBackend:
         yield (EVENT_DONE, {})
 
 
+class _ReadOnlyShellThenAwaitBackend:
+    """Inspect and validate once, then request a consequential decision."""
+
+    name = "read-only-shell-then-await"
+    model = "stub-model"
+    tool_mode = "native"
+    handles_tools = False
+
+    def __init__(self):
+        self.calls = 0
+
+    def stream(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            yield (EVENT_TOOL_CALL, {
+                "name": "bash",
+                "arguments": json.dumps({
+                    "command": (
+                        r"cd /d D:\Repos\project && dir && "
+                        r'echo "---STATUS---" && git status 2>&1'
+                    ),
+                }),
+                "call_id": "inspect-1",
+            })
+        elif self.calls == 2:
+            yield (EVENT_TOOL_CALL, {
+                "name": "bash",
+                "arguments": json.dumps({
+                    "command": (
+                        r"cd /d D:\Repos\project && "
+                        r".venv\Scripts\python.exe -m pytest -q 2>&1 | tail -30"
+                    ),
+                }),
+                "call_id": "verify-2",
+            })
+        elif self.calls == 3:
+            yield (EVENT_TOOL_CALL, {
+                "name": "await_user",
+                "arguments": json.dumps({
+                    "question": "Which externally controlled data source should the integration use?",
+                    "options": ["Documented API", "Screen capture"],
+                    "recommended_option": "Documented API",
+                    "unresolved_reason": (
+                        "Repository documentation describes both paths but does not "
+                        "authorize access to the external system."
+                    ),
+                    "urgency": "alignment",
+                }),
+                "call_id": "await-3",
+            })
+        else:
+            yield (EVENT_DONE, {"text": "completed"})
+            return
+        yield (EVENT_DONE, {})
+
+
+class _AnswerThenGenericQuestionBackend:
+    """Return a complete answer followed by a low-value continuation prompt."""
+
+    name = "answer-then-generic-question"
+    model = "stub-model"
+    tool_mode = "native"
+    handles_tools = False
+
+    def __init__(self):
+        self.calls = 0
+
+    def stream(self, **kwargs):
+        self.calls += 1
+        if self.calls > 1:
+            raise AssertionError("A suppressed trailing question started another model step")
+        yield (EVENT_TEXT_DELTA, {"delta": "The requested analysis is complete."})
+        yield (EVENT_TOOL_CALL, {
+            "name": "await_user",
+            "arguments": json.dumps({"question": "What should I do next?"}),
+            "call_id": "await-trailing",
+        })
+        yield (EVENT_DONE, {})
+
+
 def _run_with_callback(callback, tool_args=None):
     """Run a Session that calls await_user once with the given args
     and the given callback. Returns the list of yielded events."""
@@ -240,6 +320,41 @@ class TestAwaitUserDispatch:
         assert result["output"] == "stop"
         assert result["metadata"]["suppressed"] is False
 
+    def test_read_only_shell_work_does_not_close_alignment(self):
+        callback = MagicMock(return_value="Documented API")
+        backend = _ReadOnlyShellThenAwaitBackend()
+        successful = ToolResult(output="ok", is_error=False, elapsed=0.0)
+
+        with patch("resonant_client.engine.session.execute_tool", return_value=successful):
+            events = list(Session(backend, max_steps=6, auto_approve=True).run(
+                "Investigate the integration", on_user_input=callback,
+            ))
+
+        callback.assert_called_once()
+        result = next(
+            event for event in events
+            if event.get("event") == "tool.result" and event.get("name") == "await_user"
+        )
+        assert result["output"] == "Documented API"
+        assert result["metadata"]["suppressed"] is False
+
+    def test_suppressed_trailing_question_ends_on_visible_answer(self):
+        callback = MagicMock(return_value="should-not-be-used")
+        backend = _AnswerThenGenericQuestionBackend()
+
+        events = list(Session(backend, max_steps=4, auto_approve=True).run(
+            "Analyze the project", on_user_input=callback,
+        ))
+
+        callback.assert_not_called()
+        assert backend.calls == 1
+        assert any(
+            event.get("event") == "text.done"
+            and event.get("text") == "The requested analysis is complete."
+            for event in events
+        )
+        assert any(event.get("event") == "session.end" for event in events)
+
     def test_callback_invoked_with_question(self):
         captured = {}
 
@@ -248,7 +363,7 @@ class TestAwaitUserDispatch:
             captured["options"] = options
             return "answer-a"
 
-        events = _run_with_callback(cb, {"question": "What approach?"})
+        _run_with_callback(cb, {"question": "What approach?"})
         assert captured.get("question") == "What approach?"
         assert captured.get("options") == []
 

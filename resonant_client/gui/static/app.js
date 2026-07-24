@@ -7327,6 +7327,7 @@ class ResonantApp {
         const run = this._liveRun;
         if (run && run.provider === 'exo') {
             run.lastProgressAt = Date.now();
+            run.lastTransportAt = Date.now();
         }
         const activeModel = run?.model || this.currentModelName || '';
         this._setLiveRunPhase(
@@ -11490,6 +11491,10 @@ class ResonantApp {
             lastCompleted: null,
             completedTools: 0,
             detailsOpen: false,
+            provider: '',
+            lastProgressAt: null,
+            lastTransportAt: null,
+            idleTimeoutSeconds: 0,
         };
         task.liveEl.hidden = false;
         task.liveEl.classList.remove('is-finishing', 'is-error');
@@ -11678,17 +11683,28 @@ class ResonantApp {
             run.provider === 'exo'
             && run.lastProgressAt
             && run.idleTimeoutSeconds > 0
-            && (run.phase === 'Reasoning' || run.phase === 'Composing')
+            && ['Starting', 'Ready', 'Reading context', 'Reasoning', 'Composing', 'Recovering']
+                .includes(run.phase)
         ) {
-            const idleFor = Math.max(0, Math.floor((Date.now() - run.lastProgressAt) / 1000));
+            const now = Date.now();
+            const idleFor = Math.max(0, Math.floor((now - run.lastProgressAt) / 1000));
             const remaining = Math.max(0, run.idleTimeoutSeconds - idleFor);
             const model = this._liveRunCompactValue(run.model || 'EXO', 44);
+            const transportAge = run.lastTransportAt
+                ? Math.max(0, Math.floor((now - run.lastTransportAt) / 1000))
+                : null;
+            const connection = transportAge !== null && transportAge <= 15
+                ? 'EXO connection active'
+                : 'waiting for EXO stream data';
             const activity = idleFor < 2
                 ? `${model} is producing output`
-                : `${model} · last data ${idleFor}s ago · idle stop in ${remaining}s`;
+                : `${run.currentAction || run.detail} · ${connection} · last model progress ${idleFor}s ago · idle stop in ${remaining}s`;
             const nowEl = run.el.querySelector('[data-live-now]');
             if (nowEl) {
-                const nowText = `${run.phase} · ${activity}`;
+                const phase = idleFor >= 15 && run.phase !== 'Recovering'
+                    ? 'Still working'
+                    : run.phase;
+                const nowText = `${phase} · ${activity}`;
                 nowEl.textContent = nowText;
                 nowEl.title = nowText;
             }
@@ -11964,6 +11980,16 @@ class ResonantApp {
      */
     handleBackendStatus(event) {
         if (!event || !event.kind) return;
+        if (event.reset_partial_output && this.isStreaming) {
+            if (this._renderTimer) {
+                clearTimeout(this._renderTimer);
+                this._renderTimer = null;
+            }
+            if (this.currentMessageEl) this.currentMessageEl.remove();
+            this.currentMessageEl = null;
+            this.streamBuffer = '';
+            this.isStreaming = false;
+        }
         if (event.kind === 'exo_instance_check') {
             this._setLiveRunPhase(
                 'Starting',
@@ -11995,6 +12021,7 @@ class ResonantApp {
                 this._liveRun.provider = 'exo';
                 this._liveRun.model = event.model || this._liveRun.model;
                 this._liveRun.lastProgressAt = Date.now();
+                this._liveRun.lastTransportAt = Date.now();
             }
             this._setLiveRunPhase(
                 'Reading context',
@@ -12009,6 +12036,7 @@ class ResonantApp {
                 this._liveRun.model = event.model || this._liveRun.model;
                 this._liveRun.idleTimeoutSeconds = idleSeconds;
                 this._liveRun.lastProgressAt = Date.now();
+                this._liveRun.lastTransportAt = Date.now();
             }
             const safeguard = idleSeconds > 0
                 ? ` · ${idleSeconds}s idle safeguard`
@@ -12017,10 +12045,32 @@ class ResonantApp {
                 'Reasoning',
                 `Generating with ${event.model || 'EXO'}${safeguard}`,
             );
+        } else if (event.kind === 'exo_keepalive') {
+            if (this._liveRun) {
+                this._liveRun.provider = 'exo';
+                this._liveRun.model = event.model || this._liveRun.model;
+                this._liveRun.lastTransportAt = Date.now();
+                if (Number(event.idle_timeout_seconds || 0) > 0) {
+                    this._liveRun.idleTimeoutSeconds = Number(
+                        event.idle_timeout_seconds,
+                    );
+                }
+            }
         } else if (event.kind === 'ollama_retry' || event.kind === 'ollama_timeout' || event.kind === 'kimi_retry' || event.kind === 'exo_retry') {
             // v0.6.4 (F6) — ollama_timeout (a slow open-phase call
             // being retried) shares the transient retry banner; the
             // renderer phrases it differently from a 5xx retry.
+            if (event.kind === 'exo_retry' && event.reason === 'runner_restart') {
+                if (this._liveRun) {
+                    this._liveRun.provider = 'exo';
+                    this._liveRun.lastProgressAt = Date.now();
+                    this._liveRun.lastTransportAt = Date.now();
+                }
+                this._setLiveRunPhase(
+                    'Recovering',
+                    `EXO runner stopped; replaying the uncommitted step safely (attempt ${(event.attempt || 1) + 1}/${event.max || 3})`,
+                );
+            }
             this._renderOllamaRetryBanner(event);
         } else if (event.kind === 'empty_response_retry') {
             this._renderEmptyResponseRetryBanner(event);
@@ -12147,7 +12197,9 @@ class ResonantApp {
         // an ollama_timeout event carries no status_code — it's a
         // slow open-phase call, not an error response.
         let reason;
-        if (event.kind === 'ollama_timeout') {
+        if (event.kind === 'exo_retry' && event.reason === 'runner_restart') {
+            reason = 'lost an EXO runner before the step committed';
+        } else if (event.kind === 'ollama_timeout') {
             reason = 'slow to respond';
         } else if (status === 503) {
             reason = 'rate-limited (HTTP 503)';
@@ -12160,7 +12212,7 @@ class ResonantApp {
         banner.innerHTML = `
             <span class="backend-status-icon" aria-hidden="true">⚠</span>
             <span class="backend-status-text">
-                Backend ${this.escapeHtml(reason)} — retrying in ${backoff.toFixed(1)}s
+                Backend ${this.escapeHtml(reason)} — retrying safely in ${backoff.toFixed(1)}s
                 <span class="backend-status-attempt">attempt ${attempt}/${max}</span>
             </span>
         `;

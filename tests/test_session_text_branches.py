@@ -20,17 +20,13 @@ what the streaming-stub harness lets us drive deterministically.
 """
 from __future__ import annotations
 
-from typing import Iterator
-
-import pytest
-
 from resonant_client.engine.session import Session
 from tests.streaming_stub import (
     StreamingBackend,
+    backend_status,
     done,
     events_of_kind,
     first_of_kind,
-    kinds_of,
     text_delta,
     tool_call,
 )
@@ -85,6 +81,29 @@ class TestTodosUpdated:
         todos = first_of_kind(events, "todos.updated")
         assert todos["done"] == 3
         assert todos["total"] == 3
+
+
+def test_provider_replay_discards_abandoned_partial_text():
+    backend = StreamingBackend(events=[
+        text_delta("Abandoned partial"),
+        backend_status(
+            kind="exo_retry",
+            reason="runner_restart",
+            reset_partial_output=True,
+        ),
+        text_delta("Recovered result"),
+        done(),
+    ])
+    session = Session(backend=backend, max_steps=1)
+
+    events = list(session.run("finish reliably"))
+
+    completed = first_of_kind(events, "text.done")
+    assert completed["text"] == "Recovered result"
+    assert session.conversation_history[-1] == {
+        "role": "assistant",
+        "content": "Recovered result",
+    }
 
 
 # ── CHOICES flow ───────────────────────────────────────────────────────

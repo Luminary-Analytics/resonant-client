@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import httpx
 
 from resonant_client.backends import (
+    EVENT_BACKEND_STATUS,
     EVENT_DONE,
     EVENT_ERROR,
     EVENT_TEXT_DELTA,
@@ -198,6 +199,69 @@ def test_exo_supports_future_multimodal_content_shape():
     assert converted[1] == {"type": "text", "text": "Inspect this screenshot"}
 
 
+def test_exo_glm_is_text_only_and_reports_prefix_cache_support():
+    backend = ExoBackend("mlx-community/GLM-5.2-mxfp4")
+    converted = backend._api_content([
+        {"type": "image", "media_type": "image/png", "data": "aGVsbG8="},
+        {"type": "text", "text": "Inspect this screenshot"},
+    ])
+
+    assert backend.capability_profile.modalities == ("text",)
+    assert backend.capability_profile.supports("vision") is False
+    assert backend.capability_profile.supports("cache") is True
+    assert isinstance(converted, str)
+    assert "[Image: image/png attached." in converted
+    assert "Inspect this screenshot" in converted
+
+
+def test_exo_warmup_uses_short_native_tool_call():
+    requests: list[tuple[str, dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/state":
+            return httpx.Response(
+                200,
+                json={"instances": {"ready": {"modelId": "local/model"}}},
+            )
+        if request.url.path == "/v1/chat/completions":
+            payload = json.loads(request.read())
+            requests.append((request.url.path, payload))
+            return httpx.Response(
+                200,
+                text=_sse_response([{
+                    "id": "warmup-1",
+                    "choices": [{
+                        "delta": {
+                            "tool_calls": [{
+                                "index": 0,
+                                "id": "warmup-call",
+                                "function": {
+                                    "name": "resonant_warmup",
+                                    "arguments": "{}",
+                                },
+                            }],
+                        },
+                    }],
+                }]),
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    backend.warm_up()
+    backend.warm_up()
+
+    assert len(requests) == 1
+    payload = requests[0][1]
+    assert payload["tools"][0]["function"]["name"] == "resonant_warmup"
+    assert "max_tokens" not in payload
+    assert "max_completion_tokens" not in payload
+
+
 def test_exo_uses_progress_idle_timeout_without_capping_total_output(monkeypatch):
     monkeypatch.delenv("RESONANT_EXO_READ_TIMEOUT_SEC", raising=False)
     monkeypatch.delenv("RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC", raising=False)
@@ -326,7 +390,7 @@ def test_exo_progress_watchdog_ignores_keepalives_and_ends_stalled_generation():
     assert ("POST", "/v1/cancel/command-stalled") in requests
 
 
-def test_exo_prefill_comment_is_visible_progress_but_keepalive_is_not():
+def test_exo_prefill_and_transport_keepalive_have_distinct_progress_semantics():
     backend = ExoBackend("local/model")
 
     status = backend._provider_comment_status(
@@ -338,7 +402,133 @@ def test_exo_prefill_comment_is_visible_progress_but_keepalive_is_not():
         "model": "local/model",
         "progress": {"progress": 0.42, "processed_tokens": 420},
     }
-    assert backend._provider_comment_status(": keepalive") is None
+    assert backend._provider_comment_status(": keepalive") == {
+        "kind": "exo_keepalive",
+        "model": "local/model",
+        "_semantic_progress": False,
+    }
+
+
+def test_exo_replays_uncommitted_step_after_runner_shutdown(monkeypatch):
+    chat_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal chat_requests
+        if request.url.path == "/state":
+            return httpx.Response(
+                200,
+                json={"instances": {"ready": {"modelId": "local/model"}}},
+            )
+        if request.url.path == "/v1/chat/completions":
+            chat_requests += 1
+            if chat_requests == 1:
+                return httpx.Response(
+                    200,
+                    text=_sse_response([
+                        {
+                            "id": "lost-command",
+                            "choices": [{"delta": {"content": "Abandoned partial"}}],
+                        },
+                        {
+                            "id": "lost-command",
+                            "error": {
+                                "message": (
+                                    "Runner shutdown before completing command "
+                                    "(lost-command)"
+                                ),
+                            },
+                        },
+                    ]),
+                )
+            return httpx.Response(
+                200,
+                text=_sse_response([
+                    {
+                        "id": "recovered-command",
+                        "choices": [{"delta": {"content": "Recovered result"}}],
+                    },
+                ]),
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr(
+        "resonant_client.backends._wait_with_cancel",
+        lambda _seconds, _cancel_event: False,
+    )
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    events = list(backend.stream("Work", [], "system", []))
+
+    assert chat_requests == 2
+    assert not any(event == EVENT_ERROR for event, _data in events)
+    recovery = next(
+        data
+        for event, data in events
+        if event == EVENT_BACKEND_STATUS
+        and data.get("reason") == "runner_restart"
+    )
+    assert recovery["reset_partial_output"] is True
+    assert recovery["attempt"] == 1
+    assert (EVENT_TEXT_DELTA, {"delta": "Recovered result"}) in events
+    assert events[-1][0] == EVENT_DONE
+
+
+def test_exo_runner_recovery_is_bounded_and_discards_last_partial(monkeypatch):
+    chat_requests = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal chat_requests
+        if request.url.path == "/state":
+            return httpx.Response(
+                200,
+                json={"instances": {"ready": {"modelId": "local/model"}}},
+            )
+        if request.url.path == "/v1/chat/completions":
+            chat_requests += 1
+            return httpx.Response(
+                200,
+                text=_sse_response([
+                    {
+                        "id": f"lost-command-{chat_requests}",
+                        "choices": [{"delta": {"content": "Uncommitted"}}],
+                    },
+                    {
+                        "error": {
+                            "message": (
+                                "Runner shutdown before completing command "
+                                f"(lost-command-{chat_requests})"
+                            ),
+                        },
+                    },
+                ]),
+            )
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    monkeypatch.setattr(
+        "resonant_client.backends._wait_with_cancel",
+        lambda _seconds, _cancel_event: False,
+    )
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+
+    events = list(backend.stream("Work", [], "system", []))
+
+    assert chat_requests == 3
+    assert sum(
+        event == EVENT_BACKEND_STATUS and data.get("reason") == "runner_restart"
+        for event, data in events
+    ) == 2
+    error = next(data for event, data in events if event == EVENT_ERROR)
+    assert "Runner shutdown before completing command" in error["message"]
+    assert error["discard_partial_output"] is True
+    assert not any(event == EVENT_DONE for event, _data in events)
 
 
 def test_exo_repetition_guard_stops_degenerate_output_without_length_cap():

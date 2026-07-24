@@ -165,6 +165,50 @@ _READ_ONLY_COMMAND_PREFIXES = (
 )
 
 
+_READ_ONLY_SHELL_SEGMENT_PREFIXES = _READ_ONLY_COMMAND_PREFIXES + (
+    "cd ", "set-location ", "pushd ", "popd",
+    "echo ", "write-output ",
+    "python -m pytest", "pytest ", "py -m pytest",
+    "tail ", "head ", "findstr ", "more", "select-object ", "out-string",
+)
+
+
+def _shell_segment_is_read_only(segment: str) -> bool:
+    value = str(segment or "").strip()
+    if not value or value.startswith(_READ_ONLY_SHELL_SEGMENT_PREFIXES):
+        return True
+    # Test runners are commonly invoked through a project-local virtual
+    # environment, so their prefix is repository-specific.  Running tests
+    # validates work but does not mean implementation has started.
+    return bool(re.match(
+        r"^(?:&\s*)?(?:[^\s]+[\\/])?"
+        r"(?:python(?:\d+(?:\.\d+)*)?)(?:\.exe)?\s+-m\s+pytest\b",
+        value,
+    ))
+
+
+def _shell_command_is_read_only(command: str) -> bool:
+    """Recognize common chained discovery and validation commands.
+
+    This is deliberately conservative: every shell segment must have a known
+    read-only prefix, and output redirection to a file keeps the command on the
+    mutating path.  It covers the normal ``cd && dir && git status`` and
+    ``cd && pytest`` probes used by coding models without treating arbitrary
+    shell execution as safe.
+    """
+    normalized = str(command or "").strip().casefold()
+    if not normalized:
+        return True
+    # Redirecting stdout/stderr to another stream is harmless; other output
+    # redirection may create or overwrite workspace files.
+    without_stream_redirects = re.sub(r"\b[12]?>\s*&[12]\b", "", normalized)
+    if re.search(r"(?<!<)>{1,2}(?!&)", without_stream_redirects):
+        return False
+
+    segments = re.split(r"\s*(?:&&|\|\||;|\|)\s*", without_stream_redirects)
+    return bool(segments) and all(_shell_segment_is_read_only(segment) for segment in segments)
+
+
 def _tool_may_mutate_workspace(tool_name: str, arguments: dict) -> bool:
     if tool_name in WRITE_TOOL_NAMES or tool_name in {"git_commit", "git_branch_create"}:
         return True
@@ -176,8 +220,22 @@ def _tool_may_mutate_workspace(tool_name: str, arguments: dict) -> bool:
         )
     if tool_name != "bash":
         return False
-    command = str(arguments.get("command") or "").strip().casefold()
-    return not any(command.startswith(prefix) for prefix in _READ_ONLY_COMMAND_PREFIXES)
+    return not _shell_command_is_read_only(arguments.get("command") or "")
+
+
+def _tool_starts_implementation(tool_name: str, arguments: dict) -> bool:
+    """Return whether a tool call closes the initial-alignment window."""
+    if not tool_name or tool_name == "await_user":
+        return False
+    if tool_name in PREFLIGHT_RESEARCH_TOOLS:
+        return False
+    if tool_name == "bash":
+        return _tool_may_mutate_workspace(tool_name, arguments)
+    # Preserve the conservative boundary for delegated, MCP, computer-use,
+    # and other stateful tools whose side effects are provider-defined.
+    return True
+
+
 # A cloud model can occasionally terminate a successful HTTP stream with only
 # hidden reasoning metadata and no user-visible text or tool call. Treating
 # that as completed produces a blank answer and a misleading green "Done".
@@ -1704,6 +1762,13 @@ class Session:
                         # mission daemon, GUI) can surface "still
                         # alive, retrying" rather than leaving users
                         # staring at a stalled "thinking" counter.
+                        if data.get("reset_partial_output"):
+                            # A provider runner can disappear after streaming
+                            # prose but before it commits any tool call. The
+                            # backend can safely replay that generation; drop
+                            # the abandoned prose so it is neither duplicated
+                            # in the UI nor persisted in model history.
+                            collected_text.clear()
                         yield make_event(EngineEvent.BACKEND_STATUS, **data)
 
             except KeyboardInterrupt:
@@ -1841,6 +1906,7 @@ class Session:
 
             # ── Execute tool calls ──
             has_tool_calls = len(tool_calls) > 0
+            terminal_suppressed_question = False
 
             # CLI backends (claude-code, codex) handle tool execution internally.
             # We received tool_call events for display only — skip execution.
@@ -1893,10 +1959,15 @@ class Session:
                 call_id = item.get("call_id", "")
                 fn_args = item.get("_normalized_arguments", {})
                 argument_error = item.get("_argument_error", "")
+                # Close the initial-alignment window only when the model
+                # actually attempts a workspace mutation.  Read-only shell
+                # probes and validation commands are still discovery: treating
+                # every `bash` call as implementation caused legitimate late
+                # preflight decisions to be suppressed, which in turn forced
+                # an unnecessary extra model step.
                 if (
                     fn_name
-                    and fn_name != "await_user"
-                    and fn_name not in PREFLIGHT_RESEARCH_TOOLS
+                    and _tool_starts_implementation(fn_name, fn_args)
                 ):
                     implementation_started = True
                 if argument_error:
@@ -2224,6 +2295,7 @@ class Session:
                         ]
                     if suppressed_reason:
                         answer = f"(question suppressed by Resonant policy: {suppressed_reason})"
+                        terminal_suppressed_question = bool(full_text.strip())
                     elif on_user_input:
                         try:
                             answer = on_user_input(question, options)
@@ -2499,6 +2571,18 @@ class Session:
                 if self.cancel_requested:
                     yield from self._cancelled_events(total_start, exec_step)
                     return
+
+            if (
+                terminal_suppressed_question
+                and tool_calls
+                and all(item.get("name") == "await_user" for item in tool_calls)
+            ):
+                # The model already gave the user a visible answer, then tried
+                # to append a generic or disallowed clarification. The
+                # synthetic suppression result exists only for protocol
+                # completeness; asking the provider for another turn would
+                # hide a finished answer behind a fresh spinner.
+                has_tool_calls = False
 
             # ── Status ──
             if reasoning_by_call_id or provider_metadata_by_call_id:

@@ -2104,6 +2104,10 @@ class KimiBackend:
     def _timeout_error_message(self) -> str:
         return f"{self.PROVIDER_LABEL} API request timed out."
 
+    def _is_retryable_stream_error(self, message: str) -> bool:
+        """Return whether an in-stream provider error is safe to replay."""
+        return False
+
     def stream(
         self,
         user_msg: str,
@@ -2130,6 +2134,7 @@ class KimiBackend:
         }
         stream_watcher_done = threading.Event()
         progress_idle_timeout = self._progress_idle_timeout_seconds()
+        last_transport_status_at = 0.0
 
         # A synchronous httpx iterator cannot observe cancellation or semantic
         # inactivity while blocked waiting for the provider. Providers with a
@@ -2175,6 +2180,7 @@ class KimiBackend:
         try:
             with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
                 for attempt in range(3):
+                    restart_stream = False
                     if cancel_event is not None and cancel_event.is_set():
                         self._cancel_remote_generation(response_id)
                         return
@@ -2227,7 +2233,35 @@ class KimiBackend:
                             if line.startswith(":"):
                                 status = self._provider_comment_status(line)
                                 if status:
-                                    stream_state["last_progress_at"] = time.monotonic()
+                                    now = time.monotonic()
+                                    status = dict(status)
+                                    semantic_progress = bool(
+                                        status.pop("_semantic_progress", True)
+                                    )
+                                    if semantic_progress:
+                                        stream_state["last_progress_at"] = now
+                                    else:
+                                        # Transport keepalives prove the SSE
+                                        # connection is alive, but must not
+                                        # defeat the semantic-idle watchdog.
+                                        if now - last_transport_status_at < 10.0:
+                                            continue
+                                        last_transport_status_at = now
+                                        status["idle_seconds"] = max(
+                                            0,
+                                            int(
+                                                now
+                                                - float(
+                                                    stream_state.get(
+                                                        "last_progress_at"
+                                                    )
+                                                    or now
+                                                )
+                                            ),
+                                        )
+                                        status["idle_timeout_seconds"] = int(
+                                            progress_idle_timeout
+                                        )
                                     yield (EVENT_BACKEND_STATUS, status)
                                 continue
                             if not line.startswith("data:"):
@@ -2248,8 +2282,50 @@ class KimiBackend:
                                     if isinstance(error, dict)
                                     else str(error)
                                 )
+                                if (
+                                    self._is_retryable_stream_error(message)
+                                    and attempt < 2
+                                ):
+                                    delay = 1.5 * (2 ** attempt)
+                                    yield (EVENT_BACKEND_STATUS, {
+                                        "kind": self.RETRY_EVENT_KIND,
+                                        "status_code": 0,
+                                        "attempt": attempt + 1,
+                                        "max": 3,
+                                        "model": self.model,
+                                        "backoff_seconds": delay,
+                                        "reason": "runner_restart",
+                                        "message": message[:500],
+                                        # No tool call is emitted until the
+                                        # stream completes, so replay is
+                                        # idempotent. Clear any partial prose
+                                        # before the fresh attempt starts.
+                                        "reset_partial_output": bool(
+                                            content_parts or reasoning_parts
+                                        ),
+                                    })
+                                    if _wait_with_cancel(delay, cancel_event):
+                                        return
+                                    reasoning_parts.clear()
+                                    content_parts.clear()
+                                    repetition_window = ""
+                                    output_guard_pending_chars = 0
+                                    tool_calls.clear()
+                                    usage = {}
+                                    response_id = ""
+                                    stream_state["response_id"] = ""
+                                    stream_state["last_progress_at"] = (
+                                        time.monotonic()
+                                    )
+                                    stream_state["idle_timed_out"] = False
+                                    restart_stream = True
+                                    break
                                 yield (EVENT_ERROR, {
-                                    "message": f"{self.PROVIDER_LABEL} generation failed: {message}"
+                                    "message": f"{self.PROVIDER_LABEL} generation failed: {message}",
+                                    "discard_partial_output": bool(
+                                        self._is_retryable_stream_error(message)
+                                        and (content_parts or reasoning_parts)
+                                    ),
                                 })
                                 return
                             if isinstance(event.get("usage"), dict):
@@ -2296,6 +2372,9 @@ class KimiBackend:
                                     current["name"] += str(function["name"])
                                 if function.get("arguments"):
                                     current["arguments"] += str(function["arguments"])
+                        if restart_stream:
+                            stream_state["response"] = None
+                            continue
                         break
                     stream_state["response"] = None
 
@@ -2392,19 +2471,29 @@ class ExoBackend(KimiBackend):
         self.handles_tools = False
         self.thinking_mode = ""
         self._transport = transport
+        inferred = infer_model_capabilities(self.model)
         self._capabilities = ModelCapabilities(
             model=self.model,
             context_window=1_048_576,
-            modalities=("text", "image"),
+            # EXO serves both text-only and multimodal models. Start from the
+            # conservative model-family inference instead of advertising image
+            # support for every model; otherwise text-only GLM receives native
+            # image payloads it cannot decode.
+            modalities=inferred.modalities,
             native_tools=True,
             parallel_tools=True,
             structured_output=None,
             reasoning_levels=(),
-            prompt_caching=False,
+            # EXO/MLX reports exact prefix-cache hits in OpenAI usage metadata.
+            # Resonant keeps its system/tool prefix stable to take advantage.
+            prompt_caching=True,
             native_continuation=True,
             max_safe_concurrency=4,
             source="provider",
         )
+        self._warmup_cancel_event = threading.Event()
+        self._warmup_lock = threading.Lock()
+        self._warmup_started = False
         idle_timeout = float(
             os.environ.get(
                 "RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC",
@@ -2500,6 +2589,20 @@ class ExoBackend(KimiBackend):
             payload["tools"] = _convert_tools_for_ollama(tools)
         return payload
 
+    def _api_content(self, content) -> str | list[dict]:
+        """Use native images only when the selected EXO model supports them."""
+        if self.capability_profile.supports("vision"):
+            return KimiBackend._api_content(content)
+        rendered: list[str] = []
+        for part in normalize_content(content):
+            if part.get("type") == "text":
+                text = str(part.get("text") or "")
+            else:
+                text = text_fallback(part)
+            if text:
+                rendered.append(text)
+        return "\n\n".join(rendered)
+
     def _cancel_remote_generation(self, response_id: str) -> bool:
         command_id = str(response_id or "").strip()
         if not command_id:
@@ -2521,6 +2624,52 @@ class ExoBackend(KimiBackend):
                 type(exc).__name__,
             )
             return False
+
+    def warm_up(self) -> None:
+        """Compile/warm the selected EXO model before the first user turn.
+
+        The desktop already invokes ``warm_up`` in a background thread after a
+        model is selected. A tiny native tool call exercises the same
+        chat-completions path as coding work while keeping generation short.
+        If the user submits real work first, ``stream`` cancels this optional
+        request immediately so warmup never competes with the task.
+        """
+        with self._warmup_lock:
+            if self._warmup_started or self._warmup_cancel_event.is_set():
+                return
+            self._warmup_started = True
+
+        warmup_tool = {
+            "type": "function",
+            "function": {
+                "name": "resonant_warmup",
+                "description": "Finish the provider warmup.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        }
+        try:
+            self._ensure_instance(self._warmup_cancel_event)
+            if self._warmup_cancel_event.is_set():
+                return
+            for event_type, data in KimiBackend.stream(
+                self,
+                user_msg="Call resonant_warmup now.",
+                conversation_history=[],
+                instructions=(
+                    "This is a provider warmup. Call resonant_warmup exactly "
+                    "once and do not write prose."
+                ),
+                tools=[warmup_tool],
+                cancel_event=self._warmup_cancel_event,
+            ):
+                if event_type == EVENT_ERROR and not self._warmup_cancel_event.is_set():
+                    logger.debug("EXO warmup ended with provider error: %s", data)
+        except Exception:
+            logger.debug("EXO warmup failed", exc_info=True)
 
     @staticmethod
     def _repetitive_suffix_length(text: str) -> int:
@@ -2641,10 +2790,20 @@ class ExoBackend(KimiBackend):
 
     def _provider_comment_status(self, line: str) -> dict | None:
         prefix = ": prefill_progress "
-        if not str(line or "").startswith(prefix):
+        raw = str(line or "").strip()
+        if raw in {": keepalive", ":keepalive"}:
+            return {
+                "kind": "exo_keepalive",
+                "model": self.model,
+                # The transport is alive, but the model has not necessarily
+                # advanced. KimiBackend uses this flag to keep the semantic
+                # idle watchdog honest.
+                "_semantic_progress": False,
+            }
+        if not raw.startswith(prefix):
             return None
         try:
-            progress = json.loads(str(line)[len(prefix):])
+            progress = json.loads(raw[len(prefix):])
         except json.JSONDecodeError:
             progress = {}
         return {
@@ -2652,6 +2811,17 @@ class ExoBackend(KimiBackend):
             "model": self.model,
             "progress": progress if isinstance(progress, dict) else {},
         }
+
+    @staticmethod
+    def _is_retryable_stream_error(message: str) -> bool:
+        """Replay commands that EXO lost before committing a tool call."""
+        normalized = str(message or "").strip().casefold()
+        return any(marker in normalized for marker in (
+            "runner shutdown before completing command",
+            "runner shut down before completing command",
+            "runner crashed",
+            "runner stopped before completing",
+        ))
 
     def _progress_idle_timeout_seconds(self) -> float:
         return self._stream_idle_timeout
@@ -2765,6 +2935,9 @@ class ExoBackend(KimiBackend):
         max_tokens: int | None = None,
         cancel_event=None,
     ) -> Iterator[Tuple[str, dict]]:
+        # A real task always wins over the speculative background warmup
+        # launched by the model picker.
+        self._warmup_cancel_event.set()
         try:
             if cancel_event is not None and cancel_event.is_set():
                 return

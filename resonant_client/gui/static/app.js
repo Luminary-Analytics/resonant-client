@@ -228,6 +228,11 @@ class ResonantApp {
         this.recentProjects = [];
         this.playgroundProject = null;
         this._projectRailOrder = [];
+        this._projectSwitchSequence = 0;
+        this._latestProjectSwitchId = '';
+        this._pendingProjectSwitchId = '';
+        this._pendingProjectPath = '';
+        this._projectSwitchTimer = null;
         this.harnessState = null;
         this.harnessCycles = [];
         this.harnessCyclePoller = null;
@@ -5086,6 +5091,17 @@ class ResonantApp {
 
     handleEvent(event) {
         const type = event.event;
+        const projectSwitchId = String(event?.project_switch_id || '');
+
+        // A full project initialization can outlive a newer rail click.
+        // Older acknowledgements must never repaint the newer selection.
+        if (
+            projectSwitchId
+            && this._latestProjectSwitchId
+            && projectSwitchId !== this._latestProjectSwitchId
+        ) {
+            return;
+        }
 
         switch (type) {
             case 'init':
@@ -5152,6 +5168,14 @@ class ResonantApp {
                 this.handleCancelCompleted(event);
                 break;
             case 'error':
+                if (
+                    projectSwitchId
+                    && projectSwitchId === this._pendingProjectSwitchId
+                ) {
+                    this._pendingProjectSwitchId = '';
+                    this._pendingProjectPath = '';
+                    this._restoreConfirmedProjectSelection();
+                }
                 this.handleError(event);
                 break;
             case 'subagent.start':
@@ -5819,6 +5843,15 @@ class ResonantApp {
     // ── Init ────────────────────────────────────────────────────
 
     handleInit(event) {
+        const projectSwitchId = String(event?.project_switch_id || '');
+        if (this._pendingProjectSwitchId) {
+            // While changing projects, only the latest selection may replace
+            // project-scoped state. Untagged refreshes can already be in flight.
+            if (projectSwitchId !== this._pendingProjectSwitchId) return;
+            this._pendingProjectSwitchId = '';
+            this._pendingProjectPath = '';
+        }
+
         const {
             backends,
             current_backend,
@@ -13309,7 +13342,7 @@ class ResonantApp {
             if (!key) continue;
             counts.set(key, (counts.get(key) || 0) + 1);
         }
-        const addProject = (pathValue, nameValue = '', options = {}) => {
+        const addProject = (pathValue, nameValue = '') => {
             const path = this._normalizeProjectPath(pathValue);
             if (!path) return;
             const key = this._projectKey(path);
@@ -13320,40 +13353,30 @@ class ResonantApp {
                     path,
                     name: nameValue || this._projectNameFromPath(path),
                     count: counts.get(key) || 0,
-                    permanent: !!options.permanent,
                 });
                 candidateOrder.push(key);
                 return;
             }
             const existing = byKey.get(key);
             if (!existing.name && nameValue) existing.name = nameValue;
-            if (options.permanent) {
-                existing.permanent = true;
-                existing.name = nameValue || existing.name || 'Playground';
-            }
             existing.count = counts.get(key) || existing.count || 0;
         };
 
-        if (this.playgroundProject?.path) {
-            addProject(this.playgroundProject.path, this.playgroundProject.name || 'Playground', { permanent: true });
-        }
+        const playgroundKey = this.playgroundProject?.path
+            ? this._projectKey(this.playgroundProject.path)
+            : '';
         for (const project of (this.recentProjects || [])) {
+            if (this._projectKey(project?.path || '') === playgroundKey) continue;
             addProject(project?.path || '', project?.name || '');
         }
-        for (const session of (sessionPool || [])) {
-            addProject(session?.project_path || '', session?.project_name || '');
-        }
-        addProject(this.currentCwd, this._projectNameFromPath(this.currentCwd || ''));
 
         const allKeys = new Set(candidateOrder);
-        const playgroundKey = this.playgroundProject?.path ? this._projectKey(this.playgroundProject.path) : '';
         const previousOrder = Array.isArray(this._projectRailOrder) ? this._projectRailOrder : [];
         const orderedKeys = [];
         const pushKey = (key) => {
             if (key && allKeys.has(key) && !orderedKeys.includes(key)) orderedKeys.push(key);
         };
 
-        pushKey(playgroundKey);
         previousOrder.forEach(pushKey);
         candidateOrder.forEach(pushKey);
         this._projectRailOrder = orderedKeys;
@@ -13363,11 +13386,14 @@ class ResonantApp {
     renderProjectRail() {
         if (!this.railProjects) return;
         const projects = this._getProjectRailItems();
-        const currentPath = this._normalizeProjectPath(this.currentCwd || '');
+        const currentPath = this._normalizeProjectPath(
+            this._pendingProjectPath || this.currentCwd || '',
+        );
+        const currentKey = this._projectKey(currentPath);
         this.railProjects.innerHTML = '';
 
         for (const [index, project] of projects.entries()) {
-            const isActive = project.path === currentPath;
+            const isActive = project.key === currentKey;
             const [bg, bg2, border] = this._projectRailColor(index);
             const btn = document.createElement('button');
             btn.type = 'button';
@@ -13398,13 +13424,34 @@ class ResonantApp {
     _selectRailProject(path) {
         const norm = this._normalizeProjectPath(path);
         if (!norm) return;
-        const cur = this._normalizeProjectPath(this.currentCwd || '');
-        this._setProjectFilter(norm);
-        if (norm !== cur) {
-            this.selectProjectFolder(path);
-        } else {
+        const confirmed = this._normalizeProjectPath(this.currentCwd || '');
+        const cur = this._normalizeProjectPath(
+            this._pendingProjectPath || this.currentCwd || '',
+        );
+        if (norm === cur) {
             this.renderProjectRail();
+            return;
         }
+        if (norm === confirmed && !this._pendingProjectSwitchId) {
+            if (this._projectSwitchTimer) clearTimeout(this._projectSwitchTimer);
+            this._projectSwitchTimer = null;
+            this._pendingProjectPath = '';
+            this._setProjectFilter(norm);
+            this.renderProjectRail();
+            return;
+        }
+
+        // Keep the last of a burst of rail clicks. The pending path makes the
+        // highlight respond immediately without launching redundant indexing
+        // and model-discovery work for every intermediate project.
+        this._pendingProjectPath = norm;
+        this._setProjectFilter(norm);
+        this.renderProjectRail();
+        if (this._projectSwitchTimer) clearTimeout(this._projectSwitchTimer);
+        this._projectSwitchTimer = setTimeout(() => {
+            this._projectSwitchTimer = null;
+            this.selectProjectFolder(path);
+        }, 120);
     }
 
     // ── Project switcher dropdown ──────────────────────────────────────
@@ -13792,15 +13839,24 @@ class ResonantApp {
     }
 
     selectProjectFolder(path) {
-        this.send({ command: 'set_project', path });
+        if (this._projectSwitchTimer) clearTimeout(this._projectSwitchTimer);
+        this._projectSwitchTimer = null;
+        const projectSwitchId = `project-${Date.now()}-${++this._projectSwitchSequence}`;
+        this._latestProjectSwitchId = projectSwitchId;
+        this._pendingProjectSwitchId = projectSwitchId;
+        this._pendingProjectPath = this._normalizeProjectPath(path);
+        this.send({
+            command: 'set_project',
+            path,
+            project_switch_id: projectSwitchId,
+        });
 
         const short = path.replace(/\\/g, '/').split('/').pop();
-        this.currentCwd = path.replace(/\\/g, '/');
         this.headerProject.textContent = short;
         this.sidebarProjectName.textContent = short;
         this.sidebarCwd.textContent = path;
-        this._updateHeaderProjectPath(this.currentCwd);
-        this._projectFilter = this.currentCwd;
+        this._updateHeaderProjectPath(this._pendingProjectPath);
+        this._projectFilter = this._pendingProjectPath;
         this._pinnedOnly = false;
         this._projectFilterUserCleared = false;
         if (this.sidebarProjectSwitchLabel) this.sidebarProjectSwitchLabel.textContent = short;
@@ -13853,6 +13909,22 @@ class ResonantApp {
             const label = document.querySelector('.backend-label');
             if (label) label.textContent = 'Scanning backends...';
         }
+    }
+
+    _restoreConfirmedProjectSelection() {
+        const path = this._normalizeProjectPath(this.currentCwd || '');
+        if (path) {
+            const short = this._projectNameFromPath(path);
+            this.headerProject.textContent = short;
+            this.sidebarProjectName.textContent = short;
+            this.sidebarCwd.textContent = path;
+            this._updateHeaderProjectPath(path);
+            this._projectFilter = path;
+            if (this.sidebarProjectSwitchLabel) {
+                this.sidebarProjectSwitchLabel.textContent = short;
+            }
+        }
+        this.renderFilteredSessions();
     }
 
     handleDirList(event) {

@@ -161,18 +161,12 @@
     <div id="app">
         <nav id="activity-rail" aria-label="Primary">
             <div class="rail-top">
-                <!-- Brand mark, not a control — a <button> here invited
-                     clicks that did nothing. -->
-                <div class="rail-avatar" role="img" title="Resonant" aria-label="Resonant">
-                    <span class="rail-avatar-letter">R</span>
-                    <span class="rail-avatar-dot" aria-hidden="true"></span>
-                </div>
-                <div id="rail-projects" class="rail-projects" aria-label="Projects"></div>
-                <button id="rail-open-project" class="rail-btn" type="button" title="Open project" aria-label="Open project">
+                <button id="rail-open-project" class="rail-btn" type="button" title="Add project" aria-label="Add project">
                     <svg width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                         <path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"/>
                     </svg>
                 </button>
+                <div id="rail-projects" class="rail-projects" aria-label="Projects"></div>
             </div>
             <div class="rail-bottom">
                 <button class="rail-btn" type="button" data-view="settings" title="Settings" aria-label="Settings">

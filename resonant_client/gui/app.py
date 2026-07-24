@@ -8148,8 +8148,13 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif command == "set_project":
                 project_path = msg.get("path", "").strip()
+                project_switch_id = str(msg.get("project_switch_id", "")).strip()
                 if not project_path:
-                    await ws.send_json({"event": "error", "message": "Project path is required."})
+                    await ws.send_json({
+                        "event": "error",
+                        "message": "Project path is required.",
+                        "project_switch_id": project_switch_id,
+                    })
                     continue
                 try:
                     resolved_project_path = await asyncio.get_event_loop().run_in_executor(
@@ -8173,16 +8178,20 @@ async def websocket_endpoint(ws: WebSocket):
                             )
                         except Exception:
                             logger.exception("default runtime session after project switch failed")
-                    await ws.send_json(state.get_init_data())
+                    init_data = state.get_init_data()
+                    init_data["project_switch_id"] = project_switch_id
+                    await ws.send_json(init_data)
                     await ws.send_json({
                         "event": "ui_notice",
                         "message": f"Project ready: {resolved_project_path}",
+                        "project_switch_id": project_switch_id,
                     })
                 except Exception as exc:
                     logger.warning("set_project failed for %r: %s", project_path, exc)
                     await ws.send_json({
                         "event": "error",
                         "message": f"Couldn't open project folder: {exc}",
+                        "project_switch_id": project_switch_id,
                     })
 
             elif command == "check_updates":

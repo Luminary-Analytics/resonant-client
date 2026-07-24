@@ -10324,7 +10324,6 @@ body {
     display: none;
 }
 
-.rail-avatar,
 .rail-btn,
 .rail-project-icon {
     width: 34px;
@@ -10338,26 +10337,6 @@ body {
     justify-content: center;
     cursor: pointer;
     position: relative;
-}
-
-.rail-avatar {
-    color: #fff;
-    background: linear-gradient(180deg, #5b3b95, #2b2240);
-    border-color: rgba(255,255,255,.35);
-    box-shadow: inset 0 0 0 1px rgba(143,108,255,.4);
-    font-weight: 650;
-    cursor: default; /* brand mark, not a control */
-}
-
-.rail-avatar-dot {
-    position: absolute;
-    right: -2px;
-    top: 4px;
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: #d6d0ff;
-    border: 2px solid #0e0e0e;
 }
 
 .rail-btn:hover,

@@ -199,3 +199,68 @@ def test_app_state_applies_project_context_and_builds_project_scoped_session(mon
     assert state.codebase_index.project_path == Path(project_two)
     assert state.engram._namespace != first_namespace
     assert "project two instructions" in (session.project_instructions or "")
+
+
+def test_project_rail_puts_add_first_and_has_no_permanent_brand():
+    repo_root = Path(__file__).parent.parent
+    template = (repo_root / "resonant_client/gui/templates/index.html").read_text(
+        encoding="utf-8",
+    )
+
+    add_position = template.index('id="rail-open-project"')
+    projects_position = template.index('id="rail-projects"')
+
+    assert add_position < projects_position
+    assert 'aria-label="Add project"' in template
+    assert 'class="rail-avatar"' not in template
+
+
+def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
+    from starlette.testclient import TestClient
+
+    from resonant_client.gui import app as gui_app
+
+    target = tmp_path / "target"
+    target.mkdir()
+    original_project = str(tmp_path / "original")
+
+    monkeypatch.setattr(gui_app.state.project, "project_path", original_project)
+    monkeypatch.setattr(gui_app.state.project, "current_session", None)
+    monkeypatch.setattr(gui_app.state, "available_backends", {"dummy": {}})
+    monkeypatch.setattr(gui_app.state, "backend", object())
+    monkeypatch.setattr(gui_app.state, "backend_spec", object())
+    monkeypatch.setattr(gui_app.state, "session", None)
+    monkeypatch.setattr(gui_app.state, "codebase_index", object())
+    monkeypatch.setattr(gui_app.state, "ensure_project_path", lambda path: str(target))
+    monkeypatch.setattr(
+        gui_app.state,
+        "apply_project_context",
+        lambda path, refresh_index=True: setattr(gui_app.state.project, "project_path", path),
+    )
+    monkeypatch.setattr(gui_app.state, "detect_backends", lambda: None)
+    monkeypatch.setattr(gui_app.state, "ensure_default_runtime_session", lambda: None)
+    monkeypatch.setattr(
+        gui_app.state,
+        "get_init_data",
+        lambda refresh_only=False: {
+            "event": "init",
+            "refresh_only": refresh_only,
+            "cwd": gui_app.state.project.project_path.replace("\\", "/"),
+        },
+    )
+
+    with TestClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            websocket.send_json({
+                "command": "set_project",
+                "path": str(target),
+                "project_switch_id": "switch-latest",
+            })
+            init = websocket.receive_json()
+            notice = websocket.receive_json()
+
+    assert init["event"] == "init"
+    assert init["project_switch_id"] == "switch-latest"
+    assert init["cwd"] == str(target).replace("\\", "/")
+    assert notice["event"] == "ui_notice"
+    assert notice["project_switch_id"] == "switch-latest"

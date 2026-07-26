@@ -39,7 +39,15 @@ Ordered by leverage, from a repo-health pass at v0.11.6:
 
    The second slice also corrected the first one's judgement: 22 handlers were moved initially and the rest written off as run-loop-coupled, but re-measuring showed most of the remainder only touched `state`/`msg`/`ws`. The real test is whether a handler needs the endpoint's *locals* (`chat_runner`, the session/backend rebuild dance), not whether it mutates application state. It also surfaced that the git helpers read a module-level `AppState` singleton, so which repository they inspected was global state — they now take an explicit `project_path`.
 
-   Still open: the ~20 genuinely run-loop-coupled commands (`mission_*`, `autonomous_*`, `switch_session`, `set_project`, `shell_exec`, `cancel`, `steer`) need the coupling designed away rather than relocated. `AppState` is still 5,720 lines / 138 methods — of which ~75 harness/generator/evaluator methods (~3,700 lines) are domain logic with only a six-field dependency on GUI state, and are the obvious next extraction. `gui/static/app.js` is still a single ~14k-line `ResonantApp` class.
+   *Third slice landed:* the harness cluster left `AppState` for [`harness/prompts.py`](resonant_client/harness/prompts.py) — 95 methods and 4,439 lines, roughly four fifths of the class. Prompt construction for the generator and evaluator roles is domain logic; living on the GUI server's state object meant it could only be exercised by constructing the whole application. `HarnessPrompts` reaches its host through a stated 13-name surface, and [`tests/test_harness_prompts_seam.py`](tests/test_harness_prompts_seam.py) fails if any method reaches for something outside it, so the coupling cannot quietly grow back.
+
+   | | before | after |
+   |---|---:|---:|
+   | `gui/app.py` | 9,287 | 4,241 |
+   | `AppState` | 5,700 lines / 130 methods | 1,296 / 39 |
+   | `websocket_endpoint` | 2,398 / 82 commands | 2,186 / 58 |
+
+   Still open: the ~20 genuinely run-loop-coupled commands (`mission_*`, `autonomous_*`, `switch_session`, `set_project`, `shell_exec`, `cancel`, `steer`) need the coupling designed away rather than relocated. `gui/static/app.js` is still a single ~14k-line `ResonantApp` class and is now the largest single unit in the repo.
 6. **Tree-sitter has no test coverage.** `code_intelligence.py` imports it; nothing in `tests/` does. CI deliberately does not install the `code-intelligence` extra rather than pretend to cover that path.
 
 ### Waiting policy (2026-07-26)

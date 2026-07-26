@@ -193,6 +193,7 @@ def _make_daemon(
     full_reflect_cadence: int = 3,
     tick_pause_seconds: float = 0.0,
     intent_id: str = "test-intent",
+    decision_timeout_seconds: Optional[float] = None,
 ) -> tuple[AutonomousMissionDaemon, list[dict]]:
     """Build a daemon with an event-collecting on_event callback.
     Returns `(daemon, events_list)` so tests can inspect event order."""
@@ -208,6 +209,7 @@ def _make_daemon(
         max_iterations=max_iterations,
         full_reflect_cadence=full_reflect_cadence,
         tick_pause_seconds=tick_pause_seconds,
+        decision_timeout_seconds=decision_timeout_seconds,
     )
     daemon = AutonomousMissionDaemon(config, hooks, on_event=on_event)
     return daemon, events
@@ -1397,3 +1399,97 @@ class TestAtomicTerminalStateTransition:
         paused = _events_of_kind(events, "autonomous_mission_paused")
         assert len(paused) == 1
         assert paused[0]["new_phase"] == "autonomous_paused"
+
+
+# ══════════════════════════════════════════════════════════════════════
+# Park deadline
+#
+# A park blocks the entire mission on a person. Unattended, that is
+# indefinite dead wall-clock time that looks identical to healthy work.
+# ══════════════════════════════════════════════════════════════════════
+
+
+class TestParkDeadline:
+    def _request(self, **overrides):
+        request = {
+            "question": "Move the file or update the criterion?",
+            "options": [
+                {"id": "update", "label": "Update the criterion"},
+                {"id": "move", "label": "Move the file"},
+            ],
+        }
+        request.update(overrides)
+        return request
+
+    def test_default_option_prefers_the_declared_one(self):
+        pick = AutonomousMissionDaemon._default_decision_option(
+            self._request(default_option_id="move")
+        )
+        assert pick == "move"
+
+    def test_default_option_falls_back_to_the_first_offered(self):
+        pick = AutonomousMissionDaemon._default_decision_option(self._request())
+        assert pick == "update"
+
+    def test_declared_default_must_be_a_real_option(self):
+        """A nominated id that isn't offered must not be applied verbatim."""
+        pick = AutonomousMissionDaemon._default_decision_option(
+            self._request(default_option_id="not-an-option")
+        )
+        assert pick == "update"
+
+    def test_no_options_yields_no_default(self):
+        assert AutonomousMissionDaemon._default_decision_option({"options": []}) == ""
+        assert AutonomousMissionDaemon._default_decision_option({}) == ""
+
+    def test_wait_returns_after_the_deadline_without_a_response(self, tmp_path):
+        daemon, _ = _make_daemon(
+            tmp_path / "roadmap.md",
+            _make_hooks(_StubCallTracker()),
+            decision_timeout_seconds=0.2,
+        )
+        started = time.time()
+
+        proceeded = daemon._wait_for_decision(0.2)
+
+        assert proceeded is True
+        assert time.time() - started >= 0.2
+        # No human answered, so nothing is queued — that emptiness is the
+        # signal the caller uses to apply the declared default.
+        assert daemon._consume_pending_decision() == {}
+
+    def test_a_real_decision_still_wins_before_the_deadline(self, tmp_path):
+        daemon, _ = _make_daemon(
+            tmp_path / "roadmap.md",
+            _make_hooks(_StubCallTracker()),
+            decision_timeout_seconds=30.0,
+        )
+        threading.Timer(0.05, lambda: daemon.provide_decision("move", "go")).start()
+        started = time.time()
+
+        proceeded = daemon._wait_for_decision(30.0)
+
+        assert proceeded is True
+        assert time.time() - started < 5.0
+        assert daemon._consume_pending_decision()["option_id"] == "move"
+
+    def test_stop_still_beats_the_deadline(self, tmp_path):
+        daemon, _ = _make_daemon(
+            tmp_path / "roadmap.md",
+            _make_hooks(_StubCallTracker()),
+            decision_timeout_seconds=30.0,
+        )
+        threading.Timer(0.05, lambda: daemon.stop("user_stop")).start()
+
+        assert daemon._wait_for_decision(30.0) is False
+
+    def test_without_a_deadline_the_wait_is_still_unbounded(self, tmp_path):
+        """The opt-in must not silently change existing missions."""
+        daemon, _ = _make_daemon(
+            tmp_path / "roadmap.md", _make_hooks(_StubCallTracker()),
+        )
+        assert daemon.config.decision_timeout_seconds is None
+
+        # With no deadline the wait only ends on a decision or a stop.
+        threading.Timer(0.05, lambda: daemon.stop("user_stop")).start()
+        assert daemon._wait_for_decision(None) is False

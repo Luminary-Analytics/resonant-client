@@ -234,6 +234,20 @@ class AutonomousMissionConfig:
     # freeze the whole mission. On timeout we cancel the dispatch (which
     # unblocks the wait) and fail the iteration. None disables the ceiling.
     dispatch_timeout_seconds: Optional[float] = 3600.0
+    # Deadline for a parked human decision. A park blocks the whole mission on
+    # a person, and an unattended run can therefore burn hours of wall-clock
+    # doing nothing — the failure is invisible, because "parked" looks the same
+    # after ten seconds and after ten hours.
+    #
+    # When set, the daemon waits this long and then proceeds with the option
+    # REFLECT nominated as its default (`decision_request.default_option_id`,
+    # falling back to the first option). The choice is recorded and emitted as
+    # an auto-decision so the transcript never implies a human made it.
+    #
+    # None (the default) preserves the original wait-forever behaviour: a
+    # deadline is only safe when the request declares an option that is
+    # genuinely acceptable unattended, so opting in is the caller's call.
+    decision_timeout_seconds: Optional[float] = None
 
 
 # ── The daemon ──────────────────────────────────────────────────────────
@@ -422,14 +436,20 @@ class AutonomousMissionDaemon:
         self._decision_event.set()
         return was_parked
 
-    def _wait_for_decision(self) -> bool:
+    def _wait_for_decision(self, deadline_seconds: Optional[float] = None) -> bool:
         """Block until provide_decision() OR stop() is called.
 
         Returns True if a decision arrived (unblock + proceed), False
         if the daemon is being torn down (treat as a stop).
+
+        `deadline_seconds` bounds the wait. On expiry this returns True
+        WITHOUT a queued response; the caller detects the empty response and
+        applies the request's declared default. Expiry is not an error — the
+        run continues, it just continues unattended.
         """
         # Loop with short timeouts so the stop_event check fires
         # promptly even when the user takes hours to respond.
+        started = time.time()
         while True:
             if self._stop_event.is_set():
                 return False
@@ -439,6 +459,28 @@ class AutonomousMissionDaemon:
                 if self._stop_event.is_set():
                     return False
                 return True
+            if (
+                deadline_seconds
+                and deadline_seconds > 0
+                and (time.time() - started) >= deadline_seconds
+            ):
+                return True
+
+    @staticmethod
+    def _default_decision_option(request: dict) -> str:
+        """The option to apply when a park deadline expires.
+
+        Prefers whatever REFLECT explicitly nominated; otherwise the first
+        offered option, which is the convention REFLECT already follows when
+        ordering them (most conservative resolution first).
+        """
+        declared = str((request or {}).get("default_option_id") or "").strip()
+        options = (request or {}).get("options") or []
+        valid = [str(o.get("id") or "").strip() for o in options if isinstance(o, dict)]
+        valid = [o for o in valid if o]
+        if declared and declared in valid:
+            return declared
+        return valid[0] if valid else ""
 
     def _consume_pending_decision(self) -> dict:
         """Atomic read-and-clear of the latest decision response.
@@ -1096,13 +1138,51 @@ class AutonomousMissionDaemon:
                 self._set_activity("parked",
                     detail=outcome.decision_request.get("question", "")[:80],
                     specialist="reflect")
-                proceeded = self._wait_for_decision()
+                proceeded = self._wait_for_decision(
+                    self.config.decision_timeout_seconds,
+                )
                 if not proceeded:
                     # Daemon being torn down. Return the outcome as-is;
                     # the run loop's stop_event check will exit cleanly
                     # on the next iteration of the outer while-True.
                     return outcome
                 response = self._consume_pending_decision()
+                # An empty response means the deadline expired rather than a
+                # human answering. Apply the declared default and say so
+                # loudly: the transcript must never read as though someone
+                # made this call.
+                auto_decided = not response.get("option_id")
+                if auto_decided:
+                    fallback = self._default_decision_option(outcome.decision_request)
+                    if not fallback:
+                        # Nothing safe to pick. Keep the original semantics —
+                        # a park with no usable default stays parked rather
+                        # than inventing an answer.
+                        proceeded = self._wait_for_decision()
+                        if not proceeded:
+                            return outcome
+                        response = self._consume_pending_decision()
+                        auto_decided = False
+                    else:
+                        response = {
+                            "option_id": fallback,
+                            "response_text": "",
+                            "responded_at_iso": _now_iso(),
+                            "auto": True,
+                        }
+                        logger.warning(
+                            "Mission %s: no decision within %ss; proceeding with "
+                            "default option %r.",
+                            self.config.intent_id,
+                            self.config.decision_timeout_seconds,
+                            fallback,
+                        )
+                        self._emit("autonomous_decision_auto_applied", {
+                            "iter_count": self._iter_count,
+                            "option_id": fallback,
+                            "timeout_seconds": self.config.decision_timeout_seconds,
+                            "question": outcome.decision_request.get("question", ""),
+                        })
                 # Build a compact context string summarizing the
                 # user's choice. The model sees this verbatim as the
                 # "## User decision (act on this)" block in the next

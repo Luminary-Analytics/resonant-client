@@ -38,6 +38,33 @@ Ordered by leverage, from a repo-health pass at v0.11.6:
 5. **The monoliths.** *First slice landed:* the 22 self-contained WebSocket commands moved out of `websocket_endpoint` into [`gui/ws_commands.py`](resonant_client/gui/ws_commands.py), a registry of handlers that take an explicit `CommandContext` instead of closing over the endpoint's locals — they are now unit-testable with a stub socket (`tests/test_ws_command_registry.py`). The endpoint is down from ~2,580 to ~2,330 lines. Still open: the remaining ~30 commands are genuinely entangled with the run loop (chat runner, backend rebuilds, autonomous daemon) and need the coupling designed away rather than relocated; `AppState` is still ~120 methods; `gui/static/app.js` is still a single ~14k-line `ResonantApp` class.
 6. **Tree-sitter has no test coverage.** `code_intelligence.py` imports it; nothing in `tests/` does. CI deliberately does not install the `code-intelligence` extra rather than pretend to cover that path.
 
+### Waiting policy (2026-07-26)
+
+The two ways a mission can block are now one policy (`WaitPolicy` in
+`gui/autonomous_loop.py`) with two deliberately distinct members, because they
+need opposite recoveries:
+
+- **Parked on a person** (`human_seconds`) — REFLECT emitted a
+  `decision_request` it could not resolve alone. On expiry the daemon
+  *proceeds* with the nominated option: the work is fine, only the decision was
+  missing. Set per run from the launch card.
+- **A sub-mission grinding** (`dispatch_seconds`) — on expiry the dispatch is
+  *cancelled* and the iteration fails, because the sub-mission is the problem.
+  Now derived from the time budget instead of a fixed hour, which was wrong at
+  both ends: it let one sub-task consume an entire 1h mission, and it killed
+  legitimately long work on a multi-day run (each kill counts toward
+  `check_failed_streak_limit`, so two stop the mission).
+
+Both report expiry through one `autonomous_wait_expired` event carrying `kind`
+and `outcome`, so the GUI answers "why did this move on?" the same way
+regardless of which wait ended.
+
+Correction to the record: the stall ceiling was previously documented as
+guarding against a sub-mission calling `await_user` with no GUI and blocking
+forever. That is not possible — `LocalSpecialistRunner` runs sub-missions
+without an `on_user_input` callback, so `await_user` returns immediately. The
+ceiling guards genuine stalls only.
+
 ## Foundation status (pre-refocus, 2026-04-28)
 
 | # | Cluster | Plan | Status | Tasks shipped | Notes |

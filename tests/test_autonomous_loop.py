@@ -163,6 +163,10 @@ def _make_hooks(
                 summary=reflect_outcome.summary,
                 estimated_remaining_minutes=reflect_outcome.estimated_remaining_minutes,
                 error=reflect_outcome.error,
+                # Carried through so the decision-park path is reachable from
+                # tests at all. Dropping it here silently made the whole
+                # park / auto-apply branch untestable through this helper.
+                decision_request=reflect_outcome.decision_request,
             )
         return FullReflectOutcome(pass_result=pass_result, verdict="continue")
 
@@ -241,8 +245,13 @@ def _events_of_kind(events: list[dict], kind: str) -> list[dict]:
 class TestStallDetection:
     """The daemon-side wait monitor emits heartbeats during a blocking
     dispatch and enforces a ceiling — on timeout it cancels the stuck
-    sub-mission (the canonical hang: `await_user` with no GUI, where
-    `wait_for_dispatch` would otherwise block forever)."""
+    sub-mission.
+
+    This is the work-stall half of the mission's WaitPolicy. It is NOT the
+    human-decision wait: a sub-mission cannot block on a person, because
+    `LocalSpecialistRunner` runs it without an `on_user_input` callback and
+    `await_user` returns immediately. What this catches is a hung subprocess,
+    a non-terminating tool loop, or a model that never stops."""
 
     def test_timeout_cancels_stuck_dispatch(self, tmp_path):
         tracker = _StubCallTracker()
@@ -281,6 +290,15 @@ class TestStallDetection:
         assert 7 in tracker.cancelled_handles
         assert _events_of_kind(events, "autonomous_iteration_timeout")
         assert _events_of_kind(events, "autonomous_heartbeat")
+        # A stalled sub-mission reports through the same vocabulary as an
+        # expired human wait, tagged with which kind of wait ended and how it
+        # recovered — cancelling here, proceeding at the decision park.
+        expired = _events_of_kind(events, "autonomous_wait_expired")
+        assert expired, "stall ceiling must report through the shared wait vocabulary"
+        assert expired[0]["kind"] == "dispatch"
+        assert expired[0]["outcome"] == "cancelled"
+        assert expired[0]["item_id"] == "T1.1"
+        assert expired[0]["policy"]["dispatch_seconds"] == 0.3
 
     def test_fast_dispatch_no_timeout_no_cancel(self, tmp_path):
         tracker = _StubCallTracker()
@@ -366,6 +384,90 @@ class TestDaemonLifecycle:
         snap = daemon.state_snapshot()
         assert snap["iter_count"] == 0
         assert snap["is_running"] is False
+
+
+# ── The human half of the wait policy ───────────────────────────────────
+
+
+class TestParkedDecisionExpiry:
+    """The decision park, driven end to end rather than through the wait
+    primitive alone.
+
+    Opposite recovery from the stall ceiling above: an expired human wait
+    PROCEEDS with the option REFLECT nominated, because the work is fine and
+    only the decision was missing. Cancelling here would throw away good work
+    for the sake of an unanswered question.
+    """
+
+    def _hooks_with_decision(self, tracker, path, *, request):
+        return _make_hooks(
+            tracker,
+            reflect_outcome=FullReflectOutcome(
+                pass_result=ReflectPassResult(),
+                verdict="satisfied",
+                decision_request=request,
+            ),
+            flip_criteria_on_reflect=True,
+            roadmap_path=path,
+        )
+
+    def test_an_expired_park_proceeds_with_the_nominated_option(self, tmp_path):
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1 — first", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = self._hooks_with_decision(tracker, path, request={
+            "question": "Move the file or update the criterion?",
+            "default_option_id": "update",
+            "options": [
+                {"id": "move", "label": "Move the file"},
+                {"id": "update", "label": "Update the criterion"},
+            ],
+        })
+        daemon, events = _make_daemon(
+            path, hooks, max_iterations=1, full_reflect_cadence=1,
+            decision_timeout_seconds=0.2,
+        )
+
+        _run_daemon_to_completion(daemon, timeout=10.0)
+
+        applied = _events_of_kind(events, "autonomous_decision_auto_applied")
+        assert applied, "an expired park must proceed rather than hang"
+        assert applied[0]["option_id"] == "update"
+
+        expired = _events_of_kind(events, "autonomous_wait_expired")
+        assert expired[0]["kind"] == "human"
+        # The decisive contrast with the stall ceiling, which cancels.
+        assert expired[0]["outcome"] == "proceeded"
+        assert expired[0]["policy"]["human_seconds"] == 0.2
+
+    def test_a_park_with_no_usable_option_is_not_guessed_at(self, tmp_path):
+        """Bounding the wait must never mean inventing an answer."""
+        path = _build_roadmap_on_disk(
+            tmp_path,
+            items=[(1, "T1.1 — first", "")],
+            criteria=[("chrome", "click toggle")],
+        )
+        tracker = _StubCallTracker()
+        hooks = self._hooks_with_decision(tracker, path, request={
+            "question": "Something unanswerable",
+            "options": [],
+        })
+        daemon, events = _make_daemon(
+            path, hooks, max_iterations=1, full_reflect_cadence=1,
+            decision_timeout_seconds=0.2,
+        )
+        daemon.start()
+        # It must still be parked well after the deadline would have expired.
+        time.sleep(0.6)
+        still_parked = daemon.state_snapshot()["activity"]["phase"] == "parked"
+        daemon.stop("user_stop")
+        daemon.join(timeout=5.0)
+
+        assert still_parked
+        assert not _events_of_kind(events, "autonomous_decision_auto_applied")
 
 
 # ── Iteration happy path ────────────────────────────────────────────────

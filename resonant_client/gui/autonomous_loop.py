@@ -197,6 +197,79 @@ class DaemonHooks:
     checkpoint_hook: Optional[Callable[..., dict]] = None
 
 
+# ── Waiting policy ──────────────────────────────────────────────────────
+
+
+# No time budget (full auto) still deserves a stall guard, but there is no
+# mission length to scale it against.
+_DEFAULT_STALL_CEILING_SECONDS = 3600.0
+# A sub-mission that has consumed half the entire mission budget is pathological
+# regardless of how generous that budget was; the clamps keep the derived value
+# sane at both extremes.
+_MIN_STALL_CEILING_SECONDS = 900.0
+_MAX_STALL_CEILING_SECONDS = 14400.0
+
+# Distinguishes "the caller said no ceiling" from "the caller said nothing".
+_DERIVE_FROM_BUDGET = object()
+
+
+@dataclass(frozen=True)
+class WaitPolicy:
+    """How long the mission waits, and for what.
+
+    A mission blocks for two genuinely different reasons, and conflating them
+    produces the wrong recovery:
+
+    `human_seconds` — the daemon is parked on a person, because REFLECT emitted
+    a `decision_request` it could not resolve alone. Nothing proceeds without an
+    answer. On expiry the right move is to *continue* using the option REFLECT
+    nominated: the work is fine, only the decision is missing.
+
+    `dispatch_seconds` — one sub-mission is grinding. On expiry the right move
+    is the opposite: cancel it and fail the iteration, because the sub-mission
+    itself is the problem.
+
+    A note on history, because the previous rationale was stale and misled a
+    later reading of this code: the dispatch ceiling was documented as guarding
+    against a sub-mission calling `await_user` with no GUI attached and blocking
+    forever. That is no longer possible. `LocalSpecialistRunner` invokes
+    `session.run(node.goal)` with no `on_user_input` callback, and `await_user`
+    then returns "(no user available — proceed with your best judgment)"
+    immediately. The ceiling now guards only against genuine stalls: a hung
+    subprocess, a non-terminating tool loop, or a model that never stops.
+
+    Both durations use the same vocabulary as the time budget ("30m", "2h") so
+    there is one thing to learn.
+    """
+
+    human_seconds: Optional[float] = None
+    dispatch_seconds: Optional[float] = None
+
+    @staticmethod
+    def derive_stall_ceiling(time_budget_seconds: Optional[float]) -> float:
+        """Scale the stall ceiling to the mission it is protecting.
+
+        A fixed one-hour ceiling was wrong at both ends. On a 1h mission it
+        permitted a single sub-task to consume the entire budget; on a 48h
+        mission it killed legitimately long work — a large test suite or a slow
+        build — and each kill counts toward `check_failed_streak_limit`, so two
+        of them stop the whole mission.
+        """
+        if not time_budget_seconds or time_budget_seconds <= 0:
+            return _DEFAULT_STALL_CEILING_SECONDS
+        return max(
+            _MIN_STALL_CEILING_SECONDS,
+            min(_MAX_STALL_CEILING_SECONDS, time_budget_seconds * 0.5),
+        )
+
+    def describe(self) -> dict:
+        """Telemetry shape shared by both wait sites."""
+        return {
+            "human_seconds": self.human_seconds,
+            "dispatch_seconds": self.dispatch_seconds,
+        }
+
+
 # ── Configuration ───────────────────────────────────────────────────────
 
 
@@ -227,27 +300,37 @@ class AutonomousMissionConfig:
     # on a sub-mission, so the GUI can tell a slow-but-alive daemon apart
     # from a frozen one over a multi-day run. 0 disables.
     heartbeat_seconds: float = 30.0
-    # Hard ceiling on a single sub-mission dispatch. A Phase-1 item rarely
-    # needs an hour; exceeding this almost always means the sub-mission is
-    # stuck — the canonical case is it called `await_user` with no GUI
-    # attached, so `wait_for_dispatch` would otherwise block FOREVER and
-    # freeze the whole mission. On timeout we cancel the dispatch (which
-    # unblocks the wait) and fail the iteration. None disables the ceiling.
-    dispatch_timeout_seconds: Optional[float] = 3600.0
-    # Deadline for a parked human decision. A park blocks the whole mission on
-    # a person, and an unattended run can therefore burn hours of wall-clock
-    # doing nothing — the failure is invisible, because "parked" looks the same
-    # after ten seconds and after ten hours.
+    # ── Waiting. See WaitPolicy for why these are two settings, not one. ──
     #
-    # When set, the daemon waits this long and then proceeds with the option
-    # REFLECT nominated as its default (`decision_request.default_option_id`,
-    # falling back to the first option). The choice is recorded and emitted as
-    # an auto-decision so the transcript never implies a human made it.
+    # Stall ceiling for a single sub-mission dispatch. On expiry the dispatch is
+    # cancelled (which unblocks the wait) and the iteration fails. Left unset it
+    # is derived from the time budget; pass None explicitly to disable it.
+    dispatch_timeout_seconds: Any = _DERIVE_FROM_BUDGET
+    # Deadline for a parked human decision. A park blocks the whole mission on a
+    # person, and an unattended run can burn hours doing nothing — the failure
+    # is invisible, because "parked" looks the same after ten seconds and after
+    # ten hours. On expiry the daemon proceeds with the option REFLECT
+    # nominated, recorded as an auto-decision so the transcript never implies a
+    # human made it.
     #
-    # None (the default) preserves the original wait-forever behaviour: a
-    # deadline is only safe when the request declares an option that is
-    # genuinely acceptable unattended, so opting in is the caller's call.
+    # None (the default) waits indefinitely. A deadline is only safe when the
+    # request declares an option acceptable unattended, so opting in is the
+    # caller's call — the launch card asks for it per run.
     decision_timeout_seconds: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.dispatch_timeout_seconds is _DERIVE_FROM_BUDGET:
+            self.dispatch_timeout_seconds = WaitPolicy.derive_stall_ceiling(
+                self.time_budget_seconds,
+            )
+
+    @property
+    def wait_policy(self) -> WaitPolicy:
+        """The two waits as one object, for telemetry and for the wait sites."""
+        return WaitPolicy(
+            human_seconds=self.decision_timeout_seconds,
+            dispatch_seconds=self.dispatch_timeout_seconds,
+        )
 
 
 # ── The daemon ──────────────────────────────────────────────────────────
@@ -465,6 +548,22 @@ class AutonomousMissionDaemon:
                 and (time.time() - started) >= deadline_seconds
             ):
                 return True
+
+    def _emit_wait_expired(self, kind: str, waited_seconds: Optional[float], **extra) -> None:
+        """One event for "we stopped waiting", whatever we were waiting on.
+
+        The two waits recover differently — a human wait proceeds, a dispatch
+        wait cancels — but the GUI's question is the same either way ("why did
+        this move on?"), and the answer should not depend on which of two
+        unrelated event names it happened to learn.
+        """
+        self._emit("autonomous_wait_expired", {
+            "iter_count": self._iter_count,
+            "kind": kind,
+            "waited_seconds": waited_seconds,
+            "policy": self.config.wait_policy.describe(),
+            **extra,
+        })
 
     @staticmethod
     def _default_decision_option(request: dict) -> str:
@@ -948,18 +1047,20 @@ class AutonomousMissionDaemon:
           * Heartbeat — emit `autonomous_heartbeat` every
             `config.heartbeat_seconds` so the GUI can tell a slow-but-
             alive wait apart from a frozen daemon.
-          * Stall ceiling — if the wait exceeds
-            `config.dispatch_timeout_seconds`, cancel the in-flight
-            dispatch (which unblocks `wait_for_dispatch`) and report a
-            timeout. Catches the otherwise-infinite hang where a
-            sub-mission called `await_user` with no GUI attached.
+          * Stall ceiling — if the wait exceeds the policy's
+            `dispatch_seconds`, cancel the in-flight dispatch (which
+            unblocks `wait_for_dispatch`) and report a timeout.
+
+        This is the work-stall half of the mission's WaitPolicy; the
+        human half lives at the decision-park in `_run_full_reflect`.
+        Cancelling is right here and wrong there — see WaitPolicy.
 
         Returns the DispatchOutcome (a synthesized failure/timeout
         outcome when the wait raises or the ceiling trips)."""
         timed_out = {"flag": False}
         monitor_stop = threading.Event()
         hb = self.config.heartbeat_seconds or 0.0
-        ceiling = self.config.dispatch_timeout_seconds
+        ceiling = self.config.wait_policy.dispatch_seconds
 
         def _monitor() -> None:
             # Tick at the heartbeat cadence (fall back to 30s when only
@@ -979,9 +1080,11 @@ class AutonomousMissionDaemon:
                         and not timed_out["flag"]):
                     timed_out["flag"] = True
                     logger.warning(
-                        "Dispatch for %s exceeded the %.0fs ceiling; "
-                        "cancelling the sub-mission (likely stalled — e.g. "
-                        "awaiting user input with no GUI attached).",
+                        "Dispatch for %s exceeded the %.0fs stall ceiling; "
+                        "cancelling the sub-mission (hung process, "
+                        "non-terminating tool loop, or a model that never "
+                        "stops). This is NOT the human-decision wait — see "
+                        "WaitPolicy.",
                         item.id, ceiling,
                     )
                     self._emit("autonomous_iteration_timeout", {
@@ -989,6 +1092,12 @@ class AutonomousMissionDaemon:
                         "item_id": item.id,
                         "timeout_seconds": ceiling,
                     })
+                    self._emit_wait_expired(
+                        "dispatch",
+                        ceiling,
+                        outcome="cancelled",
+                        item_id=item.id,
+                    )
                     try:
                         self.hooks.cancel_dispatch(handle)
                     except Exception:
@@ -1183,6 +1292,13 @@ class AutonomousMissionDaemon:
                             "timeout_seconds": self.config.decision_timeout_seconds,
                             "question": outcome.decision_request.get("question", ""),
                         })
+                        self._emit_wait_expired(
+                            "human",
+                            self.config.decision_timeout_seconds,
+                            outcome="proceeded",
+                            option_id=fallback,
+                            question=outcome.decision_request.get("question", ""),
+                        )
                 # Build a compact context string summarizing the
                 # user's choice. The model sees this verbatim as the
                 # "## User decision (act on this)" block in the next

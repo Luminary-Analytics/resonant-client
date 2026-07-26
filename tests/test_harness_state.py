@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -11,7 +10,6 @@ from resonant_client.harness.state import (
     LEGACY_HARNESS_DIRNAME,
     HarnessWorkspace,
     ProgressState,
-    SprintContract,
 )
 
 

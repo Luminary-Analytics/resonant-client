@@ -162,7 +162,7 @@ def main() -> int:
 
     print("=" * 70)
     print(f"BOOTSTRAP-ROGUELITE SMOKE — model={model_label}")
-    print(f"  spec: 6 [bash] criteria, multi-file scaffold")
+    print("  spec: 6 [bash] criteria, multi-file scaffold")
     print("=" * 70)
     print()
 
@@ -228,9 +228,9 @@ def main() -> int:
                   f"reason={payload.get('stop_reason')} "
                   f"elapsed={payload.get('elapsed_seconds', 0):.0f}s")
 
-    print(f"-" * 70)
+    print("-" * 70)
     print(f"Dispatching mission with {model_label} ({model_id})…")
-    print(f"-" * 70)
+    print("-" * 70)
 
     started_at = time.time()
 

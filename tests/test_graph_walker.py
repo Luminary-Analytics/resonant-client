@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import threading
-from typing import Callable
 
-import pytest
 
 from resonant_client.orchestration import (
     GraphWalker,

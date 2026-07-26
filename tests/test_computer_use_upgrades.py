@@ -17,8 +17,6 @@ from __future__ import annotations
 
 import io
 import os
-import shutil
-import sys
 import time
 from pathlib import Path
 

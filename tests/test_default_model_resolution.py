@@ -155,3 +155,33 @@ class TestDefaultChatBackendChoice:
         state.available_backends = {"codex": {"models": ["gpt-5.5"]}}
 
         assert state.default_chat_backend_choice() == ("codex", "gpt-5.5")
+
+
+class TestProjectChatBackendChoice:
+    def test_keeps_latest_project_model_when_provider_catalog_temporarily_loses_it(self):
+        state = AppState.__new__(AppState)
+        state.project = MagicMock()
+        state.project.current_session = None
+        state.project.list_sessions.return_value = [{
+            "backend_type": "exo",
+            "model": "mlx-community/GLM-5.2-mxfp4",
+            "updated_at": 20,
+        }]
+        state.default_chat_backend_choice = MagicMock(
+            return_value=("exo", "mlx-community/Llama-3.2-3B-Instruct-4bit")
+        )
+
+        assert state.project_chat_backend_choice() == (
+            "exo",
+            "mlx-community/GLM-5.2-mxfp4",
+        )
+        state.default_chat_backend_choice.assert_not_called()
+
+    def test_falls_back_to_global_default_for_project_without_history(self):
+        state = AppState.__new__(AppState)
+        state.project = MagicMock()
+        state.project.current_session = None
+        state.project.list_sessions.return_value = []
+        state.default_chat_backend_choice = MagicMock(return_value=("codex", "gpt-5.5"))
+
+        assert state.project_chat_backend_choice() == ("codex", "gpt-5.5")

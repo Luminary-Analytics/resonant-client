@@ -264,3 +264,65 @@ def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
     assert init["cwd"] == str(target).replace("\\", "/")
     assert notice["event"] == "ui_notice"
     assert notice["project_switch_id"] == "switch-latest"
+
+
+def test_duplicate_new_session_request_is_idempotent(monkeypatch, tmp_path):
+    from starlette.testclient import TestClient
+
+    from resonant_client.gui import app as gui_app
+
+    class ProjectStub:
+        project_path = str(tmp_path)
+        current_session = None
+
+        def __init__(self):
+            self.created = 0
+
+        def create_session(self, **kwargs):
+            self.created += 1
+            self.current_session = SimpleNamespace(id=f"session-{self.created}")
+            return self.current_session
+
+        def list_sessions(self):
+            if not self.current_session:
+                return []
+            return [{"id": self.current_session.id}]
+
+    project = ProjectStub()
+    monkeypatch.setattr(gui_app.state, "project", project)
+    monkeypatch.setattr(gui_app.state, "available_backends", {"exo": {"models": ["glm"]}})
+    monkeypatch.setattr(gui_app.state, "backend", _DummyBackend(name="exo", model="glm"))
+    monkeypatch.setattr(gui_app.state, "backend_spec", SimpleNamespace())
+    monkeypatch.setattr(gui_app.state, "session", SimpleNamespace())
+    monkeypatch.setattr(gui_app.state, "codebase_index", object())
+    monkeypatch.setattr(gui_app.state, "build_session", lambda **kwargs: SimpleNamespace())
+    monkeypatch.setattr(gui_app.state.costs, "reset_session", lambda: None)
+
+    with TestClient(gui_app.app) as client:
+        with client.websocket_connect("/ws") as websocket:
+            request = {
+                "command": "clear",
+                "session_role": "generator",
+                "request_id": "new-session-intent-1",
+            }
+            websocket.send_json(request)
+            first = websocket.receive_json()
+            websocket.send_json(request)
+            duplicate = websocket.receive_json()
+
+    assert project.created == 1
+    assert first == duplicate
+    assert first["event"] == "session_cleared"
+    assert first["request_id"] == "new-session-intent-1"
+    assert first["current_session_id"] == "session-1"
+
+
+def test_backend_selection_does_not_persist_an_empty_session():
+    repo_root = Path(__file__).parent.parent
+    source = (repo_root / "resonant_client/gui/app.py").read_text(encoding="utf-8")
+    start = source.index('            elif command == "select_backend":')
+    end = source.index('            elif command == "message":', start)
+
+    assert "create_session(" not in source[start:end]
+    assert "state.project.current_session = None" in source[start:end]
+    assert "state.project.current_session = previous_record" in source[start:end]

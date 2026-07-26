@@ -19,14 +19,12 @@ from __future__ import annotations
 
 import os
 import time
-from pathlib import Path
 
 import pytest
 
 from resonant_client.gui.roadmap import (
     AcceptanceCriterion,
     CRITERION_TYPES,
-    IterationLogEntry,
     Roadmap,
     RoadmapItem,
     add_item,

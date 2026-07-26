@@ -14,7 +14,6 @@ import pytest
 
 from resonant_client.orchestration.skill_loader import (
     DEFAULT_MAX_SKILLS,
-    DEFAULT_MIN_MATCH_SCORE,
     LoadedSkill,
     format_skills_for_prompt,
     loaded_skill_ids,

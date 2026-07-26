@@ -18,13 +18,11 @@ runs (out of scope for unit tests).
 
 from __future__ import annotations
 
-from typing import Optional
 
 import pytest
 
 from resonant_client.gui.roadmap import AcceptanceCriterion
 from resonant_client.orchestration.acceptance_check import (
-    DEFAULT_VISION_MODEL,
     BashAssertion,
     BashRunner,
     CheckContext,

@@ -180,7 +180,7 @@ def main() -> int:
 
     print("=" * 70)
     print(f"AUTONOMOUS MISSION COUNTER SMOKE — model={model_label}")
-    print(f"  spec: 4 [bash] criteria, wordcount.py CLI utility")
+    print("  spec: 4 [bash] criteria, wordcount.py CLI utility")
     print("=" * 70)
     print()
 
@@ -259,9 +259,9 @@ def main() -> int:
                 f"elapsed={payload.get('elapsed_seconds', 0):.0f}s"
             )
 
-    print(f"-" * 70)
+    print("-" * 70)
     print(f"Dispatching mission with {model_label} ({model_id})…")
-    print(f"-" * 70)
+    print("-" * 70)
 
     started_at = time.time()
 

@@ -21,10 +21,7 @@ import pytest
 from resonant_client.harness.service import HarnessService
 from resonant_client.harness.state import (
     HarnessWorkspace,
-    ProductSpec,
-    ProgressState,
     SprintContract,
-    EvaluatorReport,
 )
 
 

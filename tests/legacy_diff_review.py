@@ -19,8 +19,6 @@ from resonant_client.engine.diff_review import (
     _review_file_edit,
     _review_file_write,
     _review_bash,
-    _DANGEROUS_PATTERNS,
-    _SENSITIVE_FILES,
 )
 
 PASSED = 0

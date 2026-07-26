@@ -56,6 +56,21 @@ jobs:
           python-version: '3.13'
           cache: 'pip'
 
+      # Correctness gate. A signed installer that auto-updates every deployed
+      # copy of Resonant is the last artifact that should ever be cut from a red
+      # tree, and a tag push can race ahead of the PR that `tests.yml` gated.
+      # ~2 minutes against a 30-minute job budget.
+      - name: Install for tests
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev]"
+
+      - name: Lint
+        run: python -m ruff check .
+
+      - name: Test
+        run: python -m pytest -q
+
       - name: Build PyInstaller bundle
         shell: pwsh
         run: |

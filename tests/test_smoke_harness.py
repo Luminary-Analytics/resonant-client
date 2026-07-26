@@ -9,13 +9,11 @@ unit-test sensibly.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from resonant_client.smoke import (
     MODELS,
-    SPECS,
     FlakyPlannerBackend,
     SmokeResult,
     VarianceReport,
@@ -1147,7 +1145,6 @@ class TestCISpecResult:
 
     def test_failing_when_converged_but_baseline_regression(self):
         # Construct a BaselineDiff with regressions populated.
-        from resonant_client.smoke import BaselineDiff
         diff = BaselineDiff(
             spec_name="x", model_label="pro",
             baseline_n=3, current_n=3,
@@ -1209,7 +1206,6 @@ class TestCISuiteResult:
         assert suite.exit_code() == 1
 
     def test_has_any_regression_propagates(self):
-        from resonant_client.smoke import BaselineDiff
         diff = BaselineDiff(
             spec_name="wordcount", model_label="pro",
             baseline_n=3, current_n=3,
@@ -1288,7 +1284,6 @@ class TestRenderCIMarkdown:
         assert "## Baseline diffs" not in md
 
         # Inject a diff with a regression.
-        from resonant_client.smoke import BaselineDiff
         suite = self._ok_suite()
         suite.spec_results[0].baseline_diff = BaselineDiff(
             spec_name="minimal", model_label="pro",

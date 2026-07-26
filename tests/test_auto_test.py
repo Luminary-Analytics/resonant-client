@@ -7,9 +7,7 @@ Tests for resonant_client/engine/auto_test.py
 from __future__ import annotations
 
 import shutil
-import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 

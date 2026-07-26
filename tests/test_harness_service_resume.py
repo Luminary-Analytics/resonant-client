@@ -91,7 +91,7 @@ def populated_workspace(state_home, project_dir):
         validation_checks=["v1", "v2", "v3", "v4", "v5", "v6"],
         validation_artifacts=["a1", "a2", "a3", "a4", "a5", "a6"],
         acceptance_evidence={
-            f"check{i}": f"evidence " * 30  # ~210 chars each → triggers truncation
+            f"check{i}": "evidence " * 30  # ~210 chars each → triggers truncation
             for i in range(1, 7)
         },
     ))

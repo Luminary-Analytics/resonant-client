@@ -43,9 +43,7 @@ Covered here:
 from __future__ import annotations
 
 import threading
-from typing import Optional
 
-import pytest
 
 from resonant_client.engine.session import (
     Session,

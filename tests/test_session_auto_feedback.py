@@ -139,7 +139,6 @@ class TestSessionDefaults:
     """Make sure new fields are initialized on a freshly-constructed Session."""
 
     def test_defaults(self):
-        from resonant_client.backends import OllamaBackend
         # Use a dummy backend object — we just need __init__ to run
         class _Stub:
             name = "stub"

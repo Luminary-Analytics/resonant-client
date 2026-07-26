@@ -10,7 +10,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
 
 from resonant_client.gui import roadmap as roadmap_module
 from resonant_client.gui.autonomous_loop import (
@@ -25,10 +24,8 @@ from resonant_client.gui.roadmap import (
     Roadmap,
 )
 from resonant_client.orchestration.acceptance_check import (
-    BashRunner,
     CheckContext,
 )
-from resonant_client.orchestration.reflect import ReflectPassResult
 
 
 def _build_roadmap(tmp_path, n_items=3):

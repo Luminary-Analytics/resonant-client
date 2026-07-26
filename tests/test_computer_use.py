@@ -12,10 +12,8 @@ Tests cover:
 """
 
 import base64
-import json
 import time
-import pytest
-from unittest.mock import patch, MagicMock, PropertyMock
+from unittest.mock import patch, MagicMock
 
 # ── ScreenScale Tests ─────────────────────────────────────────────────
 
@@ -198,8 +196,6 @@ class TestScreenOCR:
         """OCR should fail gracefully when dependencies missing."""
         from resonant_client.engine.computer_use import exec_screen_ocr
         with patch.dict("sys.modules", {"mss": None}):
-            import importlib
-            from resonant_client.engine import computer_use
             # Should handle ImportError
             result = exec_screen_ocr({}, start=time.time())
             # Either error about deps or actually runs (if mss is installed)

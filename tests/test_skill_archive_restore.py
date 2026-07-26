@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 import time
-from pathlib import Path
 
 import pytest
 
@@ -20,7 +19,6 @@ from resonant_client.orchestration.skills import (
     load_skill,
     restore_skill,
     save_skill,
-    skill_dir,
 )
 from resonant_client.orchestration.skill_cli import build_parser, main
 

@@ -36,12 +36,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-import pytest
 
 from resonant_client.gui.roadmap import (
-    AcceptanceCriterion,
     Roadmap,
-    RoadmapItem,
 )
 from resonant_client.orchestration.acceptance_check import (
     BashRunner,

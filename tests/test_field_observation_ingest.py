@@ -15,12 +15,10 @@ Tests cover:
 from __future__ import annotations
 
 import textwrap
-from pathlib import Path
 
 import pytest
 
 from resonant_client.orchestration.field_observation_ingest import (
-    IngestResult,
     _parse_field_observation_md,
     ingest_field_observation_dir,
     ingest_field_observation_file,

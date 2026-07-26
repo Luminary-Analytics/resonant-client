@@ -16,9 +16,7 @@ Coverage:
 """
 from __future__ import annotations
 
-from pathlib import Path
 
-import pytest
 
 from resonant_client.engine.tools import (
     _exec_file_edit,

@@ -14,14 +14,10 @@ Coverage:
 from __future__ import annotations
 
 import subprocess
-from pathlib import Path
 
-import pytest
 
 from resonant_client.orchestration.grill_me import extract_spec
 from resonant_client.smoke.specs import (
-    SPECS,
-    SmokeSpec,
     get_spec,
     list_spec_names,
 )

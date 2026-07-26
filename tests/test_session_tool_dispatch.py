@@ -23,7 +23,6 @@ NOT covered here (intentionally — they need real tool execution):
 """
 from __future__ import annotations
 
-import pytest
 
 from resonant_client.engine.session import Session
 from tests.streaming_stub import (
@@ -31,7 +30,6 @@ from tests.streaming_stub import (
     done,
     events_of_kind,
     first_of_kind,
-    text_delta,
     tool_call,
 )
 

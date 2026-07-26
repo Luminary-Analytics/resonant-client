@@ -26,7 +26,6 @@ from __future__ import annotations
 import threading
 import time
 
-import pytest
 
 from resonant_client.gui import roadmap as roadmap_module
 from resonant_client.gui.autonomous_loop import (

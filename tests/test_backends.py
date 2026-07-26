@@ -149,6 +149,23 @@ class TestDetectJsonToolCalls:
         assert result[0]["name"] == "bash"
 
     @pytest.mark.unit
+    def test_parameters_alias_and_llama_control_tokens_are_recovered(self):
+        text = (
+            '{"name":"await_user","parameters":{"question":"Choose","options":'
+            '["A","B"],"recommended_option":"A"}}'
+            "<|eom_id|><|start_header_id|>assistant<|end_header_id|>"
+        )
+        result = _detect_json_tool_calls(text)
+
+        assert len(result) == 1
+        assert result[0]["name"] == "await_user"
+        assert json.loads(result[0]["arguments"]) == {
+            "question": "Choose",
+            "options": ["A", "B"],
+            "recommended_option": "A",
+        }
+
+    @pytest.mark.unit
     def test_multiple_tool_calls(self):
         text = (
             '{"name": "bash", "arguments": {"command": "ls"}} '

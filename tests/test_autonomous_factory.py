@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
-from pathlib import Path
 
-import pytest
 
 from resonant_client.gui.autonomous_factory import (
     DispatchTracker,
@@ -27,11 +25,9 @@ from resonant_client.gui.autonomous_factory import (
     parse_reflect_verdict,
     _last_balanced_json_block,
 )
-from resonant_client.gui.autonomous_loop import DispatchOutcome
 from resonant_client.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
-    RoadmapItem,
 )
 from resonant_client.orchestration.reflect import ReflectPassResult
 

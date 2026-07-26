@@ -13,9 +13,6 @@ load-bearing coverage).
 """
 from __future__ import annotations
 
-import json
-import time
-from pathlib import Path
 
 import pytest
 
@@ -29,7 +26,7 @@ from resonant_client.orchestration.skill_mission_extraction import (
     parse_extractor_response,
     should_extract_from_iter,
 )
-from resonant_client.orchestration.skills import Skill, load_skill
+from resonant_client.orchestration.skills import load_skill
 from tests.streaming_stub import StreamingBackend, done, error, text_delta
 
 

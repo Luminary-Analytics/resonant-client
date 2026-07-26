@@ -14,10 +14,7 @@ fundamentally-broken planner. Works for both PLAN and PLAN_DEEP.
 """
 from __future__ import annotations
 
-import threading
-from unittest.mock import MagicMock
 
-import pytest
 
 from resonant_client.orchestration.plan_graph import (
     NodeSpecialization,

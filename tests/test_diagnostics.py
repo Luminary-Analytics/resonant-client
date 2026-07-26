@@ -12,15 +12,12 @@ leaking API keys. Coverage is split:
 from __future__ import annotations
 
 import json
-import time
 import zipfile
 from pathlib import Path
 
 import pytest
 
 from resonant_client.gui.diagnostics import (
-    LATEST_N_INTENTS,
-    LATEST_N_SESSIONS,
     build_diagnostics_zip,
     default_output_dir,
     redact,

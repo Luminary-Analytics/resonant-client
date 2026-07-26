@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from resonant_client.protocol import parse_tool_calls
 

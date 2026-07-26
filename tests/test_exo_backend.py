@@ -13,6 +13,7 @@ from resonant_client.backends import (
     EVENT_DONE,
     EVENT_ERROR,
     EVENT_TEXT_DELTA,
+    EVENT_TOOL_CALL,
     ExoBackend,
     create_backend,
 )
@@ -75,6 +76,42 @@ def test_exo_streams_openai_chat_without_auth_or_output_cap():
     assert (EVENT_TEXT_DELTA, {"delta": "Ready"}) in events
     done = next(data for event, data in events if event == EVENT_DONE)
     assert done["stats"] == {"input_tokens": 12, "output_tokens": 4, "cached_tokens": 0}
+
+
+def test_exo_recovers_text_encoded_tool_call_without_leaking_protocol():
+    raw_call = (
+        '{"name":"await_user","parameters":{"question":"How should I proceed?",'
+        '"options":["Inspect safely","Stop"],'
+        '"recommended_option":"Inspect safely"}}'
+        "<|eom_id|><|start_header_id|>assistant<|end_header_id|>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/state":
+            return httpx.Response(
+                200,
+                json={"instances": {"ready": {"modelId": "local/model"}}},
+            )
+        return httpx.Response(
+            200,
+            text=_sse_response([
+                {"id": "exo-tool", "choices": [{"delta": {"content": raw_call[:45]}}]},
+                {"id": "exo-tool", "choices": [{"delta": {"content": raw_call[45:]}}]},
+            ]),
+        )
+
+    backend = ExoBackend(
+        "local/model",
+        base_url="http://exo.test:52415/v1",
+        transport=httpx.MockTransport(handler),
+    )
+    events = list(backend.stream("Work", [], "system", []))
+
+    assert not any(event == EVENT_TEXT_DELTA for event, _ in events)
+    tool = next(data for event, data in events if event == EVENT_TOOL_CALL)
+    assert tool["name"] == "await_user"
+    assert json.loads(tool["arguments"])["recommended_option"] == "Inspect safely"
+    assert tool["assistant_content"] == ""
 
 
 def test_exo_catalog_prioritizes_downloaded_models(monkeypatch):

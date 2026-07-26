@@ -11,11 +11,7 @@ test_autonomous_pause / test_human_decision_park files.
 """
 from __future__ import annotations
 
-import threading
-import time
-from pathlib import Path
 
-import pytest
 
 from resonant_client.gui import roadmap as roadmap_module
 from resonant_client.gui.autonomous_loop import (

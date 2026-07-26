@@ -11,7 +11,6 @@ WebSocket plumbing itself is exercised by the live GUI.
 from __future__ import annotations
 
 import time
-from pathlib import Path
 
 import pytest
 

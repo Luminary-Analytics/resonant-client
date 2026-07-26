@@ -18,11 +18,8 @@ responses in sequence. No live network.
 from __future__ import annotations
 
 import threading
-from contextlib import contextmanager
-from typing import Iterator
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from resonant_client.backends import (
     _OLLAMA_BASE_BACKOFF,

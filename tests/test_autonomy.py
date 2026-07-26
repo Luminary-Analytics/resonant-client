@@ -4,13 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
 
 from resonant_client.orchestration import (
-    AutonomySettings,
     DEFAULT_BUDGET_USD_MAX,
-    DEFAULT_PROTECTED_BRANCHES,
-    FloorViolation,
     check_floor,
 )
 

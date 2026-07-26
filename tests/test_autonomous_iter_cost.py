@@ -9,11 +9,9 @@ from __future__ import annotations
 
 import threading
 
-import pytest
 
 from resonant_client.gui.autonomous_iter_cost import (
     AutonomousIterCostTracker,
-    IterCostSnapshot,
 )
 
 

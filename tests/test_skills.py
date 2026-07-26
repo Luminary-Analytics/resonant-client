@@ -8,7 +8,6 @@ import pytest
 
 from resonant_client.orchestration import (
     NodeSpecialization,
-    NodeStatus,
     PlanGraph,
     PlanNode,
     Skill,

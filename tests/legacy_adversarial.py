@@ -10,7 +10,6 @@ import os
 import sys
 import tempfile
 import threading
-import time
 
 # Fix encoding on Windows
 if sys.platform == "win32":

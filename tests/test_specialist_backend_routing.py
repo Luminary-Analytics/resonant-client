@@ -16,17 +16,14 @@ local-first positioning.
 """
 from __future__ import annotations
 
-import os
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from resonant_client.backends import OllamaBackend
 from resonant_client.gui.app import AppState
 from resonant_client.orchestration import (
     LocalSpecialistRunner,
     NodeSpecialization,
-    NodeStatus,
     PlanGraph,
     PlanNode,
     new_node_id,

@@ -9,7 +9,6 @@ Three things ship in this alpha:
 """
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 

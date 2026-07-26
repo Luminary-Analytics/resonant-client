@@ -1,0 +1,66 @@
+name: Tests
+
+# The correctness gate for the repo.
+#
+# Why this exists:
+#   Until v0.11.6 the only CI on this project was `build-check.yml`, which
+#   builds the PyInstaller bundle and asks the frozen exe to print its version.
+#   That catches packaging bugs (see bug #12) and nothing else. The 2,700+ test
+#   suite ran only when a developer remembered to run it, and `release.yml`
+#   would happily cut a signed installer from a red tree.
+#
+#   The suite takes ~2 minutes. There is no good reason not to gate on it.
+#
+# Note the deliberately broad path filter compared to build-check.yml: that
+# workflow ignores `tests/**`, so a test-only change used to trigger no CI at
+# all. Correctness CI must run when the tests themselves change.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    # windows-latest matches the platform Resonant actually ships on, and the
+    # platform-sensitive parts of the harness (subprocess-tree cancellation,
+    # path validation, the grep/glob tools) behave differently elsewhere.
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install
+        # Deliberately NOT installing the `code-intelligence` extra. Nothing in
+        # tests/ imports tree_sitter, so the extra buys no coverage — it would
+        # only change which import branch `code_intelligence.py` takes, on a
+        # path this suite has never exercised. Matching the environment the
+        # suite is actually verified against keeps a red gate meaningful.
+        # Covering tree-sitter properly is a test-writing job, not a CI flag.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev]"
+
+      - name: Lint
+        # `resonant_client/**` is held to ruff's full default rule set. Test and
+        # support code carries narrow per-file exemptions declared in
+        # pyproject.toml rather than being excluded outright.
+        run: python -m ruff check .
+
+      - name: Test
+        # -q overrides the `-v` in pyproject addopts (CLI args win) to keep the
+        # CI log readable; failures still print with --tb=short.
+        run: python -m pytest -q

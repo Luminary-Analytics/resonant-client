@@ -280,4 +280,19 @@ def test_settings_navigation_is_idempotent_and_background_events_cannot_close_it
 
     new_start = source.index("    startNewSession() {")
     new_end = source.index("\n    showNewSessionSetup()", new_start)
-    assert "if (this.currentView !== 'agents') this.switchView('agents');" in source[new_start:new_end]
+    new_session_body = source[new_start:new_end]
+    assert "if (this.currentView !== 'agents') this.switchView('agents');" in new_session_body
+    assert "if (this._newSessionInflight)" in new_session_body
+    assert "request_id: this._newSessionRequestId" in new_session_body
+    assert "button.disabled = true" in new_session_body
+
+
+def test_model_selector_preserves_a_temporarily_unavailable_current_model():
+    source = APP_JS.read_text(encoding="utf-8")
+    start = source.index("    _populateSelectWithGroupedModels(")
+    end = source.index("\n    populateModelSelector(", start)
+    body = source[start:end]
+
+    assert "Current selection" in body
+    assert "temporarily unavailable" in body
+    assert "unavailable.selected = true" in body

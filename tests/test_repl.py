@@ -15,7 +15,6 @@ Node tests are skipped when `node` is not on PATH (Windows CI may lack it).
 from __future__ import annotations
 
 import shutil
-import time
 
 import pytest
 

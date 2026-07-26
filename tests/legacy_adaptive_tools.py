@@ -8,7 +8,6 @@ Tests cover:
 """
 
 import json
-import re
 import sys
 import threading
 import unittest
@@ -28,7 +27,6 @@ from resonant_client.backends import (
     OllamaBackend,
     _detect_json_tool_calls,
     _detect_text_tool_calls,
-    _build_simple_tool_call,
     _convert_tools_for_ollama,
 )
 

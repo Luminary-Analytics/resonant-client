@@ -17,9 +17,6 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Optional
 
 import pytest
 
@@ -40,10 +37,8 @@ from resonant_client.gui.roadmap import (
     Roadmap,
 )
 from resonant_client.orchestration.acceptance_check import (
-    BashRunner,
     CheckContext,
 )
-from resonant_client.orchestration.reflect import ReflectPassResult
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────

@@ -9,7 +9,6 @@ Covers:
 """
 from __future__ import annotations
 
-import pytest
 
 from resonant_client.gui.sessions import SessionRecord
 from resonant_client.orchestration.grill_me import (

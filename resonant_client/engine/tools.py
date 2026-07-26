@@ -8,12 +8,14 @@ Tools run server-side (same machine as the engine).
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -1851,6 +1853,59 @@ def _exec_glob(args: dict, start: float) -> ToolResult:
     )
 
 
+@lru_cache(maxsize=1)
+def _ripgrep_executable() -> Optional[str]:
+    """Locate ripgrep once per process. None when it isn't installed."""
+    return shutil.which("rg")
+
+
+def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
+    """Argv for a recursive content search, best available tool first.
+
+    ripgrep is strongly preferred. The fallbacks are correct but weak: Windows
+    `findstr /r` implements a regex dialect with no alternation, no `+`, and no
+    groups, so ordinary model-written patterns silently return nothing, and it
+    walks `node_modules`/`.venv` at full cost. POSIX `grep -rn` is closer but
+    still ignores `.gitignore`.
+
+    Every branch returns argv for `shell=False`. Never interpolate a
+    model-controlled pattern into a shell command — a quoted string is not a
+    security boundary, and a pattern containing a quote would turn this
+    read-only tool into arbitrary shell execution.
+    """
+    ripgrep = _ripgrep_executable()
+    if ripgrep:
+        cmd = [
+            ripgrep,
+            "--line-number",
+            "--no-heading",
+            "--with-filename",
+            "--color", "never",
+            # Search dotfiles — `.github/`, `.claude/`, and `.env.example` are
+            # ordinary working files for a coding agent, and ripgrep hides them
+            # by default. `.gitignore` filtering is kept (that is the point:
+            # no node_modules noise); only the VCS internals are force-excluded.
+            "--hidden",
+            "--glob", "!.git/",
+        ]
+        if file_glob:
+            cmd.extend(["--glob", file_glob])
+        # `-e` keeps a pattern beginning with `-` from being parsed as a flag;
+        # `--` does the same for the path.
+        cmd.extend(["-e", pattern, "--", path])
+        return cmd
+
+    if sys.platform == "win32":
+        target = os.path.join(path, file_glob or "*") if os.path.isdir(path) else path
+        return ["findstr", "/s", "/n", "/r", f"/c:{pattern}", target]
+
+    cmd = ["grep", "-rn"]
+    if file_glob:
+        cmd.extend([f"--include={file_glob}"])
+    cmd.extend(["--", pattern, path])
+    return cmd
+
+
 def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
     pattern = args.get("pattern", "")
     path = args.get("path", ".")
@@ -1858,17 +1913,7 @@ def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event]
     offset = max(0, int(args.get("offset", 0) or 0))
     limit = min(200, max(1, int(args.get("limit", 50) or 50)))
 
-    # Never interpolate model-controlled search values into a shell command.
-    # A quoted string is not a security boundary: a pattern containing a quote
-    # can escape it and turn this read-only tool into arbitrary shell execution.
-    if sys.platform == "win32":
-        target = os.path.join(path, file_glob or "*") if os.path.isdir(path) else path
-        cmd = ["findstr", "/s", "/n", "/r", f"/c:{pattern}", target]
-    else:
-        cmd = ["grep", "-rn"]
-        if file_glob:
-            cmd.extend([f"--include={file_glob}"])
-        cmd.extend(["--", pattern, path])
+    cmd = _build_grep_command(pattern, path, file_glob)
 
     returncode, stdout, _stderr, timed_out = _run_subprocess_with_cancel(
         cmd,
@@ -1933,9 +1978,21 @@ def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event]
         shown = 0
         next_offset = offset
 
+    if not output:
+        # ripgrep honours .gitignore, which is the right default (no
+        # node_modules noise) but makes an empty result ambiguous: the agent
+        # cannot tell "not in this codebase" from "in a file I chose not to
+        # read". Say so, so it can decide rather than conclude.
+        output = "(no matches)"
+        if _ripgrep_executable():
+            output += (
+                "\nNote: .gitignore'd files were not searched. "
+                "Re-run with bash `rg --no-ignore ...` to include them."
+            )
+
     elapsed = time.time() - start
     return ToolResult(
-        output or "(no matches)",
+        output,
         elapsed=elapsed,
         metadata={
             "pattern": pattern,

@@ -11,7 +11,12 @@ import pytest
 
 from resonant_client.engine.sandbox import PathSandbox, SandboxViolation
 from resonant_client.engine.session import Session, ToolBoundaryViolation
-from resonant_client.engine.tools import ToolResult, _exec_batch, _exec_grep
+from resonant_client.engine.tools import (
+    ToolResult,
+    _build_grep_command,
+    _exec_batch,
+    _exec_grep,
+)
 
 
 class _Backend:
@@ -138,6 +143,71 @@ def test_grep_uses_argv_without_a_shell(tmp_path):
     assert isinstance(command, list)
     assert run.call_args.kwargs["shell"] is False
     assert any(hostile in arg for arg in command)
+
+
+# ---------------------------------------------------------------------------
+# grep backend selection
+# ---------------------------------------------------------------------------
+
+
+def _with_ripgrep(path):
+    return patch("resonant_client.engine.tools._ripgrep_executable", return_value=path)
+
+
+def test_grep_prefers_ripgrep_when_available():
+    with _with_ripgrep("/usr/bin/rg"):
+        command = _build_grep_command("needle", "src", "")
+
+    assert command[0] == "/usr/bin/rg"
+    assert command[-2:] == ["--", "src"]
+    # Dotfile directories like .github/ are working files, not noise.
+    assert "--hidden" in command
+    assert command[command.index("--glob") + 1] == "!.git/"
+
+
+def test_grep_passes_file_glob_through_to_ripgrep():
+    with _with_ripgrep("/usr/bin/rg"):
+        command = _build_grep_command("needle", "src", "*.py")
+
+    globs = [command[i + 1] for i, arg in enumerate(command) if arg == "--glob"]
+    assert globs == ["!.git/", "*.py"]
+
+
+def test_grep_pattern_starting_with_dash_is_not_read_as_a_flag():
+    with _with_ripgrep("/usr/bin/rg"):
+        command = _build_grep_command("--recursive", "src", "")
+
+    # `-e` is what makes this safe; without it ripgrep would consume the
+    # pattern as an option and search for nothing.
+    assert command[command.index("-e") + 1] == "--recursive"
+
+
+def test_grep_falls_back_to_findstr_on_windows_without_ripgrep():
+    with _with_ripgrep(None), patch("resonant_client.engine.tools.sys.platform", "win32"):
+        command = _build_grep_command("needle", "src", "")
+
+    assert command[0] == "findstr"
+
+
+def test_grep_falls_back_to_posix_grep_without_ripgrep():
+    with _with_ripgrep(None), patch("resonant_client.engine.tools.sys.platform", "linux"):
+        command = _build_grep_command("needle", "src", "*.py")
+
+    assert command[0] == "grep"
+    assert "--include=*.py" in command
+    assert command[-2:] == ["needle", "src"]
+
+
+def test_grep_finds_real_matches_through_the_selected_backend(tmp_path):
+    """End-to-end against whatever backend this machine actually has."""
+    (tmp_path / "hit.py").write_text("alpha = 1\nbeta = 2\n", encoding="utf-8")
+    (tmp_path / "miss.py").write_text("gamma = 3\n", encoding="utf-8")
+
+    result = _exec_grep({"pattern": "beta", "path": str(tmp_path)}, time.time())
+
+    assert not result.is_error
+    assert "hit.py" in result.output
+    assert "miss.py" not in result.output
 
 
 def test_symlink_target_outside_project_is_blocked(tmp_path):

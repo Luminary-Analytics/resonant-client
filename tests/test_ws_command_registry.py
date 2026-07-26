@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -170,3 +171,135 @@ def test_director_status_tolerates_no_session():
     sent = _run(ws_commands.HANDLERS["director_status"], _ctx())
 
     assert sent[0] == {"event": "director.status", "run": None, "benchmark": None}
+
+
+# ---------------------------------------------------------------------------
+# Second extraction batch
+# ---------------------------------------------------------------------------
+
+
+def test_settings_are_sent_masked():
+    """Secrets must not leave the process in the clear."""
+    state = SimpleNamespace(
+        settings=SimpleNamespace(get_masked=lambda: {"api_key": "sk-***"}),
+    )
+    sent = _run(ws_commands.HANDLERS["get_settings"], _ctx(state=state))
+
+    assert sent[0] == {"event": "settings", "data": {"api_key": "sk-***"}}
+
+
+def test_set_permission_mode_defaults_and_sends_nothing():
+    applied = []
+    state = SimpleNamespace(apply_permission_mode=applied.append)
+
+    assert _run(ws_commands.HANDLERS["set_permission_mode"], _ctx(state=state)) == []
+    assert applied == ["bypass"]
+
+
+def test_git_status_runs_against_the_active_project():
+    """Regression guard: _git_status used to read a module-level AppState
+    singleton, so which repository it inspected was global state."""
+    seen = {}
+
+    def _fake_status(project_path):
+        seen["path"] = project_path
+        return {"is_repo": True, "branch": "main"}
+
+    with patch("resonant_client.gui.ws_commands._git_status", _fake_status):
+        sent = _run(ws_commands.HANDLERS["git_status"], _ctx())
+
+    assert seen["path"] == "/tmp/project"
+    assert sent[0]["data"]["branch"] == "main"
+
+
+def test_git_quick_passes_the_action_and_project():
+    seen = {}
+
+    def _fake_quick(action, msg, project_path):
+        seen.update(action=action, project_path=project_path, count=msg.get("count"))
+        return {"output": "abc123 commit"}
+
+    with patch("resonant_client.gui.ws_commands._git_quick", _fake_quick):
+        sent = _run(
+            ws_commands.HANDLERS["git_quick"],
+            _ctx(msg={"action": "log", "count": 3}),
+        )
+
+    assert seen == {"action": "log", "project_path": "/tmp/project", "count": 3}
+    assert sent[0]["event"] == "git_result"
+
+
+def test_mcp_connect_refreshes_session_tools_and_drops_the_intent_cache():
+    """New tools change the session's surface; a cached intent service
+    captured the old one."""
+    session = SimpleNamespace(mcp_tools=["old"])
+    manager = SimpleNamespace(
+        connect=lambda name: True,
+        get_all_tools=lambda: ["old", "new"],
+        list_servers=lambda: [{"name": "fs"}],
+    )
+    state = SimpleNamespace(
+        session=session, mcp_manager=manager, _intent_service=object(),
+        project=SimpleNamespace(project_path="/tmp/project"),
+    )
+
+    sent = _run(ws_commands.HANDLERS["mcp_connect"], _ctx(msg={"name": "fs"}, state=state))
+
+    assert session.mcp_tools == ["old", "new"]
+    assert state._intent_service is None
+    assert sent[0]["connected"] is True
+
+
+def test_mcp_connect_without_a_name_does_nothing():
+    state = SimpleNamespace(session=None, mcp_manager=None, _intent_service="kept")
+
+    assert _run(ws_commands.HANDLERS["mcp_connect"], _ctx(msg={}, state=state)) == []
+    assert state._intent_service == "kept"
+
+
+def test_rag_stats_reports_an_unindexed_project():
+    state = SimpleNamespace(codebase_index=None)
+
+    sent = _run(ws_commands.HANDLERS["rag_stats"], _ctx(state=state))
+
+    assert sent[0] == {"event": "rag_stats", "total_files": 0, "is_indexed": False}
+
+
+def test_rag_search_without_an_index_returns_empty_rather_than_failing():
+    state = SimpleNamespace(codebase_index=None)
+
+    sent = _run(ws_commands.HANDLERS["rag_search"], _ctx(msg={"query": "x"}, state=state))
+
+    assert sent[0] == {"event": "rag_results", "results": []}
+
+
+def test_engram_recall_reports_when_memory_is_disabled():
+    state = SimpleNamespace(engram=SimpleNamespace(enabled=False, recall=lambda q: []))
+
+    sent = _run(ws_commands.HANDLERS["engram_recall"], _ctx(msg={"query": "x"}, state=state))
+
+    assert sent[0] == {"event": "engram_recall", "memories": [], "enabled": False}
+
+
+def test_engram_remember_is_a_no_op_when_disabled():
+    stored = []
+    state = SimpleNamespace(
+        engram=SimpleNamespace(enabled=False, remember=stored.append),
+    )
+
+    assert _run(ws_commands.HANDLERS["engram_remember"], _ctx(msg={"text": "x"}, state=state)) == []
+    assert stored == []
+
+
+def test_session_replay_reports_a_missing_session():
+    state = SimpleNamespace(
+        project=SimpleNamespace(project_path="/tmp/project", get_recent_projects=list),
+    )
+
+    sent = _run(
+        ws_commands.HANDLERS["get_session_replay_events"],
+        _ctx(msg={"session_id": "nope"}, state=state),
+    )
+
+    assert sent[0]["error"] == "not found"
+    assert sent[0]["events"] == []

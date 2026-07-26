@@ -34,7 +34,17 @@ dependencies = [
 # Kimi uses the existing httpx dependency directly; no provider SDK is needed.
 [project.optional-dependencies]
 server = ["websockets>=12.0"]
-desktop = ["pyautogui>=0.9.54", "mss>=9.0.0", "Pillow>=10.0.0"]
+desktop = [
+    "pyautogui>=0.9.54",
+    "mss>=9.0.0",
+    "Pillow>=10.0.0",
+    # Backs the `process_list` and `process_kill` agent tools. This was
+    # undeclared until v0.11.7 and only ever worked on machines where an
+    # unrelated package happened to pull psutil in. build_clean.ps1 installs
+    # [gui,desktop], so every shipped .exe answered both tools with
+    # "psutil not installed" — two advertised tools dead in every release.
+    "psutil>=5.9.0",
+]
 gui = [
     "starlette>=0.40.0",
     "uvicorn>=0.30.0",
@@ -52,6 +62,7 @@ all = [
     "pyautogui>=0.9.54",
     "mss>=9.0.0",
     "Pillow>=10.0.0",
+    "psutil>=5.9.0",
     "starlette>=0.40.0",
     "uvicorn>=0.30.0",
     "jinja2>=3.1.0",

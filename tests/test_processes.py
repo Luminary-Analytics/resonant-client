@@ -11,7 +11,19 @@ import time
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from resonant_client.engine import processes as proc
+
+# These tests patch `proc.psutil`, which only exists when psutil imported
+# successfully. psutil ships with the `desktop` extra (it backs process_list /
+# process_kill), but a core-only `pip install -e .` has no psutil and every
+# test here failed with a bare AttributeError instead of saying why.
+# processes.py itself degrades gracefully in that case; the suite should too.
+pytestmark = pytest.mark.skipif(
+    not hasattr(proc, "psutil"),
+    reason="psutil not installed — install the `desktop` extra to exercise the process tools",
+)
 from resonant_client.engine.processes import (
     NEVER_KILL_NAMES,
     SYSTEM_PID_FLOOR,

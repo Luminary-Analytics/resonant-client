@@ -4376,6 +4376,27 @@ class ResonantApp {
             </button>
         `).join('');
 
+        // How long the session may sit parked on a decision before proceeding
+        // with the option REFLECT nominated. "Wait for me" is the default and
+        // preserves the historical behaviour — a deadline only makes sense if
+        // you are willing to have it decide without you.
+        const decisionPresets = [
+            { label: 'Wait for me', value: '', sub: 'never proceeds alone' },
+            { label: '15m', value: '15m', sub: '' },
+            { label: '30m', value: '30m', sub: '' },
+            { label: '1h', value: '1h', sub: '' },
+            { label: '4h', value: '4h', sub: '' },
+        ];
+        const decisionHTML = decisionPresets.map((p) => `
+            <button type="button"
+                class="mission-budget-preset mission-decision-preset"
+                data-decision="${p.value}"
+                ${p.value === '' ? 'data-default="1"' : ''}>
+                <span class="mission-budget-preset-label">${p.label}</span>
+                ${p.sub ? `<span class="mission-budget-preset-sub">${p.sub}</span>` : ''}
+            </button>
+        `).join('');
+
         wrap.innerHTML = `
             <div class="mission-autonomous-head">
                 <span class="mission-autonomous-icon" aria-hidden="true">∞</span>
@@ -4387,9 +4408,15 @@ class ResonantApp {
                 or you click Stop. <strong>Pick a time budget:</strong>
             </p>
             <div class="mission-budget-presets">${presetHTML}</div>
+            <p class="mission-autonomous-blurb">
+                <strong>If it needs a decision and you are away:</strong> the session parks and
+                waits. Bound that wait so an unattended run cannot stall on you indefinitely.
+            </p>
+            <div class="mission-decision-presets">${decisionHTML}</div>
             <div class="mission-autonomous-actions">
                 <span class="mission-autonomous-budget-label">
                     Selected: <strong class="mission-autonomous-budget-display">${recommended}</strong>
+                    <span class="mission-autonomous-decision-display"></span>
                 </span>
                 <button type="button" class="mission-build-btn mission-build-btn-autonomous">
                     <span class="mission-build-icon" aria-hidden="true">∞</span>
@@ -4405,7 +4432,12 @@ class ResonantApp {
         // Wire preset selection. Default selection from the spec's
         // `**Time budget:**` line (or "4h" if absent).
         let chosen = recommended;
-        const presetButtons = wrap.querySelectorAll('.mission-budget-preset');
+        // Scoped to the budget row on purpose: the decision-deadline buttons
+        // reuse `.mission-budget-preset` for styling, and an unscoped query
+        // would sweep them in and read a `data-budget` they do not carry.
+        const presetButtons = wrap.querySelectorAll(
+            '.mission-budget-presets .mission-budget-preset',
+        );
         const budgetDisplay = wrap.querySelector('.mission-autonomous-budget-display');
         const fullAutoNote = wrap.querySelector('.mission-autonomous-fullauto-note');
         const updateSelection = (label) => {
@@ -4425,8 +4457,34 @@ class ResonantApp {
                 updateSelection(b.dataset.budget);
             }
         });
+
+        // Park deadline. Empty string means wait indefinitely.
+        let chosenDecision = '';
+        const decisionButtons = wrap.querySelectorAll(
+            '.mission-decision-presets .mission-decision-preset',
+        );
+        const decisionDisplay = wrap.querySelector('.mission-autonomous-decision-display');
+        const updateDecision = (value) => {
+            chosenDecision = value || '';
+            decisionDisplay.textContent = chosenDecision
+                ? ` · decides alone after ${chosenDecision}`
+                : ' · waits for you';
+            decisionButtons.forEach((b) => {
+                b.classList.toggle(
+                    'mission-budget-preset-selected',
+                    (b.dataset.decision || '') === chosenDecision,
+                );
+            });
+        };
+        decisionButtons.forEach((b) => {
+            b.addEventListener('click', () => updateDecision(b.dataset.decision || ''));
+        });
+        updateDecision('');
         // Defensive — if no preset matched the recommendation, default to 4h.
-        if (!wrap.querySelector('.mission-budget-preset-selected')) {
+        // Scoped to the budget row: the decision row's default is always
+        // selected by now, and an unscoped query would see that and conclude a
+        // budget had been chosen when none had.
+        if (!wrap.querySelector('.mission-budget-presets .mission-budget-preset-selected')) {
             updateSelection('4h');
         }
 
@@ -4443,6 +4501,7 @@ class ResonantApp {
                 spec_markdown: finalSpec,
                 refined_intent: refined,
                 time_budget: chosen,
+                decision_timeout: chosenDecision,
             });
             // v0.5.7a4 — collapse the dispatch card into a one-line
             // confirmation chip after click. Linux-bridge field-

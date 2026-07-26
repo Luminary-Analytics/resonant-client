@@ -6868,6 +6868,12 @@ async def websocket_endpoint(ws: WebSocket):
                         spec_markdown=spec_md,
                         on_event=_emit_autonomous,
                         started_iso=started_iso,
+                        # Per-run: how long this mission may sit parked on a
+                        # human decision before proceeding with REFLECT's
+                        # nominated option. Empty preserves wait-forever.
+                        decision_timeout_label=str(
+                            msg.get("decision_timeout") or ""
+                        ).strip(),
                     )
                 except ValueError as exc:
                     # Misconfigured spec (no typed criteria / no Final

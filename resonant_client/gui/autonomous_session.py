@@ -112,6 +112,7 @@ def build_roadmap_from_spec(
     spec_markdown: str,
     project_path: str,
     started_iso: str = "",
+    decision_timeout_label: str = "",
 ) -> tuple[Roadmap, Path]:
     """Parse a rigorous-grill spec into a Roadmap + persist to
     `<project>/.resonant/roadmap-<intent_id>.md`.
@@ -150,6 +151,7 @@ def build_roadmap_from_spec(
         intent_id=intent_id,
         started_iso=started_iso,
         time_budget_label=parsed.time_budget,
+        decision_timeout_label=(decision_timeout_label or "").strip(),
         status="running",
         goal_spec_block=parsed.raw,
         acceptance_criteria=list(parsed.acceptance_criteria),
@@ -277,9 +279,15 @@ def start_autonomous_mission(
     on_event: Callable[[dict], None],
     started_iso: str = "",
     image_provider: Optional[Callable[[], Optional[bytes]]] = None,
+    decision_timeout_label: str = "",
 ) -> AutonomousMissionDaemon:
     """Top-level entry point used by the `mission_dispatch_autonomous`
     WS handler.
+
+    `decision_timeout_label` is the per-run answer to "how long may this sit
+    waiting on me?" ("20m", "2h", or empty to wait indefinitely). It is
+    recorded on the roadmap, so it survives a resume rather than reverting to
+    wait-forever after a crash.
 
     What this does:
     1. Parses the spec, builds the roadmap, persists to disk.
@@ -299,6 +307,7 @@ def start_autonomous_mission(
         spec_markdown=spec_markdown,
         project_path=state.project.project_path,
         started_iso=started_iso,
+        decision_timeout_label=decision_timeout_label,
     )
     return _spawn_autonomous_daemon(
         state=state,
@@ -755,6 +764,11 @@ def _spawn_autonomous_daemon(
         intent_id=intent_id,
         roadmap_path=roadmap_path,
         time_budget_seconds=parse_time_budget(roadmap.time_budget_label),
+        # Read from the roadmap, so a mission resumed after a crash keeps the
+        # deadline it was started with instead of silently reverting to
+        # wait-forever. Shares the budget vocabulary ("20m" / "2h"); an empty
+        # label parses to None, which is the historical behaviour.
+        decision_timeout_seconds=parse_time_budget(roadmap.decision_timeout_label),
     )
     daemon = AutonomousMissionDaemon(
         config=config,

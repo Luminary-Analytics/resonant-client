@@ -158,6 +158,13 @@ class Roadmap:
     intent_id: str = ""
     started_iso: str = ""
     time_budget_label: str = ""    # "4h" / "Full auto" / "1h"
+    # How long the daemon waits on a parked human decision before proceeding
+    # with the option REFLECT nominated. Same vocabulary as the time budget
+    # ("20m" / "2h"); empty means wait indefinitely, the historical behaviour.
+    # Stored on the roadmap rather than passed at spawn so it survives a
+    # resume — a mission restarted after a crash keeps the deadline the user
+    # chose for it.
+    decision_timeout_label: str = ""
     status: str = "running"        # "running" | "paused" | "complete" | "failed"
 
     goal_spec_block: str = ""      # raw markdown from `## Goal (from grill spec)`
@@ -237,6 +244,9 @@ _INTENT_RE = re.compile(r"^\*\*Intent ID:\*\*\s*(.+?)\s*$", re.MULTILINE)
 # cleanly through load+save.
 _STARTED_RE = re.compile(r"^\*\*Started:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE)
 _BUDGET_RE = re.compile(r"^\*\*Time budget:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE)
+_DECISION_TIMEOUT_RE = re.compile(
+    r"^\*\*Decision timeout:\*\*[ \t]*(.*?)[ \t]*$", re.MULTILINE,
+)
 _STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(\w+)", re.MULTILINE)
 
 # Tier section header: `### Tier 1 — initial decomposition` etc.
@@ -328,6 +338,8 @@ def parse(markdown: str) -> Roadmap:
         rm.started_iso = m.group(1).strip()
     if m := _BUDGET_RE.search(markdown):
         rm.time_budget_label = m.group(1).strip()
+    if m := _DECISION_TIMEOUT_RE.search(markdown):
+        rm.decision_timeout_label = m.group(1).strip()
     if m := _STATUS_RE.search(markdown):
         rm.status = m.group(1).strip()
 
@@ -455,6 +467,10 @@ def render(rm: Roadmap) -> str:
     parts.append(f"**Intent ID:** {rm.intent_id}")
     parts.append(f"**Started:** {rm.started_iso}")
     parts.append(f"**Time budget:** {rm.time_budget_label}")
+    # Only written when set, so existing roadmaps round-trip byte-identically
+    # through load+save and don't churn on the next REFLECT write.
+    if rm.decision_timeout_label:
+        parts.append(f"**Decision timeout:** {rm.decision_timeout_label}")
     parts.append(f"**Status:** {rm.status}")
     parts.append("")
 

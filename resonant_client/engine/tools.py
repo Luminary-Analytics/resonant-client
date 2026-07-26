@@ -1853,9 +1853,44 @@ def _exec_glob(args: dict, start: float) -> ToolResult:
     )
 
 
+# Where packaging/fetch_ripgrep.ps1 puts the verified binary in a source
+# checkout. Module-level so tests can point it somewhere deterministic instead
+# of depending on whether the developer happens to have run the fetch script —
+# the kind of "works on my machine" coupling that hid the undeclared psutil
+# dependency for months.
+_VENDORED_RIPGREP_DIR = Path(__file__).resolve().parent.parent.parent / "packaging" / "ripgrep"
+
+
 @lru_cache(maxsize=1)
 def _ripgrep_executable() -> Optional[str]:
-    """Locate ripgrep once per process. None when it isn't installed."""
+    """Locate ripgrep once per process. None when it isn't available.
+
+    The bundled copy wins over PATH. A packaged install ships a pinned,
+    checksum-verified rg (see packaging/fetch_ripgrep.ps1), and preferring it
+    means every user gets the same search behaviour regardless of what happens
+    to be installed on their machine — including users with no `rg` at all,
+    who previously fell back to `findstr` and its far weaker regex dialect.
+
+    `sys._MEIPASS` is set only in a PyInstaller bundle; from a source checkout
+    this falls straight through to PATH.
+    """
+    binary = "rg.exe" if sys.platform == "win32" else "rg"
+    bundle_dir = getattr(sys, "_MEIPASS", "")
+    if bundle_dir:
+        # Both layouts, matching updater._find_dll: one-file extracts to
+        # _MEIPASS directly, one-folder puts contents under _internal/.
+        candidates = [
+            Path(bundle_dir) / binary,
+            Path(bundle_dir) / "_internal" / binary,
+        ]
+    else:
+        # Source checkout: use the build-time copy if a developer has fetched
+        # one, so `grep` behaves the same here as in a packaged install.
+        candidates = [_VENDORED_RIPGREP_DIR / binary]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
     return shutil.which("rg")
 
 

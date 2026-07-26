@@ -198,6 +198,81 @@ def test_grep_falls_back_to_posix_grep_without_ripgrep():
     assert command[-2:] == ["needle", "src"]
 
 
+def test_bundled_ripgrep_wins_over_whatever_is_on_path(tmp_path):
+    """A packaged install ships a pinned, verified rg; it must be preferred so
+    every user gets the same search behaviour."""
+    from resonant_client.engine.tools import _ripgrep_executable
+
+    bundle = tmp_path / "_internal"
+    bundle.mkdir()
+    name = "rg.exe" if os.name == "nt" else "rg"
+    bundled = bundle / name
+    bundled.write_text("", encoding="utf-8")
+
+    _ripgrep_executable.cache_clear()
+    try:
+        with patch("resonant_client.engine.tools.sys._MEIPASS", str(bundle), create=True), \
+             patch("resonant_client.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+            assert _ripgrep_executable() == str(bundled)
+    finally:
+        _ripgrep_executable.cache_clear()
+
+
+def test_a_source_checkout_prefers_a_fetched_binary(tmp_path):
+    """A developer who ran the fetch script gets the same rg the bundle ships,
+    so `grep` behaves identically here and in a packaged install."""
+    from resonant_client.engine.tools import _ripgrep_executable
+
+    vendored = tmp_path / "vendored"
+    vendored.mkdir()
+    name = "rg.exe" if os.name == "nt" else "rg"
+    (vendored / name).write_text("", encoding="utf-8")
+
+    _ripgrep_executable.cache_clear()
+    try:
+        with patch("resonant_client.engine.tools._VENDORED_RIPGREP_DIR", vendored), \
+             patch("resonant_client.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+            assert _ripgrep_executable() == str(vendored / name)
+    finally:
+        _ripgrep_executable.cache_clear()
+
+
+def test_a_source_checkout_without_a_fetched_binary_uses_path(tmp_path):
+    """`sys._MEIPASS` only exists inside a bundle; nothing else should change.
+
+    The vendored directory is patched to an empty one rather than left to the
+    real repo, so this asserts the same thing whether or not the developer
+    running it has fetched ripgrep.
+    """
+    from resonant_client.engine.tools import _ripgrep_executable
+
+    _ripgrep_executable.cache_clear()
+    try:
+        with patch("resonant_client.engine.tools._VENDORED_RIPGREP_DIR", tmp_path / "absent"), \
+             patch("resonant_client.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+            assert _ripgrep_executable() == "/usr/bin/rg"
+    finally:
+        _ripgrep_executable.cache_clear()
+
+
+def test_a_bundle_without_ripgrep_still_falls_back(tmp_path):
+    """Belt and braces: the bundle policy gate should prevent this, but a
+    missing binary must degrade rather than crash the tool."""
+    from resonant_client.engine.tools import _ripgrep_executable
+
+    empty = tmp_path / "_internal"
+    empty.mkdir()
+
+    _ripgrep_executable.cache_clear()
+    try:
+        with patch("resonant_client.engine.tools.sys._MEIPASS", str(empty), create=True), \
+             patch("resonant_client.engine.tools._VENDORED_RIPGREP_DIR", tmp_path / "absent"), \
+             patch("resonant_client.engine.tools.shutil.which", return_value=None):
+            assert _ripgrep_executable() is None
+    finally:
+        _ripgrep_executable.cache_clear()
+
+
 def test_grep_finds_real_matches_through_the_selected_backend(tmp_path):
     """End-to-end against whatever backend this machine actually has."""
     (tmp_path / "hit.py").write_text("alpha = 1\nbeta = 2\n", encoding="utf-8")

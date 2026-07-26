@@ -6,6 +6,7 @@ import argparse
 import fnmatch
 import hashlib
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -56,6 +57,37 @@ def inspect_bundle(bundle_root: Path, policy: dict) -> tuple[dict, list[str]]:
     for pattern in policy.get("required_globs", []):
         if not any(fnmatch.fnmatchcase(path, pattern) for path in paths):
             errors.append(f"Required bundle asset is missing: {pattern}")
+
+    # Presence is not the same as working. A bundled helper binary can be the
+    # wrong architecture, truncated by a failed extract, or blocked — all of
+    # which satisfy a glob check and then fail silently at runtime, which is
+    # exactly how the weak-search fallback reached users in the first place.
+    for entry in policy.get("required_executables", []):
+        relative = entry["path"] if isinstance(entry, dict) else entry
+        expect = entry.get("version_contains", "") if isinstance(entry, dict) else ""
+        target = root / relative
+        if not target.exists():
+            errors.append(f"Required bundle executable is missing: {relative}")
+            continue
+        try:
+            proc = subprocess.run(
+                [str(target), "--version"],
+                capture_output=True, text=True, timeout=30,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"Bundled executable {relative} could not run: {exc}")
+            continue
+        if proc.returncode != 0:
+            errors.append(
+                f"Bundled executable {relative} exited {proc.returncode} on --version"
+            )
+            continue
+        reported = (proc.stdout or proc.stderr or "").strip()
+        if expect and expect not in reported:
+            errors.append(
+                f"Bundled executable {relative} reports {reported!r}, "
+                f"expected it to contain {expect!r}"
+            )
 
     forbidden = {
         str(component).lower()

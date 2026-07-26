@@ -25,6 +25,15 @@ Bundled deps:
                        browser tab. Requires Microsoft Edge WebView2
                        runtime on Windows, which is pre-installed on
                        Windows 11 and Win10 1809+ (the vast majority).
+- ripgrep (rg.exe)   — bundled (v0.11.9+). Backs the `grep` agent tool.
+                       Without it a shipped install falls back to
+                       `findstr`, whose regex dialect has no alternation,
+                       no `+`, and no groups, so ordinary patterns match
+                       nothing and the agent reads "(no matches)" as "not
+                       in this codebase". Fetched and SHA-256 verified at
+                       build time by packaging/fetch_ripgrep.ps1 rather
+                       than committed, and required by bundle-policy.json
+                       so a missing or non-running binary fails the build.
 
 NOT bundled (runtime-optional):
 - Browser automation — supplied by user-configured MCP servers. BrowserOS
@@ -166,6 +175,27 @@ binaries = []
 if WINSPARKLE_DLL.exists():
     # ('source', 'destination_dir_in_bundle')  — empty dest means top of bundle.
     binaries.append((str(WINSPARKLE_DLL), "."))
+
+# ripgrep for the `grep` agent tool. Without it a shipped install falls back to
+# `findstr`, whose regex dialect has no alternation, no `+`, and no groups — so
+# ordinary patterns match nothing and the agent reads "(no matches)" as "not in
+# this codebase". Fetched and SHA-256 verified by packaging/fetch_ripgrep.ps1,
+# which build_clean.ps1 runs before PyInstaller.
+#
+# Deliberately not `if exists` — see packaging/bundle-policy.json. A missing
+# search binary is the exact class of bug that shipped for months in the psutil
+# case: present for developers, absent for users, silent either way. The policy
+# gate fails the build instead.
+RIPGREP_EXE = PROJECT_ROOT / "packaging" / "ripgrep" / "rg.exe"
+if RIPGREP_EXE.exists():
+    binaries.append((str(RIPGREP_EXE), "."))
+
+    # ripgrep is dual-licensed MIT / Unlicense; redistributing the binary means
+    # shipping its license text.
+    for license_name in ("COPYING", "LICENSE-MIT", "UNLICENSE"):
+        license_path = RIPGREP_EXE.parent / license_name
+        if license_path.exists():
+            datas.append((str(license_path), "licenses/ripgrep"))
 
 a = Analysis(
     [str(PKG_ROOT / "__main__.py")],

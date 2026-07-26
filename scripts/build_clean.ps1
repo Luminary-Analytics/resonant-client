@@ -33,6 +33,13 @@ try {
     if (Test-Path -LiteralPath $eggInfo) { Remove-Item -LiteralPath $eggInfo -Recurse -Force }
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force }
 
+    # Fetch + verify the pinned ripgrep before PyInstaller runs; the spec picks
+    # it up from packaging/ripgrep/ and the bundle policy requires it to be
+    # there, so a failure here stops the build rather than silently shipping an
+    # install whose `grep` tool falls back to findstr.
+    & (Join-Path $repo "packaging/fetch_ripgrep.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "ripgrep fetch failed with exit code $LASTEXITCODE" }
+
     python -m venv $tempRoot
     $python = Join-Path $tempRoot "Scripts/python.exe"
     & $python -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip

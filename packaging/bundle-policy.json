@@ -5,9 +5,14 @@
   "required_globs": [
     "resonant.exe",
     "_internal/WinSparkle.dll",
+    "_internal/rg.exe",
+    "_internal/licenses/ripgrep/LICENSE-MIT",
     "_internal/resonant_client/gui/templates/index.html",
     "_internal/resonant_client/gui/static/app.js",
     "_internal/resonant_client/gui/static/styles.css"
+  ],
+  "required_executables": [
+    { "path": "_internal/rg.exe", "version_contains": "ripgrep 15.2.0" }
   ],
   "forbidden_path_components": [
     "anthropic",

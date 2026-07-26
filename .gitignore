@@ -6,6 +6,11 @@ dist/
 build/
 *.egg
 
+# Build-time vendored binary. Fetched + SHA-256 verified by
+# packaging/fetch_ripgrep.ps1; a 4 MB binary in git is permanent weight and
+# every version bump would add another copy forever.
+packaging/ripgrep/
+
 # Virtual environments
 .venv/
 venv/

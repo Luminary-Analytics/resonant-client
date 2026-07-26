@@ -10535,11 +10535,28 @@ class ResonantApp {
         // orphaned agent to "running", leaving the UI waiting on a worker that
         // no longer existed.
         const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled', 'stuck'];
-        if (TERMINAL_STATUSES.includes(String(agent.status || ''))) {
+        const status = String(agent.status || '');
+        if (TERMINAL_STATUSES.includes(status)) {
             controls.querySelectorAll('button, input').forEach((element) => {
                 element.disabled = true;
-                element.title = `Agent is ${agent.status} — no live run to control.`;
+                element.title = `Agent is ${status} — no live run to control.`;
             });
+            // Restart is the one control that DOES apply to a dead worker: its
+            // assignment outlived its thread. Not offered for `completed` —
+            // there is nothing to redo.
+            if (status !== 'completed') {
+                const restart = document.createElement('button');
+                restart.type = 'button';
+                restart.dataset.action = 'restart';
+                restart.textContent = 'Restart';
+                restart.title = 'Re-run this agent from its saved assignment.';
+                restart.addEventListener('click', () => {
+                    restart.disabled = true;
+                    restart.textContent = 'Restarting…';
+                    this.send({ command: 'agent_restart', agent_id: agent.id });
+                });
+                controls.appendChild(restart);
+            }
         }
         detail?.appendChild(controls);
         controls.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => {

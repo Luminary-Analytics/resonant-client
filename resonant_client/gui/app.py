@@ -6393,6 +6393,66 @@ async def websocket_endpoint(ws: WebSocket):
                 await _enqueue_chat_message(msg)
                 continue
 
+            elif command == "agent_restart":
+                # Re-dispatch a worker whose thread died with the process.
+                #
+                # Deliberately NOT in ws_commands.py: this starts a real run
+                # that streams for minutes and owns the chat runner, which is
+                # exactly the coupling that module exists to stay out of.
+                agent_id = str(msg.get("agent_id") or "")
+                if not state.session:
+                    await ws.send_json({"event": "error", "message": "No backend selected"})
+                    continue
+                if chat_runner is not None and not chat_runner.done():
+                    await ws.send_json({
+                        "event": "error",
+                        "message": "Finish or stop the active run before restarting an agent.",
+                    })
+                    continue
+                try:
+                    # Resolve the assignment before spawning anything, so an
+                    # unknown or already-completed agent fails as a clean error
+                    # instead of a half-started run.
+                    registry = getattr(state.session, "agent_registry", None)
+                    if registry is None:
+                        raise RuntimeError("This session has no agent registry.")
+                    assignment = registry.restart_assignment(agent_id)
+                except KeyError:
+                    # str(KeyError) is the repr of its argument, quotes and all.
+                    await ws.send_json({
+                        "event": "error",
+                        "message": f"Unknown agent: {agent_id}",
+                    })
+                    continue
+                except (ValueError, RuntimeError) as exc:
+                    await ws.send_json({"event": "error", "message": str(exc)})
+                    continue
+
+                state.cancel_requested.clear()
+                session_for_restart = state.session
+
+                def _restart_source(_agent_id=agent_id, _session=session_for_restart):
+                    return _session.restart_agent(_agent_id)
+
+                await ws.send_json({
+                    "event": "agent.restarted",
+                    "source_agent_id": agent_id,
+                    "agent_type": assignment["agent_type"],
+                    "completed_steps": assignment["completed_steps"],
+                })
+                chat_runner = asyncio.ensure_future(_run_session_streaming(
+                    ws,
+                    state.session,
+                    assignment["prompt"],
+                    display_user_msg=(
+                        f"Restarting {assignment['agent_type']} agent "
+                        f"(interrupted after {assignment['completed_steps']} step"
+                        f"{'' if assignment['completed_steps'] == 1 else 's'})"
+                    ),
+                    event_source=_restart_source,
+                ))
+                continue
+
             elif command == "status_update":
                 # A status request is steering, never a replacement turn. Do
                 # not enqueue it if the active run ends during this command;
@@ -8447,10 +8507,17 @@ async def _run_session_streaming(
     display_user_msg: str | None = None,
     session_mode: str = "code",
     session_role: str = "generator",
+    event_source: Callable[[], Any] | None = None,
 ):
     """Run Session.run() in a thread, streaming events to WebSocket.
 
     Returns a list of display events for session persistence/replay.
+
+    `event_source` substitutes a different engine generator for the usual
+    `session.run(...)` — used by the agent-restart path, which re-dispatches a
+    worker instead of taking a user turn. Everything downstream (streaming,
+    persistence, cancellation, replay) is identical, so a restarted worker is
+    observable and stoppable exactly like any other run.
     """
     event_queue: queue.Queue = queue.Queue()
     display_events: list = []
@@ -8524,13 +8591,14 @@ async def _run_session_streaming(
 
     def _engine_thread():
         try:
-            for event in session.run(
+            source = event_source() if event_source is not None else session.run(
                 user_msg,
                 on_permission=on_permission if not session.auto_approve else None,
                 on_choice=on_choice,
                 on_user_input=on_user_input,
                 images=images,
-            ):
+            )
+            for event in source:
                 event_queue.put(event)
         except Exception as e:
             event_queue.put(make_event(EngineEvent.ERROR, message=str(e)))

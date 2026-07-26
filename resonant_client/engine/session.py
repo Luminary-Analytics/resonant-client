@@ -2835,6 +2835,92 @@ class Session:
             **final_payload,
         )
 
+    def restart_agent(self, agent_id: str) -> Iterator[dict]:
+        """Re-dispatch an interrupted worker from its persisted assignment.
+
+        A worker thread cannot survive a process restart, so `AgentRegistry`
+        marks anything still in flight as `stuck` on load. Until now that was
+        where it ended: the assignment was durable, but nothing could act on
+        it, and a 36-minute run killed at minute 30 was simply lost.
+
+        This re-enters through `_execute_task`, the same path a parent's `task`
+        tool call takes, rather than reimplementing dispatch. Everything the
+        primary path already gets right — agent-type resolution, tool
+        filtering, worker backend routing, worktree isolation, lifecycle hooks,
+        control attachment, handoff construction — applies unchanged, and there
+        is only one dispatch implementation to keep correct.
+
+        The retry gets a fresh record and transcript. The interrupted run stays
+        `stuck` and readable as evidence rather than being overwritten by its
+        own retry; `metadata.resumed_from` links them.
+
+        Yields the worker's events, exactly as a delegated task would.
+        """
+        if not self.agent_registry:
+            raise RuntimeError("This session has no agent registry to restart from.")
+
+        assignment = self.agent_registry.restart_assignment(agent_id)
+
+        # A director task id only means something inside the run that created
+        # it. Replaying a stale one into a different (or absent) Director would
+        # either error deep in _execute_task or, worse, attach this worker to an
+        # unrelated task. Carry it only when it still resolves.
+        director_task_id = str(assignment["metadata"].get("director_task_id") or "")
+        if director_task_id and self.director_run is not None:
+            if director_task_id not in getattr(self.director_run, "tasks", {}):
+                raise ValueError(
+                    f"Agent {agent_id} belonged to Director task {director_task_id}, "
+                    f"which is not part of the current Director run. Start it as a "
+                    f"new task instead of restarting this worker."
+                )
+        elif self.director_run is None:
+            director_task_id = ""
+
+        fn_args: dict[str, Any] = {
+            "prompt": self._restart_prompt(assignment),
+            "agent_type": assignment["agent_type"],
+            "model_role": assignment["role"],
+            "restart_of": agent_id,
+        }
+        if assignment["max_steps"]:
+            fn_args["max_steps"] = assignment["max_steps"]
+        if assignment["metadata"].get("isolation") == "worktree":
+            fn_args["isolation"] = "worktree"
+        if director_task_id:
+            fn_args["director_task_id"] = director_task_id
+            if assignment["metadata"].get("worker_id"):
+                fn_args["worker_id"] = assignment["metadata"]["worker_id"]
+
+        call_id = f"restart:{agent_id}:{_uuid.uuid4().hex[:8]}"
+        yield from self._execute_task(
+            fn_args,
+            call_id,
+            json.dumps(fn_args, ensure_ascii=False),
+        )
+
+    @staticmethod
+    def _restart_prompt(assignment: dict) -> str:
+        """The original objective, plus what its predecessor already did.
+
+        A retry that is told nothing will redo finished work and may undo it.
+        The step count is the honest signal available without replaying a
+        transcript the worker has no context for: it says "you are not starting
+        from nothing, verify before you repeat".
+        """
+        prompt = str(assignment.get("prompt") or "")
+        completed = int(assignment.get("completed_steps") or 0)
+        if not completed:
+            return prompt
+        reason = str(assignment.get("interrupted_reason") or "the run was interrupted")
+        return (
+            f"{prompt}\n\n"
+            f"[RESTART] A previous attempt at this task completed {completed} "
+            f"step{'' if completed == 1 else 's'} before it stopped ({reason}). "
+            f"Its work may be partially present in the workspace. Inspect the "
+            f"current state before repeating anything, and continue from there "
+            f"rather than starting over."
+        )
+
     def _execute_task(
         self,
         fn_args: dict,
@@ -2995,6 +3081,11 @@ class Session:
                         "worktree": lease.to_dict() if lease else None,
                         "director_task_id": director_task_id,
                         "worker_id": worker_id,
+                        # Set only by restart_agent(). The interrupted run keeps
+                        # its own record and transcript as evidence; this is the
+                        # link back to it, so a retry is never mistaken for
+                        # independent work that happened to look similar.
+                        "resumed_from": str(fn_args.get("restart_of") or "") or None,
                     },
                 )
             except Exception:

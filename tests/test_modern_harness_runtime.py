@@ -150,21 +150,24 @@ def test_restart_assignment_rejects_a_completed_agent(tmp_path: Path):
         raise AssertionError("expected restart_assignment() to reject a completed agent")
 
 
-def test_adopt_restart_preserves_the_interrupted_run_as_evidence(tmp_path: Path):
+def test_restarts_of_links_a_retry_back_to_the_run_it_replaced(tmp_path: Path):
     registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
     original = registry.create(agent_type="implement", prompt="Add the parser")
     registry.transition(original.id, AgentStatus.RUNNING)
     registry.append_event(original.id, {"event": "step.end", "step": 1})
     reloaded = AgentRegistry(tmp_path, root=tmp_path / "agents")
 
-    retry = reloaded.adopt_restart(original.id)
+    # Session.restart_agent creates the retry as part of dispatching it; the
+    # registry only records the link.
+    retry = reloaded.create(
+        agent_type="implement",
+        prompt="Add the parser",
+        metadata={"resumed_from": original.id},
+    )
 
-    assert retry.id != original.id
-    assert retry.prompt == original.prompt
-    assert retry.status == "queued"
-    assert retry.metadata["resumed_from"] == original.id
-    assert retry.metadata["resumed_after_steps"] == 1
-    # The interrupted transcript survives its own retry.
+    assert [r.id for r in reloaded.restarts_of(original.id)] == [retry.id]
+    assert reloaded.restarts_of("nobody") == []
+    # The interrupted run survives its own retry, still readable as evidence.
     assert reloaded.get(original.id).status == "stuck"
     assert reloaded.transcript(original.id)[0]["event"] == "step.end"
 

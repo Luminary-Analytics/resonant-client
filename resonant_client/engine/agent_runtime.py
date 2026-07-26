@@ -328,31 +328,20 @@ class AgentRegistry:
                 "metadata": dict(record.metadata),
             }
 
-    def adopt_restart(self, agent_id: str) -> AgentRecord:
-        """Create a fresh agent seeded from an interrupted one.
+    def restarts_of(self, agent_id: str) -> list[AgentRecord]:
+        """Retries spawned from `agent_id`, newest first.
 
-        A new record (and a new transcript) rather than reusing the old id, so
-        the interrupted run stays inspectable as evidence instead of being
-        overwritten by its own retry. The two are linked through
-        `metadata.resumed_from`.
+        The registry deliberately does NOT create retry records itself. A
+        record with no thread behind it is the failure mode this class already
+        exists to prevent, and a `queued` agent that nothing dispatches is that
+        same ghost wearing a different status. Dispatch belongs to
+        `Session.restart_agent`, which creates the record as part of actually
+        running it; this is the read side of the link it writes.
         """
-        assignment = self.restart_assignment(agent_id)
-        record = self.create(
-            agent_type=assignment["agent_type"],
-            prompt=assignment["prompt"],
-            parent_id=assignment["parent_id"],
-            model=assignment["model"],
-            role=assignment["role"],
-            workspace=assignment["workspace"],
-            policy=assignment["policy"],
-            max_steps=assignment["max_steps"],
-            metadata={
-                **assignment["metadata"],
-                "resumed_from": assignment["source_agent_id"],
-                "resumed_after_steps": assignment["completed_steps"],
-            },
-        )
-        return record
+        return [
+            record for record in self.list()
+            if record.metadata.get("resumed_from") == agent_id
+        ]
 
     def steer(self, agent_id: str, message: str) -> AgentRecord:
         with self._lock:

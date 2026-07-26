@@ -2117,7 +2117,63 @@ class KimiBackend:
         )
         if _message_text(user_msg).strip() and not history_has_current_user:
             messages.append({"role": "user", "content": self._api_content(user_msg)})
-        return messages
+        return self._repair_orphaned_tool_calls(messages)
+
+    @staticmethod
+    def _repair_orphaned_tool_calls(messages: list[dict]) -> list[dict]:
+        """Guarantee every declared tool_call has a matching tool response.
+
+        OpenAI-compatible providers reject a request outright when an assistant
+        message declares `tool_calls` that no later `tool` message answers:
+
+            Invalid request: an assistant message with 'tool_calls' must be
+            followed by tool messages responding to each 'tool_call_id'
+
+        History can reach that state honestly. A turn that is cancelled, times
+        out, or dies mid-dispatch persists the assistant message announcing the
+        calls while one or more results never arrive. The damage is that this is
+        not a transient failure: the orphaned call is replayed on every
+        subsequent request, so the provider rejects the turn forever and Retry
+        and Continue both fail the same way. The session is bricked, and the
+        only visible symptom is a 400 whose explanation is cut off mid-sentence.
+
+        Dropping the orphaned call would be lossy and confusing — the model
+        would see itself decide to call a tool and then find no evidence it ever
+        did. Instead each orphan gets an explicit synthetic result saying the
+        run was interrupted, which is both true and useful: the model can decide
+        to retry that tool rather than assume it succeeded.
+        """
+        answered = {
+            str(message.get("tool_call_id") or "")
+            for message in messages
+            if message.get("role") == "tool"
+        }
+        answered.discard("")
+
+        repaired: list[dict] = []
+        for message in messages:
+            repaired.append(message)
+            if message.get("role") != "assistant":
+                continue
+            for call in message.get("tool_calls") or []:
+                call_id = str(call.get("id") or "") if isinstance(call, dict) else ""
+                if not call_id or call_id in answered:
+                    continue
+                answered.add(call_id)
+                name = ""
+                if isinstance(call, dict):
+                    function = call.get("function")
+                    if isinstance(function, dict):
+                        name = str(function.get("name") or "")
+                repaired.append({
+                    "role": "tool",
+                    "tool_call_id": call_id,
+                    "content": (
+                        f"[{name or 'tool'} produced no result: the run was interrupted "
+                        f"before this call completed. Re-run it if the result is still needed.]"
+                    ),
+                })
+        return repaired
 
     def _payload(
         self,

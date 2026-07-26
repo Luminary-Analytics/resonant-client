@@ -696,3 +696,115 @@ def test_exo_repetition_guard_surfaces_terminal_error_and_cancels():
     error = next(data for event, data in events if event == EVENT_ERROR)
     assert "repetitious" in error["message"]
     assert cancelled == ["command-loop"]
+
+
+# ---------------------------------------------------------------------------
+# Orphaned tool_calls repair
+#
+# A turn cancelled or killed mid-dispatch persists the assistant message that
+# announced the tool calls while the results never arrive. OpenAI-compatible
+# providers reject that history with a 400 on EVERY subsequent request, so the
+# session is permanently bricked rather than transiently broken.
+# ---------------------------------------------------------------------------
+
+
+def _assistant_with_calls(messages):
+    return [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
+
+
+def _tool_ids(messages):
+    return [m.get("tool_call_id") for m in messages if m.get("role") == "tool"]
+
+
+def test_orphaned_tool_call_receives_a_synthetic_result():
+    backend = ExoBackend("local/model", base_url="http://exo.test:52415/v1")
+    history = [
+        {"role": "user", "content": "read the file"},
+        {
+            "role": "tool_call",
+            "name": "file_read",
+            "arguments": '{"path": "a.py"}',
+            "call_id": "call_orphan",
+            "assistant_content": "Reading it.",
+        },
+        # No tool_result — the run died here.
+    ]
+
+    messages = backend._messages(history, "system", "continue")
+
+    assert "call_orphan" in _tool_ids(messages)
+    synthetic = next(m for m in messages if m.get("tool_call_id") == "call_orphan")
+    assert "interrupted" in synthetic["content"]
+    assert "file_read" in synthetic["content"]
+
+
+def test_synthetic_result_is_ordered_after_its_assistant_message():
+    backend = ExoBackend("local/model", base_url="http://exo.test:52415/v1")
+    history = [
+        {"role": "user", "content": "go"},
+        {
+            "role": "tool_call",
+            "name": "bash",
+            "arguments": "{}",
+            "call_id": "call_x",
+            "assistant_content": "Running.",
+        },
+    ]
+
+    messages = backend._messages(history, "system", "continue")
+    roles = [m["role"] for m in messages]
+    assistant_at = roles.index("assistant")
+
+    assert roles[assistant_at + 1] == "tool"
+
+
+def test_answered_tool_calls_are_left_alone():
+    backend = ExoBackend("local/model", base_url="http://exo.test:52415/v1")
+    history = [
+        {"role": "user", "content": "read it"},
+        {
+            "role": "tool_call",
+            "name": "file_read",
+            "arguments": "{}",
+            "call_id": "call_ok",
+            "assistant_content": "Reading.",
+        },
+        {"role": "tool_result", "call_id": "call_ok", "content": "print('x')"},
+    ]
+
+    messages = backend._messages(history, "system", "continue")
+
+    assert _tool_ids(messages) == ["call_ok"]
+    assert "print('x')" in next(m for m in messages if m["role"] == "tool")["content"]
+
+
+def test_every_declared_call_id_is_answered_exactly_once():
+    """The invariant the provider actually enforces."""
+    backend = ExoBackend("local/model", base_url="http://exo.test:52415/v1")
+    history = [
+        {"role": "user", "content": "do three things"},
+        {
+            "role": "tool_call",
+            "name": "grep",
+            "arguments": "{}",
+            "call_id": "call_1",
+            "assistant_content": "Working.",
+            "response_id": "resp_a",
+            "response_tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "grep", "arguments": "{}"}},
+                {"id": "call_2", "type": "function",
+                 "function": {"name": "glob", "arguments": "{}"}},
+            ],
+        },
+        {"role": "tool_result", "call_id": "call_1", "content": "hit"},
+        # call_2 never came back.
+    ]
+
+    messages = backend._messages(history, "system", "continue")
+
+    declared = [c["id"] for m in _assistant_with_calls(messages) for c in m["tool_calls"]]
+    answered = _tool_ids(messages)
+    assert sorted(declared) == ["call_1", "call_2"]
+    assert sorted(answered) == ["call_1", "call_2"]
+    assert len(answered) == len(set(answered))

@@ -45,8 +45,8 @@ from ..backends import (
     resolve_codex_cli_path,
 )
 from ..engine import Session, AGENT_TOOLS
-from ..engine.session import inspect_system_instructions
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url
+from . import ws_commands
 from .sessions import ProjectManager
 from .settings import SettingsManager
 from .costs import CostTracker
@@ -5521,6 +5521,25 @@ class AppState:
                 return backend_type, self._resolve_default_model(models)
         return "", ""
 
+    def project_chat_backend_choice(self) -> tuple[str, str]:
+        """Prefer the model this project most recently used.
+
+        Provider discovery is transient: a distributed EXO model may disappear
+        from ``/models`` while its runner restarts.  Falling through to the
+        provider's first remaining model silently changes user intent.  Keep
+        the recorded project model instead and let the provider report a clear
+        availability error if it has not recovered yet.
+        """
+        record = self.project.current_session
+        if record and record.backend_type and record.model:
+            return record.backend_type, record.model
+        for summary in self.project.list_sessions():
+            backend_type = str(summary.get("backend_type") or "").strip()
+            model = str(summary.get("model") or "").strip()
+            if backend_type and model:
+                return backend_type, model
+        return self.default_chat_backend_choice()
+
     def ensure_default_runtime_session(self, *, session_role: str = "generator") -> bool:
         """Create an in-memory backend/session so the composer is usable.
 
@@ -5533,7 +5552,7 @@ class AppState:
         with self._default_session_lock:
             if self.backend:
                 return False
-            backend_type, model = self.default_chat_backend_choice()
+            backend_type, model = self.project_chat_backend_choice()
             if not backend_type or not model:
                 return False
             self.create_backend(
@@ -6042,6 +6061,7 @@ async def websocket_endpoint(ws: WebSocket):
     pending_chat_messages: list[dict[str, Any]] = []
     chat_runner: asyncio.Task | None = None
     cancel_request_id: str | None = None
+    clear_request_cache: dict[str, dict[str, Any]] = {}
 
     async def _drain_chat_queue() -> None:
         nonlocal chat_runner, cancel_request_id
@@ -6130,6 +6150,19 @@ async def websocket_endpoint(ws: WebSocket):
             raw = await ws.receive_text()
             msg = json.loads(raw)
             command = msg.get("command", "")
+
+            # Self-contained commands (read some state, send one reply) live in
+            # gui/ws_commands.py with an explicit context instead of closing
+            # over this function's ~2,600-line local scope. See that module for
+            # what qualifies. Everything below is still entangled with the run
+            # loop — the chat runner, backend rebuilds, the autonomous daemon —
+            # and needs untangling rather than relocation.
+            standalone = ws_commands.HANDLERS.get(command)
+            if standalone is not None:
+                await standalone(ws_commands.CommandContext(
+                    ws=ws, state=state, msg=msg, chat_runner=chat_runner,
+                ))
+                continue
 
             if command == "init":
                 if not state.backend and state.available_backends:
@@ -6289,12 +6322,13 @@ async def websocket_endpoint(ws: WebSocket):
                 model = msg.get("model", "")
                 session_mode = msg.get("session_mode", "code")
                 session_role = msg.get("session_role", "generator")
+                previous_record = state.project.current_session
                 try:
-                    state.project.create_session(
-                        backend_type=backend_type,
-                        model=model or "",
-                        session_role=session_role,
-                    )
+                    # Backend setup starts a fresh, lazily-persisted session.
+                    # Detach the prior record so the first message cannot
+                    # overwrite an existing conversation. Restore it if the
+                    # provider connection itself fails.
+                    state.project.current_session = None
                     await asyncio.get_event_loop().run_in_executor(
                         None,
                         lambda: state.create_backend(
@@ -6346,6 +6380,7 @@ async def websocket_endpoint(ws: WebSocket):
 
                         threading.Thread(target=_warm_in_bg, name="model-warmup", daemon=True).start()
                 except Exception as e:
+                    state.project.current_session = previous_record
                     await ws.send_json({"event": "error", "message": str(e)})
 
             elif command == "message":
@@ -7362,6 +7397,10 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif command == "clear":
                 # Create a new session (don't destroy old one)
+                request_id = str(msg.get("request_id") or "").strip()
+                if request_id and request_id in clear_request_cache:
+                    await ws.send_json(clear_request_cache[request_id])
+                    continue
                 session_mode = msg.get("session_mode", "code")
                 session_role = msg.get("session_role", "generator")
                 if state.backend:
@@ -7381,14 +7420,20 @@ async def websocket_endpoint(ws: WebSocket):
                     )
                     state._first_message_sent = False
                     state.costs.reset_session()
-                await ws.send_json({
+                response = {
                     "event": "session_cleared",
                     "sessions": state.project.list_sessions(),
                     "current_session_id": state.project.current_session.id if state.project.current_session else "",
                     "session_mode": session_mode,
                     "session_role": session_role,
                     "cwd": state.project.project_path,
-                })
+                    "request_id": request_id,
+                }
+                if request_id:
+                    clear_request_cache[request_id] = response
+                    if len(clear_request_cache) > 32:
+                        clear_request_cache.pop(next(iter(clear_request_cache)))
+                await ws.send_json(response)
 
             elif command == "director_configure":
                 from ..engine.director import DirectorConfig
@@ -7463,17 +7508,6 @@ async def websocket_endpoint(ws: WebSocket):
                         "message": f"Director Mode configuration failed: {exc}",
                     })
 
-            elif command == "director_status":
-                run = getattr(state.session, "director_run", None) if state.session else None
-                await ws.send_json({
-                    "event": "director.status",
-                    "run": run.to_dict() if run else None,
-                    "benchmark": (
-                        state.session.benchmark_store.comparison()
-                        if state.session and state.session.benchmark_store else None
-                    ),
-                })
-
             elif command == "switch_model":
                 model = msg.get("model", "")
                 backend_type = msg.get("backend", "")
@@ -7517,258 +7551,6 @@ async def websocket_endpoint(ws: WebSocket):
                         await ws.send_json(state.get_init_data())
                     except Exception as e:
                         await ws.send_json({"event": "error", "message": str(e)})
-
-            elif command == "get_model_telemetry":
-                # Best-effort runtime info about the loaded Ollama model
-                # (context_length, memory, supports_thinking).
-                if state.backend and getattr(state.backend, "name", "") == "ollama" \
-                        and hasattr(state.backend, "get_runtime_telemetry"):
-                    data = await asyncio.get_event_loop().run_in_executor(
-                        None,
-                        lambda: state.backend.get_runtime_telemetry(timeout=4.0),
-                    )
-                    await ws.send_json({"event": "model_telemetry", "data": data})
-                else:
-                    await ws.send_json({"event": "model_telemetry", "data": {"error": "no Ollama backend"}})
-
-            elif command == "get_prompt_inspector":
-                session = state.session
-                model_name = (
-                    getattr(state.backend, "model", "")
-                    or getattr(state.backend_spec, "model", "")
-                    or state.settings.get("general", "default_model", "")
-                )
-                data = inspect_system_instructions(
-                    plan_mode=bool(getattr(session, "plan_mode", False)),
-                    project_instructions=getattr(session, "project_instructions", None),
-                    working_directory=state.project.project_path,
-                    model_name=model_name,
-                    prompt_role=getattr(session, "prompt_role", "primary"),
-                    role_instructions=getattr(session, "role_instructions", None),
-                )
-                await ws.send_json({"event": "prompt_inspector", "data": data})
-
-            elif command == "get_context_state":
-                data = state.session.context_snapshot() if state.session else {
-                    "model": "",
-                    "context_window": 0,
-                    "estimated_total_tokens": 0,
-                    "utilization": 0,
-                    "history": {"entries": 0, "estimated_tokens": 0},
-                    "system_prompt": {"estimated_tokens": 0, "layers": []},
-                    "sources": {},
-                    "largest_tool_payloads": [],
-                    "todos": [],
-                    "compression_count": 0,
-                }
-                await ws.send_json({"event": "context.state", **data})
-
-            elif command == "agent_runtime_list":
-                registry = getattr(state.session, "agent_registry", None) if state.session else None
-                agents = [record.to_dict() for record in registry.list()] if registry else []
-                await ws.send_json({"event": "agent.runtime_list", "agents": agents})
-
-            elif command == "agent_runtime_detail":
-                registry = getattr(state.session, "agent_registry", None) if state.session else None
-                agent_id = str(msg.get("agent_id") or "")
-                record = registry.get(agent_id) if registry else None
-                await ws.send_json({
-                    "event": "agent.runtime_detail",
-                    "agent": record.to_dict() if record else None,
-                    "transcript": registry.transcript(agent_id) if record else [],
-                })
-
-            elif command == "agent_runtime_control":
-                registry = getattr(state.session, "agent_registry", None) if state.session else None
-                agent_id = str(msg.get("agent_id") or "")
-                action = str(msg.get("action") or "")
-                if not registry or not registry.get(agent_id):
-                    await ws.send_json({"event": "error", "message": "Agent is no longer available"})
-                    continue
-                try:
-                    if action == "pause":
-                        record = registry.request_pause(agent_id)
-                    elif action == "resume":
-                        record = registry.resume(agent_id)
-                    elif action == "cancel":
-                        record = registry.request_cancel(agent_id)
-                    elif action == "steer":
-                        record = registry.steer(agent_id, str(msg.get("text") or ""))
-                    else:
-                        raise ValueError(f"Unknown agent action: {action}")
-                    await ws.send_json({"event": "agent.control_ack", "agent": record.to_dict(), "action": action})
-                    await ws.send_json({"event": "agent.runtime_list", "agents": [item.to_dict() for item in registry.list()]})
-                except (KeyError, ValueError) as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
-
-            elif command == "session_timeline_list":
-                store = getattr(state.session, "checkpoint_store", None) if state.session else None
-                values = [item.to_dict() for item in store.list()] if store else []
-                await ws.send_json({"event": "session.timeline_list", "checkpoints": values})
-
-            elif command == "session_timeline_compare":
-                try:
-                    store = getattr(state.session, "checkpoint_store", None)
-                    data = await asyncio.get_event_loop().run_in_executor(
-                        None, store.compare, str(msg.get("checkpoint_id") or "")
-                    )
-                    await ws.send_json({"event": "session.timeline_comparison", "data": data})
-                except Exception as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
-
-            elif command == "session_timeline_restore":
-                try:
-                    if chat_runner is not None and not chat_runner.done():
-                        raise RuntimeError("Stop the active run before restoring a checkpoint")
-                    store = getattr(state.session, "checkpoint_store", None)
-                    checkpoint_id = str(msg.get("checkpoint_id") or "")
-                    mode = str(msg.get("mode") or "both")
-                    data = await asyncio.get_event_loop().run_in_executor(
-                        None, store.restore, checkpoint_id, mode
-                    )
-                    if mode in {"conversation", "both"}:
-                        state.session.conversation_history = data.get("conversation_history") or []
-                        if state.project.current_session:
-                            state.project.current_session.conversation_history = list(state.session.conversation_history)
-                            state.project.current_session.display_events = list(data.get("display_events") or [])
-                            state.project.current_session.save()
-                    if state.session.hook_runner:
-                        from ..engine.hooks import HookType
-                        state.session.hook_runner.emit(
-                            HookType.CHECKPOINT_RESTORED,
-                            {"checkpoint_id": checkpoint_id, "mode": mode, "project_path": state.project.project_path},
-                        )
-                    await ws.send_json({
-                        "event": "session.timeline_restored",
-                        "data": data,
-                        "display_events": data.get("display_events") or [],
-                    })
-                except Exception as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
-
-            elif command == "flight_recorder_list":
-                from ..engine.flight_recorder import FlightRecorder
-                await ws.send_json({
-                    "event": "flight.recorder_list",
-                    "runs": FlightRecorder.list_runs(state.project.project_path),
-                })
-
-            elif command == "flight_recorder_detail":
-                try:
-                    from ..engine.flight_recorder import FlightRecorder
-                    recorder = FlightRecorder.open_run(state.project.project_path, str(msg.get("run_id") or ""))
-                    await ws.send_json({
-                        "event": "flight.recorder_detail",
-                        "manifest": recorder.manifest.to_dict(),
-                        "events": recorder.events(),
-                    })
-                except Exception as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
-
-            elif command == "flight_recorder_compare":
-                try:
-                    from ..engine.flight_recorder import FlightRecorder
-                    left = FlightRecorder.open_run(state.project.project_path, str(msg.get("left") or ""))
-                    right = FlightRecorder.open_run(state.project.project_path, str(msg.get("right") or ""))
-                    await ws.send_json({"event": "flight.recorder_comparison", "data": FlightRecorder.compare(left, right)})
-                except Exception as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
-
-            elif command == "flight_recorder_export":
-                try:
-                    from ..engine.flight_recorder import FlightRecorder
-                    recorder = FlightRecorder.open_run(state.project.project_path, str(msg.get("run_id") or ""))
-                    artifact = state.session.artifact_store.put_text(
-                        json.dumps(recorder.export_otel(), indent=2),
-                        kind="trace", label=f"{recorder.run_id} OTLP export", source=recorder.run_id,
-                        media_type="application/json",
-                    )
-                    await ws.send_json({"event": "artifact.created", "artifact": artifact.to_dict()})
-                except Exception as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
-
-            elif command == "artifact_list":
-                store = getattr(state.session, "artifact_store", None) if state.session else None
-                await ws.send_json({
-                    "event": "artifact.list",
-                    "artifacts": [item.to_dict() for item in reversed(store.list())] if store else [],
-                })
-
-            elif command == "capability_pack_list":
-                manager = getattr(state.session, "capability_packs", None) if state.session else None
-                await ws.send_json({
-                    "event": "capability.pack_list",
-                    "packs": [item.to_dict() for item in manager.discover()] if manager else [],
-                    "catalog": manager.context_catalog() if manager else {},
-                })
-
-            elif command == "context_catalog":
-                broker = getattr(state.session, "context_broker", None) if state.session else None
-                await ws.send_json({
-                    "event": "context.catalog",
-                    "providers": broker.catalog() if broker else [],
-                })
-
-            elif command == "checkpoint_list":
-                try:
-                    from ..orchestration.checkpoints import IterationCheckpointStore
-                    store = IterationCheckpointStore(state.project.project_path)
-                    await ws.send_json({
-                        "event": "checkpoint_list",
-                        "checkpoints": store.list(),
-                    })
-                except Exception as exc:
-                    await ws.send_json({
-                        "event": "checkpoint_list",
-                        "checkpoints": [],
-                        "error": str(exc),
-                    })
-
-            elif command == "checkpoint_compare":
-                try:
-                    from ..orchestration.checkpoints import IterationCheckpointStore
-                    store = IterationCheckpointStore(state.project.project_path)
-                    data = await asyncio.get_event_loop().run_in_executor(
-                        None, store.compare, str(msg.get("ref") or "")
-                    )
-                    await ws.send_json({"event": "checkpoint_comparison", "data": data})
-                except Exception as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
-
-            elif command == "checkpoint_restore":
-                try:
-                    if state.active_thread and state.active_thread.is_alive():
-                        raise RuntimeError("Stop the active agent before restoring a checkpoint")
-                    from ..orchestration.checkpoints import IterationCheckpointStore
-                    store = IterationCheckpointStore(state.project.project_path)
-                    data = await asyncio.get_event_loop().run_in_executor(
-                        None, store.restore, str(msg.get("ref") or "")
-                    )
-                    await ws.send_json({"event": "checkpoint_restored", "data": data})
-                except Exception as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
-
-            elif command == "evaluation_list":
-                await ws.send_json({
-                    "event": "evaluation_dashboard",
-                    "data": state.evaluations.snapshot(),
-                })
-
-            elif command == "evaluation_start":
-                try:
-                    record = state.evaluations.start(
-                        model_label=str(msg.get("model") or "glm"),
-                        spec_name=str(msg.get("spec") or "minimal"),
-                        n=int(msg.get("n") or 1),
-                        timeout_minutes=int(msg.get("timeout_minutes") or 25),
-                        project_path=state.project.project_path,
-                    )
-                    await ws.send_json({
-                        "event": "evaluation_started",
-                        "record": record,
-                    })
-                except (TypeError, ValueError, RuntimeError) as exc:
-                    await ws.send_json({"event": "error", "message": str(exc)})
 
             elif command == "set_thinking_mode":
                 # Per-session thinking-mode toggle (deepseek-v* etc.).

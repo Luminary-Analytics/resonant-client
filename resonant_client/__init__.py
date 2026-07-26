@@ -1,2 +1,2 @@
 """Resonant Client — durable agentic coding runtime and desktop client."""
-__version__ = "0.11.8"
+__version__ = "0.11.9"

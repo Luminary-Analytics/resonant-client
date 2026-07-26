@@ -81,39 +81,112 @@ def _convert_tools_for_ollama(tools: list) -> list:
     return ollama_tools
 
 
+_MODEL_CONTROL_TOKEN_RE = re.compile(
+    r"<\|(?:"
+    r"im_(?:start|end)|"
+    r"eom_id|eot_id|end_of_text|begin_of_text|"
+    r"start_header_id|end_header_id"
+    r")\|>",
+    re.IGNORECASE,
+)
+
+
+def _strip_model_control_tokens(text: str) -> str:
+    """Remove chat-template control tokens leaked by compatible providers."""
+    return _MODEL_CONTROL_TOKEN_RE.sub("", text or "")
+
+
+# The longest token the pattern above can match is "<|start_header_id|>" (19).
+# The bound only has to be >= that; it caps how much text the streaming filter
+# will ever hold back waiting to see whether a "<" grows into a control token.
+_CONTROL_TOKEN_MAX_LEN = 24
+
+# A proper prefix of a control token, anchored to the end of a chunk: a bare
+# "<", "<|", "<|eot_i", or "<|eot_id|" — anything that could still become
+# "<|eot_id|>" once the next chunk arrives. The optional trailing "|" matters:
+# a provider splitting after the closing pipe ("<|im_end|" + ">") is just as
+# likely as splitting mid-word, and without it that split leaks through.
+_PARTIAL_CONTROL_TOKEN_RE = re.compile(r"<(?:\|[A-Za-z_]*\|?)?$")
+
+
+class _ControlTokenFilter:
+    """Streaming-safe stripper for chat-template control tokens.
+
+    ``_strip_model_control_tokens`` is correct on a complete response but not on
+    a token stream: a provider is free to split ``<|eot_id|>`` across two SSE
+    chunks as ``<|eot`` + ``_id|>``, and a per-delta ``re.sub`` sees neither
+    half as a match and forwards both to the UI.
+
+    This holds back the shortest trailing run that could still grow into a
+    control token and releases it as soon as the next chunk proves it innocent
+    (or at ``flush()`` when the stream ends). The cost of a false hold — a line
+    of prose ending in ``<`` — is that one ``<`` arrives with the following
+    chunk instead of its own. Nothing is ever dropped.
+
+    Detection heuristics must keep reading the *raw* accumulated text; this
+    filter is only for what gets emitted to the user.
+    """
+
+    __slots__ = ("_pending",)
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def feed(self, delta: str) -> str:
+        """Return the portion of ``delta`` that is safe to emit now."""
+        buffered = self._pending + (delta or "")
+        cleaned = _MODEL_CONTROL_TOKEN_RE.sub("", buffered)
+        match = _PARTIAL_CONTROL_TOKEN_RE.search(cleaned[-_CONTROL_TOKEN_MAX_LEN:])
+        if match:
+            hold = len(match.group(0))
+            self._pending = cleaned[-hold:]
+            return cleaned[:-hold]
+        self._pending = ""
+        return cleaned
+
+    def flush(self) -> str:
+        """Release any held-back tail. Call once when the stream ends."""
+        remainder, self._pending = self._pending, ""
+        return remainder
+
+
 def _detect_json_tool_calls(text: str) -> list:
     """
     Detect raw JSON tool calls in model output (fallback).
-    Handles: {"name": "bash", "arguments": {"command": "..."}}
+    Handles both the Resonant ``arguments`` contract and the common
+    OpenAI-compatible ``parameters`` alias.  ``JSONDecoder.raw_decode`` lets
+    us recover a valid leading call even when a provider appends template
+    control tokens or explanatory prose.
     """
     results = []
-    for match in re.finditer(r'\{[^{}]*"name"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*\{', text):
-        start = match.start()
-        depth = 0
-        i = start
-        while i < len(text):
-            if text[i] == '{':
-                depth += 1
-            elif text[i] == '}':
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start:i+1]
-                    try:
-                        parsed = json.loads(candidate)
-                        name = parsed.get("name", "")
-                        args = parsed.get("arguments", {})
-                        if name:
-                            args_str = json.dumps(args) if isinstance(args, dict) else str(args)
-                            call_id = _new_call_id(name, args_str, len(results))
-                            results.append({
-                                "name": name,
-                                "arguments": args_str,
-                                "call_id": call_id,
-                            })
-                    except (json.JSONDecodeError, ValueError):
-                        pass
-                    break
-            i += 1
+    clean = _strip_model_control_tokens(text)
+    decoder = json.JSONDecoder()
+    cursor = 0
+    while cursor < len(clean):
+        start = clean.find("{", cursor)
+        if start < 0:
+            break
+        try:
+            parsed, consumed = decoder.raw_decode(clean[start:])
+        except (json.JSONDecodeError, ValueError):
+            cursor = start + 1
+            continue
+        cursor = start + max(consumed, 1)
+        if not isinstance(parsed, dict):
+            continue
+        name = str(parsed.get("name") or "").strip()
+        args = parsed.get("arguments")
+        if args is None:
+            args = parsed.get("parameters")
+        if not name or not isinstance(args, dict):
+            continue
+        args_str = json.dumps(args) if isinstance(args, dict) else str(args)
+        call_id = _new_call_id(name, args_str, len(results))
+        results.append({
+            "name": name,
+            "arguments": args_str,
+            "call_id": call_id,
+        })
     return results
 
 
@@ -1281,6 +1354,11 @@ class OllamaBackend:
         #   - Always buffer until we can determine if <tool_call> is present
         #   - Stream text outside of tool_call blocks at end
         force_buffer = False   # Always buffer (JSON/XML tool call detected)
+        # Strips chat-template control tokens from everything shown to the user.
+        # `collected_tokens` deliberately keeps the RAW text — the tool-call
+        # detection below (first-char '{' check, DSML/XML/JSON/text parsers)
+        # must see the wire bytes, not a cleaned view of them.
+        emit_filter = _ControlTokenFilter()
         known_tool_names = {
             str(tool.get("function", {}).get("name") or "")
             for tool in tools
@@ -1405,8 +1483,14 @@ class OllamaBackend:
                         if data.get("done"):
                             # --- End of response ---
                             full_text = "".join(collected_tokens)
-                            # Strip model control tokens
-                            clean_text = re.sub(r'<\|im_\w+\|>', '', full_text).strip()
+                            # Strip model control tokens. This used to be a
+                            # local `<\|im_\w+\|>` sub, which only knew the
+                            # ChatML pair and let the Llama-family tokens
+                            # (`<|eot_id|>`, `<|end_of_text|>`,
+                            # `<|start_header_id|>`) through into both the UI
+                            # and the parsers below. Shared with the
+                            # Kimi/EXO path so a provider fix lands once.
+                            clean_text = _strip_model_control_tokens(full_text).strip()
 
                             # Detect tool calls from ALL sources
                             detected_calls = list(native_tool_calls)
@@ -1455,7 +1539,25 @@ class OllamaBackend:
                             elif not streaming and collected_tokens:
                                 # Was buffering text, no tool calls found — flush as text
                                 for t in collected_tokens:
-                                    yield (EVENT_TEXT_DELTA, {"delta": t})
+                                    visible = emit_filter.feed(t)
+                                    if visible:
+                                        yield (EVENT_TEXT_DELTA, {"delta": visible})
+
+                            # Release anything the control-token filter was
+                            # holding back. Reached whether we streamed live or
+                            # flushed a buffer above; without it a response that
+                            # legitimately ends in "<" would lose that character.
+                            #
+                            # Unconditional on purpose. The filter only holds
+                            # text it was actually fed, which happens only on a
+                            # path that already emitted that text to the user —
+                            # so a pending tail always belongs to visible prose,
+                            # even when the turn also produced a tool call. When
+                            # the response was buffered as a tool call instead,
+                            # the filter was never fed and this is a no-op.
+                            trailing = emit_filter.flush()
+                            if trailing:
+                                yield (EVENT_TEXT_DELTA, {"delta": trailing})
 
                             # Stats
                             stats = {}
@@ -1511,11 +1613,15 @@ class OllamaBackend:
                                 continue
                             elif streaming:
                                 # Already streaming — send immediately
-                                yield (EVENT_TEXT_DELTA, {"delta": token})
+                                visible = emit_filter.feed(token)
+                                if visible:
+                                    yield (EVENT_TEXT_DELTA, {"delta": visible})
                             elif not has_tools:
                                 # No tools available — stream immediately
                                 streaming = True
-                                yield (EVENT_TEXT_DELTA, {"delta": token})
+                                visible = emit_filter.feed(token)
+                                if visible:
+                                    yield (EVENT_TEXT_DELTA, {"delta": visible})
                             else:
                                 # Native tool mode — check first non-whitespace char
                                 acc = "".join(collected_tokens).lstrip()
@@ -1534,7 +1640,9 @@ class OllamaBackend:
                                 # Doesn't look like a tool call → stream
                                 streaming = True
                                 for t in collected_tokens:
-                                    yield (EVENT_TEXT_DELTA, {"delta": t})
+                                    visible = emit_filter.feed(t)
+                                    if visible:
+                                        yield (EVENT_TEXT_DELTA, {"delta": visible})
 
         except httpx.TimeoutException as e:
             # v0.6.4 (F6) — the open-phase timeout retries exhausted.
@@ -2121,6 +2229,11 @@ class KimiBackend:
         headers = self._request_headers()
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
+        pending_text_parts: list[str] = []
+        text_mode_undecided = True
+        # Shared with OllamaBackend — see _ControlTokenFilter. A per-delta
+        # re.sub cannot catch a control token split across two SSE chunks.
+        emit_filter = _ControlTokenFilter()
         repetition_window = ""
         output_guard_pending_chars = 0
         tool_calls: dict[int, dict] = {}
@@ -2308,6 +2421,9 @@ class KimiBackend:
                                         return
                                     reasoning_parts.clear()
                                     content_parts.clear()
+                                    pending_text_parts.clear()
+                                    text_mode_undecided = True
+                                    emit_filter = _ControlTokenFilter()
                                     repetition_window = ""
                                     output_guard_pending_chars = 0
                                     tool_calls.clear()
@@ -2341,7 +2457,25 @@ class KimiBackend:
                             text_delta = str(delta.get("content") or "")
                             if text_delta:
                                 content_parts.append(text_delta)
-                                yield (EVENT_TEXT_DELTA, {"delta": text_delta})
+                                if text_mode_undecided:
+                                    pending_text_parts.append(text_delta)
+                                    pending = "".join(pending_text_parts)
+                                    stripped = _strip_model_control_tokens(pending).lstrip()
+                                    # Some OpenAI-compatible local runners emit
+                                    # tool calls as assistant JSON. Hold a
+                                    # JSON-looking prefix until completion so it
+                                    # can become a real tool event instead of
+                                    # flashing raw protocol into the chat.
+                                    if stripped and not stripped.startswith("{"):
+                                        text_mode_undecided = False
+                                        visible = emit_filter.feed(pending)
+                                        if visible:
+                                            yield (EVENT_TEXT_DELTA, {"delta": visible})
+                                        pending_text_parts.clear()
+                                else:
+                                    visible_delta = emit_filter.feed(text_delta)
+                                    if visible_delta:
+                                        yield (EVENT_TEXT_DELTA, {"delta": visible_delta})
                                 repetition_window = (
                                     repetition_window + text_delta
                                 )[-2048:]
@@ -2393,6 +2527,37 @@ class KimiBackend:
                 })
             reasoning_content = "".join(reasoning_parts)
             assistant_content = "".join(content_parts)
+            if not complete_calls:
+                recovered_calls = _detect_json_tool_calls(assistant_content)
+                for index, call in enumerate(recovered_calls):
+                    complete_calls.append({
+                        "id": call["call_id"],
+                        "type": "function",
+                        "function": {
+                            "name": call["name"],
+                            "arguments": call["arguments"],
+                        },
+                    })
+                if recovered_calls:
+                    # The structured call is carried by response_tool_calls.
+                    # Keeping its raw JSON in assistant_content would feed the
+                    # provider's malformed wire syntax back into model history.
+                    assistant_content = ""
+            if pending_text_parts and not complete_calls:
+                visible = _strip_model_control_tokens("".join(pending_text_parts)).strip()
+                if visible:
+                    yield (EVENT_TEXT_DELTA, {"delta": visible})
+            else:
+                # Nothing was held as an undecided JSON prefix, so any residue
+                # belongs to the live filter: a partial control-token tail that
+                # turned out to be ordinary text (a response ending in "<").
+                # Unconditional — the filter only ever holds text on a path that
+                # already streamed that text to the user, so the tail is visible
+                # prose even when the turn also produced a native tool call.
+                trailing = emit_filter.flush()
+                if trailing:
+                    yield (EVENT_TEXT_DELTA, {"delta": trailing})
+            assistant_content = _strip_model_control_tokens(assistant_content)
             stable_response_id = response_id or _new_call_id(
                 self.model, assistant_content + reasoning_content, 0
             )

@@ -7,8 +7,10 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 from resonant_client.backends import (
+    EVENT_TEXT_DELTA,
     EVENT_TOOL_CALL,
     OllamaBackend,
+    _ControlTokenFilter,
     _detect_json_tool_calls,
 )
 from resonant_client.engine.sandbox import PathSandbox
@@ -25,6 +27,35 @@ class _Response:
 
     def iter_raw(self):
         return iter(self._chunks)
+
+
+def _collect_stream_events(backend, chunks, **stream_kwargs):
+    """Drive a full OllamaBackend stream and return the emitted events."""
+
+    @contextmanager
+    def fake_open(payload, *_args, **_kwargs):
+        yield object(), _Response(chunks)
+
+    backend._use_native_tools = True
+    OllamaBackend._vision_support_cache[backend.model] = False
+    backend._open_chat_stream_with_retry = fake_open
+    return list(backend.stream(
+        user_msg="continue",
+        conversation_history=stream_kwargs.pop("conversation_history", []),
+        instructions="stable",
+        tools=stream_kwargs.pop("tools", []),
+        **stream_kwargs,
+    ))
+
+
+def _streamed_text(events):
+    return "".join(
+        payload["delta"] for name, payload in events if name == EVENT_TEXT_DELTA
+    )
+
+
+def _content_chunk(text):
+    return json.dumps({"message": {"content": text}}).encode() + b"\n"
 
 
 def _capture_stream_payload(backend, chunks, **stream_kwargs):
@@ -227,6 +258,96 @@ def test_structured_generation_uses_json_schema_and_disables_second_reasoning_pa
     assert payload["stream"] is False
     assert "think" not in payload
     assert payload["options"]["temperature"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Control-token normalization
+#
+# Every provider path must strip chat-template control tokens with the SAME
+# rules. Ollama used to carry a local `<\|im_\w+\|>` sub that knew only the
+# ChatML pair, so Llama-family tokens leaked into the chat on the primary
+# backend while Kimi/EXO were already clean.
+# ---------------------------------------------------------------------------
+
+
+def test_control_token_filter_strips_token_split_across_chunks():
+    f = _ControlTokenFilter()
+
+    emitted = "".join([f.feed("done"), f.feed("<|eot"), f.feed("_id|>"), f.flush()])
+
+    assert emitted == "done"
+
+
+def test_control_token_filter_strips_token_split_after_the_closing_pipe():
+    f = _ControlTokenFilter()
+
+    emitted = "".join([f.feed("done<|im_end|"), f.feed(">"), f.flush()])
+
+    assert emitted == "done"
+
+
+def test_control_token_filter_holds_only_the_partial_token_not_the_prose():
+    f = _ControlTokenFilter()
+
+    first = f.feed("all done<|eot")
+
+    assert first == "all done"
+    assert "".join([first, f.feed("_id|>"), f.flush()]) == "all done"
+
+
+def test_control_token_filter_never_drops_ordinary_trailing_angle_bracket():
+    f = _ControlTokenFilter()
+
+    emitted = "".join([f.feed("if a <"), f.feed(" b:"), f.flush()])
+
+    assert emitted == "if a < b:"
+
+
+def test_control_token_filter_releases_held_bracket_at_end_of_stream():
+    f = _ControlTokenFilter()
+
+    emitted = "".join([f.feed("compare with <"), f.flush()])
+
+    assert emitted == "compare with <"
+
+
+def test_ollama_stream_strips_llama_family_control_tokens():
+    backend = OllamaBackend("http://stub", "glm-5.2")
+    chunks = [
+        _content_chunk("<|begin_of_text|>All set."),
+        _content_chunk("<|eot_id|>"),
+        json.dumps({"done": True}).encode() + b"\n",
+    ]
+
+    events = _collect_stream_events(backend, chunks)
+
+    assert _streamed_text(events) == "All set."
+
+
+def test_ollama_stream_strips_control_token_split_across_chunks():
+    backend = OllamaBackend("http://stub", "glm-5.2")
+    chunks = [
+        _content_chunk("All set."),
+        _content_chunk("<|eot"),
+        _content_chunk("_id|>"),
+        json.dumps({"done": True}).encode() + b"\n",
+    ]
+
+    events = _collect_stream_events(backend, chunks)
+
+    assert _streamed_text(events) == "All set."
+
+
+def test_ollama_stream_preserves_trailing_angle_bracket_in_prose():
+    backend = OllamaBackend("http://stub", "glm-5.2")
+    chunks = [
+        _content_chunk("the guard is n <"),
+        json.dumps({"done": True}).encode() + b"\n",
+    ]
+
+    events = _collect_stream_events(backend, chunks)
+
+    assert _streamed_text(events) == "the guard is n <"
 
 
 def test_structured_generation_fails_fast_for_unsupported_ollama_cloud():

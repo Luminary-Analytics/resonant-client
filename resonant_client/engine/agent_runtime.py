@@ -269,13 +269,90 @@ class AgentRegistry:
         return self.transition(agent_id, AgentStatus.PAUSED)
 
     def resume(self, agent_id: str) -> AgentRecord:
+        """Un-pause a live agent.
+
+        This only clears a pause on a worker whose thread is still alive. It
+        deliberately refuses terminal records: flipping a `stuck` agent to
+        RUNNING would present a ghost worker that no thread backs — the exact
+        state `_load()` exists to clean up after a restart — and the UI would
+        then wait forever on a run that can never emit another event.
+
+        Use `restart_assignment()` to re-dispatch interrupted work.
+        """
         with self._lock:
+            record = self._require(agent_id)
+            if AgentStatus(record.status).terminal:
+                raise ValueError(
+                    f"Agent {agent_id} is {record.status} and has no live thread to resume. "
+                    f"Re-dispatch it with restart_assignment() instead."
+                )
             control = self._live.setdefault(agent_id, _LiveControl())
             control.pause_event.clear()
-            record = self._require(agent_id)
             record.control.pop("pause_requested", None)
             self._save(record)
         return self.transition(agent_id, AgentStatus.RUNNING)
+
+    def restart_assignment(self, agent_id: str) -> dict[str, Any]:
+        """Return everything needed to re-dispatch an interrupted agent.
+
+        A worker's thread cannot survive a process restart, but its assignment
+        can: the record already persists the prompt, agent type, workspace,
+        policy, model, and step budget. This exposes that as a dispatch payload
+        so an interrupted run can be re-issued rather than mourned.
+
+        `completed_steps` and `transcript_path` are included so the caller can
+        tell the re-dispatched worker what its predecessor already did — a
+        restart should not silently redo finished work.
+
+        Raises ValueError for agents that completed successfully; there is
+        nothing to restart.
+        """
+        with self._lock:
+            record = self._require(agent_id)
+            if record.status == AgentStatus.COMPLETED.value:
+                raise ValueError(f"Agent {agent_id} completed; there is nothing to restart.")
+            return {
+                "source_agent_id": record.id,
+                "agent_type": record.agent_type,
+                "prompt": record.prompt,
+                "project_path": record.project_path,
+                "workspace": record.workspace,
+                "policy": record.policy,
+                "model": record.model,
+                "role": record.role,
+                "parent_id": record.parent_id,
+                "max_steps": record.max_steps,
+                "completed_steps": record.steps,
+                "transcript_path": record.transcript_path,
+                "interrupted_reason": record.error,
+                "metadata": dict(record.metadata),
+            }
+
+    def adopt_restart(self, agent_id: str) -> AgentRecord:
+        """Create a fresh agent seeded from an interrupted one.
+
+        A new record (and a new transcript) rather than reusing the old id, so
+        the interrupted run stays inspectable as evidence instead of being
+        overwritten by its own retry. The two are linked through
+        `metadata.resumed_from`.
+        """
+        assignment = self.restart_assignment(agent_id)
+        record = self.create(
+            agent_type=assignment["agent_type"],
+            prompt=assignment["prompt"],
+            parent_id=assignment["parent_id"],
+            model=assignment["model"],
+            role=assignment["role"],
+            workspace=assignment["workspace"],
+            policy=assignment["policy"],
+            max_steps=assignment["max_steps"],
+            metadata={
+                **assignment["metadata"],
+                "resumed_from": assignment["source_agent_id"],
+                "resumed_after_steps": assignment["completed_steps"],
+            },
+        )
+        return record
 
     def steer(self, agent_id: str, message: str) -> AgentRecord:
         with self._lock:

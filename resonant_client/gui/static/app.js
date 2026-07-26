@@ -131,6 +131,9 @@ class ResonantApp {
         this._cancelInterrupted = false;
         this._cancelWatchdog = null;
         this._cancelCardBaseline = null;
+        this._newSessionInflight = false;
+        this._newSessionRequestId = '';
+        this._newSessionInflightTimer = null;
         this.planMode = false;
 
         // Streaming state
@@ -5359,6 +5362,13 @@ class ResonantApp {
                 this._syncMissionUI();
                 break;
             case 'session_cleared':
+                if (
+                    this._newSessionInflight
+                    && event.request_id
+                    && event.request_id !== this._newSessionRequestId
+                ) {
+                    break;
+                }
                 // Mission flow: the frontend already rendered the seed
                 // feature as a user message before sending mission_start.
                 // Wiping the chat here would visually delete it, leaving
@@ -5404,6 +5414,9 @@ class ResonantApp {
                         clearTimeout(this._missionStartInflightTimer);
                         this._missionStartInflightTimer = null;
                     }
+                }
+                if (this._newSessionInflight) {
+                    this._releaseNewSessionGuard();
                 }
                 break;
             case 'session_forked':
@@ -6515,6 +6528,21 @@ class ResonantApp {
         const preferred = this._getPreferredBackendSelection(backends);
         const effectiveBackend = currentBackend || preferred?.backend || '';
         const effectiveModel = currentModel || preferred?.model || '';
+        const currentIsDiscovered = Boolean(
+            effectiveBackend
+            && effectiveModel
+            && (backends[effectiveBackend]?.models || []).includes(effectiveModel)
+        );
+        if (effectiveBackend && effectiveModel && !currentIsDiscovered) {
+            const unavailableGroup = document.createElement('optgroup');
+            unavailableGroup.label = 'Current selection';
+            const unavailable = document.createElement('option');
+            unavailable.value = `${effectiveBackend}:${effectiveModel}`;
+            unavailable.textContent = `${effectiveModel} · temporarily unavailable`;
+            unavailable.selected = true;
+            unavailableGroup.appendChild(unavailable);
+            selectEl.appendChild(unavailableGroup);
+        }
 
         for (const group of Object.values(groups)) {
             // Collect all models in this category
@@ -10356,6 +10384,18 @@ class ResonantApp {
         const controls = document.createElement('div');
         controls.className = 'runtime-control-bar';
         controls.innerHTML = `<button data-action="pause">Pause</button><button data-action="resume">Resume</button><button data-action="cancel" class="is-danger">Cancel</button><input aria-label="Steer agent" placeholder="Add direction without cancelling"><button data-action="steer">Steer</button>`;
+        // A terminal agent has no live thread behind it. Offering Pause /
+        // Resume / Steer there invites a control that can only ever come back
+        // as an error — and `resume` in particular used to flip a restart-
+        // orphaned agent to "running", leaving the UI waiting on a worker that
+        // no longer existed.
+        const TERMINAL_STATUSES = ['completed', 'failed', 'cancelled', 'stuck'];
+        if (TERMINAL_STATUSES.includes(String(agent.status || ''))) {
+            controls.querySelectorAll('button, input').forEach((element) => {
+                element.disabled = true;
+                element.title = `Agent is ${agent.status} — no live run to control.`;
+            });
+        }
         detail?.appendChild(controls);
         controls.querySelectorAll('button').forEach((button) => button.addEventListener('click', () => {
             const input = controls.querySelector('input');
@@ -10601,6 +10641,9 @@ class ResonantApp {
                 clearTimeout(this._missionStartInflightTimer);
                 this._missionStartInflightTimer = null;
             }
+        }
+        if (this._newSessionInflight) {
+            this._releaseNewSessionGuard();
         }
 
         // Track error state so the run-card can drop the "Build" framing and
@@ -13693,10 +13736,35 @@ class ResonantApp {
         // This is an explicit navigation action, unlike background runtime
         // events guarded by showChatInterface().
         if (this.currentView !== 'agents') this.switchView('agents');
+        if (this._newSessionInflight) {
+            // Ignore click bursts while the first request is in flight. The
+            // disabled primary button handles normal clicks; this also covers
+            // keyboard/project-switcher paths without adding noisy toasts.
+            return;
+        }
 
         const selectedBackend = this.currentBackendName || ((this.modelSelector?.value || '').split(':')[0] || '');
         if (this.currentSessionId || selectedBackend) {
-            this.send({ command: 'clear', session_role: this.sessionRole || 'generator' });
+            this._newSessionInflight = true;
+            this._newSessionRequestId = (
+                globalThis.crypto?.randomUUID?.()
+                || `new-${Date.now()}-${Math.random().toString(16).slice(2)}`
+            );
+            const button = document.getElementById('new-agent-btn');
+            if (button) {
+                button.disabled = true;
+                button.setAttribute('aria-busy', 'true');
+            }
+            if (this._newSessionInflightTimer) clearTimeout(this._newSessionInflightTimer);
+            this._newSessionInflightTimer = setTimeout(
+                () => this._releaseNewSessionGuard(),
+                10000,
+            );
+            this.send({
+                command: 'clear',
+                session_role: this.sessionRole || 'generator',
+                request_id: this._newSessionRequestId,
+            });
         } else if (this.currentCwd) {
             this.showCurrentProjectBackendSetup();
         } else {
@@ -13908,6 +13976,20 @@ class ResonantApp {
             // Show scanning message — init event will refresh
             const label = document.querySelector('.backend-label');
             if (label) label.textContent = 'Scanning backends...';
+        }
+    }
+
+    _releaseNewSessionGuard() {
+        this._newSessionInflight = false;
+        this._newSessionRequestId = '';
+        if (this._newSessionInflightTimer) {
+            clearTimeout(this._newSessionInflightTimer);
+            this._newSessionInflightTimer = null;
+        }
+        const button = document.getElementById('new-agent-btn');
+        if (button) {
+            button.disabled = false;
+            button.removeAttribute('aria-busy');
         }
     }
 

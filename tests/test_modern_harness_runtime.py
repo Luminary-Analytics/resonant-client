@@ -69,6 +69,106 @@ def test_agent_registry_persists_controls_transcript_and_handoff(tmp_path: Path)
     assert {event["event"] for event in events} >= {"agent.created", "agent.updated", "agent.completed"}
 
 
+def test_restart_marks_interrupted_agents_stuck_rather_than_running(tmp_path: Path):
+    registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
+    record = registry.create(agent_type="implement", prompt="Add the parser")
+    registry.transition(record.id, AgentStatus.RUNNING, current_action="editing")
+
+    # A new registry stands in for a process restart: the thread is gone.
+    reloaded = AgentRegistry(tmp_path, root=tmp_path / "agents")
+
+    assert reloaded.get(record.id).status == "stuck"
+
+
+def test_resume_refuses_to_resurrect_a_restart_orphaned_agent(tmp_path: Path):
+    registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
+    record = registry.create(agent_type="implement", prompt="Add the parser")
+    registry.transition(record.id, AgentStatus.RUNNING)
+    reloaded = AgentRegistry(tmp_path, root=tmp_path / "agents")
+
+    # Flipping this back to "running" would leave the UI waiting forever on a
+    # worker with no thread behind it.
+    try:
+        reloaded.resume(record.id)
+    except ValueError as exc:
+        assert "restart_assignment" in str(exc)
+    else:
+        raise AssertionError("expected resume() to reject a stuck agent")
+
+    assert reloaded.get(record.id).status == "stuck"
+
+
+def test_resume_still_unpauses_a_live_agent(tmp_path: Path):
+    registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
+    record = registry.create(agent_type="implement", prompt="Add the parser")
+    registry.transition(record.id, AgentStatus.RUNNING)
+    registry.request_pause(record.id)
+
+    resumed = registry.resume(record.id)
+
+    assert resumed.status == "running"
+    assert "pause_requested" not in resumed.control
+
+
+def test_restart_assignment_carries_everything_needed_to_re_dispatch(tmp_path: Path):
+    registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
+    record = registry.create(
+        agent_type="implement",
+        prompt="Add the parser",
+        model="glm-5.2",
+        role="generator",
+        workspace=str(tmp_path / "wt"),
+        policy="guarded",
+        max_steps=12,
+    )
+    registry.transition(record.id, AgentStatus.RUNNING)
+    registry.append_event(record.id, {"event": "step.end", "step": 1})
+    reloaded = AgentRegistry(tmp_path, root=tmp_path / "agents")
+
+    assignment = reloaded.restart_assignment(record.id)
+
+    assert assignment["prompt"] == "Add the parser"
+    assert assignment["agent_type"] == "implement"
+    assert assignment["workspace"] == str(tmp_path / "wt")
+    assert assignment["policy"] == "guarded"
+    assert assignment["max_steps"] == 12
+    # The retry must know what its predecessor already finished.
+    assert assignment["completed_steps"] == 1
+    assert "Runtime restarted" in assignment["interrupted_reason"]
+
+
+def test_restart_assignment_rejects_a_completed_agent(tmp_path: Path):
+    registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
+    record = registry.create(agent_type="explore", prompt="Map the API")
+    registry.complete(record.id, AgentHandoff(outcome="completed", summary="done"))
+
+    try:
+        registry.restart_assignment(record.id)
+    except ValueError as exc:
+        assert "nothing to restart" in str(exc)
+    else:
+        raise AssertionError("expected restart_assignment() to reject a completed agent")
+
+
+def test_adopt_restart_preserves_the_interrupted_run_as_evidence(tmp_path: Path):
+    registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
+    original = registry.create(agent_type="implement", prompt="Add the parser")
+    registry.transition(original.id, AgentStatus.RUNNING)
+    registry.append_event(original.id, {"event": "step.end", "step": 1})
+    reloaded = AgentRegistry(tmp_path, root=tmp_path / "agents")
+
+    retry = reloaded.adopt_restart(original.id)
+
+    assert retry.id != original.id
+    assert retry.prompt == original.prompt
+    assert retry.status == "queued"
+    assert retry.metadata["resumed_from"] == original.id
+    assert retry.metadata["resumed_after_steps"] == 1
+    # The interrupted transcript survives its own retry.
+    assert reloaded.get(original.id).status == "stuck"
+    assert reloaded.transcript(original.id)[0]["event"] == "step.end"
+
+
 def test_checkpoint_timeline_restores_conversation_and_non_git_files(tmp_path: Path):
     project = tmp_path / "project"
     project.mkdir()
@@ -214,12 +314,23 @@ def test_ast_code_intelligence_and_parallel_task_contract():
 
 
 def test_gui_exposes_runtime_control_plane_contract():
+    """The runtime control plane must be reachable from the UI.
+
+    The backend half checks the dispatch registry rather than grepping
+    app.py's source: these handlers now live in gui/ws_commands.py, and a
+    substring search over one file asserts where the code sits rather than
+    whether the command is actually routable.
+    """
+    from resonant_client.gui import ws_commands
+    from resonant_client.gui.app import websocket_endpoint  # noqa: F401
+
     root = Path(__file__).parents[1]
-    backend = (root / "resonant_client" / "gui" / "app.py").read_text(encoding="utf-8")
     frontend = (root / "resonant_client" / "gui" / "static" / "app.js").read_text(encoding="utf-8")
+    endpoint_source = (root / "resonant_client" / "gui" / "app.py").read_text(encoding="utf-8")
+
     for command in (
         "agent_runtime_control", "session_timeline_restore", "flight_recorder_export",
         "artifact_list", "capability_pack_list", "context_catalog",
     ):
-        assert command in backend
-        assert command in frontend
+        assert command in ws_commands.HANDLERS or command in endpoint_source, command
+        assert command in frontend, command

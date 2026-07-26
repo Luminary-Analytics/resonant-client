@@ -8,7 +8,14 @@ maintainability, and wall-clock performance rank above token or compute
 efficiency. The dated release and cluster histories below remain useful records
 but do not override that direction.
 
-Post-refocus, the client is a single-purpose agentic coder: Ollama + `deepseek-v4-pro:cloud` on the Mac Studio (`10.0.0.133`), with a clean Agent + Settings UI. The original 8 clusters below were the foundation (shipped pre-v0.2.0); see the "Post-refocus state" section further down for the v0.3.x–v0.6.x evolution.
+Post-refocus, the client is a single-purpose agentic coder with a clean Agent +
+Settings UI. It is no longer tied to one model or one provider: the harness is
+capability-driven and model-neutral (see the north star above), with Ollama on
+the Mac Studio (`10.0.0.133`) as the primary local path, `glm-5.2` the flagship
+model, and Kimi, EXO distributed inference, and the Codex CLI as additional
+backends. The original 8 clusters below were the foundation (shipped
+pre-v0.2.0); see the "Post-refocus state" section further down for the
+v0.3.x–v0.6.x evolution.
 
 ## Project direction (2026-05, set at v0.6.3)
 
@@ -18,7 +25,18 @@ Post-refocus, the client is a single-purpose agentic coder: Ollama + `deepseek-v
 - **Comparables are Aider / OpenHands / Cline / Goose** — not closed business-automation SaaS. The ownable gap: *local-first* + *self-improving*.
 - **One repo, singular focus.** A 2026-05 evaluation of getviktor.com (an "AI coworker" SaaS) concluded **do not fork** into a Viktor-style business-automation product: flagships win on depth, and a second repo would halve attention and dilute the narrative. Take Viktor's *validation* (persistent memory + autonomous execution are the right bets), not its scope.
 - **Near-term priorities:** harden the loop until the headline feature is bulletproof and demoable; then v0.7 polish (README / CONTRIBUTING / architecture docs / a reproducible demo) for the flagship launch.
-- **Harness gap analysis (2026-07-01):** [`docs/harness-competitive-analysis-2026-07-01.md`](docs/harness-competitive-analysis-2026-07-01.md) benchmarks the harness against Claude Code / OpenCode / Codex / Gemini CLI / Aider / Cline / Goose and ranks 16 improvements. The six quick wins — per-model `num_ctx` + compaction fix, fuzzy edit-application cascade, KV-cache prefix discipline, DeepSeek `reasoning_content` replay + vendor sampling pins, tool-arg validation ladder, Ollama structured outputs — are the next harness workstream.
+- **Harness gap analysis (2026-07-01):** [`docs/harness-competitive-analysis-2026-07-01.md`](docs/harness-competitive-analysis-2026-07-01.md) benchmarks the harness against Claude Code / OpenCode / Codex / Gemini CLI / Aider / Cline / Goose and ranks 16 improvements. Its six quick wins have since landed and are no longer the open workstream: per-model `num_ctx` is capability-derived, `file_edit` runs a multi-strategy match cascade, the KV-cache prefix is byte-stable (measured at 30,203 of 30,266 prompt tokens reused — see [`docs/glm-5.2-exo-qa-2026-07-23.md`](docs/glm-5.2-exo-qa-2026-07-23.md)), `reasoning_content` is replayed across tool turns with vendor sampling pins, and Ollama structured outputs ship behind a capability check. The ranked medium/large items in that report — tool-output eviction, shadow-git checkpointing, phase-scoped tool tiering, tree-sitter repo mapping, architect/editor split — remain open.
+
+### Open engineering workstream (2026-07-25)
+
+Ordered by leverage, from a repo-health pass at v0.11.6:
+
+1. ~~**No correctness CI.**~~ Fixed: `.github/workflows/tests.yml` now gates every PR and push on ruff + the full suite, and `release.yml` gates the signed installer on the same. Previously the only CI was the PyInstaller smoke build, so a 2,700-test suite ran only when someone remembered to.
+2. ~~**Divergent provider wire-repair.**~~ Fixed: control-token stripping is one streaming-safe filter shared by the Ollama and Kimi/EXO paths.
+3. ~~**`findstr`-based `grep`.**~~ Fixed: prefers ripgrep when present, falls back to `findstr`/`grep`. **Follow-up:** bundle `rg` in the PyInstaller build so shipped installs get the good path too — today an end user without ripgrep on PATH silently falls back to the weak `findstr` regex dialect.
+4. **Restart-resume.** The north star's declared next reliability layer. Workspace checkpoints, timeline restore, and durable agent records exist; nothing reattaches an in-flight task after the *process* dies. A 36-minute EXO run currently costs the whole run.
+5. **The monoliths.** *First slice landed:* the 22 self-contained WebSocket commands moved out of `websocket_endpoint` into [`gui/ws_commands.py`](resonant_client/gui/ws_commands.py), a registry of handlers that take an explicit `CommandContext` instead of closing over the endpoint's locals — they are now unit-testable with a stub socket (`tests/test_ws_command_registry.py`). The endpoint is down from ~2,580 to ~2,330 lines. Still open: the remaining ~30 commands are genuinely entangled with the run loop (chat runner, backend rebuilds, autonomous daemon) and need the coupling designed away rather than relocated; `AppState` is still ~120 methods; `gui/static/app.js` is still a single ~14k-line `ResonantApp` class.
+6. **Tree-sitter has no test coverage.** `code_intelligence.py` imports it; nothing in `tests/` does. CI deliberately does not install the `code-intelligence` extra rather than pretend to cover that path.
 
 ## Foundation status (pre-refocus, 2026-04-28)
 

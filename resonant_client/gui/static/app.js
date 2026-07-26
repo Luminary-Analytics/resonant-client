@@ -1946,6 +1946,11 @@ class ResonantApp {
     }
 
     handleAutonomousMissionStarted(event) {
+        // Ask here rather than at startup: the payoff for allowing
+        // notifications is obvious at the moment you kick off work that runs
+        // for tens of minutes, and an unprompted dialog on first launch is the
+        // fastest route to a permanent denial.
+        this.ensureNotificationPermission();
         const s = this._ensureAutonomousState(event);
         // started_iso → epoch seconds; the daemon sends ISO + budget
         // up front, then per-iter events update iter_count + elapsed.
@@ -2142,6 +2147,13 @@ class ResonantApp {
         this._refreshMissionBadge(newPhase, '');
 
         this._renderAutonomousBanner(isComplete ? 'complete' : 'paused', event);
+        this.notifyDesktop(
+            isComplete ? 'Autonomous session complete' : 'Autonomous session stopped',
+            isComplete
+                ? `Finished after ${s.iterCount || 0} step${s.iterCount === 1 ? '' : 's'}.`
+                : `Stopped: ${(event && event.stop_reason) || 'paused'}.`,
+            { tag: 'resonant-autonomous' },
+        );
         // v0.5.4a4 — refresh inspector once more so it shows the final
         // criteria state. The session's `mission_state.phase` may not
         // have transitioned yet (depends on whether the server has
@@ -2161,6 +2173,11 @@ class ResonantApp {
         }
         this._refreshMissionBadge('autonomous_paused', '');
         this._renderAutonomousBanner('failed', event);
+        this.notifyDesktop(
+            'Autonomous session failed',
+            event.message || event.reason || 'The session stopped before finishing.',
+            { tag: 'resonant-autonomous' },
+        );
         this._requestAutonomousMissionRoadmap();
         this._requestAutonomousMissionsList();
     }
@@ -2191,6 +2208,14 @@ class ResonantApp {
             return;
         }
         this._setSessionActivity('needs-input');
+        // The run is now blocked on a person. Everything else in the session
+        // keeps working without one, so this is the moment most worth an
+        // interrupt — an unnoticed park is dead wall-clock time.
+        this.notifyDesktop(
+            'Resonant needs a decision',
+            request.question || 'The autonomous session is waiting on your input.',
+            { tag: 'resonant-autonomous' },
+        );
         // Track active decision card so we can dismiss / replace it
         // cleanly (e.g. if the daemon emits a SECOND request in the
         // same iter). One card at a time per mission.
@@ -9612,6 +9637,60 @@ class ResonantApp {
         return r ? `${m}m ${r}s` : `${m}m`;
     }
 
+    /**
+     * Attach the full failure text to a run summary as an expandable block.
+     *
+     * `.task-run-detail` is a single-line ellipsis clamp, which suits a status
+     * line but silently eats the diagnostic half of a provider error — the
+     * message names the failing constraint at the END ("...must be followed by
+     * tool messages responding to each tool_call_id"), so the clamp removes
+     * exactly the part worth reading. The text is already here in full; only
+     * the presentation was lossy.
+     *
+     * Collapsed by default so a healthy transcript stays scannable.
+     */
+    _attachFailureDetail(summary, detail) {
+        const text = String(detail || '');
+        const wrap = document.createElement('div');
+        wrap.className = 'task-failure-detail';
+
+        const toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'task-failure-toggle';
+        toggle.setAttribute('aria-expanded', 'false');
+        toggle.textContent = 'Show full error';
+
+        const body = document.createElement('pre');
+        body.className = 'task-failure-body';
+        body.hidden = true;
+        body.textContent = text;
+
+        const copy = document.createElement('button');
+        copy.type = 'button';
+        copy.className = 'task-failure-copy';
+        copy.textContent = 'Copy';
+        copy.addEventListener('click', (e) => {
+            e.stopPropagation();
+            // Errors get pasted into issues and searched for; make that one click.
+            navigator.clipboard?.writeText(text).then(() => {
+                copy.textContent = 'Copied';
+                setTimeout(() => { copy.textContent = 'Copy'; }, 1200);
+            }).catch(() => this.showToastMessage('Could not copy to clipboard.'));
+        });
+
+        toggle.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const open = body.hidden;
+            body.hidden = !open;
+            toggle.setAttribute('aria-expanded', String(open));
+            toggle.textContent = open ? 'Hide full error' : 'Show full error';
+        });
+
+        wrap.append(toggle, copy, body);
+        summary.insertAdjacentElement('afterend', wrap);
+        return wrap;
+    }
+
     _renderAgentRunCompleteCard(totalElapsed, totalSteps) {
         const summary = this._agentRunSummary || { title: '', fileChanges: [], todos: null };
         const n = Math.max(0, Math.floor(totalSteps || 0));
@@ -9853,6 +9932,13 @@ class ResonantApp {
             <span class="task-run-label">${this.escapeHtml(outcomeMeta.label)}</span>
             <span class="task-run-detail">${this.escapeHtml(detail)}</span>
         `;
+
+        // A one-line ellipsis is right for "3 steps | 2 tools" and actively
+        // harmful for a provider error: the part that says WHY is always the
+        // part that gets cut. Failures get an expandable, copyable full text.
+        if (outcome === 'failed' && detail) {
+            this._attachFailureDetail(summary, detail);
+        }
 
         if (files.length > 0 && outcome !== 'failed') {
             const review = document.createElement('button');
@@ -12156,6 +12242,57 @@ class ResonantApp {
             setTimeout(() => banner.remove(), 2000);
         } else {
             banner.remove();
+        }
+    }
+
+    /**
+     * Raise an OS notification for something that happened while the user was
+     * elsewhere.
+     *
+     * Long autonomous runs are measured in tens of minutes; a toast only
+     * reaches someone already looking at the window. The three moments that
+     * genuinely need a person — the run finished, it failed, or it parked
+     * waiting on a decision — should reach them anywhere on the desktop.
+     *
+     * Deliberately silent when the window is already focused: an alert for
+     * something visible on screen is noise, and noise gets permission revoked.
+     */
+    notifyDesktop(title, body, { tag = '', force = false } = {}) {
+        try {
+            if (!force && document.visibilityState === 'visible' && document.hasFocus()) return false;
+            if (typeof Notification === 'undefined') return false;
+            if (Notification.permission !== 'granted') return false;
+            const note = new Notification(title, {
+                body: String(body || '').slice(0, 240),
+                // A tag collapses repeats: a run that parks twice replaces its
+                // own notification instead of stacking.
+                tag: tag || 'resonant-run',
+                icon: '/static/resonant.png',
+            });
+            note.onclick = () => { window.focus(); note.close(); };
+            return true;
+        } catch (err) {
+            console.debug('desktop notification failed', err);
+            return false;
+        }
+    }
+
+    /**
+     * Ask for notification permission the first time a long run could need it.
+     *
+     * Not requested at startup: an unprompted permission dialog on first launch
+     * is the fastest way to get permanently denied. This is called when the
+     * user actually starts autonomous work, where the payoff is obvious.
+     */
+    ensureNotificationPermission() {
+        try {
+            if (typeof Notification === 'undefined') return;
+            if (Notification.permission !== 'default') return;
+            if (this._notificationPromptShown) return;
+            this._notificationPromptShown = true;
+            Notification.requestPermission().catch(() => {});
+        } catch (err) {
+            console.debug('notification permission request failed', err);
         }
     }
 

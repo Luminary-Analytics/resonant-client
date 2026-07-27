@@ -1501,6 +1501,18 @@ body {
     background: rgba(255,95,95,0.1);
 }
 
+/* Shown rather than hidden so the action's absence is explained — the
+   Playground project is permanent and cannot be removed. */
+.agent-context-menu .ctx-item.is-disabled {
+    color: var(--muted);
+    opacity: .55;
+    cursor: default;
+}
+
+.agent-context-menu .ctx-item.is-disabled:hover {
+    background: transparent;
+}
+
 .agent-context-menu .ctx-separator {
     height: 1px;
     background: var(--border);

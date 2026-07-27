@@ -3,6 +3,19 @@ from pathlib import Path
 
 APP_JS = Path(__file__).parents[1] / "resonant_client" / "gui" / "static" / "app.js"
 STYLES_CSS = APP_JS.with_name("styles.css")
+
+
+def handles_event(source: str, name: str) -> bool:
+    """Whether the frontend dispatches `name`, by either mechanism.
+
+    handleEvent resolves single-delegation events through
+    RESONANT_EVENT_DELEGATES and everything else through its switch. Asserting
+    on `case 'x':` alone would fail whenever an event moves between the two,
+    which says nothing about whether the event is still handled.
+    """
+    return f"case '{name}':" in source or f"'{name}': '" in source
+
+
 def frontend_source() -> str:
     """Every class-body script that contributes methods to ResonantApp.
 
@@ -119,15 +132,15 @@ def test_running_composer_supports_steering_and_visible_queue_state():
     assert "this._removeQueuedMessage(messageId);" in source
     assert "command: 'steer_queued'" in source
     assert "command: 'remove_queued'" in source
-    assert "case 'steer.applied':" in source
+    assert handles_event(source, "steer.applied")
     assert "Waiting for next step" in source
     assert "In current context" in source
     assert "Applied to current run" in source
     assert ".live-steer-note" in styles
     assert "Interrupting safely" not in source
     assert "this._steerInterrupted" not in source
-    assert "case 'message.queued':" in source
-    assert "case 'message.started':" in source
+    assert handles_event(source, "message.queued")
+    assert handles_event(source, "message.started")
     assert "this.userInput.disabled = false;" in source
     assert "Write a follow-up for the running agent" in source
     assert "Queue follow-up (Enter)" in source
@@ -212,8 +225,8 @@ def test_check_status_is_immediate_deduplicated_and_non_interrupting():
     assert "run.statusVisible = true;" in source
     assert "['sending', 'queued'].includes(run.statusRequestState)" in source
     assert "command: 'status_update'" in source
-    assert "case 'status.update_queued':" in source
-    assert "case 'status.update_rejected':" in source
+    assert handles_event(source, "status.update_queued")
+    assert handles_event(source, "status.update_rejected")
     assert "Agent update was not acknowledged; local health is still live" in source
     assert "run.statusRequestId === event.message_id" in source
     assert ".live-run-status-check" in styles
@@ -226,8 +239,8 @@ def test_stop_button_uses_acknowledged_cancel_lifecycle():
 
     assert "this._requestCancel();" in source
     assert "command: 'cancel', cancel_id: cancelId" in source
-    assert "case 'cancel.requested':" in source
-    assert "case 'cancel.completed':" in source
+    assert handles_event(source, "cancel.requested")
+    assert handles_event(source, "cancel.completed")
     assert "handleCancelCompleted(event)" in source
     assert "this._finishCancelledTask();" in source
     assert "_removeEmptyCancelArtifacts()" in source

@@ -118,6 +118,62 @@ function inferActionLabel(toolCounts) {
 //  Resonant App Class
 // ═══════════════════════════════════════════════════════════════════
 
+// Events whose handling is a single delegation. A table rather than 45 more
+// switch arms: "what handles X" becomes a lookup instead of a scroll through a
+// 750-line function, and an event with no handler is now a findable gap rather
+// than a silent fall-through.
+//
+// Cases with inline logic deliberately stay in the switch below — hoisting
+// those mechanically would produce a hundred badly-named methods.
+const RESONANT_EVENT_DELEGATES = {
+    'autonomous_heartbeat': 'handleAutonomousHeartbeat',
+    'autonomous_human_decision_received': 'handleAutonomousHumanDecisionReceived',
+    'autonomous_human_decision_required': 'handleAutonomousHumanDecisionRequired',
+    'autonomous_iteration_complete': 'handleAutonomousIterationComplete',
+    'autonomous_iteration_started': 'handleAutonomousIterationStarted',
+    'autonomous_iteration_timeout': 'handleAutonomousIterationTimeout',
+    'autonomous_mission_started': 'handleAutonomousMissionStarted',
+    'autonomous_reflection': 'handleAutonomousReflection',
+    'autonomous_resume_recovery': 'handleAutonomousResumeRecovery',
+    'backend.status': 'handleBackendStatus',
+    'cancel.completed': 'handleCancelCompleted',
+    'cancel.requested': 'handleCancelRequested',
+    'choices': 'handleChoices',
+    'context.compression': 'handleCompression',
+    'dir_list': 'handleDirList',
+    'git_result': 'handleGitResult',
+    'init': 'handleInit',
+    'message.queue_cleared': 'handleMessageQueueCleared',
+    'message.queued': 'handleMessageQueued',
+    'message.remove_failed': 'handleMessageRemoveFailed',
+    'message.removed': 'handleMessageRemoved',
+    'message.started': 'handleMessageStarted',
+    'mission.spec_ready': 'handleMissionSpecReady',
+    'mission_phase_changed': 'handleMissionPhaseChanged',
+    'project_files': 'handleProjectFiles',
+    'rag_results': 'handleRagResults',
+    'session.end': 'handleSessionEnd',
+    'session.start': 'handleSessionStart',
+    'shell_exec_result': 'handleShellExecResult',
+    'skill_view_data': 'handleSkillViewData',
+    'status': 'handleStatus',
+    'status.update_queued': 'handleStatusUpdateQueued',
+    'status.update_rejected': 'handleStatusUpdateRejected',
+    'steer.applied': 'handleSteerApplied',
+    'step.end': 'handleStepEnd',
+    'step.start': 'handleStepStart',
+    'subagent.end': 'handleSubagentEnd',
+    'subagent.start': 'handleSubagentStart',
+    'text.delta': 'handleTextDelta',
+    'text.done': 'handleTextDone',
+    'todos.updated': 'handleTodosUpdated',
+    'tool.call': 'handleToolCall',
+    'tool.result': 'handleToolResult',
+    'tool_permission': 'handleToolPermission',
+    'user_input_received': 'handleUserInputReceived',
+};
+
+
 class ResonantApp {
     constructor() {
         this.ws = null;
@@ -2945,70 +3001,21 @@ class ResonantApp {
             return;
         }
 
+        // Single-delegation events resolve here; see RESONANT_EVENT_DELEGATES.
+        // Checked before the switch so the table is the first place to look,
+        // and so a mistyped handler name fails loudly instead of falling
+        // through to the default arm and being swallowed.
+        const delegate = RESONANT_EVENT_DELEGATES[type];
+        if (delegate) {
+            if (typeof this[delegate] !== 'function') {
+                console.error(`No handler ${delegate} for event "${type}"`);
+                return;
+            }
+            this[delegate](event);
+            return;
+        }
+
         switch (type) {
-            case 'init':
-                this.handleInit(event);
-                break;
-            case 'session.start':
-                this.handleSessionStart(event);
-                break;
-            case 'step.start':
-                this.handleStepStart(event);
-                break;
-            case 'text.delta':
-                this.handleTextDelta(event);
-                break;
-            case 'text.done':
-                this.handleTextDone(event);
-                break;
-            case 'todos.updated':
-                this.handleTodosUpdated(event);
-                break;
-            case 'tool.call':
-                this.handleToolCall(event);
-                break;
-            case 'tool.result':
-                this.handleToolResult(event);
-                break;
-            case 'status':
-                this.handleStatus(event);
-                break;
-            case 'step.end':
-                this.handleStepEnd(event);
-                break;
-            case 'session.end':
-                this.handleSessionEnd(event);
-                break;
-            case 'message.queued':
-                this.handleMessageQueued(event);
-                break;
-            case 'message.started':
-                this.handleMessageStarted(event);
-                break;
-            case 'message.queue_cleared':
-                this.handleMessageQueueCleared(event);
-                break;
-            case 'status.update_queued':
-                this.handleStatusUpdateQueued(event);
-                break;
-            case 'status.update_rejected':
-                this.handleStatusUpdateRejected(event);
-                break;
-            case 'message.removed':
-                this.handleMessageRemoved(event);
-                break;
-            case 'message.remove_failed':
-                this.handleMessageRemoveFailed(event);
-                break;
-            case 'steer.applied':
-                this.handleSteerApplied(event);
-                break;
-            case 'cancel.requested':
-                this.handleCancelRequested(event);
-                break;
-            case 'cancel.completed':
-                this.handleCancelCompleted(event);
-                break;
             case 'error':
                 if (
                     projectSwitchId
@@ -3020,55 +3027,16 @@ class ResonantApp {
                 }
                 this.handleError(event);
                 break;
-            case 'subagent.start':
-                this.handleSubagentStart(event);
-                break;
-            case 'subagent.end':
-                this.handleSubagentEnd(event);
-                break;
-            case 'shell_exec_result':
-                this.handleShellExecResult(event);
-                break;
-            case 'project_files':
-                this.handleProjectFiles(event);
-                break;
-            case 'mission.spec_ready':
-                this.handleMissionSpecReady(event);
-                break;
-            case 'mission_phase_changed':
-                this.handleMissionPhaseChanged(event);
-                break;
             case 'mission_exited':
                 this.handleMissionExited(event);
                 break;
             // v0.5.0a7 — autonomous-mission events from
             // AutonomousMissionDaemon. See docs/long-running-agents-
             // phase-2-implementation.md §4.5 for the contract.
-            case 'autonomous_mission_started':
-                this.handleAutonomousMissionStarted(event);
-                break;
-            case 'autonomous_iteration_started':
-                this.handleAutonomousIterationStarted(event);
-                break;
-            case 'autonomous_iteration_complete':
-                this.handleAutonomousIterationComplete(event);
-                break;
             case 'autonomous_iteration_failed':
                 this.handleAutonomousIterationFailed(event);
                 break;
             // v0.6.5 (task #7) — long-running session health signals.
-            case 'autonomous_heartbeat':
-                this.handleAutonomousHeartbeat(event);
-                break;
-            case 'autonomous_iteration_timeout':
-                this.handleAutonomousIterationTimeout(event);
-                break;
-            case 'autonomous_resume_recovery':
-                this.handleAutonomousResumeRecovery(event);
-                break;
-            case 'autonomous_reflection':
-                this.handleAutonomousReflection(event);
-                break;
             case 'autonomous_mission_complete':
                 this.handleAutonomousMissionEnded(event, true);
                 break;
@@ -3083,12 +3051,6 @@ class ResonantApp {
             // inline card with the options + a Submit button. Once the
             // user picks, the daemon retries REFLECT with the choice
             // folded into the prompt.
-            case 'autonomous_human_decision_required':
-                this.handleAutonomousHumanDecisionRequired(event);
-                break;
-            case 'autonomous_human_decision_received':
-                this.handleAutonomousHumanDecisionReceived(event);
-                break;
             case 'autonomous_decision_dispatched':
                 // No-op surface event — confirms the WS round-trip.
                 // The daemon-side `_received` event arrives separately
@@ -3141,9 +3103,6 @@ class ResonantApp {
             // 503 retries, etc). Distinct from `error` (terminal); the
             // user wants to know "still alive, retrying" rather than
             // staring at a stalled "thinking N s" counter.
-            case 'backend.status':
-                this.handleBackendStatus(event);
-                break;
             case 'await_user':
                 // v0.3.5 — agent paused with `await_user` tool, asking
                 // a focused question. Render an inline prompt with
@@ -3151,15 +3110,6 @@ class ResonantApp {
                 // back via the `user_input` WS command and unblocks
                 // the agent.
                 this.handleAwaitUser(event);
-                break;
-            case 'user_input_received':
-                this.handleUserInputReceived(event);
-                break;
-            case 'tool_permission':
-                this.handleToolPermission(event);
-                break;
-            case 'choices':
-                this.handleChoices(event);
                 break;
             case 'status_msg':
                 this.showStatusMessage(event.message);
@@ -3382,9 +3332,6 @@ class ResonantApp {
                 );
                 this.send({ command: 'get_harness_state' });
                 break;
-            case 'dir_list':
-                this.handleDirList(event);
-                break;
             case 'folder_picked':
                 // Native folder dialog returned a path. v0.3.3 — when
                 // the mission composer asked for the picker, route the
@@ -3520,17 +3467,11 @@ class ResonantApp {
             case 'git_status':
                 this.handleGitStatus(event.data);
                 break;
-            case 'git_result':
-                this.handleGitResult(event);
-                break;
             case 'resonant_md':
                 this.resonantMd = event.info;
                 this.resonantMdContent = event.content || '';
                 this.updateResonantMdBadge();
                 this._updateResonantMdPopoverContent();
-                break;
-            case 'context.compression':
-                this.handleCompression(event);
                 break;
             case 'context.state':
                 this.contextState = event;
@@ -3650,9 +3591,6 @@ class ResonantApp {
                 this.showStatusMessage(`Indexed ${event.total_files} files in ${event.elapsed_ms}ms`);
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
-            case 'rag_results':
-                this.handleRagResults(event);
-                break;
             case 'rag_stats':
                 this.ragStats = event;
                 break;
@@ -3664,9 +3602,6 @@ class ResonantApp {
                     const stillExists = this.skills.some(s => s.id === this._skillDetailOpenId);
                     if (!stillExists) this.closeSkillDetail();
                 }
-                break;
-            case 'skill_view_data':
-                this.handleSkillViewData(event);
                 break;
             case 'skill_pin_changed':
                 // No-op — list refresh follows immediately.
@@ -9427,8 +9362,82 @@ class ResonantApp {
                 ev.stopPropagation();
                 this._selectRailProject(project.path);
             });
+            btn.addEventListener('contextmenu', (ev) => {
+                ev.preventDefault();
+                ev.stopPropagation();
+                this.showProjectContextMenu(ev, project);
+            });
             this.railProjects.appendChild(btn);
         }
+    }
+
+    /**
+     * Right-click menu for a sidebar project tile.
+     *
+     * Reuses the session context menu's markup and positioning so both feel
+     * the same. Two actions:
+     *
+     *  - Rename: a display name for the sidebar only. The folder is not
+     *    touched, and the name survives re-opening the project.
+     *  - Remove: stops tracking the project. Deliberately NOT "Delete" — the
+     *    folder and its sessions stay on disk and re-opening restores them.
+     *    Labelled and confirmed in those terms so nobody reads it as
+     *    destructive, and so nobody expects it to free disk space.
+     *
+     * The Playground project is permanent and cannot be removed.
+     */
+    showProjectContextMenu(e, project) {
+        document.querySelector('.agent-context-menu')?.remove();
+        if (!project || !project.path) return null;
+
+        const menu = document.createElement('div');
+        menu.className = 'agent-context-menu';
+        const permanent = !!project.permanent;
+        menu.innerHTML = `
+            <div class="ctx-item" data-action="open">&#128194; Open</div>
+            <div class="ctx-item" data-action="rename">&#9998; Rename</div>
+            <div class="ctx-separator"></div>
+            <div class="ctx-item${permanent ? ' is-disabled' : ' danger'}" data-action="forget">
+                &#10006; Remove from sidebar
+            </div>
+        `;
+        menu.style.left = `${e.clientX}px`;
+        menu.style.top = `${e.clientY}px`;
+
+        menu.addEventListener('click', (ev) => {
+            const action = ev.target.closest('.ctx-item')?.dataset.action;
+            if (action === 'open') {
+                this._selectRailProject(project.path);
+            } else if (action === 'rename') {
+                const next = prompt('Rename project (sidebar label only):', project.name || '');
+                if (next && next.trim() && next.trim() !== project.name) {
+                    this.send({ command: 'rename_project', path: project.path, name: next.trim() });
+                }
+            } else if (action === 'forget') {
+                if (permanent) {
+                    this.showToastMessage('The Playground project cannot be removed.');
+                } else if (confirm(
+                    `Remove "${project.name}" from the sidebar?\n\n`
+                    + 'The folder and its sessions stay on disk — reopening it brings them back.'
+                )) {
+                    this.send({ command: 'forget_project', path: project.path });
+                }
+            }
+            menu.remove();
+        });
+
+        document.body.appendChild(menu);
+
+        // Keep the menu inside the viewport — the rail sits at the left edge,
+        // so the bottom overflow is the one that actually bites.
+        const rect = menu.getBoundingClientRect();
+        if (rect.right > window.innerWidth) {
+            menu.style.left = `${window.innerWidth - rect.width - 8}px`;
+        }
+        if (rect.bottom > window.innerHeight) {
+            menu.style.top = `${window.innerHeight - rect.height - 8}px`;
+        }
+        return menu;
     }
 
     _selectRailProject(path) {

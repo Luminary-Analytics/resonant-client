@@ -74,7 +74,9 @@ Ordered by leverage, from a repo-health pass at v0.11.6:
 
    Both new files are registered in `resonant.spec` **and** `bundle-policy.json`, verified by deleting one from a built bundle and confirming the gate fails. The JS-reading tests now glob the static directory rather than naming files, so a future split cannot silently narrow what they can see.
 
-   Still open: `app.js` at 9.9k lines with ~300 methods. The remaining bulk is the 750-line `handleEvent` dispatcher, `bindEvents` (~467), and the session/sidebar rendering — `handleEvent` is the natural next target and would benefit from the same registry treatment `websocket_endpoint` got.
+   *`handleEvent` partially tabled:* its 45 pure-delegation cases became `RESONANT_EVENT_DELEGATES`, consulted before the switch, taking it **750 → 629 lines**. A mistyped handler now logs instead of falling through the default arm silently. The other 100 cases carry inline logic and deliberately stayed — hoisting them mechanically would produce a hundred badly-named methods, which is worse than the switch. Naming them is per-case design work.
+
+   Still open: `app.js` at 9.9k lines. `bindEvents` (~467 lines) and the session/sidebar rendering are the next candidates, plus the 100 inline `handleEvent` cases.
 6. **Tree-sitter has no test coverage.** `code_intelligence.py` imports it; nothing in `tests/` does. CI deliberately does not install the `code-intelligence` extra rather than pretend to cover that path.
 
 ### Waiting policy (2026-07-26)

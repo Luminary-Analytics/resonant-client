@@ -2113,6 +2113,58 @@ async def _cmd_redetect_backends(ctx: CommandContext) -> None:
 
 
 
+async def _send_project_list(ctx: CommandContext, **extra: Any) -> None:
+    """The payload the sidebar rebuilds itself from."""
+    await ctx.send({
+        "event": "project_registered",
+        "recent_projects": ctx.state.project.get_recent_projects(),
+        "playground_project": ctx.state.project.get_playground_project(),
+        "all_sessions": ctx.state.project.list_all_sessions(),
+        **extra,
+    })
+
+
+@command("rename_project")
+async def _cmd_rename_project(ctx: CommandContext) -> None:
+    """Give a sidebar project a custom display name."""
+    path = str(ctx.msg.get("path") or "").strip()
+    name = str(ctx.msg.get("name") or "").strip()
+    try:
+        label = await _in_executor(ctx.state.project.rename_project, path, name)
+    except Exception as exc:
+        await ctx.send_error(f"Couldn't rename project: {exc}")
+        return
+    await _send_project_list(ctx, path=path)
+    await ctx.send({"event": "ui_notice", "message": f"Project renamed to {label}."})
+
+
+@command("forget_project")
+async def _cmd_forget_project(ctx: CommandContext) -> None:
+    """Stop tracking a project in the sidebar.
+
+    Removes the entry only. The folder and its sessions stay on disk, so
+    re-opening it restores everything — which is why this is 'forget' and not
+    'delete', and why it does not ask for confirmation.
+    """
+    path = str(ctx.msg.get("path") or "").strip()
+    if not path:
+        await ctx.send_error("Project path is required.")
+        return
+    try:
+        removed = await _in_executor(ctx.state.project.forget_project, path)
+    except Exception as exc:
+        await ctx.send_error(f"Couldn't remove project: {exc}")
+        return
+    await _send_project_list(ctx, path=path)
+    await ctx.send({
+        "event": "ui_notice",
+        "message": (
+            "Removed from the sidebar. The folder and its sessions are untouched."
+            if removed else "That project was not in the sidebar."
+        ),
+    })
+
+
 @command("register_project")
 async def _cmd_register_project(ctx: CommandContext) -> None:
     project_path = ctx.msg.get("path", "").strip()

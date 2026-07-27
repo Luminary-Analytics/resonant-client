@@ -670,6 +670,84 @@ class ProjectManager:
         self._save_recent_project_path(normalized)
         return normalized
 
+    def rename_project(self, project_path: str, name: str) -> str:
+        """Give a tracked project a custom display name.
+
+        Stored with `renamed: True` so `_save_recent_project_path` knows not to
+        overwrite it with the folder basename the next time the project is
+        opened.
+        """
+        label = (name or "").strip()
+        if not label:
+            raise ValueError("Project name cannot be empty.")
+        normalized = os.path.normpath(project_path)
+        target = normalized.replace("\\", "/").lower()
+
+        # Renaming back to the folder's own name means "stop overriding", not
+        # "pin this string forever" — otherwise renaming the folder on disk
+        # would leave the sidebar showing the old label with no way back.
+        is_default = label == (os.path.basename(normalized) or normalized)
+
+        entries = self._read_recent_projects_raw()
+        for entry in entries:
+            if (entry.get("path") or "").replace("\\", "/").lower() == target:
+                entry["name"] = label
+                if is_default:
+                    entry.pop("renamed", None)
+                else:
+                    entry["renamed"] = True
+                break
+        else:
+            raise ValueError(f"Project is not in the sidebar: {normalized}")
+
+        self._write_recent_projects_raw(entries)
+        return label
+
+    def forget_project(self, project_path: str) -> bool:
+        """Remove a project from the sidebar list.
+
+        Deliberately does NOT touch the folder or its sessions on disk — this
+        only stops tracking it. Re-opening the folder brings it back with its
+        sessions intact.
+
+        Returns whether an entry was actually removed.
+        """
+        normalized = os.path.normpath(project_path)
+        target = normalized.replace("\\", "/").lower()
+
+        entries = self._read_recent_projects_raw()
+        remaining = [
+            entry for entry in entries
+            if (entry.get("path") or "").replace("\\", "/").lower() != target
+        ]
+        if len(remaining) == len(entries):
+            return False
+        self._write_recent_projects_raw(remaining)
+        return True
+
+    def _read_recent_projects_raw(self) -> list:
+        """Raw recents entries, unfiltered. Callers that display them should
+        use `get_recent_projects`, which drops missing and pytest paths."""
+        recents_file = _resonant_dir() / "recent_projects.json"
+        try:
+            if recents_file.exists():
+                with open(recents_file, "r", encoding="utf-8-sig") as f:
+                    entries = json.load(f)
+                    if isinstance(entries, list):
+                        return [e for e in entries if isinstance(e, dict)]
+        except Exception:
+            logger.debug("recent_projects.json unreadable", exc_info=True)
+        return []
+
+    def _write_recent_projects_raw(self, entries: list) -> None:
+        recents_file = _resonant_dir() / "recent_projects.json"
+        try:
+            _resonant_dir().mkdir(parents=True, exist_ok=True)
+            with open(recents_file, "w", encoding="utf-8") as f:
+                json.dump(entries, f, indent=2)
+        except Exception as e:
+            logger.error(f"Failed to save recent projects: {e}")
+
     def _save_recent_project_path(self, project_path: str):
         """Track an arbitrary project path in the recent projects list."""
         normalized_project = os.path.normpath(project_path)
@@ -685,6 +763,17 @@ class ProjectManager:
             recents = []
 
         norm = normalized_project.replace("\\", "/")
+        # A user-set display name has to survive this rewrite. Opening a
+        # project rebuilds its entry, so without carrying `renamed` forward a
+        # rename would silently revert the next time the project was selected.
+        previous = next(
+            (
+                r for r in recents
+                if isinstance(r, dict)
+                and (r.get("path") or "").replace("\\", "/") == norm
+            ),
+            None,
+        )
         # Scrub pytest tmp dirs on every write so files polluted by
         # pre-fix test runs self-heal; get_recent_projects applies the
         # same filter at read time.
@@ -695,11 +784,15 @@ class ProjectManager:
             and not _is_pytest_temp_path(r.get("path") or "")
         ]
         if not _is_pytest_temp_path(normalized_project):
-            recents.insert(0, {
+            entry = {
                 "path": normalized_project,
                 "name": os.path.basename(normalized_project) or normalized_project,
                 "last_used": time.time(),
-            })
+            }
+            if previous and previous.get("renamed") and (previous.get("name") or "").strip():
+                entry["name"] = previous["name"]
+                entry["renamed"] = True
+            recents.insert(0, entry)
         recents = recents[:20]
 
         try:

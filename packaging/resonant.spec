@@ -71,6 +71,8 @@ datas = [
      "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "plan_graph_view.js"),
      "resonant_client/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "autonomous_view.js"),
+     "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "styles.css"),
      "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "favicon.svg"),

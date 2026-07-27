@@ -3,6 +3,22 @@ from pathlib import Path
 
 APP_JS = Path(__file__).parents[1] / "resonant_client" / "gui" / "static" / "app.js"
 STYLES_CSS = APP_JS.with_name("styles.css")
+AUTONOMOUS_VIEW_JS = APP_JS.with_name("autonomous_view.js")
+
+
+def frontend_source() -> str:
+    """Every class-body script that contributes methods to ResonantApp.
+
+    These assertions are about behaviour existing in the frontend, not about
+    which file it sits in. `ResonantApp` is being split into mixin files, so
+    reading app.js alone would fail the moment a method moves — a refactor
+    breaking a test that the refactor did not actually invalidate.
+    """
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (APP_JS, AUTONOMOUS_VIEW_JS)
+        if path.is_file()
+    )
 
 
 def test_send_message_resets_task_state_before_creating_user_card():
@@ -247,7 +263,7 @@ def test_session_list_has_semantic_activity_indicators():
 
 
 def test_user_blocking_events_update_session_indicator():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
 
     await_start = source.index("    handleAwaitUser(event) {")
     await_end = source.index("\n    handleUserInputReceived", await_start)

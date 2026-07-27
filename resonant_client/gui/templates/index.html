@@ -648,6 +648,9 @@
     </div>
 
     <script src="/static/plan_graph_view.js?v={{ asset_version }}"></script>
+    <!-- Mixed into ResonantApp.prototype at class-definition time, so it must
+         load before app.js. app.js throws a named error if it is missing. -->
+    <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
     <div class="window-resize-edge window-resize-top" data-resize-edge="top" aria-hidden="true"></div>
     <div class="window-resize-edge window-resize-right" data-resize-edge="right" aria-hidden="true"></div>
     <div class="window-resize-edge window-resize-bottom" data-resize-edge="bottom" aria-hidden="true"></div>

@@ -47,7 +47,11 @@ Ordered by leverage, from a repo-health pass at v0.11.6:
    | `AppState` | 5,700 lines / 130 methods | 1,296 / 39 |
    | `websocket_endpoint` | 2,398 / 82 commands | 2,186 / 58 |
 
-   Still open: the ~20 genuinely run-loop-coupled commands (`mission_*`, `autonomous_*`, `switch_session`, `set_project`, `shell_exec`, `cancel`, `steer`) need the coupling designed away rather than relocated. `gui/static/app.js` is still a single ~14k-line `ResonantApp` class and is now the largest single unit in the repo.
+   *Fourth slice landed:* `app.js` began splitting. The 52 autonomous-session methods (mission lifecycle, roadmap inspector, decision cards, health signals, run banners) moved to [`static/autonomous_view.js`](resonant_client/gui/static/autonomous_view.js), mixed onto `ResonantApp.prototype` at class-definition time. `app.js` is down from 14,500 to 12,427 lines.
+
+   Mixin rather than ES modules: the page loads classic scripts and converting the whole app is a separate change with its own risk. Two details worth keeping in mind when adding the next one — class methods are non-enumerable, so `Object.assign` silently copies **nothing** and `applyMixin` uses property descriptors instead; and `applyMixin` throws on a name collision or a missing mixin rather than letting either fail quietly at call time. New static files must be added to `resonant.spec` **and** `bundle-policy.json`, which now also lists `plan_graph_view.js` (previously shipped but ungated). `_asset_version` globs the static directory so a new file cannot silently miss cache-busting.
+
+   Still open: the ~20 genuinely run-loop-coupled commands (`mission_*`, `autonomous_*`, `switch_session`, `set_project`, `shell_exec`, `cancel`, `steer`) need the coupling designed away rather than relocated. `app.js` is still 12.4k lines — the next natural cuts are the settings/modal views and the run-card renderers.
 6. **Tree-sitter has no test coverage.** `code_intelligence.py` imports it; nothing in `tests/` does. CI deliberately does not install the `code-intelligence` extra rather than pretend to cover that path.
 
 ### Waiting policy (2026-07-26)

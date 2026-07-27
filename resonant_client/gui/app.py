@@ -4203,10 +4203,12 @@ def _asset_version() -> str:
     try:
         static = Path(__file__).parent / "static"
         templates_dir = Path(__file__).parent / "templates"
+        # Globbed rather than listed. app.js is being split into several files;
+        # an explicit list means the next split silently stops busting the
+        # cache for the new file, and stale-JS bugs are miserable to diagnose.
         candidates = [
-            static / "app.js",
-            static / "styles.css",
-            static / "plan_graph_view.js",
+            *static.glob("*.js"),
+            *static.glob("*.css"),
             templates_dir / "index.html",
         ]
         mtimes = [int(p.stat().st_mtime) for p in candidates if p.is_file()]

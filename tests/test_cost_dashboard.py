@@ -52,10 +52,14 @@ def test_settings_exposes_usage_cost_dashboard_contract():
 
 
 def test_session_history_is_replayed_before_runtime_rebuild():
-    source = APP_PY.read_text(encoding="utf-8")
-    start = source.index('            elif command == "switch_session":')
-    end = source.index('            elif command == "delete_session":', start)
-    body = source[start:end]
+    # Reads the registered handler rather than a line range in app.py. The
+    # command has moved files once already; what matters is the ordering
+    # inside whatever function actually serves it.
+    import inspect
+
+    from resonant_client.gui import ws_commands
+
+    body = inspect.getsource(ws_commands.HANDLERS["switch_session"])
 
     assert body.index('"event": "session_loaded"') < body.index("state.create_backend(")
     assert '"runtime_pending": bool(record.backend_type)' in body

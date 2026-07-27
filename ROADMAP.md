@@ -55,7 +55,20 @@ Ordered by leverage, from a repo-health pass at v0.11.6:
 
    The queue ordering, cancel acknowledgement, and busy check are now testable without a socket ([`tests/test_chat_run_loop.py`](tests/test_chat_run_loop.py)); as closures they could not be tested at all.
 
-   Still open: the commands that touch `ctx.runs` can now move to `ws_commands.py` — the blocker is gone, the relocation is not yet done. `app.js` is still 12.4k lines; the next natural cuts are the settings/modal views and the run-card renderers.
+   *Sixth slice landed — the relocation.* 53 of the 58 dispatched commands moved to `ws_commands.py` (99 handlers registered). `websocket_endpoint` is **2,186 → 606 lines with 5 commands**, and `gui/app.py` **4,241 → 2,655**.
+
+   The five that stayed genuinely belong to the endpoint: `mission_start`, `shell_exec`, and `agent_restart` start a streaming run, and `autonomous_mission_resume` and `mission_dispatch_autonomous` build the autonomous event forwarder bound to this socket.
+
+   Structure the mechanical pass had to learn the hard way: the dispatch chain sits at exactly 12 spaces, and `intent_*` is a single `elif command in (...)` branch containing its own nested `if command ==` chain at 20 spaces — matching those as top-level branches split one handler into six, each referencing an `intent_service` the parent had built. The endpoint's `except`/`finally` also had to bound the last branch, or it absorbed the disconnect handling.
+
+   | | start | now |
+   |---|---:|---:|
+   | `gui/app.py` | 9,287 | 2,655 |
+   | `AppState` | 5,700 | 1,296 |
+   | `websocket_endpoint` | 2,398 / 82 cmds | 606 / 5 |
+   | `app.js` | 14,500 | 12,427 |
+
+   Still open: `app.js` at 12.4k lines — the settings/modal views and run-card renderers are the next natural cuts.
 6. **Tree-sitter has no test coverage.** `code_intelligence.py` imports it; nothing in `tests/` does. CI deliberately does not install the `code-intelligence` extra rather than pretend to cover that path.
 
 ### Waiting policy (2026-07-26)

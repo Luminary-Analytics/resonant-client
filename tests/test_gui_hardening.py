@@ -318,11 +318,14 @@ def test_duplicate_new_session_request_is_idempotent(monkeypatch, tmp_path):
 
 
 def test_backend_selection_does_not_persist_an_empty_session():
-    repo_root = Path(__file__).parent.parent
-    source = (repo_root / "resonant_client/gui/app.py").read_text(encoding="utf-8")
-    start = source.index('            elif command == "select_backend":')
-    end = source.index('            elif command == "message":', start)
+    # Reads the registered handler rather than a line range in app.py, so the
+    # assertion survives the command changing files.
+    import inspect
 
-    assert "create_session(" not in source[start:end]
-    assert "state.project.current_session = None" in source[start:end]
-    assert "state.project.current_session = previous_record" in source[start:end]
+    from resonant_client.gui import ws_commands
+
+    body = inspect.getsource(ws_commands.HANDLERS["select_backend"])
+
+    assert "create_session(" not in body
+    assert "ctx.state.project.current_session = None" in body
+    assert "ctx.state.project.current_session = previous_record" in body

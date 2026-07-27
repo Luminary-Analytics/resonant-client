@@ -68,7 +68,13 @@ Ordered by leverage, from a repo-health pass at v0.11.6:
    | `websocket_endpoint` | 2,398 / 82 cmds | 606 / 5 |
    | `app.js` | 14,500 | 12,427 |
 
-   Still open: `app.js` at 12.4k lines — the settings/modal views and run-card renderers are the next natural cuts.
+   *Seventh slice landed — two more `app.js` cuts.* Settings and overlay surfaces (settings page, Ollama wizard, model picker, project switcher, shortcuts overlay, and the status/harness/git/RESONANT.md popovers) went to [`static/settings_view.js`](resonant_client/gui/static/settings_view.js); run-card and live-run rendering (task-card lifecycle, live-run clock/phase/todos/health, tool-activity grouping, completion summary and expandable failure detail) went to [`static/run_cards.js`](resonant_client/gui/static/run_cards.js). **`app.js` 14,500 → 9,939 lines** across the three splits; 94 methods now live in mixins.
+
+   Clusters were chosen by explicit name list, not regex — `_handleKeyboardShortcut` and `_runShellShortcut` deliberately stayed in `app.js` because neither is an overlay, they merely share a word. That is the same trap that swept four `permission` methods into the autonomous mixin on the first split.
+
+   Both new files are registered in `resonant.spec` **and** `bundle-policy.json`, verified by deleting one from a built bundle and confirming the gate fails. The JS-reading tests now glob the static directory rather than naming files, so a future split cannot silently narrow what they can see.
+
+   Still open: `app.js` at 9.9k lines with ~300 methods. The remaining bulk is the 750-line `handleEvent` dispatcher, `bindEvents` (~467), and the session/sidebar rendering — `handleEvent` is the natural next target and would benefit from the same registry treatment `websocket_endpoint` got.
 6. **Tree-sitter has no test coverage.** `code_intelligence.py` imports it; nothing in `tests/` does. CI deliberately does not install the `code-intelligence` extra rather than pretend to cover that path.
 
 ### Waiting policy (2026-07-26)

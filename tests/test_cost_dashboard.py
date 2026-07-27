@@ -12,6 +12,15 @@ APP_PY = ROOT / "resonant_client" / "gui" / "app.py"
 STYLES_CSS = APP_JS.with_name("styles.css")
 
 
+def frontend_source() -> str:
+    """All frontend scripts. ResonantApp is split across mixin files, so
+    reading app.js alone would fail whenever a method moves between them."""
+    return "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(APP_JS.parent.glob("*.js"))
+    )
+
+
 def test_cost_tracker_returns_persisted_total_and_current_session(tmp_path):
     tracker = CostTracker(tmp_path / "costs.json")
 
@@ -36,7 +45,7 @@ def test_cost_tracker_returns_persisted_total_and_current_session(tmp_path):
 
 
 def test_settings_exposes_usage_cost_dashboard_contract():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "this.send({ command: 'get_costs' });" in source

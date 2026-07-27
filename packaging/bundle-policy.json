@@ -10,6 +10,8 @@
     "_internal/resonant_client/gui/templates/index.html",
     "_internal/resonant_client/gui/static/app.js",
     "_internal/resonant_client/gui/static/autonomous_view.js",
+    "_internal/resonant_client/gui/static/settings_view.js",
+    "_internal/resonant_client/gui/static/run_cards.js",
     "_internal/resonant_client/gui/static/plan_graph_view.js",
     "_internal/resonant_client/gui/static/styles.css"
   ],

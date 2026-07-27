@@ -3,26 +3,25 @@ from pathlib import Path
 
 APP_JS = Path(__file__).parents[1] / "resonant_client" / "gui" / "static" / "app.js"
 STYLES_CSS = APP_JS.with_name("styles.css")
-AUTONOMOUS_VIEW_JS = APP_JS.with_name("autonomous_view.js")
-
-
 def frontend_source() -> str:
     """Every class-body script that contributes methods to ResonantApp.
 
     These assertions are about behaviour existing in the frontend, not about
-    which file it sits in. `ResonantApp` is being split into mixin files, so
+    which file it sits in. `ResonantApp` is split across mixin files, so
     reading app.js alone would fail the moment a method moves — a refactor
     breaking a test that the refactor did not actually invalidate.
+
+    Globbed rather than listed: naming the mixins here would mean every future
+    split silently narrows what these assertions can see, which fails open.
     """
     return "\n".join(
         path.read_text(encoding="utf-8")
-        for path in (APP_JS, AUTONOMOUS_VIEW_JS)
-        if path.is_file()
+        for path in sorted(APP_JS.parent.glob("*.js"))
     )
 
 
 def test_send_message_resets_task_state_before_creating_user_card():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     start = source.index("    _prepareTurnUI(text, images = []) {")
     end = source.index("\n    _clearComposerAfterSend()", start)
     body = source[start:end]
@@ -41,7 +40,7 @@ def test_send_message_resets_task_state_before_creating_user_card():
 
 
 def test_chat_supports_structured_outcomes_recovery_and_model_fallback():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
 
     for outcome in (
         "answered",
@@ -59,7 +58,7 @@ def test_chat_supports_structured_outcomes_recovery_and_model_fallback():
 
 
 def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "live-run-surface" in source
@@ -112,7 +111,7 @@ def test_streaming_text_does_not_use_a_lonely_blinking_cursor():
 
 
 def test_running_composer_supports_steering_and_visible_queue_state():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "this._queueFollowUpMessage(text);" in source
@@ -141,7 +140,7 @@ def test_running_composer_supports_steering_and_visible_queue_state():
 
 
 def test_await_user_marks_and_cleans_recommended_option():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "await-user-recommended" in source
@@ -155,7 +154,7 @@ def test_await_user_marks_and_cleans_recommended_option():
 
 
 def test_await_user_renders_concise_question_and_aligned_choice_rows():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "_conciseAwaitUserQuestion(question)" in source
@@ -167,7 +166,7 @@ def test_await_user_renders_concise_question_and_aligned_choice_rows():
 
 
 def test_live_run_shell_is_stable_across_updates():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
 
     assert "if (!run.domReady || !run.el.querySelector('.live-run-head'))" in source
     assert "run.el.querySelector('[data-live-now]')" in source
@@ -176,7 +175,7 @@ def test_live_run_shell_is_stable_across_updates():
 
 
 def test_live_run_quick_summary_preserves_concrete_tool_context():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "_liveRunToolActivity(name, args = {})" in source
@@ -194,7 +193,7 @@ def test_live_run_quick_summary_preserves_concrete_tool_context():
 
 
 def test_exo_quiet_generation_status_is_informational_by_default():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
 
     assert "progressWarningSeconds: 120" in source
     assert "EXO connection active" in source
@@ -204,7 +203,7 @@ def test_exo_quiet_generation_status_is_informational_by_default():
 
 
 def test_check_status_is_immediate_deduplicated_and_non_interrupting():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "class=\"live-run-status-check\"" in source
@@ -222,7 +221,7 @@ def test_check_status_is_immediate_deduplicated_and_non_interrupting():
 
 
 def test_stop_button_uses_acknowledged_cancel_lifecycle():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "this._requestCancel();" in source
@@ -237,7 +236,7 @@ def test_stop_button_uses_acknowledged_cancel_lifecycle():
 
 
 def test_session_list_has_semantic_activity_indicators():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
 
     assert "this._sessionActivity = new Map();" in source
@@ -282,7 +281,7 @@ def test_user_blocking_events_update_session_indicator():
 
 
 def test_settings_navigation_is_idempotent_and_background_events_cannot_close_it():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
 
     assert "Navigation controls must be idempotent." in source
     assert "this.switchView('settings');" in source
@@ -304,7 +303,7 @@ def test_settings_navigation_is_idempotent_and_background_events_cannot_close_it
 
 
 def test_model_selector_preserves_a_temporarily_unavailable_current_model():
-    source = APP_JS.read_text(encoding="utf-8")
+    source = frontend_source()
     start = source.index("    _populateSelectWithGroupedModels(")
     end = source.index("\n    populateModelSelector(", start)
     body = source[start:end]

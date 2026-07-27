@@ -76,7 +76,11 @@ Ordered by leverage, from a repo-health pass at v0.11.6:
 
    *`handleEvent` partially tabled:* its 45 pure-delegation cases became `RESONANT_EVENT_DELEGATES`, consulted before the switch, taking it **750 → 629 lines**. A mistyped handler now logs instead of falling through the default arm silently. The other 100 cases carry inline logic and deliberately stayed — hoisting them mechanically would produce a hundred badly-named methods, which is worse than the switch. Naming them is per-case design work.
 
-   Still open: `app.js` at 9.9k lines. `bindEvents` (~467 lines) and the session/sidebar rendering are the next candidates, plus the 100 inline `handleEvent` cases.
+   *`bindEvents` split by surface:* 467 lines of 62 listener registrations became a 12-line orchestrator over seven named groups (`_bindComposer`, `_bindTerminalBar`, `_bindRunControls`, `_bindSidebarChrome`, `_bindAttachments`, `_bindPreviewPanel`, `_bindGlobalSurfaces`). Kept in `app.js` — the problem was never which file it lived in, it was that one block answered nothing about what wires a given surface. Split points were bracket-balance checked before cutting, since a boundary inside a listener body produces valid-looking garbage rather than an error.
+
+   Still open: `app.js` at 9,990 lines — the 100 inline `handleEvent` cases (per-case design work, not a script) and the session/sidebar rendering.
+
+**A consolidated handoff for this whole stretch — the totals, the recurring failure mode, the traps that cost real time, and the testing conventions established — is in [`docs/engineering-state-2026-07-27.md`](docs/engineering-state-2026-07-27.md). Read it before picking this work up cold.**
 6. **Tree-sitter has no test coverage.** `code_intelligence.py` imports it; nothing in `tests/` does. CI deliberately does not install the `code-intelligence` extra rather than pretend to cover that path.
 
 ### Waiting policy (2026-07-26)

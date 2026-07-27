@@ -842,7 +842,27 @@ class ResonantApp {
 
     // ── Event Binding ───────────────────────────────────────────
 
+    /**
+     * Wire every DOM listener.
+     *
+     * Was one 467-line block of 62 addEventListener calls, which made
+     * "where is the composer wired up" a scrolling exercise. Split by
+     * surface; each group below is independently readable and the order
+     * here is the only coupling between them.
+     */
     bindEvents() {
+        this._bindComposer();
+        this._bindTerminalBar();
+        this._bindRunControls();
+        this._bindSidebarChrome();
+        this._bindAttachments();
+        this._bindPreviewPanel();
+        this._bindGlobalSurfaces();
+    }
+
+    /** Wires the message composer: send, mission toggle, textarea
+     * behaviour, and the stop button. */
+    _bindComposer() {
         // Send message
         this.sendBtn.addEventListener('click', () => this.sendMessage());
         this.directorModeBtn?.addEventListener('click', () => this.openDirectorComposer());
@@ -910,7 +930,10 @@ class ResonantApp {
             this._requestCancel();
             this._maybeOfferMissionExitOnCancel();
         });
+    }
 
+    /** Wires the managed-process terminal bar. */
+    _bindTerminalBar() {
         // Terminal bar — header click toggles expand/collapse
         document.getElementById('terminal-bar-header').addEventListener('click', (e) => {
             // Don't toggle if clicking the stop-all button
@@ -932,7 +955,11 @@ class ResonantApp {
                 this._requestCancel();
             }
         });
+    }
 
+    /** Wires run configuration: model selector, voice input, reasoning
+     * depth, and the permission mode dropdown. */
+    _bindRunControls() {
         // Model selector — value is "backend:model" (model may contain colons like "nemotron:cloud")
         this.modelSelector.addEventListener('change', () => {
             const val = this.modelSelector.value;
@@ -1001,7 +1028,11 @@ class ResonantApp {
             this.setPermissionMode(mode);
             permMenu.classList.remove('open');
         });
+    }
 
+    /** Wires sidebar chrome: collapse toggle, activity rail, permission
+     * dialog, new session, and the add-project button. */
+    _bindSidebarChrome() {
         // Sidebar toggle
         document.getElementById('sidebar-toggle').addEventListener('click', () => {
             document.getElementById('sidebar').classList.toggle('collapsed');
@@ -1096,7 +1127,10 @@ class ResonantApp {
         document.getElementById('pf-add-project')?.addEventListener('click', () => {
             this.openProjectFolder('register');
         });
+    }
 
+    /** Wires image attachment: clipboard paste and drag-and-drop. */
+    _bindAttachments() {
         // Image paste (Ctrl+V)
         this.userInput.addEventListener('paste', (e) => {
             const items = e.clipboardData?.items;
@@ -1131,7 +1165,11 @@ class ResonantApp {
                 }
             }
         });
+    }
 
+    /** Wires the preview panel: visibility, tabs, plan-graph toolbar,
+     * navigation, console, and the resize handle. */
+    _bindPreviewPanel() {
         // Preview panel toggle
         this.previewToggle.addEventListener('click', () => {
             this.togglePreviewPanel();
@@ -1243,7 +1281,12 @@ class ResonantApp {
             document.addEventListener('mousemove', onMove);
             document.addEventListener('mouseup', onUp);
         });
+    }
 
+    /** Wires everything global or badge-driven: lightbox escape, context
+     * menu dismissal, sidebar navigation, keyboard shortcuts, search, and
+     * the git / harness / RESONANT.md badges. */
+    _bindGlobalSurfaces() {
         // Lightbox close on Escape
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
@@ -1304,7 +1347,6 @@ class ResonantApp {
             }
             this.toggleResonantMdPopover();
         });
-
     }
 
     // ── Image Attachments ────────────────────────────────────────

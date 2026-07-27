@@ -25,7 +25,7 @@ class _StubWS:
         self.sent.append(payload)
 
 
-def _ctx(*, msg=None, session=None, state=None, chat_runner=None):
+def _ctx(*, msg=None, session=None, state=None, runs=None):
     state = state or SimpleNamespace(
         session=session,
         project=SimpleNamespace(project_path="/tmp/project", current_session=None),
@@ -36,7 +36,7 @@ def _ctx(*, msg=None, session=None, state=None, chat_runner=None):
         evaluations=None,
     )
     return ws_commands.CommandContext(
-        ws=_StubWS(), state=state, msg=msg or {}, chat_runner=chat_runner,
+        ws=_StubWS(), state=state, msg=msg or {}, runs=runs,
     )
 
 
@@ -150,11 +150,9 @@ def test_artifact_list_returns_newest_first():
 
 
 def test_session_timeline_restore_refuses_while_a_turn_is_streaming():
-    running = SimpleNamespace(done=lambda: False)
-
     sent = _run(
         ws_commands.HANDLERS["session_timeline_restore"],
-        _ctx(msg={"checkpoint_id": "c1"}, chat_runner=running),
+        _ctx(msg={"checkpoint_id": "c1"}, runs=SimpleNamespace(busy=True)),
     )
 
     assert sent[0]["event"] == "error"

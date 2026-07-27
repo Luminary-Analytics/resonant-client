@@ -41,6 +41,7 @@ from ..backends import (
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url
 from . import ws_commands
+from .chat_loop import ChatRunLoop
 # Payload builders moved to ws_commands.py with the handlers that use them.
 # Re-exported because `skill_archive` still lives in the endpoint and because
 # these are the module's established public surface for tests. Safe from
@@ -1657,63 +1658,11 @@ async def websocket_endpoint(ws: WebSocket):
     """Main WebSocket handler — bidirectional communication with frontend."""
     await ws.accept()
 
-    pending_chat_messages: list[dict[str, Any]] = []
-    chat_runner: asyncio.Task | None = None
-    cancel_request_id: str | None = None
-    clear_request_cache: dict[str, dict[str, Any]] = {}
-
-    async def _drain_chat_queue() -> None:
-        nonlocal chat_runner, cancel_request_id
-        try:
-            while pending_chat_messages:
-                queued = pending_chat_messages.pop(0)
-                try:
-                    if queued.get("_was_queued"):
-                        await ws.send_json({
-                            "event": "message.started",
-                            "message_id": queued.get("message_id", ""),
-                            "text": queued.get("text", ""),
-                        })
-                    await _process_chat_message(ws, queued)
-                except WebSocketDisconnect:
-                    raise
-                except Exception as exc:
-                    logger.exception("queued chat turn failed")
-                    try:
-                        await ws.send_json({"event": "error", "message": str(exc)})
-                    except Exception:
-                        pass
-        except WebSocketDisconnect:
-            raise
-        finally:
-            chat_runner = None
-            if cancel_request_id:
-                completed_id = cancel_request_id
-                cancel_request_id = None
-                try:
-                    await ws.send_json({
-                        "event": "cancel.completed",
-                        "cancel_id": completed_id,
-                    })
-                except Exception:
-                    pass
-
-    async def _enqueue_chat_message(msg: dict[str, Any]) -> None:
-        nonlocal chat_runner
-        message_id = str(msg.get("message_id") or uuid.uuid4())
-        running = chat_runner is not None and not chat_runner.done()
-        queued = dict(msg, message_id=message_id, _was_queued=running)
-        pending_chat_messages.append(queued)
-        if running:
-            await ws.send_json({
-                "event": "message.queued",
-                "message_id": message_id,
-                "text": queued.get("text", ""),
-                "position": len(pending_chat_messages),
-                "steering": False,
-            })
-        else:
-            chat_runner = asyncio.create_task(_drain_chat_queue())
+    # The per-connection chat state used to be four locals and two closures
+    # here, which is precisely why the commands that touch it could not move
+    # into ws_commands.py — not conceptual entanglement, just unreachable
+    # scope. See gui/chat_loop.py.
+    runs = ChatRunLoop(ws, _process_chat_message)
 
     # Store WebSocket ref for live agent event streaming
     state._ws_ref = ws
@@ -1759,7 +1708,7 @@ async def websocket_endpoint(ws: WebSocket):
             standalone = ws_commands.HANDLERS.get(command)
             if standalone is not None:
                 await standalone(ws_commands.CommandContext(
-                    ws=ws, state=state, msg=msg, chat_runner=chat_runner,
+                    ws=ws, state=state, msg=msg, runs=runs,
                 ))
                 continue
 
@@ -1983,7 +1932,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if not state.session:
                     await ws.send_json({"event": "error", "message": "No backend selected"})
                     continue
-                await _enqueue_chat_message(msg)
+                await runs.enqueue(msg)
                 continue
 
             elif command == "agent_restart":
@@ -1996,7 +1945,7 @@ async def websocket_endpoint(ws: WebSocket):
                 if not state.session:
                     await ws.send_json({"event": "error", "message": "No backend selected"})
                     continue
-                if chat_runner is not None and not chat_runner.done():
+                if runs.busy:
                     await ws.send_json({
                         "event": "error",
                         "message": "Finish or stop the active run before restarting an agent.",
@@ -2033,7 +1982,7 @@ async def websocket_endpoint(ws: WebSocket):
                     "agent_type": assignment["agent_type"],
                     "completed_steps": assignment["completed_steps"],
                 })
-                chat_runner = asyncio.ensure_future(_run_session_streaming(
+                runs.adopt(asyncio.ensure_future(_run_session_streaming(
                     ws,
                     state.session,
                     assignment["prompt"],
@@ -2043,7 +1992,7 @@ async def websocket_endpoint(ws: WebSocket):
                         f"{'' if assignment['completed_steps'] == 1 else 's'})"
                     ),
                     event_source=_restart_source,
-                ))
+                )))
                 continue
 
             elif command == "status_update":
@@ -2051,7 +2000,7 @@ async def websocket_endpoint(ws: WebSocket):
                 # not enqueue it if the active run ends during this command;
                 # that would unexpectedly start a new task after the race.
                 message_id = str(msg.get("message_id") or uuid.uuid4())
-                running = chat_runner is not None and not chat_runner.done()
+                running = runs.busy
                 accepted = bool(
                     running
                     and state.session
@@ -2078,7 +2027,7 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "steer":
                 text = str(msg.get("text") or "").strip()
                 message_id = str(msg.get("message_id") or uuid.uuid4())
-                running = chat_runner is not None and not chat_runner.done()
+                running = runs.busy
                 if not text or not state.session:
                     continue
                 if running and state.session.steer(text, message_id=message_id):
@@ -2090,14 +2039,14 @@ async def websocket_endpoint(ws: WebSocket):
                         "steering": True,
                     })
                 else:
-                    await _enqueue_chat_message(dict(msg, command="message"))
+                    await runs.enqueue(dict(msg, command="message"))
                 continue
 
             elif command == "steer_queued":
                 message_id = str(msg.get("message_id") or "")
                 queued_index = next(
                     (
-                        index for index, item in enumerate(pending_chat_messages)
+                        index for index, item in enumerate(runs.pending)
                         if str(item.get("message_id") or "") == message_id
                     ),
                     None,
@@ -2108,14 +2057,14 @@ async def websocket_endpoint(ws: WebSocket):
                         "message": "That follow-up has already started or is no longer queued.",
                     })
                     continue
-                queued = pending_chat_messages.pop(queued_index)
+                queued = runs.pending.pop(queued_index)
                 steering_text = str(queued.get("text") or "").strip()
                 accepted = bool(
                     state.session
                     and state.session.steer(steering_text, message_id=message_id)
                 )
                 if not accepted:
-                    pending_chat_messages.insert(queued_index, queued)
+                    runs.pending.insert(queued_index, queued)
                     await ws.send_json({
                         "event": "ui_notice",
                         "message": "The active run could not accept that steering message.",
@@ -2134,14 +2083,14 @@ async def websocket_endpoint(ws: WebSocket):
                 message_id = str(msg.get("message_id") or "")
                 queued_index = next(
                     (
-                        index for index, item in enumerate(pending_chat_messages)
+                        index for index, item in enumerate(runs.pending)
                         if str(item.get("message_id") or "") == message_id
                     ),
                     None,
                 )
                 removed = False
                 if queued_index is not None:
-                    pending_chat_messages.pop(queued_index)
+                    runs.pending.pop(queued_index)
                     removed = True
                 elif state.session and hasattr(state.session, "remove_steering"):
                     removed = bool(state.session.remove_steering(message_id))
@@ -2162,9 +2111,9 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "cancel":
                 cancel_id = str(msg.get("cancel_id") or uuid.uuid4())
                 cleared_ids = [
-                    str(item.get("message_id") or "") for item in pending_chat_messages
+                    str(item.get("message_id") or "") for item in runs.pending
                 ]
-                pending_chat_messages.clear()
+                runs.pending.clear()
                 await ws.send_json({
                     "event": "cancel.requested",
                     "cancel_id": cancel_id,
@@ -2177,8 +2126,8 @@ async def websocket_endpoint(ws: WebSocket):
                         "event": "message.queue_cleared",
                         "message_ids": cleared_ids,
                     })
-                if chat_runner is not None and not chat_runner.done():
-                    cancel_request_id = cancel_id
+                if runs.busy:
+                    runs.cancel_request_id = cancel_id
                 else:
                     await ws.send_json({
                         "event": "cancel.completed",
@@ -3057,8 +3006,8 @@ async def websocket_endpoint(ws: WebSocket):
             elif command == "clear":
                 # Create a new session (don't destroy old one)
                 request_id = str(msg.get("request_id") or "").strip()
-                if request_id and request_id in clear_request_cache:
-                    await ws.send_json(clear_request_cache[request_id])
+                if request_id and request_id in runs.clear_cache:
+                    await ws.send_json(runs.clear_cache[request_id])
                     continue
                 session_mode = msg.get("session_mode", "code")
                 session_role = msg.get("session_role", "generator")
@@ -3089,9 +3038,9 @@ async def websocket_endpoint(ws: WebSocket):
                     "request_id": request_id,
                 }
                 if request_id:
-                    clear_request_cache[request_id] = response
-                    if len(clear_request_cache) > 32:
-                        clear_request_cache.pop(next(iter(clear_request_cache)))
+                    runs.clear_cache[request_id] = response
+                    if len(runs.clear_cache) > 32:
+                        runs.clear_cache.pop(next(iter(runs.clear_cache)))
                 await ws.send_json(response)
 
             elif command == "director_configure":
@@ -3831,12 +3780,12 @@ async def websocket_endpoint(ws: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
-        pending_chat_messages.clear()
-        if chat_runner is not None and not chat_runner.done():
+        runs.pending.clear()
+        if runs.busy:
             state.cancel_requested.set()
             if state.session:
                 state.session.cancel()
-            chat_runner.cancel()
+            runs.task.cancel()
 
 
 _STREAM_DELTA_COALESCE_SECONDS = 0.012

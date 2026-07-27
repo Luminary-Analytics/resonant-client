@@ -57,10 +57,12 @@ class CommandContext:
     ws: Any
     state: Any
     msg: dict[str, Any]
-    # Read-only view of the in-flight chat task. Present because a couple of
-    # handlers must refuse to run while a turn is streaming; a handler must
-    # never start or replace it.
-    chat_runner: Any = None
+    # The connection's chat-turn state (gui/chat_loop.ChatRunLoop). Previously
+    # a bare asyncio.Task copied out of the endpoint's scope, which meant a
+    # handler could inspect the in-flight turn but never act on it. Handlers
+    # may ask whether one is running and queue work; starting a turn outside
+    # the queue stays with the endpoint.
+    runs: Any = None
 
     async def send(self, payload: dict[str, Any]) -> None:
         await self.ws.send_json(payload)
@@ -246,7 +248,7 @@ async def _session_timeline_compare(ctx: CommandContext) -> None:
 async def _session_timeline_restore(ctx: CommandContext) -> None:
     state = ctx.state
     try:
-        if ctx.chat_runner is not None and not ctx.chat_runner.done():
+        if ctx.runs is not None and ctx.runs.busy:
             raise RuntimeError("Stop the active run before restoring a checkpoint")
         store = ctx.session_attr("checkpoint_store")
         checkpoint_id = str(ctx.msg.get("checkpoint_id") or "")

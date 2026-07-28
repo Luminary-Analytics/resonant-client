@@ -1,0 +1,48 @@
+/*
+ * Inter, served locally.
+ *
+ * Replaces the Google Fonts stylesheet that used to sit in <head>. That link
+ * was render-blocking and measured 273 ms on a warm local connection — the
+ * single largest item on the startup critical path — plus it made every launch
+ * depend on reaching fonts.googleapis.com and told a third party each time the
+ * app opened.
+ *
+ * Weights match what the old css2 request asked for (400/500/600/700), latin
+ * subset only, pinned via packaging/fetch_web_assets.ps1. `font-display: swap`
+ * keeps text visible while the face loads, so a slow font can never blank the
+ * interface.
+ *
+ * Inter is SIL OFL 1.1, which permits redistribution.
+ */
+
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 400;
+    font-display: swap;
+    src: url('/static/vendor/inter-latin-400-normal.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 500;
+    font-display: swap;
+    src: url('/static/vendor/inter-latin-500-normal.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 600;
+    font-display: swap;
+    src: url('/static/vendor/inter-latin-600-normal.woff2') format('woff2');
+}
+
+@font-face {
+    font-family: 'Inter';
+    font-style: normal;
+    font-weight: 700;
+    font-display: swap;
+    src: url('/static/vendor/inter-latin-700-normal.woff2') format('woff2');
+}

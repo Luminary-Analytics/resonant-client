@@ -42,6 +42,12 @@ signal either way.**
   it identically, and the UI truncated the provider error before the part that
   explained why.
 
+- **Five CDN-loaded frontend assets** (fonts, marked, highlight.js, DOMPurify)
+  blocked first render on two external hosts. On a developer machine with a warm
+  cache this is invisible; for users it is a network round trip per launch (the
+  Google Fonts stylesheet alone measured 273 ms), and offline it means an
+  unstyled page with no markdown rendering at all. Fixed in v0.11.14 — see §7.
+
 The CI gate found the first two within an hour of existing. When adding
 anything the packaged app depends on, register it in `packaging/resonant.spec`
 **and** `packaging/bundle-policy.json`, then confirm the gate fails without it.
@@ -196,3 +202,56 @@ load.
 
 `git push` needs `gh auth switch -u LA-Rich` first — `rbellantoni85` is often
 active and gets a 403.
+
+---
+
+## 7. Startup performance — vendored frontend assets (v0.11.14)
+
+**Symptom:** launch was getting slower.
+
+**Cause:** `index.html` opened with five render-blocking external requests to
+two hosts — a Google Fonts stylesheet (measured 273 ms, and it in turn pulls
+the font files), plus marked, highlight.js, its theme CSS, and DOMPurify from
+jsdelivr. `marked` was loaded from an **unpinned** `latest` URL, so the app's
+markdown renderer could change under it without a commit.
+
+**Fix:** `packaging/fetch_web_assets.ps1` downloads eight pinned assets
+(~263 KB), verifies each against a recorded SHA-256 *before* extracting, and
+writes them to `gui/static/vendor/`. `build_clean.ps1` runs it before
+PyInstaller; `resonant.spec` globs the directory; `bundle-policy.json` requires
+the files, so a fetch failure stops the build instead of shipping an app that
+phones home at launch. Fonts moved to a local `fonts.css` with
+`font-display: swap`.
+
+**Result:** external requests at startup 7 → 0. Startup no longer depends on
+the network at all, which also means it works offline.
+
+Details worth keeping:
+
+- **`vendor/` is gitignored**, same as `packaging/ripgrep/` — pinned binaries
+  in git are permanent weight and every re-pin adds another copy forever. The
+  consequence is that a fresh clone has no vendored libraries until
+  `fetch_web_assets.ps1` runs.
+- **That made `DOMPurify === undefined` a reachable state**, where before it
+  was theoretical. `renderMarkdown` fed the unsanitized string to `innerHTML`
+  in that case, and marked passes raw inline HTML straight through — with
+  model output and tool-read file contents as the input. It now tracks whether
+  the sanitizer actually ran and degrades to `textContent` when it did not.
+- **The `marked` `highlight` callback in the constructor was already dead** —
+  marked removed that option in v5 and the page was loading an unpinned build.
+  Highlighting has been done by `hljs.highlightElement` over rendered
+  `pre code` blocks for a long time. Removed rather than "fixed".
+- **`defer` on the vendor scripts is safe** only because `app.js` merely
+  registers a `DOMContentLoaded` handler at top level and constructs
+  `ResonantApp` inside it; deferred scripts are guaranteed to run before that
+  event. A top-level `marked.`/`hljs.`/`DOMPurify.` call in `app.js` would
+  break this.
+- **`_asset_version()` now globs `static/vendor/*`.** Vendored filenames are
+  stable across upgrades (`marked.min.js` stays `marked.min.js`), so without
+  it a re-pin that touched no top-level asset would leave every existing
+  client on the cached old library.
+
+Guarded by `tests/test_vendored_web_assets.py`, which asserts the template
+references no external host, the policy requires each vendored file, the
+sanitizer fallback cannot reach `innerHTML`, and the cache-buster sees
+`vendor/`.

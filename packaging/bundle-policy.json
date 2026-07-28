@@ -13,6 +13,12 @@
     "_internal/resonant_client/gui/static/settings_view.js",
     "_internal/resonant_client/gui/static/run_cards.js",
     "_internal/resonant_client/gui/static/plan_graph_view.js",
+    "_internal/resonant_client/gui/static/fonts.css",
+    "_internal/resonant_client/gui/static/vendor/marked.min.js",
+    "_internal/resonant_client/gui/static/vendor/highlight.min.js",
+    "_internal/resonant_client/gui/static/vendor/purify.min.js",
+    "_internal/resonant_client/gui/static/vendor/github-dark-dimmed.min.css",
+    "_internal/resonant_client/gui/static/vendor/inter-latin-400-normal.woff2",
     "_internal/resonant_client/gui/static/styles.css"
   ],
   "required_executables": [

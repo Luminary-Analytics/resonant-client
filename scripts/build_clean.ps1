@@ -40,6 +40,12 @@ try {
     & (Join-Path $repo "packaging/fetch_ripgrep.ps1")
     if ($LASTEXITCODE -ne 0) { throw "ripgrep fetch failed with exit code $LASTEXITCODE" }
 
+    # Frontend libraries and fonts formerly loaded from CDNs. The bundle policy
+    # requires them, so a failure here stops the build rather than shipping an
+    # app that reaches out to the network on every launch.
+    & (Join-Path $repo "packaging/fetch_web_assets.ps1")
+    if ($LASTEXITCODE -ne 0) { throw "web asset fetch failed with exit code $LASTEXITCODE" }
+
     python -m venv $tempRoot
     $python = Join-Path $tempRoot "Scripts/python.exe"
     & $python -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip

@@ -406,18 +406,18 @@ class ResonantApp {
         this.harnessBadgeText = document.getElementById('harness-badge-text');
         this.resonantMdBadge = document.getElementById('resonant-md-badge');
 
-        // Configure marked
+        // Configure marked.
+        //
+        // The `highlight` callback that used to live here was dead: marked
+        // removed that option in v5, and the page loaded an unpinned `latest`
+        // build, so it had been silently ignored for a long time. Syntax
+        // highlighting is done by hljs.highlightElement over the rendered
+        // `pre code` blocks once streaming settles — see renderMarkdown. It
+        // is kept out of the parse step deliberately, because re-highlighting
+        // every block on every throttled re-parse is expensive on long
+        // responses.
         if (typeof marked !== 'undefined') {
-            marked.setOptions({
-                gfm: true,
-                breaks: true,
-                highlight: function(code, lang) {
-                    if (typeof hljs !== 'undefined' && lang && hljs.getLanguage(lang)) {
-                        return hljs.highlight(code, { language: lang }).value;
-                    }
-                    return code;
-                }
-            });
+            marked.setOptions({ gfm: true, breaks: true });
         }
 
         this.bindEvents();
@@ -4840,11 +4840,24 @@ class ResonantApp {
                 html = text.replace(/\n/g, '<br>');
             }
 
+            let sanitized = false;
             if (typeof DOMPurify !== 'undefined') {
                 html = DOMPurify.sanitize(html);
+                sanitized = true;
             }
 
-            contentEl.innerHTML = html;
+            // marked passes raw inline HTML straight through, and what lands
+            // here is model output and tool output — including file contents
+            // the agent just read. The sanitizer is therefore not optional.
+            // It used to come from a CDN and now comes from static/vendor/,
+            // which is absent when running from source without first running
+            // packaging/fetch_web_assets.ps1. Degrade to plain text rather
+            // than injecting unsanitized markup.
+            if (sanitized) {
+                contentEl.innerHTML = html;
+            } else {
+                contentEl.textContent = text;
+            }
 
             if (streaming) {
                 contentEl.classList.add('streaming-cursor');

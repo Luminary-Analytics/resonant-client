@@ -2621,6 +2621,11 @@ def _asset_version() -> str:
         candidates = [
             *static.glob("*.js"),
             *static.glob("*.css"),
+            # Vendored libraries and fonts. Their filenames are stable across
+            # version bumps (marked.min.js stays marked.min.js), so without
+            # this a re-pin in fetch_web_assets.ps1 that touches no top-level
+            # asset would leave every existing client on the cached old copy.
+            *static.glob("vendor/*"),
             templates_dir / "index.html",
         ]
         mtimes = [int(p.stat().st_mtime) for p in candidates if p.is_file()]

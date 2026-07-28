@@ -11,6 +11,10 @@ build/
 # every version bump would add another copy forever.
 packaging/ripgrep/
 
+# Frontend libraries and fonts, fetched + SHA-256 verified by
+# packaging/fetch_web_assets.ps1. Same reasoning as ripgrep above.
+resonant_client/gui/static/vendor/
+
 # Virtual environments
 .venv/
 venv/

@@ -5,22 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Resonant</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-    <!-- Fonts: Inter (UI). Mono falls through to system-installed
-         Cascadia Code (Windows 10+) / SF Mono (macOS) / Consolas etc.
-         v0.5.12a1 — dropped the Geist Mono CDN link; Chrome's ORB
-         was blocking the response on every load (cosmetic but a real
-         network error in `preview_network --filter failed`). -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+    <!-- Everything below is served locally. Until v0.11.14 these five came
+         from fonts.googleapis.com and cdn.jsdelivr.net, all in <head> and so
+         all render-blocking: a network round trip on the critical path of
+         every launch, a hard dependency on internet access, and a third party
+         notified each time the app opened. The Google Fonts stylesheet alone
+         measured 273 ms on a warm local connection.
+
+         Fetched and SHA-256 verified at build time by
+         packaging/fetch_web_assets.ps1 and required by bundle-policy.json, so
+         a missing one fails the build rather than the user's startup.
+
+         Mono still falls through to system-installed Cascadia Code (Windows
+         10+) / SF Mono (macOS) / Consolas. -->
+    <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
     <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
-    <!-- Markdown rendering -->
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <!-- Syntax highlighting -->
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark-dimmed.min.css">
-    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
-    <!-- Sanitizer -->
-    <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.6/dist/purify.min.js"></script>
+    <!-- Syntax highlighting theme -->
+    <link rel="stylesheet" href="/static/vendor/github-dark-dimmed.min.css?v={{ asset_version }}">
+    <!-- Markdown rendering, syntax highlighting, sanitizer. Deferred: none is
+         needed before first paint, so they no longer block rendering.
+
+         Safe despite app.js loading at the end of <body> without `defer`:
+         app.js only *registers* a DOMContentLoaded handler at top level and
+         constructs ResonantApp inside it, and deferred scripts are guaranteed
+         to have executed before DOMContentLoaded fires. Keep it that way — a
+         top-level `marked.`/`hljs.`/`DOMPurify.` call in app.js would run
+         before these have loaded. -->
+    <script defer src="/static/vendor/marked.min.js?v={{ asset_version }}"></script>
+    <script defer src="/static/vendor/highlight.min.js?v={{ asset_version }}"></script>
+    <script defer src="/static/vendor/purify.min.js?v={{ asset_version }}"></script>
 </head>
 <body>
     <!-- ═══ Single titlebar — brand + menus + project context + window controls ═══ -->

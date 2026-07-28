@@ -77,6 +77,8 @@ datas = [
      "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "run_cards.js"),
      "resonant_client/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "fonts.css"),
+     "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "styles.css"),
      "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "favicon.svg"),
@@ -90,6 +92,15 @@ datas = [
 # Include data files for libraries that ship their own (jinja2 has none, but
 # starlette ships some HTML defaults for error pages).
 datas += collect_data_files("starlette")
+
+# Frontend libraries and fonts that index.html used to load from CDNs. Fetched
+# and SHA-256 verified by packaging/fetch_web_assets.ps1, which build_clean.ps1
+# runs before PyInstaller. Bundling them takes five render-blocking network
+# round trips off every launch and makes startup work offline.
+VENDOR_DIR = PKG_ROOT / "gui" / "static" / "vendor"
+for vendored in sorted(VENDOR_DIR.glob("*")) if VENDOR_DIR.is_dir() else []:
+    if vendored.is_file():
+        datas.append((str(vendored), "resonant_client/gui/static/vendor"))
 
 # ---- Hidden imports ----------------------------------------------------------
 # Modules dynamically imported (string-based) that PyInstaller's static

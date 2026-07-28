@@ -10850,6 +10850,30 @@ body {
     display: none;
 }
 
+/* Persistent notice for "the runtime cannot accept a message, and here is
+   why". Sits directly above the composer because that is where the user is
+   when they discover the problem. Warning-toned rather than error-toned: the
+   condition is recoverable by re-selecting a model. */
+.runtime-banner {
+    order: -1;
+    flex: 0 0 auto;
+    width: 100%;
+    max-width: var(--content-max-width);
+    margin: 0 auto 8px;
+    padding: 10px 14px;
+    border: 1px solid rgba(240, 173, 78, .38);
+    border-radius: 8px;
+    background: rgba(240, 173, 78, .10);
+    color: var(--text);
+    font-size: 12.5px;
+    line-height: 1.45;
+}
+.runtime-banner[hidden] { display: none; }
+.runtime-banner-mcp {
+    margin-top: 4px;
+    color: var(--muted);
+}
+
 .live-run-surface {
     order: 4;
     position: relative;

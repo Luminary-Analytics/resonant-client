@@ -969,7 +969,12 @@ class ResonantApp {
                 const model = val.substring(idx + 1);
                 this.currentBackendName = backend;
                 this.currentModelName = model;
-                this._setSystemStatus('connected', `${backend} / ${model}`);
+                // Optimistically claiming 'connected' here was half of the
+                // "model selected but no backend" contradiction: the status
+                // went green before the server had tried to build anything,
+                // and stayed green when the build failed. Report the attempt;
+                // the init payload that follows reports the outcome.
+                this._setSystemStatus('warning', `Starting ${model}...`);
                 this.send({ command: 'switch_model', backend, model });
             }
             this._refreshThinkingModeVisibility();
@@ -3814,14 +3819,30 @@ class ResonantApp {
             if (!refresh_only) {
                 this.showChatInterface();
             }
-            this._setSystemStatus('connected', `${current_backend} / ${current_model}`);
+            // `runtime_ready` is the authority on whether a message can be
+            // sent. A backend can be selected while its session failed to
+            // build (a dead MCP server is the usual cause), and reporting
+            // "connected" there is what produced the contradiction users hit:
+            // the composer named a model and every send came back refused.
+            if (event.runtime_ready === false) {
+                this._setSystemStatus('warning', `${current_model} — not running`);
+            } else {
+                this._setSystemStatus('connected', `${current_backend} / ${current_model}`);
+            }
             this.populateModelSelector(backends, current_backend, current_model);
             this.setThinkingMode(event.current_thinking_mode || '');
+            this._applyRuntimeError(event);
             return;
         }
 
-        this._setSystemStatus(Object.keys(this.backends || {}).length ? 'connected' : 'warning',
-            Object.keys(this.backends || {}).length ? 'Ready' : 'No model server');
+        // No backend loaded. Note this branch previously left the model
+        // selector untouched, so it kept displaying whichever model was last
+        // shown — the visible half of the same contradiction.
+        this.populateModelSelector(backends, '', '', { unloaded: true });
+        const haveProviders = Object.keys(this.backends || {}).length > 0;
+        this._setSystemStatus('warning',
+            haveProviders ? 'No model loaded' : 'No model server');
+        this._applyRuntimeError(event);
 
         if (refresh_only) {
             const backendStep = document.getElementById('backend-step');
@@ -4243,8 +4264,22 @@ class ResonantApp {
         }
     }
 
-    populateModelSelector(backends, currentBackend, currentModel) {
+    populateModelSelector(backends, currentBackend, currentModel, { unloaded = false } = {}) {
         this._populateSelectWithGroupedModels(this.modelSelector, backends, currentBackend, currentModel);
+        // With no runtime loaded, the builder still falls back to a "preferred"
+        // model so the list has a sensible default highlighted. That is fine
+        // when a runtime exists and actively wrong when one doesn't: the
+        // composer ends up naming a model nobody selected, directly
+        // contradicting the banner telling the user to select one. Put an
+        // explicit placeholder in front and select it.
+        if (unloaded && this.modelSelector) {
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = 'Select a model';
+            placeholder.selected = true;
+            this.modelSelector.prepend(placeholder);
+            this.modelSelector.value = '';
+        }
         this._refreshThinkingModeVisibility();
     }
 
@@ -8146,6 +8181,57 @@ class ResonantApp {
         const target = (this._activeTask && this._activeTask.activityEl) || this.chatMessages;
         target.appendChild(el);
         this.scrollToBottom();
+    }
+
+    /**
+     * Show or clear the persistent "runtime unavailable" notice above the
+     * composer.
+     *
+     * Deliberately not a toast. The reason a runtime failed to start was
+     * already being computed and sent, but only as a transient status message
+     * — so it was gone by the time the user typed something, and all that
+     * remained was a model name in the composer plus an error insisting no
+     * model was selected. This state persists until the runtime actually
+     * works, because the condition itself persists.
+     */
+    _applyRuntimeError(event) {
+        const el = document.getElementById('runtime-banner');
+        if (!el) return;
+
+        const reason = (event && event.runtime_ready === false)
+            ? (event.runtime_error || '') : '';
+        // An MCP server being down does not block chat (its tools just
+        // disappear), but it silently removes capabilities the user asked
+        // for. With BrowserOS down, "open a browser and search" fails in a
+        // way that reads as the agent ignoring the request.
+        const down = (event && Array.isArray(event.mcp_unavailable)) ? event.mcp_unavailable : [];
+        let mcpNote = (event && event.mcp_load_error) ? event.mcp_load_error : '';
+        if (!mcpNote && down.length) {
+            mcpNote = down
+                .map(s => `${s.name} not connected${s.endpoint ? ` (${s.endpoint})` : ''}${s.error ? ` — ${s.error}` : ''}`)
+                .join('; ');
+        }
+
+        if (!reason && !mcpNote) {
+            el.hidden = true;
+            el.textContent = '';
+            return;
+        }
+
+        el.replaceChildren();
+        if (reason) {
+            const line = document.createElement('div');
+            line.className = 'runtime-banner-reason';
+            line.textContent = reason;
+            el.appendChild(line);
+        }
+        if (mcpNote) {
+            const line = document.createElement('div');
+            line.className = 'runtime-banner-mcp';
+            line.textContent = `Tool server unavailable: ${mcpNote}`;
+            el.appendChild(line);
+        }
+        el.hidden = false;
     }
 
     /**

@@ -358,6 +358,11 @@
                     <!-- ═══ Bottom Input Bar ═══ -->
                     <div id="input-bar" class="input-bar" style="display:none;">
                         <section id="live-run-surface" class="live-run-surface" hidden aria-live="polite"></section>
+                        <!-- Persistent "the runtime is not usable" notice. The
+                             reason used to be a toast that vanished before the
+                             user pressed send, leaving only a model name and a
+                             contradictory error. -->
+                        <div id="runtime-banner" class="runtime-banner" hidden role="status" aria-live="polite"></div>
                         <div id="composer-queue" class="composer-queue" hidden></div>
                         <div class="input-wrapper">
                             <div class="input-top">

@@ -166,6 +166,14 @@ class AppState:
         self.backend = None
         self.backend_spec: Optional[BackendSpec] = None
         self.session: Optional[Session] = None
+        # Last MCP tool-discovery failure, if any. Kept so the UI can explain
+        # that e.g. BrowserOS is down instead of silently offering no browser
+        # tools. Empty string means the last discovery succeeded.
+        self.mcp_load_error: str = ""
+        # Why the runtime is unavailable, when it is. Surfaced instead of the
+        # old "No backend selected", which was wrong whenever a model *was*
+        # chosen and its runtime simply failed to start.
+        self.runtime_error: str = ""
         # v0.4.4 (T1.4) — `api_url` (Resonant Engine remote) and
         # `lmstudio_url` (LM Studio probe) were retired. Both backends
         # were cut in v0.4.0 but the AppState fields lingered as dead
@@ -475,6 +483,33 @@ class AppState:
 
         return project_path
 
+    def _safe_mcp_tools(self) -> list:
+        """Discover MCP tools, degrading to none if a server is unreachable.
+
+        MCP servers are separate processes — BrowserOS, the default profile,
+        runs entirely outside Resonant — so one being down or misconfigured is
+        an ordinary condition, not a reason the user cannot chat.
+
+        This used to be an unguarded call inside `_wire_session`, so a failing
+        server aborted the whole session build. `create_backend` had already
+        assigned `self.backend` by then and left `self.session` at None, and
+        those two fields are read by different code paths: the composer's model
+        label comes from `self.backend`, the send gate checks `self.session`.
+        The result was an app that displayed a live model and rejected every
+        message with "No backend selected".
+        """
+        try:
+            tools = self.mcp_manager.get_all_tools()
+            self.mcp_load_error = ""
+            return tools
+        except Exception as exc:
+            self.mcp_load_error = str(exc)
+            logger.warning(
+                "MCP tool discovery failed; continuing without MCP tools",
+                exc_info=True,
+            )
+            return []
+
     def _wire_session(
         self,
         session: Session,
@@ -491,7 +526,7 @@ class AppState:
             else load_project_instructions(target_path)
         )
         session.hook_runner = self.hook_runner
-        session.mcp_tools = self.mcp_manager.get_all_tools()
+        session.mcp_tools = self._safe_mcp_tools()
         session._mcp_manager = self.mcp_manager
         session._engram = engram or self.engram
         session._codebase_index = codebase_index or self.codebase_index
@@ -572,7 +607,9 @@ class AppState:
                 )
             except Exception:
                 logger.warning("Capability-pack MCP connection failed: %s", server_name, exc_info=True)
-        session.mcp_tools = self.mcp_manager.get_all_tools()
+        # Re-read after the capability-pack servers have connected; this is the
+        # authoritative assignment and supersedes the one above.
+        session.mcp_tools = self._safe_mcp_tools()
         session.agent_registry = agent_registry
         session.artifact_store = artifact_store
         session.checkpoint_store = checkpoint_store
@@ -1082,18 +1119,87 @@ class AppState:
         if prior_thinking and backend_type == "ollama":
             spec.thinking_mode = prior_thinking
 
-        self.backend = spec.create_backend(self.settings)
-        self.backend_spec = spec
-        self._project_instructions = load_project_instructions(self.project.project_path)
-        self.session = self.build_session(
-            backend=self.backend,
-            backend_spec=spec,
-            project_path=self.project.project_path,
-            session_mode=session_mode,
-            session_role=session_role,
-        )
+        # Build everything into locals and publish only on success.
+        #
+        # This used to assign self.backend first and then build the session.
+        # When session construction raised, the backend stayed assigned with
+        # self.session still None — and those two fields are read by different
+        # code paths. get_init_data() reports the model from self.backend, so
+        # the composer showed a live model, while the send path checks
+        # self.session and answered "No backend selected". The app looked
+        # configured and refused every message, and because
+        # ensure_default_runtime_session() short-circuits on a set backend,
+        # nothing rebuilt it. Keep the two fields consistent.
+        prior_backend, prior_spec, prior_session = self.backend, self.backend_spec, self.session
+        try:
+            # Provider construction is inside the try too: an unreachable or
+            # unauthorized provider is the most common way this fails, and its
+            # reason is exactly what the user needs to see.
+            backend = spec.create_backend(self.settings)
+            self._project_instructions = load_project_instructions(self.project.project_path)
+            session = self.build_session(
+                backend=backend,
+                backend_spec=spec,
+                project_path=self.project.project_path,
+                session_mode=session_mode,
+                session_role=session_role,
+            )
+        except Exception as exc:
+            self.backend, self.backend_spec, self.session = prior_backend, prior_spec, prior_session
+            self.runtime_error = f"{backend_type} ({model or 'default model'}) failed to start: {exc}"
+            raise
+
+        self.backend, self.backend_spec, self.session = backend, spec, session
+        self.runtime_error = ""
         self.apply_permission_mode(self.permission_mode, session=self.session)
         return self.backend
+
+    def mcp_unavailable_servers(self) -> list[dict]:
+        """Enabled MCP servers that are configured but not connected.
+
+        A down server is invisible everywhere else: `get_all_tools()` filters
+        on `connection.connected`, so it simply returns fewer tools and the
+        agent behaves as though the capability was never configured. When the
+        user has asked for browser work and BrowserOS is not listening, "the
+        agent ignored my request" and "the tool server is not running" look
+        identical from the chat pane.
+        """
+        try:
+            servers = self.mcp_manager.list_servers()
+        except Exception:
+            logger.debug("MCP server listing failed", exc_info=True)
+            return []
+        return [
+            {
+                "name": s.get("name", ""),
+                "endpoint": s.get("endpoint", "") or s.get("url", ""),
+                "error": s.get("error", ""),
+            }
+            for s in servers
+            if s.get("enabled") and not s.get("connected")
+        ]
+
+    def runtime_unavailable_reason(self) -> str:
+        """Explain why a message cannot be sent, or "" if it can.
+
+        The old message for this condition was a flat "No backend selected",
+        which was wrong in the case users actually hit: a model *was* chosen
+        and its runtime failed to start. The reason was computed, shown once as
+        a transient toast, and thrown away — so by the time the user pressed
+        send, the only thing left on screen was a model name and an error
+        contradicting it.
+        """
+        if self.session:
+            return ""
+        if self.runtime_error:
+            return self.runtime_error
+        if self.backend is not None:
+            model = getattr(self.backend, "model", "") or "the selected model"
+            return (
+                f"The runtime for {model} is not running. "
+                "Re-select it from the model menu to restart it."
+            )
+        return "No model selected. Choose one from the model menu below."
 
     def default_chat_backend_choice(self) -> tuple[str, str]:
         """Return the default chat backend/model from detected providers."""
@@ -1138,10 +1244,14 @@ class AppState:
         session is written only once the user sends the first message, which
         keeps cold starts from filling the list with empty "New session" rows.
         """
-        if self.backend:
+        # Both must be present to count as a usable runtime. Guarding on
+        # `backend` alone meant a half-built runtime (backend set, session
+        # None) could never be repaired, so a transient failure — a stopped
+        # MCP server, a provider blip — wedged the app until restart.
+        if self.backend and self.session:
             return False
         with self._default_session_lock:
-            if self.backend:
+            if self.backend and self.session:
                 return False
             backend_type, model = self.project_chat_backend_choice()
             if not backend_type or not model:
@@ -1217,18 +1327,26 @@ class AppState:
             spec.thinking_mode = prior_thinking
 
         new_backend = spec.create_backend(self.settings)
-        self.backend = new_backend
-        self.backend_spec = spec
 
         if self.session is None:
             # Fall through to the full create path on the rare case where there's
-            # no session yet (initial app boot before any project is open).
+            # no session yet (initial app boot, or a session whose runtime failed
+            # to build).
+            #
+            # Deliberately before any assignment to self.backend: create_backend
+            # rolls back to the previously published backend on failure, so
+            # assigning here first would make it "roll back" to this very
+            # backend and leave the same phantom (backend set, session None)
+            # that the rollback exists to prevent.
             return self.create_backend(
                 backend_type,
                 model=model,
                 session_mode=session_mode,
                 session_role=session_role,
             )
+
+        self.backend = new_backend
+        self.backend_spec = spec
 
         # The whole point of swap_backend: just rewire .backend on the existing
         # session, leaving conversation_history + todos + everything else intact.
@@ -1362,6 +1480,13 @@ class AppState:
             "model_capabilities": model_capabilities,
             "permission_mode": self.permission_mode,
             "cwd": self.project.project_path.replace("\\", "/"),
+            # Whether a message can actually be sent right now, and why not.
+            # `current_backend` above is not a substitute: it reports the
+            # chosen provider, which can be set while no usable runtime exists.
+            "runtime_ready": self.session is not None,
+            "runtime_error": self.runtime_unavailable_reason(),
+            "mcp_load_error": self.mcp_load_error,
+            "mcp_unavailable": self.mcp_unavailable_servers(),
             "sessions": self.project.list_sessions(),
             "all_sessions": self.project.list_all_sessions(),
             "current_session_id": self.project.current_session.id if self.project.current_session else "",
@@ -1577,7 +1702,10 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if not text:
         return
     if not state.session:
-        await ws.send_json({"event": "error", "message": "No backend selected"})
+        await ws.send_json({
+            "event": "error",
+            "message": state.runtime_unavailable_reason(),
+        })
         return
 
     images = None
@@ -1711,7 +1839,10 @@ async def websocket_endpoint(ws: WebSocket):
                 # exactly the coupling that module exists to stay out of.
                 agent_id = str(msg.get("agent_id") or "")
                 if not state.session:
-                    await ws.send_json({"event": "error", "message": "No backend selected"})
+                    await ws.send_json({
+                        "event": "error",
+                        "message": state.runtime_unavailable_reason(),
+                    })
                     continue
                 if runs.busy:
                     await ws.send_json({

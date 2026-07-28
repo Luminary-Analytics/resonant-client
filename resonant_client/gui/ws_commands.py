@@ -1022,7 +1022,10 @@ async def _cmd_message(ctx: CommandContext) -> None:
     if not text:
         return
     if not ctx.state.session:
-        await ctx.send({"event": "error", "message": "No backend selected"})
+        await ctx.send({
+            "event": "error",
+            "message": ctx.state.runtime_unavailable_reason(),
+        })
         return
     await ctx.runs.enqueue(ctx.msg)
     return
@@ -1775,6 +1778,18 @@ async def _cmd_switch_model(ctx: CommandContext) -> None:
             await ctx.send(ctx.state.get_init_data())
         except Exception as e:
             await ctx.send({"event": "error", "message": str(e)})
+            # The selector optimistically shows the model the user picked, so
+            # push authoritative state back or the UI keeps advertising a
+            # backend that failed to start.
+            await ctx.send(ctx.state.get_init_data(refresh_only=True))
+    else:
+        # No backend to switch to and none currently loaded. This used to fall
+        # off the end of the handler silently: the user picked a model, the UI
+        # said "connected", and the server did nothing at all.
+        await ctx.send({
+            "event": "error",
+            "message": "Could not determine which provider to use for that model.",
+        })
 
 
 
@@ -1932,6 +1947,16 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
             ctx.state.backend = None
             ctx.state.backend_spec = None
             ctx.state.session = None
+            # Retain the reason. This used to be sent only as a status_msg,
+            # which the frontend renders as a transient toast — so by the time
+            # the user typed a message the explanation was gone and all that
+            # was left was a stale model name in the composer and an error
+            # claiming no model was selected.
+            ctx.state.runtime_error = (
+                f"{record.backend_type or 'This session'}"
+                f"{f' ({record.model})' if record.model else ''}"
+                f" failed to start: {e}"
+            )
             await ctx.send({
                 "event": "status_msg",
                 "message": f"Session loaded. Its runtime is unavailable: {e}",

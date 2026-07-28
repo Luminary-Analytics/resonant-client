@@ -51,7 +51,7 @@ contract stay model-neutral.
 - File, search, shell, git, batch, task, skill, and user-input tools
 - User-configured MCP servers
 - Skills, plugins, LSP status, and project instructions
-- BrowserOS as the default browser MCP
+- Built-in browser control (native CDP) and desktop computer-use tools
 - Permission modes and a project-root path sandbox
 - Optional codebase indexing, RAG, and Engram memory
 
@@ -140,14 +140,36 @@ offers the models exposed by that provider adapter.
 
 ## Browser Tools
 
-[BrowserOS](https://github.com/browseros-ai/BrowserOS) is Resonant's default
-browser MCP. In BrowserOS, open `chrome://browseros/mcp`, copy the server URL,
-and configure it under **Settings > MCP Servers > browseros**. The usual local
-endpoint is `http://127.0.0.1:9239/mcp`.
+Browsing is built in. The `browser_*` tools drive your installed Chrome over
+the Chrome DevTools Protocol — navigate, click, type, read, screenshot, run
+JavaScript, and manage tabs. Nothing to install or configure: Chrome starts on
+first use.
 
-Resonant does not bundle Playwright or launch a debug Chrome instance. Browser
-capabilities come from BrowserOS or another user-configured stdio or streamable
-HTTP MCP server.
+Chrome runs under a dedicated Resonant profile (`~/.resonant/browser-profile`)
+rather than your everyday one, because Chrome locks a profile directory while
+it is in use — sharing yours would mean you and the agent could not browse at
+the same time. Log into sites once in that window and the session persists.
+
+Agent tabs are collected into a labelled Chrome tab group so they are easy to
+tell apart from your own. That group is created by a small bundled extension:
+tab groups are the `chrome.tabGroups` extension API and are not reachable
+through the DevTools protocol.
+
+No Playwright and no bundled Chromium — CDP is JSON-RPC over a WebSocket, so
+this adds nothing to the installer.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `RESONANT_BROWSER_CDP_PORT` | `9222` | DevTools port |
+| `RESONANT_BROWSER_CHROME_PATH` | auto-detected | Chrome executable |
+| `RESONANT_BROWSER_USER_DATA_DIR` | `~/.resonant/browser-profile` | Profile directory |
+| `RESONANT_BROWSER_HEADLESS` | `0` | Run without a visible window |
+| `RESONANT_BROWSER_GROUP_TITLE` | `Resonant` | Tab group label |
+
+[BrowserOS](https://github.com/browseros-ai/BrowserOS) and other browser MCP
+servers still work if you prefer them. Enable **Settings > MCP Servers >
+browseros** and paste the URL from `chrome://browseros/mcp`; it ships disabled
+now that browsing works out of the box.
 
 ## Environment Variables
 

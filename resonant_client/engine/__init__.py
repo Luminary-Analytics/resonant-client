@@ -15,7 +15,7 @@ from .model_prompts import (
     get_model_prompt_profile,
 )
 from .clipboard import read_clipboard_image, image_to_base64, image_size_label
-from . import computer
+from . import browser, computer
 
 __all__ = [
     "Session", "AGENT_TOOLS", "execute_tool", "get_tool_icon", "ToolResult",
@@ -23,5 +23,5 @@ __all__ = [
     "ModelPromptProfile", "build_model_prompt", "detect_model_family",
     "get_model_prompt_profile",
     "read_clipboard_image", "image_to_base64", "image_size_label",
-    "computer",
+    "browser", "computer",
 ]

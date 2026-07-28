@@ -317,11 +317,12 @@ def build_reflect_goal(
         lines.append("## [chrome] criteria you need to validate")
         lines.append("")
         lines.append(
-            "Drive the browser through a connected browser MCP. BrowserOS is "
-            "the default and exposes tools with an `mcp_browseros_` prefix. "
-            "Inspect the available schemas instead of assuming tool names. Mark each criterion via "
-            "`file_edit` to the roadmap (flip the checkbox `[ ]` → "
-            "`[x]` and append a short evidence note)."
+            "Drive the browser with the built-in `browser_*` tools — "
+            "`browser_navigate`, `browser_read`, `browser_click`, "
+            "`browser_screenshot` and friends. Chrome starts automatically on "
+            "first use. A user-configured browser MCP, if present, also works. "
+            "Mark each criterion via `file_edit` to the roadmap (flip the "
+            "checkbox `[ ]` → `[x]` and append a short evidence note)."
         )
         lines.append("")
         for i, c in enumerate(pass_result.chrome_pending, start=1):

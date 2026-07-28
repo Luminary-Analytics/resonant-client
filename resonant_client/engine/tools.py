@@ -416,6 +416,199 @@ AGENT_TOOLS = [
             }
         }
     },
+    # ── Browser tools (native Chrome DevTools Protocol) ──────────────
+    # Chrome runs under a dedicated Resonant profile and is launched on first
+    # use; no MCP server and no Playwright involved.
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": "Navigate the browser to a URL. Starts Chrome automatically if it is not already running. Use this to open web pages, follow links, or search the web.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL to open (e.g. 'https://example.com'). A bare domain is assumed to be https."
+                    }
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "Click an element on the page. Prefer `text` (the visible label) — it is the most robust. Fall back to a CSS selector, or explicit viewport coordinates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Visible text of the element to click (most natural approach)"},
+                    "selector": {"type": "string", "description": "CSS selector of the element to click"},
+                    "x": {"type": "integer", "description": "X viewport coordinate"},
+                    "y": {"type": "integer", "description": "Y viewport coordinate"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": "Type text into a form field. Set `submit` to press Enter afterwards — the usual way to run a search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector of the input field"},
+                    "text": {"type": "string", "description": "Text to type"},
+                    "clear": {"type": "boolean", "description": "Clear the field first (default false)"},
+                    "submit": {"type": "boolean", "description": "Press Enter after typing (default false)"}
+                },
+                "required": ["selector", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_read",
+            "description": "Read the current page. Use mode 'text' for readable content, 'accessibility' to list the interactive elements you can click, or 'html' for markup.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["text", "html", "accessibility"],
+                        "description": "What to return (default 'text')"
+                    },
+                    "selector": {"type": "string", "description": "Limit to one element (optional)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Capture the page as a PNG for visual inspection. Defaults to the viewport; pass `full_page` for the whole document or `selector` for one element.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "Capture just this element (optional)"},
+                    "full_page": {"type": "boolean", "description": "Capture the entire scrollable page (default false)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_js",
+            "description": "Evaluate JavaScript in the page and return the result. Use for extracting structured data or reaching state the other tools do not expose.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "JavaScript expression to evaluate. Promises are awaited."}
+                },
+                "required": ["code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_scroll",
+            "description": "Scroll the page — by an amount, to top/bottom, or to bring an element into view.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "top", "bottom"],
+                        "description": "Scroll direction (default 'down')"
+                    },
+                    "amount": {"type": "integer", "description": "Pixels to scroll for up/down (default 500)"},
+                    "selector": {"type": "string", "description": "Scroll this element into view instead"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_hover",
+            "description": "Move the pointer over an element, to reveal a dropdown menu or tooltip.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector of the element to hover"}
+                },
+                "required": ["selector"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_select",
+            "description": "Choose an option in a <select> dropdown, by option value or visible label.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector of the <select> element"},
+                    "value": {"type": "string", "description": "Option value or visible text to select"}
+                },
+                "required": ["selector", "value"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_wait",
+            "description": "Wait for an element to appear, or for a fixed delay. Use after an action that loads content asynchronously.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector to wait for (omit to just sleep)"},
+                    "timeout": {"type": "number", "description": "Seconds to wait (default 10)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_back",
+            "description": "Go back in the tab's history, or forward with `forward` set.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "forward": {"type": "boolean", "description": "Go forward instead of back (default false)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_tabs",
+            "description": "List, switch to, open, or close browser tabs. Agent tabs are collected into a labelled Chrome tab group automatically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "switch", "new", "close"],
+                        "description": "What to do (default 'list')"
+                    },
+                    "index": {"type": "integer", "description": "Tab index for switch/close"},
+                    "url": {"type": "string", "description": "URL to open for action 'new'"}
+                }
+            }
+        }
+    },
     # ── Desktop / Computer Use tools ─────────────────────────────────
     {
         "type": "function",
@@ -1143,6 +1336,19 @@ TOOL_ICONS = {
     "grep":       "/",   # Search slash
     "task":       "│",   # Sub-agent
     "batch":      "⚡",   # Parallel execution
+    # Browser tools
+    "browser_navigate":      "🌐",
+    "browser_click":         "☞",
+    "browser_type":          "⌨",
+    "browser_read":          "📄",
+    "browser_screenshot":    "📷",
+    "browser_js":            "ƒ",
+    "browser_scroll":        "↕",
+    "browser_hover":         "☟",
+    "browser_select":        "▼",
+    "browser_wait":          "⏳",
+    "browser_back":          "←",
+    "browser_tabs":          "▤",
     # Desktop / Computer Use tools
     "computer_screenshot": "▣",
     "computer_click":      "◎",
@@ -1299,6 +1505,43 @@ def execute_tool(
                 "Error: 'task' tool must be executed through Session (needs backend access).",
                 is_error=True, elapsed=time.time() - start,
             )
+        # Browser tools (native CDP — see engine/browser.py)
+        elif name == "browser_navigate":
+            from .browser import exec_browser_navigate
+            return exec_browser_navigate(arguments, start)
+        elif name == "browser_click":
+            from .browser import exec_browser_click
+            return exec_browser_click(arguments, start)
+        elif name == "browser_type":
+            from .browser import exec_browser_type
+            return exec_browser_type(arguments, start)
+        elif name == "browser_read":
+            from .browser import exec_browser_read
+            return exec_browser_read(arguments, start)
+        elif name == "browser_screenshot":
+            from .browser import exec_browser_screenshot
+            return exec_browser_screenshot(arguments, start)
+        elif name == "browser_js":
+            from .browser import exec_browser_js
+            return exec_browser_js(arguments, start)
+        elif name == "browser_scroll":
+            from .browser import exec_browser_scroll
+            return exec_browser_scroll(arguments, start)
+        elif name == "browser_hover":
+            from .browser import exec_browser_hover
+            return exec_browser_hover(arguments, start)
+        elif name == "browser_select":
+            from .browser import exec_browser_select
+            return exec_browser_select(arguments, start)
+        elif name == "browser_wait":
+            from .browser import exec_browser_wait
+            return exec_browser_wait(arguments, start)
+        elif name == "browser_back":
+            from .browser import exec_browser_back
+            return exec_browser_back(arguments, start)
+        elif name == "browser_tabs":
+            from .browser import exec_browser_tabs
+            return exec_browser_tabs(arguments, start)
         # Desktop / Computer Use tools
         elif name == "computer_screenshot":
             from .computer import exec_computer_screenshot

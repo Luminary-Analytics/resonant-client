@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "Resonant Agent Tabs",
+  "version": "1.0.0",
+  "description": "Groups tabs opened in Resonant's browser profile into a single labelled tab group so agent-driven browsing is easy to identify.",
+  "permissions": ["tabs", "tabGroups"],
+  "background": {
+    "service_worker": "background.js"
+  }
+}

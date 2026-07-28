@@ -255,3 +255,49 @@ Guarded by `tests/test_vendored_web_assets.py`, which asserts the template
 references no external host, the policy requires each vendored file, the
 sanitizer fallback cannot reach `innerHTML`, and the cache-buster sees
 `vendor/`.
+
+---
+
+## 8. Native browser control (v0.11.15)
+
+Browsing came back in-process. `engine/browser.py` drives the user's installed
+Chrome over CDP; there is no Playwright and no bundled Chromium.
+
+**Why the v0.9.13 removal did not need to be permanent.** That commit dropped
+`browser.py` because Playwright "adds 150+ MB and a Chromium download". But the
+old code only used Playwright's `connect_over_cdp` — as a protocol client
+against Chrome the user already had. `connect_over_cdp` never touches the
+downloaded browsers. The 150 MB bought a JSON-RPC-over-WebSocket implementation
+and nothing else, and `httpx` (core dep) plus `websockets` (already bundled for
+the GUI) cover it at zero installer cost.
+
+Worth internalising as a pattern: **the dependency and the capability were
+conflated.** The capability was cheap; only the client library was expensive.
+
+### Things that bite here
+
+- **`--load-extension` is dead.** Chrome 137+ ignores it, silently. The
+  extension simply never loads and grouping fails with no error anywhere —
+  which is how this was first written and how it first shipped in this branch's
+  working tree. `Extensions.loadUnpacked` (browser target, not page target) is
+  the supported replacement; the flag is kept only for older Chromium builds.
+  `tests/test_browser.py` asserts the CDP path exists, because the flag-only
+  version passes every unit test.
+- **Tab groups are unreachable from CDP.** Chrome exposes 57 domains and none
+  of them touch `chrome.tabGroups` — it is an extension API. Verified against
+  `/json/protocol`, not assumed. This is why an extension ships at all.
+- **Verify grouping via the extension's service worker**, not a screenshot. The
+  worker is itself a CDP target and has `chrome.tabGroups` in scope. A desktop
+  screenshot of the Chrome window proves nothing: `computer_screenshot`
+  captures screen coordinates, so anything on top of Chrome (a fullscreen game,
+  in the case that caught this) is what lands in the PNG.
+- **Chrome locks a profile directory.** Attaching to the user's everyday
+  profile means racing their browser or killing it, so Resonant uses
+  `~/.resonant/browser-profile`. The extension is copied there per session and
+  stamped with a `config.js` carrying the group label, which is what lets the
+  label name the run instead of being fixed at build time.
+- **Retiring a decision means retiring its tests.** Four tests encoded the old
+  "no native browser" stance — including
+  `test_builtin_browser_tools_are_not_advertised`, whose whole purpose was to
+  assert the inverse of the new behaviour. They were rewritten to state the new
+  intent and why it changed, not deleted.

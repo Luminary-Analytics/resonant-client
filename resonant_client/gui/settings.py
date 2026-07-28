@@ -43,11 +43,17 @@ DEFAULTS = {
     "api_keys": {"kimi": ""},
     "hooks": [],
     "mcp_servers": {
+        # Off by default since v0.11.15: browsing is native now (the built-in
+        # `browser_*` tools drive Chrome over CDP), so this is only needed by
+        # users who specifically want BrowserOS. Left configured because
+        # enabling it is then a single click. An enabled-but-unreachable server
+        # is reported in the composer, and defaulting this to on meant every
+        # user who never installed BrowserOS saw that notice.
         "browseros": {
             "transport": "http",
             "url": "http://127.0.0.1:9239/mcp",
-            "enabled": True,
-            "description": "Default browser MCP. Copy the server URL from chrome://browseros/mcp.",
+            "enabled": False,
+            "description": "Optional browser MCP. Resonant has built-in browser tools; enable this only to use BrowserOS instead. Copy the server URL from chrome://browseros/mcp.",
         },
     },
     "lsp_servers": {},

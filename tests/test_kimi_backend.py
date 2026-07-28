@@ -221,9 +221,17 @@ def test_tool_search_finds_specialized_capabilities():
         _browseros_tool("take_screenshot"),
     ]
 
-    matches = session._search_tool_catalog("click and inspect a browser page", limit=6)
-    names = {tool["function"]["name"] for tool in matches}
+    # Native browser tools should win the top slots for a browser query —
+    # they are the ones that work without any server configured.
+    top = [tool["function"]["name"] for tool in
+           session._search_tool_catalog("click and inspect a browser page", limit=6)]
+    assert top[0] == "browser_click"
+    assert {"browser_read", "browser_screenshot"} <= set(top)
 
+    # MCP-provided equivalents must still be discoverable for users who run
+    # BrowserOS; they rank lower, they are not excluded.
+    names = {tool["function"]["name"] for tool in
+             session._search_tool_catalog("click and inspect a browser page", limit=20)}
     assert "mcp_browseros_click" in names
     assert names & {"mcp_browseros_get_page_content", "mcp_browseros_take_screenshot"}
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.11.14"
+version = "0.11.15"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
 # v0.6.2 — relicensed Proprietary → MIT. Resonant Client is now an
@@ -170,3 +170,8 @@ include = ["resonant_client*"]
 # can find them in pip / wheel / pyinstaller installs, not just source
 # checkouts.
 "resonant_client.orchestration.bundled_skills" = ["*.md"]
+# The unpacked Chrome extension behind the browser tools' tab grouping. Listed
+# here as well as in packaging/resonant.spec: the spec only covers the frozen
+# .exe, and without this a `pip install` silently omits the extension and tabs
+# stop being grouped with no error anywhere.
+"resonant_client" = ["browser_extension/*"]

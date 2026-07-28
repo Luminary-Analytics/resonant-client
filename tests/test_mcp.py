@@ -1,4 +1,4 @@
-"""MCP transport and BrowserOS default-profile coverage."""
+"""MCP transport and the optional BrowserOS profile."""
 
 from __future__ import annotations
 
@@ -11,17 +11,21 @@ from resonant_client.engine.tools import AGENT_TOOLS
 from resonant_client.gui.settings import SettingsManager
 
 
-def test_browseros_is_the_default_mcp_profile(tmp_path):
+def test_browseros_is_configured_but_off_by_default(tmp_path):
+    """BrowserOS stays one click away without nagging users who never install it.
+
+    It was enabled by default when browsing required an external MCP server.
+    Browsing is native as of v0.11.15, so an enabled-by-default entry meant
+    every user who had never heard of BrowserOS saw a "tool server not
+    connected" notice for it. The config stays so enabling is trivial.
+    """
     settings = SettingsManager(tmp_path / "settings.json")
 
     browseros = settings.get("mcp_servers", "browseros")
 
-    assert browseros == {
-        "transport": "http",
-        "url": "http://127.0.0.1:9239/mcp",
-        "enabled": True,
-        "description": "Default browser MCP. Copy the server URL from chrome://browseros/mcp.",
-    }
+    assert browseros["transport"] == "http"
+    assert browseros["url"] == "http://127.0.0.1:9239/mcp"
+    assert browseros["enabled"] is False
     listed = MCPManager(settings).list_servers()
     assert listed[0]["endpoint"] == "http://127.0.0.1:9239/mcp"
     assert listed[0]["transport"] == "http"
@@ -123,7 +127,19 @@ def test_streamable_http_sse_response_is_supported():
     assert MCPConnection._parse_http_response(response, 7) == payload
 
 
-def test_builtin_browser_tools_are_not_advertised():
+def test_builtin_browser_tools_are_advertised():
+    """Browsing is a built-in capability again.
+
+    This test previously asserted the opposite: between v0.9.13 and v0.11.15
+    browsing came only from an external MCP server, because the native
+    implementation had been built on Playwright and cost 150+ MB. The
+    replacement speaks CDP directly and adds nothing to the bundle, so the
+    tools are back and must be advertised without any server configured.
+    """
     names = {tool["function"]["name"] for tool in AGENT_TOOLS}
 
-    assert not {name for name in names if name.startswith("browser_")}
+    assert {name for name in names if name.startswith("browser_")} == {
+        "browser_navigate", "browser_click", "browser_type", "browser_read",
+        "browser_screenshot", "browser_js", "browser_scroll", "browser_hover",
+        "browser_select", "browser_wait", "browser_back", "browser_tabs",
+    }

@@ -35,9 +35,17 @@ Bundled deps:
                        than committed, and required by bundle-policy.json
                        so a missing or non-running binary fails the build.
 
+- Browser tools     — native, via the Chrome DevTools Protocol against the
+                       user's installed Chrome (see engine/browser.py). CDP is
+                       JSON-RPC over a WebSocket, so this needs only httpx and
+                       websockets, both already bundled: zero installer cost.
+                       A small unpacked extension ships alongside for tab
+                       grouping, which CDP cannot do.
+
 NOT bundled (runtime-optional):
-- Browser automation — supplied by user-configured MCP servers. BrowserOS
-                       is the default profile and runs outside Resonant.
+- Playwright        — was used pre-v0.9.13 purely as a CDP client, which cost
+                       150+ MB and a Chromium download for a protocol
+                       implementation. Replaced, not deferred.
 - opencv-python      — runtime-optional in engine/recording.py (wrapped
                        in try/except). Users who want screen recording
                        can `pip install opencv-python` themselves.
@@ -87,6 +95,14 @@ datas = [
      "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "resonant.png"),
      "resonant_client/gui/static"),
+
+    # Unpacked Chrome extension backing the browser tools' tab grouping.
+    # Chrome 137+ ignores --load-extension, so it is installed at runtime via
+    # the Extensions CDP domain; either way the files have to be in the bundle.
+    (str(PKG_ROOT / "browser_extension" / "manifest.json"),
+     "resonant_client/browser_extension"),
+    (str(PKG_ROOT / "browser_extension" / "background.js"),
+     "resonant_client/browser_extension"),
 ]
 
 # Include data files for libraries that ship their own (jinja2 has none, but
@@ -175,7 +191,7 @@ excludes = [
     "numpy",            # only pulled by some optional cv2 paths we excluded
     "scipy",
     "pandas",
-    "playwright",       # browser automation belongs to external MCP servers
+    "playwright",       # browser tools speak CDP directly; see engine/browser.py
     "cv2",              # runtime-optional, not bundled
     "uiautomation",     # runtime-optional, not bundled
 ]

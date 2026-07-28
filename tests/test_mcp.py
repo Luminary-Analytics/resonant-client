@@ -11,24 +11,19 @@ from resonant_client.engine.tools import AGENT_TOOLS
 from resonant_client.gui.settings import SettingsManager
 
 
-def test_browseros_is_configured_but_off_by_default(tmp_path):
-    """BrowserOS stays one click away without nagging users who never install it.
+def test_no_mcp_server_is_configured_by_default(tmp_path):
+    """Nothing ships pre-configured.
 
-    It was enabled by default when browsing required an external MCP server.
-    Browsing is native as of v0.11.15, so an enabled-by-default entry meant
-    every user who had never heard of BrowserOS saw a "tool server not
-    connected" notice for it. The config stays so enabling is trivial.
+    BrowserOS was the default browser MCP while browsing needed an external
+    server. Browsing is native as of v0.11.15, so the entry only produced a
+    "tool server unavailable" notice for something nobody was running. It was
+    removed outright in v0.11.16, including from existing settings files —
+    see tests/test_settings_migration.py.
     """
     settings = SettingsManager(tmp_path / "settings.json")
 
-    browseros = settings.get("mcp_servers", "browseros")
-
-    assert browseros["transport"] == "http"
-    assert browseros["url"] == "http://127.0.0.1:9239/mcp"
-    assert browseros["enabled"] is False
-    listed = MCPManager(settings).list_servers()
-    assert listed[0]["endpoint"] == "http://127.0.0.1:9239/mcp"
-    assert listed[0]["transport"] == "http"
+    assert settings.get("mcp_servers") == {}
+    assert MCPManager(settings).list_servers() == []
 
 
 def test_http_config_is_inferred_from_url():

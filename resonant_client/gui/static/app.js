@@ -8215,6 +8215,17 @@ class ResonantApp {
         if (!reason && !mcpNote) {
             el.hidden = true;
             el.textContent = '';
+            this._dismissedRuntimeNotice = '';
+            return;
+        }
+
+        // Dismissal is keyed to the message, not the element. A sticky banner
+        // with no way to close it is just noise once the user has read it —
+        // but silencing it forever would hide a *different*, later problem, so
+        // a changed message brings it back.
+        const signature = `${reason}||${mcpNote}`;
+        if (this._dismissedRuntimeNotice === signature) {
+            el.hidden = true;
             return;
         }
 
@@ -8231,6 +8242,19 @@ class ResonantApp {
             line.textContent = `Tool server unavailable: ${mcpNote}`;
             el.appendChild(line);
         }
+
+        const close = document.createElement('button');
+        close.className = 'runtime-banner-close';
+        close.type = 'button';
+        close.setAttribute('aria-label', 'Dismiss');
+        close.title = 'Dismiss';
+        close.textContent = '×';
+        close.addEventListener('click', () => {
+            this._dismissedRuntimeNotice = signature;
+            el.hidden = true;
+        });
+        el.appendChild(close);
+
         el.hidden = false;
     }
 

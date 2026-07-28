@@ -2142,24 +2142,74 @@ class KimiBackend:
         did. Instead each orphan gets an explicit synthetic result saying the
         run was interrupted, which is both true and useful: the model can decide
         to retry that tool rather than assume it succeeded.
-        """
-        answered = {
-            str(message.get("tool_call_id") or "")
-            for message in messages
-            if message.get("role") == "tool"
-        }
-        answered.discard("")
 
-        repaired: list[dict] = []
-        for message in messages:
-            repaired.append(message)
+        Existence alone is not enough: the results must IMMEDIATELY follow the
+        assistant message that declared them. `await_user` produces exactly the
+        failing shape, because the agent announces a call, pauses for the user,
+        and the reply lands between the call and its result:
+
+            assistant(tool_calls=[c1]) -> user("I'll sign in myself") -> tool(c1)
+
+        Every call there is answered, so an existence-only check sees nothing
+        wrong and the provider still rejects the request. Results are therefore
+        relocated to sit directly after their assistant message, in the order
+        the calls were declared.
+        """
+        # Responses are matched by position, not just by id. Older histories
+        # reuse a single call_id across separate turns ("call-reused" twice),
+        # so an id maps to a queue of answers and each call consumes the next
+        # one. Matching by id alone would hand both calls the same answer and
+        # drop the other.
+        queued: dict[str, list[int]] = {}
+        for index, message in enumerate(messages):
+            if message.get("role") == "tool":
+                call_id = str(message.get("tool_call_id") or "")
+                if call_id:
+                    queued.setdefault(call_id, []).append(index)
+
+        # Decide every placement before emitting anything. A response can sit
+        # earlier in the list than the call it answers, and a single pass would
+        # emit it once in place and again beside the call.
+        taken: dict[int, list[int]] = {}   # assistant index -> response indices
+        consumed: set[int] = set()
+        cursor: dict[str, int] = {}
+        for index, message in enumerate(messages):
             if message.get("role") != "assistant":
                 continue
             for call in message.get("tool_calls") or []:
                 call_id = str(call.get("id") or "") if isinstance(call, dict) else ""
-                if not call_id or call_id in answered:
+                if not call_id:
                     continue
-                answered.add(call_id)
+                available = queued.get(call_id, [])
+                position = cursor.get(call_id, 0)
+                if position < len(available):
+                    cursor[call_id] = position + 1
+                    response_index = available[position]
+                    consumed.add(response_index)
+                    taken.setdefault(index, []).append(response_index)
+                else:
+                    taken.setdefault(index, []).append(-1)  # needs a synthetic
+
+        repaired: list[dict] = []
+        for index, message in enumerate(messages):
+            if message.get("role") == "tool":
+                # Skip the copy left behind once it has moved up beside its
+                # call. A response answering no declared call stays where it
+                # is rather than being silently discarded.
+                if index in consumed:
+                    continue
+                repaired.append(message)
+                continue
+
+            repaired.append(message)
+            if message.get("role") != "assistant":
+                continue
+            placements = taken.get(index) or []
+            for call, response_index in zip(message.get("tool_calls") or [], placements):
+                if response_index >= 0:
+                    repaired.append(messages[response_index])
+                    continue
+                call_id = str(call.get("id") or "") if isinstance(call, dict) else ""
                 name = ""
                 if isinstance(call, dict):
                     function = call.get("function")

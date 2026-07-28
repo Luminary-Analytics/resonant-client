@@ -828,10 +828,22 @@ class AppState:
 
         info = self.available_backends.get("ollama")
         if not info:
+            # `available_backends` is a cached snapshot from a single probe with
+            # a 2s connect timeout. Over a LAN — Ollama commonly runs on another
+            # machine — one slow response at startup poisons that cache for the
+            # rest of the session, and the user is told Ollama is down while it
+            # is plainly running. Re-probe before making the claim.
+            logger.info("Ollama absent from the cached probe; re-detecting before failing")
+            self.detect_backends()
+            info = self.available_backends.get("ollama")
+
+        if not info:
+            # Name the URL actually probed. The old text quoted the default,
+            # which is misleading precisely when the configured URL is the
+            # problem.
             raise ValueError(
-                "Ollama is not reachable. Check the URL in Settings → Network "
-                "(default: http://127.0.0.1:11434) and that "
-                "`ollama serve` is running."
+                f"Ollama is not reachable at {self.ollama_url}. Check the URL in "
+                f"Settings → Network and that `ollama serve` is running there."
             )
 
         models = info.get("models") or []

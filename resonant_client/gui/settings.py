@@ -43,18 +43,11 @@ DEFAULTS = {
     "api_keys": {"kimi": ""},
     "hooks": [],
     "mcp_servers": {
-        # Off by default since v0.11.15: browsing is native now (the built-in
-        # `browser_*` tools drive Chrome over CDP), so this is only needed by
-        # users who specifically want BrowserOS. Left configured because
-        # enabling it is then a single click. An enabled-but-unreachable server
-        # is reported in the composer, and defaulting this to on meant every
-        # user who never installed BrowserOS saw that notice.
-        "browseros": {
-            "transport": "http",
-            "url": "http://127.0.0.1:9239/mcp",
-            "enabled": False,
-            "description": "Optional browser MCP. Resonant has built-in browser tools; enable this only to use BrowserOS instead. Copy the server URL from chrome://browseros/mcp.",
-        },
+        # Deliberately empty. BrowserOS shipped as a default entry while
+        # browsing required an external MCP server; browsing is native as of
+        # v0.11.15, so the entry only produced a "tool server unavailable"
+        # notice for a server nobody needed. Users who want BrowserOS — or any
+        # other MCP server — add it from Settings → MCP Servers.
     },
     "lsp_servers": {},
     "plugins": {},
@@ -151,7 +144,33 @@ class SettingsManager:
             else:
                 self._data = {}
             self._apply_defaults()
+            self._migrate()
             self._save_locked()
+
+    def _migrate(self) -> None:
+        """Retire settings that shipped as defaults and no longer apply.
+
+        Removing an entry from DEFAULTS does nothing for existing installs —
+        `_apply_defaults` only adds missing keys, it never prunes. Every user
+        who ever launched a build before v0.11.15 has a `browseros` entry
+        written into their settings.json, and it reports itself as an
+        unavailable tool server on a machine that has no reason to run one.
+
+        Only the untouched stock entry is dropped. A changed URL means the user
+        configured BrowserOS deliberately, and that is theirs to keep.
+        """
+        servers = self._data.get("mcp_servers")
+        if not isinstance(servers, dict):
+            return
+        browseros = servers.get("browseros")
+        if not isinstance(browseros, dict):
+            return
+        if str(browseros.get("url") or "") == "http://127.0.0.1:9239/mcp":
+            servers.pop("browseros", None)
+            logger.info(
+                "Removed the stock browseros MCP entry; browsing is built in "
+                "(add it back from Settings if you use BrowserOS)"
+            )
 
     def _apply_defaults(self) -> None:
         """Merge missing keys from DEFAULTS into current data."""

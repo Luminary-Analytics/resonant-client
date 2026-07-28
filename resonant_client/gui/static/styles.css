@@ -10856,11 +10856,12 @@ body {
    condition is recoverable by re-selecting a model. */
 .runtime-banner {
     order: -1;
+    position: relative;
     flex: 0 0 auto;
     width: 100%;
     max-width: var(--content-max-width);
     margin: 0 auto 8px;
-    padding: 10px 14px;
+    padding: 10px 34px 10px 14px;  /* room for the close button */
     border: 1px solid rgba(240, 173, 78, .38);
     border-radius: 8px;
     background: rgba(240, 173, 78, .10);
@@ -10872,6 +10873,25 @@ body {
 .runtime-banner-mcp {
     margin-top: 4px;
     color: var(--muted);
+}
+.runtime-banner-close {
+    position: absolute;
+    top: 6px;
+    right: 8px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+}
+.runtime-banner-close:hover {
+    background: rgba(255, 255, 255, .10);
+    color: var(--text);
 }
 
 .live-run-surface {

@@ -65,6 +65,9 @@ _PULSE_PERIOD_S = 2.6
 _PULSE_MIN = 0.62      # fraction of full intensity at the trough
 _PULSE_MAX = 1.0
 _PULSE_FPS = 25
+# The ring has to keep up with a moving pointer, so the worker ticks at this
+# rate and the glow is recomposited on a subset of those ticks.
+_RING_FPS = 60
 
 # Win32 constants
 _WS_EX_LAYERED = 0x00080000
@@ -125,6 +128,8 @@ def _declare_signatures() -> None:
         ctypes.POINTER(wintypes.RECT), ctypes.c_uint,
     ]
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    user32.GetCursorPos.restype = wintypes.BOOL
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.SetWindowPos.argtypes = [
         wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
@@ -242,6 +247,58 @@ def _build_glow_rows(width: int, height: int) -> bytearray:
     return buffer
 
 
+# ── cursor ring ──────────────────────────────────────────────────────
+#
+# The edge glow says "Resonant is driving". The ring says *where*. Because the
+# agent moves the real system cursor, the pointer is already visible — what is
+# missing is any signal distinguishing its movement from the user's own.
+
+RING_BOX = 116          # window is square; the ring is centred in it
+_RING_RADIUS = 17
+_RING_THICKNESS = 3.0
+_RING_ALPHA = 225
+# Click feedback: the ring expands outward and fades. Pre-rendered because
+# re-rasterising on the click path would put Python drawing work between the
+# agent's click and the screenshot that follows it.
+_PULSE_FRAMES = 9
+_PULSE_MAX_RADIUS = 46
+
+
+def _build_ring_frame(radius: float, thickness: float, alpha_scale: float) -> bytearray:
+    """One premultiplied BGRA frame containing a soft-edged ring."""
+    red, green, blue = _GLOW_RGB
+    size = RING_BOX
+    stride = size * 4
+    buffer = bytearray(stride * size)
+    centre = (size - 1) / 2.0
+    # Antialiasing band: alpha tapers across roughly a pixel either side of the
+    # stroke, which is what stops the ring looking like a jagged circle.
+    feather = 1.2
+
+    for y in range(size):
+        dy = y - centre
+        base = y * stride
+        for x in range(size):
+            dx = x - centre
+            distance = math.hypot(dx, dy)
+            edge = abs(distance - radius)
+            if edge > thickness / 2 + feather:
+                continue
+            if edge <= thickness / 2:
+                coverage = 1.0
+            else:
+                coverage = 1.0 - (edge - thickness / 2) / feather
+            alpha = int(_RING_ALPHA * alpha_scale * coverage)
+            if alpha <= 0:
+                continue
+            offset = base + x * 4
+            buffer[offset] = blue * alpha // 255
+            buffer[offset + 1] = green * alpha // 255
+            buffer[offset + 2] = red * alpha // 255
+            buffer[offset + 3] = alpha
+    return buffer
+
+
 class _Overlay:
     """A single click-through, per-pixel-alpha window covering one monitor."""
 
@@ -259,6 +316,15 @@ class _Overlay:
         self._ready = threading.Event()
         self._shutdown = threading.Event()
         self._shown = False
+        # Cursor ring — a second window, owned by the same thread for the same
+        # reason the first one is: cross-thread window calls deadlock.
+        self._ring_hwnd = None
+        self._ring_hdc = None
+        self._ring_bitmaps: list = []
+        self._ring_old_bitmap = None
+        self._ring_shown = False
+        self._ring_frame = 0          # 0 = idle ring, 1..N = click pulse
+        self._ring_last_pos = None
 
     # ── window plumbing ──────────────────────────────────────────────
 
@@ -319,6 +385,23 @@ class _Overlay:
         if self._hbitmap:
             gdi32.DeleteObject(self._hbitmap)
         self._hdc_mem = self._hbitmap = self._old_bitmap = None
+
+    def _release_ring(self) -> None:
+        """Free the ring's DC and its pre-rendered frames.
+
+        Ten DIB sections at 116x116 is not much, but GDI objects are a
+        per-process quota and leaking them across a long autonomous run is how
+        a process ends up unable to create any window at all.
+        """
+        gdi32 = ctypes.windll.gdi32
+        if self._ring_hdc:
+            if self._ring_old_bitmap:
+                gdi32.SelectObject(self._ring_hdc, self._ring_old_bitmap)
+            gdi32.DeleteDC(self._ring_hdc)
+        for bitmap in self._ring_bitmaps:
+            gdi32.DeleteObject(bitmap)
+        self._ring_bitmaps = []
+        self._ring_hdc = self._ring_old_bitmap = None
 
     def _build_surface(self, width: int, height: int) -> bool:
         """Render the glow and banner once into a reusable DIB."""
@@ -433,7 +516,14 @@ class _Overlay:
     # message-based marshalling and the pulse tick comes free.
 
     def _worker(self) -> None:
-        frame = 1.0 / _PULSE_FPS
+        # The loop runs at cursor-tracking speed; the edge glow is recomposited
+        # only every few ticks. Compositing a full-monitor layered surface at
+        # 60 Hz is real GPU and CPU work for a pulse nobody can perceive that
+        # fast, while the ring genuinely needs the rate to not visibly lag the
+        # pointer it is drawing around.
+        frame = 1.0 / _RING_FPS
+        glow_every = max(1, round(_RING_FPS / _PULSE_FPS))
+        tick = 0
         started = time.monotonic()
         try:
             if not self._ensure_window():
@@ -443,11 +533,13 @@ class _Overlay:
             while not self._shutdown.is_set():
                 self._drain_commands()
                 self._pump_messages()
-                if self._shown:
+                self._tick_ring()
+                if self._shown and tick % glow_every == 0:
                     phase = (time.monotonic() - started) / _PULSE_PERIOD_S
                     # Sine eased into [_PULSE_MIN, _PULSE_MAX] — no hard edge.
                     wave = (math.sin(phase * 2 * math.pi) + 1.0) / 2.0
                     self._composite(_PULSE_MIN + (_PULSE_MAX - _PULSE_MIN) * wave)
+                tick += 1
                 time.sleep(frame)
         except Exception:
             logger.debug("Halo overlay worker stopped", exc_info=True)
@@ -470,8 +562,15 @@ class _Overlay:
             try:
                 if action == "show":
                     self._apply_show(*payload)
+                    self._apply_ring_show()
                 elif action == "hide":
                     self._apply_hide()
+                elif action == "click":
+                    # Restart the pulse from frame 1 even if one is already
+                    # running: a double-click should read as two beats, not one
+                    # long fade.
+                    self._ring_frame = 1
+                    self._ring_last_pos = None  # force a redraw this tick
                 elif action == "suppress":
                     # Report what the overlay was actually doing at the moment
                     # the hide took effect, not what a caller observed earlier.
@@ -504,6 +603,126 @@ class _Overlay:
         if self._hwnd:
             ctypes.windll.user32.ShowWindow(self._hwnd, _SW_HIDE)
         self._shown = False
+        self._apply_ring_hide()
+
+    # ── cursor ring ──────────────────────────────────────────────────
+
+    def _ensure_ring(self) -> bool:
+        if self._ring_hwnd:
+            return True
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
+
+        self._ring_hwnd = user32.CreateWindowExW(
+            _WS_EX_LAYERED | _WS_EX_TRANSPARENT | _WS_EX_TOPMOST
+            | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE,
+            "ResonantComputerUseHalo", "Resonant cursor",
+            _WS_POPUP,
+            0, 0, RING_BOX, RING_BOX,
+            None, None, ctypes.windll.kernel32.GetModuleHandleW(None), None,
+        )
+        if not self._ring_hwnd:
+            return False
+
+        header = _BITMAPINFOHEADER()
+        header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+        header.biWidth = RING_BOX
+        header.biHeight = -RING_BOX  # top-down, matching the row order
+        header.biPlanes = 1
+        header.biBitCount = 32
+        header.biCompression = _BI_RGB
+
+        screen_dc = user32.GetDC(None)
+        try:
+            self._ring_hdc = gdi32.CreateCompatibleDC(screen_dc)
+            # Idle ring first, then the expanding click pulse.
+            specs = [(float(_RING_RADIUS), _RING_THICKNESS, 1.0)]
+            for step in range(1, _PULSE_FRAMES + 1):
+                progress = step / _PULSE_FRAMES
+                specs.append((
+                    _RING_RADIUS + (_PULSE_MAX_RADIUS - _RING_RADIUS) * progress,
+                    max(1.2, _RING_THICKNESS * (1.0 - 0.5 * progress)),
+                    1.0 - progress,
+                ))
+            for radius, thickness, scale in specs:
+                bits = ctypes.c_void_p()
+                bitmap = gdi32.CreateDIBSection(
+                    screen_dc, ctypes.byref(header), _DIB_RGB_COLORS,
+                    ctypes.byref(bits), None, 0,
+                )
+                if not bitmap or not bits:
+                    return False
+                pixels = _build_ring_frame(radius, thickness, scale)
+                ctypes.memmove(bits, bytes(pixels), len(pixels))
+                self._ring_bitmaps.append(bitmap)
+        finally:
+            user32.ReleaseDC(None, screen_dc)
+        return bool(self._ring_bitmaps)
+
+    def _composite_ring(self, x: int, y: int) -> None:
+        """Place the ring centred on (x, y) and draw the current frame."""
+        if not (self._ring_hwnd and self._ring_hdc and self._ring_bitmaps):
+            return
+        gdi32 = ctypes.windll.gdi32
+        user32 = ctypes.windll.user32
+
+        index = min(self._ring_frame, len(self._ring_bitmaps) - 1)
+        previous = gdi32.SelectObject(self._ring_hdc, self._ring_bitmaps[index])
+        if self._ring_old_bitmap is None:
+            self._ring_old_bitmap = previous
+
+        blend = _BLENDFUNCTION(_AC_SRC_OVER, 0, 255, _AC_SRC_ALPHA)
+        size = wintypes.SIZE(RING_BOX, RING_BOX)
+        source = wintypes.POINT(0, 0)
+        dest = wintypes.POINT(x - RING_BOX // 2, y - RING_BOX // 2)
+        user32.UpdateLayeredWindow(
+            self._ring_hwnd, None,
+            ctypes.byref(dest), ctypes.byref(size),
+            self._ring_hdc, ctypes.byref(source),
+            0, ctypes.byref(blend), _ULW_ALPHA,
+        )
+
+    def _apply_ring_show(self) -> None:
+        if not self._ensure_ring():
+            return
+        user32 = ctypes.windll.user32
+        point = wintypes.POINT()
+        user32.GetCursorPos(ctypes.byref(point))
+        self._composite_ring(point.x, point.y)
+        user32.ShowWindow(self._ring_hwnd, _SW_SHOWNOACTIVATE)
+        user32.SetWindowPos(
+            self._ring_hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
+            _SWP_NOMOVE | _SWP_NOSIZE | _SWP_NOACTIVATE,
+        )
+        self._ring_shown = True
+
+    def _apply_ring_hide(self) -> None:
+        if self._ring_hwnd:
+            ctypes.windll.user32.ShowWindow(self._ring_hwnd, _SW_HIDE)
+        self._ring_shown = False
+        self._ring_frame = 0
+
+    def _tick_ring(self) -> None:
+        """Follow the cursor and advance any click pulse. Runs every frame."""
+        if not self._ring_shown:
+            return
+        user32 = ctypes.windll.user32
+        point = wintypes.POINT()
+        if not user32.GetCursorPos(ctypes.byref(point)):
+            return
+        position = (point.x, point.y)
+        animating = self._ring_frame > 0
+        # Redraw only when something changed. A stationary cursor with no pulse
+        # in flight costs nothing, which matters because this runs at 60 Hz for
+        # as long as the agent is working.
+        if position == self._ring_last_pos and not animating:
+            return
+        self._ring_last_pos = position
+        self._composite_ring(point.x, point.y)
+        if animating:
+            self._ring_frame += 1
+            if self._ring_frame > _PULSE_FRAMES:
+                self._ring_frame = 0
 
     def _ensure_worker(self) -> bool:
         with self._lock:
@@ -538,6 +757,9 @@ class _Overlay:
 
     def hide(self, wait: bool = False) -> None:
         self._submit("hide", (), wait=wait)
+
+    def click_pulse(self) -> None:
+        self._submit("click", ())
 
     def suppress(self) -> tuple[bool, tuple]:
         """Hide synchronously and report whether it had been showing.
@@ -630,6 +852,25 @@ def hide() -> None:
         overlay.hide()
     except Exception:
         logger.debug("Halo overlay failed to hide", exc_info=True)
+
+
+def note_click() -> None:
+    """Pulse the cursor ring — the agent just clicked.
+
+    Takes no coordinates on purpose: the ring already tracks the real cursor,
+    and pyautogui has moved it to the click point by the time this is called.
+    Passing the intended coordinates instead would draw the pulse where the
+    agent *meant* to click, hiding exactly the mis-clicks worth seeing.
+    """
+    if not IS_WINDOWS:
+        return
+    overlay = _instance()
+    if overlay is None or not overlay.visible:
+        return
+    try:
+        overlay.click_pulse()
+    except Exception:
+        logger.debug("Cursor pulse failed", exc_info=True)
 
 
 _activity_timer: Optional[threading.Timer] = None

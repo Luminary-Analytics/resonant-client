@@ -256,6 +256,16 @@ def exec_computer_click(args: dict, start: float) -> ToolResult:
 
     try:
         pyautogui.click(x=abs_x, y=abs_y, button=button, clicks=clicks)
+        # After the click, not before: pyautogui has moved the real cursor by
+        # now, so the ring pulses where the pointer actually landed rather than
+        # where the agent aimed. A mis-click should be visible as one.
+        try:
+            from .screen_overlay import note_click
+
+            for _ in range(max(1, int(clicks))):
+                note_click()
+        except Exception:
+            pass
         elapsed = time.time() - start
         click_type = "Double-clicked" if clicks == 2 else "Clicked"
         scope_msg = f" relative to {label}" if origin is not None else ""

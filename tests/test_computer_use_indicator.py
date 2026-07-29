@@ -171,3 +171,95 @@ def test_unlocatable_arguments_fall_through_to_the_primary(two_monitors):
 
 def test_a_point_outside_every_monitor_is_not_forced_onto_one(two_monitors):
     assert screen_overlay.monitor_index_for_point(99999, 99999) is None
+
+
+# ── cursor ring ──────────────────────────────────────────────────────
+
+def _alpha_at(frame: bytearray, x: int, y: int) -> int:
+    box = screen_overlay.RING_BOX
+    return frame[(y * box + x) * 4 + 3]
+
+
+def test_ring_frame_is_an_annulus_not_a_disc():
+    """The ring must outline the cursor, not cover it.
+
+    A filled circle would hide the pointer and whatever it is hovering, which
+    defeats the point of showing where the agent is working.
+    """
+    box = screen_overlay.RING_BOX
+    centre = box // 2
+    radius = screen_overlay._RING_RADIUS
+    frame = screen_overlay._build_ring_frame(float(radius), 3.0, 1.0)
+
+    assert _alpha_at(frame, centre, centre) == 0, "centre must stay clear"
+    assert _alpha_at(frame, centre, centre - radius) > 0, "stroke must be drawn"
+    assert _alpha_at(frame, centre, centre - radius - 8) == 0, "outside must be clear"
+
+
+def test_ring_stroke_is_feathered():
+    """A hard-edged circle reads as jagged at this size."""
+    box = screen_overlay.RING_BOX
+    centre = box // 2
+    radius = screen_overlay._RING_RADIUS
+    frame = screen_overlay._build_ring_frame(float(radius), 3.0, 1.0)
+
+    column = [_alpha_at(frame, centre, y) for y in range(centre - radius - 4, centre - radius + 4)]
+    # Partial alpha either side of the solid core is what antialiases it.
+    assert any(0 < value < 255 for value in column)
+
+
+def test_ring_pixels_are_premultiplied():
+    """The compositor expects colour already scaled by alpha.
+
+    Un-premultiplied pixels wash the ring out to white at its soft edges.
+    """
+    box = screen_overlay.RING_BOX
+    centre = box // 2
+    radius = screen_overlay._RING_RADIUS
+    frame = screen_overlay._build_ring_frame(float(radius), 3.0, 1.0)
+
+    offset = ((centre - radius) * box + centre) * 4
+    blue, green, red, alpha = frame[offset:offset + 4]
+    assert alpha > 0
+    for channel in (blue, green, red):
+        assert channel <= alpha, "channel exceeds alpha — not premultiplied"
+
+
+def test_pulse_frames_expand_and_fade():
+    """Later frames are larger and fainter, so a click reads as a ripple."""
+    radius = screen_overlay._RING_RADIUS
+    near = screen_overlay._build_ring_frame(float(radius), 3.0, 1.0)
+    far = screen_overlay._build_ring_frame(
+        float(screen_overlay._PULSE_MAX_RADIUS), 1.5, 0.15
+    )
+
+    assert max(near[3::4]) > max(far[3::4]), "the pulse should fade as it expands"
+
+    box = screen_overlay.RING_BOX
+    centre = box // 2
+    # The wide frame draws its stroke further out than the idle ring does.
+    assert _alpha_at(far, centre, centre - screen_overlay._PULSE_MAX_RADIUS) > 0
+    assert _alpha_at(near, centre, centre - screen_overlay._PULSE_MAX_RADIUS) == 0
+
+
+def test_click_pulse_is_ignored_when_the_indicator_is_not_showing(monkeypatch):
+    """A click outside a computer-use run must not flash a ring."""
+    calls = []
+    fake = SimpleNamespace(visible=False, click_pulse=lambda: calls.append(1))
+    monkeypatch.setattr(screen_overlay, "_instance", lambda: fake)
+    monkeypatch.setattr(screen_overlay, "IS_WINDOWS", True)
+
+    screen_overlay.note_click()
+
+    assert calls == []
+
+
+def test_click_pulse_fires_while_showing(monkeypatch):
+    calls = []
+    fake = SimpleNamespace(visible=True, click_pulse=lambda: calls.append(1))
+    monkeypatch.setattr(screen_overlay, "_instance", lambda: fake)
+    monkeypatch.setattr(screen_overlay, "IS_WINDOWS", True)
+
+    screen_overlay.note_click()
+
+    assert calls == [1]

@@ -25,6 +25,11 @@ class ModelCapabilities:
     reasoning_levels: tuple[str, ...] = ()
     prompt_caching: bool | None = None
     native_continuation: bool | None = None
+    # Whether the model can usefully drive the desktop: read a screenshot
+    # and act on it with coordinates. Requires vision AND reliable tool
+    # calling — a text-only model handed computer_click can only invent
+    # coordinates, which is worse than not offering the tool at all.
+    computer_use: bool | None = None
     max_safe_concurrency: int | None = None
     source: str = "inferred"
 
@@ -38,6 +43,8 @@ class ModelCapabilities:
             "reasoning": "reasoning_levels",
             "cache": "prompt_caching",
             "continuation": "native_continuation",
+            "computer": "computer_use",
+            "computer_control": "computer_use",
         }
         field = aliases.get(normalized, normalized)
         if field in {"text", "image", "audio", "video", "document"}:
@@ -66,11 +73,19 @@ class ModelCapabilities:
         window = self.context_window
         if context_window is not None and int(context_window) > 0:
             window = int(context_window)
+        native_tools = True if "tools" in reported_set else self.native_tools
+        # Recomputed, not carried over. What the provider reports at runtime is
+        # authoritative, so a model whose family inference guessed text-only
+        # but which actually advertises vision + tools must gain desktop
+        # control here — otherwise the runtime report is honoured for every
+        # capability except this one.
+        computer_use = bool("image" in modalities and native_tools)
         return replace(
             self,
             context_window=window,
             modalities=tuple(sorted(modalities, key=("text", "image", "audio", "video", "document").index)),
-            native_tools=True if "tools" in reported_set else self.native_tools,
+            native_tools=native_tools,
+            computer_use=computer_use,
             structured_output=(
                 True if {"structured_output", "structured-outputs"} & reported_set
                 else self.structured_output
@@ -136,6 +151,14 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
         parallel_tools = False
         concurrency = 1
 
+    # Driving the desktop means looking at a screenshot and acting on it with
+    # coordinates, so it needs vision and dependable tool calling together.
+    # Derived rather than listed per-model: any new vision model with native
+    # tools gets it without a code change, which is the point of "any model
+    # that supports it". A model missing either half would be reduced to
+    # guessing coordinates, so it is not offered the tools at all.
+    computer_use = bool("image" in modalities and native_tools)
+
     return ModelCapabilities(
         model=model,
         context_window=default_context_window(model),
@@ -145,6 +168,7 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
         structured_output=structured_output,
         reasoning_levels=reasoning_levels,
         max_safe_concurrency=concurrency,
+        computer_use=computer_use,
     )
 
 

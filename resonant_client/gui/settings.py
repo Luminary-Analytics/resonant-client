@@ -28,6 +28,12 @@ DEFAULTS = {
         "budget_usd_max": 5.00,
         "autonomy_protected_branches": ["main", "master", "prod", "production"],
         "autonomy_external_paths": [],   # empty → use the defaults from autonomy.py
+        # On-screen glow and banner while the agent drives the mouse and
+        # keyboard. Opt-*out*, deliberately: someone watching their own cursor
+        # move needs to know it is Resonant, and making that visibility
+        # something you must switch on inverts the default that matters.
+        # Windows only; a no-op elsewhere.
+        "computer_use_indicator": True,
     },
     "network": {
         # Empty means use OLLAMA_HOST or the local endpoint default.

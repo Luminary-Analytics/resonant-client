@@ -33,6 +33,7 @@ from ..content import build_user_content
 from .tools import (
     AGENT_TOOLS,
     BATCH_ALLOWED_TOOL_NAMES,
+    DESKTOP_TOOL_NAMES,
     DIRECTOR_TOOLS,
     execute_tool,
     get_tool_icon,
@@ -729,9 +730,33 @@ class Session:
                     )
                     break
             base = base + DIRECTOR_TOOLS
+        base = self._without_unsupported_desktop_tools(base)
         if self.mcp_tools:
             base = base + self.mcp_tools
         return base
+
+    def _without_unsupported_desktop_tools(self, tools: list[dict]) -> list[dict]:
+        """Drop the desktop tools for models that cannot actually drive a screen.
+
+        Computer use means reading a screenshot and acting on it with
+        coordinates, so it needs vision and dependable tool calling together. A
+        text-only model offered `computer_click` can only invent coordinates —
+        it will click confidently in the wrong place and report success, which
+        is materially worse than not having the tool. Advertising them also
+        spends schema budget on every request for a capability that cannot work.
+        """
+        profile = getattr(self.backend, "capability_profile", None)
+        if profile is None:
+            return tools  # unknown backend: leave the catalogue alone
+        try:
+            if profile.supports("computer_use"):
+                return tools
+        except Exception:
+            return tools
+        return [
+            tool for tool in tools
+            if (tool.get("function") or {}).get("name") not in DESKTOP_TOOL_NAMES
+        ]
 
     @property
     def provider_tools(self) -> list[dict]:

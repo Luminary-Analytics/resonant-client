@@ -6,6 +6,7 @@ Tools run server-side (same machine as the engine).
 """
 
 import json
+import logging
 import os
 import re
 import shutil
@@ -29,6 +30,8 @@ from .truncation import (
     truncate_tail,
 )
 from .editing import EditMatchError, apply_text_edit
+
+logger = logging.getLogger(__name__)
 
 
 # ── Tool Definitions (OpenAI function-calling format) ──────────────────
@@ -1416,6 +1419,32 @@ class ToolResult:
         }
 
 
+# Tools that physically drive the user's machine — mouse, keyboard, windows,
+# or the screen itself. These are what the on-screen indicator announces.
+DESKTOP_TOOL_NAMES = frozenset({
+    "computer_screenshot", "computer_click", "computer_type", "computer_scroll",
+    "computer_drag", "computer_hover", "computer_wait",
+    "window_list", "window_focus", "monitors_list",
+    "screen_ocr", "open_application",
+})
+
+
+def _computer_use_indicator_enabled(settings: object) -> bool:
+    """Whether to show the on-screen indicator. Defaults to on.
+
+    Deliberately opt-*out*. Someone watching their own mouse move needs to know
+    it is Resonant; making that visibility something you have to switch on
+    inverts the default that matters.
+    """
+    if settings is None:
+        return True
+    try:
+        value = settings.get("general", "computer_use_indicator", True)
+    except Exception:
+        return True
+    return bool(value)
+
+
 def execute_tool(
     name: str,
     arguments: dict,
@@ -1443,6 +1472,20 @@ def execute_tool(
     Note: 'task' tool is handled by Session (needs backend access), not here.
     """
     start = time.time()
+
+    # ── Computer-use indicator ──
+    # Signal before dispatch, not after: the point is to tell the user their
+    # machine is being driven *while* it happens. The overlay lingers for a few
+    # seconds so a burst of clicks and screenshots keeps it lit rather than
+    # strobing, and it is taken down automatically for screen captures.
+    if name in DESKTOP_TOOL_NAMES:
+        try:
+            from .screen_overlay import monitor_index_for_args, note_activity
+
+            if _computer_use_indicator_enabled(settings):
+                note_activity(monitor_index_for_args(arguments or {}))
+        except Exception:
+            logger.debug("Computer-use indicator failed", exc_info=True)
 
     # ── Irreversibility floor check ──
     if name not in ("task",):  # task isn't dispatched here at all

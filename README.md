@@ -51,7 +51,8 @@ contract stay model-neutral.
 - File, search, shell, git, batch, task, skill, and user-input tools
 - User-configured MCP servers
 - Skills, plugins, LSP status, and project instructions
-- Built-in browser control (native CDP) and desktop computer-use tools
+- Built-in browser control (native CDP) and desktop computer use, with an
+  on-screen indicator while the agent drives the machine
 - Permission modes and a project-root path sandbox
 - Optional codebase indexing, RAG, and Engram memory
 

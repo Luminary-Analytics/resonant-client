@@ -37,7 +37,20 @@ def _take_screenshot(region: dict = None) -> tuple[bytes, int, int]:
     Falls back to pyautogui if mss unavailable.
 
     Returns (png_bytes, width, height).
+
+    The "Resonant is using the computer" halo is taken down for the duration of
+    the grab. The agent decides where to click from these images, so leaving the
+    overlay in them would feed Resonant's own border and banner back to the
+    model as part of the application it is looking at — and the banner sits
+    exactly where a title bar or toolbar usually is.
     """
+    from .screen_overlay import hidden_for_capture
+
+    with hidden_for_capture():
+        return _grab(region)
+
+
+def _grab(region: dict = None) -> tuple[bytes, int, int]:
     try:
         import mss
         from PIL import Image

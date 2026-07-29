@@ -15,6 +15,7 @@ import queue
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 import difflib
 from collections import deque
 from pathlib import Path
@@ -660,7 +661,16 @@ class AppState:
         session.auto_approve = self._session_auto_approve()
         return session
 
-    def detect_backends(self):
+    # How long a provider probe stays fresh enough to trust. Long enough that a
+    # burst of UI actions does not re-probe an unreachable host repeatedly,
+    # short enough that starting Ollama and coming back is picked up.
+    _PROBE_FRESH_SECONDS = 10.0
+
+    def _backend_probe_is_stale(self) -> bool:
+        last = getattr(self, "_last_backend_probe", 0.0)
+        return (time.time() - last) > self._PROBE_FRESH_SECONDS
+
+    def detect_backends(self, force: bool = False):
         """v0.4.0 — Ollama-only detection. Single network probe to the
         configured Ollama URL (Mac Studio at 10.0.0.133 by default per
         the user's infra; falls back to whatever `ollama_url` resolves
@@ -670,6 +680,15 @@ class AppState:
         """
         import httpx
 
+        # Reuse a recent probe. This is called on every WebSocket connect and
+        # every project switch, and with unreachable hosts each call costs
+        # seconds of timeout. Providers do not appear and disappear inside a
+        # few seconds, so re-probing on a burst of UI actions buys nothing and
+        # costs the user a frozen interface. `force=True` is for the explicit
+        # "check again" paths, where the user has just changed something.
+        if not force and self.available_backends and not self._backend_probe_is_stale():
+            return self.available_backends
+
         self.refresh_network_defaults()
         ollama_url = self.ollama_url
         available: dict = {}
@@ -678,21 +697,43 @@ class AppState:
         # startup — the wizard handles the unreachable case explicitly.
         _timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=4.0)
 
-        try:
-            resp = httpx.get(f"{ollama_url}/api/tags", timeout=_timeout)
-            resp.raise_for_status()
-            data = resp.json()
-            # Filter out non-chat models (embeddings, rerankers).
-            models = [m["name"] for m in data.get("models", [])
-                      if not any(kw in m["name"].lower()
-                                 for kw in ("embed", "bert", "bge", "nomic"))]
-            if models:
-                available["ollama"] = {"url": ollama_url, "models": models}
-        except Exception:
-            # Non-fatal — empty available means "show the Ollama wizard."
-            pass
+        # Ollama and EXO are probed concurrently. Run in sequence they add up:
+        # with both hosts down — a laptop away from the desk, an inference box
+        # switched off — that was 2.2s of Ollama connect timeout plus 4.2s of
+        # EXO discovery, and this runs on every connect and every project
+        # switch. Six and a half seconds of a dead interface reads as "nothing
+        # is loading", which is exactly how it was reported.
+        def _probe_ollama():
+            try:
+                resp = httpx.get(f"{ollama_url}/api/tags", timeout=_timeout)
+                resp.raise_for_status()
+                data = resp.json()
+                # Filter out non-chat models (embeddings, rerankers).
+                models = [m["name"] for m in data.get("models", [])
+                          if not any(kw in m["name"].lower()
+                                     for kw in ("embed", "bert", "bge", "nomic"))]
+                if models:
+                    return {"url": ollama_url, "models": models}
+            except Exception:
+                # Non-fatal — empty available means "show the Ollama wizard."
+                pass
+            return None
 
-        exo_catalog = ExoBackend.discover_models(base_url=self.exo_url, timeout=4.0)
+        def _probe_exo():
+            try:
+                return ExoBackend.discover_models(base_url=self.exo_url, timeout=4.0)
+            except Exception:
+                return {"models": [], "downloaded_models": [], "running_models": []}
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ollama_future = pool.submit(_probe_ollama)
+            exo_future = pool.submit(_probe_exo)
+            ollama_info = ollama_future.result()
+            exo_catalog = exo_future.result()
+
+        if ollama_info:
+            available["ollama"] = ollama_info
+
         exo_models = exo_catalog["models"]
         if exo_models:
             downloaded = set(exo_catalog["downloaded_models"])
@@ -734,6 +775,7 @@ class AppState:
             }
 
         self.available_backends = available
+        self._last_backend_probe = time.time()
         return available
 
     def run_scheduled_task(self, task) -> dict[str, Any]:
@@ -827,13 +869,19 @@ class AppState:
             )
 
         info = self.available_backends.get("ollama")
-        if not info:
+        if not info and self._backend_probe_is_stale():
             # `available_backends` is a cached snapshot from a single probe with
             # a 2s connect timeout. Over a LAN — Ollama commonly runs on another
             # machine — one slow response at startup poisons that cache for the
             # rest of the session, and the user is told Ollama is down while it
             # is plainly running. Re-probe before making the claim.
-            logger.info("Ollama absent from the cached probe; re-detecting before failing")
+            #
+            # Only when the cache is actually stale. Callers such as
+            # `set_project` probe immediately before calling this, and probing
+            # twice against an unreachable host doubled the stall on every
+            # project switch — two connect timeouts back to back, with the UI
+            # waiting on both.
+            logger.info("Ollama absent from a stale probe; re-detecting before failing")
             self.detect_backends()
             info = self.available_backends.get("ollama")
 
@@ -1382,7 +1430,8 @@ class AppState:
         self.base_engram.set_mcp_manager(self.mcp_manager)
         self.apply_project_context(self.project.project_path, refresh_index=True)
         self.refresh_network_defaults()
-        self.detect_backends()
+        # Settings may have changed a provider URL — must re-probe.
+        self.detect_backends(force=True)
 
         if section == "general" and key == "default_permission_mode":
             configured_mode = str(

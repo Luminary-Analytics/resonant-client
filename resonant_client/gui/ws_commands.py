@@ -73,6 +73,28 @@ STATUS_UPDATE_STEER = (
 )
 
 
+def _is_connection_closed(exc: BaseException) -> bool:
+    """Whether this exception means "the client is gone", not "we have a bug".
+
+    Starlette does not raise a dedicated type for a send after close — it
+    surfaces the raw ASGI protocol complaint — so the text is what identifies
+    it. Matched narrowly on purpose: swallowing every send failure would hide
+    real serialisation errors behind a silent no-op.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    if isinstance(exc, (WebSocketDisconnect, ConnectionResetError, BrokenPipeError)):
+        return True
+    text = str(exc).lower()
+    return (
+        "websocket.close" in text
+        or "after sending 'websocket.close'" in text
+        or "connection is closed" in text
+        or "websocket is disconnected" in text
+        or "unexpected asgi message" in text
+    )
+
+
 @dataclass(slots=True)
 class CommandContext:
     """Everything a self-contained command handler is allowed to touch."""
@@ -87,11 +109,36 @@ class CommandContext:
     # the queue stays with the endpoint.
     runs: Any = None
 
+    # Set once this connection is known to be gone, so the remaining sends in a
+    # multi-message handler are skipped instead of each raising in turn.
+    _closed: bool = False
+
     async def send(self, payload: dict[str, Any]) -> None:
-        await self.ws.send_json(payload)
+        """Send to the client, tolerating a connection that has already gone.
+
+        Writing to a closed WebSocket raises out of the handler, unwinds into
+        the endpoint's receive loop, and ends the connection for good. That is
+        how a single recoverable failure became "clicking sessions does
+        nothing": a project switch hit an unreachable provider, the handler
+        tried to *report* it, the report hit a socket the client had already
+        dropped, and the endpoint died. The frontend reconnected and repeated.
+
+        Failing to deliver a message is not worth losing the connection over —
+        the client is gone either way. Anything that is not a closed connection
+        still propagates, so a serialisation bug is not hidden behind this.
+        """
+        if self._closed:
+            return
+        try:
+            await self.ws.send_json(payload)
+        except Exception as exc:
+            if not _is_connection_closed(exc):
+                raise
+            self._closed = True
+            logger.debug("Dropping WS payload; client already disconnected", exc_info=True)
 
     async def send_error(self, message: str) -> None:
-        await self.ws.send_json({"event": "error", "message": message})
+        await self.send({"event": "error", "message": message})
 
     @property
     def project_path(self) -> str:
@@ -2118,7 +2165,10 @@ async def _cmd_redetect_backends(ctx: CommandContext) -> None:
     # picker). The wizard listens for this event and
     # updates its hint area in real time.
     ctx.state.refresh_network_defaults()
-    await asyncio.get_event_loop().run_in_executor(None, ctx.state.detect_backends)
+    # Explicit user request: bypass the probe-freshness window.
+    await asyncio.get_event_loop().run_in_executor(
+        None, lambda: ctx.state.detect_backends(force=True)
+    )
     ollama_info = ctx.state.available_backends.get("ollama") or {}
     if ollama_info and not ctx.state.backend:
         try:

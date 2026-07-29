@@ -41,7 +41,7 @@ def state(monkeypatch, tmp_path):
     project.mkdir()
     (project / ".resonant").mkdir()
     app_module = _load_app_module(monkeypatch, project)
-    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self: {})
+    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self, force=False: {})
     st = app_module.AppState()
     # A spec whose backend construction always succeeds; the failure under
     # test happens later, while wiring the session.
@@ -157,7 +157,7 @@ def test_init_data_reports_runtime_readiness_separately_from_backend(state, monk
     Conflating them is what let the composer advertise a model while every
     send was refused.
     """
-    monkeypatch.setattr(type(state), "detect_backends", lambda self: {})
+    monkeypatch.setattr(type(state), "detect_backends", lambda self, force=False: {})
     data = state.get_init_data(refresh_only=True)
 
     assert data["runtime_ready"] is False
@@ -199,7 +199,7 @@ def test_broken_mcp_server_does_not_brick_the_session(monkeypatch, tmp_path):
     project.mkdir()
     (project / ".resonant").mkdir()
     app_module = _load_app_module(monkeypatch, project)
-    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self: {})
+    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self, force=False: {})
     st = app_module.AppState()
 
     def _boom():

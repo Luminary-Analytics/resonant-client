@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.12.1"
+version = "0.12.2"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
 # v0.6.2 — relicensed Proprietary → MIT. Resonant Client is now an

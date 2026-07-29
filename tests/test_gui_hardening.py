@@ -137,7 +137,7 @@ def test_app_state_preserves_blank_secret_and_applies_permission_mode(monkeypatc
     (project / ".resonant").mkdir()
 
     app_module = _load_app_module(monkeypatch, project)
-    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self: {})
+    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self, force=False: {})
 
     state = app_module.AppState()
     state.settings.set("api_keys", "openai", "existing-secret")
@@ -162,7 +162,7 @@ def test_app_state_applies_permission_mode_to_cli_backend(monkeypatch, tmp_path)
     (project / ".resonant").mkdir()
 
     app_module = _load_app_module(monkeypatch, project)
-    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self: {})
+    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self, force=False: {})
     state = app_module.AppState()
     backend = _DummyBackend(name="codex", model="gpt-5.5")
     observed = []
@@ -186,7 +186,7 @@ def test_app_state_applies_project_context_and_builds_project_scoped_session(mon
     (project_two / "RESONANT.md").write_text("project two instructions", encoding="utf-8")
 
     app_module = _load_app_module(monkeypatch, project_one)
-    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self: {})
+    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self, force=False: {})
 
     state = app_module.AppState()
     first_namespace = state.engram._namespace
@@ -237,7 +237,7 @@ def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
         "apply_project_context",
         lambda path, refresh_index=True: setattr(gui_app.state.project, "project_path", path),
     )
-    monkeypatch.setattr(gui_app.state, "detect_backends", lambda: None)
+    monkeypatch.setattr(gui_app.state, "detect_backends", lambda force=False: None)
     monkeypatch.setattr(gui_app.state, "ensure_default_runtime_session", lambda: None)
     monkeypatch.setattr(
         gui_app.state,

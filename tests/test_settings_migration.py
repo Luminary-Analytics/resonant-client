@@ -138,7 +138,7 @@ def test_unreachable_ollama_error_names_the_configured_url(monkeypatch, tmp_path
     import resonant_client.gui.app as app_module
     app_module = importlib.reload(app_module)
 
-    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self: {})
+    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self, force=False: {})
     state = app_module.AppState()
     state.available_backends = {}
     state.ollama_url = "http://10.0.0.133:11434"
@@ -149,3 +149,74 @@ def test_unreachable_ollama_error_names_the_configured_url(monkeypatch, tmp_path
         assert "http://10.0.0.133:11434" in str(exc)
     else:
         raise AssertionError("expected a ValueError for unreachable Ollama")
+
+
+def test_backend_probe_is_reused_within_the_freshness_window(monkeypatch, tmp_path):
+    """Providers do not appear and disappear inside a few seconds.
+
+    detect_backends runs on every WebSocket connect and every project switch.
+    With unreachable hosts each call costs seconds of connect timeout — 6.4s
+    measured with Ollama and EXO both down — and that time is a frozen UI. The
+    reported symptom was "I'm clicking sessions and nothing is loading".
+    """
+    import importlib
+    from pathlib import Path
+
+    project = tmp_path / "p3"
+    project.mkdir()
+    (project / ".resonant").mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.chdir(project)
+    import resonant_client.gui.app as app_module
+    app_module = importlib.reload(app_module)
+
+    probes = []
+    real = app_module.AppState.detect_backends
+
+    def _counting(self, force=False):
+        result = real(self, force=force)
+        return result
+
+    monkeypatch.setattr(app_module.AppState, "refresh_network_defaults",
+                        lambda self: probes.append("probe"))
+    state = app_module.AppState()
+    state.available_backends = {"kimi": {"models": ["kimi-k3"]}}
+    state._last_backend_probe = __import__("time").time()
+
+    probes.clear()
+    state.detect_backends()
+    assert probes == [], "a fresh probe was repeated on a routine call"
+
+    # An explicit refresh must still go to the network.
+    state.detect_backends(force=True)
+    assert probes, "force=True must bypass the freshness window"
+
+
+def test_a_stale_probe_is_refreshed(monkeypatch, tmp_path):
+    """The window must not pin a stale answer forever.
+
+    Starting Ollama and coming back has to be picked up without a restart.
+    """
+    import importlib
+    import time as _time
+    from pathlib import Path
+
+    project = tmp_path / "p4"
+    project.mkdir()
+    (project / ".resonant").mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.chdir(project)
+    import resonant_client.gui.app as app_module
+    app_module = importlib.reload(app_module)
+
+    probes = []
+    monkeypatch.setattr(app_module.AppState, "refresh_network_defaults",
+                        lambda self: probes.append("probe"))
+    state = app_module.AppState()
+    state.available_backends = {"kimi": {"models": ["kimi-k3"]}}
+    state._last_backend_probe = _time.time() - (state._PROBE_FRESH_SECONDS + 5)
+
+    probes.clear()
+    state.detect_backends()
+
+    assert probes, "a stale probe should have been refreshed"

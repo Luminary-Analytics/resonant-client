@@ -671,12 +671,20 @@ class AppState:
         return (time.time() - last) > self._PROBE_FRESH_SECONDS
 
     def detect_backends(self, force: bool = False):
-        """v0.4.0 — Ollama-only detection. Single network probe to the
-        configured Ollama URL (Mac Studio at 10.0.0.133 by default per
-        the user's infra; falls back to whatever `ollama_url` resolves
-        to). Returns `{"ollama": {url, models}}` on success or `{}`
-        when Ollama isn't reachable — the welcome screen reads the
-        empty dict and renders the Ollama setup wizard.
+        """Probe the configured providers and cache what answered.
+
+        The Ollama URL comes from `resolve_ollama_url`, which defaults to
+        **localhost** when nothing is configured. Do not describe that default
+        as a LAN host: an earlier version of this docstring did, and the effect
+        was that an empty `network.ollama_url` looked deliberate rather than
+        unset, so a user running Ollama on another machine never set it and
+        could not work out why the app kept reporting Ollama as unreachable.
+
+        Returns `{"ollama": {url, models}, ...}` for whatever responded, or an
+        entry-free dict when nothing did — the welcome screen reads the empty
+        result and renders the setup wizard.
+
+        `force=True` bypasses the freshness window; see the body.
         """
         import httpx
 
@@ -1471,9 +1479,17 @@ class AppState:
         return self.settings.get_masked()
 
     def refresh_network_defaults(self):
-        # v0.4.0 — single Ollama URL resolution chain (env → settings →
-        # Mac Studio default at 10.0.0.133). See `resolve_ollama_url`
-        # for why localhost is NOT a silent fallback.
+        # Single resolution chain per provider, in `network_defaults`:
+        # explicit argument → env var → settings.json → local default.
+        #
+        # The Ollama default IS localhost, and it is silent. An earlier version
+        # of this comment claimed the default was a specific LAN host and that
+        # localhost was never a silent fallback; both halves were wrong, and
+        # the mismatch is expensive — someone running Ollama on another machine
+        # sees an empty `network.ollama_url`, reads this as "it already points
+        # at the LAN box", and never sets it. The app then quietly probes
+        # 127.0.0.1 and reports Ollama as unreachable.
+        #
         # v0.4.4 (T1.4) — `api_url` (Resonant Engine remote) and
         # `lmstudio_url` (LM Studio) resolutions retired with their
         # backends.

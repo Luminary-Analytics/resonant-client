@@ -42,6 +42,36 @@ def test_computer_use_requires_vision_and_tools(model, expected):
     assert infer_model_capabilities(model).computer_use is expected
 
 
+def test_a_literal_profile_that_never_set_the_field_still_derives_it():
+    """Profiles handed over by a provider adapter miss fields added later.
+
+    Only the name-inference path was updated when `computer_use` was
+    introduced. Kimi K3's profile is constructed literally in `backends.py`,
+    so it reported `computer_use=None` — and the flagship model for this
+    feature was denied it. `None` means "unstated", not "no".
+    """
+    literal = ModelCapabilities(
+        model="kimi-k3", context_window=256000,
+        modalities=("text", "image"), native_tools=True,
+        source="provider",   # note: computer_use never set
+    )
+
+    assert literal.computer_use is None
+    assert literal.can_use_computer is True
+    assert literal.supports("computer_use") is True
+
+
+def test_an_explicit_false_is_not_overridden_by_the_derivation():
+    """A provider saying "no" must outrank the inference."""
+    stated = ModelCapabilities(
+        model="x", context_window=8192, modalities=("text", "image"),
+        native_tools=True, computer_use=False,
+    )
+
+    assert stated.can_use_computer is False
+    assert stated.supports("computer_use") is False
+
+
 def test_runtime_report_can_grant_computer_use():
     """A provider's runtime report is authoritative.
 
@@ -91,6 +121,54 @@ def test_incapable_model_is_not_offered_the_desktop_tools():
     assert not (DESKTOP_TOOL_NAMES & names)
     # Only the desktop tools go; everything else is untouched.
     assert {"file_read", "bash", "grep"} <= names
+
+
+def _dynamic_backend(profile):
+    """A backend that compacts its tool catalogue — Ollama and Kimi both do."""
+    return SimpleNamespace(
+        name="ollama", model="test", capability_profile=profile,
+        supports_dynamic_tool_catalog=True,
+    )
+
+
+def test_desktop_tools_survive_dynamic_catalogue_compaction():
+    """Gating `Session.tools` alone leaves the feature inert where it matters.
+
+    Both Ollama and Kimi advertise a dynamic catalogue, so `provider_tools`
+    trims the payload to a small core — and that trim removed every desktop
+    tool the capability gate had just added. The model never saw them and had
+    to discover them through `search_tools`.
+
+    Measured against qwen3-vl:8b, that indirection is where it broke: asked for
+    a screenshot it replied "I cannot take screenshots" via `await_user`, and
+    with the same tools present in the payload it called `computer_screenshot`
+    on the first turn.
+    """
+    session = Session(backend=_dynamic_backend(infer_model_capabilities("kimi-k3")))
+
+    advertised = {tool["function"]["name"] for tool in session.provider_tools}
+
+    assert DESKTOP_TOOL_NAMES <= advertised, (
+        "desktop tools were stripped from the payload the model actually sees"
+    )
+    assert "search_tools" in advertised, "the compact core should still be present"
+
+
+def test_compaction_still_excludes_desktop_tools_for_incapable_models():
+    """The extra schemas are only paid for by models that can use them."""
+    session = Session(backend=_dynamic_backend(infer_model_capabilities("llama3")))
+
+    advertised = {tool["function"]["name"] for tool in session.provider_tools}
+
+    assert not (DESKTOP_TOOL_NAMES & advertised)
+    assert "search_tools" in advertised
+
+
+def test_compaction_is_still_smaller_than_the_full_catalogue():
+    """Adding the desktop tools must not defeat the point of compaction."""
+    session = Session(backend=_dynamic_backend(infer_model_capabilities("kimi-k3")))
+
+    assert len(session.provider_tools) < len(session.tools)
 
 
 def test_backend_without_a_capability_profile_keeps_everything():

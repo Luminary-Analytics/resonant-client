@@ -735,6 +735,28 @@ class Session:
             base = base + self.mcp_tools
         return base
 
+    def _supports_computer_use(self, *, unknown: bool = True) -> bool:
+        """Whether this backend's model can usefully drive the desktop.
+
+        `unknown` is what to answer when the backend declares no capability
+        profile, and the two callers want opposite defaults:
+
+        - Filtering the full catalogue defaults to True. Absent information
+          must not silently strip a capability from a backend we simply do not
+          have metadata for.
+        - Inflating the compact provider payload defaults to False. That path
+          adds twelve schemas to every request, and a guess is not a good
+          enough reason to spend them — the tools stay reachable through
+          `search_tools` either way.
+        """
+        profile = getattr(self.backend, "capability_profile", None)
+        if profile is None:
+            return unknown
+        try:
+            return bool(profile.supports("computer_use"))
+        except Exception:
+            return unknown
+
     def _without_unsupported_desktop_tools(self, tools: list[dict]) -> list[dict]:
         """Drop the desktop tools for models that cannot actually drive a screen.
 
@@ -745,13 +767,7 @@ class Session:
         is materially worse than not having the tool. Advertising them also
         spends schema budget on every request for a capability that cannot work.
         """
-        profile = getattr(self.backend, "capability_profile", None)
-        if profile is None:
-            return tools  # unknown backend: leave the catalogue alone
-        try:
-            if profile.supports("computer_use"):
-                return tools
-        except Exception:
+        if self._supports_computer_use():
             return tools
         return [
             tool for tool in tools
@@ -780,6 +796,22 @@ class Session:
                 tool.get("function", {}).get("name", "")
                 for tool in DIRECTOR_TOOLS
             )
+        # Desktop tools go in the core for models that can drive a screen.
+        #
+        # Without this the capability gating is inert on exactly the backends
+        # people use: it adds the desktop tools to `self.tools`, and this
+        # compaction then strips them back out, because both Ollama and Kimi
+        # advertise a dynamic catalogue. The model is left to discover them
+        # through `search_tools` — and measured against qwen3-vl:8b, that
+        # indirection is where it breaks down. Asked for a screenshot it
+        # answered "I cannot take screenshots" via `await_user`; with the same
+        # tools present in the payload it called `computer_screenshot`
+        # immediately, both with 23 schemas and with all 56.
+        #
+        # The cost is bounded and only paid by capable models: twelve schemas,
+        # and only when the capability check above already said yes.
+        if self._supports_computer_use(unknown=False):
+            core_names.update(DESKTOP_TOOL_NAMES)
         selected = [
             _compact_provider_tool(tool)
             for tool in self.tools

@@ -49,8 +49,30 @@ class ModelCapabilities:
         field = aliases.get(normalized, normalized)
         if field in {"text", "image", "audio", "video", "document"}:
             return field in self.modalities
+        if field == "computer_use":
+            return self.can_use_computer
         value = getattr(self, field, None)
         return bool(value)
+
+    @property
+    def can_use_computer(self) -> bool:
+        """Whether this model can drive a desktop, deriving when unstated.
+
+        An explicit True or False always wins. `None` means "nobody said", and
+        the answer is then derived from vision plus native tool calling, which
+        is what the capability actually requires.
+
+        The fallback is not a nicety. Profiles are built two ways: inferred
+        from the model name, and handed over literally by a provider adapter.
+        Only the first was updated when this field was added, so Kimi K3 — a
+        vision model with native tools, and the flagship for this feature —
+        reported `computer_use=None` and was denied its own capability.
+        Deriving here fixes every literal profile at once, including ones
+        written later by someone who has never heard of this field.
+        """
+        if self.computer_use is not None:
+            return bool(self.computer_use)
+        return bool("image" in self.modalities and self.native_tools)
 
     def with_runtime_metadata(
         self,

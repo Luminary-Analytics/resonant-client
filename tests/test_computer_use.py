@@ -3,7 +3,6 @@ Tests for the Computer Use system.
 
 Tests cover:
 - ScreenScale coordinate mapping
-- SafetyZone containment
 - Tool execution (mocked pyautogui/mss)
 - Auto-screenshot attachment
 - Window management stubs
@@ -15,9 +14,28 @@ import base64
 import time
 from unittest.mock import patch, MagicMock
 
+
+def _no_indicator():
+    """Settings stub that turns the on-screen computer-use indicator off.
+
+    Routing is what these tests are about; the overlay is not. Left enabled,
+    every desktop tool exercised here spawns a real layered window on the test
+    machine and in CI. It also hid a native crash — the overlay thread faulted
+    on a truncated module handle, and because that thread is a daemon the suite
+    still reported all tests passing.
+    """
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        get=lambda section, key, default=None: (
+            False if key == "computer_use_indicator" else default
+        )
+    )
+
+
 # ── ScreenScale Tests ─────────────────────────────────────────────────
 
-from resonant_client.engine.computer_use import ScreenScale, SafetyZone
+from resonant_client.engine.computer_use import ScreenScale
 
 
 class TestScreenScale:
@@ -69,24 +87,6 @@ class TestScreenScale:
         # scale_x and scale_y default to 1.0 when 0
         assert s.scale_x == 1.0
         assert s.scale_y == 1.0
-
-
-class TestSafetyZone:
-    def test_contains_inside(self):
-        zone = SafetyZone(x=100, y=100, width=200, height=200)
-        assert zone.contains(150, 150)
-        assert zone.contains(100, 100)  # Edge
-        assert zone.contains(300, 300)  # Edge
-
-    def test_contains_outside(self):
-        zone = SafetyZone(x=100, y=100, width=200, height=200)
-        assert not zone.contains(50, 50)
-        assert not zone.contains(301, 150)
-        assert not zone.contains(150, 301)
-
-    def test_label(self):
-        zone = SafetyZone(x=0, y=0, width=50, height=50, label="taskbar")
-        assert zone.label == "taskbar"
 
 
 # ── Tool Execution Tests (Mocked) ────────────────────────────────────
@@ -484,7 +484,7 @@ class TestComputerUseToolDefs:
              patch("subprocess.Popen"), patch("os.startfile", create=True), \
              patch("time.sleep"):
             for name, args in tools_to_test:
-                result = execute_tool(name, args)
+                result = execute_tool(name, args, settings=_no_indicator())
                 assert "Unknown tool" not in result.output, f"{name} not routed"
 
 
@@ -522,3 +522,48 @@ class TestVisionLoop:
                 }
             assert "image" in entry
             assert entry["image"]["data"] == result.metadata["screenshot_b64"]
+
+
+class TestOverlayWin32Signatures:
+    """Guards against the crash class that keeps recurring in this module.
+
+    Win32 handles are pointer-sized. ctypes defaults an undeclared restype to C
+    int, so a handle above 4 GB is silently truncated — and the failure is a
+    native access violation, not a Python exception. It only reproduces when
+    ASLR happens to place the module high, which is why an undeclared
+    GetModuleHandleW survived hand-testing and then faulted under pytest.
+
+    Worse, the fault landed on the overlay's daemon thread, so the suite still
+    reported every test passing. Nothing here would have gone red.
+    """
+
+    def test_handle_returning_calls_declare_pointer_sized_types(self):
+        import ctypes
+
+        from resonant_client.engine import screen_overlay
+
+        if not screen_overlay.IS_WINDOWS:
+            import pytest
+            pytest.skip("Win32-only")
+
+        screen_overlay._declare_signatures()
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        # Each of these returns or accepts a pointer-sized handle.
+        assert kernel32.GetModuleHandleW.restype is not ctypes.c_int
+        assert ctypes.sizeof(kernel32.GetModuleHandleW.restype) == ctypes.sizeof(ctypes.c_void_p)
+        assert user32.CreateWindowExW.restype is not ctypes.c_int
+        assert user32.DefWindowProcW.restype is ctypes.c_ssize_t
+        assert user32.GetDC.restype is not ctypes.c_int
+
+    def test_declaring_signatures_is_idempotent(self):
+        """It runs on every window creation; repeating it must be harmless."""
+        from resonant_client.engine import screen_overlay
+
+        if not screen_overlay.IS_WINDOWS:
+            import pytest
+            pytest.skip("Win32-only")
+
+        screen_overlay._declare_signatures()
+        screen_overlay._declare_signatures()

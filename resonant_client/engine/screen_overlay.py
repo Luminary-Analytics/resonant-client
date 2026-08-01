@@ -130,6 +130,23 @@ def _declare_signatures() -> None:
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
     user32.GetCursorPos.restype = wintypes.BOOL
+    user32.RegisterClassW.restype = wintypes.ATOM
+    user32.PeekMessageW.argtypes = [
+        ctypes.POINTER(wintypes.MSG), wintypes.HWND,
+        wintypes.UINT, wintypes.UINT, wintypes.UINT,
+    ]
+    user32.PeekMessageW.restype = wintypes.BOOL
+    user32.TranslateMessage.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.argtypes = [ctypes.POINTER(wintypes.MSG)]
+    user32.DispatchMessageW.restype = ctypes.c_ssize_t
+
+    # The one that actually crashed: an undeclared restype defaults to C int,
+    # so a module handle above 4 GB is silently truncated and RegisterClassW
+    # then faults on a garbage hInstance. It only reproduces when ASLR happens
+    # to place the module high, which is why it survived hand-testing and
+    # surfaced as an access violation under pytest.
+    ctypes.windll.kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    ctypes.windll.kernel32.GetModuleHandleW.restype = wintypes.HMODULE
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.SetWindowPos.argtypes = [
         wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,

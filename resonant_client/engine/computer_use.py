@@ -92,22 +92,6 @@ class ScreenScale:
         return (sx, sy)
 
 
-# ── Safety Zone ──────────────────────────────────────────────────────
-
-@dataclass
-class SafetyZone:
-    """A screen region where automated actions are blocked."""
-    x: int
-    y: int
-    width: int
-    height: int
-    label: str = "protected"
-
-    def contains(self, px: int, py: int) -> bool:
-        return (self.x <= px <= self.x + self.width and
-                self.y <= py <= self.y + self.height)
-
-
 # ── Enhanced Screenshot ──────────────────────────────────────────────
 
 def take_screenshot_scaled(

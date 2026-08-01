@@ -557,6 +557,35 @@ class TestOverlayWin32Signatures:
         assert user32.DefWindowProcW.restype is ctypes.c_ssize_t
         assert user32.GetDC.restype is not ctypes.c_int
 
+    def test_the_overlay_can_actually_create_its_window(self):
+        """The only assertion that catches a broken declaration.
+
+        Asserting restypes alone was not enough and shipped a dead feature:
+        v0.12.4 declared `GetModuleHandleW` correctly, so it began returning a
+        true 64-bit handle, while `CreateWindowExW` still defaulted its
+        parameters to C int and rejected it. Window creation raised, the
+        overlay swallowed the error by design, and the indicator silently
+        never appeared again.
+
+        So this creates the window for real. Every declaration has to agree
+        with every other one for it to succeed, which no amount of inspecting
+        individual signatures can establish.
+        """
+        from resonant_client.engine import screen_overlay
+
+        if not screen_overlay.IS_WINDOWS:
+            import pytest
+            pytest.skip("Win32-only")
+
+        overlay = screen_overlay._Overlay()
+        try:
+            assert overlay._ensure_worker(), "overlay worker failed to start"
+            assert overlay._hwnd, "window was never created"
+        finally:
+            overlay._shutdown.set()
+            if overlay._thread:
+                overlay._thread.join(timeout=3)
+
     def test_declaring_signatures_is_idempotent(self):
         """It runs on every window creation; repeating it must be harmless."""
         from resonant_client.engine import screen_overlay

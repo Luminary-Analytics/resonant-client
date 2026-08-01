@@ -118,7 +118,29 @@ def _declare_signatures() -> None:
         wintypes.HWND, ctypes.c_uint, wintypes.WPARAM, wintypes.LPARAM,
     ]
     user32.DefWindowProcW.restype = LRESULT
+    # argtypes as well as restype. Declaring only the return value is what
+    # broke the overlay in v0.12.4: GetModuleHandleW started returning a true
+    # 64-bit handle, and CreateWindowExW — whose parameters still defaulted to
+    # C int — then rejected it with "argument 11: int too long to convert".
+    # The crash was fixed and the feature stopped working, silently, because
+    # every failure here is swallowed by design.
+    user32.CreateWindowExW.argtypes = [
+        wintypes.DWORD,      # dwExStyle
+        wintypes.LPCWSTR,    # lpClassName
+        wintypes.LPCWSTR,    # lpWindowName
+        wintypes.DWORD,      # dwStyle
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,  # x, y, w, h
+        wintypes.HWND,       # hWndParent
+        wintypes.HMENU,      # hMenu
+        wintypes.HINSTANCE,  # hInstance
+        wintypes.LPVOID,     # lpParam
+    ]
     user32.CreateWindowExW.restype = wintypes.HWND
+    user32.RegisterClassW.argtypes = [ctypes.c_void_p]
+    user32.MoveWindow.argtypes = [
+        wintypes.HWND, ctypes.c_int, ctypes.c_int,
+        ctypes.c_int, ctypes.c_int, wintypes.BOOL,
+    ]
     user32.GetDC.argtypes = [wintypes.HWND]
     user32.GetDC.restype = wintypes.HDC
     user32.ReleaseDC.argtypes = [wintypes.HWND, wintypes.HDC]

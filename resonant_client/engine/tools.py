@@ -617,7 +617,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_screenshot",
-            "description": "Take a screenshot. Defaults to full primary monitor; pass `target_window` to capture just one window, `monitor` for a specific display, or `region` for an explicit bbox. Precedence: region > target_window > monitor.",
+            "description": "Take a screenshot. Defaults to full primary monitor; pass `target_window` to capture just one window, `monitor` for a specific display, or `region` for an explicit bbox. Precedence: region > target_window > monitor. A red crosshair marks the current cursor position — after clicking, compare the crosshair to your target and correct proportionally if it missed.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -647,7 +647,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_click",
-            "description": "Click at a position. By default (x,y) are absolute screen coords. With `target_window`, (x,y) are relative to that window's top-left. With `monitor`, relative to that monitor's top-left. Auto-captures a follow-up screenshot.",
+            "description": "Click at a position. By default (x,y) are coordinates in the last screenshot you received (they are mapped to real screen pixels automatically). With `target_window`, (x,y) are relative to that window's top-left. With `monitor`, relative to that monitor's top-left. Auto-captures a follow-up screenshot — check the red crosshair in it to verify where the click landed. Prefer keyboard shortcuts (computer_type with `key`) over clicking when possible; aim for the center of elements, not their edges.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -683,7 +683,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "computer_type",
-            "description": "Type text or press key combinations on the desktop. Use 'text' for typing strings, 'key' for hotkeys like 'ctrl+s' or 'enter'. Automatically captures a follow-up screenshot.",
+            "description": "Type text or press key combinations on the desktop. Use 'text' for typing strings, 'key' for hotkeys like 'ctrl+s' or 'enter'. Automatically captures a follow-up screenshot. Always prefer keyboard shortcuts over mouse clicks where possible — they are far more reliable than coordinate-based clicking.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -719,7 +719,7 @@ AGENT_TOOLS = [
                     "y": {"type": "integer", "description": "Y coordinate (optional)"},
                     "direction": {
                         "type": "string",
-                        "enum": ["up", "down"],
+                        "enum": ["up", "down", "left", "right"],
                         "description": "Scroll direction (default: down)"
                     },
                     "amount": {
@@ -777,6 +777,17 @@ AGENT_TOOLS = [
                     }
                 },
                 "required": ["x", "y"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_cursor_position",
+            "description": "Get the current cursor position in the coordinate space of the last screenshot (plus real screen pixels). Useful to verify aim before clicking or to correlate with the crosshair.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
             }
         }
     },
@@ -1360,6 +1371,7 @@ TOOL_ICONS = {
     "computer_drag":       "↗",
     "computer_hover":      "⊙",
     "computer_wait":       "⏳",
+    "computer_cursor_position": "✛",
     "window_list":         "☰",
     "window_focus":        "◉",
     "screen_ocr":          "🔍",
@@ -1423,7 +1435,7 @@ class ToolResult:
 # or the screen itself. These are what the on-screen indicator announces.
 DESKTOP_TOOL_NAMES = frozenset({
     "computer_screenshot", "computer_click", "computer_type", "computer_scroll",
-    "computer_drag", "computer_hover", "computer_wait",
+    "computer_drag", "computer_hover", "computer_wait", "computer_cursor_position",
     "window_list", "window_focus", "monitors_list",
     "screen_ocr", "open_application",
 })
@@ -1598,6 +1610,9 @@ def execute_tool(
         elif name == "computer_scroll":
             from .computer import exec_computer_scroll
             return exec_computer_scroll(arguments, start)
+        elif name == "computer_cursor_position":
+            from .computer import exec_computer_cursor_position
+            return exec_computer_cursor_position(arguments, start)
         # Enhanced Computer Use tools
         elif name == "computer_drag":
             from .computer_use import exec_computer_drag

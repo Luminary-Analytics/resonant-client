@@ -97,12 +97,17 @@ class ScreenScale:
 def take_screenshot_scaled(
     region: Optional[dict] = None,
     max_edge: int = MAX_SCREENSHOT_EDGE,
+    for_model: bool = True,
 ) -> tuple[bytes, ScreenScale]:
     """
     Take a screenshot and return (png_bytes, scale_info).
 
     The scale_info lets callers map coordinates between the
     scaled image (sent to model) and real screen pixels.
+
+    for_model: when True (default), draw the cursor crosshair and record the
+    capture geometry for coordinate mapping. Pass False for internal captures
+    (pixel-diff polling) where an annotated, tracked frame would be wrong.
     """
     try:
         import mss
@@ -128,13 +133,21 @@ def take_screenshot_scaled(
 
             real_w, real_h = img.size
 
-            # Scale down if needed
-            if max(real_w, real_h) > max_edge:
-                ratio = max_edge / max(real_w, real_h)
+            # Scale down if needed (shared edge + megapixel limits, plus
+            # crosshair and capture tracking so clicks map correctly).
+            from .computer import _api_scale_ratio, _draw_cursor_crosshair, _remember_capture
+
+            ratio = min(_api_scale_ratio(real_w, real_h), max_edge / max(real_w, real_h))
+            ratio = min(ratio, 1.0)
+            if ratio < 1.0:
                 new_w, new_h = int(real_w * ratio), int(real_h * ratio)
                 img = img.resize((new_w, new_h), Image.LANCZOS)
             else:
                 new_w, new_h = real_w, real_h
+
+            if for_model:
+                _draw_cursor_crosshair(img, offset_x, offset_y, ratio)
+                _remember_capture(real_w, real_h, new_w, new_h, offset_x, offset_y)
 
             buf = io.BytesIO()
             img.save(buf, format="PNG", optimize=True)
@@ -444,12 +457,23 @@ def exec_computer_drag(args: dict, start: float) -> ToolResult:
     except ImportError:
         return ToolResult("Error: pyautogui not installed", is_error=True, elapsed=time.time() - start)
 
+    from .computer import _map_model_coords, _validate_bounds
+
     x1 = args.get("start_x", args.get("x1", 0))
     y1 = args.get("start_y", args.get("y1", 0))
     x2 = args.get("end_x", args.get("x2", 0))
     y2 = args.get("end_y", args.get("y2", 0))
     button = args.get("button", "left")
     duration = args.get("duration", 0.5)
+
+    # Coordinates come from the last screenshot's image space; map them to
+    # real screen pixels (identity when the screen wasn't downscaled).
+    x1, y1, _ = _map_model_coords(x1, y1, None)
+    x2, y2, _ = _map_model_coords(x2, y2, None)
+    for px, py in ((x1, y1), (x2, y2)):
+        bounds_error = _validate_bounds(px, py)
+        if bounds_error:
+            return ToolResult(bounds_error, is_error=True, elapsed=time.time() - start)
 
     try:
         pyautogui.moveTo(x1, y1)
@@ -471,9 +495,13 @@ def exec_computer_hover(args: dict, start: float) -> ToolResult:
     except ImportError:
         return ToolResult("Error: pyautogui not installed", is_error=True, elapsed=time.time() - start)
 
+    from .computer import _map_model_coords
+
     x = args.get("x", 0)
     y = args.get("y", 0)
     duration = args.get("duration", 0.3)
+
+    x, y, _ = _map_model_coords(x, y, None)
 
     try:
         pyautogui.moveTo(x, y, duration=duration)
@@ -564,7 +592,7 @@ def exec_computer_wait(args: dict, start: float) -> ToolResult:
                 )
 
             try:
-                png_bytes, _ = take_screenshot_scaled(region=region)
+                png_bytes, _ = take_screenshot_scaled(region=region, for_model=False)
                 initial_hash = hashlib.md5(png_bytes).hexdigest()
             except Exception:
                 time.sleep(1)
@@ -575,7 +603,7 @@ def exec_computer_wait(args: dict, start: float) -> ToolResult:
             while time.time() - wait_start < timeout:
                 time.sleep(0.5)
                 try:
-                    png_bytes, _ = take_screenshot_scaled(region=region)
+                    png_bytes, _ = take_screenshot_scaled(region=region, for_model=False)
                     current_hash = hashlib.md5(png_bytes).hexdigest()
                     if current_hash != initial_hash:
                         elapsed = time.time() - start

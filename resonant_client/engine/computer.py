@@ -18,6 +18,7 @@ Usage:
 
 import base64
 import io
+import threading
 import time
 import logging
 from typing import Optional
@@ -27,6 +28,141 @@ logger = logging.getLogger(__name__)
 
 # Auto-screenshot delay after actions (seconds)
 _AUTO_SCREENSHOT_DELAY = 0.4
+
+# Screenshot limits. Anthropic's vision API downsamples anything larger than
+# 1568px on the long edge OR ~1.15 megapixels total — if we don't downsample
+# ourselves, the model reasons in coordinates of an image we never saw.
+_MAX_EDGE = 1568
+_MAX_PIXELS = int(1.15 * 1024 * 1024)
+
+# ── Capture-scale tracking ───────────────────────────────────────────
+#
+# The model gives click coordinates in the space of the screenshot it last
+# looked at. When that screenshot was downscaled (high-DPI screens), those
+# coordinates must be scaled back up to real screen pixels — otherwise every
+# click on a 4K display lands short of the target. We remember the geometry
+# of the most recent capture (explicit or auto) and map through it.
+
+_LAST_CAPTURE_LOCK = threading.Lock()
+_LAST_CAPTURE: Optional[dict] = None
+
+
+def _remember_capture(real_w: int, real_h: int, scaled_w: int, scaled_h: int,
+                      offset_x: int, offset_y: int) -> None:
+    global _LAST_CAPTURE
+    with _LAST_CAPTURE_LOCK:
+        _LAST_CAPTURE = {
+            "real_w": real_w, "real_h": real_h,
+            "scaled_w": scaled_w, "scaled_h": scaled_h,
+            "offset_x": offset_x, "offset_y": offset_y,
+        }
+
+
+def get_last_capture() -> Optional[dict]:
+    """Geometry of the most recent screenshot sent to the model, or None."""
+    with _LAST_CAPTURE_LOCK:
+        return dict(_LAST_CAPTURE) if _LAST_CAPTURE else None
+
+
+def _api_scale_ratio(w: int, h: int) -> float:
+    """How much to shrink a capture to fit vision-API limits (<= 1.0)."""
+    edge_scale = _MAX_EDGE / max(w, h) if max(w, h) > _MAX_EDGE else 1.0
+    pixel_scale = (_MAX_PIXELS / (w * h)) ** 0.5 if w * h > _MAX_PIXELS else 1.0
+    return min(edge_scale, pixel_scale)
+
+
+def _map_model_coords(x: int, y: int, origin: Optional[dict]) -> tuple[int, int, bool]:
+    """
+    Map model-provided (x, y) to real screen pixels.
+
+    Coordinates are interpreted in the image space of the last screenshot when
+    that's coherent with the requested origin; scaling is identity when the
+    screen was never downscaled, so this is backward compatible.
+
+    Returns (real_x, real_y, was_scaled).
+    """
+    cap = get_last_capture()
+    if not cap or cap["scaled_w"] <= 0 or cap["scaled_h"] <= 0:
+        if origin is not None:
+            return origin["x"] + x, origin["y"] + y, False
+        return x, y, False
+
+    sx = cap["real_w"] / cap["scaled_w"]
+    sy = cap["real_h"] / cap["scaled_h"]
+    scaled = sx > 1.001 or sy > 1.001
+
+    if origin is None:
+        # Model is pointing at the last screenshot it saw; its offsets place
+        # the click on the right monitor/window.
+        return int(round(x * sx)) + cap["offset_x"], int(round(y * sy)) + cap["offset_y"], scaled
+
+    if (origin["x"], origin["y"]) == (cap["offset_x"], cap["offset_y"]):
+        # Relative click on the same window/monitor the last capture showed.
+        return origin["x"] + int(round(x * sx)), origin["y"] + int(round(y * sy)), scaled
+
+    # Origin differs from the last capture — no scale information applies.
+    return origin["x"] + x, origin["y"] + y, False
+
+
+def _virtual_screen_bounds() -> Optional[tuple[int, int, int, int]]:
+    """(left, top, right, bottom) of the combined desktop, or None if unknown."""
+    try:
+        import mss
+        with mss.mss() as sct:
+            union = sct.monitors[0]
+            return (union["left"], union["top"],
+                    union["left"] + union["width"], union["top"] + union["height"])
+    except Exception:
+        pass
+    try:
+        import pyautogui
+        w, h = pyautogui.size()
+        return (0, 0, w, h)
+    except Exception:
+        return None
+
+
+def _validate_bounds(x: int, y: int) -> Optional[str]:
+    """Return an error message when (x, y) is off-screen, else None."""
+    bounds = _virtual_screen_bounds()
+    if bounds is None:
+        return None
+    left, top, right, bottom = bounds
+    if not (left <= x < right and top <= y < bottom):
+        return (
+            f"Coordinates ({x}, {y}) are outside the screen bounds "
+            f"({left},{top})..({right},{bottom}). Take a fresh screenshot "
+            f"and use coordinates within the image you receive."
+        )
+    return None
+
+
+def _draw_cursor_crosshair(img, offset_x: int, offset_y: int, ratio: float) -> None:
+    """
+    Draw a red crosshair at the current cursor position (in image space).
+
+    Screenshots don't include the pointer, so without this the model can't
+    tell where its last click actually landed. With the crosshair it can
+    compare aim vs. impact and correct its coordinates proportionally.
+    """
+    try:
+        import pyautogui
+        pos = pyautogui.position()
+    except Exception:
+        return
+    try:
+        from PIL import ImageDraw
+
+        cx = int((pos[0] - offset_x) * ratio)
+        cy = int((pos[1] - offset_y) * ratio)
+        if not (0 <= cx < img.width and 0 <= cy < img.height):
+            return
+        draw = ImageDraw.Draw(img)
+        size = 20
+        draw.line([(cx - size, cy), (cx + size, cy)], fill=(255, 0, 0), width=3)
+        draw.line([(cx, cy - size), (cx, cy + size)], fill=(255, 0, 0), width=3)
+    except Exception:
+        logger.debug("Cursor crosshair drawing failed (non-fatal)", exc_info=True)
 
 
 # ── Screenshot capture ───────────────────────────────────────────────
@@ -50,6 +186,24 @@ def _take_screenshot(region: dict = None) -> tuple[bytes, int, int]:
         return _grab(region)
 
 
+def _finish_capture(img, offset_x: int, offset_y: int) -> tuple[bytes, int, int]:
+    """Downscale to API limits, draw the cursor crosshair, remember geometry."""
+    from PIL import Image
+
+    real_w, real_h = img.size
+    ratio = _api_scale_ratio(real_w, real_h)
+    if ratio < 1.0:
+        img = img.resize((int(real_w * ratio), int(real_h * ratio)), Image.LANCZOS)
+    w, h = img.size
+
+    _draw_cursor_crosshair(img, offset_x, offset_y, ratio)
+    _remember_capture(real_w, real_h, w, h, offset_x, offset_y)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue(), w, h
+
+
 def _grab(region: dict = None) -> tuple[bytes, int, int]:
     try:
         import mss
@@ -68,19 +222,7 @@ def _grab(region: dict = None) -> tuple[bytes, int, int]:
 
             sct_img = sct.grab(monitor)
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
-
-            # Resize if needed (Anthropic max: 1568px longest edge)
-            w, h = img.size
-            max_edge = 1568
-            if max(w, h) > max_edge:
-                scale = max_edge / max(w, h)
-                new_w, new_h = int(w * scale), int(h * scale)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                w, h = new_w, new_h
-
-            buf = io.BytesIO()
-            img.save(buf, format="PNG", optimize=True)
-            return buf.getvalue(), w, h
+            return _finish_capture(img, monitor["left"], monitor["top"])
 
     except ImportError:
         pass
@@ -88,23 +230,13 @@ def _grab(region: dict = None) -> tuple[bytes, int, int]:
     # Fallback: pyautogui
     try:
         import pyautogui
-        from PIL import Image
 
         screenshot = pyautogui.screenshot(
             region=(region["x"], region["y"], region["width"], region["height"]) if region else None
         )
-
-        w, h = screenshot.size
-        max_edge = 1568
-        if max(w, h) > max_edge:
-            scale = max_edge / max(w, h)
-            new_w, new_h = int(w * scale), int(h * scale)
-            screenshot = screenshot.resize((new_w, new_h), Image.LANCZOS)
-            w, h = new_w, new_h
-
-        buf = io.BytesIO()
-        screenshot.save(buf, format="PNG", optimize=True)
-        return buf.getvalue(), w, h
+        offset_x = region["x"] if region else 0
+        offset_y = region["y"] if region else 0
+        return _finish_capture(screenshot, offset_x, offset_y)
 
     except ImportError:
         raise ImportError("Neither 'mss' nor 'pyautogui' installed. Run: pip install mss pyautogui Pillow")
@@ -249,10 +381,11 @@ def exec_computer_click(args: dict, start: float) -> ToolResult:
     screenshot = args.get("screenshot", True)
 
     origin, label = _resolve_window_or_monitor(args)
-    abs_x, abs_y = x, y
-    if origin is not None:
-        abs_x = origin["x"] + x
-        abs_y = origin["y"] + y
+    abs_x, abs_y, was_scaled = _map_model_coords(x, y, origin)
+
+    bounds_error = _validate_bounds(abs_x, abs_y)
+    if bounds_error:
+        return ToolResult(bounds_error, is_error=True, elapsed=time.time() - start)
 
     try:
         pyautogui.click(x=abs_x, y=abs_y, button=button, clicks=clicks)
@@ -269,6 +402,8 @@ def exec_computer_click(args: dict, start: float) -> ToolResult:
         elapsed = time.time() - start
         click_type = "Double-clicked" if clicks == 2 else "Clicked"
         scope_msg = f" relative to {label}" if origin is not None else ""
+        if was_scaled:
+            scope_msg += " (image coords scaled to screen)"
         result = ToolResult(
             f"{click_type} at ({x}, {y}){scope_msg} → screen ({abs_x}, {abs_y}) [{button}]",
             elapsed=elapsed,
@@ -278,6 +413,7 @@ def exec_computer_click(args: dict, start: float) -> ToolResult:
                 "abs_x": abs_x, "abs_y": abs_y,
                 "button": button,
                 "target_label": label,
+                "coords_scaled": was_scaled,
             },
         )
         if screenshot:
@@ -338,16 +474,27 @@ def exec_computer_scroll(args: dict, start: float) -> ToolResult:
 
     x = args.get("x")
     y = args.get("y")
-    direction = args.get("direction", "down")  # up, down
+    direction = args.get("direction", "down")  # up, down, left, right
     amount = args.get("amount", 3)             # scroll clicks
     screenshot = args.get("screenshot", True)  # Auto-screenshot after
 
     try:
-        scroll_val = amount if direction == "up" else -amount
+        abs_x = abs_y = None
         if x is not None and y is not None:
-            pyautogui.scroll(scroll_val, x=x, y=y)
+            abs_x, abs_y, _ = _map_model_coords(x, y, None)
+
+        if direction in ("left", "right"):
+            scroll_val = amount if direction == "right" else -amount
+            if abs_x is not None:
+                pyautogui.hscroll(scroll_val, x=abs_x, y=abs_y)
+            else:
+                pyautogui.hscroll(scroll_val)
         else:
-            pyautogui.scroll(scroll_val)
+            scroll_val = amount if direction == "up" else -amount
+            if abs_x is not None:
+                pyautogui.scroll(scroll_val, x=abs_x, y=abs_y)
+            else:
+                pyautogui.scroll(scroll_val)
 
         elapsed = time.time() - start
         result = ToolResult(
@@ -360,3 +507,34 @@ def exec_computer_scroll(args: dict, start: float) -> ToolResult:
         return result
     except Exception as e:
         return ToolResult(f"Scroll error: {e}", is_error=True, elapsed=time.time() - start)
+
+
+def exec_computer_cursor_position(args: dict, start: float) -> ToolResult:
+    """
+    Report the current cursor position, in both real screen pixels and the
+    coordinate space of the last screenshot (what the model should use).
+    """
+    try:
+        import pyautogui
+    except ImportError:
+        return ToolResult("Error: pyautogui not installed. Run: pip install pyautogui",
+                         is_error=True, elapsed=time.time() - start)
+
+    try:
+        pos = pyautogui.position()
+        real_x, real_y = int(pos[0]), int(pos[1])
+        cap = get_last_capture()
+        if cap and cap["scaled_w"] > 0 and cap["scaled_h"] > 0:
+            sx = cap["real_w"] / cap["scaled_w"]
+            sy = cap["real_h"] / cap["scaled_h"]
+            img_x = int(round((real_x - cap["offset_x"]) / sx))
+            img_y = int(round((real_y - cap["offset_y"]) / sy))
+            msg = (f"Cursor at image coords ({img_x}, {img_y}) "
+                   f"[screen pixels: ({real_x}, {real_y})]")
+            metadata = {"x": img_x, "y": img_y, "screen_x": real_x, "screen_y": real_y}
+        else:
+            msg = f"Cursor at screen ({real_x}, {real_y}) — no screenshot taken yet"
+            metadata = {"x": real_x, "y": real_y, "screen_x": real_x, "screen_y": real_y}
+        return ToolResult(msg, elapsed=time.time() - start, metadata=metadata)
+    except Exception as e:
+        return ToolResult(f"Cursor position error: {e}", is_error=True, elapsed=time.time() - start)

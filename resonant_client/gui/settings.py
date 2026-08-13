@@ -46,7 +46,14 @@ DEFAULTS = {
         # unknown keys; nothing reads them anymore.
     },
     # Secrets are masked before settings are sent to the frontend.
-    "api_keys": {"kimi": ""},
+    "api_keys": {"kimi": "", "telegram_bot": ""},
+    # Chat-channel gateway (`resonant gateway`): drive the agent from
+    # Telegram. Only allowlisted chat IDs are served.
+    "gateway": {
+        "backend": "",
+        "model": "",
+        "allowed_chat_ids": [],
+    },
     "hooks": [],
     "mcp_servers": {
         # Deliberately empty. BrowserOS shipped as a default entry while

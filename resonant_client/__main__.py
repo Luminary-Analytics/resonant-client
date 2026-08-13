@@ -83,6 +83,9 @@ def main():
         # Absolute imports for PyInstaller compat — see comment at top of file.
         from resonant_client.gui.server import main as gui_main
         gui_main()
+    elif len(sys.argv) > 1 and sys.argv[1] == "gateway":
+        from resonant_client.gateway.cli import main as gateway_main
+        gateway_main(sys.argv[2:])
     else:
         from resonant_client.tui import main as tui_main
         tui_main()

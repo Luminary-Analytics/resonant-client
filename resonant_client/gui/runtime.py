@@ -97,6 +97,13 @@ class BackendSpec:
                 cwd=self.cwd or None,
                 permission_mode=self.permission_mode or None,
             )
+        if backend_type == "claude-code":
+            return create_backend(
+                "claude-code",
+                model=self.model,
+                cwd=self.cwd or None,
+                permission_mode=self.permission_mode or None,
+            )
         if backend_type == "kimi":
             return create_backend(
                 "kimi",
@@ -114,5 +121,5 @@ class BackendSpec:
 
         raise ValueError(
             f"Backend '{backend_type}' is not supported. Resonant Client "
-            f"supports Ollama, EXO, Kimi, and Codex."
+            f"supports Ollama, EXO, Kimi, Codex, and Claude Code."
         )

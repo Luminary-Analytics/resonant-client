@@ -32,11 +32,14 @@ from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from ..events import EngineEvent, make_event
 from ..backends import (
+    ClaudeCodeCliBackend,
     CodexCliBackend,
     ExoBackend,
     KimiBackend,
     OllamaBackend,
+    claude_code_model_labels,
     codex_cli_model_labels,
+    resolve_claude_cli_path,
     resolve_codex_cli_path,
 )
 from ..engine import Session
@@ -416,7 +419,7 @@ class AppState:
             configure = getattr(backend, "configure_permission_mode", None)
             if callable(configure):
                 configure(self.permission_mode)
-        if self.backend_spec and self.backend_spec.backend_type == "codex":
+        if self.backend_spec and self.backend_spec.backend_type in ("codex", "claude-code"):
             self.backend_spec.permission_mode = self.permission_mode
         return self.permission_mode
 
@@ -769,6 +772,14 @@ class AppState:
                 "cli_path": codex_cli,
             }
 
+        claude_cli = resolve_claude_cli_path()
+        if claude_cli:
+            available["claude-code"] = {
+                "models": ClaudeCodeCliBackend.list_available_models(),
+                "model_labels": claude_code_model_labels(),
+                "cli_path": claude_cli,
+            }
+
         kimi_key, kimi_source, kimi_env, kimi_setting = self._api_key_details(
             "kimi", "MOONSHOT_API_KEY"
         )
@@ -816,7 +827,7 @@ class AppState:
             spec = BackendSpec.from_dict(self.backend_spec.to_dict(include_sensitive=True))
             if model:
                 spec.model = model
-            if backend_type == "codex":
+            if backend_type in ("codex", "claude-code"):
                 spec.cwd = project_path
                 spec.permission_mode = self.permission_mode
             return spec
@@ -826,6 +837,15 @@ class AppState:
             models = info.get("models") or CodexCliBackend.list_available_models()
             selected_model = model or self._resolve_default_model(models)
             spec = BackendSpec(backend_type="codex", model=selected_model)
+            spec.cwd = project_path
+            spec.permission_mode = self.permission_mode
+            return spec
+
+        if backend_type == "claude-code":
+            info = self.available_backends.get("claude-code") or {}
+            models = info.get("models") or ClaudeCodeCliBackend.list_available_models()
+            selected_model = model or self._resolve_default_model(models)
+            spec = BackendSpec(backend_type="claude-code", model=selected_model)
             spec.cwd = project_path
             spec.permission_mode = self.permission_mode
             return spec
@@ -873,7 +893,7 @@ class AppState:
         if backend_type != "ollama":
             raise ValueError(
                 f"Backend '{backend_type}' is not supported. Resonant Client "
-                f"supports Ollama, EXO, Kimi, and Codex."
+                f"supports Ollama, EXO, Kimi, Codex, and Claude Code."
             )
 
         info = self.available_backends.get("ollama")
@@ -1277,7 +1297,7 @@ class AppState:
         backend_order = []
         if configured_backend:
             backend_order.append(configured_backend)
-        backend_order.extend(k for k in ("ollama", "exo", "kimi", "codex") if k not in backend_order)
+        backend_order.extend(k for k in ("ollama", "exo", "kimi", "codex", "claude-code") if k not in backend_order)
 
         for backend_type in backend_order:
             info = self.available_backends.get(backend_type) or {}
@@ -1351,7 +1371,7 @@ class AppState:
     # v0.4.0 — kept as empty set for compatibility with existing call sites
     # (one branch in switch_model checks it). Pre-v0.4.0 this held the set
     # of backends whose CLI sessions ignored our conversation_history.
-    CLI_WRAPPED_BACKENDS: set = {"codex"}
+    CLI_WRAPPED_BACKENDS: set = {"codex", "claude-code"}
 
     def swap_backend(
         self,

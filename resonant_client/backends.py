@@ -3506,6 +3506,316 @@ class CodexCliBackend:
 
 
 # ---------------------------------------------------------------------------
+# Claude Code CLI (subscription bridge)
+# ---------------------------------------------------------------------------
+
+_CLAUDE_CODE_DEFAULT_MODELS = [
+    "opus",
+    "sonnet",
+    "haiku",
+]
+
+_CLAUDE_CODE_MODEL_LABELS = {
+    "opus": "Claude Opus (latest)",
+    "sonnet": "Claude Sonnet (latest)",
+    "haiku": "Claude Haiku (latest)",
+}
+
+# Map Resonant permission modes onto Claude Code's --permission-mode flag.
+# Like Codex, the non-interactive print mode cannot relay approval requests
+# back through Resonant, so Ask and Plan stay genuinely non-mutating.
+_CLAUDE_CODE_PERMISSION_PROFILES = {
+    "ask": "plan",
+    "plan": "plan",
+    "auto-edit": "acceptEdits",
+    "bypass": "bypassPermissions",
+}
+
+
+def claude_code_cli_models() -> list[str]:
+    """Return the Claude Code model list Resonant should expose.
+
+    Claude Code accepts model aliases (opus/sonnet/haiku) as well as full
+    model names. RESONANT_CLAUDE_MODELS overrides for early rollouts.
+    """
+    env_models = _split_model_list(os.environ.get("RESONANT_CLAUDE_MODELS", ""))
+    return env_models or list(_CLAUDE_CODE_DEFAULT_MODELS)
+
+
+def claude_code_model_labels() -> dict[str, str]:
+    labels = dict(_CLAUDE_CODE_MODEL_LABELS)
+    for model in claude_code_cli_models():
+        labels.setdefault(model, model)
+    return labels
+
+
+def resolve_claude_cli_path() -> str:
+    """Resolve the Claude Code CLI executable for subscription-backed runs."""
+    candidates = [
+        os.environ.get("RESONANT_CLAUDE_CLI", "").strip(),
+        os.environ.get("CLAUDE_CLI_PATH", "").strip(),
+        shutil.which("claude") or "",
+        str(Path.home() / ".claude" / "local" / "claude"),
+    ]
+    seen: set[str] = set()
+    for raw in candidates:
+        if not raw:
+            continue
+        expanded = os.path.expandvars(os.path.expanduser(raw))
+        key = os.path.normcase(os.path.normpath(expanded))
+        if key in seen:
+            continue
+        seen.add(key)
+        if os.path.isfile(expanded):
+            return expanded
+        resolved = shutil.which(expanded)
+        if resolved:
+            return resolved
+    return ""
+
+
+def claude_code_credentials_present() -> bool:
+    """Best-effort check that Claude Code has something to authenticate with."""
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return True
+    return (Path.home() / ".claude" / ".credentials.json").is_file()
+
+
+class ClaudeCodeCliBackend:
+    """Subscription-backed Claude Code CLI execution.
+
+    Mirrors CodexCliBackend: Resonant delegates the whole turn to the
+    installed `claude` CLI in non-interactive print mode. The CLI runs its
+    own tools (handles_tools=True), authenticated by whatever login the
+    user's Claude Code already has — no separate API key needed.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        *,
+        cwd: str | None = None,
+        cli_path: str | None = None,
+        permission_mode: str | None = None,
+    ):
+        if not model:
+            raise ValueError("Model name required for Claude Code backend")
+        self.model = model
+        self.name = "claude-code"
+        self.handles_tools = True
+        self.cwd = os.path.abspath(cwd or os.getcwd())
+        self.cli_path = cli_path or resolve_claude_cli_path()
+        if not self.cli_path:
+            raise ValueError(
+                "Claude Code CLI was not found. Install/sign in to Claude Code, "
+                "or set RESONANT_CLAUDE_CLI to the claude executable."
+            )
+        self.permission_mode = "bypass"
+        self.cli_permission_mode = _CLAUDE_CODE_PERMISSION_PROFILES["bypass"]
+        self.configure_permission_mode(permission_mode or "bypass")
+
+    def configure_permission_mode(self, mode: str) -> None:
+        """Apply Resonant's permission mode to the non-interactive CLI run."""
+        normalized = mode if mode in _CLAUDE_CODE_PERMISSION_PROFILES else "bypass"
+        self.permission_mode = normalized
+        self.cli_permission_mode = _CLAUDE_CODE_PERMISSION_PROFILES[normalized]
+
+    @staticmethod
+    def list_available_models() -> list[str]:
+        return claude_code_cli_models()
+
+    @classmethod
+    def is_available(cls) -> bool:
+        return bool(resolve_claude_cli_path())
+
+    def list_models(self) -> list[str]:
+        return self.list_available_models()
+
+    def health(self) -> dict:
+        try:
+            proc = subprocess.run(
+                [self.cli_path, "--version"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            version = (proc.stdout or proc.stderr or "").strip()
+            logged_in = claude_code_credentials_present()
+            status = "ready" if proc.returncode == 0 and logged_in else "error"
+            message = version
+            if not logged_in:
+                message = (
+                    "No Claude Code credentials found. Run `claude` once to sign "
+                    "in with your subscription, or set ANTHROPIC_API_KEY."
+                )
+            return {
+                "status": status,
+                "backend": "claude-code",
+                "model": self.model,
+                "available_models": self.list_models(),
+                "message": message,
+                "cli_path": self.cli_path,
+            }
+        except Exception as exc:
+            return {"status": "error", "backend": "claude-code", "message": str(exc)}
+
+    def classify(self, prompt: str, max_tokens: int = 50) -> str:
+        events = list(self.stream(
+            user_msg=prompt,
+            conversation_history=[],
+            instructions="Return a short answer.",
+            tools=[],
+            max_tokens=max_tokens,
+        ))
+        return "".join(data.get("delta", "") for event, data in events if event == EVENT_TEXT_DELTA).strip()
+
+    def _command(self) -> list[str]:
+        return [
+            self.cli_path,
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            self.model,
+            "--permission-mode",
+            self.cli_permission_mode,
+        ]
+
+    def stream(
+        self,
+        user_msg: str,
+        conversation_history: list,
+        instructions: str,
+        tools: list,
+        max_tokens: int = 4096,
+        cancel_event=None,
+    ) -> Iterator[Tuple[str, dict]]:
+        # The Codex prompt builder is CLI-handoff generic: project context,
+        # trimmed history, and the current request as one stdin document.
+        prompt = _build_codex_prompt(
+            user_msg=user_msg,
+            conversation_history=conversation_history,
+            instructions=instructions,
+            cwd=self.cwd,
+        )
+        try:
+            proc = subprocess.Popen(
+                self._command(),
+                cwd=self.cwd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception as exc:
+            yield (EVENT_ERROR, {"message": f"Failed to start Claude Code CLI: {exc}"})
+            return
+
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except Exception:
+            pass
+
+        output_q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+
+        def _reader(stream, stream_name: str) -> None:
+            try:
+                for line in iter(stream.readline, ""):
+                    output_q.put((stream_name, line))
+            finally:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+
+        threads = []
+        for stream, name in ((proc.stdout, "stdout"), (proc.stderr, "stderr")):
+            if stream is None:
+                continue
+            t = threading.Thread(target=_reader, args=(stream, name), daemon=True)
+            t.start()
+            threads.append(t)
+
+        emitted_text = False
+        stderr_tail: list[str] = []
+        usage: dict = {}
+        error_message = ""
+        result_text = ""
+
+        while True:
+            if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                yield (EVENT_ERROR, {"message": "Claude Code CLI run cancelled"})
+                return
+
+            try:
+                stream_name, line = output_q.get(timeout=0.1)
+            except queue.Empty:
+                if proc.poll() is not None and output_q.empty():
+                    break
+                continue
+
+            if stream_name == "stderr":
+                text = line.strip()
+                if text:
+                    stderr_tail.append(text)
+                    stderr_tail = stderr_tail[-12:]
+                continue
+
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                event = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            etype = event.get("type", "")
+            if etype == "assistant":
+                message = event.get("message") or {}
+                for block in message.get("content") or []:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        text = str(block.get("text", "") or "")
+                        if text:
+                            if emitted_text:
+                                yield (EVENT_TEXT_DELTA, {"delta": "\n\n"})
+                            yield (EVENT_TEXT_DELTA, {"delta": text})
+                            emitted_text = True
+            elif etype == "result":
+                usage = event.get("usage") or {}
+                result_text = str(event.get("result", "") or "")
+                if event.get("is_error") or event.get("subtype", "") not in ("", "success"):
+                    error_message = result_text or str(event.get("subtype", "") or "Claude Code run failed")
+
+        for t in threads:
+            t.join(timeout=0.2)
+
+        returncode = proc.poll()
+        if error_message and not emitted_text:
+            yield (EVENT_ERROR, {"message": error_message})
+            return
+        if not emitted_text and result_text:
+            yield (EVENT_TEXT_DELTA, {"delta": result_text})
+            emitted_text = True
+        if not emitted_text and returncode:
+            detail = "\n".join(stderr_tail).strip()
+            yield (EVENT_ERROR, {"message": detail or f"Claude Code CLI exited with code {returncode}"})
+            return
+        yield (EVENT_DONE, {"model": self.model, "stats": usage or None, "cognitive_state": None})
+
+
+# ---------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------
 
@@ -3532,6 +3842,12 @@ def create_backend(
             sandbox=os.environ.get("RESONANT_CODEX_SANDBOX") or None,
             permission_mode=permission_mode,
         )
+    if backend_type in ("claude-code", "claude_code"):
+        return ClaudeCodeCliBackend(
+            model or claude_code_cli_models()[0],
+            cwd=cwd,
+            permission_mode=permission_mode,
+        )
     if backend_type == "kimi":
         return KimiBackend(
             api_key=api_key or "",
@@ -3547,7 +3863,7 @@ def create_backend(
     if backend_type != "ollama":
         raise ValueError(
             f"Unsupported backend {backend_type!r}. Resonant Client supports "
-            f"Ollama, EXO, Kimi, and Codex."
+            f"Ollama, EXO, Kimi, Codex, and Claude Code."
         )
     if not model:
         raise ValueError("Model name required for Ollama backend")

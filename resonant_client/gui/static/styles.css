@@ -12461,3 +12461,71 @@ body.is-window-dragging * {
 @media (prefers-reduced-motion: reduce) {
     .director-composer-orbit i { animation: none !important; }
 }
+
+/* ==========================================================================
+   Minimalist response rendering — Claude Code-inspired
+   Wider content column, tighter typography, rule-based tables.
+   ========================================================================== */
+
+:root {
+    --content-max-width: 920px;
+}
+
+/* Density now actually shapes chat rhythm. Comfortable keeps today's 24/38px
+   margins (14px var + constant); compact tightens to 18/32px. Before this,
+   the compact setting changed row padding but left message spacing untouched. */
+.msg-assistant { margin: 0 0 calc(var(--density-msg-py) + 10px); }
+.msg-user { margin: 0 0 calc(var(--density-msg-py) + 24px); }
+
+/* Slightly wider user bubbles — 52% wrapped short prompts awkwardly */
+.msg-user-content { max-width: 66%; }
+
+.msg-assistant .message-content {
+    line-height: 1.65;
+}
+
+.message-content p { margin-bottom: 10px; }
+
+.message-content h1, .message-content h2, .message-content h3 {
+    margin: 18px 0 8px;
+}
+.message-content h1:first-child,
+.message-content h2:first-child,
+.message-content h3:first-child { margin-top: 2px; }
+
+.message-content ul, .message-content ol {
+    margin: 6px 0 10px;
+    padding-left: 20px;
+}
+.message-content li { margin-bottom: 3px; }
+.message-content li > ul, .message-content li > ol { margin: 3px 0; }
+
+/* Tables: horizontal rules only — no cell grid, quiet header */
+.message-content table {
+    margin: 10px 0 14px;
+    width: 100%;
+    border-collapse: collapse;
+}
+.message-content th, .message-content td {
+    border: 0;
+    border-bottom: 1px solid var(--border);
+    padding: 7px 14px 7px 0;
+    font-size: 13px;
+    text-align: left;
+    vertical-align: top;
+}
+.message-content th {
+    background: transparent;
+    color: var(--muted);
+    font-weight: 600;
+    font-size: 12px;
+    letter-spacing: .02em;
+    border-bottom: 1px solid var(--border-strong);
+}
+.message-content tr:last-child td { border-bottom: 0; }
+
+.message-content hr {
+    border: 0;
+    border-top: 1px solid var(--border);
+    margin: 18px 0;
+}

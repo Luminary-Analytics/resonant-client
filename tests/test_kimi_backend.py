@@ -246,6 +246,101 @@ def test_kimi_emits_dynamic_catalog_as_system_tool_declarations():
     assert catalog == {"role": "system", "tools": [tool]}
 
 
+def test_kimi_deduplicates_top_level_and_historical_tool_declarations():
+    browser_click = {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "click",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    browser_read = {
+        "type": "function",
+        "function": {
+            "name": "browser_read",
+            "description": "read",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    browser_tabs = {
+        "type": "function",
+        "function": {
+            "name": "browser_tabs",
+            "description": "tabs",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+    history = [
+        {"role": "tool_catalog", "tools": [browser_click, browser_read]},
+        {"role": "tool_catalog", "tools": [browser_click, browser_tabs]},
+    ]
+
+    payload = KimiBackend("key")._payload(
+        "Continue",
+        history,
+        "system",
+        [browser_click, browser_click],
+        None,
+    )
+
+    declarations = list(payload["tools"])
+    declarations.extend(
+        tool
+        for message in payload["messages"]
+        for tool in message.get("tools", [])
+    )
+    names = [tool["function"]["name"] for tool in declarations]
+    assert names == ["browser_click", "browser_read", "browser_tabs"]
+    assert len(names) == len(set(names))
+
+
+def test_repeated_tool_searches_do_not_persist_overlapping_catalogs():
+    class Backend:
+        name = "kimi"
+        model = "kimi-k3"
+        handles_tools = False
+        supports_dynamic_tool_catalog = True
+        dynamic_tool_catalog_via_history = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def stream(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield EVENT_TOOL_CALL, {
+                    "name": "search_tools",
+                    "arguments": '{"query":"browser click","limit":6}',
+                    "call_id": "search-1",
+                }
+            elif self.calls == 2:
+                yield EVENT_TOOL_CALL, {
+                    "name": "search_tools",
+                    "arguments": '{"query":"browser navigate click","limit":6}',
+                    "call_id": "search-2",
+                }
+            else:
+                yield EVENT_TEXT_DELTA, {"delta": "Loaded."}
+            yield EVENT_DONE, {
+                "model": self.model,
+                "stats": {},
+                "cognitive_state": None,
+            }
+
+    session = Session(backend=Backend(), max_steps=3, auto_approve=True)
+    list(session.run("Use browser tools"))
+
+    catalog_names = [
+        tool["function"]["name"]
+        for entry in session.conversation_history
+        if entry.get("role") == "tool_catalog"
+        for tool in entry.get("tools", [])
+    ]
+    assert "browser_click" in catalog_names
+    assert len(catalog_names) == len(set(catalog_names))
+
+
 def test_session_search_tools_loads_catalog_for_next_kimi_step():
     class Backend:
         name = "kimi"

@@ -426,7 +426,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "browser_navigate",
-            "description": "Navigate the browser to a URL. Starts Chrome automatically if it is not already running. Use this to open web pages, follow links, or search the web.",
+            "description": "Navigate Resonant's dedicated Chrome profile to a URL. Starts it automatically and identifies its tabs in a purple group named for this session. Use this to open web pages, follow links, or search the web.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1507,7 +1507,10 @@ def execute_tool(
         try:
             from .browser import set_browser_session_name
 
-            set_browser_session_name(session_name)
+            set_browser_session_name(
+                session_name,
+                activity_indicator=_computer_use_indicator_enabled(settings),
+            )
         except Exception:
             logger.debug("Browser session indicator failed", exc_info=True)
 

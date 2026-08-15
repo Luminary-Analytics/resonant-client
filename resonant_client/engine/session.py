@@ -134,6 +134,27 @@ def _compact_provider_tool(tool: dict) -> dict:
     shorten_descriptions(function.get("parameters", {}))
     return compact
 
+
+def _tool_definition_name(tool: dict) -> str:
+    return str((tool.get("function") or {}).get("name") or "").strip()
+
+
+def _dedupe_tool_definitions(tools: list[dict]) -> list[dict]:
+    """Keep the first valid definition for every provider-visible name.
+
+    Resonant's built-ins are assembled before MCP additions, so a malformed or
+    legacy unprefixed MCP definition can never replace a trusted core tool.
+    """
+    unique: list[dict] = []
+    names: set[str] = set()
+    for tool in tools:
+        name = _tool_definition_name(tool)
+        if not name or name in names:
+            continue
+        names.add(name)
+        unique.append(tool)
+    return unique
+
 # Read-only tools are classified for preflight behavior only. There is no
 # lookup cap: large repositories can legitimately require extensive discovery.
 READ_ONLY_TOOLS = frozenset({"glob", "grep", "file_read"})
@@ -733,10 +754,25 @@ class Session:
                     )
                     break
             base = base + DIRECTOR_TOOLS
-        base = self._without_unsupported_desktop_tools(base)
         if self.mcp_tools:
             base = base + self.mcp_tools
-        return base
+        return self._without_unsupported_desktop_tools(
+            _dedupe_tool_definitions(base)
+        )
+
+    def _loaded_catalog_tool_names(self) -> set[str]:
+        names: set[str] = set()
+        for entry in self.conversation_history:
+            if entry.get("role") != "tool_catalog":
+                continue
+            names.update(
+                name
+                for name in (
+                    _tool_definition_name(tool) for tool in entry.get("tools") or []
+                )
+                if name
+            )
+        return names
 
     def _supports_computer_use(self, *, unknown: bool = True) -> bool:
         """Whether this backend's model can usefully drive the desktop.
@@ -2263,11 +2299,17 @@ class Session:
                         "content": result_output,
                     })
                     if matches:
-                        self.conversation_history.append({
-                            "role": "tool_catalog",
-                            "tools": matches,
-                            "content": "Dynamically loaded tool definitions.",
-                        })
+                        already_loaded = self._loaded_catalog_tool_names()
+                        new_matches = [
+                            tool for tool in matches
+                            if _tool_definition_name(tool) not in already_loaded
+                        ]
+                        if new_matches:
+                            self.conversation_history.append({
+                                "role": "tool_catalog",
+                                "tools": new_matches,
+                                "content": "Dynamically loaded tool definitions.",
+                            })
                     turn_successful_tools.append(fn_name)
                 elif fn_name == "task":
                     # Task tool — spawn a sub-agent session
@@ -2415,6 +2457,29 @@ class Session:
                         is_error=bool(mcp_result.get("isError") or "error" in mcp_result),
                         elapsed=_time.time() - mcp_start,
                     )
+
+                    # MCP browser/computer tools do not pass through
+                    # execute_tool(), but users still need the same visible
+                    # ownership signal. Show it after the call so an MCP
+                    # screenshot cannot capture Resonant's own border.
+                    visual_name = fn_name.casefold()
+                    if any(
+                        marker in visual_name
+                        for marker in ("browser", "browseros", "chrome", "computer", "desktop", "screen")
+                    ):
+                        try:
+                            from .screen_overlay import (
+                                monitor_index_for_foreground_window,
+                                note_activity,
+                            )
+                            from .tools import _computer_use_indicator_enabled
+
+                            if _computer_use_indicator_enabled(
+                                getattr(self, "_settings_ref", None)
+                            ):
+                                note_activity(monitor_index_for_foreground_window())
+                        except Exception:
+                            logger.debug("MCP activity indicator failed", exc_info=True)
 
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,

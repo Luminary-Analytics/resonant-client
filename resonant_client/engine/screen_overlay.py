@@ -945,6 +945,27 @@ def monitor_index_for_point(x: int, y: int) -> Optional[int]:
     return None
 
 
+def monitor_index_for_foreground_window() -> Optional[int]:
+    """Return the monitor containing the foreground window's center."""
+    if not IS_WINDOWS:
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return None
+        rect = wintypes.RECT()
+        if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+            return None
+        return monitor_index_for_point(
+            int((rect.left + rect.right) / 2),
+            int((rect.top + rect.bottom) / 2),
+        )
+    except Exception:
+        logger.debug("foreground monitor lookup failed", exc_info=True)
+        return None
+
+
 def hide() -> None:
     for overlay in _all_instances():
         try:

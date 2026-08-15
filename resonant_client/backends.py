@@ -2028,9 +2028,22 @@ class KimiBackend:
             return "\n\n".join(str(part.get("text") or "") for part in parts)
         return parts
 
-    def _messages(self, conversation_history: list, instructions: str, user_msg: str) -> list[dict]:
+    def _messages(
+        self,
+        conversation_history: list,
+        instructions: str,
+        user_msg: str,
+        *,
+        declared_tool_names: set[str] | None = None,
+    ) -> list[dict]:
         messages: list[dict] = [{"role": "system", "content": instructions}]
         emitted_responses: set[str] = set()
+        # Kimi treats tool declarations in top-level `tools` and historical
+        # system messages as one namespace and rejects the entire request when
+        # a name appears twice. Older sessions can legitimately contain
+        # overlapping search_tools catalog pages, so canonicalize at the wire
+        # boundary as well as preventing new duplicates in Session.
+        declared = set(declared_tool_names or ())
 
         for index, turn in enumerate(conversation_history):
             role = str(turn.get("role") or "")
@@ -2047,8 +2060,15 @@ class KimiBackend:
                 messages.append({"role": "user", "content": self._api_content(content)})
             elif role == "tool_catalog":
                 definitions = _convert_tools_for_ollama(turn.get("tools") or [])
-                if definitions:
-                    messages.append({"role": "system", "tools": definitions})
+                unique_definitions: list[dict] = []
+                for definition in definitions:
+                    name = str((definition.get("function") or {}).get("name") or "")
+                    if not name or name in declared:
+                        continue
+                    declared.add(name)
+                    unique_definitions.append(definition)
+                if unique_definitions:
+                    messages.append({"role": "system", "tools": unique_definitions})
             elif role == "tool_call":
                 response_id = str(turn.get("response_id") or "")
                 if response_id:
@@ -2233,15 +2253,29 @@ class KimiBackend:
         tools: list,
         max_tokens: int | None,
     ) -> dict:
+        converted_tools = _convert_tools_for_ollama(tools)
+        unique_tools: list[dict] = []
+        declared_tool_names: set[str] = set()
+        for tool in converted_tools:
+            name = str((tool.get("function") or {}).get("name") or "")
+            if not name or name in declared_tool_names:
+                continue
+            declared_tool_names.add(name)
+            unique_tools.append(tool)
         payload = {
             "model": self.model,
-            "messages": self._messages(conversation_history, instructions, user_msg),
+            "messages": self._messages(
+                conversation_history,
+                instructions,
+                user_msg,
+                declared_tool_names=declared_tool_names,
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
             "reasoning_effort": "max",
         }
-        if tools:
-            payload["tools"] = _convert_tools_for_ollama(tools)
+        if unique_tools:
+            payload["tools"] = unique_tools
         if max_tokens:
             payload["max_completion_tokens"] = min(max(1, int(max_tokens)), 1_048_576)
         return payload

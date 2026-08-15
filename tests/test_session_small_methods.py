@@ -201,6 +201,22 @@ class TestSessionTools:
         assert result[: len(AGENT_TOOLS)] == AGENT_TOOLS
         assert result[-1]["function"]["name"] == "mcp_thing"
 
+    def test_builtin_definition_wins_an_unprefixed_mcp_name_collision(self):
+        s = Session(backend=_StubBackend())
+        duplicate = {
+            "type": "function",
+            "function": {"name": "browser_click", "description": "MCP duplicate"},
+        }
+        s.mcp_tools = [duplicate]
+
+        matches = [
+            tool for tool in s.tools
+            if tool.get("function", {}).get("name") == "browser_click"
+        ]
+
+        assert len(matches) == 1
+        assert matches[0]["function"]["description"] != "MCP duplicate"
+
     def test_allowed_tools_wins_over_mcp_when_both_set(self):
         # _allowed_tools=None means "use AGENT_TOOLS"; if explicitly
         # set, MCP tools are ignored.

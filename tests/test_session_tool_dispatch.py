@@ -34,6 +34,39 @@ from tests.streaming_stub import (
 )
 
 
+def test_browser_mcp_tool_uses_the_visual_activity_indicator(monkeypatch):
+    from resonant_client.engine import screen_overlay
+
+    backend = StreamingBackend(scripts=[
+        [
+            tool_call(
+                "mcp_chrome_click",
+                {"selector": "#play"},
+                call_id="mcp-1",
+            ),
+            done(),
+        ],
+        [done()],
+    ])
+
+    class Manager:
+        def call_tool(self, name, arguments):
+            return {"content": [{"type": "text", "text": "clicked"}]}
+
+    activity = []
+    monkeypatch.setattr(
+        screen_overlay, "monitor_index_for_foreground_window", lambda: 1
+    )
+    monkeypatch.setattr(screen_overlay, "note_activity", activity.append)
+    session = Session(backend=backend, max_steps=2, auto_approve=True)
+    session._mcp_manager = Manager()
+
+    events = list(session.run("Click in Chrome"))
+
+    assert activity == [1]
+    assert first_of_kind(events, "tool.result")["output"] == "clicked"
+
+
 # ── Malformed JSON arguments ───────────────────────────────────────────
 
 

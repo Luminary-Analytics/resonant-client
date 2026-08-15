@@ -56,6 +56,7 @@ _CDP_TIMEOUT = 30.0
 _EXTENSION_SRC = Path(__file__).resolve().parent.parent / "browser_extension"
 
 _browser_session_name = _GROUP_TITLE
+_browser_activity_indicator = True
 
 
 def _group_title(session_name: str = "") -> str:
@@ -66,16 +67,19 @@ def _group_title(session_name: str = "") -> str:
     return cleaned if len(cleaned) <= 60 else cleaned[:57] + "..."
 
 
-def set_browser_session_name(session_name: str = "") -> None:
+def set_browser_session_name(
+    session_name: str = "", *, activity_indicator: bool = True
+) -> None:
     """Set the label used by the next native-browser action.
 
     This does not launch Chrome. It may be called for validation failures and
     from tests, so changing context must remain a side-effect-free operation
     until a browser tool actually executes.
     """
-    global _browser_session_name
+    global _browser_session_name, _browser_activity_indicator
     title = _group_title(session_name)
     _browser_session_name = title
+    _browser_activity_indicator = bool(activity_indicator)
     with _manager_lock:
         if _manager is not None:
             _manager.set_session_name(title)
@@ -300,6 +304,19 @@ class BrowserManager:
                 if message:
                     return message
                 self._load_extension()
+            else:
+                # A client restart commonly finds the dedicated profile still
+                # running. Reuse its staged extension and load/discover it over
+                # CDP; otherwise tab grouping silently disappears until Chrome
+                # itself is closed and relaunched.
+                staged = Path(_profile_dir()) / "resonant-extension"
+                if (staged / "manifest.json").is_file():
+                    self._extension_path = str(staged)
+                else:
+                    self._extension_path = _prepare_extension(
+                        _profile_dir(), self._session_name, _GROUP_COLOR
+                    )
+                self._load_extension()
 
             try:
                 message = self._attach()
@@ -371,8 +388,6 @@ class BrowserManager:
     def _sync_session_indicator(self) -> None:
         """Name and color the group containing the tab Resonant is driving."""
         signature = (self._session_name, self._target_id)
-        if signature == self._extension_context_signature:
-            return
         try:
             # Activating the target makes Chrome's purple group treatment land
             # on the exact tab being controlled, rather than an arbitrary tab
@@ -380,21 +395,52 @@ class BrowserManager:
             if self._conn is not None and self._target_id:
                 self._conn.call("Target.activateTarget", {"targetId": self._target_id})
 
-            worker = self._extension_worker_target()
-            if not worker or not worker.get("webSocketDebuggerUrl"):
-                return
-            connection = CDPConnection(worker["webSocketDebuggerUrl"])
-            try:
-                result = connection.evaluate(
-                    "typeof configureResonantGroup === 'function' "
-                    f"? configureResonantGroup({json.dumps({'title': self._session_name, 'color': _GROUP_COLOR})}) "
-                    ": null",
-                    await_promise=True,
+            if _browser_activity_indicator:
+                from .screen_overlay import (
+                    monitor_index_for_foreground_window,
+                    note_activity,
                 )
-                if result is not None:
-                    self._extension_context_signature = signature
-            finally:
-                connection.close()
+
+                note_activity(monitor_index_for_foreground_window())
+
+            if signature == self._extension_context_signature:
+                return
+
+            # Extensions.loadUnpacked returns before a fresh MV3 service
+            # worker has necessarily evaluated background.js. The target can
+            # already be visible while configureResonantGroup is still
+            # undefined, which made first-use grouping randomly disappear.
+            # Retry only on a new tab/session signature; steady-state calls
+            # take the fast path above.
+            deadline = time.time() + 3.0
+            last_error: Exception | None = None
+            while time.time() < deadline:
+                worker = self._extension_worker_target()
+                if not worker or not worker.get("webSocketDebuggerUrl"):
+                    time.sleep(0.05)
+                    continue
+                connection = None
+                try:
+                    connection = CDPConnection(worker["webSocketDebuggerUrl"])
+                    result = connection.evaluate(
+                        "typeof configureResonantGroup === 'function' "
+                        f"? configureResonantGroup({json.dumps({'title': self._session_name, 'color': _GROUP_COLOR})}) "
+                        ": null",
+                        await_promise=True,
+                    )
+                    if isinstance(result, dict) and result.get("title"):
+                        self._extension_context_signature = signature
+                        return
+                except Exception as exc:
+                    last_error = exc
+                finally:
+                    if connection is not None:
+                        connection.close()
+                time.sleep(0.05)
+            if last_error is not None:
+                logger.debug(
+                    "Chrome group extension did not become ready: %s", last_error
+                )
         except Exception:
             # Browser operation remains usable when an enterprise Chrome policy
             # blocks unpacked extensions or service-worker inspection.

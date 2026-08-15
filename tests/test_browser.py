@@ -11,6 +11,7 @@ v0.11.15 release notes for what was verified.
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -175,6 +176,88 @@ def test_connected_browser_still_refreshes_the_session_indicator(monkeypatch):
 
     assert browser._ensure(0.0) is None
     assert manager.ensure_calls == 1
+
+
+def test_existing_dedicated_chrome_reloads_the_staged_group_extension(
+    tmp_path, monkeypatch
+):
+    staged = tmp_path / "resonant-extension"
+    staged.mkdir()
+    (staged / "manifest.json").write_text("{}", encoding="utf-8")
+    manager = browser.BrowserManager()
+    calls = []
+    monkeypatch.setattr(browser, "_CDP_PORT", 9222)
+    monkeypatch.setattr(browser, "_port_is_open", lambda port: True)
+    monkeypatch.setattr(browser, "_profile_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(manager, "_load_extension", lambda: calls.append("extension"))
+    monkeypatch.setattr(manager, "_attach", lambda target_id="": "Connected")
+    monkeypatch.setattr(manager, "_sync_session_indicator", lambda: calls.append("sync"))
+
+    assert manager.ensure_started() == "Connected"
+    assert manager._extension_path == str(staged)
+    assert calls == ["extension", "sync"]
+
+
+def test_browser_activity_glow_is_rearmed_even_when_group_context_is_current(
+    monkeypatch,
+):
+    from resonant_client.engine import screen_overlay
+
+    cdp_calls = []
+    activity = []
+    manager = browser.BrowserManager()
+    manager._conn = SimpleNamespace(
+        call=lambda method, params: cdp_calls.append((method, params))
+    )
+    manager._target_id = "tab-1"
+    manager._session_name = "My Session"
+    manager._extension_context_signature = ("My Session", "tab-1")
+    monkeypatch.setattr(browser, "_browser_activity_indicator", True)
+    monkeypatch.setattr(
+        screen_overlay, "monitor_index_for_foreground_window", lambda: 2
+    )
+    monkeypatch.setattr(screen_overlay, "note_activity", activity.append)
+
+    manager._sync_session_indicator()
+
+    assert cdp_calls == [("Target.activateTarget", {"targetId": "tab-1"})]
+    assert activity == [2]
+
+
+def test_group_sync_retries_until_a_fresh_extension_worker_is_ready(monkeypatch):
+    attempts = []
+
+    class WorkerConnection:
+        def __init__(self, url):
+            self.url = url
+
+        def evaluate(self, expression, *, await_promise=False):
+            attempts.append(expression)
+            if len(attempts) == 1:
+                return None
+            return {"title": "Retry Session", "color": "purple", "tabs": 1}
+
+        def close(self):
+            return None
+
+    manager = browser.BrowserManager()
+    manager._conn = SimpleNamespace(call=lambda method, params: {})
+    manager._target_id = "tab-retry"
+    manager._session_name = "Retry Session"
+    manager._extension_context_signature = ("", "")
+    monkeypatch.setattr(browser, "_browser_activity_indicator", False)
+    monkeypatch.setattr(
+        manager,
+        "_extension_worker_target",
+        lambda: {"webSocketDebuggerUrl": "ws://extension-worker"},
+    )
+    monkeypatch.setattr(browser, "CDPConnection", WorkerConnection)
+    monkeypatch.setattr(browser.time, "sleep", lambda seconds: None)
+
+    manager._sync_session_indicator()
+
+    assert len(attempts) == 2
+    assert manager._extension_context_signature == ("Retry Session", "tab-retry")
 
 
 def test_extension_can_refresh_the_native_group_for_the_active_session():

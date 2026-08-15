@@ -1464,6 +1464,7 @@ def execute_tool(
     *,
     project_path: str = "",
     settings: object = None,
+    session_name: str = "",
 ) -> ToolResult:
     """
     Execute a tool and return structured result.
@@ -1498,6 +1499,17 @@ def execute_tool(
                 note_activity(monitor_index_for_args(arguments or {}))
         except Exception:
             logger.debug("Computer-use indicator failed", exc_info=True)
+
+    # Give the dedicated Chrome profile a human session label before the
+    # first browser call launches it. Subsequent calls also refresh the active
+    # tab's purple group when the user switches Resonant sessions.
+    if name.startswith("browser_"):
+        try:
+            from .browser import set_browser_session_name
+
+            set_browser_session_name(session_name)
+        except Exception:
+            logger.debug("Browser session indicator failed", exc_info=True)
 
     # ── Irreversibility floor check ──
     if name not in ("task",):  # task isn't dispatched here at all

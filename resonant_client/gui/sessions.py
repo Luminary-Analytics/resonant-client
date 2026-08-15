@@ -17,6 +17,8 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
+from .session_ledger import SESSION_LEDGER_VERSION, SessionEventLedger
+
 logger = logging.getLogger(__name__)
 
 # Sidebar refreshes are frequent and a project can accumulate hundreds of
@@ -48,6 +50,12 @@ _MISSION_SEED_PATTERN = re.compile(
 )
 
 PLAYGROUND_PROJECT_NAME = "Playground"
+_SESSION_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+
+def is_valid_session_id(value: str) -> bool:
+    """Whether a session id is safe to use as one storage filename stem."""
+    return bool(_SESSION_ID_PATTERN.fullmatch(str(value or "")))
 
 def _resonant_dir() -> Path:
     """Resolve ~/.resonant at call time, never at import time.
@@ -338,10 +346,9 @@ def _cache_session_summary(filepath: Path, summary: Optional[dict]) -> None:
 def _parse_session_summary(filepath: Path) -> Optional[dict]:
     """Read only metadata fields from a session file without parsing full history.
 
-    Session files can be large (100KB+) due to conversation_history and
-    display_events arrays.  This reads the first ~2KB to extract just the
-    metadata fields needed for the sidebar, falling back to full parse only
-    if the fast path fails.
+    Legacy session files can be large because they embed conversation and
+    display arrays. Ledger-backed files are small, but this prefix scan still
+    avoids unnecessary JSON parsing during frequent sidebar refreshes.
     """
     try:
         with open(filepath, "r", encoding="utf-8") as f:
@@ -444,11 +451,11 @@ def _session_files_by_mtime(directory: Path) -> list[tuple[Path, os.stat_result]
 
 
 class SessionRecord:
-    """A serializable session record (metadata + conversation history).
+    """Serializable session metadata backed by one append-only event ledger.
 
-    Stores two parallel histories:
-    - conversation_history: backend-formatted messages for engine context restore
-    - display_events: EngineEvent dicts for UI replay when resuming a session
+    ``conversation_history`` and ``display_events`` remain the in-memory views
+    consumed by the existing engine and renderer. On disk they are projections
+    of ``<session-id>.events.jsonl`` rather than parallel arrays in this file.
     """
 
     def __init__(
@@ -470,8 +477,12 @@ class SessionRecord:
         orchestration_mode: str = "single",
         director_config: Optional[dict] = None,
         director_run_id: str = "",
+        event_log: str = "",
+        session_format_version: int = SESSION_LEDGER_VERSION,
     ):
         self.id = session_id or str(uuid.uuid4())[:8]
+        if not is_valid_session_id(self.id):
+            raise ValueError(f"Invalid session id: {self.id!r}")
         self.title = title
         self.project_path = project_path
         self.backend_type = backend_type
@@ -511,8 +522,60 @@ class SessionRecord:
         )
         self.director_config: dict = dict(director_config or {})
         self.director_run_id = str(director_run_id or "")
+        self.session_format_version = int(session_format_version or SESSION_LEDGER_VERSION)
+        raw_event_log = str(event_log or "")
+        expected_event_log = f"{self.id}.events.jsonl"
+        self.event_log = (
+            raw_event_log if raw_event_log == expected_event_log else expected_event_log
+        )
 
-    def to_dict(self) -> dict:
+    @property
+    def ledger(self) -> SessionEventLedger:
+        return SessionEventLedger(_sessions_dir(self.project_path) / self.event_log)
+
+    def load_ledger(self) -> None:
+        """Refresh the two compatibility views from the authoritative ledger."""
+        ledger = self.ledger
+        if not ledger.path.exists():
+            return
+        records = ledger.read_records()
+        self.conversation_history = ledger.project_conversation(records=records)
+        self.display_events = ledger.project_display_events(records=records)
+
+    def append_display_events(self, events: list[dict]) -> list[int]:
+        """Durably append live GUI events and update the in-memory projection."""
+        clean = [dict(event) for event in events if isinstance(event, dict)]
+        if not clean:
+            return []
+        if not self.ledger.path.exists() and (self.conversation_history or self.display_events):
+            self.ledger.seed(self.conversation_history, self.display_events)
+        seqs = self.ledger.append_display(clean)
+        self.display_events.extend(clean)
+        return seqs
+
+    def display_page(
+        self, *, before_seq: int | None = None, limit: int = 240
+    ) -> dict:
+        """Return a serializable tail/older page from the display projection."""
+        if not self.ledger.path.exists():
+            self.ledger.seed(self.conversation_history, self.display_events)
+        return self.ledger.display_page(before_seq=before_seq, limit=limit).to_dict()
+
+    def projections(self) -> dict:
+        """Return consistent whole-session read models at one ledger sequence."""
+        if not self.ledger.path.exists():
+            self.ledger.seed(self.conversation_history, self.display_events)
+        return self.ledger.projections()
+
+    def history_snapshot(
+        self, *, before_seq: int | None = None, limit: int = 240
+    ) -> dict:
+        """Return a page and projections from one committed ledger snapshot."""
+        if not self.ledger.path.exists():
+            self.ledger.seed(self.conversation_history, self.display_events)
+        return self.ledger.history_snapshot(before_seq=before_seq, limit=limit)
+
+    def to_dict(self, *, include_histories: bool = True) -> dict:
         # Field order matters: small metadata fields go FIRST so the
         # 4KB fast-path summary scanner in `_read_session_summary` can
         # find them without touching the (potentially multi-MB)
@@ -520,7 +583,7 @@ class SessionRecord:
         # sessions in particular need mission_state to be discoverable
         # by the sidebar without forcing a full file load on every
         # session list refresh.
-        return {
+        data = {
             "id": self.id,
             "title": self.title,
             "project_path": self.project_path,
@@ -536,9 +599,15 @@ class SessionRecord:
             "orchestration_mode": self.orchestration_mode,
             "director_config": self.director_config,
             "director_run_id": self.director_run_id,
-            "conversation_history": self.conversation_history,
-            "display_events": self.display_events,
+            "session_format_version": self.session_format_version,
+            "event_log": self.event_log,
         }
+        # Direct serialization remains compatible for callers and tests. The
+        # on-disk metadata path opts out so histories live only in the ledger.
+        if include_histories:
+            data["conversation_history"] = self.conversation_history
+            data["display_events"] = self.display_events
+        return data
 
     def to_summary(self) -> dict:
         """Lightweight summary for the sidebar (no conversation history)."""
@@ -580,6 +649,10 @@ class SessionRecord:
             orchestration_mode=data.get("orchestration_mode", "single"),
             director_config=data.get("director_config") or {},
             director_run_id=data.get("director_run_id", ""),
+            event_log=data.get("event_log", ""),
+            session_format_version=data.get(
+                "session_format_version", SESSION_LEDGER_VERSION
+            ),
         )
 
     # ── Mission helpers ────────────────────────────────────────────────
@@ -620,8 +693,18 @@ class SessionRecord:
         d.mkdir(parents=True, exist_ok=True)
         filepath = d / f"{self.id}.json"
         try:
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(self.to_dict(), f, indent=2, ensure_ascii=False)
+            self.ledger.seed(self.conversation_history, self.display_events)
+            event_count = self.ledger.sync(
+                self.conversation_history, self.display_events
+            )
+            payload = self.to_dict(include_histories=False)
+            payload["event_count"] = event_count
+            temporary = filepath.with_suffix(".json.tmp")
+            with open(temporary, "w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temporary, filepath)
             _cache_session_summary(filepath, self.to_summary())
         except Exception as e:
             _invalidate_session_summary(filepath)
@@ -632,6 +715,7 @@ class SessionRecord:
         filepath = _sessions_dir(self.project_path) / f"{self.id}.json"
         try:
             filepath.unlink(missing_ok=True)
+            self.ledger.path.unlink(missing_ok=True)
             _invalidate_session_summary(filepath)
         except Exception as e:
             logger.error(f"Failed to delete session {self.id}: {e}")
@@ -934,8 +1018,12 @@ class ProjectManager:
         self.current_session = record
         return record
 
-    def load_session(self, session_id: str) -> Optional[SessionRecord]:
+    def load_session(
+        self, session_id: str, *, activate: bool = True, hydrate: bool = True
+    ) -> Optional[SessionRecord]:
         """Load a session by ID."""
+        if not is_valid_session_id(session_id):
+            return None
         filepath = _sessions_dir(self.project_path) / f"{session_id}.json"
         if not filepath.exists():
             return None
@@ -944,7 +1032,16 @@ class ProjectManager:
             with open(filepath, "r", encoding="utf-8") as f:
                 data = json.load(f)
             record = SessionRecord.from_dict(data)
-            self.current_session = record
+            # The selected project owns this metadata file. Never let a stale
+            # or hand-edited project_path redirect its ledger elsewhere.
+            record.project_path = self.project_path
+            if hydrate and record.ledger.path.exists():
+                record.load_ledger()
+            elif data.get("conversation_history") or data.get("display_events"):
+                # One-time migration from the pre-ledger session format.
+                record.save()
+            if activate:
+                self.current_session = record
             return record
         except Exception as e:
             logger.error(f"Failed to load session {session_id}: {e}")
@@ -970,7 +1067,12 @@ class ProjectManager:
                 self.current_session.director_run_id = director_run.id
 
         if display_events:
-            self.current_session.display_events.extend(display_events)
+            # Streaming normally persisted these records already. Legacy and
+            # test callers may still provide one complete end-of-turn batch.
+            existing = self.current_session.display_events
+            count = len(display_events)
+            if count > len(existing) or existing[-count:] != display_events:
+                self.current_session.append_display_events(display_events)
 
         self.current_session.save()
 
@@ -984,9 +1086,14 @@ class ProjectManager:
 
     def delete_session(self, session_id: str):
         """Delete a session by ID."""
+        if not is_valid_session_id(session_id):
+            return
         filepath = _sessions_dir(self.project_path) / f"{session_id}.json"
         if filepath.exists():
             filepath.unlink()
+        (_sessions_dir(self.project_path) / f"{session_id}.events.jsonl").unlink(
+            missing_ok=True
+        )
         _invalidate_session_summary(filepath)
         if self.current_session and self.current_session.id == session_id:
             self.current_session = None
@@ -998,7 +1105,7 @@ class ProjectManager:
 
         Slices conversation_history at the boundary right after the kept
         user message's response (i.e. just before the next user message),
-        and slices display_events proportionally.
+        and slices display events at the same exact task boundary.
 
         Returns the new SessionRecord, or None if source not found.
         """
@@ -1022,13 +1129,20 @@ class ProjectManager:
 
         sliced_history = history[:cutoff]
 
-        # Slice display_events proportionally — best-effort. Replay tolerates incomplete tails.
+        # Display history follows the same exact user-task boundary.
         evts = source.display_events or []
-        if cutoff >= len(history) or not history:
+        display_user_idxs = [
+            i for i, event in enumerate(evts)
+            if isinstance(event, dict) and event.get("event") == "user_message"
+        ]
+        if not display_user_idxs:
+            sliced_events = list(evts) if cutoff >= len(history) else []
+        elif fork_at_user_index < 0:
+            sliced_events = []
+        elif fork_at_user_index >= len(display_user_idxs) - 1:
             sliced_events = list(evts)
         else:
-            ratio = cutoff / max(1, len(history))
-            sliced_events = evts[: max(1, int(round(len(evts) * ratio)))]
+            sliced_events = evts[: display_user_idxs[fork_at_user_index + 1]]
 
         title = source.title or "Untitled"
         if not title.startswith("Fork: "):

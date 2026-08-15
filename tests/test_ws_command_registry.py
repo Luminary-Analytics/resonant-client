@@ -301,3 +301,79 @@ def test_session_replay_reports_a_missing_session():
 
     assert sent[0]["error"] == "not found"
     assert sent[0]["events"] == []
+
+
+def test_session_history_page_does_not_activate_the_inspected_session():
+    calls = []
+    record = SimpleNamespace(
+        history_snapshot=lambda **kwargs: {
+            "page": {"events": [{"event": "user_message"}], **kwargs},
+            "projections": {"stats": {"turns": 1}},
+        },
+    )
+    project = SimpleNamespace(
+        project_path="/tmp/project",
+        load_session=lambda session_id, activate=True, hydrate=True: (
+            calls.append((session_id, activate, hydrate)) or record
+        ),
+    )
+    state = SimpleNamespace(project=project)
+
+    sent = _run(
+        ws_commands.HANDLERS["get_session_history_page"],
+        _ctx(msg={"session_id": "s1", "before_seq": 20, "limit": 10}, state=state),
+    )
+
+    assert calls == [("s1", False, False)]
+    assert sent[0]["page"]["before_seq"] == 20
+    assert sent[0]["projections"]["stats"]["turns"] == 1
+
+
+def test_session_history_page_rejects_a_malformed_cursor():
+    state = SimpleNamespace(project=SimpleNamespace(project_path="/tmp/project"))
+
+    sent = _run(
+        ws_commands.HANDLERS["get_session_history_page"],
+        _ctx(msg={"session_id": "s1", "before_seq": "nope"}, state=state),
+    )
+
+    assert sent[0]["error"] == "invalid paging cursor"
+
+
+def test_open_workspace_path_opens_a_file_inside_the_active_project(tmp_path):
+    target = tmp_path / "result.md"
+    target.write_text("done", encoding="utf-8")
+    state = SimpleNamespace(
+        project=SimpleNamespace(project_path=str(tmp_path), current_session=None),
+    )
+
+    with (
+        patch.object(ws_commands.sys, "platform", "win32"),
+        patch.object(ws_commands.os, "startfile", create=True) as startfile,
+    ):
+        sent = _run(
+            ws_commands.HANDLERS["open_workspace_path"],
+            _ctx(msg={"path": "result.md"}, state=state),
+        )
+
+    startfile.assert_called_once_with(str(target.resolve()))
+    assert sent[-1]["message"] == "Opened result.md"
+
+
+def test_open_workspace_path_rejects_paths_outside_the_project(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    state = SimpleNamespace(
+        project=SimpleNamespace(project_path=str(project), current_session=None),
+    )
+
+    with patch.object(ws_commands.os, "startfile", create=True) as startfile:
+        sent = _run(
+            ws_commands.HANDLERS["open_workspace_path"],
+            _ctx(msg={"path": str(outside)}, state=state),
+        )
+
+    startfile.assert_not_called()
+    assert "outside the active project" in sent[-1]["message"]

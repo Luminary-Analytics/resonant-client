@@ -40,6 +40,7 @@ import logging
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -336,10 +337,33 @@ async def _session_timeline_restore(ctx: CommandContext) -> None:
                 HookType.CHECKPOINT_RESTORED,
                 {"checkpoint_id": checkpoint_id, "mode": mode, "project_path": ctx.project_path},
             )
+        record = state.project.current_session
+        if record:
+            snapshot = record.history_snapshot()
+            history_page = snapshot["page"]
+            display_events = history_page["events"]
+            projections = snapshot["projections"]
+        else:
+            display_events = list(data.get("display_events") or [])[-240:]
+            history_page = {
+                "events": display_events,
+                "start_seq": None,
+                "end_seq": None,
+                "has_more": len(data.get("display_events") or []) > len(display_events),
+                "total_events": len(data.get("display_events") or []),
+                "as_of_seq": -1,
+            }
+            projections = {}
+        public_data = {
+            key: value for key, value in data.items()
+            if key not in {"conversation_history", "display_events"}
+        }
         await ctx.send({
             "event": "session.timeline_restored",
-            "data": data,
-            "display_events": data.get("display_events") or [],
+            "data": public_data,
+            "display_events": display_events,
+            "history_page": history_page,
+            "projections": projections,
         })
     except Exception as exc:
         await ctx.send_error(str(exc))
@@ -766,10 +790,17 @@ async def _skill_pin_toggle(ctx: CommandContext) -> None:
 @command("get_session_replay_events")
 async def _get_session_replay_events(ctx: CommandContext) -> None:
     """Fetch a session's display events without switching the active one."""
-    from .sessions import _sessions_dir
+    from .sessions import _sessions_dir, is_valid_session_id
 
     target_id = ctx.msg.get("session_id", "")
     project_path = ctx.msg.get("project_path") or ctx.project_path
+    if not is_valid_session_id(target_id):
+        await ctx.send({
+            "event": "session_replay_events", "session_id": target_id,
+            "error": "not found", "events": [],
+        })
+        return
+    record_project_path = project_path
 
     path = _sessions_dir(project_path) / f"{target_id}.json"
     if not path.exists():
@@ -781,6 +812,7 @@ async def _get_session_replay_events(ctx: CommandContext) -> None:
             candidate = _sessions_dir(candidate_root) / f"{target_id}.json"
             if candidate.exists():
                 path = candidate
+                record_project_path = candidate_root
                 break
 
     if not path.exists():
@@ -790,18 +822,102 @@ async def _get_session_replay_events(ctx: CommandContext) -> None:
         })
         return
     try:
+        from .sessions import SessionRecord
+
         data = json.loads(path.read_text(encoding="utf-8"))
+        record = SessionRecord.from_dict(data)
+        record.project_path = record_project_path
+        if record.ledger.path.exists():
+            record.load_ledger()
         await ctx.send({
             "event": "session_replay_events",
             "session_id": target_id,
             "title": data.get("title") or "",
-            "events": data.get("display_events") or [],
+            "events": record.display_events,
         })
     except Exception as exc:
         await ctx.send({
             "event": "session_replay_events", "session_id": target_id,
             "error": str(exc), "events": [],
         })
+
+
+@command("get_session_history_page")
+async def _get_session_history_page(ctx: CommandContext) -> None:
+    """Load one older display-event page without changing active runtime state."""
+    target_id = str(ctx.msg.get("session_id") or "")
+    if not target_id:
+        await ctx.send({
+            "event": "session_history_page",
+            "session_id": "",
+            "error": "session_id is required",
+            "page": {"events": [], "has_more": False},
+        })
+        return
+    try:
+        before_raw = ctx.msg.get("before_seq")
+        before_seq = int(before_raw) if before_raw is not None else None
+        limit = int(ctx.msg.get("limit") or 240)
+    except (TypeError, ValueError):
+        await ctx.send({
+            "event": "session_history_page",
+            "session_id": target_id,
+            "error": "invalid paging cursor",
+            "page": {"events": [], "has_more": False},
+        })
+        return
+    record = ctx.state.project.load_session(
+        target_id, activate=False, hydrate=False
+    )
+    if record is None:
+        await ctx.send({
+            "event": "session_history_page",
+            "session_id": target_id,
+            "error": "not found",
+            "page": {"events": [], "has_more": False},
+        })
+        return
+    snapshot = record.history_snapshot(before_seq=before_seq, limit=limit)
+    await ctx.send({
+        "event": "session_history_page",
+        "session_id": target_id,
+        "page": snapshot["page"],
+        "projections": snapshot["projections"],
+    })
+
+
+@command("open_workspace_path")
+async def _open_workspace_path(ctx: CommandContext) -> None:
+    """Open an existing project file explicitly selected by the user."""
+    raw = str(ctx.msg.get("path") or "").strip()
+    if not raw:
+        await ctx.send({"event": "status_msg", "message": "No file path was provided."})
+        return
+    try:
+        root = Path(ctx.project_path).resolve(strict=True)
+        requested = Path(raw)
+        target = (requested if requested.is_absolute() else root / requested).resolve(
+            strict=True
+        )
+        target.relative_to(root)
+    except (OSError, ValueError):
+        await ctx.send({
+            "event": "status_msg",
+            "message": "That file is unavailable or outside the active project.",
+        })
+        return
+
+    try:
+        if sys.platform == "win32":
+            os.startfile(str(target))  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(target)], **background_process_kwargs())
+        else:
+            subprocess.Popen(["xdg-open", str(target)], **background_process_kwargs())
+    except OSError as exc:
+        await ctx.send({"event": "status_msg", "message": f"Could not open file: {exc}"})
+        return
+    await ctx.send({"event": "status_msg", "message": f"Opened {target.name}"})
 
 
 # ---------------------------------------------------------------------------
@@ -1918,11 +2034,15 @@ async def _cmd_fork_session(ctx: CommandContext) -> None:
             "title": forked.title,
             "user_messages_kept": forked.message_count,
         })
+        snapshot = forked.history_snapshot()
+        history_page = snapshot["page"]
         await ctx.send({
             "event": "session_loaded",
             "current_session_id": forked.id,
             "session_role": forked.session_role,
-            "display_events": forked.display_events,
+            "display_events": history_page["events"],
+            "history_page": history_page,
+            "projections": snapshot["projections"],
             "sessions": ctx.state.project.list_sessions(),
         })
 
@@ -1947,6 +2067,8 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
         # can take seconds (or fail when a provider is offline), but
         # neither condition should prevent users from opening and
         # reading an existing session.
+        snapshot = record.history_snapshot()
+        history_page = snapshot["page"]
         await ctx.send({
             "event": "session_loaded",
             "session_id": record.id,
@@ -1959,7 +2081,9 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
             "orchestration_mode": record.orchestration_mode,
             "director_config": record.director_config,
             "director_run_id": record.director_run_id,
-            "display_events": record.display_events,
+            "display_events": history_page["events"],
+            "history_page": history_page,
+            "projections": snapshot["projections"],
             "sessions": ctx.state.project.list_sessions(),
             "current_session_id": record.id,
             "runtime_pending": bool(record.backend_type),

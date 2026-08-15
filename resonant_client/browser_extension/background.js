@@ -58,8 +58,40 @@ async function groupTab(tabId) {
     await chrome.tabGroups.update(groupId, {
         title: GROUP_TITLE,
         color: GROUP_COLOR,
+        collapsed: false,
     });
 }
+
+// Called by Resonant over the extension service worker's DevTools target when
+// the active client session changes. Grouping is browser chrome, so unlike a
+// page-injected outline it remains visible without contaminating screenshots
+// or changing the page being tested.
+globalThis.configureResonantGroup = async function configureResonantGroup(config = {}) {
+    if (typeof config.title === 'string' && config.title.trim()) {
+        GROUP_TITLE = config.title.trim();
+    }
+    if (typeof config.color === 'string' && config.color) {
+        GROUP_COLOR = config.color;
+    }
+
+    const tabs = await chrome.tabs.query({});
+    const byWindow = new Map();
+    for (const tab of tabs) {
+        if (tab.id == null || tab.windowId == null) continue;
+        if (!byWindow.has(tab.windowId)) byWindow.set(tab.windowId, []);
+        byWindow.get(tab.windowId).push(tab.id);
+    }
+    for (const tabIds of byWindow.values()) {
+        if (!tabIds.length) continue;
+        const groupId = await chrome.tabs.group({ tabIds });
+        await chrome.tabGroups.update(groupId, {
+            title: GROUP_TITLE,
+            color: GROUP_COLOR,
+            collapsed: false,
+        });
+    }
+    return { title: GROUP_TITLE, color: GROUP_COLOR, tabs: tabs.length };
+};
 
 chrome.tabs.onCreated.addListener(tab => {
     if (tab.id != null) serialize(() => groupTab(tab.id));

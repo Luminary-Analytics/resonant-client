@@ -1127,6 +1127,9 @@ class AppState:
             cancel_event=cancel_event,
         )
         session.project_path = effective_root  # Tools + sandbox cwd
+        session.browser_session_name = (
+            str(record.title or "").strip() if record else ""
+        )
 
         # Attach sandbox for path safety (always on for sessions with a project)
         from ..engine.sandbox import PathSandbox
@@ -1828,6 +1831,8 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
 
     if not state._first_message_sent:
         state.project.update_session_title(text)
+    if state.project.current_session:
+        state.session.browser_session_name = state.project.current_session.title
 
     text_for_session = text
     if not state._first_message_sent and state.harness_prompts.harness_enabled():
@@ -2557,12 +2562,22 @@ async def _run_session_streaming(
     pending_harness_text: str = ""
     harness_parse_error: str | None = None
 
-    # Record the user message as a display event
-    display_events.append({"event": "user_message", "text": display_user_msg or user_msg})
-    persisted_events = list(
+    # Record every replayable event as it happens. A process crash can then
+    # lose at most an ephemeral streaming delta, not the completed work log.
+    user_display_event = {
+        "event": "user_message",
+        "text": display_user_msg or user_msg,
+    }
+    display_events.append(user_display_event)
+    active_record = getattr(state.project, "current_session", None)
+    if active_record is not None:
+        try:
+            active_record.append_display_events([user_display_event])
+        except Exception:
+            logger.warning("Unable to append user event to session ledger", exc_info=True)
+    session.checkpoint_display_provider = lambda: list(
         getattr(state.project.current_session, "display_events", []) or []
     )
-    session.checkpoint_display_provider = lambda: persisted_events + list(display_events)
 
     def on_permission(tool_name, tool_args):
         """Push permission request to frontend with diff review data."""
@@ -2790,6 +2805,20 @@ async def _run_session_streaming(
             # Collect display events for session replay (skip streaming deltas)
             if event_type not in SKIP_FOR_REPLAY:
                 display_events.append(event)
+                active_record = getattr(state.project, "current_session", None)
+                if active_record is not None:
+                    try:
+                        seqs = active_record.append_display_events([event])
+                        # The browser can merge newly streamed activity with
+                        # an older paged history window without guessing which
+                        # records are already mounted.
+                        if seqs:
+                            event = {**event, "_ledger_seq": seqs[0]}
+                    except Exception:
+                        logger.warning(
+                            "Unable to append display event to session ledger",
+                            exc_info=True,
+                        )
 
             try:
                 await ws.send_json(event)

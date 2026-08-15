@@ -55,6 +55,31 @@ _CDP_TIMEOUT = 30.0
 # Source-checkout location of the unpacked extension.
 _EXTENSION_SRC = Path(__file__).resolve().parent.parent / "browser_extension"
 
+_browser_session_name = _GROUP_TITLE
+
+
+def _group_title(session_name: str = "") -> str:
+    """A compact Chrome-safe label for the active Resonant session."""
+    cleaned = " ".join(str(session_name or "").split()).strip()
+    if not cleaned or cleaned.lower() == "new session":
+        return _GROUP_TITLE
+    return cleaned if len(cleaned) <= 60 else cleaned[:57] + "..."
+
+
+def set_browser_session_name(session_name: str = "") -> None:
+    """Set the label used by the next native-browser action.
+
+    This does not launch Chrome. It may be called for validation failures and
+    from tests, so changing context must remain a side-effect-free operation
+    until a browser tool actually executes.
+    """
+    global _browser_session_name
+    title = _group_title(session_name)
+    _browser_session_name = title
+    with _manager_lock:
+        if _manager is not None:
+            _manager.set_session_name(title)
+
 
 def _find_chrome() -> Optional[str]:
     """Locate the installed Chrome executable, or None."""
@@ -240,6 +265,8 @@ class BrowserManager:
         self._launched_by_us = False
         self._extension_path: Optional[str] = None
         self._extension_id: str = ""
+        self._session_name: str = _browser_session_name
+        self._extension_context_signature: tuple[str, str] = ("", "")
         self._lock = threading.RLock()
 
     # ── lifecycle ────────────────────────────────────────────────────
@@ -265,6 +292,7 @@ class BrowserManager:
         """Launch Chrome if needed and attach to a tab. Returns a status line."""
         with self._lock:
             if self.is_connected:
+                self._sync_session_indicator()
                 return "Browser already connected"
 
             if not _port_is_open(_CDP_PORT):
@@ -274,9 +302,103 @@ class BrowserManager:
                 self._load_extension()
 
             try:
-                return self._attach()
+                message = self._attach()
+                self._sync_session_indicator()
+                return message
             except Exception as exc:
                 return f"Error: could not attach to Chrome on port {_CDP_PORT}: {exc}"
+
+    def set_session_name(self, session_name: str) -> None:
+        title = _group_title(session_name)
+        if title != self._session_name:
+            self._session_name = title
+            self._extension_context_signature = ("", "")
+
+    def _extension_worker_target(self) -> Optional[dict]:
+        def find() -> tuple[list[dict], Optional[dict]]:
+            targets = self._http("/json/list") or []
+            workers = [
+                target for target in targets
+                if target.get("type") in {"service_worker", "background_page"}
+                and str(target.get("url") or "").startswith("chrome-extension://")
+                and str(target.get("url") or "").endswith("/background.js")
+            ]
+            if self._extension_id:
+                prefix = f"chrome-extension://{self._extension_id}/"
+                match = next(
+                    (
+                        target for target in workers
+                        if str(target.get("url") or "").startswith(prefix)
+                    ),
+                    None,
+                )
+                return workers, match
+            return workers, None
+
+        workers, match = find()
+        if match is not None:
+            return match
+        if workers and not self._extension_id:
+            return workers[0]
+        if not self._extension_id:
+            return None
+
+        # Manifest V3 workers stop after an idle period. Wake our known worker
+        # through the browser target, then wait briefly for its inspectable
+        # target to appear. Without this, task-name updates work only during
+        # the first few seconds after Chrome launches.
+        browser_conn = None
+        try:
+            version = self._http("/json/version") or {}
+            browser_conn = CDPConnection(version["webSocketDebuggerUrl"])
+            browser_conn.call("ServiceWorker.enable")
+            browser_conn.call(
+                "ServiceWorker.startWorker",
+                {"scopeURL": f"chrome-extension://{self._extension_id}/"},
+            )
+        finally:
+            if browser_conn is not None:
+                browser_conn.close()
+
+        deadline = time.time() + 1.0
+        while time.time() < deadline:
+            _, match = find()
+            if match is not None:
+                return match
+            time.sleep(0.05)
+        return None
+
+    def _sync_session_indicator(self) -> None:
+        """Name and color the group containing the tab Resonant is driving."""
+        signature = (self._session_name, self._target_id)
+        if signature == self._extension_context_signature:
+            return
+        try:
+            # Activating the target makes Chrome's purple group treatment land
+            # on the exact tab being controlled, rather than an arbitrary tab
+            # that happened to be selected before the tool call.
+            if self._conn is not None and self._target_id:
+                self._conn.call("Target.activateTarget", {"targetId": self._target_id})
+
+            worker = self._extension_worker_target()
+            if not worker or not worker.get("webSocketDebuggerUrl"):
+                return
+            connection = CDPConnection(worker["webSocketDebuggerUrl"])
+            try:
+                result = connection.evaluate(
+                    "typeof configureResonantGroup === 'function' "
+                    f"? configureResonantGroup({json.dumps({'title': self._session_name, 'color': _GROUP_COLOR})}) "
+                    ": null",
+                    await_promise=True,
+                )
+                if result is not None:
+                    self._extension_context_signature = signature
+            finally:
+                connection.close()
+        except Exception:
+            # Browser operation remains usable when an enterprise Chrome policy
+            # blocks unpacked extensions or service-worker inspection.
+            logger.debug("Could not refresh Chrome session indicator", exc_info=True)
 
     def _load_extension(self) -> None:
         """Install the tab-group extension over CDP.
@@ -339,7 +461,7 @@ class BrowserManager:
         if _HEADLESS:
             args.append("--headless=new")
 
-        self._extension_path = _prepare_extension(profile, _GROUP_TITLE, _GROUP_COLOR)
+        self._extension_path = _prepare_extension(profile, self._session_name, _GROUP_COLOR)
         if self._extension_path:
             # Chrome 137+ ignores --load-extension (it was disabled for
             # security), which is why the extension has to be installed over
@@ -394,6 +516,7 @@ class BrowserManager:
         self._target_id = target.get("id", "")
         self._conn.call("Page.enable")
         self._conn.call("Runtime.enable")
+        self._extension_context_signature = ("", "")
         return f"Connected to Chrome (tab: {target.get('title') or target.get('url') or 'about:blank'})"
 
     @property
@@ -423,7 +546,9 @@ class BrowserManager:
             self._http(f"/json/close/{target_id}")
 
     def attach(self, target_id: str = "") -> str:
-        return self._attach(target_id)
+        message = self._attach(target_id)
+        self._sync_session_indicator()
+        return message
 
     def close(self) -> None:
         with self._lock:
@@ -506,8 +631,9 @@ def _js_string(value: str) -> str:
 def _ensure(start: float) -> Optional[ToolResult]:
     """Start the browser if needed; return a ToolResult only on failure."""
     manager = get_browser()
-    if manager.is_connected:
-        return None
+    # The connected path is intentionally not skipped: ensure_started() also
+    # refreshes the extension context when a different Resonant session takes
+    # over an already-running browser profile.
     message = manager.ensure_started()
     if message.startswith("Error"):
         return ToolResult(message, is_error=True, elapsed=time.time() - start)

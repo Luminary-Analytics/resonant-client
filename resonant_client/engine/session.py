@@ -51,6 +51,7 @@ from .compression import (
 from .hooks import HookResult, HookRunner, HookType
 from .model_prompts import build_model_prompt, get_model_prompt_profile
 from .tool_arguments import ToolArgumentError, normalize_tool_arguments
+from .tool_presentation import tool_presentation
 from .turn_outcomes import (
     VALIDATION_TOOL_NAMES,
     WRITE_TOOL_NAMES,
@@ -562,6 +563,7 @@ class Session:
         self._steering_queue: queue.SimpleQueue[dict[str, str]] = queue.SimpleQueue()
         self._steering_lock = threading.Lock()
         self.project_path: Optional[str] = None  # Set externally for path resolution
+        self.browser_session_name: str = ""
         # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed)
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
         self.sandbox = None  # PathSandbox, set externally
@@ -676,6 +678,7 @@ class Session:
     def copy_execution_context_from(self, parent: "Session") -> None:
         """Mirror tool cwd, sandbox, and sidecar services from a parent session (e.g. sub-agents)."""
         self.project_path = parent.project_path
+        self.browser_session_name = parent.browser_session_name
         self.sandbox = parent.sandbox
         self.project_instructions = parent.project_instructions
         self.autonomy_tier = parent.autonomy_tier
@@ -1787,7 +1790,8 @@ class Session:
                                         name=fn_name, arguments=fn_args,
                                         arguments_str=fn_args_str,
                                         call_id=data.get("call_id", ""),
-                                        icon=get_tool_icon(fn_name))
+                                        icon=get_tool_icon(fn_name),
+                                        presentation=tool_presentation(fn_name, fn_args))
 
                     elif event_type == EVENT_DONE:
                         cog_state = data.get("cognitive_state")
@@ -2486,6 +2490,7 @@ class Session:
                         cancel_event=self._cancel_event,
                         project_path=self.project_path or "",
                         settings=getattr(self, "_settings_ref", None),
+                        session_name=self.browser_session_name,
                     )
 
                     history_output, context_meta = self._compact_tool_result_for_context(

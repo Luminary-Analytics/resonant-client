@@ -251,6 +251,64 @@ def test_a_point_outside_every_monitor_is_not_forced_onto_one(two_monitors):
     assert screen_overlay.monitor_index_for_point(99999, 99999) is None
 
 
+def test_activity_on_two_monitors_keeps_two_borders_visible(two_monitors, monkeypatch):
+    """Crossing displays must add a border, not move the first border away."""
+    created = []
+
+    class FakeOverlay:
+        def __init__(self, *, cursor_indicator=True):
+            self.cursor_indicator = cursor_indicator
+            self.visible = False
+            self._bounds = (0, 0, 0, 0)
+            created.append(self)
+
+        def show(self, *bounds):
+            self._bounds = bounds
+            self.visible = True
+            return True
+
+    primary = FakeOverlay()
+    created.clear()
+    monkeypatch.setattr(screen_overlay, "IS_WINDOWS", True)
+    monkeypatch.setattr(screen_overlay, "_instance", lambda: primary)
+    monkeypatch.setattr(screen_overlay, "_Overlay", FakeOverlay)
+    monkeypatch.setattr(screen_overlay, "_secondary_overlays", [])
+    monkeypatch.setattr(screen_overlay, "_suppressed", 0)
+
+    assert screen_overlay.show_for_monitor(0)
+    assert screen_overlay.show_for_monitor(1)
+    assert primary.visible
+    assert primary._bounds == (-2560, 0, 2560, 1080)
+    assert len(created) == 1
+    assert created[0].visible
+    assert created[0]._bounds == (0, 0, 2560, 1080)
+    assert created[0].cursor_indicator is False
+
+
+def test_repeated_activity_on_one_monitor_skips_the_window_redraw(
+    two_monitors, monkeypatch
+):
+    class FakeOverlay:
+        def __init__(self):
+            self.visible = False
+            self._bounds = (0, 0, 0, 0)
+            self.show_calls = 0
+
+        def show(self, *bounds):
+            self.show_calls += 1
+            self._bounds = bounds
+            self.visible = True
+            return True
+
+    overlay = FakeOverlay()
+    monkeypatch.setattr(screen_overlay, "_instance_for_region", lambda bounds: overlay)
+    monkeypatch.setattr(screen_overlay, "_suppressed", 0)
+
+    assert screen_overlay.show_for_region(0, 0, 1920, 1080)
+    assert screen_overlay.show_for_region(0, 0, 1920, 1080)
+    assert overlay.show_calls == 1
+
+
 # ── cursor ring ──────────────────────────────────────────────────────
 
 def _alpha_at(frame: bytearray, x: int, y: int) -> int:
@@ -284,6 +342,22 @@ def test_ring_stroke_is_feathered():
     column = [_alpha_at(frame, centre, y) for y in range(centre - radius - 4, centre - radius + 4)]
     # Partial alpha either side of the solid core is what antialiases it.
     assert any(0 < value < 255 for value in column)
+
+
+def test_idle_cursor_indicator_is_a_broad_glow_with_a_clear_center():
+    box = screen_overlay.RING_BOX
+    centre = box // 2
+    radius = screen_overlay._RING_RADIUS
+    frame = screen_overlay._build_ring_frame(
+        float(radius), screen_overlay._RING_THICKNESS, 1.0
+    )
+
+    assert _alpha_at(frame, centre, centre) == 0
+    radial_alphas = {
+        _alpha_at(frame, centre, centre - distance)
+        for distance in range(10, 33)
+    }
+    assert len({alpha for alpha in radial_alphas if alpha > 0}) >= 5
 
 
 def test_ring_pixels_are_premultiplied():

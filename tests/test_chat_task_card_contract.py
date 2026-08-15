@@ -123,6 +123,35 @@ def test_streaming_text_does_not_use_a_lonely_blinking_cursor():
     assert "content: '';" in cursor_rule
 
 
+def test_screenshots_are_collapsed_inside_the_work_log_by_default():
+    source = frontend_source()
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    start = source.index("    renderScreenshotImage(")
+    end = source.index("\n    showLightbox", start)
+    body = source[start:end]
+
+    assert "const target = this.getRenderTarget();" in body
+    assert "this.chatMessages" not in body
+    assert "const gallery = this._screenshotGallery(target);" in body
+    assert "details.className = 'screenshot-gallery';" in source
+    assert "details.open" not in source[source.index("    _screenshotGallery("):start]
+    assert ".screenshot-gallery-grid" in styles
+
+
+def test_titlebar_grid_cells_preserve_a_native_drag_region():
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+    start = styles.index(".titlebar-left,\n.titlebar-right {")
+    end = styles.index(".titlebar-logo", start)
+    titlebar_rules = styles[start:end]
+
+    assert titlebar_rules.count("-webkit-app-region: drag;") >= 2
+    assert ".app-titlebar button" in styles
+    control_rule = styles[styles.index(".app-titlebar button"):]
+    control_rule = control_rule[:control_rule.index("}")]
+    assert "-webkit-app-region: no-drag;" in control_rule
+
+
 def test_running_composer_supports_steering_and_visible_queue_state():
     source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -324,3 +353,27 @@ def test_model_selector_preserves_a_temporarily_unavailable_current_model():
     assert "Current selection" in body
     assert "temporarily unavailable" in body
     assert "unavailable.selected = true" in body
+
+
+def test_saved_history_is_tail_paged_and_keeps_a_bounded_dom_window():
+    source = frontend_source()
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert handles_event(source, "session_history_page")
+    assert "command: 'get_session_history_page'" in source
+    assert "const MAX_MOUNTED_HISTORY_EVENTS = 1200;" in source
+    assert "Return to latest activity" in source
+    assert "this._loadedHistoryEvents = merged.slice(0, MAX_MOUNTED_HISTORY_EVENTS);" in source
+    assert "Number.isInteger(event?._ledger_seq)" in source
+    assert "this._loadedHistoryEvents.push({ event: 'user_message', text });" in source
+    assert ".session-history-page-control" in styles
+
+
+def test_tool_render_intent_drives_changed_files_and_clickable_deliverables():
+    source = frontend_source()
+
+    assert "event.presentation?.kind" in source
+    assert "event.presentation?.locations" in source
+    assert "command: 'open_workspace_path'" in source
+    assert 'data-file-path="${this.escapeHtml(f.path)}"' in source
+    assert "for (const rawPath of (evidence.changed_files || []))" in source

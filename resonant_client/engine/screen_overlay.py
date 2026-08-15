@@ -292,10 +292,13 @@ def _build_glow_rows(width: int, height: int) -> bytearray:
 # agent moves the real system cursor, the pointer is already visible — what is
 # missing is any signal distinguishing its movement from the user's own.
 
-RING_BOX = 116          # window is square; the ring is centred in it
-_RING_RADIUS = 17
-_RING_THICKNESS = 3.0
-_RING_ALPHA = 225
+RING_BOX = 116          # window is square; the glow is centred in it
+_RING_RADIUS = 18
+# The resting indicator is deliberately a broad, low-alpha halo rather than a
+# narrow ring.  A narrow animated ring reads like Windows' busy cursor; the
+# halo reads as ambient ownership while leaving the actual pointer unobscured.
+_RING_THICKNESS = 18.0
+_RING_ALPHA = 150
 # Click feedback: the ring expands outward and fades. Pre-rendered because
 # re-rasterising on the click path would put Python drawing work between the
 # agent's click and the screenshot that follows it.
@@ -304,15 +307,19 @@ _PULSE_MAX_RADIUS = 46
 
 
 def _build_ring_frame(radius: float, thickness: float, alpha_scale: float) -> bytearray:
-    """One premultiplied BGRA frame containing a soft-edged ring."""
+    """One premultiplied BGRA frame containing a soft cursor halo."""
     red, green, blue = _GLOW_RGB
     size = RING_BOX
     stride = size * 4
     buffer = bytearray(stride * size)
     centre = (size - 1) / 2.0
-    # Antialiasing band: alpha tapers across roughly a pixel either side of the
-    # stroke, which is what stops the ring looking like a jagged circle.
-    feather = 1.2
+    # A wide stroke gets a proportional feather so it fades like emitted light
+    # instead of presenting a crisp progress-ring edge.  The small-thickness
+    # path remains useful for the brief click ripple below.
+    feather = min(
+        max(1.2, thickness * 0.75),
+        max(1.2, radius - thickness / 2 - 2.0),
+    )
 
     for y in range(size):
         dy = y - centre
@@ -321,12 +328,17 @@ def _build_ring_frame(radius: float, thickness: float, alpha_scale: float) -> by
             dx = x - centre
             distance = math.hypot(dx, dy)
             edge = abs(distance - radius)
-            if edge > thickness / 2 + feather:
+            half_stroke = thickness / 2
+            if edge > half_stroke + feather:
                 continue
-            if edge <= thickness / 2:
-                coverage = 1.0
+            if edge <= half_stroke:
+                # Even the brightest part is gently rounded.  This avoids a
+                # visible circular stroke while keeping the cursor-sized hole
+                # in the middle completely transparent.
+                coverage = 0.72 + 0.28 * (1.0 - edge / max(half_stroke, 0.01))
             else:
-                coverage = 1.0 - (edge - thickness / 2) / feather
+                fade = 1.0 - (edge - half_stroke) / feather
+                coverage = fade * fade
             alpha = int(_RING_ALPHA * alpha_scale * coverage)
             if alpha <= 0:
                 continue
@@ -341,7 +353,7 @@ def _build_ring_frame(radius: float, thickness: float, alpha_scale: float) -> by
 class _Overlay:
     """A single click-through, per-pixel-alpha window covering one monitor."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, cursor_indicator: bool = True) -> None:
         self._hwnd = None
         self._wndclass = None
         self._wndproc_ref = None  # must outlive the window
@@ -355,6 +367,7 @@ class _Overlay:
         self._ready = threading.Event()
         self._shutdown = threading.Event()
         self._shown = False
+        self._cursor_indicator = cursor_indicator
         # Cursor ring — a second window, owned by the same thread for the same
         # reason the first one is: cross-thread window calls deadlock.
         self._ring_hwnd = None
@@ -601,7 +614,8 @@ class _Overlay:
             try:
                 if action == "show":
                     self._apply_show(*payload)
-                    self._apply_ring_show()
+                    if self._cursor_indicator:
+                        self._apply_ring_show()
                 elif action == "hide":
                     self._apply_hide()
                 elif action == "click":
@@ -674,14 +688,14 @@ class _Overlay:
         screen_dc = user32.GetDC(None)
         try:
             self._ring_hdc = gdi32.CreateCompatibleDC(screen_dc)
-            # Idle ring first, then the expanding click pulse.
+            # Soft idle halo first, then a narrower expanding click ripple.
             specs = [(float(_RING_RADIUS), _RING_THICKNESS, 1.0)]
             for step in range(1, _PULSE_FRAMES + 1):
                 progress = step / _PULSE_FRAMES
                 specs.append((
                     _RING_RADIUS + (_PULSE_MAX_RADIUS - _RING_RADIUS) * progress,
-                    max(1.2, _RING_THICKNESS * (1.0 - 0.5 * progress)),
-                    1.0 - progress,
+                    max(1.4, 4.0 * (1.0 - 0.55 * progress)),
+                    0.9 * (1.0 - progress),
                 ))
             for radius, thickness, scale in specs:
                 bits = ctypes.c_void_p()
@@ -792,7 +806,11 @@ class _Overlay:
     # ── public surface ───────────────────────────────────────────────
 
     def show(self, x: int, y: int, width: int, height: int) -> bool:
-        return self._submit("show", (x, y, width, height)) is not None
+        # Wait until the border is genuinely visible before returning control
+        # to the desktop action.  Besides being the honest indicator timing,
+        # this lets a second monitor claim a second window instead of racing a
+        # still-queued first show and moving that same window away.
+        return self._submit("show", (x, y, width, height), wait=True) is not None
 
     def hide(self, wait: bool = False) -> None:
         self._submit("hide", (), wait=wait)
@@ -818,6 +836,7 @@ class _Overlay:
 
 
 _overlay: Optional[_Overlay] = None
+_secondary_overlays: list[_Overlay] = []
 _overlay_lock = threading.Lock()
 _suppressed = 0  # >0 while a screen capture is in flight
 
@@ -832,15 +851,58 @@ def _instance() -> Optional[_Overlay]:
         return _overlay
 
 
+def _all_instances() -> list[_Overlay]:
+    """Snapshot every border window, with the cursor owner first."""
+    primary = _instance()
+    if primary is None:
+        return []
+    with _overlay_lock:
+        return [primary, *_secondary_overlays]
+
+
+def _instance_for_region(bounds: tuple[int, int, int, int]) -> Optional[_Overlay]:
+    """Return a border window for ``bounds`` without replacing a live one.
+
+    A single layered window can only draw one rectangular monitor border.  On
+    a multi-display computer the previous implementation simply moved that
+    window whenever activity crossed screens, making one active display lose
+    its indicator.  Keep a small pool instead: visible windows retain their
+    monitor until the shared linger timer expires; hidden ones are reusable.
+    Only the first owns the cursor halo, so multiple borders never duplicate
+    the pointer indicator.
+    """
+    global _secondary_overlays
+    primary = _instance()
+    if primary is None:
+        return None
+    with _overlay_lock:
+        overlays = [primary, *_secondary_overlays]
+        for overlay in overlays:
+            if overlay.visible and overlay._bounds == bounds:
+                return overlay
+        for overlay in overlays:
+            if not overlay.visible:
+                return overlay
+        overlay = _Overlay(cursor_indicator=False)
+        _secondary_overlays.append(overlay)
+        return overlay
+
+
 def show_for_region(x: int, y: int, width: int, height: int) -> bool:
     """Draw the glow around the given screen rectangle."""
     if _suppressed:
         return False
-    overlay = _instance()
+    bounds = (int(x), int(y), int(width), int(height))
+    overlay = _instance_for_region(bounds)
     if overlay is None:
         return False
+    # Repeated desktop actions on the same monitor only need to extend the
+    # linger timer. Avoid a synchronous window redraw when the correct border
+    # is already visible.
+    if overlay.visible and overlay._bounds == bounds:
+        return True
     try:
-        return overlay.show(int(x), int(y), int(width), int(height))
+        return overlay.show(*bounds)
     except Exception:
         logger.debug("Halo overlay failed to show", exc_info=True)
         return False
@@ -884,13 +946,11 @@ def monitor_index_for_point(x: int, y: int) -> Optional[int]:
 
 
 def hide() -> None:
-    overlay = _instance()
-    if overlay is None:
-        return
-    try:
-        overlay.hide()
-    except Exception:
-        logger.debug("Halo overlay failed to hide", exc_info=True)
+    for overlay in _all_instances():
+        try:
+            overlay.hide()
+        except Exception:
+            logger.debug("Halo overlay failed to hide", exc_info=True)
 
 
 def note_click() -> None:
@@ -995,15 +1055,16 @@ def hidden_for_capture():
     the glow on.
     """
     global _suppressed
-    overlay = _instance()
-    was_visible = False
-    bounds = (0, 0, 0, 0)
-    if overlay is not None:
+    overlays = _all_instances()
+    restore: list[tuple[_Overlay, tuple]] = []
+    for overlay in overlays:
         try:
             # Blocking and queue-ordered: the grab must not start until the
             # glow is actually off screen, or it lands in the very image the
             # agent reads.
             was_visible, bounds = overlay.suppress()
+            if was_visible:
+                restore.append((overlay, bounds))
         except Exception:
             logger.debug("Halo overlay suppression failed", exc_info=True)
     _suppressed += 1
@@ -1011,9 +1072,10 @@ def hidden_for_capture():
         yield
     finally:
         _suppressed -= 1
-        if overlay is not None and was_visible:
+        if restore:
             try:
-                overlay.show(*bounds)
+                for overlay, bounds in restore:
+                    overlay.show(*bounds)
                 # Re-arm the linger. The pending timer can fire during the
                 # capture — while the glow is already hidden, so its hide is a
                 # no-op — and the restore would then bring the glow back with

@@ -153,6 +153,7 @@ const RESONANT_EVENT_DELEGATES = {
     'project_files': 'handleProjectFiles',
     'rag_results': 'handleRagResults',
     'session.end': 'handleSessionEnd',
+    'session_history_page': 'handleSessionHistoryPage',
     'session.start': 'handleSessionStart',
     'shell_exec_result': 'handleShellExecResult',
     'skill_view_data': 'handleSkillViewData',
@@ -284,6 +285,10 @@ class ResonantApp {
         this.sessions = [];
         this.allSessions = [];
         this.currentSessionId = '';
+        this._historyPage = null;
+        this._loadedHistoryEvents = [];
+        this._historyLoading = false;
+        this._historyWindowDroppedTail = false;
         this.recentProjects = [];
         this.playgroundProject = null;
         this._projectRailOrder = [];
@@ -1425,6 +1430,13 @@ class ResonantApp {
         this._currentTurn = this._freshTurnAggregate();
         this._resetTaskCardState();
         this.addUserMessage(text, images);
+        if (this._historyPage && this.currentSessionId) {
+            this._loadedHistoryEvents.push({ event: 'user_message', text });
+            this._historyPage = {
+                ...this._historyPage,
+                total_events: Number(this._historyPage.total_events || 0) + 1,
+            };
+        }
         this._resetAgentRunSummary(text);
         this._blockToolRows = new Map();
         this.subagentDepth = 0;
@@ -3048,6 +3060,24 @@ class ResonantApp {
             return;
         }
 
+        // Only ledger-backed stream events carry this cursor. Retain them so
+        // loading an older page during a live continuation cannot repaint a
+        // stale tail and make the new turn disappear.
+        if (
+            this._historyPage
+            && this.currentSessionId
+            && !this.isReplaying
+            && Number.isInteger(event?._ledger_seq)
+        ) {
+            this._loadedHistoryEvents.push({ ...event });
+            this._historyPage = {
+                ...this._historyPage,
+                end_seq: event._ledger_seq,
+                as_of_seq: event._ledger_seq,
+                total_events: Number(this._historyPage.total_events || 0) + 1,
+            };
+        }
+
         // Single-delegation events resolve here; see RESONANT_EVENT_DELEGATES.
         // Checked before the switch so the table is the first place to look,
         // and so a mistyped handler name fails loudly instead of falling
@@ -3269,6 +3299,12 @@ class ResonantApp {
                 this.chatMessages.innerHTML = '';
                 this._resetTaskCardState();
                 this.currentSessionId = event.current_session_id || '';
+                this._historyPage = event.history_page || null;
+                this._loadedHistoryEvents = Array.isArray(event.display_events)
+                    ? event.display_events.slice()
+                    : [];
+                this._historyLoading = false;
+                this._historyWindowDroppedTail = false;
                 this.sessions = event.sessions || [];
                 this.applySessionRoleUI(event.session_role || 'generator');
                 this.sessionRole = event.session_role || this.sessionRole;
@@ -3285,6 +3321,7 @@ class ResonantApp {
                 if (event.display_events && event.display_events.length > 0) {
                     this.replayDisplayEvents(event.display_events);
                 }
+                this._renderHistoryPageControl();
                 // Scroll to bottom after replay
                 this.chatMessages.scrollTop = this.chatMessages.scrollHeight;
                 break;
@@ -3586,11 +3623,18 @@ class ResonantApp {
                 break;
             case 'session.timeline_restored':
                 this.showStatusMessage('Checkpoint restored');
+                this._historyPage = event.history_page || null;
+                this._loadedHistoryEvents = Array.isArray(event.display_events)
+                    ? event.display_events.slice()
+                    : [];
+                this._historyLoading = false;
+                this._historyWindowDroppedTail = false;
                 if (event.display_events) {
                     this.chatMessages.innerHTML = '';
                     this._resetTaskCardState();
                     this.replayDisplayEvents(event.display_events);
                 }
+                this._renderHistoryPageControl();
                 this.send({ command: 'session_timeline_list' });
                 break;
             case 'flight.recorder_list':
@@ -5004,7 +5048,8 @@ class ResonantApp {
             this.trackTerminalStart(callId, name, event.arguments || {});
         }
 
-        if (name === 'file_edit' || name === 'file_write') {
+        const renderKind = event.presentation?.kind || '';
+        if (renderKind === 'edit' || renderKind === 'write' || name === 'file_edit' || name === 'file_write') {
             this._recordAgentFileChange(name, event.arguments || {}, event);
         }
 
@@ -5535,8 +5580,34 @@ class ResonantApp {
 
     // ── Screenshot Image ────────────────────────────────────────
 
+    _screenshotGallery(target) {
+        let details = Array.from(target.children || []).find((child) =>
+            child.classList?.contains('screenshot-gallery')
+        );
+        if (details) return details;
+
+        details = document.createElement('details');
+        details.className = 'screenshot-gallery';
+        details.innerHTML = `
+            <summary>
+                <span class="screenshot-gallery-caret" aria-hidden="true"></span>
+                <span class="screenshot-gallery-title">Screenshots</span>
+                <span class="screenshot-gallery-count">0</span>
+                <span class="screenshot-gallery-hint">Open gallery</span>
+            </summary>
+            <div class="screenshot-gallery-grid"></div>
+        `;
+        // Deliberately omit the `open` attribute. Screenshots are evidence,
+        // while the assistant's succinct result is the primary handoff.
+        target.appendChild(details);
+        return details;
+    }
+
     renderScreenshotImage(base64Data, mediaType, toolName) {
         const category = toolName.startsWith('computer_') ? 'desktop' : '';
+        const target = this.getRenderTarget();
+        const gallery = this._screenshotGallery(target);
+        const grid = gallery.querySelector('.screenshot-gallery-grid');
         const container = document.createElement('div');
         container.className = `screenshot-container ${category}`;
 
@@ -5551,10 +5622,11 @@ class ResonantApp {
         });
 
         container.appendChild(img);
+        grid.appendChild(container);
 
-        // Append to current render target (subagent container or chat)
-        const target = this.subagentContainer || this.chatMessages;
-        target.appendChild(container);
+        const count = grid.childElementCount;
+        const countEl = gallery.querySelector('.screenshot-gallery-count');
+        if (countEl) countEl.textContent = `${count} image${count === 1 ? '' : 's'}`;
 
         // Also push to preview panel
         this.pushPreviewImage(base64Data, mediaType, toolName);
@@ -6395,14 +6467,20 @@ class ResonantApp {
         if (!this._agentRunSummary) {
             this._agentRunSummary = { title: '', fileChanges: [], todos: null };
         }
-        const path = String(args.path || '').replace(/\\/g, '/').trim();
-        if (!path) return;
+        const presented = Array.isArray(event.presentation?.locations)
+            ? event.presentation.locations
+            : [];
+        const paths = (presented.length ? presented : [args.path])
+            .map((value) => String(value || '').replace(/\\/g, '/').trim())
+            .filter((value, index, values) => value && values.indexOf(value) === index);
+        if (!paths.length) return;
 
         let detail = '';
-        if (name === 'file_write') {
+        const renderKind = event.presentation?.kind || '';
+        if (name === 'file_write' || renderKind === 'write') {
             const lines = String(args.content || '').split('\n').length;
             detail = lines ? `Wrote ${lines} line${lines === 1 ? '' : 's'}` : 'Wrote file';
-        } else if (name === 'file_edit') {
+        } else if (name === 'file_edit' || renderKind === 'edit') {
             const dl = event.diff_lines || [];
             let add = 0;
             let del = 0;
@@ -6414,10 +6492,19 @@ class ResonantApp {
         }
 
         const list = this._agentRunSummary.fileChanges;
-        const idx = list.findIndex(c => c.path === path);
-        const entry = { path, tool: name, detail };
-        if (idx >= 0) list[idx] = entry;
-        else list.push(entry);
+        for (const path of paths) {
+            const idx = list.findIndex(c => c.path === path);
+            const entry = { path, tool: name, detail };
+            if (idx >= 0) list[idx] = entry;
+            else list.push(entry);
+        }
+    }
+
+    _openWorkspacePath(path) {
+        const value = String(path || '').trim();
+        if (!value) return;
+        this.send({ command: 'open_workspace_path', path: value });
+        this.showStatusMessage(`Opening ${this.shortenPath(value)}â€¦`);
     }
 
     _selectAlternateModelValue() {
@@ -8642,6 +8729,91 @@ class ResonantApp {
      * Enter replay mode: shows a scrubber over the conversation, lets the user
      * drag through events to "time-travel" through what the agent did.
      */
+    _renderHistoryPageControl() {
+        this.chatMessages?.querySelector('.session-history-page-control')?.remove();
+        const page = this._historyPage;
+        if (!this.chatMessages || !page || (!page.has_more && !this._historyWindowDroppedTail)) return;
+
+        const control = document.createElement('div');
+        control.className = 'session-history-page-control';
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.disabled = this._historyLoading;
+        if (this._historyWindowDroppedTail) {
+            button.textContent = 'Return to latest activity';
+            button.addEventListener('click', () => {
+                if (!this.currentSessionId) return;
+                this.send({ command: 'switch_session', session_id: this.currentSessionId });
+            });
+        } else {
+            const loaded = this._loadedHistoryEvents.length;
+            const total = Number(page.total_events || loaded);
+            button.textContent = this._historyLoading
+                ? 'Loading earlier activity…'
+                : `Load earlier activity · ${loaded} of ${total} events`;
+            button.addEventListener('click', () => this._loadOlderHistory());
+        }
+        control.appendChild(button);
+        this.chatMessages.prepend(control);
+    }
+
+    _loadOlderHistory() {
+        if (this._historyLoading || !this._historyPage?.has_more || !this.currentSessionId) return;
+        this._historyLoading = true;
+        this._renderHistoryPageControl();
+        this.send({
+            command: 'get_session_history_page',
+            session_id: this.currentSessionId,
+            before_seq: this._historyPage.start_seq,
+            limit: 240,
+        });
+    }
+
+    handleSessionHistoryPage(event) {
+        if (event.session_id !== this.currentSessionId) return;
+        this._historyLoading = false;
+        if (event.error) {
+            this.showStatusMessage(`Could not load earlier activity: ${event.error}`);
+            this._renderHistoryPageControl();
+            return;
+        }
+
+        const page = event.page || {};
+        const older = Array.isArray(page.events) ? page.events : [];
+        const existingSeqs = new Set(
+            this._loadedHistoryEvents.map((item) => item && item._ledger_seq)
+                .filter((value) => value !== undefined),
+        );
+        const merged = [
+            ...older.filter((item) => !existingSeqs.has(item && item._ledger_seq)),
+            ...this._loadedHistoryEvents,
+        ];
+
+        // A bounded event window keeps the DOM genuinely bounded. Loading far
+        // into the past drops the newer tail from this temporary inspection
+        // window; one click restores the authoritative latest page.
+        const MAX_MOUNTED_HISTORY_EVENTS = 1200;
+        this._historyWindowDroppedTail = merged.length > MAX_MOUNTED_HISTORY_EVENTS;
+        this._loadedHistoryEvents = merged.slice(0, MAX_MOUNTED_HISTORY_EVENTS);
+        const lastLoaded = this._loadedHistoryEvents[this._loadedHistoryEvents.length - 1];
+        this._historyPage = {
+            ...page,
+            end_seq: lastLoaded?._ledger_seq ?? page.end_seq,
+        };
+
+        const scrollSurface = this.chatContainer || this.chatMessages;
+        const previousHeight = scrollSurface.scrollHeight;
+        const previousTop = scrollSurface.scrollTop;
+        this.chatMessages.innerHTML = '';
+        this._resetTaskCardState();
+        this.replayDisplayEvents(this._loadedHistoryEvents);
+        this._renderHistoryPageControl();
+        requestAnimationFrame(() => {
+            const addedHeight = Math.max(0, scrollSurface.scrollHeight - previousHeight);
+            scrollSurface.scrollTop = previousTop + addedHeight;
+        });
+    }
+
     enterReplayMode(events, title = '') {
         if (!Array.isArray(events) || events.length === 0) {
             this.showStatusMessage('No replay events for this session');

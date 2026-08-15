@@ -63,6 +63,7 @@ class TestMalformedToolArgs:
         assert tc_events[0]["arguments"] == {}
         # The original arguments_str preserved verbatim.
         assert tc_events[0]["arguments_str"] == "not-json-at-all"
+        assert tc_events[0]["presentation"]["kind"] == "generic"
 
 
 # ── Hook denial path ───────────────────────────────────────────────────

@@ -151,3 +151,42 @@ def test_prepare_extension_reports_missing_source(tmp_path, monkeypatch):
     """A missing extension degrades grouping; it must not raise."""
     monkeypatch.setattr(browser, "_extension_source_dir", lambda: None)
     assert browser._prepare_extension(str(tmp_path), "x", "purple") is None
+
+
+def test_session_name_becomes_the_compact_tab_group_label():
+    assert browser._group_title("  Fix   the title bar  ") == "Fix the title bar"
+    assert browser._group_title("New session") == browser._GROUP_TITLE
+    assert len(browser._group_title("x" * 100)) == 60
+
+
+def test_connected_browser_still_refreshes_the_session_indicator(monkeypatch):
+    class ConnectedManager:
+        is_connected = True
+
+        def __init__(self):
+            self.ensure_calls = 0
+
+        def ensure_started(self):
+            self.ensure_calls += 1
+            return "Browser ready"
+
+    manager = ConnectedManager()
+    monkeypatch.setattr(browser, "get_browser", lambda: manager)
+
+    assert browser._ensure(0.0) is None
+    assert manager.ensure_calls == 1
+
+
+def test_extension_can_refresh_the_native_group_for_the_active_session():
+    source = (EXTENSION / "background.js").read_text(encoding="utf-8")
+    browser_source = (REPO / "resonant_client" / "engine" / "browser.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "globalThis.configureResonantGroup" in source
+    assert "title: GROUP_TITLE" in source
+    assert "color: GROUP_COLOR" in source
+    assert "collapsed: false" in source
+    assert 'self._conn.call("Target.activateTarget"' in browser_source
+    assert '"ServiceWorker.startWorker"' in browser_source
+    assert "await_promise=True" in browser_source

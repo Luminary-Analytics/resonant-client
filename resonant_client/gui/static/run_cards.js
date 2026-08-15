@@ -548,16 +548,12 @@ class ResonantRunCards {
             });
         });
 
-        // Make file paths copyable on click
+        // Produced files are first-class deliverables: open them directly.
         el.querySelectorAll('[data-file-path]').forEach((codeEl) => {
             codeEl.style.cursor = 'pointer';
             codeEl.addEventListener('click', () => {
                 const p = codeEl.dataset.filePath || '';
-                if (!p) return;
-                if (navigator.clipboard?.writeText) {
-                    navigator.clipboard.writeText(p);
-                    this.showStatusMessage(`Copied: ${p}`);
-                }
+                this._openWorkspacePath(p);
             });
         });
 
@@ -575,9 +571,15 @@ class ResonantRunCards {
         const elapsed = event.total_elapsed || t.totalElapsed || 0;
         const steps = event.total_steps || t.stepCount || 0;
         const tools = t.toolCallCount || 0;
-        const files = (this._agentRunSummary && this._agentRunSummary.fileChanges) || [];
         const todos = (this._agentRunSummary && this._agentRunSummary.todos) || null;
         const evidence = event.evidence || {};
+        const files = (this._agentRunSummary && this._agentRunSummary.fileChanges) || [];
+        for (const rawPath of (evidence.changed_files || [])) {
+            const path = String(rawPath || '').replace(/\\/g, '/').trim();
+            if (path && !files.some((entry) => entry.path === path)) {
+                files.push({ path, tool: 'evidence', detail: 'Changed' });
+            }
+        }
         const hasVisibleResult = !!(task.resultEl && task.resultEl.textContent.trim());
         const legacyOutcome = files.length > 0
             ? 'changed_unverified'
@@ -678,12 +680,18 @@ class ResonantRunCards {
                 <summary>Changed files</summary>
                 <ol>${files.slice(0, 12).map((f) => `
                     <li>
-                        <code title="${this.escapeHtml(f.path)}">${this.escapeHtml(this.shortenPath(f.path))}</code>
+                        <code class="task-change-path" data-file-path="${this.escapeHtml(f.path)}" title="Open ${this.escapeHtml(f.path)}">${this.escapeHtml(this.shortenPath(f.path))}</code>
                         ${f.detail ? `<span>${this.escapeHtml(f.detail)}</span>` : ''}
                     </li>
                 `).join('')}</ol>
                 ${files.length > 12 ? `<div class="task-change-more">${files.length - 12} more</div>` : ''}
             `;
+            changes.querySelectorAll('[data-file-path]').forEach((codeEl) => {
+                codeEl.addEventListener('click', (clickEvent) => {
+                    clickEvent.stopPropagation();
+                    this._openWorkspacePath(codeEl.dataset.filePath || '');
+                });
+            });
             task.footerEl.appendChild(changes);
         }
     }

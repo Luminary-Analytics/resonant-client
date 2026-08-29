@@ -20,7 +20,10 @@ _CHANGE_REQUEST = re.compile(
     re.IGNORECASE,
 )
 _WORKSPACE_CHANGE_PROHIBITION = re.compile(
-    r"(?:\b(?:do\s+not|don't|never)\s+(?:edit|modify|change|write|touch)\s+"
+    r"(?:\b(?:do\s+not|don't|never)\b"
+    r"(?=[^.!?\n]{0,120}\b(?:configure|install|edit|modify|change|write|touch)\b)"
+    r"[^.!?\n]{0,120}\b(?:anything|files?|the\s+(?:workspace|repo(?:sitory)?|project|codebase))\b|"
+    r"\b(?:do\s+not|don't|never)\s+(?:edit|modify|change|write|touch)\s+"
     r"(?:any\s+)?(?:files?|anything|the\s+(?:workspace|repo(?:sitory)?|project|codebase))\b|"
     r"\bwithout\s+(?:editing|modifying|changing|writing|touching)\s+"
     r"(?:any\s+)?(?:files?|anything|the\s+(?:workspace|repo(?:sitory)?|project|codebase))\b)",

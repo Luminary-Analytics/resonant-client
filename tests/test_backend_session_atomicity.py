@@ -151,6 +151,30 @@ def test_runtime_reason_names_the_real_failure(state):
     assert "No backend selected" not in reason
 
 
+def test_saved_session_recovery_prefers_the_same_model_on_a_live_provider(state):
+    state.available_backends = {
+        "ollama": {"models": ["glm-5.2:cloud"]},
+        "exo": {"models": ["glm-5.2", "kimi-k3"]},
+        "codex": {"models": ["gpt-5.6-sol"]},
+    }
+
+    assert state.recovery_chat_backend_choice(
+        "ollama", "glm-5.2:cloud"
+    ) == ("exo", "glm-5.2")
+
+
+def test_saved_session_recovery_excludes_the_failed_provider(state):
+    state.available_backends = {
+        "ollama": {"models": ["glm-5.2:cloud"]},
+        "kimi": {"models": ["kimi-k3"]},
+    }
+    state.settings.set("general", "default_backend", "ollama")
+
+    assert state.recovery_chat_backend_choice(
+        "ollama", "missing-model"
+    ) == ("kimi", "kimi-k3")
+
+
 def test_init_data_reports_runtime_readiness_separately_from_backend(state, monkeypatch):
     """`current_backend` must not be the UI's proxy for "can I send?".
 

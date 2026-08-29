@@ -14,6 +14,9 @@ def test_change_request_and_action_promise_detection():
     assert not request_requires_workspace_change(
         "Review the parser without editing the workspace."
     )
+    assert not request_requires_workspace_change(
+        "Do not configure, install, or change anything. Report what is available."
+    )
     assert response_promises_future_action(
         "Let me rewrite it cleanly, then run it to verify."
     )

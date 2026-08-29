@@ -52,6 +52,50 @@ def test_every_registered_command_is_unique_and_callable():
         assert asyncio.iscoroutinefunction(handler), name
 
 
+def test_init_restores_current_conversation_without_rebuilding_runtime():
+    snapshot = {
+        "page": {"events": [{"event": "user_message", "text": "hello"}]},
+        "projections": {"stats": {"turns": 1}},
+    }
+    record = SimpleNamespace(history_snapshot=lambda **_kwargs: snapshot)
+    state = SimpleNamespace(
+        backend=object(),
+        available_backends={},
+        project=SimpleNamespace(current_session=record),
+        get_init_data=lambda: {"event": "init", "current_session_id": "s1"},
+    )
+
+    runs = SimpleNamespace(
+        busy=True,
+        started_at=1234.5,
+        pending=[
+            {"message_id": "follow-1", "text": "keep checking"},
+            {"message_id": "follow-2", "text": "then summarize"},
+        ],
+    )
+    sent = _run(ws_commands.HANDLERS["init"], _ctx(state=state, runs=runs))
+
+    assert sent[0]["current_display_events"] == snapshot["page"]["events"]
+    assert sent[0]["current_history_page"] == snapshot["page"]
+    assert sent[0]["current_projections"] == snapshot["projections"]
+    assert sent[0]["run_active"] is True
+    assert sent[0]["run_started_at"] == 1234.5
+    assert sent[0]["queued_messages"] == [
+        {
+            "message_id": "follow-1",
+            "text": "keep checking",
+            "position": 1,
+            "steering": False,
+        },
+        {
+            "message_id": "follow-2",
+            "text": "then summarize",
+            "position": 2,
+            "steering": False,
+        },
+    ]
+
+
 def test_registering_a_duplicate_command_is_rejected():
     # Two handlers silently claiming one command is the failure mode a plain
     # elif-chain made impossible to notice.
@@ -337,6 +381,68 @@ def test_session_history_page_rejects_a_malformed_cursor():
     )
 
     assert sent[0]["error"] == "invalid paging cursor"
+
+
+def test_switch_session_recovers_from_an_unavailable_saved_provider():
+    saved = []
+    record = SimpleNamespace(
+        id="s1",
+        title="Old GLM session",
+        backend_type="ollama",
+        model="glm-5.2:cloud",
+        message_count=1,
+        session_role="generator",
+        thinking_mode="",
+        conversation_history=[{"role": "user", "content": "hello"}],
+        history_snapshot=lambda **_kwargs: {
+            "page": {"events": [{"event": "user_message", "text": "hello"}]},
+            "projections": {},
+        },
+    )
+    project = SimpleNamespace(
+        project_path="/tmp/project",
+        current_session=record,
+        load_session=lambda _id, **_kwargs: record,
+        list_sessions=lambda: [],
+        save_current_session=lambda session: saved.append(session),
+    )
+    state = SimpleNamespace(
+        project=project,
+        backend=None,
+        backend_spec=None,
+        session=None,
+        _first_message_sent=False,
+        _normalize_path=lambda value: value,
+        recovery_chat_backend_choice=lambda *_args: ("exo", "glm-5.2"),
+        get_init_data=lambda refresh_only=False: {
+            "event": "init", "runtime_ready": True,
+        },
+    )
+
+    def create_backend(backend_type, model, **_kwargs):
+        if backend_type == "ollama":
+            raise RuntimeError("Ollama is not reachable")
+        state.backend = SimpleNamespace(name=backend_type, model=model)
+        state.backend_spec = SimpleNamespace(thinking_mode="")
+        state.session = SimpleNamespace(conversation_history=[])
+
+    state.create_backend = create_backend
+    state.restore_session_runtime = create_backend
+
+    sent = _run(
+        ws_commands.HANDLERS["switch_session"],
+        _ctx(msg={"session_id": "s1"}, state=state),
+    )
+
+    assert state.session.conversation_history == record.conversation_history
+    assert (record.backend_type, record.model) == ("exo", "glm-5.2")
+    assert saved == [state.session]
+    assert any(
+        event.get("event") == "status_msg"
+        and "Continuing with exo (glm-5.2)" in event.get("message", "")
+        for event in sent
+    )
+    assert not any("runtime is unavailable" in event.get("message", "") for event in sent)
 
 
 def test_open_workspace_path_opens_a_file_inside_the_active_project(tmp_path):

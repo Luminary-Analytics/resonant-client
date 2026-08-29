@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from typing import Any, Awaitable, Callable
 
@@ -54,6 +55,40 @@ class ChatRunLoop:
         self.cancel_request_id: str | None = None
         # Per-connection memo for `clear`, which is idempotent by request id.
         self.clear_cache: dict[str, dict[str, Any]] = {}
+        self.started_at: float | None = None
+
+    def attach(
+        self,
+        ws: Any,
+        process: Callable[[Any, dict[str, Any]], Awaitable[None]] | None = None,
+    ) -> None:
+        """Route future run events to the newest connected client."""
+        self.ws = ws
+        if process is not None:
+            self._process = process
+
+    def detach(self, ws: Any) -> None:
+        """Detach one viewer without cancelling the server-owned run."""
+        if self.ws is ws:
+            self.ws = None
+
+    async def send_json(self, payload: dict[str, Any]) -> bool:
+        """Best-effort delivery to the currently attached client.
+
+        Session events are persisted independently. A browser refresh must not
+        turn a temporary lack of viewers into an agent cancellation.
+        """
+        target = self.ws
+        if target is None:
+            return False
+        try:
+            await target.send_json(payload)
+            return True
+        except Exception:
+            if self.ws is target:
+                self.ws = None
+            logger.debug("Chat event retained while no client is attached", exc_info=True)
+            return False
 
     @property
     def busy(self) -> bool:
@@ -71,7 +106,7 @@ class ChatRunLoop:
         queued = dict(msg, message_id=message_id, _was_queued=running)
         self.pending.append(queued)
         if running:
-            await self.ws.send_json({
+            await self.send_json({
                 "event": "message.queued",
                 "message_id": message_id,
                 "text": queued.get("text", ""),
@@ -79,6 +114,7 @@ class ChatRunLoop:
                 "steering": False,
             })
         else:
+            self.started_at = time.time()
             self.task = asyncio.create_task(self._drain())
 
     async def _drain(self) -> None:
@@ -87,29 +123,30 @@ class ChatRunLoop:
                 queued = self.pending.pop(0)
                 try:
                     if queued.get("_was_queued"):
-                        await self.ws.send_json({
+                        await self.send_json({
                             "event": "message.started",
                             "message_id": queued.get("message_id", ""),
                             "text": queued.get("text", ""),
                         })
-                    await self._process(self.ws, queued)
+                    await self._process(self, queued)
                 except WebSocketDisconnect:
                     raise
                 except Exception as exc:
                     logger.exception("queued chat turn failed")
                     try:
-                        await self.ws.send_json({"event": "error", "message": str(exc)})
+                        await self.send_json({"event": "error", "message": str(exc)})
                     except Exception:
                         pass
         except WebSocketDisconnect:
             raise
         finally:
             self.task = None
+            self.started_at = None
             if self.cancel_request_id:
                 completed_id = self.cancel_request_id
                 self.cancel_request_id = None
                 try:
-                    await self.ws.send_json({
+                    await self.send_json({
                         "event": "cancel.completed",
                         "cancel_id": completed_id,
                     })
@@ -123,3 +160,4 @@ class ChatRunLoop:
         `busy`, or a concurrent message would start a second turn on top of it.
         """
         self.task = task
+        self.started_at = time.time()

@@ -55,6 +55,7 @@ def test_profiles_share_model_neutral_guidance():
         assert "Never claim an action or check that did not complete" in prompt
         assert "Continue through ordinary\n  tool failures" in prompt
         assert "Delegate only bounded independent work" in prompt
+        assert "use `task_batch` so they actually run\n  concurrently" in prompt
         assert "Use `await_user` only for one consequential requirement" in prompt
         assert "set `recommended_option` to that exact value" in prompt
         assert "reuse settled evidence instead of\nrediscovering it" in prompt
@@ -121,6 +122,33 @@ def test_subagent_profile_is_wired_into_child_session():
     completed = next(event for event in events if event["event"] == "subagent.end")
     assert completed["call_id"] == "task-1"
     assert completed["result"] == "(no output)"
+
+
+def test_subagent_step_budget_with_useful_output_is_not_a_generic_failure():
+    parent = Session(backend=StreamingBackend(), max_steps=1)
+
+    def fake_run(_child, user_msg, **_kwargs):
+        assert user_msg == "Audit the parser"
+        yield {"event": "text.done", "text": "Confirmed two useful findings."}
+        yield {"event": "step.end", "step": 4, "elapsed": 1.0}
+        yield {"event": "error", "message": "Reached 4 step limit — use /clear to reset"}
+        yield {"event": "session.end", "reason": "max_steps"}
+
+    with patch.object(Session, "run", fake_run):
+        events = list(parent._execute_task(
+            fn_args={"prompt": "Audit the parser", "agent_type": "explore", "max_steps": 4},
+            call_id="task-budget",
+            fn_args_str='{"agent_type":"explore","prompt":"Audit the parser"}',
+        ))
+
+    completed = next(event for event in events if event["event"] == "subagent.end")
+    result = next(
+        event for event in events
+        if event["event"] == "tool.result" and event["name"] == "task"
+    )
+    assert completed["handoff"]["outcome"] == "completed"
+    assert result["is_error"] is False
+    assert "Budget exhausted after useful output" in result["output"]
 
 
 def test_profile_metadata_matches_rendered_family():

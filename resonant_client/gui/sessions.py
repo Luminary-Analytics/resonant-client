@@ -568,12 +568,30 @@ class SessionRecord:
         return self.ledger.projections()
 
     def history_snapshot(
-        self, *, before_seq: int | None = None, limit: int = 240
+        self,
+        *,
+        before_seq: int | None = None,
+        limit: int = 240,
+        hydrate: bool = False,
     ) -> dict:
-        """Return a page and projections from one committed ledger snapshot."""
-        if not self.ledger.path.exists():
-            self.ledger.seed(self.conversation_history, self.display_events)
-        return self.ledger.history_snapshot(before_seq=before_seq, limit=limit)
+        """Return a page and projections from one committed ledger snapshot.
+
+        ``hydrate=True`` also restores the compatibility arrays used by the
+        live engine from that same parse. Session switching used to hydrate the
+        record and then parse the ledger a second time for the visible page.
+        """
+        ledger = self.ledger
+        if not ledger.path.exists():
+            ledger.seed(self.conversation_history, self.display_events)
+        records = ledger.read_records()
+        if hydrate:
+            self.conversation_history = ledger.project_conversation(records=records)
+            self.display_events = ledger.project_display_events(records=records)
+        return ledger.history_snapshot(
+            before_seq=before_seq,
+            limit=limit,
+            records=records,
+        )
 
     def to_dict(self, *, include_histories: bool = True) -> dict:
         # Field order matters: small metadata fields go FIRST so the

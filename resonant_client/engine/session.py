@@ -3336,6 +3336,7 @@ class Session:
         changed_files: list[str] = []
         validation: list[str] = []
         errors: list[str] = []
+        budget_limits: list[str] = []
 
         for event in child.run(
             user_msg=prompt,
@@ -3387,7 +3388,15 @@ class Session:
                     outcome = "failed" if event.get("is_error") else "passed"
                     validation.append(f"{name}: {outcome}")
             elif etype == EngineEvent.ERROR.value:
-                errors.append(str(event.get("message") or "Worker error"))
+                message = str(event.get("message") or "Worker error")
+                # A bounded worker that used its entire step budget and still
+                # produced a useful handoff is not a crashed worker. Preserve
+                # the budget cap as evidence without painting the sub-task as
+                # a generic red failure in the parent UI.
+                if "step limit" in message.lower() and collected_text:
+                    budget_limits.append(message)
+                else:
+                    errors.append(message)
 
         worker_done.set()
         sub_elapsed = time.time() - sub_start
@@ -3427,7 +3436,11 @@ class Session:
         handoff = AgentHandoff(
             outcome=outcome,
             summary=summary,
-            evidence=[f"{sub_steps} worker steps", f"{sub_elapsed:.1f}s elapsed"],
+            evidence=[
+                f"{sub_steps} worker steps",
+                f"{sub_elapsed:.1f}s elapsed",
+                *[f"Budget exhausted after useful output: {item}" for item in budget_limits],
+            ],
             changed_files=changed_files,
             validation=validation,
             blockers=errors,

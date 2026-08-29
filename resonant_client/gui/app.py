@@ -884,11 +884,9 @@ class AppState:
             # rest of the session, and the user is told Ollama is down while it
             # is plainly running. Re-probe before making the claim.
             #
-            # Only when the cache is actually stale. Callers such as
-            # `set_project` probe immediately before calling this, and probing
-            # twice against an unreachable host doubled the stall on every
-            # project switch — two connect timeouts back to back, with the UI
-            # waiting on both.
+            # Only when the cache is actually stale. Explicit refresh and
+            # settings paths probe separately; ordinary project navigation
+            # intentionally stays off this network-bound path.
             logger.info("Ollama absent from a stale probe; re-detecting before failing")
             self.detect_backends()
             info = self.available_backends.get("ollama")
@@ -1213,6 +1211,55 @@ class AppState:
         self.apply_permission_mode(self.permission_mode, session=self.session)
         return self.backend
 
+    def restore_session_runtime(
+        self,
+        backend_type: str,
+        model: str = None,
+        *,
+        session_mode: str = "code",
+        session_role: str = "generator",
+        thinking_mode: str = "",
+    ):
+        """Activate a saved session while reusing a compatible HTTP runtime.
+
+        Provider clients for Ollama, EXO, and Kimi are conversation-stateless;
+        the engine session owns the history. Rebuilding those clients on every
+        sidebar click adds connection setup without changing behavior. CLI
+        wrappers are deliberately excluded because their process/session state
+        is meaningful and must not leak between conversations.
+        """
+        current_spec = self.backend_spec
+        reusable = bool(
+            self.backend
+            and current_spec
+            and backend_type not in self.CLI_WRAPPED_BACKENDS
+            and current_spec.backend_type == backend_type
+            and (current_spec.model or "") == (model or "")
+            and (
+                backend_type != "ollama"
+                or (current_spec.thinking_mode or "") == (thinking_mode or "")
+            )
+        )
+        if not reusable:
+            return self.create_backend(
+                backend_type,
+                model,
+                session_mode=session_mode,
+                session_role=session_role,
+            )
+
+        session = self.build_session(
+            backend=self.backend,
+            backend_spec=current_spec,
+            project_path=self.project.project_path,
+            session_mode=session_mode,
+            session_role=session_role,
+        )
+        self.session = session
+        self.runtime_error = ""
+        self.apply_permission_mode(self.permission_mode, session=session)
+        return self.backend
+
     def mcp_unavailable_servers(self) -> list[dict]:
         """Enabled MCP servers that are configured but not connected.
 
@@ -1277,6 +1324,53 @@ class AppState:
                 return backend_type, self._resolve_default_model(models)
         return "", ""
 
+    def recovery_chat_backend_choice(
+        self,
+        failed_backend: str,
+        preferred_model: str = "",
+    ) -> tuple[str, str]:
+        """Choose a healthy runtime when a saved provider is unavailable.
+
+        Session history belongs to the conversation, not to the process that
+        originally served it. Prefer the same model on another detected
+        provider, then fall back to the user's normal provider order. The
+        failed provider is excluded because its discovery entry may be a stale
+        startup snapshot.
+        """
+        failed = str(failed_backend or "").strip().lower()
+
+        def model_key(value: str) -> str:
+            key = str(value or "").strip().lower()
+            if key.endswith(":cloud"):
+                key = key[:-len(":cloud")]
+            return key.rsplit("/", 1)[-1]
+
+        wanted = model_key(preferred_model)
+        if wanted:
+            for backend_type, info in self.available_backends.items():
+                if str(backend_type).lower() == failed:
+                    continue
+                for model in list((info or {}).get("models") or []):
+                    if model_key(model) == wanted:
+                        return str(backend_type), str(model)
+
+        configured = str(
+            self.settings.get("general", "default_backend", "") or ""
+        ).strip().lower()
+        backend_order = []
+        if configured and configured != failed:
+            backend_order.append(configured)
+        backend_order.extend(
+            backend_type
+            for backend_type in ("exo", "kimi", "codex", "claude-code", "ollama")
+            if backend_type != failed and backend_type not in backend_order
+        )
+        for backend_type in backend_order:
+            models = list((self.available_backends.get(backend_type) or {}).get("models") or [])
+            if models:
+                return backend_type, self._resolve_default_model(models)
+        return "", ""
+
     def project_chat_backend_choice(self) -> tuple[str, str]:
         """Prefer the model this project most recently used.
 
@@ -1315,7 +1409,7 @@ class AppState:
             backend_type, model = self.project_chat_backend_choice()
             if not backend_type or not model:
                 return False
-            self.create_backend(
+            self.restore_session_runtime(
                 backend_type,
                 model,
                 session_mode="code",
@@ -1802,7 +1896,9 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     state._first_message_sent = True
 
     state.cancel_requested.clear()
-    state.session.reset_cancel()
+    reset_cancel = getattr(state.session, "reset_cancel", None)
+    if callable(reset_cancel):
+        reset_cancel()
     display_events = await _run_session_streaming(
         ws,
         state.session,
@@ -1815,7 +1911,9 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     # Close the run's steering window before the next serialized chat turn.
     # This catches the tiny race where direction arrives after the engine's
     # final safe boundary but before the websocket runner marks itself idle.
-    state.session.discard_steering()
+    discard_steering = getattr(state.session, "discard_steering", None)
+    if callable(discard_steering):
+        discard_steering()
 
     state.project.save_current_session(state.session, display_events=display_events)
     await ws.send_json({
@@ -1831,11 +1929,15 @@ async def websocket_endpoint(ws: WebSocket):
     """Main WebSocket handler — bidirectional communication with frontend."""
     await ws.accept()
 
-    # The per-connection chat state used to be four locals and two closures
-    # here, which is precisely why the commands that touch it could not move
-    # into ws_commands.py — not conceptual entanglement, just unreachable
-    # scope. See gui/chat_loop.py.
-    runs = ChatRunLoop(ws, _process_chat_message)
+    # The run belongs to the application session, not to one browser socket.
+    # Reuse it across reconnects so refreshing the UI merely swaps the viewer
+    # while the engine thread, queued follow-ups, and cancellation controls live on.
+    runs = getattr(state, "_chat_run_loop", None)
+    if runs is None:
+        runs = ChatRunLoop(ws, _process_chat_message)
+        state._chat_run_loop = runs
+    else:
+        runs.attach(ws, _process_chat_message)
 
     # Store WebSocket ref for live agent event streaming
     state._ws_ref = ws
@@ -1936,7 +2038,7 @@ async def websocket_endpoint(ws: WebSocket):
                     "completed_steps": assignment["completed_steps"],
                 })
                 runs.adopt(asyncio.ensure_future(_run_session_streaming(
-                    ws,
+                    runs,
                     state.session,
                     assignment["prompt"],
                     display_user_msg=(
@@ -2428,12 +2530,9 @@ async def websocket_endpoint(ws: WebSocket):
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
     finally:
-        runs.pending.clear()
-        if runs.busy:
-            state.cancel_requested.set()
-            if state.session:
-                state.session.cancel()
-            runs.task.cancel()
+        runs.detach(ws)
+        if getattr(state, "_ws_ref", None) is ws:
+            state._ws_ref = None
 
 
 _STREAM_DELTA_COALESCE_SECONDS = 0.012
@@ -2527,8 +2626,8 @@ async def _run_session_streaming(
             active_record.append_display_events([user_display_event])
         except Exception:
             logger.warning("Unable to append user event to session ledger", exc_info=True)
-    session.checkpoint_display_provider = lambda: list(
-        getattr(state.project.current_session, "display_events", []) or []
+    session.checkpoint_display_provider = lambda record=active_record: list(
+        getattr(record, "display_events", []) or []
     )
 
     def on_permission(tool_name, tool_args):
@@ -2631,7 +2730,9 @@ async def _run_session_streaming(
             event = await loop.run_in_executor(None, _get_event)
             if event is None:
                 break
-            session._log_event(event)
+            log_event = getattr(session, "_log_event", None)
+            if callable(log_event):
+                log_event(event)
             # Enrich file_edit events with diff lines for frontend rendering
             if event.get("event") == EngineEvent.TOOL_CALL.value and event.get("name") == "file_edit":
                 args = event.get("arguments", {})
@@ -2757,7 +2858,6 @@ async def _run_session_streaming(
             # Collect display events for session replay (skip streaming deltas)
             if event_type not in SKIP_FOR_REPLAY:
                 display_events.append(event)
-                active_record = getattr(state.project, "current_session", None)
                 if active_record is not None:
                     try:
                         seqs = active_record.append_display_events([event])
@@ -2775,8 +2875,10 @@ async def _run_session_streaming(
             try:
                 await ws.send_json(event)
             except Exception:
-                session.cancel()
-                break
+                # The ledger is the source of truth and the run is server-owned.
+                # Keep draining/persisting while the client is temporarily away;
+                # ChatRunLoop.send_json will resume delivery after attach().
+                logger.debug("Run event persisted while client is detached", exc_info=True)
 
         if harness_parse_error:
             await ws.send_json({"event": "error", "message": harness_parse_error})
@@ -2800,8 +2902,8 @@ async def _run_session_streaming(
                 await ws.send_json({"event": "error", "message": f"Failed to apply harness update: {exc}"})
     finally:
         state.active_thread = None
-        session.checkpoint_display_provider = lambda: list(
-            getattr(state.project.current_session, "display_events", []) or []
+        session.checkpoint_display_provider = lambda record=active_record: list(
+            getattr(record, "display_events", []) or []
         )
 
     return display_events

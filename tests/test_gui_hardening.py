@@ -201,6 +201,82 @@ def test_app_state_applies_project_context_and_builds_project_scoped_session(mon
     assert "project two instructions" in (session.project_instructions or "")
 
 
+def test_saved_http_session_reuses_compatible_provider_client(monkeypatch, tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".resonant").mkdir()
+
+    app_module = _load_app_module(monkeypatch, project)
+    monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self, force=False: {})
+    state = app_module.AppState()
+    backend = _DummyBackend(name="kimi", model="kimi-k3")
+    state.backend = backend
+    state.backend_spec = BackendSpec(backend_type="kimi", model="kimi-k3")
+    monkeypatch.setattr(
+        state,
+        "create_backend",
+        lambda *_args, **_kwargs: pytest.fail("compatible provider should be reused"),
+    )
+
+    restored = state.restore_session_runtime("kimi", "kimi-k3")
+
+    assert restored is backend
+    assert state.session.backend is backend
+    assert state.session.project_path == os.path.normpath(str(project))
+
+
+def test_worker_errors_are_not_promoted_to_duplicate_turn_failures():
+    repo_root = Path(__file__).parent.parent
+    source = (repo_root / "resonant_client/gui/static/app.js").read_text(encoding="utf-8")
+
+    assert "if (event._subagent) this.handleSubagentError(event);" in source
+    assert "if (!this._activeTask)" in source
+    assert "if (this.isReplaying) return;" in source
+    assert "this._activeTask?.activityEl" in source
+
+
+def test_websocket_disconnect_detaches_viewer_without_cancelling_run():
+    import inspect
+
+    from resonant_client.gui import app as gui_app
+
+    endpoint_source = inspect.getsource(gui_app.websocket_endpoint)
+    stream_source = inspect.getsource(gui_app._run_session_streaming)
+
+    assert 'getattr(state, "_chat_run_loop", None)' in endpoint_source
+    assert "runs.attach(ws, _process_chat_message)" in endpoint_source
+    assert "runs.detach(ws)" in endpoint_source
+    finally_body = endpoint_source[endpoint_source.rindex("    finally:") :]
+    assert "state.session.cancel()" not in finally_body
+    assert "runs.task.cancel()" not in finally_body
+    assert "session.cancel()" not in stream_source
+
+
+def test_streaming_persists_to_the_record_that_started_the_run():
+    """Changing the selected sidebar session must not redirect a live ledger."""
+    import inspect
+
+    from resonant_client.gui import app as gui_app
+
+    source = inspect.getsource(gui_app._run_session_streaming)
+
+    assert source.count(
+        'active_record = getattr(state.project, "current_session", None)'
+    ) == 1
+    assert "lambda record=active_record" in source
+
+
+def test_project_switch_does_not_reprobe_global_providers():
+    repo_root = Path(__file__).parent.parent
+    from resonant_client.gui import ws_commands
+    import inspect
+
+    source = inspect.getsource(ws_commands.HANDLERS["set_project"])
+
+    assert "state.detect_backends" not in source
+    assert "state.backend = None" not in source
+
+
 def test_project_rail_puts_add_first_and_has_no_permanent_brand():
     repo_root = Path(__file__).parent.parent
     template = (repo_root / "resonant_client/gui/templates/index.html").read_text(

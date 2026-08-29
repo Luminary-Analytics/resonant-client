@@ -150,6 +150,36 @@ def test_an_adopted_run_counts_as_busy():
     assert busy_after is False
 
 
+def test_reconnect_reattaches_without_cancelling_the_active_turn():
+    async def scenario():
+        first = _StubWS()
+        second = _StubWS()
+        gate = asyncio.Event()
+
+        async def slow(run_socket, _msg):
+            await gate.wait()
+            await run_socket.send_json({"event": "progress", "value": 2})
+
+        runs = ChatRunLoop(first, slow)
+        await runs.enqueue({"text": "long task"})
+        await asyncio.sleep(0)
+        assert runs.busy is True
+        assert runs.started_at is not None
+
+        runs.detach(first)
+        runs.attach(second)
+        gate.set()
+        await runs.task
+        return first, second, runs
+
+    first, second, runs = asyncio.run(scenario())
+
+    assert not any(item.get("event") == "progress" for item in first.sent)
+    assert second.sent == [{"event": "progress", "value": 2}]
+    assert runs.busy is False
+    assert runs.started_at is None
+
+
 def test_the_clear_cache_is_per_connection_state():
     runs, _, _ = _loop()
     assert runs.clear_cache == {}

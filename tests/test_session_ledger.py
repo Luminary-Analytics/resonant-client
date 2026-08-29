@@ -162,6 +162,35 @@ def test_history_snapshot_parses_the_ledger_once(tmp_path, monkeypatch):
     assert snapshot["projections"]["stats"]["turns"] == 2
 
 
+def test_hydrated_history_snapshot_restores_engine_history_with_one_parse(
+    isolated_home, monkeypatch
+):
+    project = str(isolated_home / "hydrated-snapshot-project")
+    manager = ProjectManager(project)
+    original = manager.create_session()
+    original.conversation_history = [{"role": "user", "content": "hello"}]
+    original.display_events = _task(0)
+    original.save()
+
+    loaded = manager.load_session(original.id, hydrate=False)
+    assert loaded is not None
+    original_read = SessionEventLedger.read_records
+    calls = 0
+
+    def counted_read(ledger):
+        nonlocal calls
+        calls += 1
+        return original_read(ledger)
+
+    monkeypatch.setattr(SessionEventLedger, "read_records", counted_read)
+    snapshot = loaded.history_snapshot(hydrate=True)
+
+    assert calls == 1
+    assert loaded.conversation_history == original.conversation_history
+    assert loaded.display_events == original.display_events
+    assert snapshot["page"]["events"]
+
+
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions_mod.Path, "home", staticmethod(lambda: tmp_path))

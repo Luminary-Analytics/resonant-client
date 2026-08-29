@@ -934,7 +934,38 @@ async def _cmd_init(ctx: CommandContext) -> None:
             )
         except Exception:
             logger.exception("default runtime session init failed")
-    await ctx.send(ctx.state.get_init_data())
+    payload = ctx.state.get_init_data()
+    payload["run_active"] = bool(ctx.runs and ctx.runs.busy)
+    payload["run_started_at"] = (
+        float(ctx.runs.started_at)
+        if ctx.runs and ctx.runs.started_at is not None
+        else None
+    )
+    payload["queued_messages"] = [
+        {
+            "message_id": str(item.get("message_id") or ""),
+            "text": str(item.get("text") or ""),
+            "position": index,
+            "steering": False,
+        }
+        for index, item in enumerate((ctx.runs.pending if ctx.runs else []), start=1)
+        if str(item.get("message_id") or "")
+    ]
+    record = getattr(getattr(ctx.state, "project", None), "current_session", None)
+    if record is not None:
+        try:
+            # Reconnecting should restore the visible conversation immediately
+            # without rebuilding an already-live model runtime. A switch_session
+            # round trip did both extra work and, for the selected row, was never
+            # sent by the frontend at all.
+            snapshot = record.history_snapshot(hydrate=True)
+            page = snapshot["page"]
+            payload["current_display_events"] = page["events"]
+            payload["current_history_page"] = page
+            payload["current_projections"] = snapshot["projections"]
+        except Exception:
+            logger.warning("Unable to hydrate current session during init", exc_info=True)
+    await ctx.send(payload)
 
 
 
@@ -1968,19 +1999,21 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
     project_path = ctx.msg.get("project_path", "")
     if project_path and ctx.state._normalize_path(project_path) != ctx.state._normalize_path(ctx.state.project.project_path):
         if os.path.isdir(project_path):
-            ctx.state.apply_project_context(project_path, refresh_index=True)
-            ctx.state.backend = None
-            ctx.state.backend_spec = None
+            # Detach the old engine session before project context rewiring.
+            # Provider discovery is global (not project-scoped), so probing it
+            # here only delays the conversation the user asked to see.
             ctx.state.session = None
+            ctx.state.apply_project_context(project_path, refresh_index=True)
             ctx.state._first_message_sent = False
-            await asyncio.get_event_loop().run_in_executor(None, ctx.state.detect_backends)
-    record = ctx.state.project.load_session(session_id)
+    record = ctx.state.project.load_session(session_id, hydrate=False)
     if record:
         # Replay the saved conversation immediately. Backend startup
         # can take seconds (or fail when a provider is offline), but
         # neither condition should prevent users from opening and
         # reading an existing session.
-        snapshot = record.history_snapshot()
+        # One ledger parse supplies both the visible page and the engine's
+        # conversation history. The previous path parsed every event twice.
+        snapshot = record.history_snapshot(hydrate=True)
         history_page = snapshot["page"]
         await ctx.send({
             "event": "session_loaded",
@@ -2009,11 +2042,12 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
             if backend_type:
                 await asyncio.get_event_loop().run_in_executor(
                     None,
-                    lambda: ctx.state.create_backend(
+                    lambda: ctx.state.restore_session_runtime(
                         backend_type,
                         model or None,
                         session_mode="code",
                         session_role=record.session_role or "generator",
+                        thinking_mode=record.thinking_mode or "",
                     ),
                 )
             else:
@@ -2028,20 +2062,61 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
             ctx.state.backend = None
             ctx.state.backend_spec = None
             ctx.state.session = None
-            # Retain the reason. This used to be sent only as a status_msg,
-            # which the frontend renders as a transient toast — so by the time
-            # the user typed a message the explanation was gone and all that
-            # was left was a stale model name in the composer and an error
-            # claiming no model was selected.
-            ctx.state.runtime_error = (
-                f"{record.backend_type or 'This session'}"
-                f"{f' ({record.model})' if record.model else ''}"
-                f" failed to start: {e}"
+            fallback_type, fallback_model = ctx.state.recovery_chat_backend_choice(
+                record.backend_type,
+                record.model,
             )
-            await ctx.send({
-                "event": "status_msg",
-                "message": f"Session loaded. Its runtime is unavailable: {e}",
-            })
+            if fallback_type and fallback_model:
+                try:
+                    await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: ctx.state.create_backend(
+                            fallback_type,
+                            fallback_model,
+                            session_mode="code",
+                            session_role=record.session_role or "generator",
+                        ),
+                    )
+                    if ctx.state.session and record.conversation_history:
+                        ctx.state.session.conversation_history = record.conversation_history
+                    ctx.state._first_message_sent = record.message_count > 0
+                    record.backend_type = fallback_type
+                    record.model = fallback_model
+                    record.thinking_mode = (
+                        getattr(ctx.state.backend_spec, "thinking_mode", "") or ""
+                    )
+                    ctx.state.project.save_current_session(ctx.state.session)
+                    await ctx.send({
+                        "event": "status_msg",
+                        "message": (
+                            f"The saved {backend_type} runtime was unavailable. "
+                            f"Continuing with {fallback_type} ({fallback_model})."
+                        ),
+                    })
+                except Exception:
+                    logger.warning(
+                        "saved-session fallback runtime also failed",
+                        exc_info=True,
+                    )
+                    ctx.state.backend = None
+                    ctx.state.backend_spec = None
+                    ctx.state.session = None
+
+            if not ctx.state.session:
+                # Retain the reason. This used to be sent only as a status_msg,
+                # which the frontend renders as a transient toast — so by the time
+                # the user typed a message the explanation was gone and all that
+                # was left was a stale model name in the composer and an error
+                # claiming no model was selected.
+                ctx.state.runtime_error = (
+                    f"{backend_type or 'This session'}"
+                    f"{f' ({model})' if model else ''}"
+                    f" failed to start: {e}"
+                )
+                await ctx.send({
+                    "event": "status_msg",
+                    "message": f"Session loaded. Its runtime is unavailable: {e}",
+                })
         # Send lightweight init refresh (skip re-detecting backends)
         # even when runtime setup fails so navigation stays coherent.
         await ctx.send(ctx.state.get_init_data(refresh_only=True))
@@ -2325,15 +2400,16 @@ async def _cmd_set_project(ctx: CommandContext) -> None:
             None,
             lambda: ctx.state.ensure_project_path(project_path),
         )
-        ctx.state.apply_project_context(resolved_project_path, refresh_index=True)
-        # Reset backend + session
-        ctx.state.backend = None
-        ctx.state.backend_spec = None
+        # The engine session is project-scoped, but HTTP provider clients are
+        # not. Detach the old conversation before applying the new context and
+        # let ensure_default_runtime_session reuse a compatible client.
         ctx.state.session = None
+        ctx.state.apply_project_context(resolved_project_path, refresh_index=True)
         ctx.state._first_message_sent = False
         ctx.state.costs.reset_session()
-        # Re-detect backends
-        await asyncio.get_event_loop().run_in_executor(None, ctx.state.detect_backends)
+        # Provider discovery is global and already cached from app startup.
+        # Re-probing every project click made an unreachable provider's network
+        # timeout part of navigation latency.
         if ctx.state.available_backends:
             try:
                 await asyncio.get_event_loop().run_in_executor(

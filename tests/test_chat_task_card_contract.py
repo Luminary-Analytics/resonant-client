@@ -70,6 +70,26 @@ def test_chat_supports_structured_outcomes_recovery_and_model_fallback():
     assert "_selectAlternateModelValue()" in source
 
 
+def test_replayed_unfinished_turns_distinguish_retry_from_continue():
+    source = frontend_source()
+
+    assert "_interruptedReplayRecovery(events = [])" in source
+    assert "const tail = events.slice(lastEnd + 1);" in source
+    assert "kind: partial ? 'paused' : 'not_started'" in source
+    assert "Response didn\\'t start" in source
+    assert "Response paused" in source
+    assert "notStarted && recovery.prompt" in source
+    assert "Session was interrupted" not in source
+
+
+def test_saved_false_positive_change_outcome_is_repaired_during_replay():
+    source = frontend_source()
+
+    assert "_requestExplicitlyForbidsWorkspaceChanges(text = '')" in source
+    assert "Do not configure, install, or change anything." in source
+    assert "outcome = 'answered';" in source
+
+
 def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     source = frontend_source()
     styles = STYLES_CSS.read_text(encoding="utf-8")
@@ -123,6 +143,57 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     assert "liveEl: this.liveRunSurface" in card_body
     assert "activity?.querySelector(':scope > .live-run-surface')?.remove();" in source
     assert "if (this._liveRun === run)" in source
+
+
+def test_quiet_long_runs_report_freshness_and_reconnect_restores_the_title():
+    source = frontend_source()
+
+    assert "lastEventAt: Date.now()" in source
+    assert "Still working · waiting for ${worker}" in source
+    assert "this._liveRun.lastEventAt = Date.now();" in source
+    assert "this._syncSessionTitle();" in source
+    assert "Array.isArray(current_display_events)" in source
+    assert "this.replayDisplayEvents(current_display_events, { activeRun: run_active === true });" in source
+    assert "activeRun: run_active === true" in source
+    assert "Reconnected to the active run" in source
+    assert "const replayRecovery = activeRun ? null" in source
+    assert "queued_messages" in source
+    assert "this._renderQueuedMessage(queued.message_id" in source
+    assert "this._liveRun.completedTools = completed.length" in source
+
+
+def test_reconnect_updates_an_existing_live_cards_original_start_time():
+    source = frontend_source()
+
+    assert "if (Number(event.started_at) > 0)" in source
+    assert "this._liveRun.startedAt = Number(event.started_at) * 1000" in source
+
+
+def test_parallel_subagent_events_have_independent_render_lanes():
+    source = frontend_source()
+
+    assert "this.subagentContainers = new Map();" in source
+    assert "this._withRenderEvent(event, () => this[delegate](event));" in source
+    assert "this.subagentContainers.set(event.agent_id, children);" in source
+    assert "this.subagentContainers.get(event.agent_id || '')" in source
+    assert "this.subagentContainers.delete(event.agent_id);" in source
+    assert "event._subagent ? 'Delegating' : 'Using tools'" in source
+
+
+def test_session_boundaries_clear_and_close_stale_preview_content():
+    source = frontend_source()
+
+    cleared_start = source.index("            case 'session_cleared':")
+    cleared_end = source.index("            case 'session_forked':", cleared_start)
+    cleared_body = source[cleared_start:cleared_end]
+    assert "this.clearPreviewPanel();" in cleared_body
+    assert "this.closePreviewPanel();" in cleared_body
+
+    loaded_start = source.index("            case 'session_loaded':")
+    loaded_end = source.index("            case 'harness_state':", loaded_start)
+    loaded_body = source[loaded_start:loaded_end]
+    assert "this.clearPreviewPanel();" in loaded_body
+    assert "this.closePreviewPanel();" in loaded_body
 
 
 def test_completed_chat_prioritizes_the_answer_over_success_telemetry():

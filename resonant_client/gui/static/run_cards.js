@@ -562,6 +562,12 @@ class ResonantRunCards {
     }
 
 
+    _requestExplicitlyForbidsWorkspaceChanges(text = '') {
+        return /\b(?:do\s+not|don't|never)\b(?=[^.!?\n]{0,120}\b(?:configure|install|edit|modify|change|write|touch)\b)[^.!?\n]{0,120}\b(?:anything|files?|the\s+(?:workspace|repo(?:sitory)?|project|codebase))\b/i
+            .test(String(text || ''));
+    }
+
+
     _renderTaskCompletionSummary(event = {}) {
         const task = this._activeTask;
         if (!task || !task.card) return;
@@ -584,7 +590,19 @@ class ResonantRunCards {
         const legacyOutcome = files.length > 0
             ? 'changed_unverified'
             : (hasVisibleResult ? 'answered' : 'incomplete');
-        const outcome = errored ? 'failed' : (event.outcome || legacyOutcome);
+        let outcome = errored ? 'failed' : (event.outcome || legacyOutcome);
+        // v0.14.0 persisted a false-positive `incomplete` result for prompts
+        // such as "Do not configure, install, or change anything." Repair
+        // those saved cards while replaying them as well as classifying new
+        // turns correctly on the server.
+        if (
+            outcome === 'incomplete'
+            && hasVisibleResult
+            && evidence.requires_workspace_change
+            && this._requestExplicitlyForbidsWorkspaceChanges(task.requestText || '')
+        ) {
+            outcome = 'answered';
+        }
         const outcomeMeta = {
             answered: { label: 'Answered', mark: 'OK', state: 'is-done', card: 'task-card-done' },
             changed_verified: { label: 'Changed & verified', mark: 'OK', state: 'is-done', card: 'task-card-done' },
@@ -839,6 +857,12 @@ class ResonantRunCards {
         if (!task || !task.liveEl) return;
         if (this._liveRun && this._liveRun.active && this._liveRun.el === task.liveEl) {
             if (event.model) this._liveRun.model = event.model;
+            // Reconnect replay can create the live card before init supplies
+            // the server-owned start time.  Updating it here keeps the clock
+            // continuous instead of restarting at zero after every refresh.
+            if (Number(event.started_at) > 0) {
+                this._liveRun.startedAt = Number(event.started_at) * 1000;
+            }
             this._renderLiveRun();
             return;
         }
@@ -846,7 +870,9 @@ class ResonantRunCards {
         this._liveRun = {
             active: true,
             el: task.liveEl,
-            startedAt: Date.now(),
+            startedAt: Number(event.started_at) > 0
+                ? Number(event.started_at) * 1000
+                : Date.now(),
             phase: 'Starting',
             detail: 'Preparing the workspace and model',
             step: 0,
@@ -863,6 +889,7 @@ class ResonantRunCards {
             provider: '',
             lastProgressAt: null,
             lastTransportAt: null,
+            lastEventAt: Date.now(),
             idleTimeoutSeconds: 0,
             progressWarningSeconds: 120,
             statusVisible: false,
@@ -1151,6 +1178,19 @@ class ResonantRunCards {
                 const nowText = `${phase} · ${activity}`;
                 nowEl.textContent = nowText;
                 nowEl.title = nowText;
+            }
+        }
+        if (run.provider !== 'exo' && run.lastEventAt) {
+            const quietFor = Math.max(0, Math.floor((Date.now() - run.lastEventAt) / 1000));
+            if (quietFor >= 30) {
+                const nowEl = run.el.querySelector('[data-live-now]');
+                if (nowEl) {
+                    const model = this._liveRunCompactValue(run.model || 'the model', 44);
+                    const worker = run.phase === 'Delegating' ? 'Sub-agent' : model;
+                    const nowText = `Still working · waiting for ${worker} · last activity ${quietFor}s ago`;
+                    nowEl.textContent = nowText;
+                    nowEl.title = nowText;
+                }
             }
         }
         const healthEl = run.el.querySelector('[data-live-health]');

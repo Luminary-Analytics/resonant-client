@@ -385,9 +385,10 @@ class SessionEventLedger:
         *,
         before_seq: int | None = None,
         limit: int = DEFAULT_DISPLAY_PAGE_SIZE,
+        records: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Return paging and summary projections from one committed snapshot."""
-        records = self.read_records()
+        records = self.read_records() if records is None else records
         return {
             "page": self.display_page(
                 before_seq=before_seq, limit=limit, records=records

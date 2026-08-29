@@ -259,6 +259,11 @@ class ResonantApp {
         // Subagent nesting
         this.subagentDepth = 0;
         this.subagentContainer = null;
+        // Parallel workers emit interleaved events. Keep a render lane per
+        // worker instead of relying on one global "current" subagent.
+        this.subagentContainers = new Map();
+        this.subagentStreams = new Map();
+        this._activeRenderEvent = null;
         this.agentActivities = new Map();
         // Runtime bookkeeping still powers compact in-chat task summaries.
         // It is intentionally not exposed as a separate agent hierarchy.
@@ -1437,6 +1442,8 @@ class ResonantApp {
         this._blockToolRows = new Map();
         this.subagentDepth = 0;
         this.subagentContainer = null;
+        this.subagentContainers.clear();
+        this.subagentStreams.clear();
         this.clearTerminals();
         this._removeLiveAgentTodoStrip();
     }
@@ -3042,6 +3049,16 @@ class ResonantApp {
 
     // ── Event Handler ───────────────────────────────────────────
 
+    _withRenderEvent(event, callback) {
+        const previous = this._activeRenderEvent;
+        this._activeRenderEvent = event;
+        try {
+            return callback();
+        } finally {
+            this._activeRenderEvent = previous;
+        }
+    }
+
     handleEvent(event) {
         const type = event.event;
         const projectSwitchId = String(event?.project_switch_id || '');
@@ -3054,6 +3071,16 @@ class ResonantApp {
             && projectSwitchId !== this._latestProjectSwitchId
         ) {
             return;
+        }
+
+        if (
+            this._liveRun?.active
+            && [
+                'step.start', 'step.end', 'thinking.delta', 'text.delta', 'text.done',
+                'tool.call', 'tool.result', 'subagent.start', 'subagent.end', 'backend_status',
+            ].includes(type)
+        ) {
+            this._liveRun.lastEventAt = Date.now();
         }
 
         // Only ledger-backed stream events carry this cursor. Retain them so
@@ -3084,7 +3111,7 @@ class ResonantApp {
                 console.error(`No handler ${delegate} for event "${type}"`);
                 return;
             }
-            this[delegate](event);
+            this._withRenderEvent(event, () => this[delegate](event));
             return;
         }
 
@@ -3098,7 +3125,10 @@ class ResonantApp {
                     this._pendingProjectPath = '';
                     this._restoreConfirmedProjectSelection();
                 }
-                this.handleError(event);
+                this._withRenderEvent(event, () => {
+                    if (event._subagent) this.handleSubagentError(event);
+                    else this.handleError(event);
+                });
                 break;
             case 'mission_exited':
                 this.handleMissionExited(event);
@@ -3265,6 +3295,10 @@ class ResonantApp {
                 }
                 this.applySessionRoleUI(event.session_role || this.sessionRole);
                 this.renderFilteredSessions();
+                // A new conversation must not inherit screenshots, console
+                // output, or an open side panel from the previous session.
+                this.clearPreviewPanel();
+                this.closePreviewPanel();
                 this.showChatInterface();
                 this._syncMissionUI();
                 // v0.3.2 — release the mission_start guard. session_cleared
@@ -3309,6 +3343,7 @@ class ResonantApp {
                 this.showChatInterface();
                 // Clear preview panel for loaded session
                 this.clearPreviewPanel();
+                this.closePreviewPanel();
                 // Replay display events to rebuild the conversation in the UI
                 if (event.display_events && event.display_events.length > 0) {
                     this.replayDisplayEvents(event.display_events);
@@ -3699,6 +3734,11 @@ class ResonantApp {
             current_session_id,
             current_session_mode,
             current_session_role,
+            current_display_events,
+            current_history_page,
+            run_active,
+            run_started_at,
+            queued_messages,
             recent_projects,
             playground_project,
             refresh_only,
@@ -3792,6 +3832,83 @@ class ResonantApp {
             this.applySessionRoleUI(current_session_role || this.currentSessionRole || 'generator');
             this.sessionRole = current_session_role || this.sessionRole;
             this.renderFilteredSessions();
+            this._syncSessionTitle();
+            if (
+                current_session_id
+                && Array.isArray(current_display_events)
+                && !refresh_only
+            ) {
+                this.chatMessages.innerHTML = '';
+                this._resetTaskCardState();
+                this._historyPage = current_history_page || null;
+                this._loadedHistoryEvents = current_display_events.slice();
+                this._historyLoading = false;
+                this._historyWindowDroppedTail = false;
+                this.showChatInterface();
+                if (current_display_events.length) {
+                    this.replayDisplayEvents(current_display_events, { activeRun: run_active === true });
+                }
+                if (run_active === true) {
+                    this.chatMessages.querySelector('.resume-banner')?.remove();
+                    this.setRunning(true);
+                    this._startLiveRun({
+                        model: current_model || '',
+                        provider: current_backend || '',
+                        started_at: run_started_at,
+                    });
+                    this._setLiveRunPhase(
+                        'Continuing',
+                        'Reconnected to the active run · waiting for the next update',
+                    );
+
+                    // Replay builds the completed conversation surface but it
+                    // intentionally does not mutate the live-run counters.
+                    // Seed those counters from the unfinished turn so refresh
+                    // does not make a 30-tool run look as though it just began.
+                    const lastUserIndex = current_display_events.reduce(
+                        (found, item, index) => item?.event === 'user_message' ? index : found,
+                        -1,
+                    );
+                    const activeEvents = current_display_events.slice(lastUserIndex + 1);
+                    const callsById = new Map(
+                        activeEvents
+                            .filter(item => item?.event === 'tool.call' && item.call_id)
+                            .map(item => [item.call_id, item]),
+                    );
+                    const completed = activeEvents.filter(item => item?.event === 'tool.result');
+                    if (this._liveRun) {
+                        this._liveRun.completedTools = completed.length;
+                        const latest = completed.at(-1);
+                        if (latest) {
+                            const call = callsById.get(latest.call_id) || {};
+                            const activity = this._liveRunToolActivity(
+                                latest.name,
+                                call.arguments || {},
+                            );
+                            const failed = Boolean(latest.is_error || latest.denied);
+                            this._liveRun.lastCompleted = {
+                                text: failed
+                                    ? `${activity.completed} — needs attention`
+                                    : activity.completed,
+                                elapsed: Number(latest.elapsed || 0),
+                                failed,
+                            };
+                        }
+                        this._renderLiveRun();
+                    }
+                }
+
+                // The queue is owned by the server-side run loop. Recreate its
+                // controls after reconnect so the user can still promote or
+                // remove a follow-up they queued before refreshing.
+                if (this.composerQueue) this.composerQueue.replaceChildren();
+                this._queuedMessages.clear();
+                for (const queued of (queued_messages || [])) {
+                    this._renderQueuedMessage(queued.message_id, queued.text || '');
+                    this.handleMessageQueued(queued);
+                }
+                this._syncComposerQueue();
+            }
         } else {
             this.renderProjectRail();
         }
@@ -4415,6 +4532,14 @@ class ResonantApp {
     }
 
     handleStepStart(event) {
+        if (event._subagent) {
+            const worker = event._agent_type || 'Sub-agent';
+            this._setLiveRunPhase(
+                'Delegating',
+                `${worker} sub-agent is reasoning${event.step ? ` · step ${event.step}` : ''}`,
+            );
+            return;
+        }
         this.currentStepEvent = event;
         this.stepToolCalls = [];
         this.stepToolResults = [];
@@ -4656,12 +4781,21 @@ class ResonantApp {
             run.lastTransportAt = Date.now();
         }
         const activeModel = run?.model || this.currentModelName || '';
-        this._setLiveRunPhase(
-            'Composing',
-            activeModel
-                ? `Receiving output from ${activeModel}`
-                : 'Streaming the latest update',
-        );
+        if (event._subagent) {
+            this._setLiveRunPhase(
+                'Delegating',
+                `${event._agent_type || 'Sub-agent'} is preparing its handoff`,
+            );
+            this._handleSubagentTextDelta(event);
+            return;
+        } else {
+            this._setLiveRunPhase(
+                'Composing',
+                activeModel
+                    ? `Receiving output from ${activeModel}`
+                    : 'Streaming the latest update',
+            );
+        }
         this.stepIsInlineOnly = false;
 
         // Text streaming means tools are done — clear terminal bar
@@ -4684,6 +4818,10 @@ class ResonantApp {
     }
 
     handleTextDone(event) {
+        if (event._subagent) {
+            this._handleSubagentTextDone(event);
+            return;
+        }
         // Cancel any pending throttled re-parse — we're about to do the
         // final, fully-formatted parse and we don't want a stale partial
         // re-parse to land after it.
@@ -4843,7 +4981,16 @@ class ResonantApp {
             run.currentAction = activity.active;
             if (callId) run.toolActivities.set(callId, activity);
         }
-        this._setLiveRunPhase('Using tools', toolActivity.active);
+        this._setLiveRunPhase(
+            event._subagent ? 'Delegating' : 'Using tools',
+            event._subagent
+                ? `${event._agent_type || 'Sub-agent'}: ${toolActivity.active}`
+                : toolActivity.active,
+        );
+        if (event._subagent) {
+            this.renderToolCall(event);
+            return;
+        }
 
         // UX fix #7 — accumulate tool-call count for the per-turn aggregate
         // so the run-card can report something honest like "3 steps · 7 tools"
@@ -4931,7 +5078,16 @@ class ResonantApp {
             if (!callId || run.activeTool?.callId === callId || run.activeTool?.name === name) {
                 run.activeTool = null;
             }
-            this._setLiveRunPhase(failed ? 'Recovering' : 'Reasoning', run.currentAction);
+            this._setLiveRunPhase(
+                failed ? 'Recovering' : (event._subagent ? 'Delegating' : 'Reasoning'),
+                event._subagent
+                    ? `${event._agent_type || 'Sub-agent'}: ${run.currentAction}`
+                    : run.currentAction,
+            );
+        }
+        if (event._subagent) {
+            this.renderToolResult(event);
+            return;
         }
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
@@ -4976,6 +5132,9 @@ class ResonantApp {
     }
 
     getRenderTarget() {
+        const agentId = String(this._activeRenderEvent?._agent_id || '');
+        const parallelTarget = agentId ? this.subagentContainers.get(agentId) : null;
+        if (parallelTarget) return parallelTarget;
         if (this.subagentContainer) return this.subagentContainer;
         const task = this._ensureTaskCard('Task');
         return (task && task.activityEl) || this.chatMessages;
@@ -6306,6 +6465,41 @@ class ResonantApp {
         }
     }
 
+    _handleSubagentTextDelta(event) {
+        const agentId = String(event._agent_id || '');
+        if (!agentId) return;
+        let state = this.subagentStreams.get(agentId);
+        if (!state) {
+            state = { buffer: '', element: this.addAssistantMessage(), timer: null };
+            this.subagentStreams.set(agentId, state);
+        }
+        state.buffer += event.delta || '';
+        if (state.timer) return;
+        state.timer = setTimeout(() => {
+            state.timer = null;
+            if (state.element?.isConnected) {
+                this.renderMarkdown(state.element, state.buffer, true);
+            }
+        }, 80);
+    }
+
+    _handleSubagentTextDone(event) {
+        const agentId = String(event._agent_id || '');
+        if (!agentId) return;
+        let state = this.subagentStreams.get(agentId);
+        const finalText = String(event.text || state?.buffer || '').trim();
+        if (!state && finalText) {
+            state = { buffer: finalText, element: this.addAssistantMessage(), timer: null };
+        }
+        if (!state) return;
+        if (state.timer) clearTimeout(state.timer);
+        state.timer = null;
+        state.buffer = finalText;
+        this.renderMarkdown(state.element, finalText);
+        state.element.querySelector('.message-content')?.classList.remove('streaming-cursor');
+        this.subagentStreams.delete(agentId);
+    }
+
     _openWorkspacePath(path) {
         const value = String(path || '').trim();
         if (!value) return;
@@ -6852,15 +7046,17 @@ class ResonantApp {
         );
         this.agentActivities.set(activityId, {
             id: activityId,
+            agentId: event.agent_id || '',
             kind: 'subagent',
             label: agentType || 'task',
             prompt,
-            parentId: this.agentActivityStack.at(-1) || '',
+            parentId: Array.from(this.agentActivities.values()).find(
+                (item) => item.agentId && item.agentId === event.parent_agent_id,
+            )?.id || '',
             status: 'running',
             startedAt: Date.now(),
         });
         this.agentActivityOrder.push(activityId);
-        this.agentActivityStack.push(activityId);
         this.renderAgentActivityTree();
         this._markAgentTabUnread();
         const display = prompt.length > 100 ? prompt.slice(0, 97) + '...' : prompt;
@@ -6890,13 +7086,17 @@ class ResonantApp {
         el.appendChild(header);
         el.appendChild(children);
 
-        // Append to current render target
-        const target = this.subagentContainer || this.getRenderTarget();
+        // Append beside sibling workers, or inside an explicit parent worker.
+        // A global stack cannot represent task_batch events because they arrive
+        // interleaved from concurrent threads.
+        const parentTarget = this.subagentContainers.get(event.parent_agent_id || '');
+        const task = this._ensureTaskCard('Task');
+        const target = parentTarget || (task && task.activityEl) || this.chatMessages;
         target.appendChild(el);
 
-        // Push nesting — child events render into this subagent's children div
-        this.subagentDepth++;
-        this.subagentContainer = children;
+        // Child events include _agent_id, which selects this render lane.
+        if (event.agent_id) this.subagentContainers.set(event.agent_id, children);
+        this.subagentDepth = this.subagentContainers.size;
 
         this.scrollToBottom();
     }
@@ -6906,37 +7106,40 @@ class ResonantApp {
         const steps = event.steps || 0;
         const elapsed = event.elapsed || 0;
         const activityId = `task:${event.call_id || ''}`;
+        const workerOutcome = String(event.handoff?.outcome || '').toLowerCase();
+        const workerFailed = ['failed', 'blocked', 'interrupted'].includes(workerOutcome);
         this._updateLiveSubtask(activityId, {
             label: agentType || 'Sub-task',
-            status: 'done',
+            status: workerFailed ? 'failed' : 'done',
             steps,
             elapsed,
         });
         const activity = this.agentActivities.get(activityId);
         if (activity) {
-            activity.status = 'done';
+            activity.status = workerFailed ? 'failed' : 'done';
             activity.steps = steps;
             activity.finishedAt = activity.startedAt + elapsed * 1000;
             activity.handoff = event.handoff
                 ? JSON.stringify(event.handoff, null, 2)
                 : event.result || event.result_preview || '';
             this.agentActivities.set(activityId, activity);
-            this.agentActivityStack = this.agentActivityStack.filter(id => id !== activityId);
             this.renderAgentActivityTree();
             this._markAgentTabUnread();
         }
 
-        // Find the current subagent block and add result footer
-        if (this.subagentContainer) {
-            const block = this.subagentContainer.closest('.subagent-block');
+        // Find this worker's own block even when sibling events interleave.
+        const workerContainer = this.subagentContainers.get(event.agent_id || '')
+            || this.subagentContainer;
+        if (workerContainer) {
+            const block = workerContainer.closest('.subagent-block');
             if (block) {
                 const result = document.createElement('div');
-                result.className = 'subagent-result';
-                result.textContent = `✓ ${agentType} · ${steps} steps · ${elapsed.toFixed(1)}s`;
+                result.className = `subagent-result${workerFailed ? ' is-error' : ''}`;
+                result.textContent = `${workerFailed ? '✗' : '✓'} ${agentType} · ${steps} steps · ${elapsed.toFixed(1)}s`;
                 block.appendChild(result);
 
                 // If subagent had content, auto-expand it
-                if (this.subagentContainer.children.length > 0) {
+                if (workerContainer.children.length > 0) {
                     block.classList.add('expanded');
                     const toggle = block.querySelector('.subagent-toggle');
                     if (toggle) toggle.textContent = '▾';
@@ -6944,14 +7147,39 @@ class ResonantApp {
             }
         }
 
-        // Pop nesting
-        this.subagentDepth = Math.max(0, this.subagentDepth - 1);
-        if (this.subagentDepth === 0) {
-            this.subagentContainer = null;
-        } else {
-            // Find parent subagent container
-            const parentBlock = this.subagentContainer?.closest('.subagent-block')?.parentElement?.closest('.subagent-block');
-            this.subagentContainer = parentBlock ? parentBlock.querySelector('.subagent-children') : null;
+        if (event.agent_id) this.subagentContainers.delete(event.agent_id);
+        const stream = this.subagentStreams.get(event.agent_id || '');
+        if (stream?.timer) clearTimeout(stream.timer);
+        if (event.agent_id) this.subagentStreams.delete(event.agent_id);
+        this.subagentDepth = this.subagentContainers.size;
+        this.subagentContainer = null;
+        this._setLiveRunPhase(
+            workerFailed ? 'Recovering' : 'Reasoning',
+            workerFailed
+                ? `${agentType || 'Sub-agent'} stopped before completing its handoff`
+                : `Reviewing the ${agentType || 'sub-agent'} handoff`,
+        );
+    }
+
+    handleSubagentError(event) {
+        // Worker failures are activity within the current user turn. Promoting
+        // them through handleError() creates a second top-level failure card,
+        // then the parent error creates a third. Keep the status attached to
+        // the worker; subagent.end carries the durable handoff and result.
+        const agentId = String(event._agent_id || '');
+        const activityId = [...this.agentActivityOrder].reverse().find((id) => {
+            const candidate = this.agentActivities.get(id);
+            return candidate?.status === 'running'
+                && (!agentId || candidate.agentId === agentId);
+        }) || '';
+        const activity = activityId ? this.agentActivities.get(activityId) : null;
+        if (activity) {
+            activity.status = 'failed';
+            activity.error = event.message || 'Worker stopped';
+            activity.finishedAt = Date.now();
+            this.agentActivities.set(activityId, activity);
+            this._updateLiveSubtask(activityId, { status: 'failed' });
+            this.renderAgentActivityTree();
         }
     }
 
@@ -7004,10 +7232,15 @@ class ResonantApp {
         this._agentRunErrored = true;
         this._agentRunErrorMessage = event.message || '';
 
-        const el = document.createElement('div');
-        el.className = 'error-block';
-        el.textContent = `✗ ${event.message || 'Unknown error'}`;
-        this.getRenderTarget().appendChild(el);
+        // A task card already has a dedicated failure summary with recovery
+        // actions and expandable detail. Rendering a raw error block beside it
+        // duplicates the same failure and makes one turn look like two.
+        if (!this._activeTask) {
+            const el = document.createElement('div');
+            el.className = 'error-block';
+            el.textContent = `✗ ${event.message || 'Unknown error'}`;
+            this.getRenderTarget().appendChild(el);
+        }
         this.scrollToBottom();
         this._finishActiveTask({
             total_elapsed: (this._currentTurn && this._currentTurn.totalElapsed) || 0,
@@ -7799,8 +8032,15 @@ class ResonantApp {
                 if (btn) { btn.innerHTML = '\u2713'; setTimeout(() => { btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><rect x="4" y="4" width="8" height="8" rx="1.2" stroke="currentColor" stroke-width="1.1"/><path d="M10 4V2.8A.8.8 0 009.2 2H2.8a.8.8 0 00-.8.8v6.4a.8.8 0 00.8.8H4" stroke="currentColor" stroke-width="1.1"/></svg>'; }, 1500); }
             });
         });
-        const target = this.subagentContainer || this._getTaskResultTarget() || this.chatMessages;
-        if (!this.subagentContainer && target.classList?.contains('task-result')) {
+        const subagentTarget = this.getRenderTarget();
+        const isSubagentTarget = Boolean(
+            this._activeRenderEvent?._agent_id
+            && this.subagentContainers.has(this._activeRenderEvent._agent_id),
+        );
+        const target = isSubagentTarget
+            ? subagentTarget
+            : (this._getTaskResultTarget() || this.chatMessages);
+        if (!isSubagentTarget && target.classList?.contains('task-result')) {
             target.querySelectorAll(':scope > .msg-assistant').forEach((msg) => {
                 msg.classList.add('task-progress-note');
             });
@@ -7887,8 +8127,15 @@ class ResonantApp {
     }
 
     removeThinking() {
-        // Remove from current target or anywhere in chat
-        const target = this.getRenderTarget();
+        // Removal must never create a render target. In particular, an error
+        // finishes the active task before session.end arrives; calling
+        // getRenderTarget() there manufactured an empty synthetic task card,
+        // which session.end then finalized as a duplicate failure.
+        const activeAgentId = String(this._activeRenderEvent?._agent_id || '');
+        const target = this.subagentContainers.get(activeAgentId)
+            || this.subagentContainer
+            || this._activeTask?.activityEl
+            || this.chatMessages;
         const el = target.querySelector('[data-thinking]') ||
                    this.chatMessages.querySelector('[data-thinking]');
         if (el) {
@@ -8414,6 +8661,11 @@ class ResonantApp {
      * having new content and let them scroll on their own terms.
      */
     scrollToBottom() {
+        // History replay can invoke normal event handlers hundreds of times in
+        // one tick. Queueing a scroll frame for every saved event turns one
+        // session click into hundreds of redundant layout reads and writes.
+        // replayDisplayEvents() performs one final scroll after replay ends.
+        if (this.isReplaying) return;
         if (this._userScrolledUp) {
             this._markScrollEndPillNew();
             return;
@@ -8702,7 +8954,7 @@ class ResonantApp {
         if (btn) btn.textContent = '▶';
     }
 
-    replayDisplayEvents(events) {
+    replayDisplayEvents(events, { activeRun = false } = {}) {
         /**
          * Replay saved display events to rebuild the conversation UI.
          * This handles user_message, text.done, tool.call, tool.result,
@@ -8727,6 +8979,8 @@ class ResonantApp {
         this._blockToolRows = new Map();
         this.subagentDepth = 0;
         this.subagentContainer = null;
+        this.subagentContainers.clear();
+        this.subagentStreams.clear();
 
         // Skip these event types during replay (streaming deltas, markers)
         const SKIP_REPLAY = new Set([
@@ -8752,30 +9006,33 @@ class ResonantApp {
 
             // For text.done — render the full text as a completed message
             if (type === 'text.done') {
-                this.handleTextDoneReplay(event);
+                this._withRenderEvent(event, () => this.handleTextDoneReplay(event));
                 continue;
             }
 
             // Step start/end, tool call/result, subagent — use normal handlers
-            if (type === 'step.start') {
-                this.handleStepStart(event);
-            } else if (type === 'tool.call') {
-                this.handleToolCall(event);
-            } else if (type === 'tool.result') {
-                this.handleToolResult(event);
-            } else if (type === 'step.end') {
-                this.handleStepEnd(event);
-            } else if (type === 'session.end') {
-                this.handleSessionEnd(event);
-            } else if (type === 'todos.updated') {
-                this.handleTodosUpdated(event);
-            } else if (type === 'subagent.start') {
-                this.handleSubagentStart(event);
-            } else if (type === 'subagent.end') {
-                this.handleSubagentEnd(event);
-            } else if (type === 'error') {
-                this.handleError(event);
-            }
+            this._withRenderEvent(event, () => {
+                if (type === 'step.start') {
+                    this.handleStepStart(event);
+                } else if (type === 'tool.call') {
+                    this.handleToolCall(event);
+                } else if (type === 'tool.result') {
+                    this.handleToolResult(event);
+                } else if (type === 'step.end') {
+                    this.handleStepEnd(event);
+                } else if (type === 'session.end') {
+                    this.handleSessionEnd(event);
+                } else if (type === 'todos.updated') {
+                    this.handleTodosUpdated(event);
+                } else if (type === 'subagent.start') {
+                    this.handleSubagentStart(event);
+                } else if (type === 'subagent.end') {
+                    this.handleSubagentEnd(event);
+                } else if (type === 'error') {
+                    if (event._subagent) this.handleSubagentError(event);
+                    else this.handleError(event);
+                }
+            });
         }
         } finally {
             this.isReplaying = false;
@@ -8784,35 +9041,65 @@ class ResonantApp {
         // Flush any pending collapsed groups
         this.flushCollapsedGroup();
 
-        // Ensure we're not in a running state after replay
-        this.setRunning(false);
+        // A reconnect can replay an unfinished turn while its server-owned run
+        // is still active. Keep the composer and recovery UI aligned with that.
+        if (!activeRun) this.setRunning(false);
         this.clearTerminals();
 
-        // Detect interrupted session — if last event isn't session.end,
-        // the model was cut off mid-response
-        if (events.length > 0) {
-            const ignored = new Set(['status', 'init', 'status_msg', 'sessions_updated']);
-            const lastEvent = [...events].reverse().find((e) => e && !ignored.has(e.event));
-            const resumable = new Set(['step.start', 'tool.call', 'tool.result', 'text.delta', 'thinking.delta', 'await_user']);
-            if (lastEvent && resumable.has(lastEvent.event)) {
-                this.showResumeButton();
-            }
-        }
+        const replayRecovery = activeRun ? null : this._interruptedReplayRecovery(events);
+        if (replayRecovery) this.showResumeButton(replayRecovery);
 
         // Scroll to bottom
         this.scrollToBottom();
     }
 
-    showResumeButton() {
+    _interruptedReplayRecovery(events = []) {
+        // Inspect only the unfinished turn after the most recent clean end.
+        // A bare step.start means inference never produced a response, so the
+        // correct action is to retry the user's request rather than ask the
+        // model to "continue" work that never began.
+        const lastEnd = events.reduce(
+            (index, event, candidate) => event?.event === 'session.end' ? candidate : index,
+            -1,
+        );
+        const tail = events.slice(lastEnd + 1);
+        const userIndex = tail.reduce(
+            (index, event, candidate) => event?.event === 'user_message' ? candidate : index,
+            -1,
+        );
+        if (userIndex < 0) return null;
+
+        const turn = tail.slice(userIndex + 1);
+        const terminal = new Set(['session.end', 'text.done', 'error', 'await_user']);
+        if (turn.some((event) => terminal.has(event?.event))) return null;
+
+        const started = turn.some((event) => event?.event === 'step.start');
+        const partial = turn.some((event) => [
+            'tool.call', 'tool.result', 'text.delta', 'thinking.delta',
+        ].includes(event?.event));
+        if (!started && !partial) return null;
+        return {
+            kind: partial ? 'paused' : 'not_started',
+            prompt: String(tail[userIndex]?.text || '').trim(),
+        };
+    }
+
+    showResumeButton(recovery = {}) {
+        this.chatMessages.querySelector('.resume-banner')?.remove();
+        const notStarted = recovery.kind === 'not_started';
+        const label = notStarted ? 'Response didn\'t start' : 'Response paused';
+        const action = notStarted ? 'Retry' : 'Continue';
         const el = document.createElement('div');
         el.className = 'resume-banner';
         el.innerHTML = `
-            <span class="resume-text">Session was interrupted</span>
-            <button class="resume-btn">Resume task</button>
+            <span class="resume-text">${label}</span>
+            <button class="resume-btn">${action}</button>
         `;
         el.querySelector('.resume-btn').addEventListener('click', () => {
             el.remove();
-            this.userInput.value = 'Continue where you left off.';
+            this.userInput.value = notStarted && recovery.prompt
+                ? recovery.prompt
+                : 'Continue the previous request from where it paused. Preserve completed work and verify the result.';
             this.sendMessage();
         });
         const task = this._activeTask;
@@ -8855,8 +9142,10 @@ class ResonantApp {
             if (typeof hljs !== 'undefined') hljs.highlightElement(block);
         });
 
-        const container = this.subagentContainer || this._getTaskResultTarget() || this.chatMessages;
-        if (!this.subagentContainer && container.classList?.contains('task-result')) {
+        const activeAgentId = String(this._activeRenderEvent?._agent_id || '');
+        const subagentTarget = this.subagentContainers.get(activeAgentId);
+        const container = subagentTarget || this._getTaskResultTarget() || this.chatMessages;
+        if (!subagentTarget && container.classList?.contains('task-result')) {
             container.querySelectorAll(':scope > .msg-assistant').forEach((msg) => {
                 msg.classList.add('task-progress-note');
             });

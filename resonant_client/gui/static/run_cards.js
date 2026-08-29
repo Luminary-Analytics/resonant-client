@@ -603,6 +603,15 @@ class ResonantRunCards {
             task.stateEl.textContent = outcomeMeta.label;
         }
 
+        // A successful conversational answer is the outcome. Repeating
+        // "Answered · 2 steps · 4 tools" underneath it is implementation
+        // telemetry, not useful conversation. Keep summaries for changes,
+        // warnings, failures, and recovery actions where they carry meaning.
+        if (['answered', 'no_changes_needed'].includes(outcome) && files.length === 0) {
+            task.footerEl.hidden = true;
+            return;
+        }
+
         const parts = [];
         if (steps > 0) parts.push(`${steps} step${steps === 1 ? '' : 's'}`);
         if (tools > 0) parts.push(`${tools} tool${tools === 1 ? '' : 's'}`);
@@ -777,6 +786,14 @@ class ResonantRunCards {
 
         const activity = document.createElement('div');
         activity.className = 'task-activity';
+        // Keep in-flight work in the conversation, directly beneath the
+        // user's request. ChatGPT's desktop app treats activity as part of
+        // the response rather than as a second dashboard docked to the
+        // composer. The element is shared and moves to each new turn.
+        if (this.liveRunSurface) {
+            this.liveRunSurface.hidden = true;
+            activity.appendChild(this.liveRunSurface);
+        }
 
         const result = document.createElement('div');
         result.className = 'task-result';
@@ -893,8 +910,13 @@ class ResonantRunCards {
         this._renderLiveRun();
         run.el.classList.add('is-finishing');
         setTimeout(() => {
-            if (run.el) run.el.hidden = true;
-            if (this._liveRun === run) this._liveRun = null;
+            // The surface is shared between turns. A fast retry can start a
+            // new run before this fade finishes, so only hide it when this is
+            // still the run that owns the surface.
+            if (this._liveRun === run) {
+                if (run.el) run.el.hidden = true;
+                this._liveRun = null;
+            }
         }, 420);
     }
 
@@ -1206,19 +1228,20 @@ class ResonantRunCards {
             run.el.innerHTML = `
                 <div class="live-run-head">
                     <button type="button" class="live-run-toggle" aria-expanded="false" aria-label="Show run details">
-                        <span class="live-run-orbit" aria-hidden="true"><i></i><b></b></span>
                         <span class="live-run-copy">
-                            <strong>Resonant is working</strong>
+                            <strong>Working for <span data-live-elapsed></span></strong>
+                            <span class="live-run-divider" aria-hidden="true"></span>
                             <small data-live-now></small>
-                            <span class="live-run-latest" data-live-latest hidden></span>
-                            <span class="live-run-health" data-live-health hidden></span>
                         </span>
-                        <span class="live-run-meta"><span data-live-step></span><span data-live-elapsed></span></span>
                         <span class="live-run-chevron" aria-hidden="true"></span>
                     </button>
-                    <button type="button" class="live-run-status-check" title="Show live health and ask the agent for a concise update">Check status</button>
                 </div>
                 <div class="live-run-body" hidden>
+                    <div class="live-run-detail-status">
+                        <span class="live-run-latest" data-live-latest hidden></span>
+                        <span class="live-run-health" data-live-health hidden></span>
+                        <button type="button" class="live-run-status-check" title="Show live health and ask the agent for a concise update">Check status</button>
+                    </div>
                     <div class="live-run-progress"><span></span></div>
                     <div class="live-run-details">
                         <div class="live-run-details-summary"><span>Run details</span><span data-live-counts></span></div>
@@ -1249,7 +1272,19 @@ class ResonantRunCards {
         }
 
         const nowEl = run.el.querySelector('[data-live-now]');
-        const nowText = `${run.phase} \u00b7 ${run.currentAction || run.detail}`;
+        const stateLabels = {
+            Starting: 'Thinking',
+            Reasoning: 'Thinking',
+            Continuing: 'Thinking',
+            'Using tools': 'Working',
+            Composing: 'Writing response',
+            Delegating: 'Coordinating',
+            Steered: 'Adjusting',
+            Recovering: 'Recovering',
+            Complete: 'Finishing',
+            Stopped: 'Stopped',
+        };
+        const nowText = stateLabels[run.phase] || run.phase || 'Thinking';
         nowEl.textContent = nowText;
         nowEl.title = nowText;
         const latestEl = run.el.querySelector('[data-live-latest]');
@@ -1283,7 +1318,6 @@ class ResonantRunCards {
                 : run.statusVisible
                     ? 'Refresh status'
                     : 'Check status';
-        run.el.querySelector('[data-live-step]').textContent = run.step ? `Step ${run.step} \u00b7 ` : '';
         run.el.querySelector('[data-live-elapsed]').textContent = this._formatRunDuration(elapsedSeconds);
         run.el.querySelector('.live-run-progress').style.setProperty('--live-run-progress', `${pct}%`);
         run.el.querySelector('[data-live-counts]').textContent = `${complete}/${total} tasks \u00b7 ${run.completedTools} tools${subtasks.length ? ` \u00b7 ${activeSubtasks} active sub-task${activeSubtasks === 1 ? '' : 's'}` : ''}`;

@@ -368,7 +368,7 @@
                             <div class="input-top">
                                 <div class="drop-hint">Drop image here</div>
                                 <textarea id="user-input"
-                                          placeholder="Ask Resonant to build, inspect, or fix..."
+                                          placeholder="Message Resonant"
                                           rows="2"
                                           autocomplete="off"
                                           spellcheck="false"></textarea>
@@ -431,10 +431,6 @@
                                             </div>
                                         </div>
                                     </div>
-                                    <button class="director-mode-btn" id="director-mode-btn" type="button" title="Configure a frontier Director and worker model pool" aria-pressed="false">
-                                        <span class="director-mode-mark" aria-hidden="true">&#10022;</span>
-                                        <span>Director</span>
-                                    </button>
                                     <button class="input-project" id="footer-project-btn" title="Current project folder — click to switch projects or open another folder">
                                         <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M1.5 4a.8.8 0 01.8-.8h2.4l1 1.1h4.8a.8.8 0 01.8.8v5a.8.8 0 01-.8.8H2.3a.8.8 0 01-.8-.8V4z" stroke="currentColor" stroke-width="1.1"/></svg>
                                         <span class="input-project-name" id="footer-project-name">project</span>
@@ -505,11 +501,6 @@
                             <span class="preview-tab-name">Plan</span>
                             <span class="preview-tab-badge" id="plan-tab-badge" style="display:none">0</span>
                         </div>
-                        <div class="preview-tab" id="agents-tab" data-pane="agents" title="Agent activity and handoffs">
-                            <span class="preview-tab-dot"></span>
-                            <span class="preview-tab-name">Agents</span>
-                            <span class="preview-tab-badge" id="agents-tab-badge" style="display:none">0</span>
-                        </div>
                         <div class="preview-tab" id="context-tab" data-pane="context" title="Live context composition and budget">
                             <span class="preview-tab-dot"></span>
                             <span class="preview-tab-name">Context</span>
@@ -563,23 +554,6 @@
                             <div class="plan-graph-empty">Plan-graph idle &mdash; start an intent to see it populate.</div>
                         </div>
                         <div id="plan-graph-detail" class="plan-graph-detail" style="display:none"></div>
-                    </div>
-                    <div id="agent-activity-pane" class="agent-activity-pane" style="display:none">
-                        <div class="agent-activity-toolbar">
-                            <div class="runtime-view-tabs" role="tablist" aria-label="Agent runtime views">
-                                <button type="button" class="runtime-view-tab active" data-runtime-view="agents">Agents</button>
-                                <button type="button" class="runtime-view-tab" data-runtime-view="director">Director</button>
-                                <button type="button" class="runtime-view-tab" data-runtime-view="timeline">Timeline</button>
-                                <button type="button" class="runtime-view-tab" data-runtime-view="traces">Traces</button>
-                                <button type="button" class="runtime-view-tab" data-runtime-view="artifacts">Artifacts</button>
-                                <button type="button" class="runtime-view-tab" data-runtime-view="packs">Packs</button>
-                            </div>
-                            <span class="agent-activity-count" id="agent-activity-count">0 workers</span>
-                        </div>
-                        <div id="agent-activity-tree" class="agent-activity-tree">
-                            <div class="agent-activity-empty">Sub-agents and specialists will appear here.</div>
-                        </div>
-                        <div id="agent-handoff-detail" class="agent-handoff-detail" style="display:none"></div>
                     </div>
                     <div id="context-cockpit-pane" class="context-cockpit-pane" style="display:none">
                         <div class="context-cockpit-toolbar">

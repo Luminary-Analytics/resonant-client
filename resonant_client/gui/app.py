@@ -540,7 +540,6 @@ class AppState:
         from ..engine.capability_packs import CapabilityPackManager
         from ..engine.context_broker import ContextBroker
         from ..engine.flight_recorder import FlightRecorder
-        from ..engine.director import DirectorBenchmarkStore, DirectorConfig, DirectorRun
         from ..engine.model_roles import ModelRoleRouter
         from ..engine.worktrees import WorktreeManager
 
@@ -579,12 +578,9 @@ class AppState:
             return spec.create_backend(self.settings)
 
         record = self.project.current_session
-        director_config = DirectorConfig.from_dict(
-            getattr(record, "director_config", {}) if record else {}
-        )
         role_router = ModelRoleRouter(
             self.settings.get("model_roles") or {},
-            workers=[worker.to_dict() for worker in director_config.workers],
+            workers=[],
             backend_factory=_role_backend_factory,
         )
         context_broker = ContextBroker(
@@ -623,35 +619,19 @@ class AppState:
         session.flight_recorder = flight_recorder
         session.context_broker = context_broker
         session.model_role_router = role_router
-        session.benchmark_store = DirectorBenchmarkStore(target_path)
-        if director_config.enabled:
-            run_id = str(getattr(record, "director_run_id", "") or "") if record else ""
-            try:
-                director_run = (
-                    DirectorRun.load(
-                        target_path, run_id, on_event=self._push_ws_event,
-                    )
-                    if run_id else None
-                )
-            except (OSError, ValueError, KeyError):
-                logger.warning("Director run %s could not be restored; starting a new run", run_id)
-                director_run = None
-            if director_run is None:
-                director_run = DirectorRun(
-                    target_path,
-                    config=director_config,
-                    on_event=self._push_ws_event,
-                )
-            session.director_run = director_run
-            director_prompt = director_run.system_prompt()
-            session.role_instructions = "\n\n".join(
-                value for value in (session.role_instructions, director_prompt) if value
-            )
-            if record:
-                record.orchestration_mode = "director"
-                record.director_config = director_config.to_dict()
-                record.director_run_id = director_run.id
-                record.save()
+        # Director Mode was retired in favor of the standard agent loop. Clear
+        # legacy session flags as records are opened so an old task graph can
+        # never be restored or injected into the model prompt.
+        session.director_run = None
+        if record and (
+            getattr(record, "orchestration_mode", "single") != "single"
+            or getattr(record, "director_config", {})
+            or getattr(record, "director_run_id", "")
+        ):
+            record.orchestration_mode = "single"
+            record.director_config = {}
+            record.director_run_id = ""
+            record.save()
         session.worktree_manager = worktree_manager
         session.capability_packs = capability_packs
         session._settings_ref = self.settings
@@ -1068,8 +1048,6 @@ class AppState:
         session_role: str = "generator",
         max_tokens: Optional[int] = None,
         allowed_tools: Optional[list[dict[str, Any]]] = None,
-        director_config: Optional[dict[str, Any]] = None,
-        director_run_id: str = "",
     ) -> Session:
         effective_root = os.path.normpath(project_path or self.project.project_path)
         session_mode = self.normalize_session_mode(session_mode)
@@ -1082,17 +1060,7 @@ class AppState:
         backend = backend or (spec.create_backend(self.settings) if spec else None)
         if backend is None:
             raise ValueError("Backend or backend spec is required to build a session")
-
-        # Director Mode is session-local. Explicit values are persisted before
-        # wiring; otherwise a resumed record restores its own configuration.
         record = self.project.current_session
-        if record and director_config is not None:
-            from ..engine.director import DirectorConfig
-            normalized = DirectorConfig.from_dict(director_config)
-            record.director_config = normalized.to_dict()
-            record.orchestration_mode = "director" if normalized.enabled else "single"
-            record.director_run_id = str(director_run_id or "")
-            record.save()
 
         if self._normalize_path(effective_root) == self._normalize_path(self.project.project_path):
             project_instructions = self._project_instructions or load_project_instructions(effective_root)
@@ -1591,22 +1559,6 @@ class AppState:
             "all_sessions": self.project.list_all_sessions(),
             "current_session_id": self.project.current_session.id if self.project.current_session else "",
             "current_session_role": self.project.current_session.session_role if self.project.current_session else "generator",
-            "orchestration_mode": (
-                self.project.current_session.orchestration_mode
-                if self.project.current_session else "single"
-            ),
-            "director_config": (
-                self.project.current_session.director_config
-                if self.project.current_session else {}
-            ),
-            "director_run": (
-                self.session.director_run.to_dict()
-                if self.session and getattr(self.session, "director_run", None) else None
-            ),
-            "director_benchmark": (
-                self.session.benchmark_store.comparison()
-                if self.session and getattr(self.session, "benchmark_store", None) else None
-            ),
             "current_thinking_mode": (
                 getattr(self.backend_spec, "thinking_mode", "") if self.backend_spec else ""
             ) or (

@@ -25,6 +25,7 @@ from tests.streaming_stub import StreamingBackend
     ("model_name", "expected"),
     [
         ("glm-5.2:cloud", "glm"),
+        ("mlx-community/GLM-5.3-Flash-4bit", "glm"),
         ("zai/glm-5", "glm"),
         ("deepseek-v4-pro:cloud", "deepseek"),
         ("DeepSeek_R1", "deepseek"),
@@ -44,18 +45,22 @@ def test_profiles_share_model_neutral_guidance():
     kimi = build_model_prompt("kimi-k3")
 
     for prompt in (glm, deepseek, generic, kimi):
-        assert "expert coding assistant operating inside Resonant" in prompt
+        assert "You are Resonant, a thoughtful technical collaborator" in prompt
         assert "Read relevant code and project instructions before editing" in prompt
+        assert "match\nthe user's tone" in prompt
+        assert "Treat tool activity as background" in prompt
+        assert "The response must stand on its own" in prompt
+        assert "avoid generic praise" in prompt
         assert "Run independent reads together" in prompt
-        assert "Never claim an action or\n  check that did not complete" in prompt
-        assert "Continue through ordinary tool failures" in prompt
+        assert "Never claim an action or check that did not complete" in prompt
+        assert "Continue through ordinary\n  tool failures" in prompt
         assert "Delegate only bounded independent work" in prompt
         assert "Use `await_user` only for one consequential requirement" in prompt
         assert "set `recommended_option` to that exact value" in prompt
         assert "reuse settled evidence instead of\nrediscovering it" in prompt
         assert "Use `search_tools` once" in prompt
         # Keep the invariant prompt small enough for fast local-model prefills.
-        assert len(prompt) < 2_500
+        assert len(prompt) < 3_200
     assert len({glm, deepseek, generic, kimi}) == 1
 
 
@@ -87,7 +92,7 @@ def test_plan_mode_keeps_model_profile_and_disables_tools():
         plan_mode=True,
         model_name="glm-5.2:cloud",
     )
-    assert "expert coding assistant operating inside Resonant" in prompt
+    assert "You are Resonant, a thoughtful technical collaborator" in prompt
     assert "CURRENT MODE: PLAN" in prompt
     assert "Do not call tools" in prompt
     assert "RESONANT TOOL NOTES" not in prompt

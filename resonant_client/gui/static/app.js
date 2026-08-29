@@ -260,19 +260,17 @@ class ResonantApp {
         this.subagentDepth = 0;
         this.subagentContainer = null;
         this.agentActivities = new Map();
-        this.agentActivityOrder = [];
-        this.agentActivityStack = [];
-        this.contextState = null;
+        // Runtime bookkeeping still powers compact in-chat task summaries.
+        // It is intentionally not exposed as a separate agent hierarchy.
         this.runtimeView = 'agents';
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
         this.runtimeTraces = [];
         this.runtimeArtifacts = [];
         this.runtimePacks = [];
-        this.directorMode = false;
-        this.directorConfig = {};
-        this.directorRun = null;
-        this.directorBenchmark = null;
+        this.agentActivityOrder = [];
+        this.agentActivityStack = [];
+        this.contextState = null;
         this.contextProviders = [];
 
         // Preview panel state
@@ -346,7 +344,6 @@ class ResonantApp {
         this.composerQueue = document.getElementById('composer-queue');
         this.modelSelector = document.getElementById('model-selector');
         this.thinkingModeSelector = document.getElementById('thinking-mode-selector');
-        this.directorModeBtn = document.getElementById('director-mode-btn');
         this.headerStatus = document.getElementById('header-status');
         this.headerProject = document.getElementById('header-project');
         this.statusPopoverTrigger = document.getElementById('status-popover-trigger');
@@ -870,7 +867,6 @@ class ResonantApp {
     _bindComposer() {
         // Send message
         this.sendBtn.addEventListener('click', () => this.sendMessage());
-        this.directorModeBtn?.addEventListener('click', () => this.openDirectorComposer());
 
         // Mission toggle in chat header — opens the composer.
         const missionToggle = document.getElementById('mission-toggle');
@@ -2707,7 +2703,7 @@ class ResonantApp {
         this.userInput.disabled = false;
         this.userInput.placeholder = running
             ? 'Write a follow-up for the running agent...'
-            : 'Ask Resonant to build, inspect, or fix...';
+            : 'Message Resonant';
         const sendLabel = running
             ? 'Queue follow-up (Enter) — Shift+Enter for newline'
             : 'Send message (Enter) — Shift+Enter for newline';
@@ -3308,10 +3304,6 @@ class ResonantApp {
                 this.sessions = event.sessions || [];
                 this.applySessionRoleUI(event.session_role || 'generator');
                 this.sessionRole = event.session_role || this.sessionRole;
-                this.directorMode = event.orchestration_mode === 'director';
-                this.directorConfig = event.director_config || {};
-                this.directorRun = null;
-                this.updateDirectorModeUI();
                 this.renderFilteredSessions();
                 this._syncSessionTitle();
                 this.showChatInterface();
@@ -3565,39 +3557,6 @@ class ResonantApp {
                 this.contextProviders = event.providers || [];
                 this.renderContextCockpit();
                 break;
-            case 'director.configured':
-                this.directorMode = event.mode === 'director';
-                this.directorConfig = event.config || {};
-                this.directorRun = event.run || null;
-                document.getElementById('director-composer-overlay')?.remove();
-                this.updateDirectorModeUI();
-                this.renderRuntimeView();
-                this.showStatusMessage(this.directorMode
-                    ? 'Director Mode is ready.' : 'Director Mode disabled for this session.');
-                break;
-            case 'director.configure_failed':
-                this.showStatusMessage(event.message || 'Director Mode configuration failed.');
-                document.querySelector('#director-composer-overlay .director-save')?.removeAttribute('disabled');
-                break;
-            case 'director.status':
-                this.directorRun = event.run || null;
-                this.directorBenchmark = event.benchmark || this.directorBenchmark;
-                this.updateDirectorModeUI();
-                this.renderRuntimeView();
-                break;
-            case 'director.created':
-            case 'director.objective.updated':
-            case 'director.plan.updated':
-            case 'director.task.updated':
-            case 'director.task.handoff':
-            case 'director.task.validation':
-            case 'director.decision':
-            case 'director.completed':
-                this.directorRun = event.run || this.directorRun;
-                this.updateDirectorModeUI();
-                this.renderRuntimeView();
-                this._markAgentTabUnread();
-                break;
             case 'agent.created':
             case 'agent.updated':
             case 'agent.completed':
@@ -3745,10 +3704,6 @@ class ResonantApp {
             refresh_only,
             harness_enabled,
             harness_cycles,
-            orchestration_mode,
-            director_config,
-            director_run,
-            director_benchmark,
         } = event;
 
         // Update project info
@@ -3773,11 +3728,6 @@ class ResonantApp {
         this.currentBackendName = current_backend || '';
         this.currentModelName = current_model || '';
         this.handlesTools = event.handles_tools || false;
-        this.directorMode = orchestration_mode === 'director';
-        this.directorConfig = director_config || {};
-        this.directorRun = director_run || null;
-        this.directorBenchmark = director_benchmark || null;
-        this.updateDirectorModeUI();
 
         if (recent_projects) {
             this.recentProjects = recent_projects;
@@ -4325,143 +4275,6 @@ class ResonantApp {
             this.modelSelector.value = '';
         }
         this._refreshThinkingModeVisibility();
-    }
-
-    updateDirectorModeUI() {
-        if (!this.directorModeBtn) return;
-        this.directorModeBtn.classList.toggle('active', this.directorMode);
-        this.directorModeBtn.setAttribute('aria-pressed', this.directorMode ? 'true' : 'false');
-        const workers = this.directorConfig?.workers?.filter(worker => worker.enabled !== false).length || 0;
-        this.directorModeBtn.title = this.directorMode
-            ? `Director Mode active · ${workers} worker model${workers === 1 ? '' : 's'}`
-            : 'Configure a frontier Director and worker model pool';
-    }
-
-    _availableDirectorModels() {
-        const labels = this._getBackendLabels();
-        const rows = [];
-        Object.entries(this.backends || {}).forEach(([backend, info]) => {
-            (info?.models || []).forEach(model => rows.push({
-                backend,
-                model,
-                label: `${labels[backend] || backend} · ${info?.model_labels?.[model] || model}`,
-            }));
-        });
-        return rows;
-    }
-
-    openDirectorComposer() {
-        if (this.isRunning) {
-            this.showStatusMessage('Configure Director Mode between runs so active work is not interrupted.');
-            return;
-        }
-        document.getElementById('director-composer-overlay')?.remove();
-        const models = this._availableDirectorModels();
-        if (!models.length) {
-            this.showStatusMessage('Connect at least one model provider before configuring Director Mode.');
-            return;
-        }
-        const currentDirector = this.directorConfig?.director || {};
-        const recommendedDirector = models[0];
-        const selectedBackend = currentDirector.backend_type || recommendedDirector.backend;
-        const selectedModel = currentDirector.model || recommendedDirector.model;
-        const configuredWorkers = new Map((this.directorConfig?.workers || []).map(worker => [
-            `${worker.backend_type || worker.backend}\u0000${worker.model}`,
-            worker,
-        ]));
-        const optionHtml = models.map((item, index) => `
-            <option value="${index}" ${item.backend === selectedBackend && item.model === selectedModel ? 'selected' : ''}>
-                ${this.escapeHtml(item.label)}${index === 0 ? ' · Recommended' : ''}
-            </option>`).join('');
-        const workersHtml = models.map((item, index) => {
-            const configured = configuredWorkers.get(`${item.backend}\u0000${item.model}`);
-            const checked = configured?.enabled !== false && !!configured;
-            const vision = configured?.capabilities?.includes('vision');
-            return `
-                <div class="director-worker-row" data-model-index="${index}">
-                    <input class="director-worker-enabled" type="checkbox" aria-label="Use ${this.escapeHtml(item.label)} as a worker" ${checked ? 'checked' : ''}>
-                    <span class="director-worker-copy">
-                        <strong>${this.escapeHtml(item.label)}</strong>
-                        <small>Explore · implement · test · review</small>
-                    </span>
-                    <label class="director-worker-capability" title="Allow image and visual tasks when this model supports them">
-                        <input class="director-worker-vision" type="checkbox" ${vision ? 'checked' : ''}>
-                        Vision
-                    </label>
-                </div>`;
-        }).join('');
-        const overlay = document.createElement('div');
-        overlay.id = 'director-composer-overlay';
-        overlay.className = 'director-composer-overlay';
-        overlay.innerHTML = `
-            <div class="director-composer" role="dialog" aria-modal="true" aria-labelledby="director-composer-title">
-                <header>
-                    <span class="director-composer-orbit" aria-hidden="true"><i></i></span>
-                    <div><h2 id="director-composer-title">Director Mode</h2><p>A frontier model plans, reviews, and integrates work from your selected model pool.</p></div>
-                    <button type="button" class="director-close" aria-label="Close">×</button>
-                </header>
-                <label class="director-master-row">
-                    <span><strong>Use Director Mode for this session</strong><small>Opt-in. Single-agent execution remains the default everywhere else.</small></span>
-                    <input class="director-enabled" type="checkbox" ${this.directorMode ? 'checked' : ''}>
-                </label>
-                <section class="director-config-section">
-                    <div class="director-section-heading"><span>Director model</span><b>Recommended: strongest available model</b></div>
-                    <select class="director-model-select">${optionHtml}</select>
-                    <div class="director-section-heading"><span>Worker pool</span><small>Select one or more models; routing adapts from verified results.</small></div>
-                    <div class="director-worker-list">${workersHtml}</div>
-                </section>
-                <section class="director-policy-grid">
-                    <label><span>Parallel workers</span><input class="director-parallel" type="number" min="1" max="16" value="${Number(this.directorConfig?.max_parallel_workers || 4)}"></label>
-                    <label><input class="director-require-validation" type="checkbox" ${this.directorConfig?.require_validation !== false ? 'checked' : ''}> Require deterministic validation</label>
-                    <label><input class="director-require-review" type="checkbox" ${this.directorConfig?.require_independent_review !== false ? 'checked' : ''}> Require independent Director review</label>
-                    <label><input class="director-auto-integrate" type="checkbox" ${this.directorConfig?.auto_integrate === true ? 'checked' : ''}> Auto-integrate only after gates pass</label>
-                </section>
-                <footer><button type="button" class="director-cancel">Cancel</button><button type="button" class="director-save">Apply to session</button></footer>
-            </div>`;
-        document.body.appendChild(overlay);
-        const close = () => overlay.remove();
-        overlay.querySelector('.director-close')?.addEventListener('click', close);
-        overlay.querySelector('.director-cancel')?.addEventListener('click', close);
-        overlay.addEventListener('click', event => { if (event.target === overlay) close(); });
-        overlay.querySelector('.director-save')?.addEventListener('click', () => {
-            const enabled = overlay.querySelector('.director-enabled')?.checked === true;
-            const directorIndex = Number(overlay.querySelector('.director-model-select')?.value || 0);
-            const director = models[directorIndex] || models[0];
-            const workers = [...overlay.querySelectorAll('.director-worker-row')]
-                .filter(row => row.querySelector('.director-worker-enabled')?.checked)
-                .map((row, workerIndex) => {
-                    const item = models[Number(row.dataset.modelIndex)] || models[0];
-                    return {
-                        id: `worker-${workerIndex + 1}-${item.backend}-${item.model}`.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(0, 80),
-                        backend_type: item.backend,
-                        model: item.model,
-                        roles: ['plan', 'explore', 'implement', 'apply', 'test', 'review', 'vision', 'summarize'],
-                        capabilities: row.querySelector('.director-worker-vision')?.checked ? ['vision'] : [],
-                        thinking_mode: 'max',
-                        enabled: true,
-                        quality_weight: 1,
-                    };
-                });
-            if (enabled && !workers.length) {
-                this.showStatusMessage('Select at least one worker model.');
-                return;
-            }
-            const save = overlay.querySelector('.director-save');
-            if (save) { save.disabled = true; save.textContent = 'Applying…'; }
-            this.send({
-                command: 'director_configure',
-                config: {
-                    enabled,
-                    director: { backend_type: director.backend, model: director.model, thinking_mode: 'max' },
-                    workers,
-                    max_parallel_workers: Math.max(1, Math.min(16, Number(overlay.querySelector('.director-parallel')?.value || 4))),
-                    require_validation: overlay.querySelector('.director-require-validation')?.checked !== false,
-                    require_independent_review: overlay.querySelector('.director-require-review')?.checked !== false,
-                    auto_integrate: overlay.querySelector('.director-auto-integrate')?.checked === true,
-                    adaptive_scheduling: true,
-                },
-            });
-        });
     }
 
     /** Show the thinking-mode selector for Ollama reasoning models
@@ -5692,9 +5505,8 @@ class ResonantApp {
      */
     switchPreviewPane(pane) {
         const isPlan = pane === 'plan';
-        const isAgents = pane === 'agents';
         const isContext = pane === 'context';
-        const isBrowser = !isPlan && !isAgents && !isContext;
+        const isBrowser = !isPlan && !isContext;
         document.querySelectorAll('.preview-tab[data-pane]').forEach((t) => {
             t.classList.toggle('active', t.dataset.pane === pane);
         });
@@ -5706,8 +5518,6 @@ class ResonantApp {
         if (browserViewport) browserViewport.style.display = isBrowser ? '' : 'none';
         if (browserConsole) browserConsole.style.display = isBrowser ? '' : 'none';
         if (planPane) planPane.style.display = isPlan ? 'flex' : 'none';
-        const agentsPane = document.getElementById('agent-activity-pane');
-        if (agentsPane) agentsPane.style.display = isAgents ? 'flex' : 'none';
         const contextPane = document.getElementById('context-cockpit-pane');
         if (contextPane) contextPane.style.display = isContext ? 'flex' : 'none';
 
@@ -5716,10 +5526,6 @@ class ResonantApp {
         // plan pane clears any pending indicator.
         this._currentPreviewPane = pane;
         if (isPlan) this._clearPlanTabUnread();
-        if (isAgents) {
-            this._clearAgentTabUnread();
-            this.refreshRuntimeView();
-        }
         if (isContext) {
             this.send({ command: 'get_context_state' });
             this.send({ command: 'context_catalog' });
@@ -6524,6 +6330,10 @@ class ResonantApp {
     _collapseTaskActivity(event = {}) {
         const task = this._activeTask;
         const activity = task && task.activityEl;
+        // Live progress is transient. Keep only the concrete work rows in the
+        // completed disclosure so expanding Activity never reveals an empty,
+        // faded run dashboard.
+        activity?.querySelector(':scope > .live-run-surface')?.remove();
         if (!activity || activity.children.length === 0) return;
         if (activity.querySelector(':scope > .task-activity-details')) return;
 
@@ -6531,16 +6341,20 @@ class ResonantApp {
         const steps = event.total_steps || t.stepCount || 0;
         const tools = t.toolCallCount || 0;
         const pieces = [];
-        if (steps > 0) pieces.push(`${steps} step${steps === 1 ? '' : 's'}`);
-        if (tools > 0) pieces.push(`${tools} tool${tools === 1 ? '' : 's'}`);
+        const actions = tools || steps;
+        if (actions > 0) pieces.push(`${actions} action${actions === 1 ? '' : 's'}`);
+        const elapsed = Number(event.total_elapsed || t.totalElapsed || 0);
+        const activityTitle = elapsed > 0
+            ? `Worked for ${this._formatRunDuration(elapsed)}`
+            : 'Work details';
 
         const details = document.createElement('details');
         details.className = 'task-activity-details';
         const summary = document.createElement('summary');
         summary.innerHTML = `
             <span class="task-activity-caret" aria-hidden="true"></span>
-            <span class="task-activity-title">Work log</span>
-            ${pieces.length ? `<span class="task-activity-meta">${this.escapeHtml(pieces.join(' | '))}</span>` : ''}
+            <span class="task-activity-title">${this.escapeHtml(activityTitle)}</span>
+            ${pieces.length ? `<span class="task-activity-meta">${this.escapeHtml(pieces.join(' · '))}</span>` : ''}
         `;
         details.appendChild(summary);
         while (activity.firstChild) {
@@ -6788,7 +6602,6 @@ class ResonantApp {
     refreshRuntimeView() {
         const commands = {
             agents: 'agent_runtime_list',
-            director: 'director_status',
             timeline: 'session_timeline_list',
             traces: 'flight_recorder_list',
             artifacts: 'artifact_list',
@@ -6833,10 +6646,6 @@ class ResonantApp {
         if (!tree) return;
         if (this.runtimeView === 'agents') {
             this.renderAgentActivityTree();
-            return;
-        }
-        if (this.runtimeView === 'director') {
-            this.renderDirectorRuntime();
             return;
         }
         const collections = {
@@ -6894,63 +6703,6 @@ class ResonantApp {
                 <span>${this.escapeHtml(item.description || '')}</span>
                 <div class="runtime-badges"><b class="${item.enabled ? 'is-on' : ''}">${item.enabled ? 'enabled' : 'disabled'}</b><b class="${item.trusted ? 'is-on' : ''}">${item.trusted ? 'trusted' : 'untrusted'}</b><b>${(item.agents || []).length} agents</b><b>${(item.skills || []).length} skills</b></div>
             </article>`).join('');
-    }
-
-    renderDirectorRuntime() {
-        const tree = document.getElementById('agent-activity-tree');
-        const count = document.getElementById('agent-activity-count');
-        if (!tree) return;
-        const run = this.directorRun;
-        const tasks = run?.tasks || [];
-        if (count) count.textContent = run
-            ? `${tasks.length} tasks · ${run.phase || 'ready'}`
-            : 'Director off';
-        if (!run) {
-            tree.innerHTML = `
-                <div class="director-runtime-empty">
-                    <span class="director-composer-orbit" aria-hidden="true"><i></i></span>
-                    <strong>Director Mode is not active</strong>
-                    <p>Enable it from the composer to assign a frontier model as supervisor and select a worker pool.</p>
-                    <button type="button" class="director-runtime-configure">Configure Director</button>
-                </div>`;
-            tree.querySelector('.director-runtime-configure')?.addEventListener('click', () => this.openDirectorComposer());
-            return;
-        }
-        const workers = run.config?.workers || [];
-        const accepted = tasks.filter(task => ['accepted', 'integrated'].includes(task.status)).length;
-        const singleMetrics = this.directorBenchmark?.modes?.single || {};
-        const directorMetrics = this.directorBenchmark?.modes?.director || {};
-        tree.innerHTML = `
-            <section class="director-runtime-summary">
-                <div><span>Director</span><strong>${this.escapeHtml(run.config?.director?.model || 'Configured model')}</strong></div>
-                <div><span>Phase</span><strong>${this.escapeHtml(run.phase || 'understand')}</strong></div>
-                <div><span>Progress</span><strong>${accepted}/${tasks.length || 0}</strong></div>
-            </section>
-            <section class="director-benchmark-strip" title="Project-local outcome comparison; token use is observed but does not reduce quality priority">
-                <span>Quality benchmark</span>
-                <b>Single ${Number(singleMetrics.samples || 0)} runs · ${Math.round(Number(singleMetrics.success_rate || 0) * 100)}%</b>
-                <b>Director ${Number(directorMetrics.samples || 0)} runs · ${Math.round(Number(directorMetrics.success_rate || 0) * 100)}%</b>
-            </section>
-            <section class="director-runtime-workers">
-                ${workers.map(worker => `<span title="${this.escapeHtml((worker.roles || []).join(', '))}"><i></i>${this.escapeHtml(worker.model || worker.id)}</span>`).join('')}
-            </section>
-            <section class="director-task-graph">
-                ${tasks.length ? tasks.map(task => {
-                    const validations = task.validations || [];
-                    const latestAttempt = Number(task.attempts || 0);
-                    const currentEvidence = validations.filter(item => Number(item.attempt || 0) === latestAttempt);
-                    return `
-                        <article class="director-task-card status-${this.escapeHtml(task.status || 'planned')}">
-                            <span class="director-task-state" aria-hidden="true"></span>
-                            <div class="director-task-copy">
-                                <strong>${this.escapeHtml(task.title || task.id)}</strong>
-                                <small>${this.escapeHtml(task.objective || '')}</small>
-                                <div>${this.escapeHtml(task.role || '')}${task.assigned_worker_id ? ` · ${this.escapeHtml(task.assigned_worker_id)}` : ''}${task.dependencies?.length ? ` · after ${this.escapeHtml(task.dependencies.join(', '))}` : ''}</div>
-                            </div>
-                            <aside><b>${this.escapeHtml(task.status || 'planned')}</b><small>${currentEvidence.filter(item => item.passed).length}/${currentEvidence.length} checks</small></aside>
-                        </article>`;
-                }).join('') : '<div class="agent-activity-empty">The Director will create its task graph after understanding the request.</div>'}
-            </section>`;
     }
 
     showRuntimePayload(title, payload) {

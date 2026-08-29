@@ -165,10 +165,9 @@ def test_model_telemetry_reports_a_missing_ollama_backend():
     assert sent[0] == {"event": "model_telemetry", "data": {"error": "no Ollama backend"}}
 
 
-def test_director_status_tolerates_no_session():
-    sent = _run(ws_commands.HANDLERS["director_status"], _ctx())
-
-    assert sent[0] == {"event": "director.status", "run": None, "benchmark": None}
+def test_director_commands_are_not_registered():
+    assert "director_status" not in ws_commands.HANDLERS
+    assert "director_configure" not in ws_commands.HANDLERS
 
 
 # ---------------------------------------------------------------------------

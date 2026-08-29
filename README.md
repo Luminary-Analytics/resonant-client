@@ -65,8 +65,7 @@ contract stay model-neutral.
 - Collapsible long-task status with EXO connection/model-progress telemetry
 - Recommended decision prompts and a non-interrupting Check status control
 - Diagnostics export and cost tracking
-- Agents/Timeline/Traces/Artifacts/Packs runtime inspector
-- Opt-in Director Mode: use a frontier model to plan, review, and safely integrate work from a selected pool of open or lower-cost worker models
+- Standard agentic workflow with tools, MCP integrations, and bounded task delegation
 - Signed Windows update feed with in-app update checks
 
 ### Optional orchestration

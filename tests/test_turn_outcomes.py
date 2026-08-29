@@ -8,6 +8,12 @@ from resonant_client.engine.turn_outcomes import (
 def test_change_request_and_action_promise_detection():
     assert request_requires_workspace_change("awesome can you rewrite it")
     assert not request_requires_workspace_change("summarize this codebase")
+    assert not request_requires_workspace_change(
+        "Do not change files. What improvement should this project make next?"
+    )
+    assert not request_requires_workspace_change(
+        "Review the parser without editing the workspace."
+    )
     assert response_promises_future_action(
         "Let me rewrite it cleanly, then run it to verify."
     )

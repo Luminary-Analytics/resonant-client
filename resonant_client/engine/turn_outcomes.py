@@ -19,6 +19,13 @@ _CHANGE_REQUEST = re.compile(
     r"ship|update|upgrade|wire)\b",
     re.IGNORECASE,
 )
+_WORKSPACE_CHANGE_PROHIBITION = re.compile(
+    r"(?:\b(?:do\s+not|don't|never)\s+(?:edit|modify|change|write|touch)\s+"
+    r"(?:any\s+)?(?:files?|anything|the\s+(?:workspace|repo(?:sitory)?|project|codebase))\b|"
+    r"\bwithout\s+(?:editing|modifying|changing|writing|touching)\s+"
+    r"(?:any\s+)?(?:files?|anything|the\s+(?:workspace|repo(?:sitory)?|project|codebase))\b)",
+    re.IGNORECASE,
+)
 _ACTION_PROMISE = re.compile(
     r"\b(?:i(?:'ll|\s+will|\s+am\s+going\s+to)|let\s+me|next,?\s+i(?:'ll|\s+will)|"
     r"i\s+need\s+to)\b",
@@ -39,7 +46,10 @@ _NO_CHANGE_NEEDED = re.compile(
 
 def request_requires_workspace_change(text: str) -> bool:
     """Return whether the request asks the agent to mutate the workspace."""
-    return bool(_CHANGE_REQUEST.search(str(text or "")))
+    value = str(text or "")
+    if _WORKSPACE_CHANGE_PROHIBITION.search(value):
+        return False
+    return bool(_CHANGE_REQUEST.search(value))
 
 
 def response_promises_future_action(text: str) -> bool:

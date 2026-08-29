@@ -281,18 +281,6 @@ async def _agent_runtime_control(ctx: CommandContext) -> None:
         await ctx.send_error(str(exc))
 
 
-@command("director_status")
-async def _director_status(ctx: CommandContext) -> None:
-    session = ctx.state.session
-    run = getattr(session, "director_run", None) if session else None
-    benchmark_store = getattr(session, "benchmark_store", None) if session else None
-    await ctx.send({
-        "event": "director.status",
-        "run": run.to_dict() if run else None,
-        "benchmark": benchmark_store.comparison() if benchmark_store else None,
-    })
-
-
 # ---------------------------------------------------------------------------
 # Session checkpoint timeline
 # ---------------------------------------------------------------------------
@@ -1821,81 +1809,6 @@ async def _cmd_clear(ctx: CommandContext) -> None:
 
 
 
-@command("director_configure")
-async def _cmd_director_configure(ctx: CommandContext) -> None:
-    from ..engine.director import DirectorConfig
-
-    config = DirectorConfig.from_dict(ctx.msg.get("config") or {})
-    enabled_workers = [
-        worker for worker in config.workers
-        if worker.enabled and worker.backend_type and worker.model
-    ]
-    if config.enabled and (
-        not config.director_backend_type or not config.director_model
-    ):
-        await ctx.send({
-            "event": "director.configure_failed",
-            "message": "Select a Director model before enabling Director Mode.",
-        })
-        return
-    if config.enabled and not enabled_workers:
-        await ctx.send({
-            "event": "director.configure_failed",
-            "message": "Select at least one worker model.",
-        })
-        return
-
-    record = ctx.state.project.current_session
-    if record is None:
-        record = ctx.state.project.create_session(
-            backend_type=config.director_backend_type or getattr(ctx.state.backend, "name", ""),
-            model=config.director_model or getattr(ctx.state.backend, "model", ""),
-            session_role="generator",
-            orchestration_mode="director" if config.enabled else "single",
-            director_config=config.to_dict(),
-        )
-    old_history = list(ctx.state.session.conversation_history) if ctx.state.session else []
-    record.orchestration_mode = "director" if config.enabled else "single"
-    record.director_config = config.to_dict()
-    record.director_run_id = ""
-    if config.enabled:
-        record.backend_type = config.director_backend_type
-        record.model = config.director_model
-    record.save()
-    try:
-        backend_type = record.backend_type or getattr(ctx.state.backend, "name", "")
-        model = record.model or getattr(ctx.state.backend, "model", "")
-        if backend_type and model:
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: ctx.state.create_backend(
-                    backend_type,
-                    model,
-                    session_mode="code",
-                    session_role=record.session_role or "generator",
-                ),
-            )
-            ctx.state.session.conversation_history = old_history
-        record.conversation_history = old_history
-        record.save()
-        await ctx.send({
-            "event": "director.configured",
-            "mode": record.orchestration_mode,
-            "config": record.director_config,
-            "run": (
-                ctx.state.session.director_run.to_dict()
-                if ctx.state.session and ctx.state.session.director_run else None
-            ),
-        })
-        await ctx.send(ctx.state.get_init_data(refresh_only=True))
-    except Exception as exc:
-        logger.exception("Director Mode configuration failed")
-        await ctx.send({
-            "event": "director.configure_failed",
-            "message": f"Director Mode configuration failed: {exc}",
-        })
-
-
 
 @command("switch_model")
 async def _cmd_switch_model(ctx: CommandContext) -> None:
@@ -2078,9 +1991,6 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
             "message_count": record.message_count,
             "session_mode": "code",
             "session_role": record.session_role or "generator",
-            "orchestration_mode": record.orchestration_mode,
-            "director_config": record.director_config,
-            "director_run_id": record.director_run_id,
             "display_events": history_page["events"],
             "history_page": history_page,
             "projections": snapshot["projections"],

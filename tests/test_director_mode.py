@@ -311,18 +311,18 @@ def test_session_record_round_trips_director_configuration():
     assert restored.to_summary()["orchestration_mode"] == "director"
 
 
-def test_director_gui_contract_is_present():
+def test_director_gui_contract_is_retired():
     root = Path(__file__).parents[1]
     template = (root / "resonant_client/gui/templates/index.html").read_text(encoding="utf-8")
     script = (root / "resonant_client/gui/static/app.js").read_text(encoding="utf-8")
     styles = (root / "resonant_client/gui/static/styles.css").read_text(encoding="utf-8")
 
-    assert 'id="director-mode-btn"' in template
-    assert 'data-runtime-view="director"' in template
-    assert "openDirectorComposer()" in script
-    assert "renderDirectorRuntime()" in script
-    assert "· Recommended" in script
-    assert ".director-composer-overlay" in styles
+    assert 'id="director-mode-btn"' not in template
+    assert 'data-pane="agents"' not in template
+    assert 'id="agent-activity-pane"' not in template
+    assert "openDirectorComposer()" not in script
+    assert "renderDirectorRuntime()" not in script
+    assert "director_configure" not in script
 
 
 def test_plan_updates_preserve_active_and_accepted_work(tmp_path: Path):

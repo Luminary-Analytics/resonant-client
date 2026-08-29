@@ -91,17 +91,26 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     assert "class=\"live-run-head\"" in source
     assert "class=\"live-run-toggle\"" in source
     assert "class=\"live-run-body\" hidden" in source
+    assert "Working for <span data-live-elapsed>" in source
+    assert "class=\"live-run-divider\"" in source
+    assert "const stateLabels = {" in source
+    assert "Starting: 'Thinking'" in source
+    assert "Composing: 'Writing response'" in source
     assert "setDetailsOpen(!run.detailsOpen);" in source
     assert "toggle.setAttribute('aria-expanded', String(open));" in source
     assert ".live-run-body[hidden]" in styles
     assert '.live-run-toggle[aria-expanded="true"] .live-run-chevron' in styles
     assert "if (run.renderKey === renderKey) return;" in source
     assert "elapsed clocks update" in source
-    assert ".input-bar > .live-run-surface" in styles
+    assert ".task-activity > .live-run-surface" in styles
+    assert ".task-activity > .live-run-surface .live-run-divider" in styles
+    assert ".task-activity > .live-run-surface .live-run-detail-status" in styles
+    assert '.task-activity:not(:has(.live-run-toggle[aria-expanded="true"]))' in styles
+    assert "> :not(.live-run-surface)" in styles
     assert "scrollbar-gutter: stable" in styles
-    live_dock_rule = styles[styles.index(".input-bar > .live-run-surface {"):]
+    live_dock_rule = styles[styles.index(".task-activity > .live-run-surface {"):]
     live_dock_rule = live_dock_rule[:live_dock_rule.index("}")]
-    assert "order: -1" in live_dock_rule
+    assert "border: 0" in live_dock_rule
     input_bar_override = styles.index(".input-bar {\n    position: absolute;")
     input_bar_body = styles[input_bar_override:styles.index("}", input_bar_override)]
     assert "flex-direction: column" in input_bar_body
@@ -110,8 +119,25 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     card_start = source.index("    _beginTaskCard(")
     card_end = source.index("\n    _ensureTaskCard", card_start)
     card_body = source[card_start:card_end]
-    assert "card.appendChild(live);" not in card_body
+    assert "activity.appendChild(this.liveRunSurface);" in card_body
     assert "liveEl: this.liveRunSurface" in card_body
+    assert "activity?.querySelector(':scope > .live-run-surface')?.remove();" in source
+    assert "if (this._liveRun === run)" in source
+
+
+def test_completed_chat_prioritizes_the_answer_over_success_telemetry():
+    source = frontend_source()
+    styles = STYLES_CSS.read_text(encoding="utf-8")
+
+    assert "['answered', 'no_changes_needed'].includes(outcome)" in source
+    assert "task.footerEl.hidden = true;" in source
+    assert "`Worked for ${this._formatRunDuration(elapsed)}`" in source
+    assert '<span class="task-activity-title">${this.escapeHtml(activityTitle)}</span>' in source
+    assert ".task-card::before,\n.task-card::after" in styles
+    assert '.task-card[data-user-message="synthetic"] .task-card-header' in styles
+    assert "border-radius: 18px 18px 4px 18px" in styles
+    assert "max-height: min(48vh, 440px)" in styles
+    assert ": 'Message Resonant';" in source
 
 
 def test_streaming_text_does_not_use_a_lonely_blinking_cursor():

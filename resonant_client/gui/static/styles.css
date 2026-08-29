@@ -12445,158 +12445,6 @@ body.is-window-dragging * {
     .steer-queue-icon::before { animation: none !important; }
 }
 
-/* Director Mode — an opt-in supervisory layer, visually related to the live
-   run surface but quiet enough to live in the composer footer. */
-.director-mode-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    min-height: 25px;
-    padding: 3px 8px;
-    border: 1px solid transparent;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--muted);
-    font: inherit;
-    font-size: 11px;
-    cursor: pointer;
-}
-.director-mode-btn:hover { color: var(--text); background: rgba(255,255,255,.055); }
-.director-mode-btn.active {
-    border-color: rgba(167,139,250,.32);
-    background: linear-gradient(135deg, rgba(124,58,237,.14), rgba(45,212,191,.07));
-    color: #ddd6fe;
-}
-.director-mode-mark { color: #a78bfa; text-shadow: 0 0 9px rgba(167,139,250,.5); }
-
-.director-composer-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 1200;
-    display: grid;
-    place-items: center;
-    padding: 26px;
-    background: rgba(3,3,5,.72);
-    backdrop-filter: blur(12px);
-}
-.director-composer {
-    width: min(720px, calc(100vw - 42px));
-    max-height: min(820px, calc(100vh - 48px));
-    overflow: auto;
-    border: 1px solid rgba(167,139,250,.25);
-    border-radius: 18px;
-    background:
-        radial-gradient(circle at 12% 0%, rgba(124,58,237,.14), transparent 34%),
-        linear-gradient(180deg, rgba(25,23,34,.985), rgba(14,14,18,.99));
-    box-shadow: 0 30px 90px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.06);
-    color: var(--text);
-}
-.director-composer > header {
-    display: grid;
-    grid-template-columns: auto 1fr auto;
-    align-items: center;
-    gap: 14px;
-    padding: 20px 22px 17px;
-    border-bottom: 1px solid rgba(255,255,255,.07);
-}
-.director-composer h2 { margin: 0; font-size: 17px; letter-spacing: -.015em; }
-.director-composer header p { margin: 4px 0 0; color: #938da2; font-size: 11.5px; }
-.director-close {
-    width: 30px; height: 30px; border: 0; border-radius: 8px; background: transparent;
-    color: #8e8899; font-size: 21px; cursor: pointer;
-}
-.director-close:hover { color: white; background: rgba(255,255,255,.06); }
-.director-composer-orbit {
-    position: relative; display: inline-grid; place-items: center; width: 34px; height: 34px;
-    border: 1px solid rgba(167,139,250,.35); border-radius: 50%;
-    box-shadow: 0 0 24px rgba(124,58,237,.18);
-}
-.director-composer-orbit::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #5eead4; box-shadow: 0 0 12px rgba(94,234,212,.8); }
-.director-composer-orbit i { position: absolute; inset: 4px; border: 1px solid rgba(167,139,250,.75); border-right-color: transparent; border-radius: 50%; animation: live-run-orbit 2.4s linear infinite; }
-.director-master-row {
-    display: flex; justify-content: space-between; align-items: center; gap: 20px;
-    margin: 18px 22px 0; padding: 13px 14px; border: 1px solid rgba(94,234,212,.15);
-    border-radius: 11px; background: rgba(94,234,212,.035);
-}
-.director-master-row strong, .director-master-row small { display: block; }
-.director-master-row strong { font-size: 12.5px; }
-.director-master-row small { margin-top: 3px; color: #888293; font-size: 10.5px; }
-.director-master-row input { accent-color: #7c3aed; width: 17px; height: 17px; }
-.director-config-section { padding: 19px 22px 0; }
-.director-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin: 0 0 8px; color: #b8b2c2; font-size: 11px; }
-.director-section-heading:not(:first-child) { margin-top: 18px; }
-.director-section-heading b { padding: 3px 7px; border-radius: 999px; background: rgba(167,139,250,.1); color: #c4b5fd; font-size: 9px; font-weight: 650; }
-.director-section-heading small { color: #777180; }
-.director-model-select, .director-parallel {
-    width: 100%; padding: 9px 10px; border: 1px solid rgba(255,255,255,.11); border-radius: 9px;
-    background: #121216; color: #e9e7ed; font: inherit; font-size: 12px; outline: none;
-}
-.director-model-select:focus, .director-parallel:focus { border-color: rgba(167,139,250,.55); }
-.director-worker-list { display: grid; gap: 6px; max-height: 250px; overflow: auto; }
-.director-worker-row {
-    display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px;
-    padding: 10px 11px; border: 1px solid rgba(255,255,255,.075); border-radius: 9px;
-    background: rgba(255,255,255,.018); cursor: pointer;
-}
-.director-worker-row:hover { border-color: rgba(167,139,250,.24); background: rgba(167,139,250,.035); }
-.director-worker-row > input { accent-color: #7c3aed; }
-.director-worker-copy strong, .director-worker-copy small { display: block; }
-.director-worker-copy strong { font-size: 11.5px; font-weight: 620; }
-.director-worker-copy small { margin-top: 2px; color: #777180; font-size: 9.5px; }
-.director-worker-capability { display: inline-flex; align-items: center; gap: 5px; color: #817b8a; font-size: 9.5px; }
-.director-worker-capability input { accent-color: #2dd4bf; }
-.director-policy-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px 18px; padding: 18px 22px; color: #9c96a7; font-size: 10.5px; }
-.director-policy-grid label { display: flex; align-items: center; gap: 7px; }
-.director-policy-grid label:first-child { justify-content: space-between; }
-.director-policy-grid input { accent-color: #7c3aed; }
-.director-policy-grid .director-parallel { width: 70px; padding: 5px 7px; }
-.director-composer > footer { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 22px; border-top: 1px solid rgba(255,255,255,.07); }
-.director-composer > footer button, .director-runtime-configure {
-    padding: 8px 13px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px;
-    background: rgba(255,255,255,.035); color: #b7b1bf; font: inherit; font-size: 11px; cursor: pointer;
-}
-.director-composer > footer .director-save { border-color: rgba(94,234,212,.27); background: linear-gradient(135deg, rgba(124,58,237,.52), rgba(13,148,136,.46)); color: white; }
-.director-composer > footer button:disabled { opacity: .5; cursor: wait; }
-
-.director-runtime-empty { display: grid; justify-items: center; gap: 9px; padding: 48px 24px; text-align: center; color: #8e8898; }
-.director-runtime-empty strong { color: #d8d4df; font-size: 13px; }
-.director-runtime-empty p { max-width: 340px; margin: 0; font-size: 10.5px; line-height: 1.5; }
-.director-runtime-summary { display: grid; grid-template-columns: 1.5fr 1fr .7fr; gap: 7px; padding: 11px; }
-.director-runtime-summary > div { min-width: 0; padding: 9px 10px; border: 1px solid rgba(255,255,255,.07); border-radius: 9px; background: rgba(255,255,255,.02); }
-.director-runtime-summary span, .director-runtime-summary strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.director-runtime-summary span { color: #777180; font-size: 8.5px; text-transform: uppercase; letter-spacing: .08em; }
-.director-runtime-summary strong { margin-top: 4px; color: #d9d5e0; font-size: 11px; }
-.director-runtime-workers { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 11px 10px; }
-.director-benchmark-strip { display: flex; align-items: center; gap: 8px; padding: 0 11px 9px; color: #6f6977; font-size: 8.5px; }
-.director-benchmark-strip span { margin-right: auto; text-transform: uppercase; letter-spacing: .07em; }
-.director-benchmark-strip b { padding: 3px 6px; border-radius: 5px; background: rgba(255,255,255,.03); color: #8f8998; font-weight: 550; }
-.director-runtime-workers span { display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px; border-radius: 999px; background: rgba(167,139,250,.075); color: #aaa3b7; font-size: 9px; }
-.director-runtime-workers i { width: 5px; height: 5px; border-radius: 50%; background: #5eead4; box-shadow: 0 0 6px rgba(94,234,212,.5); }
-.director-task-graph { display: grid; gap: 6px; padding: 0 11px 12px; }
-.director-task-card { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 9px; padding: 9px 10px; border: 1px solid rgba(255,255,255,.07); border-radius: 9px; background: rgba(255,255,255,.018); }
-.director-task-state { width: 8px; height: 8px; border: 1px solid #686171; border-radius: 50%; }
-.director-task-card.status-running .director-task-state, .director-task-card.status-validating .director-task-state, .director-task-card.status-review .director-task-state { border-color: #a78bfa; box-shadow: 0 0 8px rgba(167,139,250,.65); }
-.director-task-card.status-accepted .director-task-state, .director-task-card.status-integrated .director-task-state { border-color: #5eead4; background: #5eead4; box-shadow: 0 0 8px rgba(94,234,212,.45); }
-.director-task-card.status-blocked .director-task-state, .director-task-card.status-failed .director-task-state { border-color: #fb7185; background: #fb7185; }
-.director-task-copy { min-width: 0; }
-.director-task-copy strong, .director-task-copy small, .director-task-copy div { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.director-task-copy strong { color: #d8d4df; font-size: 10.5px; }
-.director-task-copy small { margin-top: 2px; color: #827c8c; font-size: 9px; }
-.director-task-copy div { margin-top: 4px; color: #67616f; font-size: 8.5px; }
-.director-task-card aside { text-align: right; }
-.director-task-card aside b, .director-task-card aside small { display: block; }
-.director-task-card aside b { color: #9d96a7; font-size: 8px; text-transform: uppercase; letter-spacing: .06em; }
-.director-task-card aside small { margin-top: 4px; color: #67616f; font-size: 8px; }
-
-@media (max-width: 700px) {
-    .director-policy-grid { grid-template-columns: 1fr; }
-    .director-worker-row { grid-template-columns: auto 1fr; }
-    .director-worker-capability { grid-column: 2; }
-}
-@media (prefers-reduced-motion: reduce) {
-    .director-composer-orbit i { animation: none !important; }
-}
-
 /* ==========================================================================
    Minimalist response rendering — Claude Code-inspired
    Wider content column, tighter typography, rule-based tables.
@@ -12663,4 +12511,479 @@ body.is-window-dragging * {
     border: 0;
     border-top: 1px solid var(--border);
     margin: 18px 0;
+}
+
+/* ==========================================================================
+   ChatGPT Windows-inspired conversation
+
+   The transcript is the product surface: user prompts are compact bubbles,
+   assistant answers are unboxed, and implementation detail stays behind one
+   quiet disclosure. This deliberately overrides the older task-card/timeline
+   treatments above while retaining their functional DOM and accessibility.
+   ========================================================================== */
+
+:root {
+    --content-max-width: 780px;
+    --chat-user-bubble: #242424;
+    --chat-composer: #212121;
+    --chat-composer-border: rgba(255, 255, 255, .10);
+    --chat-soft-hover: rgba(255, 255, 255, .055);
+}
+
+[data-theme="light"] {
+    --chat-user-bubble: #f1f1f1;
+    --chat-composer: #ffffff;
+    --chat-composer-border: rgba(0, 0, 0, .10);
+    --chat-soft-hover: rgba(0, 0, 0, .045);
+}
+
+.chat-header {
+    height: 52px;
+    min-height: 52px;
+    background: color-mix(in srgb, var(--bg) 94%, transparent);
+}
+
+.chat-session-title {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+}
+
+.chat-messages {
+    max-width: var(--content-max-width);
+    padding: 30px 24px var(--composer-gutter, 158px);
+}
+
+/* A turn is a conversation grouping, never a card or a timeline. */
+.task-card {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin: 0 0 42px;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.task-card::before,
+.task-card::after {
+    display: none;
+    content: none;
+}
+
+.task-card-header {
+    order: 1;
+    display: flex;
+    align-items: flex-start;
+    justify-content: flex-end;
+    gap: 7px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.task-card-state,
+.task-card-label {
+    display: none;
+}
+
+.task-card-main {
+    width: fit-content;
+    max-width: min(80%, 640px);
+    margin-left: auto;
+}
+
+.task-request-text {
+    padding: 10px 15px 11px;
+    border: 0;
+    border-radius: 18px 18px 4px 18px;
+    background: var(--chat-user-bubble);
+    box-shadow: none;
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 450;
+    line-height: 1.5;
+}
+
+.task-card-actions {
+    align-self: center;
+    min-width: 26px;
+    opacity: 0;
+    transition: opacity var(--duration-fast) ease;
+}
+
+.task-card:hover .task-card-actions,
+.task-card:focus-within .task-card-actions {
+    opacity: 1;
+}
+
+/* Replay may need a structural turn when the matching user event is outside
+   the mounted history window. Its fallback labels ("Task", "Agent response")
+   are routing metadata, not messages authored by the user. */
+.task-card[data-user-message="synthetic"] .task-card-header {
+    display: none;
+}
+
+.task-card[data-user-message="synthetic"] .task-activity {
+    margin-top: 0;
+}
+
+.task-activity,
+.task-card-running .task-activity {
+    order: 2;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin: 12px 0 0;
+    padding: 0;
+}
+
+.task-result,
+.task-card-running .task-result {
+    order: 3;
+    padding: 10px 0 0;
+    border: 0;
+    background: transparent;
+}
+
+.task-result:not([hidden])::before {
+    display: none;
+    content: none;
+}
+
+.task-result .msg-assistant {
+    margin: 0;
+}
+
+.task-result .msg-assistant + .msg-assistant {
+    margin-top: 16px;
+}
+
+.task-result .message-content,
+.msg-assistant .message-content {
+    max-width: none;
+    color: var(--text);
+    font-size: 14.5px;
+    line-height: 1.65;
+    letter-spacing: -.006em;
+}
+
+.msg-assistant .msg-actions {
+    margin-top: 7px;
+    opacity: 0;
+    transition: opacity var(--duration-fast) ease;
+}
+
+.msg-assistant:hover .msg-actions,
+.msg-assistant:focus-within .msg-actions {
+    opacity: 1;
+}
+
+/* Finished activity reads like ChatGPT's compact thinking disclosure. */
+.task-activity-details {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+}
+
+.task-activity-details > summary {
+    display: inline-flex;
+    width: auto;
+    min-height: 28px;
+    padding: 0 5px 0 0;
+    gap: 6px;
+    border-radius: 7px;
+    color: var(--muted);
+}
+
+.task-activity-details > summary:hover {
+    color: var(--text-secondary);
+}
+
+.task-activity-caret::before {
+    color: currentColor;
+    font-size: 16px;
+}
+
+.task-activity-title {
+    color: currentColor;
+    font-size: 12.5px;
+    font-weight: 500;
+}
+
+.task-activity-meta {
+    margin-left: 2px;
+    color: var(--dim);
+    font-size: 11.5px;
+}
+
+.task-activity-details[open] {
+    padding: 0 0 8px;
+    max-height: min(48vh, 440px);
+    overflow-y: auto;
+    scrollbar-gutter: stable;
+}
+
+.task-activity-details[open] > :not(summary) {
+    margin: 7px 0 0;
+}
+
+.task-activity-details[open] > summary {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg);
+}
+
+.tool-activity-group,
+.collapsed-group,
+.subagent-block,
+.tool-row {
+    border-color: var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-panel) 76%, transparent);
+}
+
+/* Live progress belongs to the response, not in a dashboard above input. */
+.task-activity > .live-run-surface {
+    position: static;
+    order: -1;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    padding: 0;
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+}
+
+.task-activity > .live-run-surface[hidden] {
+    display: none;
+}
+
+.task-activity > .live-run-surface.is-finishing {
+    opacity: 0;
+    transform: translateY(2px);
+}
+
+/* Keep implementation noise out of the conversation while work is live.
+   The compact status remains visible; opening its disclosure reveals the
+   underlying tool/evidence rows for users who want to inspect them. */
+.task-card-running .task-activity:not(:has(.live-run-toggle[aria-expanded="true"]))
+    > :not(.live-run-surface) {
+    display: none;
+}
+
+.task-activity > .live-run-surface .live-run-head {
+    display: block;
+}
+
+.task-activity > .live-run-surface .live-run-toggle {
+    grid-template-columns: minmax(0, 1fr) 9px;
+    align-items: start;
+    gap: 10px;
+    width: 100%;
+    min-height: 54px;
+    padding: 0;
+    border-radius: 0;
+}
+
+.task-activity > .live-run-surface .live-run-copy {
+    display: block;
+    min-width: 0;
+}
+
+.task-activity > .live-run-surface .live-run-copy strong {
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0;
+}
+
+.task-activity > .live-run-surface .live-run-divider {
+    display: block;
+    width: 100%;
+    margin: 8px 0 11px;
+    border-top: 1px solid var(--border);
+}
+
+.task-activity > .live-run-surface .live-run-copy small {
+    margin: 0;
+    color: var(--dim);
+    font-size: 12px;
+    line-height: 1.25;
+}
+
+.task-activity > .live-run-surface .live-run-chevron {
+    margin-top: 3px;
+    opacity: 0;
+    transition: opacity var(--duration-fast) ease, transform .18s ease;
+}
+
+.task-activity > .live-run-surface .live-run-toggle:hover .live-run-chevron,
+.task-activity > .live-run-surface .live-run-toggle:focus-visible .live-run-chevron,
+.task-activity > .live-run-surface .live-run-toggle[aria-expanded="true"] .live-run-chevron {
+    opacity: .65;
+}
+
+.task-activity > .live-run-surface .live-run-status-check {
+    min-width: 0;
+    padding: 4px 7px;
+    border-color: var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-size: 10.5px;
+}
+
+.task-activity > .live-run-surface .live-run-body {
+    margin: 7px 0 0;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--bg-panel) 80%, transparent);
+}
+
+.task-activity > .live-run-surface .live-run-detail-status {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+}
+
+.task-activity > .live-run-surface .live-run-detail-status .live-run-latest,
+.task-activity > .live-run-surface .live-run-detail-status .live-run-health {
+    grid-column: 1;
+}
+
+.task-activity > .live-run-surface .live-run-detail-status .live-run-status-check {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+}
+
+.task-activity > .live-run-surface .live-run-progress {
+    margin: 0 0 10px;
+}
+
+.task-activity > .live-run-surface .live-run-details {
+    margin: 0;
+}
+
+.task-activity > .live-run-surface .live-run-detail-grid {
+    height: auto;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+/* Completion UI appears only when it adds meaning: changes or recovery. */
+.task-card-footer {
+    order: 4;
+    gap: 7px;
+    margin-top: 10px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+}
+
+.task-run-summary {
+    min-height: 26px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+}
+
+.task-run-mark {
+    height: 18px;
+    min-width: 18px;
+    padding: 0 5px;
+    font-size: 9px;
+}
+
+.task-run-label,
+.task-run-detail {
+    font-size: 11.5px;
+}
+
+.task-change-list {
+    padding-left: 25px;
+}
+
+/* Floating desktop composer: rounded, compact, and visually separate from
+   the transcript without becoming a toolbar wall. */
+.input-bar {
+    padding: 0 20px 18px;
+    background: linear-gradient(to top, var(--bg) 0%, var(--bg) 76%, transparent);
+}
+
+.input-bar .input-wrapper,
+.input-wrapper {
+    max-width: var(--content-max-width);
+    border: 1px solid var(--chat-composer-border);
+    border-radius: 24px;
+    background: var(--chat-composer);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, .22);
+}
+
+.input-wrapper:focus-within,
+.input-wrapper.is-running {
+    border-color: color-mix(in srgb, var(--text) 22%, transparent);
+    box-shadow: 0 8px 30px rgba(0, 0, 0, .26), 0 0 0 1px var(--chat-soft-hover);
+}
+
+.input-top {
+    min-height: 62px;
+    padding: 13px 12px 7px 15px;
+    align-items: flex-end;
+}
+
+#user-input {
+    min-height: 36px;
+    padding: 5px 3px 4px 0;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.send-btn,
+.stop-btn {
+    flex: 0 0 auto;
+    width: 32px;
+    height: 32px;
+    margin: 0;
+    border-radius: 50%;
+}
+
+.input-footer {
+    padding: 0 12px 10px;
+}
+
+/* The project is already visible in the sidebar and token telemetry is
+   available in diagnostics; neither needs permanent composer real estate. */
+.input-project,
+.token-info {
+    display: none;
+}
+
+@media (max-width: 820px) {
+    .chat-messages {
+        padding: 24px 16px var(--composer-gutter, 152px);
+    }
+
+    .input-bar {
+        padding: 0 12px 12px;
+    }
+
+    .task-card-main {
+        max-width: 88%;
+    }
+
+    .task-request-text {
+        font-size: 13.5px;
+    }
 }

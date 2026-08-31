@@ -92,6 +92,7 @@ _DT_VCENTER = 0x00000004
 _DT_SINGLELINE = 0x00000020
 _TRANSPARENT_BK = 1
 _DEFAULT_GUI_FONT = 17
+_CURSOR_SHOWING = 0x00000001
 
 
 _signatures_declared = False
@@ -152,6 +153,10 @@ def _declare_signatures() -> None:
     user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
     user32.GetCursorPos.restype = wintypes.BOOL
+    user32.GetCursorInfo.argtypes = [ctypes.POINTER(_CURSORINFO)]
+    user32.GetCursorInfo.restype = wintypes.BOOL
+    user32.GetIconInfo.argtypes = [wintypes.HICON, ctypes.POINTER(_ICONINFO)]
+    user32.GetIconInfo.restype = wintypes.BOOL
     user32.RegisterClassW.restype = wintypes.ATOM
     user32.PeekMessageW.argtypes = [
         ctypes.POINTER(wintypes.MSG), wintypes.HWND,
@@ -199,6 +204,15 @@ def _declare_signatures() -> None:
     gdi32.GetStockObject.restype = wintypes.HGDIOBJ
     gdi32.SetBkMode.argtypes = [wintypes.HDC, ctypes.c_int]
     gdi32.SetTextColor.argtypes = [wintypes.HDC, wintypes.COLORREF]
+    gdi32.GetObjectW.argtypes = [
+        wintypes.HGDIOBJ, ctypes.c_int, wintypes.LPVOID,
+    ]
+    gdi32.GetObjectW.restype = ctypes.c_int
+    gdi32.GetDIBits.argtypes = [
+        wintypes.HDC, wintypes.HBITMAP, wintypes.UINT, wintypes.UINT,
+        wintypes.LPVOID, wintypes.LPVOID, wintypes.UINT,
+    ]
+    gdi32.GetDIBits.restype = ctypes.c_int
     _signatures_declared = True
 
 
@@ -224,6 +238,53 @@ class _BITMAPINFOHEADER(ctypes.Structure):
         ("biYPelsPerMeter", ctypes.c_long),
         ("biClrUsed", wintypes.DWORD),
         ("biClrImportant", wintypes.DWORD),
+    ]
+
+
+class _CURSORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("hCursor", wintypes.HANDLE),
+        ("ptScreenPos", wintypes.POINT),
+    ]
+
+
+class _ICONINFO(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", wintypes.BOOL),
+        ("xHotspot", wintypes.DWORD),
+        ("yHotspot", wintypes.DWORD),
+        ("hbmMask", wintypes.HBITMAP),
+        ("hbmColor", wintypes.HBITMAP),
+    ]
+
+
+class _BITMAP(ctypes.Structure):
+    _fields_ = [
+        ("bmType", ctypes.c_long),
+        ("bmWidth", ctypes.c_long),
+        ("bmHeight", ctypes.c_long),
+        ("bmWidthBytes", ctypes.c_long),
+        ("bmPlanes", wintypes.WORD),
+        ("bmBitsPixel", wintypes.WORD),
+        ("bmBits", wintypes.LPVOID),
+    ]
+
+
+class _RGBQUAD(ctypes.Structure):
+    _fields_ = [
+        ("rgbBlue", ctypes.c_ubyte),
+        ("rgbGreen", ctypes.c_ubyte),
+        ("rgbRed", ctypes.c_ubyte),
+        ("rgbReserved", ctypes.c_ubyte),
+    ]
+
+
+class _BITMAPINFO(ctypes.Structure):
+    _fields_ = [
+        ("bmiHeader", _BITMAPINFOHEADER),
+        ("bmiColors", _RGBQUAD * 2),
     ]
 
 
@@ -286,19 +347,21 @@ def _build_glow_rows(width: int, height: int) -> bytearray:
     return buffer
 
 
-# ── cursor ring ──────────────────────────────────────────────────────
+# ── cursor glow ──────────────────────────────────────────────────────
 #
-# The edge glow says "Resonant is driving". The ring says *where*. Because the
-# agent moves the real system cursor, the pointer is already visible — what is
-# missing is any signal distinguishing its movement from the user's own.
+# The edge glow says "Resonant is driving". The cursor glow says *where*.
+# Because the real system cursor is already visible, the overlay only traces
+# its familiar arrow silhouette instead of painting another pointer over it.
 
-RING_BOX = 116          # window is square; the glow is centred in it
+RING_BOX = 160          # square window, anchored at the cursor hot spot
 _RING_RADIUS = 18
-# The resting indicator is deliberately a broad, low-alpha halo rather than a
-# narrow ring.  A narrow animated ring reads like Windows' busy cursor; the
-# halo reads as ambient ownership while leaving the actual pointer unobscured.
-_RING_THICKNESS = 18.0
 _RING_ALPHA = 150
+_CURSOR_ANCHOR = RING_BOX // 2
+# The core hugs the native cursor by only two pixels. The bloom is wider but
+# deliberately faint, so it reads as emitted light rather than a larger arrow.
+_CURSOR_OUTLINE_PX = 1.5
+_CURSOR_GLOW_PX = 8.0
+_CURSOR_ALPHA = 235
 # Click feedback: the ring expands outward and fades. Pre-rendered because
 # re-rasterising on the click path would put Python drawing work between the
 # agent's click and the screenshot that follows it.
@@ -307,7 +370,7 @@ _PULSE_MAX_RADIUS = 46
 
 
 def _build_ring_frame(radius: float, thickness: float, alpha_scale: float) -> bytearray:
-    """One premultiplied BGRA frame containing a soft cursor halo."""
+    """One premultiplied BGRA frame containing a click ripple."""
     red, green, blue = _GLOW_RGB
     size = RING_BOX
     stride = size * 4
@@ -350,6 +413,293 @@ def _build_ring_frame(radius: float, thickness: float, alpha_scale: float) -> by
     return buffer
 
 
+def _read_bitmap_pixels(
+    bitmap: int,
+    width: int,
+    height: int,
+    bit_count: int,
+) -> tuple[bytes, int] | None:
+    """Read a GDI bitmap into a top-down, DWORD-aligned DIB buffer."""
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+    info = _BITMAPINFO()
+    header = info.bmiHeader
+    header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
+    header.biWidth = width
+    header.biHeight = -height
+    header.biPlanes = 1
+    header.biBitCount = bit_count
+    header.biCompression = _BI_RGB
+    stride = ((width * bit_count + 31) // 32) * 4
+    pixels = (ctypes.c_ubyte * (stride * height))()
+    screen_dc = user32.GetDC(None)
+    try:
+        lines = gdi32.GetDIBits(
+            screen_dc, bitmap, 0, height, pixels,
+            ctypes.byref(info), _DIB_RGB_COLORS,
+        )
+        if lines != height:
+            return None
+        return bytes(pixels), stride
+    finally:
+        user32.ReleaseDC(None, screen_dc)
+
+
+def _mask_bit(pixels: bytes, stride: int, x: int, y: int) -> int:
+    """Read one MSB-first pixel from a 1-bit DIB."""
+    value = pixels[y * stride + x // 8]
+    return (value >> (7 - x % 8)) & 1
+
+
+def _default_arrow_mask() -> tuple[bytearray, int, int, int, int]:
+    """Pixel mask matching the standard 32px Windows arrow.
+
+    This is used only when an application deliberately installs a transparent
+    cursor. Keeping the fallback at native cursor dimensions avoids returning
+    to the oversized decorative arrow that this indicator replaced.
+    """
+    width, height = 25, 32
+    polygon = (
+        (0.0, 0.0),
+        (0.0, 24.0),
+        (6.5, 17.5),
+        (12.5, 31.0),
+        (19.0, 28.0),
+        (13.0, 16.0),
+        (24.0, 16.0),
+    )
+    mask = bytearray(width * height)
+    for y in range(height):
+        py = y + 0.5
+        for x in range(width):
+            px = x + 0.5
+            inside = False
+            previous = polygon[-1]
+            for current in polygon:
+                x1, y1 = previous
+                x2, y2 = current
+                crosses = (y1 > py) != (y2 > py)
+                if crosses:
+                    intersection = (x2 - x1) * (py - y1) / (y2 - y1) + x1
+                    if px < intersection:
+                        inside = not inside
+                previous = current
+            if inside:
+                mask[y * width + x] = 255
+    return mask, width, height, 0, 0
+
+
+def _current_cursor_state():
+    """Return the visible cursor handle and screen position."""
+    if not IS_WINDOWS:
+        return None
+    _declare_signatures()
+    cursor_info = _CURSORINFO()
+    cursor_info.cbSize = ctypes.sizeof(_CURSORINFO)
+    if not ctypes.windll.user32.GetCursorInfo(ctypes.byref(cursor_info)):
+        return None
+    if not (cursor_info.flags & _CURSOR_SHOWING) or not cursor_info.hCursor:
+        return None
+    return (
+        int(cursor_info.hCursor),
+        int(cursor_info.ptScreenPos.x),
+        int(cursor_info.ptScreenPos.y),
+    )
+
+
+def _capture_cursor_mask(cursor_handle: int | None = None):
+    """Capture the active Windows cursor's exact alpha mask and hot spot.
+
+    Modern cursors expose a 32-bit alpha bitmap. Legacy cursors use a 1-bit
+    transparency mask (or stacked AND/XOR masks); both paths are preserved so
+    the glow follows Windows' actual cursor rather than an approximation.
+    """
+    if not IS_WINDOWS:
+        return None
+    _declare_signatures()
+    user32 = ctypes.windll.user32
+    gdi32 = ctypes.windll.gdi32
+
+    if cursor_handle is None:
+        cursor_state = _current_cursor_state()
+        if cursor_state is None:
+            return None
+        cursor_handle = cursor_state[0]
+    requested_handle = int(cursor_handle)
+
+    icon_info = _ICONINFO()
+    if not user32.GetIconInfo(cursor_handle, ctypes.byref(icon_info)):
+        return None
+    try:
+        source_bitmap = icon_info.hbmColor or icon_info.hbmMask
+        bitmap_info = _BITMAP()
+        if not source_bitmap or not gdi32.GetObjectW(
+            source_bitmap, ctypes.sizeof(_BITMAP), ctypes.byref(bitmap_info)
+        ):
+            return None
+        width = abs(int(bitmap_info.bmWidth))
+        height = abs(int(bitmap_info.bmHeight))
+        if not icon_info.hbmColor:
+            height //= 2  # monochrome masks stack AND and XOR planes
+        if width <= 0 or height <= 0:
+            return None
+
+        mask = bytearray(width * height)
+        if icon_info.hbmColor:
+            color = _read_bitmap_pixels(icon_info.hbmColor, width, height, 32)
+            if color is None:
+                return None
+            color_pixels, color_stride = color
+            for y in range(height):
+                for x in range(width):
+                    mask[y * width + x] = color_pixels[
+                        y * color_stride + x * 4 + 3
+                    ]
+
+        # Some legacy colour cursors have no alpha channel, while monochrome
+        # cursors store stacked AND/XOR planes. The 1-bit mask recovers both
+        # cases without inventing a geometric approximation.
+        if not any(mask):
+            raw_mask_height = height if icon_info.hbmColor else height * 2
+            raw_mask = _read_bitmap_pixels(
+                icon_info.hbmMask, width, raw_mask_height, 1
+            )
+            if raw_mask is None:
+                return None
+            mask_pixels, mask_stride = raw_mask
+            for y in range(height):
+                for x in range(width):
+                    and_bit = _mask_bit(mask_pixels, mask_stride, x, y)
+                    if icon_info.hbmColor:
+                        visible = not and_bit
+                    else:
+                        xor_bit = _mask_bit(
+                            mask_pixels, mask_stride, x, y + height
+                        )
+                        visible = not (and_bit and not xor_bit)
+                    mask[y * width + x] = 255 if visible else 0
+        if not any(mask):
+            fallback_mask, width, height, hotspot_x, hotspot_y = (
+                _default_arrow_mask()
+            )
+            return (
+                requested_handle,
+                fallback_mask,
+                width,
+                height,
+                hotspot_x,
+                hotspot_y,
+            )
+        return (
+            requested_handle,
+            mask,
+            width,
+            height,
+            int(icon_info.xHotspot),
+            int(icon_info.yHotspot),
+        )
+    finally:
+        if icon_info.hbmMask:
+            gdi32.DeleteObject(icon_info.hbmMask)
+        if icon_info.hbmColor:
+            gdi32.DeleteObject(icon_info.hbmColor)
+
+
+def _build_cursor_glow_frame(
+    mask: bytearray,
+    width: int,
+    height: int,
+    hotspot_x: int,
+    hotspot_y: int,
+    alpha_scale: float = 1.0,
+) -> bytearray:
+    """Build a tight outline and soft bloom from a native cursor mask."""
+    red, green, blue = _GLOW_RGB
+    size = RING_BOX
+    stride = size * 4
+    buffer = bytearray(stride * size)
+    silhouette = bytearray(size * size)
+    origin_x = _CURSOR_ANCHOR - hotspot_x
+    origin_y = _CURSOR_ANCHOR - hotspot_y
+    for source_y in range(height):
+        target_y = origin_y + source_y
+        if not 0 <= target_y < size:
+            continue
+        for source_x in range(width):
+            target_x = origin_x + source_x
+            if not 0 <= target_x < size:
+                continue
+            coverage = mask[source_y * width + source_x]
+            if coverage > 24:
+                silhouette[target_y * size + target_x] = coverage
+
+    edge_points = []
+    for y in range(size):
+        for x in range(size):
+            if not silhouette[y * size + x]:
+                continue
+            if any(
+                not (0 <= x + dx < size and 0 <= y + dy < size)
+                or not silhouette[(y + dy) * size + x + dx]
+                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1))
+            ):
+                edge_points.append((x + 0.5, y + 0.5))
+    if not edge_points:
+        return buffer
+
+    for y in range(size):
+        base = y * stride
+        py = y + 0.5
+        for x in range(size):
+            px = x + 0.5
+            distance = min(
+                math.hypot(px - edge_x, py - edge_y)
+                for edge_x, edge_y in edge_points
+            )
+            if distance > _CURSOR_GLOW_PX:
+                continue
+
+            # Draw only the edge pixels inside the silhouette; the real cursor
+            # covers those. Outside it, a two-pixel purple core hugs the exact
+            # contour and a much fainter bloom falls away independently.
+            inside = bool(silhouette[y * size + x])
+            if inside and distance > 0.75:
+                continue
+            bloom = max(0.0, 1.0 - distance / _CURSOR_GLOW_PX) ** 2.4
+            core = max(0.0, 1.0 - distance / _CURSOR_OUTLINE_PX)
+            coverage = min(1.0, 0.46 * bloom + 0.92 * core)
+            alpha = int(_CURSOR_ALPHA * alpha_scale * coverage)
+            if alpha <= 0:
+                continue
+            offset = base + x * 4
+            buffer[offset] = blue * alpha // 255
+            buffer[offset + 1] = green * alpha // 255
+            buffer[offset + 2] = red * alpha // 255
+            buffer[offset + 3] = alpha
+    return buffer
+
+
+def _composite_frames(base: bytearray, overlay: bytearray) -> bytearray:
+    """Alpha-composite two equally sized premultiplied BGRA frames."""
+    result = bytearray(base)
+    for offset in range(0, len(result), 4):
+        source_alpha = overlay[offset + 3]
+        if source_alpha == 0:
+            continue
+        inverse = 255 - source_alpha
+        for channel in range(3):
+            result[offset + channel] = min(
+                255,
+                overlay[offset + channel]
+                + result[offset + channel] * inverse // 255,
+            )
+        result[offset + 3] = min(
+            255,
+            source_alpha + result[offset + 3] * inverse // 255,
+        )
+    return result
+
+
 class _Overlay:
     """A single click-through, per-pixel-alpha window covering one monitor."""
 
@@ -368,7 +718,7 @@ class _Overlay:
         self._shutdown = threading.Event()
         self._shown = False
         self._cursor_indicator = cursor_indicator
-        # Cursor ring — a second window, owned by the same thread for the same
+        # Cursor glow — a second window, owned by the same thread for the same
         # reason the first one is: cross-thread window calls deadlock.
         self._ring_hwnd = None
         self._ring_hdc = None
@@ -377,6 +727,7 @@ class _Overlay:
         self._ring_shown = False
         self._ring_frame = 0          # 0 = idle ring, 1..N = click pulse
         self._ring_last_pos = None
+        self._ring_cursor_handle = None
 
     # ── window plumbing ──────────────────────────────────────────────
 
@@ -454,6 +805,7 @@ class _Overlay:
             gdi32.DeleteObject(bitmap)
         self._ring_bitmaps = []
         self._ring_hdc = self._ring_old_bitmap = None
+        self._ring_cursor_handle = None
 
     def _build_surface(self, width: int, height: int) -> bool:
         """Render the glow and banner once into a reusable DIB."""
@@ -658,11 +1010,11 @@ class _Overlay:
         self._shown = False
         self._apply_ring_hide()
 
-    # ── cursor ring ──────────────────────────────────────────────────
+    # ── cursor glow ──────────────────────────────────────────────────
 
     def _ensure_ring(self) -> bool:
         if self._ring_hwnd:
-            return True
+            return bool(self._ring_bitmaps) or self._rebuild_ring_frames()
         user32 = ctypes.windll.user32
         gdi32 = ctypes.windll.gdi32
 
@@ -677,6 +1029,37 @@ class _Overlay:
         if not self._ring_hwnd:
             return False
 
+        screen_dc = user32.GetDC(None)
+        try:
+            self._ring_hdc = gdi32.CreateCompatibleDC(screen_dc)
+        finally:
+            user32.ReleaseDC(None, screen_dc)
+        if not self._ring_hdc:
+            return False
+        return self._rebuild_ring_frames()
+
+    def _rebuild_ring_frames(self, cursor_handle: int | None = None) -> bool:
+        """Rebuild the glow whenever Windows changes the native cursor."""
+        snapshot = _capture_cursor_mask(cursor_handle)
+        if snapshot is None:
+            return False
+        handle, mask, width, height, hotspot_x, hotspot_y = snapshot
+        if handle == self._ring_cursor_handle and self._ring_bitmaps:
+            return True
+
+        cursor_glow = _build_cursor_glow_frame(
+            mask, width, height, hotspot_x, hotspot_y
+        )
+        frames = [cursor_glow]
+        for step in range(1, _PULSE_FRAMES + 1):
+            progress = step / _PULSE_FRAMES
+            ripple = _build_ring_frame(
+                _RING_RADIUS + (_PULSE_MAX_RADIUS - _RING_RADIUS) * progress,
+                max(1.4, 4.0 * (1.0 - 0.55 * progress)),
+                0.9 * (1.0 - progress),
+            )
+            frames.append(_composite_frames(cursor_glow, ripple))
+
         header = _BITMAPINFOHEADER()
         header.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
         header.biWidth = RING_BOX
@@ -685,35 +1068,40 @@ class _Overlay:
         header.biBitCount = 32
         header.biCompression = _BI_RGB
 
+        new_bitmaps = []
+        user32 = ctypes.windll.user32
+        gdi32 = ctypes.windll.gdi32
         screen_dc = user32.GetDC(None)
         try:
-            self._ring_hdc = gdi32.CreateCompatibleDC(screen_dc)
-            # Soft idle halo first, then a narrower expanding click ripple.
-            specs = [(float(_RING_RADIUS), _RING_THICKNESS, 1.0)]
-            for step in range(1, _PULSE_FRAMES + 1):
-                progress = step / _PULSE_FRAMES
-                specs.append((
-                    _RING_RADIUS + (_PULSE_MAX_RADIUS - _RING_RADIUS) * progress,
-                    max(1.4, 4.0 * (1.0 - 0.55 * progress)),
-                    0.9 * (1.0 - progress),
-                ))
-            for radius, thickness, scale in specs:
+            for pixels in frames:
                 bits = ctypes.c_void_p()
                 bitmap = gdi32.CreateDIBSection(
                     screen_dc, ctypes.byref(header), _DIB_RGB_COLORS,
                     ctypes.byref(bits), None, 0,
                 )
                 if not bitmap or not bits:
+                    for pending in new_bitmaps:
+                        gdi32.DeleteObject(pending)
                     return False
-                pixels = _build_ring_frame(radius, thickness, scale)
                 ctypes.memmove(bits, bytes(pixels), len(pixels))
-                self._ring_bitmaps.append(bitmap)
+                new_bitmaps.append(bitmap)
         finally:
             user32.ReleaseDC(None, screen_dc)
+
+        # Put the stock bitmap back before deleting any currently selected
+        # frame. This is mandatory when a link/resize cursor appears mid-run.
+        if self._ring_old_bitmap:
+            gdi32.SelectObject(self._ring_hdc, self._ring_old_bitmap)
+        for bitmap in self._ring_bitmaps:
+            gdi32.DeleteObject(bitmap)
+        self._ring_bitmaps = new_bitmaps
+        self._ring_old_bitmap = None
+        self._ring_cursor_handle = handle
+        self._ring_last_pos = None
         return bool(self._ring_bitmaps)
 
     def _composite_ring(self, x: int, y: int) -> None:
-        """Place the ring centred on (x, y) and draw the current frame."""
+        """Place the glow's hot spot on (x, y) and draw the current frame."""
         if not (self._ring_hwnd and self._ring_hdc and self._ring_bitmaps):
             return
         gdi32 = ctypes.windll.gdi32
@@ -738,10 +1126,15 @@ class _Overlay:
     def _apply_ring_show(self) -> None:
         if not self._ensure_ring():
             return
+        cursor_state = _current_cursor_state()
+        if cursor_state is None:
+            return
+        cursor_handle, cursor_x, cursor_y = cursor_state
+        if cursor_handle != self._ring_cursor_handle:
+            if not self._rebuild_ring_frames(cursor_handle):
+                return
         user32 = ctypes.windll.user32
-        point = wintypes.POINT()
-        user32.GetCursorPos(ctypes.byref(point))
-        self._composite_ring(point.x, point.y)
+        self._composite_ring(cursor_x, cursor_y)
         user32.ShowWindow(self._ring_hwnd, _SW_SHOWNOACTIVATE)
         user32.SetWindowPos(
             self._ring_hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
@@ -759,11 +1152,14 @@ class _Overlay:
         """Follow the cursor and advance any click pulse. Runs every frame."""
         if not self._ring_shown:
             return
-        user32 = ctypes.windll.user32
-        point = wintypes.POINT()
-        if not user32.GetCursorPos(ctypes.byref(point)):
+        cursor_state = _current_cursor_state()
+        if cursor_state is None:
             return
-        position = (point.x, point.y)
+        cursor_handle, cursor_x, cursor_y = cursor_state
+        if cursor_handle != self._ring_cursor_handle:
+            if not self._rebuild_ring_frames(cursor_handle):
+                return
+        position = (cursor_x, cursor_y)
         animating = self._ring_frame > 0
         # Redraw only when something changed. A stationary cursor with no pulse
         # in flight costs nothing, which matters because this runs at 60 Hz for
@@ -771,7 +1167,7 @@ class _Overlay:
         if position == self._ring_last_pos and not animating:
             return
         self._ring_last_pos = position
-        self._composite_ring(point.x, point.y)
+        self._composite_ring(cursor_x, cursor_y)
         if animating:
             self._ring_frame += 1
             if self._ring_frame > _PULSE_FRAMES:

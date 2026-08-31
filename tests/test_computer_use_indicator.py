@@ -309,11 +309,17 @@ def test_repeated_activity_on_one_monitor_skips_the_window_redraw(
     assert overlay.show_calls == 1
 
 
-# ── cursor ring ──────────────────────────────────────────────────────
+# ── cursor glow ──────────────────────────────────────────────────────
 
 def _alpha_at(frame: bytearray, x: int, y: int) -> int:
     box = screen_overlay.RING_BOX
     return frame[(y * box + x) * 4 + 3]
+
+
+def _test_cursor_mask():
+    """A small opaque cursor body with its hot spot one pixel in."""
+    width, height = 8, 10
+    return bytearray([255] * (width * height)), width, height, 1, 1
 
 
 def test_ring_frame_is_an_annulus_not_a_disc():
@@ -344,20 +350,39 @@ def test_ring_stroke_is_feathered():
     assert any(0 < value < 255 for value in column)
 
 
-def test_idle_cursor_indicator_is_a_broad_glow_with_a_clear_center():
-    box = screen_overlay.RING_BOX
-    centre = box // 2
-    radius = screen_overlay._RING_RADIUS
-    frame = screen_overlay._build_ring_frame(
-        float(radius), screen_overlay._RING_THICKNESS, 1.0
+def test_idle_cursor_indicator_follows_the_supplied_cursor_mask_exactly():
+    anchor = screen_overlay._CURSOR_ANCHOR
+    mask, width, height, hotspot_x, hotspot_y = _test_cursor_mask()
+    frame = screen_overlay._build_cursor_glow_frame(
+        mask, width, height, hotspot_x, hotspot_y
     )
+    left = anchor - hotspot_x
+    top = anchor - hotspot_y
+    right = left + width - 1
+    bottom = top + height - 1
 
-    assert _alpha_at(frame, centre, centre) == 0
-    radial_alphas = {
-        _alpha_at(frame, centre, centre - distance)
-        for distance in range(10, 33)
-    }
-    assert len({alpha for alpha in radial_alphas if alpha > 0}) >= 5
+    assert _alpha_at(frame, left, anchor) > 0
+    assert _alpha_at(frame, right, anchor) > 0
+    assert _alpha_at(frame, anchor, top) > 0
+    assert _alpha_at(frame, anchor, bottom) > 0
+    assert _alpha_at(frame, anchor + 2, anchor + 2) == 0, "interior stays clear"
+    assert _alpha_at(frame, left - 12, anchor) == 0
+
+
+def test_cursor_glow_has_a_soft_bloom_outside_its_contour():
+    anchor = screen_overlay._CURSOR_ANCHOR
+    mask, width, height, hotspot_x, hotspot_y = _test_cursor_mask()
+    frame = screen_overlay._build_cursor_glow_frame(
+        mask, width, height, hotspot_x, hotspot_y
+    )
+    left = anchor - hotspot_x
+
+    alphas = [
+        _alpha_at(frame, left - distance, anchor)
+        for distance in range(0, 11)
+    ]
+    assert alphas[0] > alphas[2] > alphas[6] > 0
+    assert alphas[10] == 0
 
 
 def test_ring_pixels_are_premultiplied():
@@ -375,6 +400,22 @@ def test_ring_pixels_are_premultiplied():
     assert alpha > 0
     for channel in (blue, green, red):
         assert channel <= alpha, "channel exceeds alpha — not premultiplied"
+
+
+def test_click_frame_keeps_cursor_contour_visible():
+    anchor = screen_overlay._CURSOR_ANCHOR
+    mask, width, height, hotspot_x, hotspot_y = _test_cursor_mask()
+    cursor = screen_overlay._build_cursor_glow_frame(
+        mask, width, height, hotspot_x, hotspot_y
+    )
+    ripple = screen_overlay._build_ring_frame(
+        float(screen_overlay._PULSE_MAX_RADIUS), 1.5, 0.15
+    )
+    combined = screen_overlay._composite_frames(cursor, ripple)
+
+    assert _alpha_at(combined, anchor - hotspot_x, anchor) >= _alpha_at(
+        cursor, anchor - hotspot_x, anchor
+    )
 
 
 def test_pulse_frames_expand_and_fade():

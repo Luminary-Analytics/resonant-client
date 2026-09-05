@@ -40,7 +40,8 @@ AGENT_TYPES: dict[str, AgentType] = {
             "reading, writing, editing files, and running commands."
         ),
         allowed_tools=[
-            "bash", "file_read", "file_write", "file_edit", "glob", "grep",
+            "bash", "file_read", "file_write", "file_edit", "glob", "grep", "artifact_read",
+            "check_run", "preview_start", "preview_status", "preview_stop", "skill_view",
         ],
         system_prompt="""\
 You are a build worker handling one bounded coding assignment.
@@ -68,7 +69,7 @@ and the parent's recommended next action.""",
             "Cannot write or edit files."
         ),
         allowed_tools=[
-            "file_read", "glob", "grep", "bash",
+            "file_read", "glob", "grep", "bash", "artifact_read",
         ],
         system_prompt="""\
 You are a fast, read-only exploration worker. Find decision-relevant evidence.
@@ -93,7 +94,7 @@ and the parent's recommended next action.""",
             "Reads files and searches to build a plan, but cannot write or edit."
         ),
         allowed_tools=[
-            "file_read", "glob", "grep",
+            "file_read", "glob", "grep", "artifact_read",
         ],
         system_prompt="""\
 You are a read-only planning worker. Ground the implementation plan in code.

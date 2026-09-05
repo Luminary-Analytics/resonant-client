@@ -173,7 +173,7 @@ def test_prompt_inspector_matches_exact_assembled_prompt():
     )
     assert inspected["estimated_tokens"] > 0
     # Platform-specific tool descriptions can shift this rough estimate slightly.
-    assert inspected["estimated_tokens"] < 850
+    assert inspected["estimated_tokens"] < 1000
     assert len(inspected["sha256"]) == 64
     assert [layer["id"] for layer in inspected["layers"]] == [
         "runtime", "model_profile", "project", "tools"

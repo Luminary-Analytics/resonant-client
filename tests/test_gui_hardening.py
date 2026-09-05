@@ -89,6 +89,7 @@ def _load_app_module(monkeypatch, cwd: Path):
                 "model": "kimi-k3",
                 "api_key": "stored-key",
                 "base_url": "https://api.moonshot.ai/v1",
+                "thinking": None,
             },
         ),
     ],

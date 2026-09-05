@@ -33,7 +33,7 @@ class BackendSpec:
     api_key_env: str = ""
     api_key_setting: str = ""
     api_key: str = ""
-    # Thinking mode: "low" | "med" | "high" | "max" | "off" | ""
+    # Thinking mode: "low" | "med" | "high" | "max" | "off" | "default" | ""
     thinking_mode: str = ""
 
     def to_dict(self, include_sensitive: bool = False) -> dict[str, Any]:
@@ -110,6 +110,7 @@ class BackendSpec:
                 model=self.model,
                 api_key=self.resolve_api_key(settings),
                 base_url=self.base_url or None,
+                thinking=self.thinking_mode or None,
             )
         if backend_type == "exo":
             return create_backend(

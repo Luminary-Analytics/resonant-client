@@ -93,7 +93,8 @@ _MODEL_CONTROL_TOKEN_RE = re.compile(
 
 def _strip_model_control_tokens(text: str) -> str:
     """Remove chat-template control tokens leaked by compatible providers."""
-    return _MODEL_CONTROL_TOKEN_RE.sub("", text or "")
+    text = re.sub(r"<\|start_header_id\|>assistant<\|end_header_id\|>\s*$", "", text or "")
+    return _MODEL_CONTROL_TOKEN_RE.sub("", text)
 
 
 # The longest token the pattern above can match is "<|start_header_id|>" (19).
@@ -153,33 +154,32 @@ class _ControlTokenFilter:
 def _detect_json_tool_calls(text: str) -> list:
     """
     Detect raw JSON tool calls in model output (fallback).
-    Handles both the Resonant ``arguments`` contract and the common
-    OpenAI-compatible ``parameters`` alias.  ``JSONDecoder.raw_decode`` lets
-    us recover a valid leading call even when a provider appends template
-    control tokens or explanatory prose.
+    Accept only a complete sequence of bare JSON call envelopes. Prose,
+    markdown examples, and partially decoded responses are never executable.
     """
     results = []
-    clean = _strip_model_control_tokens(text)
+    clean = _strip_model_control_tokens(text).strip()
     decoder = json.JSONDecoder()
     cursor = 0
     while cursor < len(clean):
-        start = clean.find("{", cursor)
-        if start < 0:
+        while cursor < len(clean) and clean[cursor].isspace():
+            cursor += 1
+        if cursor == len(clean):
             break
+        start = cursor
         try:
             parsed, consumed = decoder.raw_decode(clean[start:])
         except (json.JSONDecodeError, ValueError):
-            cursor = start + 1
-            continue
+            return []
         cursor = start + max(consumed, 1)
         if not isinstance(parsed, dict):
-            continue
+            return []
         name = str(parsed.get("name") or "").strip()
         args = parsed.get("arguments")
         if args is None:
             args = parsed.get("parameters")
         if not name or not isinstance(args, dict):
-            continue
+            return []
         args_str = json.dumps(args) if isinstance(args, dict) else str(args)
         call_id = _new_call_id(name, args_str, len(results))
         results.append({
@@ -188,6 +188,28 @@ def _detect_json_tool_calls(text: str) -> list:
             "call_id": call_id,
         })
     return results
+
+
+def _recover_tool_calls(text: str, tools: list, *, xml: bool = False, dsml: bool = False) -> list:
+    """Recover only whole-response envelopes for an advertised tool protocol."""
+    clean = _strip_model_control_tokens(text).strip()
+    allowed = {tool.get("function", tool).get("name") for tool in tools}
+    if not allowed:
+        return []
+    calls = _detect_json_tool_calls(clean)
+    if not calls and xml and clean.startswith("<tool_call") and clean.endswith("</tool_call>"):
+        plain, parsed = parse_tool_calls(clean)
+        if not plain.strip():
+            calls = parsed
+    if not calls and dsml and clean.startswith("<|DSML|tool_calls>") and clean.endswith("</|DSML|tool_calls>"):
+        plain, parsed = parse_dsml_tool_calls(clean)
+        if not plain.strip():
+            calls = parsed
+    if not calls or any(call.get("name") not in allowed for call in calls):
+        return []
+    for ordinal, call in enumerate(calls):
+        call.setdefault("call_id", _new_call_id(call["name"], call["arguments"], ordinal))
+    return calls
 
 
 def _detect_text_tool_calls(text: str) -> list:
@@ -209,7 +231,7 @@ def _detect_text_tool_calls(text: str) -> list:
     known_tools = {"bash", "file_write", "file_read", "file_edit", "glob", "grep"}
 
     # First: try tool_name(args) format
-    for match in re.finditer(r'\b(' + '|'.join(known_tools) + r')\((.+?)\)\s*$', text, re.DOTALL):
+    for match in re.finditer(r'^(' + '|'.join(known_tools) + r')\((.+?)\)\s*$', text, re.DOTALL):
         name = match.group(1)
         raw_args = match.group(2).strip()
         tc = _build_simple_tool_call(name, raw_args)
@@ -488,20 +510,21 @@ class OllamaBackend:
                     self._ollama_options[option_name] = int(raw_option)
                 except ValueError:
                     logger.warning("Ignoring invalid %s=%r", env_name, raw_option)
-        # Thinking-mode. Sent as `options.think` (verified to work via
-        # that path on glm-5.2:cloud, 2026-06-17). The internal token is
-        # low/med/high; "med" is the deepseek spelling of the middle
-        # tier. The WIRE value Ollama accepts is MODEL-DEPENDENT:
-        # deepseek wants "med", but standard reasoning models (GLM-5.x)
-        # want "medium" and reject "med" with HTTP 400. low/high are
-        # universal. We keep the internal token stable (for round-trip
-        # through the GUI/spec) and translate only on the way to the
-        # wire — see `_wire_think_value`.
+        # Persist the distinction between provider defaults and explicit off.
+        # Ollama takes `think` at the request top level. The internal `med`
+        # spelling is translated at the wire boundary.
         raw = (thinking or "").strip().lower()
         self._ollama_think: str | bool | None = None
-        if raw in {"", "off"}:
-            self.thinking_mode = None
+        if raw in {"", "default"}:
+            self.thinking_mode = "default" if raw == "default" else None
+        elif raw == "off":
+            if self._capabilities.reasoning_can_disable is False:
+                raise ValueError("This model cannot disable thinking; choose low, medium, or high.")
+            self.thinking_mode = "off"
+            self._ollama_think = False
         elif raw in {"low", "med", "medium", "high", "max"}:
+            if self._capabilities.reasoning_can_disable is False and raw == "max":
+                raise ValueError("This model supports only low, medium, or high thinking.")
             normalized = "med" if raw == "medium" else raw
             self.thinking_mode = normalized
             self._ollama_think = self._wire_think_value(normalized)
@@ -1168,7 +1191,8 @@ class OllamaBackend:
         - Text mode: tool definitions injected into system prompt, model returns
           <tool_call> XML blocks which are parsed from the response
 
-        Both modes fall through to JSON/XML/text detection as a final safety net.
+        Recovery accepts only complete envelopes for advertised tools. XML is
+        enabled by text mode; DSML is restricted to DeepSeek deployments.
         """
         # v0.6.5 — circuit breaker: if this endpoint just failed repeatedly,
         # fail fast rather than burning the retry budget + cold-start time on
@@ -1495,38 +1519,13 @@ class OllamaBackend:
                             # Detect tool calls from ALL sources
                             detected_calls = list(native_tool_calls)
 
-                            plain_text = ""  # Text outside tool_call blocks
-                            if not detected_calls:
-                                plain_text, dsml_calls = parse_dsml_tool_calls(clean_text)
-                                for tc in dsml_calls:
-                                    detected_calls.append({
-                                        "name": tc["name"],
-                                        "arguments": tc["arguments"],
-                                        "call_id": _new_call_id(
-                                            tc["name"], tc["arguments"], len(detected_calls)
-                                        ),
-                                    })
-
-                            if not detected_calls:
-                                # Try XML tags — returns (plain_text, tool_calls)
-                                plain_text, xml_calls = parse_tool_calls(clean_text)
-                                for tc in xml_calls:
-                                    call_id = _new_call_id(
-                                        tc["name"], tc["arguments"], len(detected_calls)
-                                    )
-                                    detected_calls.append({
-                                        "name": tc["name"],
-                                        "arguments": tc["arguments"],
-                                        "call_id": call_id,
-                                    })
-
-                            if not detected_calls:
-                                # Try raw JSON (in buffered OR streamed text)
-                                detected_calls = _detect_json_tool_calls(clean_text)
-
-                            if not detected_calls:
-                                # Try text format: bash(cmd) or bash cmd
-                                detected_calls = _detect_text_tool_calls(clean_text)
+                            plain_text = ""
+                            if not detected_calls and tools:
+                                detected_calls = _recover_tool_calls(
+                                    clean_text, tools,
+                                    xml=text_mode,
+                                    dsml="deepseek" in self.model.lower(),
+                                )
 
                             if detected_calls:
                                 # In text mode, emit any plain text before the tool calls
@@ -1928,6 +1927,7 @@ class KimiBackend:
         *,
         base_url: str = DEFAULT_BASE_URL,
         transport=None,
+        thinking: str | None = None,
     ):
         if not str(api_key or "").strip():
             raise ValueError(
@@ -1939,7 +1939,9 @@ class KimiBackend:
         self.base_url = str(base_url or self.DEFAULT_BASE_URL).rstrip("/")
         self.name = "kimi"
         self.handles_tools = False
-        self.thinking_mode = "max"
+        self.thinking_mode = thinking if thinking not in (None, "", "default") else "max"
+        if self.thinking_mode not in {"low", "high", "max"}:
+            raise ValueError("Kimi reasoning effort must be low, high, or max (thinking is always enabled).")
         self._transport = transport
         self._capabilities = ModelCapabilities(
             model=self.model,
@@ -1948,7 +1950,8 @@ class KimiBackend:
             native_tools=True,
             parallel_tools=True,
             structured_output=None,
-            reasoning_levels=("max",),
+            reasoning_levels=("low", "high", "max"),
+            reasoning_can_disable=False,
             prompt_caching=True,
             native_continuation=True,
             max_safe_concurrency=4,
@@ -2272,7 +2275,7 @@ class KimiBackend:
             ),
             "stream": True,
             "stream_options": {"include_usage": True},
-            "reasoning_effort": "max",
+            "reasoning_effort": self.thinking_mode,
         }
         if unique_tools:
             payload["tools"] = unique_tools
@@ -2590,7 +2593,16 @@ class KimiBackend:
                             if not choices:
                                 continue
                             delta = choices[0].get("delta") or {}
-                            stream_state["last_progress_at"] = time.monotonic()
+                            now = time.monotonic()
+                            phase = ("generating_code" if delta.get("tool_calls") else
+                                     "reasoning" if delta.get("reasoning_content") else
+                                     "")
+                            if phase or delta.get('content'):
+                                stream_state["last_progress_at"] = now
+                                if phase and (phase != stream_state.get("visible_phase") or now - stream_state.get("visible_progress_at", 0) >= 2):
+                                    stream_state["visible_phase"] = phase
+                                    stream_state["visible_progress_at"] = now
+                                    yield (EVENT_BACKEND_STATUS, {"kind": "generation_progress", "phase": phase, "model": self.model})
                             reasoning = str(delta.get("reasoning_content") or "")
                             if reasoning:
                                 reasoning_parts.append(reasoning)
@@ -2668,7 +2680,7 @@ class KimiBackend:
             reasoning_content = "".join(reasoning_parts)
             assistant_content = "".join(content_parts)
             if not complete_calls:
-                recovered_calls = _detect_json_tool_calls(assistant_content)
+                recovered_calls = _recover_tool_calls(assistant_content, tools)
                 for index, call in enumerate(recovered_calls):
                     complete_calls.append({
                         "id": call["call_id"],
@@ -2779,7 +2791,7 @@ class ExoBackend(KimiBackend):
         inferred = infer_model_capabilities(self.model)
         self._capabilities = ModelCapabilities(
             model=self.model,
-            context_window=1_048_576,
+            context_window=inferred.context_window,
             # EXO serves both text-only and multimodal models. Start from the
             # conservative model-family inference instead of advertising image
             # support for every model; otherwise text-only GLM receives native
@@ -2828,6 +2840,16 @@ class ExoBackend(KimiBackend):
             write=60.0,
             pool=60.0,
         )
+
+    @property
+    def effective_context_tokens(self) -> int:
+        configured = os.environ.get("RESONANT_EXO_CONTEXT_TOKENS", "").strip()
+        if configured:
+            try:
+                return max(4096, int(configured))
+            except ValueError:
+                logger.warning("Ignoring invalid RESONANT_EXO_CONTEXT_TOKENS")
+        return self._capabilities.context_window
 
     @staticmethod
     def normalize_base_url(base_url: str | None) -> str:
@@ -3887,6 +3909,7 @@ def create_backend(
             api_key=api_key or "",
             model=model or KimiBackend.DEFAULT_MODEL,
             base_url=base_url or KimiBackend.DEFAULT_BASE_URL,
+            thinking=thinking,
         )
     if backend_type == "exo":
         return ExoBackend(

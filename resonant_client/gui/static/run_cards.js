@@ -579,13 +579,17 @@ class ResonantRunCards {
         const tools = t.toolCallCount || 0;
         const todos = (this._agentRunSummary && this._agentRunSummary.todos) || null;
         const evidence = event.evidence || {};
-        const files = (this._agentRunSummary && this._agentRunSummary.fileChanges) || [];
-        for (const rawPath of (evidence.changed_files || [])) {
-            const path = String(rawPath || '').replace(/\\/g, '/').trim();
-            if (path && !files.some((entry) => entry.path === path)) {
-                files.push({ path, tool: 'evidence', detail: 'Changed' });
-            }
-        }
+        const normalize = value => {
+            let path = String(value || '').replace(/\\/g, '/').replace(/^\.\//, '').trim();
+            const cwd = String(this.currentCwd || '').replace(/\\/g, '/').replace(/\/$/, '');
+            const windows = /^[a-z]:/i.test(cwd);
+            if ((windows ? path.toLowerCase() : path).startsWith((windows ? cwd.toLowerCase() : cwd) + '/')) path = path.slice(cwd.length + 1);
+            return windows ? path.toLowerCase() : path;
+        };
+        const sourceFiles = Array.isArray(evidence.changed_files)
+            ? evidence.changed_files.map(path => ({path, tool: 'evidence', detail: 'Changed'}))
+            : ((this._agentRunSummary && this._agentRunSummary.fileChanges) || []);
+        const files = [...new Map(sourceFiles.filter(f => f.path).map(f => [normalize(f.path), f])).values()];
         const hasVisibleResult = !!(task.resultEl && task.resultEl.textContent.trim());
         const legacyOutcome = files.length > 0
             ? 'changed_unverified'
@@ -605,7 +609,7 @@ class ResonantRunCards {
         }
         const outcomeMeta = {
             answered: { label: 'Answered', mark: 'OK', state: 'is-done', card: 'task-card-done' },
-            changed_verified: { label: 'Changed & verified', mark: 'OK', state: 'is-done', card: 'task-card-done' },
+            changed_verified: { label: 'Changed · named checks passed', mark: 'OK', state: 'is-done', card: 'task-card-done' },
             changed_unverified: { label: 'Changed — verify', mark: '!', state: 'is-warning', card: 'task-card-warning' },
             no_changes_needed: { label: 'No changes needed', mark: 'OK', state: 'is-done', card: 'task-card-done' },
             needs_input: { label: 'Needs input', mark: '?', state: 'is-warning', card: 'task-card-warning' },
@@ -634,11 +638,14 @@ class ResonantRunCards {
         if (steps > 0) parts.push(`${steps} step${steps === 1 ? '' : 's'}`);
         if (tools > 0) parts.push(`${tools} tool${tools === 1 ? '' : 's'}`);
         if (files.length > 0) parts.push(`${files.length} file${files.length === 1 ? '' : 's'}`);
-        if ((evidence.validation_tools || []).length > 0) {
-            parts.push(`validated with ${evidence.validation_tools.join(', ')}`);
+        if ((evidence.checks || []).length > 0) {
+            parts.push(`${evidence.checks.filter(c => c.status === 'passed').length}/${evidence.checks.length} named checks passed`);
         }
         if (todos && todos.total > 0) parts.push(`${todos.done || 0}/${todos.total} to-dos`);
         if (elapsed > 0) parts.push(this._formatRunDuration(elapsed));
+        const timings = event.telemetry?.phase_timings || {};
+        if (timings.first_edit != null) parts.push(`first edit ${this._formatRunDuration(timings.first_edit)}`);
+        if (timings.preview_ready != null) parts.push(`preview ready ${this._formatRunDuration(timings.preview_ready)}`);
 
         const summary = document.createElement('div');
         summary.className = `task-run-summary ${outcomeMeta.state}`;
@@ -647,7 +654,7 @@ class ResonantRunCards {
             incomplete: evidence.requires_workspace_change
                 ? 'The request asked for a workspace change, but no successful edit was recorded.'
                 : 'The turn ended without a visible result.',
-            changed_unverified: 'Files changed, but no successful validation ran afterward.',
+            changed_unverified: 'Changes have missing, failed, or stale acceptance checks. Review the check results before relying on them.',
             needs_input: 'The agent needs a decision before it can continue.',
         };
         const detail = outcomeDetails[outcome] || (parts.length ? parts.join(' | ') : outcomeMeta.label);
@@ -699,6 +706,11 @@ class ResonantRunCards {
 
         task.footerEl.hidden = false;
         task.footerEl.prepend(summary);
+        if (evidence.checks?.length) {
+            const checks = document.createElement('details');
+            checks.innerHTML = `<summary>Acceptance check results</summary><ul>${evidence.checks.map(c => `<li><strong>${this.escapeHtml(c.status)}</strong> — ${this.escapeHtml(c.requirement)}<pre>${this.escapeHtml(c.command)}</pre></li>`).join('')}</ul>`;
+            task.footerEl.appendChild(checks);
+        }
 
         if (files.length > 0) {
             const changes = document.createElement('details');
@@ -931,7 +943,7 @@ class ResonantRunCards {
         run.detail = errored ? 'The run ended before completion' : 'Finalizing the result';
         run.milestones = run.milestones.map((item) => ({
             ...item,
-            status: errored && item.status === 'running' ? 'error' : 'done',
+            status: item.id === 'verify' ? item.status : (errored && item.status === 'running' ? 'error' : 'done'),
         }));
         if (errored) run.el.classList.add('is-error');
         this._renderLiveRun();

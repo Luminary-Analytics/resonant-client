@@ -45,6 +45,7 @@ from .compression import (
     CONTEXT_HEADROOM_RATIO,
     compress,
     estimate_tokens,
+    request_overhead_tokens,
     model_context_budget,
     should_compress,
 )
@@ -53,6 +54,7 @@ from .model_prompts import build_model_prompt, get_model_prompt_profile
 from .tool_arguments import ToolArgumentError, normalize_tool_arguments
 from .tool_presentation import tool_presentation
 from .turn_outcomes import (
+    normalized_changed_files, file_fingerprints, current_checks,
     VALIDATION_TOOL_NAMES,
     WRITE_TOOL_NAMES,
     classify_turn_outcome,
@@ -84,6 +86,8 @@ CYCLE_WINDOW_REPEAT = 3
 CORE_TOOL_NAMES = frozenset({
     "search_tools",
     "bash",
+    "check_run",
+    "preview_start",
     "file_read",
     "file_write",
     "file_edit",
@@ -98,7 +102,7 @@ CORE_TOOL_NAMES = frozenset({
 # discovery copy stays in AGENT_TOOLS for search_tools ranking and UI help, but
 # does not need to occupy the model's stable prefix.
 _CORE_TOOL_DESCRIPTIONS = {
-    "bash": "Run a non-interactive shell command with an optional timeout.",
+    "bash": "Run a time-limited shell command. Use check_run for acceptance checks and preview_start for servers.",
     "file_read": "Read a file, optionally by line offset and limit.",
     "file_write": "Create or overwrite a file with complete content.",
     "file_edit": "Replace uniquely identified text in an existing file.",
@@ -417,6 +421,12 @@ def get_system_instruction_layers(
                 "Tool notes: `bash` is non-interactive and time-limited. Prefer "
                 "`file_edit` for existing files. Use `batch` only for independent "
                 "read-only calls."
+                " For builds, map requested behavior to acceptance checks and run them with check_run. "
+                "A passing check verifies only its named requirement. Report verified behavior and untested gaps; "
+                "never claim fully tested. Investigate failures before changing expected results. "
+                "Use preview_start for servers, then browser tools for actual user journeys. "
+                "Load relevant procedures using skill_view; ignore irrelevant retrieved examples. "
+                "Do not repeat passing checks without edits or an unresolved concern."
             ),
         })
 
@@ -642,7 +652,11 @@ class Session:
             int(item.get("estimated_tokens", 0) or 0)
             for item in self._last_context_sources.values()
         )
-        estimated_total = history_tokens + inspected["estimated_tokens"] + source_tokens
+        active_instructions = getattr(self, "_active_instructions", None)
+        prefix_tokens = request_overhead_tokens(active_instructions or "", self.provider_tools)
+        if active_instructions is None:
+            prefix_tokens += inspected["estimated_tokens"] + source_tokens
+        estimated_total = history_tokens + prefix_tokens + 8 * len(self.conversation_history)
 
         role_counts: dict[str, int] = {}
         role_tokens: dict[str, int] = {}
@@ -1297,6 +1311,10 @@ class Session:
         prior_call = str(previous.get("call_id") or "") if previous else ""
         prior_still_in_context = bool(prior_call) and any(
             entry.get("role") == "tool_result" and entry.get("call_id") == prior_call
+            and not entry.get("context_evicted")
+            and not entry.get("context_deduplicated")
+            and not str(entry.get("content", "")).startswith(("[Earlier ", "[Unchanged file_read"))
+            and hashlib.sha256(str(entry.get("content", "")).encode("utf-8", errors="replace")).hexdigest() == digest
             for entry in self.conversation_history
         )
         if not previous or previous.get("digest") != digest or not prior_still_in_context:
@@ -1313,6 +1331,16 @@ class Session:
             "context_reference_call_id": prior_call,
             "context_sha256": digest,
         }
+
+    def _request_overhead_tokens(self, instructions: str, user_msg: str) -> int:
+        tokens = request_overhead_tokens(instructions, self.provider_tools)
+        tokens += 8 * len(self.conversation_history)
+        if user_msg and not (
+            self.conversation_history and self.conversation_history[-1].get("role") == "user"
+            and self.conversation_history[-1].get("content") == user_msg
+        ):
+            tokens += (len(user_msg) + 3) // 4
+        return tokens
 
     def run(
         self,
@@ -1345,6 +1373,7 @@ class Session:
         turn_failed_tools: list[str] = []
         turn_changed_files: list[str] = []
         turn_validation_tools: list[str] = []
+        turn_checks: list[dict] = []
         terminal_error = ""
         promise_continuations = 0
         empty_response_attempts = 0
@@ -1427,6 +1456,7 @@ class Session:
         current_msg = user_msg
         active_goal = user_msg
         total_start = time.time()
+        phase_timings: dict[str, float] = {}
         # Older embedders supplied a runner with only the original
         # run_hooks(PRE/POST_TOOL) surface. Keep that contract intact while
         # treating all newer lifecycle emissions as no-ops for that runner.
@@ -1476,7 +1506,8 @@ class Session:
 
         def completion_payload(total_elapsed: float, total_steps: int) -> dict:
             assistant_text = "\n\n".join(turn_text_blocks).strip()
-            changed_files = unique_strings(turn_changed_files)
+            changed_files = normalized_changed_files(turn_changed_files, self.project_path)
+            checks = current_checks(turn_checks, file_fingerprints(changed_files, self.project_path))
             validation_tools = unique_strings(turn_validation_tools)
             successful_tools = unique_strings(turn_successful_tools)
             failed_tools = unique_strings(turn_failed_tools)
@@ -1486,6 +1517,7 @@ class Session:
                 assistant_text=assistant_text,
                 changed_files=changed_files,
                 validation_tools=validation_tools,
+                checks=checks,
                 successful_tools=successful_tools,
                 terminal_error=terminal_error,
             )
@@ -1498,6 +1530,7 @@ class Session:
                 "successful_tools": successful_tools,
                 "failed_tools": failed_tools,
                 "changed_files": changed_files,
+                "checks": checks,
                 "validation_tools": validation_tools,
                 "empty_response_attempts": empty_response_attempts,
                 "promise_continuations": promise_continuations,
@@ -1519,6 +1552,7 @@ class Session:
                 "changed_files": len(changed_files),
                 "validation_tools": validation_tools,
                 "provider_stats": provider_stats,
+                "phase_timings": phase_timings,
             }
             return {"outcome": outcome, "evidence": evidence, "telemetry": telemetry}
 
@@ -1609,6 +1643,15 @@ class Session:
         # prompt byte-stable across every tool step.
         turn_context = ""
         turn_sources: dict[str, str] = {}
+        if self.project_path:
+            try:
+                from .project_memory import ProjectMemory
+                notes = ProjectMemory(self.project_path).context(user_msg)
+                if notes:
+                    turn_context += '\n\n' + notes
+                    turn_sources['project_memory'] = notes
+            except (OSError, ValueError) as exc:
+                logger.warning('Project memory unavailable: %s', exc)
         if self._engram and self._engram.enabled:
             try:
                 memory_context = self._engram.get_context_for_prompt(user_msg) or ""
@@ -1664,6 +1707,7 @@ class Session:
             prompt_role=self.prompt_role,
             role_instructions=self.role_instructions,
         ) + turn_context
+        self._active_instructions = base_instructions
 
         while True:
             if self.max_steps is not None and iteration >= self.max_steps:
@@ -1683,10 +1727,13 @@ class Session:
                 )
             # A single specialist turn can add dozens of tool results, so
             # enforce the real backend window before every inference step.
+            context_window = getattr(self.backend, "effective_context_tokens", None)
+            overhead_tokens = self._request_overhead_tokens(base_instructions, current_msg)
             if should_compress(
                 self.conversation_history,
                 model_name=backend_model,
                 context_window=context_window,
+                overhead_tokens=overhead_tokens,
             ):
                 try:
                     if self.hook_runner:
@@ -1707,6 +1754,7 @@ class Session:
                         self,
                         model_name=backend_model,
                         context_window=context_window,
+                        overhead_tokens=overhead_tokens,
                     )
                     if summary:
                         self.conversation_history = compressed
@@ -1732,6 +1780,21 @@ class Session:
                             )
                 except Exception as e:
                     logger.warning(f"Context compression failed: {e}")
+            if self.cancel_requested:
+                yield from self._cancelled_events(total_start, exec_step)
+                return
+            overhead_tokens = self._request_overhead_tokens(base_instructions, current_msg)
+            if should_compress(
+                self.conversation_history, model_name=backend_model,
+                context_window=context_window, overhead_tokens=overhead_tokens,
+            ):
+                terminal_error = (
+                    "The request exceeds this model's usable context after compaction. "
+                    "Task history has been retained. Increase the configured context window, "
+                    "choose a larger-context model, or reduce attached context before resuming."
+                )
+                yield make_event(EngineEvent.ERROR, message=terminal_error)
+                break
             yield make_event(EngineEvent.CONTEXT_STATE, **self.context_snapshot())
             iteration += 1
             is_planning = self.plan_mode and not executing_plan
@@ -1795,6 +1858,8 @@ class Session:
                         return
                     if event_type == EVENT_TEXT_DELTA:
                         delta = data.get("delta", "")
+                        if delta:
+                            phase_timings.setdefault('first_response', round(time.time() - total_start, 3))
                         collected_text.append(delta)
                         yield make_event(EngineEvent.TEXT_DELTA, delta=delta)
 
@@ -1853,6 +1918,8 @@ class Session:
                         return
 
                     elif event_type == EVENT_BACKEND_STATUS:
+                        if data.get('kind') == 'generation_progress':
+                            phase_timings.setdefault('first_model_progress', round(time.time() - total_start, 3))
                         # v0.5.6a1 — backend-emitted operational status
                         # (e.g. transparent 503 retry on Ollama Cloud).
                         # Forward verbatim so downstream (autonomous-
@@ -1907,6 +1974,9 @@ class Session:
                         "content": f"[Lifecycle feedback]\n{after_model.additional_context}",
                     })
 
+            if self.cancel_requested:
+                yield from self._cancelled_events(total_start, exec_step)
+                return
             if not full_text and not tool_calls:
                 empty_response_retries += 1
                 empty_response_attempts += 1
@@ -2023,8 +2093,7 @@ class Session:
                         cli_path = cli_args.get("path") if isinstance(cli_args, dict) else ""
                         if cli_path:
                             turn_changed_files.append(str(cli_path))
-                    if cli_name in VALIDATION_TOOL_NAMES and turn_changed_files:
-                        turn_validation_tools.append(cli_name)
+                    # Display-only CLI calls do not supply a verifiable exit result.
                 has_tool_calls = False  # Don't loop — CLI already completed
                 yield make_event(EngineEvent.STATUS,
                                 model=done_model, stats=done_stats,
@@ -2056,6 +2125,10 @@ class Session:
                 call_id = item.get("call_id", "")
                 fn_args = item.get("_normalized_arguments", {})
                 argument_error = item.get("_argument_error", "")
+                if fn_name == 'check_run':
+                    turn_checks.append({'command': fn_args.get('command', ''),
+                        'requirement': fn_args.get('requirement', ''), 'status': 'not_run',
+                        'call_id': call_id, 'files': file_fingerprints(turn_changed_files, self.project_path)})
                 # Close the initial-alignment window only when the model
                 # actually attempts a workspace mutation.  Read-only shell
                 # probes and validation commands are still discovery: treating
@@ -2550,13 +2623,22 @@ class Session:
                         })
                         continue
 
-                    result = execute_tool(
-                        fn_name, fn_args,
-                        cancel_event=self._cancel_event,
-                        project_path=self.project_path or "",
-                        settings=getattr(self, "_settings_ref", None),
-                        session_name=self.browser_session_name,
-                    )
+                    if fn_name == "artifact_read":
+                        from .tools import ToolResult
+                        try:
+                            if self.artifact_store is None:
+                                raise ValueError("No artifact store is available in this session")
+                            result = ToolResult(output=self.artifact_store.read_text_page(**fn_args))
+                        except (ValueError, OSError) as exc:
+                            result = ToolResult(output=str(exc), is_error=True)
+                    else:
+                        result = execute_tool(
+                            fn_name, fn_args,
+                            cancel_event=self._cancel_event,
+                            project_path=self.project_path or "",
+                            settings=getattr(self, "_settings_ref", None),
+                            session_name=self.browser_session_name,
+                        )
 
                     history_output, context_meta = self._compact_tool_result_for_context(
                         fn_name,
@@ -2598,6 +2680,18 @@ class Session:
                         except Exception:
                             logger.debug("Unable to persist screenshot artifact", exc_info=True)
 
+                    if result.metadata.get("check"):
+                        check = {**result.metadata["check"], "call_id": call_id,
+                                 "files": file_fingerprints(turn_changed_files, self.project_path)}
+                        turn_checks.append(check)
+                        event_metadata["check"] = check
+                        if check['status'] == 'passed':
+                            phase_timings.setdefault('first_passed_check', round(time.time() - total_start, 3))
+                    if not result.is_error and fn_name in WRITE_TOOL_NAMES:
+                        phase_timings.setdefault('first_edit', round(time.time() - total_start, 3))
+                    if fn_name == 'preview_start' and not result.is_error:
+                        phase_timings.setdefault('preview_ready', round(time.time() - total_start, 3))
+
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
                                     output=result.output, is_error=result.is_error,
@@ -2627,6 +2721,8 @@ class Session:
                     tool_result_entry = {
                         "role": "tool_result", "call_id": call_id,
                         "content": history_output,
+                        "name": fn_name, "is_error": result.is_error,
+                        **context_meta,
                     }
                     if result.metadata.get("screenshot_b64"):
                         tool_result_entry["image"] = {
@@ -2648,10 +2744,8 @@ class Session:
                     ):
                         edited_path = fn_args.get("path") or ""
                         if edited_path:
-                            if self.auto_lint_enabled:
-                                turn_validation_tools.append("auto_lint")
-                            if self.auto_test_enabled:
-                                turn_validation_tools.append("auto_test")
+                            # Auto feedback is diagnostic; only completed named checks
+                            # with actual result evidence count toward verification.
                             for fb_event in self._run_post_edit_feedback(edited_path):
                                 yield fb_event
 

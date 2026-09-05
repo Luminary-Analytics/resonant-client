@@ -858,6 +858,11 @@ class ResonantApp {
      * here is the only coupling between them.
      */
     bindEvents() {
+        document.getElementById('managed-previews-button')?.addEventListener('click', () => {
+            this._showManagedPreviews = true;
+            this.send({command: 'preview_list'});
+        });
+        document.getElementById('project-memory-button')?.addEventListener('click', () => this.send({command: 'memory_list'}));
         this._bindComposer();
         this._bindTerminalBar();
         this._bindRunControls();
@@ -1006,11 +1011,6 @@ class ResonantApp {
         if (this.thinkingModeSelector) {
             this.thinkingModeSelector.addEventListener('change', () => {
                 const mode = this.thinkingModeSelector.value || '';
-                if (mode && !confirm('Changing thinking mode reloads the model (~30–90s on large MoE models). Continue?')) {
-                    // Revert visually
-                    this.thinkingModeSelector.value = this._lastThinkingMode || '';
-                    return;
-                }
                 this._lastThinkingMode = mode;
                 this.send({ command: 'set_thinking_mode', mode });
             });
@@ -3116,6 +3116,16 @@ class ResonantApp {
         }
 
         switch (type) {
+            case 'previews_updated':
+                if (this._normalizeProjectPath(event.project) !== this._normalizeProjectPath(this.currentCwd)) break;
+                this._managedPreviews = event.previews || [];
+                if (this._showManagedPreviews) this._renderProjectResources('previews');
+                break;
+            case 'project_memory_updated':
+                if (this._normalizeProjectPath(event.project) !== this._normalizeProjectPath(this.currentCwd)) break;
+                this._projectNotes = event.memories || [];
+                this._renderProjectResources('notes');
+                break;
             case 'error':
                 if (
                     projectSwitchId
@@ -3242,6 +3252,7 @@ class ResonantApp {
                     this.allSessions = event.all_sessions;
                 }
                 this.renderProjectRail();
+                if (event.open_after_add && event.path) this.selectProjectFolder(event.path);
                 break;
             case 'resume_prompt':
                 this.applyResumePrompt(event.prompt || '');
@@ -3252,6 +3263,7 @@ class ResonantApp {
                 this.currentSessionId = event.current_session_id || '';
                 this.renderFilteredSessions();
                 this._syncMissionUI();
+                this._syncSessionTitle();
                 break;
             case 'session_cleared':
                 if (
@@ -3940,6 +3952,7 @@ class ResonantApp {
             } else {
                 this._setSystemStatus('connected', `${current_backend} / ${current_model}`);
             }
+            this._modelCapabilities = event.model_capabilities || {};
             this.populateModelSelector(backends, current_backend, current_model);
             this.setThinkingMode(event.current_thinking_mode || '');
             this._applyRuntimeError(event);
@@ -4402,7 +4415,16 @@ class ResonantApp {
         const colonIdx = val.indexOf(':');
         const backend = colonIdx > 0 ? val.substring(0, colonIdx) : '';
         const model = colonIdx > 0 ? val.substring(colonIdx + 1) : '';
-        const supports = backend === 'ollama' && /^(deepseek-v\d|glm-)/i.test(model || '');
+        const profile = this._modelCapabilities || {};
+        const matchingProfile = profile.model === model;
+        const levels = (profile.reasoning_levels || []).map(level => level === 'medium' ? 'med' : level);
+        const supports = ['ollama', 'kimi'].includes(backend) && (matchingProfile
+            ? levels.length > 0 : /^(deepseek-v\d|glm-)/i.test(model || ''));
+        for (const option of this.thinkingModeSelector.options) {
+            option.disabled = matchingProfile && (option.value === 'off'
+                ? profile.reasoning_can_disable === false
+                : option.value !== 'default' && !levels.includes(option.value));
+        }
         this.thinkingModeSelector.style.display = supports ? '' : 'none';
     }
 
@@ -4509,9 +4531,7 @@ class ResonantApp {
     /** Sync the thinking-mode selector with server state (called from init/session_loaded). */
     setThinkingMode(mode) {
         if (!this.thinkingModeSelector) return;
-        // The server reports the explicit-off sentinel "off"; the
-        // selector models "off" as its empty value.
-        const value = (mode && mode !== 'off') ? mode : '';
+        const value = mode || 'default';
         this.thinkingModeSelector.value = value;
         this._lastThinkingMode = value;
     }
@@ -4959,13 +4979,15 @@ class ResonantApp {
         const nameLower = name.toLowerCase();
         const readTools = new Set(['file_read', 'glob', 'grep', 'git_status', 'git_diff']);
         const writeTools = new Set(['file_write', 'file_edit', 'apply_patch', 'git_commit']);
-        const validationTools = new Set(['bash', 'computer_screenshot', 'browser_screenshot']);
+        const validationTools = new Set(['check_run']);
         if (readTools.has(nameLower)) {
             this._advanceLiveMilestone('inspect', 'Inspect the project');
         } else if (writeTools.has(nameLower)) {
             this._advanceLiveMilestone('change', 'Implement the changes');
         } else if (validationTools.has(nameLower)) {
-            this._advanceLiveMilestone('verify', 'Verify the result');
+            this._advanceLiveMilestone('verify', 'Running acceptance checks');
+        } else if (nameLower === 'bash') {
+            this._advanceLiveMilestone('command', 'Run a command');
         }
         const toolActivity = this._liveRunToolActivity(name, event.arguments || {});
         const run = this._liveRun;
@@ -5045,6 +5067,16 @@ class ResonantApp {
     }
 
     handleToolResult(event) {
+        if (event.metadata?.preview && !this.isReplaying) this.send({command: 'preview_list'});
+        const check = event.metadata?.check;
+        if (check && this._liveRun) {
+            const run = this._liveRun;
+            run.checks = run.checks || new Map();
+            run.checks.set(JSON.stringify([check.requirement, check.command]), check);
+            const failed = [...run.checks.values()].some(c => c.status !== 'passed');
+            const item = run.milestones.find(m => m.id === 'verify');
+            if (item) { item.status = failed ? 'error' : 'done'; item.text = failed ? 'Acceptance checks need attention' : 'Named checks passed'; }
+        }
         const name = event.name || '';
         const callId = event.call_id || '';
         const nameLower = name.toLowerCase();
@@ -8053,7 +8085,12 @@ class ResonantApp {
         const run = this._liveRun;
         if (!run || !run.active || run.modelTodos) return;
         const current = run.milestones.find((item) => item.status === 'running');
-        if (current && current.id !== id) current.status = 'done';
+        if (current && current.id !== id && current.id !== 'verify') current.status = 'done';
+        if (id === 'change') {
+            const verification = run.milestones.find(entry => entry.id === 'verify');
+            if (verification) { verification.status = 'pending'; verification.text = 'Checks need rerunning after edits'; }
+            if (run.checks) for (const check of run.checks.values()) if (check.status === 'passed') check.status = 'stale';
+        }
         let item = run.milestones.find((entry) => entry.id === id);
         if (!item) {
             item = { id, text, status: 'running' };
@@ -8456,8 +8493,15 @@ class ResonantApp {
                 );
             }
             this._renderOllamaRetryBanner(event);
+        } else if (event.kind === 'generation_progress') {
+            if (this._liveRun) {
+                this._liveRun.lastProgressAt = Date.now();
+                this._liveRun.lastTransportAt = Date.now();
+            }
+            const label = {generating_code: 'Generating code', reasoning: 'Reasoning', responding: 'Writing response'}[event.phase] || 'Generating';
+            this._setLiveRunPhase(label, `${label} with ${event.model || 'the model'}`);
         } else if (event.kind === 'empty_response_retry') {
-            this._renderEmptyResponseRetryBanner(event);
+            if (!this._cancelInFlight && !this._cancelInterrupted) this._renderEmptyResponseRetryBanner(event);
         } else if (event.kind === 'action_promise_continuation') {
             this._renderActionContinuationBanner(event);
         } else if (event.kind === 'ollama_exhausted') {
@@ -10071,13 +10115,65 @@ class ResonantApp {
         input.focus();
     }
 
+    _renderProjectResources(kind) {
+        let dialog = document.getElementById('project-resources-dialog');
+        const wasOpen = !!dialog?.open;
+        if (!dialog) {
+            dialog = document.createElement('dialog');
+            dialog.id = 'project-resources-dialog';
+            dialog.setAttribute('aria-labelledby', 'project-resources-title');
+            document.body.appendChild(dialog);
+        }
+        const esc = value => this.escapeHtml(String(value || ''));
+        const previews = kind === 'previews';
+        dialog.innerHTML = `<header><h2 id="project-resources-title">${previews ? 'Project previews' : 'Project notes'}</h2><button data-close>Close</button></header>`;
+        if (previews) {
+            dialog.innerHTML += '<p>Previews stay available across tasks and project switches until stopped or Resonant closes.</p>';
+            if (!this._managedPreviews?.length) dialog.innerHTML += '<p>No previews started for this project.</p>';
+            for (const p of this._managedPreviews || []) {
+                const section = document.createElement('section');
+                section.innerHTML = `<h3>${esc(p.state)}</h3><a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">Open preview</a> <button data-stop ${p.state === 'stopped' ? 'disabled' : ''}>Stop preview</button><details><summary>Recent logs</summary><pre style="white-space:pre-wrap">${esc(p.logs) || 'No output yet'}</pre></details>`;
+                section.querySelector('[data-stop]').onclick = () => this.send({command: 'preview_stop', id: p.id});
+                dialog.appendChild(section);
+            }
+            const refresh = document.createElement('button'); refresh.textContent = 'Refresh status';
+            refresh.onclick = () => this.send({command: 'preview_list'}); dialog.appendChild(refresh);
+        } else {
+            dialog.innerHTML += '<p>Small project facts and decisions with sources. Stale notes are excluded from recall. Model assertions still need verification.</p>';
+            for (const note of this._projectNotes || []) {
+                const section = document.createElement('section');
+                section.innerHTML = `<p>${esc(note.text)}</p><small>${esc(note.kind)} · ${esc(note.confidence)} · ${note.stale ? 'Stale' : 'Source unchanged'} · ${esc(note.source)}</small><p><button data-edit>Edit</button> <button data-delete>Delete</button></p>`;
+                section.querySelector('[data-edit]').onclick = () => {
+                    const form = dialog.querySelector('form');
+                    form.elements.id.value = note.id; form.elements.text.value = note.text;
+                    form.elements.source.value = note.source; form.elements.kind.value = note.kind;
+                    form.elements.sources.value = (note.sources || []).join(', '); form.elements.text.focus();
+                };
+                section.querySelector('[data-delete]').onclick = () => this.send({command: 'memory_delete', id: note.id});
+                dialog.appendChild(section);
+            }
+            const form = document.createElement('form');
+            form.innerHTML = '<input type="hidden" name="id"><p><label>Note <textarea name="text" required maxlength="1000" rows="3" style="width:100%"></textarea></label></p><p><label>Source <input name="source" required maxlength="300" placeholder="Decision in this task, or file and line"></label></p><p><label>Kind <select name="kind"><option value="decision">Decision</option><option value="fact">Fact</option><option value="constraint">Constraint</option><option value="procedure">Procedure</option></select></label></p><p><label>Source files <input name="sources" placeholder="Relative paths, separated by commas"></label></p><button type="submit">Save note</button>';
+            form.onsubmit = e => { e.preventDefault(); const values = Object.fromEntries(new FormData(form)); this.send({command: 'memory_save', ...values, sources: values.sources.split(',').map(s => s.trim()).filter(Boolean)}); };
+            dialog.appendChild(form);
+        }
+        dialog.querySelector('[data-close]').onclick = () => { this._showManagedPreviews = false; dialog.close(); };
+        dialog.oncancel = () => { this._showManagedPreviews = false; };
+        if (!dialog.open) dialog.showModal();
+        else if (wasOpen) (dialog.querySelector('form textarea') || dialog.querySelector('[data-close]'))?.focus();
+    }
+
     registerProjectFolder(path) {
         const cleanPath = (path || '').trim();
         if (!cleanPath) return;
-        this.send({ command: 'register_project', path: cleanPath });
+        this.send({ command: 'register_project', path: cleanPath, open_after_add: true });
     }
 
     selectProjectFolder(path) {
+        this._showManagedPreviews = false;
+        document.getElementById('project-resources-dialog')?.remove();
+        const title = document.getElementById('chat-session-title');
+        if (title) title.textContent = 'New session';
         if (this._projectSwitchTimer) clearTimeout(this._projectSwitchTimer);
         this._projectSwitchTimer = null;
         const projectSwitchId = `project-${Date.now()}-${++this._projectSwitchSequence}`;

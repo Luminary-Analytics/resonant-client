@@ -20,6 +20,8 @@
     "_internal/resonant_client/gui/static/vendor/github-dark-dimmed.min.css",
     "_internal/resonant_client/gui/static/vendor/inter-latin-400-normal.woff2",
     "_internal/resonant_client/gui/static/styles.css",
+    "_internal/resonant_client/orchestration/bundled_skills/browser-acceptance.md",
+    "_internal/resonant_client/orchestration/bundled_skills/transaction-acceptance.md",
     "_internal/resonant_client/browser_extension/manifest.json",
     "_internal/resonant_client/browser_extension/background.js"
   ],

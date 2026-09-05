@@ -144,9 +144,7 @@ class TestDetectJsonToolCalls:
     @pytest.mark.unit
     def test_tool_call_embedded_in_text(self):
         text = 'Let me run this: {"name": "bash", "arguments": {"command": "echo hello"}} for you.'
-        result = _detect_json_tool_calls(text)
-        assert len(result) == 1
-        assert result[0]["name"] == "bash"
+        assert _detect_json_tool_calls(text) == []
 
     @pytest.mark.unit
     def test_parameters_alias_and_llama_control_tokens_are_recovered(self):
@@ -1381,10 +1379,10 @@ class TestThinkingWireValues:
 
     @pytest.mark.unit
     @pytest.mark.parametrize("off", ["", "off", None])
-    def test_off_sends_no_think_option(self, off):
+    def test_off_is_distinct_from_provider_default(self, off):
         b = OllamaBackend("http://stub", "glm-5.2:cloud", thinking=off)
-        assert b.thinking_mode is None
-        assert b._ollama_think is None
+        assert b.thinking_mode == ("off" if off == "off" else None)
+        assert b._ollama_think is (False if off == "off" else None)
 
 
 # ── v0.6.5: Circuit breaker (backend resilience for long runs) ────────

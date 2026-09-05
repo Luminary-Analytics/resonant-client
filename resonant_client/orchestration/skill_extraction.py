@@ -120,7 +120,7 @@ def slugify(text: str, *, max_len: int = 30, drop_prefixes: bool = True) -> str:
 def extract_skill(
     graph: PlanGraph,
     *,
-    scope: str = DEFAULT_SCOPE,
+    scope: Optional[str] = None,
     project_path: Optional[str] = None,
     stack_sig: Optional[str] = None,
     skill_id_override: Optional[str] = None,
@@ -131,6 +131,8 @@ def extract_skill(
     """
     if not is_extraction_candidate(graph):
         return None
+
+    scope = scope or ('project' if project_path else DEFAULT_SCOPE)
 
     skill_id = skill_id_override or _derive_skill_id(graph)
     name = _derive_name(graph)

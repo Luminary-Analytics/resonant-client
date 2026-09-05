@@ -269,7 +269,7 @@ class TestRunCompletionIntegrity:
         backend = StreamingBackend(scripts=[
             [text_delta("Let me rewrite it cleanly, then run it to verify."), done()],
             [tool_call("file_write", {"path": str(target), "content": "value = 1\n"}), done()],
-            [tool_call("bash", {"command": f'python -m py_compile "{target}"'}), done()],
+            [tool_call("check_run", {"command": f'python -m py_compile "{target}"', "requirement": "Python syntax"}), done()],
             [text_delta("Updated sample.py and verified it compiles."), done()],
         ])
         session = Session(backend=backend, max_steps=3, auto_approve=True)
@@ -285,8 +285,9 @@ class TestRunCompletionIntegrity:
         assert continuation["attempt"] == 1
         end = first_of_kind(events, "session.end")
         assert end["outcome"] == "changed_verified"
-        assert end["evidence"]["changed_files"] == [str(target)]
-        assert end["evidence"]["validation_tools"] == ["bash"]
+        assert end["evidence"]["changed_files"] == ["sample.py"]
+        assert end["evidence"]["validation_tools"] == ["check_run"]
+        assert end["evidence"]["checks"][0]["status"] == "passed"
         assert end["telemetry"]["promise_continuations"] == 1
         assert target.read_text(encoding="utf-8") == "value = 1\n"
 

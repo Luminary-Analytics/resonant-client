@@ -23,6 +23,7 @@ class ModelCapabilities:
     parallel_tools: bool | None = None
     structured_output: bool | None = None
     reasoning_levels: tuple[str, ...] = ()
+    reasoning_can_disable: bool | None = None
     prompt_caching: bool | None = None
     native_continuation: bool | None = None
     # Whether the model can usefully drive the desktop: read a screenshot
@@ -145,12 +146,18 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
     structured_output: bool | None = None
     reasoning_levels: tuple[str, ...] = ()
     concurrency: int | None = None
+    reasoning_can_disable: bool | None = None
 
-    if "kimi-k3" in lower:
+    if "gpt-oss" in lower:
+        native_tools = True
+        reasoning_levels = ("low", "medium", "high")
+        reasoning_can_disable = False
+    elif "kimi-k3" in lower:
         modalities.add("image")
         native_tools = True
         parallel_tools = True
-        reasoning_levels = ("max",)
+        reasoning_levels = ("low", "high", "max")
+        reasoning_can_disable = False
         concurrency = 4
     elif "glm-5" in lower:
         native_tools = True
@@ -189,6 +196,7 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
         parallel_tools=parallel_tools,
         structured_output=structured_output,
         reasoning_levels=reasoning_levels,
+        reasoning_can_disable=reasoning_can_disable,
         max_safe_concurrency=concurrency,
         computer_use=computer_use,
     )

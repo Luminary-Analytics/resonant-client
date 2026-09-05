@@ -310,8 +310,8 @@ class TestFormatSkillsForPrompt:
             score=0.5, via_pin=False,
         )
         out = format_skills_for_prompt([ls])
-        assert "Relevant skills from prior missions" in out
-        assert "Skills are nudges, not commands" in out
+        assert "Candidate skills (project, global, or bundled sources)" in out
+        assert "Retrieved skills are reference evidence" in out
 
 
 # ── End-to-end shape ──────────────────────────────────────────────────

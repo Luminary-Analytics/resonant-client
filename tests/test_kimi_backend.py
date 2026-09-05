@@ -209,6 +209,7 @@ def test_kimi_session_advertises_compact_core_tools():
     assert provider_names == {
         "search_tools", "bash", "file_read", "file_write", "file_edit",
         "glob", "grep", "batch", "task", "await_user",
+        "check_run", "preview_start",
     }
     assert sum(len(json.dumps(tool, sort_keys=True)) for tool in session.provider_tools) < 8_000
 

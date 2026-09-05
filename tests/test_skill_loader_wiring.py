@@ -102,7 +102,7 @@ class TestBuildSkillContext:
         ctx = build_skill_context("query")
         # The formatted block carries the prompt header so the planner
         # knows it's reference material, not a goal.
-        assert "Relevant skills" in ctx.block
+        assert "Candidate skills" in ctx.block
         assert "skill_view" in ctx.block
 
     def test_token_match_surfaces_relevant_skill(self, state_home):
@@ -230,7 +230,7 @@ class TestDispatchItemSkillWiring:
         # The goal text the planner sees includes the skills block.
         assert svc.captured_text is not None
         assert "Do a thing" in svc.captured_text
-        assert "Relevant skills" in svc.captured_text
+        assert "Candidate skills" in svc.captured_text
         assert "pinned-ref" in svc.captured_text
 
     def test_no_skills_means_clean_goal_text(self, state_home, project_dir):

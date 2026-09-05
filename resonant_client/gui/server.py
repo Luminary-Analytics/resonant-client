@@ -262,6 +262,14 @@ def main():
         level=logging.DEBUG if args.debug else logging.WARNING,
     )
 
+    # Materialize new bundled skills on GUI startup, as the skill CLI does.
+    # Existing user-edited skills are preserved by the installer's default.
+    try:
+        from resonant_client.orchestration.bundled_skills import install_bundled_skills
+        install_bundled_skills()
+    except Exception:
+        logger.exception("Bundled skill installation failed (non-fatal)")
+
     try:
         from resonant_client.updater import init_updater
         init_updater()

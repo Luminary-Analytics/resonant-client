@@ -31,6 +31,11 @@ def test_outcome_requires_change_and_validation_evidence():
         **common,
         changed_files=["parser.py"],
         validation_tools=["bash"],
+    ) == "changed_unverified"
+    assert classify_turn_outcome(
+        **common,
+        changed_files=["parser.py"],
+        checks=[{"requirement": "parser syntax", "command": "python -m py_compile parser.py", "status": "passed"}],
     ) == "changed_verified"
 
 

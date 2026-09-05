@@ -51,10 +51,10 @@ class TestOllamaThinking:
         assert b.thinking_mode is None
         assert b._ollama_think is None
 
-    def test_off_drops(self):
+    def test_off_is_explicit(self):
         b = OllamaBackend("http://example", "deepseek-v4-flash:cloud", thinking="off")
-        assert b.thinking_mode is None
-        assert b._ollama_think is None
+        assert b.thinking_mode == "off"
+        assert b._with_thinking({})["think"] is False
 
 
 # ── BackendSpec round-trip ─────────────────────────────────────────────

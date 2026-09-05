@@ -24,6 +24,7 @@ Covered here:
 """
 from __future__ import annotations
 
+import json
 from typing import Iterator
 
 from resonant_client.engine.compression import (
@@ -79,7 +80,7 @@ class TestEstimateTokens:
         ]
         assert estimate_tokens(history) == 1
 
-    def test_list_content_dicts_without_text_field_count_zero(self):
+    def test_image_content_reserves_context(self):
         history = [
             {
                 "role": "user",
@@ -89,7 +90,7 @@ class TestEstimateTokens:
                 ],
             },
         ]
-        assert estimate_tokens(history) == 0
+        assert estimate_tokens(history) == 4096
 
     def test_missing_content_field_zero(self):
         history = [{"role": "user"}]
@@ -276,8 +277,12 @@ class _StubBackend:
         })
         if self.raise_exc:
             raise RuntimeError("simulated upstream failure")
-        for d in self.deltas:
-            yield ("text.delta", {"delta": d})
+        text = "".join(self.deltas)
+        if text:
+            text = json.dumps({"summary": text, "decisions": "none recorded", "changes": "none recorded",
+                               "verification": "none recorded", "unresolved_failures": "none recorded",
+                               "next_action": "Continue the most recent user request."})
+        yield ("text.delta", {"delta": text})
         yield ("done", {})
 
 
@@ -289,7 +294,7 @@ def _build_long_history(n_user_pairs: int = 10, msg_chars: int = 5000) -> list:
     history = []
     for i in range(n_user_pairs):
         history.append({"role": "user", "content": "u" * msg_chars + f" {i}"})
-        history.append({"role": "assistant", "content": "a" * msg_chars + f" {i}"})
+        history.append({"role": "assistant", "content": "a" * max(msg_chars, 1000) + f" {i}"})
     return history
 
 

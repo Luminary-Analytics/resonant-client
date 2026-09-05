@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 import difflib
 from collections import deque
 from pathlib import Path
@@ -1163,6 +1164,7 @@ class AppState:
         *,
         session_mode: str = "code",
         session_role: str = "generator",
+        thinking_mode: str | None = None,
     ):
         """Create a backend and session."""
         spec = self.build_backend_spec(backend_type, model=model, project_path=self.project.project_path)
@@ -1173,7 +1175,9 @@ class AppState:
             prior_thinking = self.backend_spec.thinking_mode or ""
         if not prior_thinking and self.project.current_session:
             prior_thinking = getattr(self.project.current_session, "thinking_mode", "") or ""
-        if prior_thinking and backend_type == "ollama":
+        if thinking_mode is not None:
+            prior_thinking = thinking_mode
+        if prior_thinking and backend_type in {"ollama", "kimi"} and (backend_type != "kimi" or prior_thinking in {"low", "high", "max", "default"}):
             spec.thinking_mode = prior_thinking
 
         # Build everything into locals and publish only on success.
@@ -1236,7 +1240,7 @@ class AppState:
             and current_spec.backend_type == backend_type
             and (current_spec.model or "") == (model or "")
             and (
-                backend_type != "ollama"
+                backend_type not in {"ollama", "kimi"}
                 or (current_spec.thinking_mode or "") == (thinking_mode or "")
             )
         )
@@ -1246,6 +1250,7 @@ class AppState:
                 model,
                 session_mode=session_mode,
                 session_role=session_role,
+                thinking_mode=thinking_mode or ("max" if backend_type == "kimi" else "default"),
             )
 
         session = self.build_session(
@@ -1476,7 +1481,7 @@ class AppState:
             prior_thinking = self.backend_spec.thinking_mode or ""
         if not prior_thinking and self.project.current_session:
             prior_thinking = getattr(self.project.current_session, "thinking_mode", "") or ""
-        if prior_thinking and backend_type == "ollama":
+        if prior_thinking and backend_type in {"ollama", "kimi"} and (backend_type != "kimi" or prior_thinking in {"low", "high", "max", "default"}):
             spec.thinking_mode = prior_thinking
 
         new_backend = spec.create_backend(self.settings)
@@ -1877,6 +1882,11 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
 
     if not state._first_message_sent:
         state.project.update_session_title(text)
+    await ws.send_json({
+        "event": "sessions_updated", "sessions": state.project.list_sessions(),
+        "all_sessions": state.project.list_all_sessions(),
+        "current_session_id": state.project.current_session.id if state.project.current_session else "",
+    })
     if state.project.current_session:
         state.session.browser_session_name = state.project.current_session.title
 
@@ -1919,6 +1929,7 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     await ws.send_json({
         "event": "sessions_updated",
         "sessions": state.project.list_sessions(),
+        "all_sessions": state.project.list_all_sessions(),
         "current_session_id": (
             state.project.current_session.id if state.project.current_session else ""
         ),
@@ -2962,7 +2973,17 @@ async def homepage(request):
 
 # ── Starlette App ─────────────────────────────────────────────────────
 
+@asynccontextmanager
+async def _app_lifespan(app):
+    try:
+        yield
+    finally:
+        from ..engine.previews import previews
+        await asyncio.to_thread(previews.close)
+
+
 app = Starlette(
+    lifespan=_app_lifespan,
     routes=[
         Route("/", homepage),
         WebSocketRoute("/ws", websocket_endpoint),

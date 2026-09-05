@@ -40,8 +40,24 @@ AGENT_TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "artifact_read",
+            "description": "Retrieve archived historical tool evidence by artifact id without rerunning a command. Offsets and limits are characters.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 16000},
+                },
+                "required": ["artifact_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "bash",
-            "description": "Execute a shell command and return its output. Use for running scripts, installing packages, git operations, etc. Commands run non-interactively (no stdin) with a timeout. Do NOT run interactive programs (games, REPLs, servers) - they will timeout. For testing interactive programs, just verify the file was created correctly.",
+            "description": "Execute a non-interactive, time-limited shell command. Use check_run for acceptance tests and preview_start for development servers; shell children are cleaned up when the command ends. Do not attempt detached server launches. Interactive apps need actual browser/input checks, not just file existence.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1244,6 +1260,21 @@ AGENT_TOOLS = [
 # Opt-in supervisory tools. These are appended only to a root session with an
 # active DirectorRun, keeping the ordinary single-agent prompt and behavior
 # byte-for-byte compatible.
+AGENT_TOOLS.extend([
+    {"type": "function", "function": {"name": name, "description": description,
+        "parameters": {"type": "object", "properties": properties, "required": required}}}
+    for name, description, properties, required in [
+        ("preview_start", "Start a project-owned development server that survives tool completion. Use program/arguments (no shell operators), a free loopback port, and wait for readiness. Returns a handle, URL and bounded logs. Stop with preview_stop.",
+         {"command": {"type": "array", "items": {"type": "string"}}, "url": {"type": "string"}, "timeout": {"type": "integer"}}, ["command", "url"]),
+        ("preview_status", "Read this project's managed previews and recent logs.", {"id": {"type": "string"}}, []),
+        ("preview_stop", "Stop a managed preview and its process tree owned by this project.", {"id": {"type": "string"}}, ["id"]),
+        ("check_run", "Execute a named acceptance check and record its actual exit status as verification evidence. Identify the requirement tested. Use the project's test command; a successful setup command or page load does not prove behavior. Rerun a failed check after fixing it.",
+         {"command": {"type": "string"}, "requirement": {"type": "string"}, "timeout": {"type": "integer"}}, ["command", "requirement"]),
+        ("memory_save", "Save or update a concise project fact, constraint or decision with its source. Agent notes are labeled model assertions. Include relative source files for automatic freshness checks. Do not store credentials or conversation dumps.",
+         {"text": {"type": "string"}, "source": {"type": "string"}, "kind": {"type": "string", "enum": ["fact", "constraint", "decision", "procedure"]}, "sources": {"type": "array", "items": {"type": "string"}}, "id": {"type": "string"}}, ["text", "source"]),
+    ]
+])
+
 DIRECTOR_TOOLS = [
     {
         "type": "function",
@@ -1547,6 +1578,29 @@ def execute_tool(
             )
 
     try:
+        if name == "memory_save":
+            from .project_memory import ProjectMemory
+            data = ProjectMemory(project_path or os.getcwd()).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
+            return ToolResult(json.dumps(data), metadata={"memory": data})
+        if name.startswith("preview_"):
+            from .previews import previews
+            root = project_path or os.getcwd()
+            if name == "preview_start":
+                data = previews.start(root, arguments.get("command"), arguments.get("url", ""), timeout=arguments.get("timeout", 15), cancel_event=cancel_event)
+            elif name == "preview_stop":
+                data = previews.stop(root, arguments.get("id", ""))
+            else:
+                data = previews.status(root, arguments["id"]) if arguments.get("id") else previews.list(root)
+            return ToolResult(json.dumps(data), is_error=name == "preview_start" and data['state'] != 'ready', elapsed=time.time()-start, metadata={"preview": data})
+        if name == "check_run":
+            requirement = str(arguments.get("requirement", "")).strip()
+            if not requirement or not str(arguments.get("command", "")).strip():
+                return ToolResult("A check needs a command and requirement.", is_error=True)
+            result = _exec_bash({**arguments, "cwd": project_path or os.getcwd()}, start, cancel_event=cancel_event)
+            result.metadata["check"] = {"command": arguments["command"], "requirement": requirement,
+                "status": "failed" if result.is_error else "passed", "exit_code": result.metadata.get("exit_code"),
+                "checked_at": time.time()}
+            return result
         if name == "bash":
             return _exec_bash(arguments, start, cancel_event=cancel_event)
         elif name == "file_write":
@@ -1560,6 +1614,11 @@ def execute_tool(
         elif name == "grep":
             return _exec_grep(arguments, start, cancel_event=cancel_event)
         elif name == "skill_view":
+            if str(arguments.get('skill_id', '')).startswith('pack:'):
+                from .capability_packs import CapabilityPackManager
+                manager = CapabilityPackManager(project_path or os.getcwd(), configured=(settings.get('plugins') or {}) if settings else {})
+                body = manager.read_skill(arguments['skill_id'])
+                return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'pack'})
             return _exec_skill_view(arguments, start, project_path=project_path)
         elif name == "batch":
             return _exec_batch(

@@ -150,6 +150,8 @@
                     <rect x="8" y="1" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
                 </svg>
             </button>
+            <button type="button" id="managed-previews-button" class="titlebar-icon-btn" style="width:auto;padding:0 10px">Previews</button>
+            <button type="button" id="project-memory-button" class="titlebar-icon-btn" style="width:auto;padding:0 10px">Project notes</button>
             <button id="preview-toggle" class="titlebar-icon-btn" title="Browser &amp; design preview" aria-label="Toggle preview panel">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                     <rect x="1" y="1" width="14" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
@@ -439,7 +441,8 @@
                                 <div class="input-footer-right">
                                     <span class="token-info" id="token-info" title="Approximate context tokens used by this turn"></span>
                                     <select id="thinking-mode-selector" class="reasoning-selector" title="Reasoning depth for thinking models" aria-label="Reasoning depth" style="display:none;">
-                                        <option value="">Off</option>
+                                        <option value="default">Provider default</option>
+                                        <option value="off">Off</option>
                                         <option value="low">Low</option>
                                         <option value="med">Med</option>
                                         <option value="high">High</option>

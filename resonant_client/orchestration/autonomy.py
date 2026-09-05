@@ -332,6 +332,10 @@ def check_floor(
     approval through the chat. Everything else runs without prompting.
     """
     args = args or {}
+    if tool_name in {'check_run', 'preview_start'}:
+        if tool_name == 'preview_start':
+            args = {**args, 'command': ' '.join(str(v) for v in args.get('command', []))}
+        tool_name = 'bash'
     autonomy = AutonomySettings.from_settings(settings)
     project = project_path or os.getcwd()
     for rule in RULES:

@@ -136,9 +136,10 @@ class CapabilityPackManager:
             "ui_panels": [panel for pack in self.active() for panel in pack.ui_panels],
         }
 
-    def skill_context(self, query: str, *, max_skills: int = 6) -> str:
+    def skill_context(self, query: str, *, max_skills: int = 6, max_tokens: int = 500) -> str:
         """Render matching trusted pack skills without copying them globally."""
-        terms = set(re.findall(r"[A-Za-z0-9_]{3,}", query.casefold()))
+        stop = {"the", "and", "for", "with", "this", "that", "use", "create", "build", "please", "can", "you", "from", "new"}
+        terms = set(re.findall(r"[A-Za-z0-9_]{3,}", query.casefold())) - stop
         ranked: list[tuple[int, CapabilityPack, Path, str]] = []
         for pack in self.active():
             root = Path(pack.path).resolve()
@@ -148,16 +149,35 @@ class CapabilityPackManager:
                     continue
                 text = path.read_text(encoding="utf-8", errors="replace")
                 haystack = f"{path.stem} {text[:4000]}".casefold()
-                score = sum(1 for term in terms if term in haystack)
-                if score or not terms:
+                score = len(terms & set(re.findall(r"[A-Za-z0-9_]{3,}", haystack)))
+                if score:
                     ranked.append((score, pack, path, text))
         ranked.sort(key=lambda item: (-item[0], item[1].id, item[2].name))
         if not ranked:
             return ""
         blocks = ["\n## Trusted capability-pack skills\n"]
         for _, pack, path, body in ranked[:max_skills]:
-            blocks.append(f"### {pack.name}: {path.stem}\n{body.strip()}\n")
+            description = next((line.partition(':')[2].strip() for line in body.splitlines() if line.lower().startswith('description:')), pack.description)
+            if not description:
+                description = next((line.strip('# ').strip() for line in body.splitlines() if line.strip() and line.strip() != '---'), path.stem)
+            handle = f"pack:{pack.id}:{path.relative_to(Path(pack.path)).as_posix()}"
+            row = f"### {pack.name}: {path.stem}\n{description[:300]}\nSource: trusted pack {pack.id}. Load with skill_view skill_id={handle}\n"
+            if len('\n'.join(blocks)) + len(row) > max_tokens * 4:
+                break
+            blocks.append(row)
         return "\n".join(blocks)
+
+    def read_skill(self, handle: str) -> str:
+        _, pack_id, relative = handle.split(':', 2)
+        for pack in self.active():
+            if pack.id != pack_id or relative not in pack.skills:
+                continue
+            root = Path(pack.path).resolve()
+            path = (root / relative).resolve()
+            if root not in path.parents:
+                break
+            return path.read_text(encoding='utf-8')[:24000]
+        raise ValueError('Unknown or untrusted pack skill')
 
     def _load(self, directory: Path) -> CapabilityPack:
         manifest_path = directory / PACK_MANIFEST

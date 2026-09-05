@@ -473,4 +473,5 @@ def test_tool_render_intent_drives_changed_files_and_clickable_deliverables():
     assert "event.presentation?.locations" in source
     assert "command: 'open_workspace_path'" in source
     assert 'data-file-path="${this.escapeHtml(f.path)}"' in source
-    assert "for (const rawPath of (evidence.changed_files || []))" in source
+    assert "Array.isArray(evidence.changed_files)" in source
+    assert "new Map(sourceFiles" in source

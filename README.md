@@ -178,6 +178,7 @@ now that browsing works out of the box.
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama base URL |
 | `EXO_API_URL` / `EXO_BASE_URL` | `http://127.0.0.1:52415/v1` | EXO OpenAI-compatible API URL |
 | `EXO_API_KEY` | none | Optional bearer token for an authenticated EXO proxy |
+| `RESONANT_EXO_CONTEXT_TOKENS` | conservative model inference | Effective EXO deployment context window; set this to the server's actual configured window |
 | `RESONANT_EXO_CONNECT_TIMEOUT_SEC` | `15` | EXO connection timeout |
 | `RESONANT_EXO_PROGRESS_WARNING_SEC` | `120` | Informational threshold for showing that a quiet EXO generation is still working; it never stops the run |
 | `RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC` | `0` (disabled) | Optional operator-defined hard limit for seconds without semantic EXO progress; long generations are unlimited by default and remain user-stoppable |
@@ -225,3 +226,5 @@ resonant-smoke variance --spec wordcount --model your-model --n 3
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+Managed previews, named acceptance checks, Kimi effort controls, and sourced project notes are described in [Priority improvements](docs/priority-improvements.md).

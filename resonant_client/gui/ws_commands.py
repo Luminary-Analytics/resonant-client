@@ -1906,7 +1906,7 @@ async def _cmd_set_thinking_mode(ctx: CommandContext) -> None:
     # Forces a backend rebuild because Ollama options must be stable
     # for the lifetime of an OllamaBackend instance.
     mode = (ctx.msg.get("mode") or "").strip().lower()
-    if mode not in {"", "off", "low", "med", "medium", "high", "max"}:
+    if mode not in {"", "default", "off", "low", "med", "medium", "high", "max"}:
         await ctx.send({"event": "error", "message": f"invalid thinking mode: {mode!r}"})
     else:
         try:
@@ -1917,6 +1917,14 @@ async def _cmd_set_thinking_mode(ctx: CommandContext) -> None:
             # per-model default (e.g. GLM→high) clobber the
             # user's choice on the next backend rebuild.
             normalized = "off" if mode in {"", "off"} else ("med" if mode == "medium" else mode)
+            if ctx.state.backend_spec and ctx.state.backend_spec.backend_type == "kimi":
+                normalized = "max" if mode in {"", "default"} else mode
+                if normalized not in {"low", "high", "max"}:
+                    raise ValueError("Kimi supports low, high, and max; thinking is always enabled.")
+            if ctx.state.backend_spec and ctx.state.backend_spec.backend_type == "ollama":
+                # Validate before persisting a setting that cannot be applied.
+                from ..backends import OllamaBackend
+                OllamaBackend("http://validation-only", ctx.state.backend_spec.model, thinking=normalized)
             if ctx.state.project.current_session:
                 ctx.state.project.current_session.thinking_mode = normalized
                 ctx.state.project.current_session.save()
@@ -1944,6 +1952,38 @@ async def _cmd_set_thinking_mode(ctx: CommandContext) -> None:
         except Exception as e:
             await ctx.send({"event": "error", "message": str(e)})
 
+
+
+@command("preview_list")
+@command("preview_stop")
+async def _cmd_previews(ctx: CommandContext) -> None:
+    from ..engine.previews import previews
+    project = ctx.state.project.project_path
+    try:
+        if ctx.msg.get('command') == 'preview_stop':
+            await asyncio.to_thread(previews.stop, project, ctx.msg.get('id', ''))
+        await ctx.send({'event': 'previews_updated', 'project': project, 'previews': previews.list(project)})
+    except (OSError, ValueError) as exc:
+        await ctx.send({'event': 'error', 'message': str(exc)})
+
+
+@command("memory_list")
+@command("memory_save")
+@command("memory_delete")
+async def _cmd_project_memory(ctx: CommandContext) -> None:
+    from ..engine.project_memory import ProjectMemory
+    project = ctx.state.project.project_path
+    memory = ProjectMemory(project)
+    try:
+        if ctx.msg.get('command') == 'memory_save':
+            memory.save(ctx.msg.get('text', ''), source=ctx.msg.get('source', ''),
+                        kind=ctx.msg.get('kind', 'decision'), sources=ctx.msg.get('sources', []),
+                        memory_id=ctx.msg.get('id', ''), author='user')
+        elif ctx.msg.get('command') == 'memory_delete':
+            memory.delete(ctx.msg.get('id', ''))
+        await ctx.send({'event': 'project_memory_updated', 'project': project, 'memories': memory.list()})
+    except (OSError, ValueError) as exc:
+        await ctx.send({'event': 'error', 'message': str(exc)})
 
 
 @command("fork_session")
@@ -2367,6 +2407,7 @@ async def _cmd_register_project(ctx: CommandContext) -> None:
         await ctx.send({
             "event": "project_registered",
             "path": registered_project_path,
+            "open_after_add": bool(ctx.msg.get("open_after_add")),
             "recent_projects": ctx.state.project.get_recent_projects(),
             "playground_project": ctx.state.project.get_playground_project(),
             "all_sessions": ctx.state.project.list_all_sessions(),

@@ -105,7 +105,9 @@ def test_exo_recovers_text_encoded_tool_call_without_leaking_protocol():
         base_url="http://exo.test:52415/v1",
         transport=httpx.MockTransport(handler),
     )
-    events = list(backend.stream("Work", [], "system", []))
+    events = list(backend.stream("Work", [], "system", [
+        {"type": "function", "function": {"name": "await_user"}},
+    ]))
 
     assert not any(event == EVENT_TEXT_DELTA for event, _ in events)
     tool = next(data for event, data in events if event == EVENT_TOOL_CALL)

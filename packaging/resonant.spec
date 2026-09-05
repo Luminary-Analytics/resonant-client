@@ -109,6 +109,11 @@ datas = [
 # starlette ships some HTML defaults for error pages).
 datas += collect_data_files("starlette")
 
+# Skill instructions are package data, not Python modules. Include them
+# explicitly so installed clients can discover the same skills as source runs.
+for skill in sorted((PKG_ROOT / "orchestration" / "bundled_skills").glob("*.md")):
+    datas.append((str(skill), "resonant_client/orchestration/bundled_skills"))
+
 # Frontend libraries and fonts that index.html used to load from CDNs. Fetched
 # and SHA-256 verified by packaging/fetch_web_assets.ps1, which build_clean.ps1
 # runs before PyInstaller. Bundling them takes five render-blocking network

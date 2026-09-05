@@ -58,7 +58,7 @@ def test_context_compression_is_rechecked_mid_turn(tmp_path):
     with (
         patch(
             "resonant_client.engine.session.should_compress",
-            side_effect=[False, True],
+            side_effect=[False, False, True, False],
         ) as should,
         patch(
             "resonant_client.engine.session.compress",
@@ -67,7 +67,7 @@ def test_context_compression_is_rechecked_mid_turn(tmp_path):
     ):
         events = list(session.run("read it"))
 
-    assert should.call_count == 2
+    assert should.call_count == 4
     assert compress_history.call_count == 1
     assert any(event.get("event") == "context.compression" for event in events)
     assert session.conversation_history[0] == compressed[0]

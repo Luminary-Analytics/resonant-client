@@ -6,7 +6,6 @@ that must be pinned. psutil is mocked so no real processes are touched.
 """
 from __future__ import annotations
 
-import os
 import time
 
 from unittest.mock import MagicMock, patch
@@ -50,9 +49,11 @@ class TestKillGuardrails:
         fake.terminate.assert_not_called()
 
     def test_refuses_self(self):
-        me = os.getpid()
+        # CI can allocate a PID below the floor, which exercises a different
+        # guard first. Choose a deterministic self PID to test this branch.
+        me = SYSTEM_PID_FLOOR + 100
         fake = _fake_proc(me, "python.exe")
-        with patch.object(proc.psutil, "Process", return_value=fake):
+        with patch.object(proc.os, "getpid", return_value=me), patch.object(proc.psutil, "Process", return_value=fake):
             out = kill_process(me)
         assert out["killed"] == []
         assert out["skipped"][0]["reason"] == "self"

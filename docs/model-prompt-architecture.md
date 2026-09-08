@@ -29,7 +29,7 @@ have explicit size ceilings.
 
 ## Fast execution path
 
-The normal Ollama/Kimi coding path is deliberately small:
+The normal engine-driven coding path (Ollama, EXO, Kimi, and OpenRouter) is deliberately small:
 
 1. Send a byte-stable system prompt and a ten-tool coding core: read, write,
    edit, shell, glob, grep, parallel read batch, sub-agent, user decision, and
@@ -45,13 +45,28 @@ The normal Ollama/Kimi coding path is deliberately small:
 
 Uncommon desktop, process, recording, REPL, and git tools are loaded by
 `search_tools` only when required. Ollama receives loaded schemas in subsequent
-top-level `tools`; Kimi uses its provider-native in-history catalog. Director
+top-level `tools`; Kimi uses its provider-native in-history catalog. OpenRouter
+uses top-level tool schemas and removes Moonshot-specific catalog messages. Director
 mode explicitly adds its orchestration tools and is not limited to the normal
 coding core.
 
 This optimizes the common path without removing capabilities. The full tool
 catalog, durable agents, worktrees, checkpoints, hooks, artifacts, compaction,
 multimodal inputs, and Director mode remain runtime services.
+
+## Installed CLI boundary
+
+Codex coding runs use `codex exec --json`; the account/login/model/quota service
+uses `codex app-server`. These are separate paths. `_build_codex_prompt` supplies
+project instructions, relevant notes, recent text history, and retained
+summaries. It does not transfer the original provider's native thread or image
+attachments, and the CLI runs its own tools. Do not assume engine tool schemas
+or named acceptance checks ran merely because a CLI displayed tool activity.
+
+OpenRouter reasoning continuation data is retained for the originating model
+only. Provider changes preserve the conversation and drafts but are blocked
+during an active run. Project defaults and session overrides are described in
+the [desktop guide](desktop-workflow.md).
 
 ## Long-running behavior
 

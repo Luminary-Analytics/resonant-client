@@ -1,5 +1,11 @@
 # GUI Hardening Pass
 
+Historical hardening record. The architecture principles below informed the
+current runtime, but references to removed providers and dispatch/scheduler
+surfaces describe the implementation at the time. Current module ownership,
+provider connections, and saved-work flow are in [ARCHITECTURE.md](../ARCHITECTURE.md)
+and the [desktop guide](desktop-workflow.md).
+
 This document captures the behavior-preserving hardening work that closed the recent GUI and background-runtime review findings without changing the product surface area.
 
 ## Goals

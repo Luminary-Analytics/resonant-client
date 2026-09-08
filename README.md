@@ -4,26 +4,35 @@
 
 Resonant gives different model providers the same durable coding harness:
 repository-aware system prompts, native tools, focused clarification, long-task
-state, verification, and a desktop workflow modeled after OpenCode. Product
+state, verification, and a desktop workflow with projects and sessions in one sidebar. Product
 behavior is capability-driven; named models are not silently promoted or given
 different operating rules.
 
 See [docs/agentic-harness-north-star.md](docs/agentic-harness-north-star.md)
 for the engineering contract that governs harness changes.
 
+Start with the [desktop workflow](docs/desktop-workflow.md) for navigation and
+provider selection, or the [documentation index](docs/README.md) for contributor
+guides. [0.17.1](docs/v0.17.1-release-notes.md) includes the compact UI polish;
+[Unreleased](docs/unreleased.md) tracks subsequent changes.
+
 ## Provider Support
 
 - **Ollama:** the zero-credential local-first default. Models are discovered
   from the configured endpoint.
+- **EXO:** distributed inference through its OpenAI-compatible endpoint, with
+  running/downloaded model discovery and instance startup.
 - **Kimi:** Moonshot's API with native tools, multimodal content, reasoning
   continuity, retries, and cache accounting.
 - **OpenRouter:** a searchable model catalog, native tools, and provider-reported API costs.
 - **Codex:** an installed Codex CLI, using the same project and permission
   boundaries.
+- **Claude Code:** an installed CLI adapter for existing Claude Code users.
 
 Provider adapters may translate wire formats, reasoning tokens, and message
-roles. The system prompt, agent loop, clarification policy, and verification
-contract stay model-neutral.
+roles. Resonant's engine contract stays model-neutral. Installed CLI adapters
+use their own native tool loops; see the [architecture guide](ARCHITECTURE.md)
+for their context-handoff and verification boundaries.
 
 ## Features
 
@@ -59,9 +68,11 @@ contract stay model-neutral.
 
 ### Desktop client
 
-- Native frameless window with project and session navigation
+- Native frameless window with sessions grouped under projects in one sidebar
+- Project/session filtering, pinned scope, and a global command palette
+- New-session drafts that become saved conversations on the first message
 - Folder picker for opening projects
-- Runtime provider/model picker without pinned model policy
+- Searchable provider/model picker, favorites, and explicit project defaults
 - Inline file diff review
 - Collapsible long-task status with EXO connection/model-progress telemetry
 - Recommended decision prompts and a non-interrupting Check status control
@@ -145,6 +156,9 @@ Credentials remain managed by Codex. This uses the official
 [Codex app-server account protocol](https://learn.chatgpt.com/docs/app-server)
 for connection management and the installed CLI for coding runs.
 
+GPT-6 Astra uses the model ID `gpt-6-astra`. Refresh account models to see the
+connected account's catalog; bootstrap model entries do not guarantee access.
+
 ### OpenRouter
 
 Add an OpenRouter key under **Settings > API keys**, or set `OPENROUTER_API_KEY`.
@@ -154,6 +168,15 @@ Resonant discovers models that support text output and tools from the
 Streaming, native tool calls, reasoning continuation data, and provider-reported
 costs use OpenRouter's API. API keys are stored locally in `~/.resonant/settings.json`
 and are masked in the settings UI and session configuration.
+
+Search **Astra** in **Models** to select `openai/gpt-6-astra` through OpenRouter.
+Its API usage is billed separately from ChatGPT/Codex subscription usage.
+
+### Claude Code
+
+Install and authenticate Claude Code, then select its discovered CLI models in
+the model picker. Resonant uses the installed CLI's native execution path.
+ChatGPT connection controls apply to Codex, not Claude Code.
 
 ### Choosing providers per session
 
@@ -244,14 +267,21 @@ resonant --ollama-url http://192.168.1.20:11434 --model your-model
 
 ## Develop
 
+Read [AGENTS.md](AGENTS.md) for shared contributor instructions. `CLAUDE.md`
+imports that guide; `RESONANT.md` remains a legacy pointer to it.
+
 ```bash
-pytest -q
-ruff check resonant_client tests
+python -m pytest -q
+python -m ruff check .
 node --check resonant_client/gui/static/app.js
+node --check resonant_client/gui/static/settings_view.js
+node --test tests/ui_recovery.test.cjs
+git diff --check
 ```
 
 The durable runtime architecture and extension contracts are documented in
 [docs/modern-agent-runtime.md](docs/modern-agent-runtime.md).
+Use [RELEASING.md](RELEASING.md) for clean Windows builds and publishing checks.
 
 The smoke harness accepts either a legacy shorthand or any Ollama model ID:
 

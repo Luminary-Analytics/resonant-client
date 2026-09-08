@@ -1,7 +1,9 @@
 # Improvements from the end-to-end evaluation
 
 This iteration implements the five priorities in `e2e-user-evaluation-2026-09-05.md`.
-Restart Resonant to load the updated runtime and bundled procedures.
+These priorities shipped in v0.15.0, with later navigation and provider work in
+v0.16.0/v0.17.0. See the [desktop guide](desktop-workflow.md) and
+[Unreleased](unreleased.md) for current controls and release status.
 
 ## Managed previews
 
@@ -13,7 +15,8 @@ Use `preview_start` with a program/argument array and an unused loopback HTTP UR
 
 The tool waits for readiness, returns a handle and recent logs, and keeps the
 server alive across turns and project navigation. Use `preview_status` and
-`preview_stop`, or **Previews** in the toolbar. Only the owning project can stop
+`preview_stop`, or **Previews** in the toolbar (the **Project previews** icon in
+the v0.17.1 compact layout). Only the owning project can stop
 a preview. Startup failure/cancellation cleans up the process. Normal shutdown
 stops managed previews; Windows job handles also clean up their process trees
 when the owning process exits. Ordinary shell commands retain their existing
@@ -84,7 +87,8 @@ place. No personal skill files are deleted or automatically promoted by this
 change. Legacy extraction callers without project context retain their existing
 scope behavior.
 
-**Project notes** provides add/edit/delete controls for facts, constraints,
+**Project notes** in the toolbar (a document icon in the v0.17.1 compact
+layout) provides add/edit/delete controls for facts, constraints,
 decisions and procedures. Notes require a source description; optional relative
 source files are fingerprinted. Changed or missing source files make notes stale
 and exclude them from recall. Agent-created notes remain labeled **model

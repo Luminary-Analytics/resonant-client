@@ -1,5 +1,11 @@
 # Resonant navigation and startup evaluation
 
+Historical evaluation of the navigation work later released in v0.16.0. Its
+flat-list row limits and scope labels describe that measured build. v0.17.0
+uses sessions grouped under projects; see the [desktop guide](desktop-workflow.md)
+and [Unreleased](unreleased.md) for the later compact layout. The measurements
+below have not been rerun for that layout.
+
 ## Changes
 
 - Named project rows with session counts, a visible add button, and keyboard-accessible action menus replace the initials-only rail.

@@ -9702,8 +9702,9 @@ class ResonantApp {
             const disclosure = document.createElement('button');
             disclosure.className = 'project-disclosure';
             disclosure.type = 'button';
-            disclosure.textContent = expanded ? '⌄' : '›';
+            disclosure.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.5 6V3.5a1 1 0 0 1 1-1H6l1.5 2h5a1 1 0 0 1 1 1V6" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="${expanded ? 'M1.5 6h13l-2 7h-11z' : 'M1.5 6h12v6a1 1 0 0 1-1 1h-10a1 1 0 0 1-1-1z'}" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>`;
             disclosure.setAttribute('aria-label', `${expanded ? 'Collapse' : 'Expand'} ${project.name}`);
+            disclosure.title = `${expanded ? 'Collapse' : 'Expand'} ${project.name}`;
             disclosure.setAttribute('aria-expanded', String(expanded));
             disclosure.dataset.navKey = `expand:${project.key}`;
             disclosure.onclick = () => {
@@ -9728,11 +9729,13 @@ class ResonantApp {
             const add = document.createElement('button');
             add.type = 'button'; add.className = 'project-nav-menu'; add.textContent = '+';
             add.setAttribute('aria-label', `New session in ${project.name}`);
+            add.title = `New session in ${project.name}`;
             add.dataset.navKey = `new:${project.key}`;
             add.onclick = () => this.startNewSession(project.path);
             const menu = document.createElement('button');
             menu.type = 'button'; menu.className = 'project-nav-menu'; menu.textContent = '⋯';
             menu.setAttribute('aria-label', `Actions for ${project.name}`);
+            menu.title = `Actions for ${project.name}`;
             menu.dataset.navKey = `menu:${project.key}`;
             menu.onclick = e => {
                 e.stopPropagation();
@@ -9782,15 +9785,13 @@ class ResonantApp {
         const timeStr = this.formatRelativeTime(date);
         const roleLabel = (session.session_role && session.session_role !== 'generator')
             ? this.formatSessionRole(session.session_role) : '';
-        const roleTag = roleLabel
-            ? `<span class="session-project-tag">${this.escapeHtml(roleLabel)}</span> \u00B7 `
-            : '';
-
         const indicator = this._sessionIndicator(session);
-        const autoBadge = '';
+        const sessionTitle = session.title || 'New session';
+        const details = [roleLabel, session.pinned ? 'Pinned' : '', timeStr].filter(Boolean).join(' · ');
+        el.title = `${sessionTitle}\n${details}`;
+        el.setAttribute('aria-label', [sessionTitle, roleLabel, session.pinned ? 'Pinned' : '', indicator.label].filter(Boolean).join(', '));
         el.innerHTML = `
-            <div class="agent-row-title"><span class="agent-row-status is-${indicator.state}" role="img" aria-label="${indicator.label}" title="${indicator.label}"><span aria-hidden="true"></span></span>${this.escapeHtml(session.title || 'New session')}</div>
-            <div class="agent-row-date">${autoBadge}${roleTag}${session.pinned ? 'Pinned · ' : ''}${timeStr}</div>
+            <div class="agent-row-title"><span class="agent-row-status is-${indicator.state}" role="img" aria-label="${indicator.label}" title="${indicator.label}"><span aria-hidden="true"></span></span><span class="session-title-text">${this.escapeHtml(sessionTitle)}</span>${session.pinned ? '<svg class="session-pin" width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M5 2h6l-1 4 2 3H4l2-3zM8 9v5" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg>' : ''}</div>
             <div class="agent-row-actions">
                 <button class="agent-menu-btn" title="More actions">&#8943;</button>
             </div>

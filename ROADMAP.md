@@ -8,14 +8,26 @@ maintainability, and wall-clock performance rank above token or compute
 efficiency. The dated release and cluster histories below remain useful records
 but do not override that direction.
 
-Post-refocus, the client is a single-purpose agentic coder with a clean Agent +
-Settings UI. It is no longer tied to one model or one provider: the harness is
-capability-driven and model-neutral (see the north star above), with Ollama on
-the Mac Studio (`10.0.0.133`) as the primary local path, `glm-5.2` the flagship
-model, and Kimi, EXO distributed inference, and the Codex CLI as additional
-backends. The original 8 clusters below were the foundation (shipped
-pre-v0.2.0); see the "Post-refocus state" section further down for the
-v0.3.x–v0.6.x evolution.
+## Current delivery status (2026-09-08)
+
+[0.17.0](docs/v0.17.0-release-notes.md) shipped the unified project/session
+sidebar, ChatGPT/Codex connections, OpenRouter, searchable models, favorites,
+project defaults, and GPT-6 Astra availability. [0.17.1](docs/v0.17.1-release-notes.md)
+adds compact toolbar icons, folder disclosures, single-line sessions, and current
+contributor documentation.
+
+The main desktop workflow supports ChatGPT/Codex and OpenRouter while retaining
+Ollama, EXO, Kimi, and other installed CLI support. Model preferences are explicit;
+no particular developer's machine, endpoint, or model is a universal default.
+See the [desktop guide](docs/desktop-workflow.md) and
+[architecture](ARCHITECTURE.md) for current behavior.
+
+Next validation work includes repeated live provider coding evaluations and
+cold-start/history-replay measurements. Compact viewport checks are recorded in
+the 0.17.1 release notes.
+Mocked tool-cycle tests and catalog checks do not establish live model quality
+or a latency SLA. Keep the older roadmap below as historical context; confirm
+whether an item has since shipped before treating it as open work.
 
 ## Project direction (2026-05, set at v0.6.3)
 

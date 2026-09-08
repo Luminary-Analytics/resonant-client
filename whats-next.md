@@ -1,3 +1,12 @@
+# Archived Command Center handoff
+
+This file preserves a pre-refocus implementation handoff. Its task list, module
+paths, and line numbers are historical, not the current backlog. Start with
+[AGENTS.md](AGENTS.md), [ROADMAP.md](ROADMAP.md), and the
+[documentation index](docs/README.md) for current work.
+
+---
+
 # Handoff Document — Resonant Command Center
 
 <original_task>

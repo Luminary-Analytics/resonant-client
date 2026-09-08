@@ -1,5 +1,10 @@
 # Skills (v0.6.0)
 
+This guide records the skills foundation introduced in v0.6.0. Current bounded
+retrieval, bundled procedures, project pin/suppression policy, and sourced notes
+are documented in [Priority improvements](priority-improvements.md). Use the
+[documentation index](README.md) for current UI and contributor guidance.
+
 The skills system lets autonomous missions teach themselves across runs. After every successful mission iter, an extractor specialist looks at what was learned and writes a reusable SKILL.md if there's a pattern worth keeping. The next mission in the same project sees those skills in its planner's context — patterns compound instead of evaporating with the chat history.
 
 This is the [Hermes Agent](https://github.com/NousResearch/hermes-agent)-inspired self-improvement loop adapted to our autonomous-mission flow. Adapted, not lifted: our `Skill` dataclass and storage already existed (Voyager-inspired plan-graph extraction since v0.4.x); v0.6.0 added the provenance gate, mission-iter extraction path, deterministic curator, and discovery/injection layer that compose them into a closed loop.

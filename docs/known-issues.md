@@ -4,6 +4,29 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
+## Current provider and validation limitations (2026-09-08)
+
+- Codex text handoffs preserve selected text context, not native provider
+  threads or image attachments. CLI tool displays do not prove Resonant's
+  named acceptance checks ran.
+- OpenRouter live catalog and Codex account discovery were checked for v0.17.0;
+  provider generation tests used mocked responses. Paid live coding behavior
+  still needs repeated evaluation.
+- `tests/test_processes.py::TestKillGuardrails::test_refuses_self` depends on
+  the runner PID being above the process floor. The separate v0.17.0 CI job
+  received a low PID and asserted the wrong refusal reason. The guard refused
+  correctly, release tests passed, and the separate job passed on rerun. The
+  test setup is deterministic in v0.17.1: a mocked self PID above the floor
+  isolates the intended guard without changing production process safety.
+- Compact toolbar/sidebar polish ships in [v0.17.1](v0.17.1-release-notes.md).
+  Its release notes record desktop, compact-layout, and packaged validation.
+
+## Historical numbered ledger
+
+Statuses below belong to their recorded investigations and may need
+revalidation against current source. Keep issue numbers stable; do not infer
+that removed product surfaces or old bundle-size observations still apply.
+
 | # | Title | Severity | Status | Surfaced by |
 |---|-------|----------|--------|-------------|
 | 1 | Project dropdown's "Open another project…" no-op in browser mode | Medium | ✅ Shipped fix | Dogfood pass 1 |

@@ -2,7 +2,7 @@
 
 Status: canonical product and engineering contract
 Audience: contributors, maintainers, coding agents, and model adapters
-Last updated: 2026-07-21
+Last updated: 2026-09-08
 
 This document defines what Resonant is optimizing for and the architectural
 direction that should guide new work. When a historical plan, release note, or
@@ -10,10 +10,17 @@ model-specific playbook conflicts with this document, this document wins.
 
 ## Mission
 
-Resonant is an Ollama-native, model-agnostic agent runtime for open models. Its
+Resonant is a provider-adaptive, model-agnostic coding runtime with a local-first path. Its
 job is to help GLM, DeepSeek, Qwen, and future open models complete difficult,
 long-running software tasks with the quality, control, durability, and evidence
 expected from a first-class coding agent.
+
+The desktop workflow also supports ChatGPT/Codex subscriptions and OpenRouter,
+alongside Ollama, EXO, Kimi, and installed CLI adapters. Provider choice is
+explicit. CLI adapters retain their own native execution loops; shared product
+goals do not imply identical tool protocols or complete cross-provider context
+transfer. See [architecture](../ARCHITECTURE.md) for implemented boundaries and
+[AGENTS.md](../AGENTS.md) for contributor instructions.
 
 The harness owns orchestration, lifecycle, context, tools, evidence, recovery,
 and user control. The model supplies reasoning and decisions inside that

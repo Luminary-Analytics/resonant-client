@@ -13130,3 +13130,26 @@ body.is-window-dragging * {
 .provider-model-choice:hover, .provider-model-choice[aria-current=true] { background: #17b8a414; }
 .provider-star { color: var(--text); border: 0; background: transparent; padding: 12px; cursor: pointer; font-size: 19px; }
 .provider-picker-footer { margin-top: 14px; font-size: 11px; color: var(--muted); }
+
+/* New conversations choose their project before changing the active draft. */
+.new-session-project-picker { margin: auto; width: min(480px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 20px; color: var(--text); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 14px; box-shadow: 0 20px 80px #0008; }
+.new-session-project-picker::backdrop { background: #0008; }
+.new-session-project-picker header { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.new-session-project-picker h2 { margin: 0; font-size: 18px; }
+.new-session-project-picker header p { margin: 6px 0 16px; color: var(--muted); font-size: 12px; }
+.new-session-project-picker button { font: inherit; color: inherit; cursor: pointer; }
+.new-session-project-picker [data-cancel] { width: 28px; height: 28px; background: transparent; border: 0; border-radius: 5px; font-size: 20px; color: var(--muted); }
+.new-session-project-picker > input { width: 100%; padding: 9px 10px; margin-bottom: 10px; background: var(--bg-elem); color: var(--text); border: 1px solid var(--border-strong); border-radius: 7px; font: inherit; }
+.new-session-project-options { max-height: min(340px, 45dvh); overflow-y: auto; }
+.new-session-project-option { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 8px; text-align: left; border: 0; border-radius: 7px; background: transparent; }
+.new-session-project-option > svg { flex: none; color: var(--muted); }
+.new-session-project-copy { flex: 1; min-width: 0; }
+.new-session-project-copy strong, .new-session-project-copy > span { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.new-session-project-copy strong { font-size: 13px; font-weight: 500; }
+.new-session-project-copy > span { margin-top: 4px; font-size: 11px; color: var(--muted); }
+.new-session-project-current { flex: none; font-size: 10px; color: var(--brand2); }
+.new-session-project-picker button:hover { background: var(--bg-hover); }
+.new-session-project-picker :is(button, input):focus-visible { outline: 2px solid var(--brand2); outline-offset: -2px; }
+.new-session-project-picker footer { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.new-session-project-picker [data-folder] { padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--bg-elem); font-size: 12px; }
+.new-session-project-picker footer span, .new-session-project-empty { font-size: 12px; color: var(--muted); }

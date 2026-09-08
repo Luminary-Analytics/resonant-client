@@ -3622,6 +3622,11 @@ class ResonantApp {
                 // result there instead of switching the global project
                 // (the global switch only happens on Start).
                 if (event.path) {
+                    if (this._pendingFolderPickConsumer === 'new-session') {
+                        this._pendingFolderPickConsumer = null;
+                        this.startNewSession(event.path);
+                        break;
+                    }
                     if (this._pendingFolderPickConsumer === 'mission') {
                         this._pendingFolderPickConsumer = null;
                         const pathInput = document.getElementById('mission-composer-path');
@@ -3656,12 +3661,18 @@ class ResonantApp {
                     const consumer = this._pendingFolderPickConsumer;
                     const label = consumer === 'mission'
                         ? 'Pick session folder'
+                        : consumer === 'new-session'
+                            ? 'New session folder'
                         : consumer === 'register'
                             ? 'Add project'
                         : 'Open project';
                     this._pendingFolderPickConsumer = null;
                     if (event.message) this.showToastMessage(event.message);
                     this._promptForProjectPath(label, (path) => {
+                        if (consumer === 'new-session') {
+                            this.startNewSession(path);
+                            return;
+                        }
                         if (consumer === 'mission') {
                             const pathInput = document.getElementById('mission-composer-path');
                             if (pathInput) {
@@ -3937,6 +3948,11 @@ class ResonantApp {
             if (this.sidebarCwd) this.sidebarCwd.textContent = cwd;
             this.currentCwd = cwd;
             this._updateHeaderProjectPath(cwd);
+            // Project-only init can return before showing the chat interface.
+            // Keep an existing blank composer in sync with its chosen folder.
+            if (this.chatMessages?.querySelector('.chat-empty-state')) {
+                this._maybeRenderChatEmptyState();
+            }
             // Default the sidebar filter to the current project so users immediately
             // see only that project's sessions; clearing it via "All projects" still works.
             if (this.sidebarProjectSwitchLabel && !this._projectFilterUserCleared) {
@@ -6425,15 +6441,15 @@ class ResonantApp {
             }
         }
 
-        // Don't intercept other shortcuts when in input
-        if (inInput) return;
-
-        // Ctrl+N → new session
-        if ((e.ctrlKey || e.metaKey) && e.key === 'n') {
+        // The project chooser preserves drafts, so it is safe from the composer too.
+        if ((e.ctrlKey || e.metaKey) && e.key === 'n' && (!inInput || e.target === this.userInput)) {
             e.preventDefault();
             document.getElementById('new-agent-btn')?.click();
             return;
         }
+
+        // Don't intercept other shortcuts when in input
+        if (inInput) return;
 
         // Ctrl+, → settings
         if ((e.ctrlKey || e.metaKey) && e.key === ',') {
@@ -10208,11 +10224,76 @@ class ResonantApp {
 
     // ── New Session Setup ──────────────────────────────────────
 
+    showNewSessionProjectPicker() {
+        if (document.getElementById('new-session-project-picker')) return;
+        const returnFocus = document.activeElement;
+        const dialog = document.createElement('dialog');
+        dialog.id = 'new-session-project-picker';
+        dialog.className = 'new-session-project-picker';
+        dialog.setAttribute('aria-labelledby', 'new-session-project-title');
+        dialog.innerHTML = `
+            <header><div><h2 id="new-session-project-title">New session</h2><p>Choose a project to work in.</p></div><button type="button" data-cancel aria-label="Cancel new session" title="Cancel">×</button></header>
+            <input type="search" aria-label="Find a project" placeholder="Find a project" autocomplete="off">
+            <div class="new-session-project-options" role="group" aria-label="Projects"></div>
+            <footer><button type="button" data-folder>Choose folder…</button><span>Open a different folder or start a new project.</span></footer>`;
+        let chosen = false;
+        const choose = (path) => {
+            chosen = true;
+            dialog.close();
+            this.startNewSession(path);
+        };
+        const search = dialog.querySelector('input');
+        const list = dialog.querySelector('.new-session-project-options');
+        const projects = this._getProjectRailItems();
+        const current = this._projectKey(this.currentCwd);
+        const render = () => {
+            const query = search.value.trim().toLowerCase();
+            list.replaceChildren();
+            const matches = projects.filter(p => `${p.name} ${p.path}`.toLowerCase().includes(query));
+            for (const project of matches) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'new-session-project-option';
+                button.setAttribute('aria-label', `Start in ${project.name}`);
+                button.title = project.path;
+                button.innerHTML = `<svg width="18" height="18" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M1.5 6V3.5h4.5l1.5 2h6V13h-12zM1.5 6h12" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/></svg><span class="new-session-project-copy"><strong>${this.escapeHtml(project.name)}</strong><span>${this.escapeHtml(project.path)}</span></span>${project.key === current ? '<span class="new-session-project-current">Current</span>' : ''}`;
+                button.onclick = () => choose(project.path);
+                list.appendChild(button);
+            }
+            if (!matches.length) {
+                const empty = document.createElement('p');
+                empty.className = 'new-session-project-empty';
+                empty.textContent = query ? 'No matching projects. Choose a folder below.' : 'Choose a folder to start your first project.';
+                empty.setAttribute('role', 'status');
+                list.appendChild(empty);
+            }
+        };
+        search.oninput = render;
+        search.onkeydown = e => {
+            if (e.key === 'ArrowDown') { e.preventDefault(); list.querySelector('button')?.focus(); }
+            if (e.key === 'Enter') { e.preventDefault(); list.querySelector('button')?.click(); }
+        };
+        dialog.querySelector('[data-cancel]').onclick = () => dialog.close();
+        dialog.querySelector('[data-folder]').onclick = () => {
+            chosen = true;
+            dialog.close();
+            this.openProjectFolder('new-session');
+        };
+        dialog.onclose = () => {
+            dialog.remove();
+            if (!chosen && returnFocus?.isConnected) returnFocus.focus();
+        };
+        document.body.appendChild(dialog);
+        render();
+        dialog.showModal();
+        search.focus();
+    }
+
     /**
      * Open a fresh composer in the chosen project. The first message creates
      * the saved conversation; opening the composer never adds an empty row.
      */
-    startNewSession(projectPath = this._pendingProjectPath || this.currentCwd) {
+    startNewSession(projectPath = null) {
         if (this.isRunning) {
             this.showToastMessage('Let the current run finish, or stop it, before starting a new session.');
             return;
@@ -10221,7 +10302,11 @@ class ResonantApp {
             this.showToastMessage('Reconnecting. Your current draft is safe.');
             return;
         }
-        if (!projectPath) { this.openProjectFolder(); return; }
+        if (this._newSessionInflight || this._pendingProjectSwitchId) return;
+        if (!projectPath) { this.showNewSessionProjectPicker(); return; }
+        const search = document.getElementById('search-input');
+        if (search) search.value = '';
+        this._pinnedOnly = false;
         if (this.currentView !== 'agents') this.switchView('agents');
         this._expandedProjects ||= {};
         this._expandedProjects[this._projectKey(projectPath)] = true;

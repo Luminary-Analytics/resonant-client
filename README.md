@@ -13,7 +13,7 @@ for the engineering contract that governs harness changes.
 
 Start with the [desktop workflow](docs/desktop-workflow.md) for navigation and
 provider selection, or the [documentation index](docs/README.md) for contributor
-guides. [0.17.1](docs/v0.17.1-release-notes.md) includes the compact UI polish;
+guides. [0.17.2](docs/v0.17.2-release-notes.md) adds project selection for new sessions;
 [Unreleased](docs/unreleased.md) tracks subsequent changes.
 
 ## Provider Support

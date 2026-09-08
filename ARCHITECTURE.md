@@ -1,7 +1,7 @@
 # Resonant architecture
 
-Current baseline: [v0.17.1](docs/v0.17.1-release-notes.md), including the compact
-toolbar and sidebar. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
+Current baseline: [v0.17.2](docs/v0.17.2-release-notes.md), including the compact
+toolbar, sidebar, and new-session project chooser. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
 product priorities live in the [harness north star](docs/agentic-harness-north-star.md).
 
 ## Runtime boundaries

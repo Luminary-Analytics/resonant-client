@@ -42,7 +42,9 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
 - A single sidebar groups sessions under named projects. Search covers projects,
   paths, and session titles. Rendering is bounded per expanded project; preserve
   active-session visibility, scroll position, and keyboard focus.
-- New session starts a draft in the selected project; do not persist empty
+- New session first offers existing projects and a folder picker; project-row
+  plus buttons use that project directly. Cancel preserves the active draft.
+  After choosing a project, start a draft there; do not persist empty
   conversations until the first message. Drafts remain scoped by project/session.
 - Saved conversations retain their provider/model. A saved project preference
   applies to new sessions. Provider changes require a stopped or finished run.

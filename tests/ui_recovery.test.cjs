@@ -7,7 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, '../resonant_client/gui/stat
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function setup(fetch) {
-    const context = vm.createContext({fetch, URLSearchParams, Blob, console});
+    const context = vm.createContext({fetch, URLSearchParams, Blob, console, WebSocket: {OPEN: 1}});
     vm.runInContext(source + '\nthis.App = ResonantApp;', context);
     const app = Object.create(context.App.prototype);
     app.userInput = {value: '', style: {}, scrollHeight: 40};
@@ -93,4 +93,44 @@ test('unified sidebar groups sessions, bounds rows, and reveals the active conve
     assert.equal(search[0].project.name, 'Beta');
     assert.equal(search[0].visible[0].id, 'b');
     assert.equal(app._sidebarProjectGroups(rows, 'alpha')[0].matches.length, 10);
+});
+
+test('new session waits for a project choice without changing the current draft', () => {
+    const app = setup(() => {});
+    app.ws = {readyState: 1};
+    app.currentCwd = 'D:/alpha';
+    app.currentSessionId = 'existing';
+    app.userInput.value = 'unfinished work';
+    let opened = 0;
+    app.showNewSessionProjectPicker = () => opened++;
+    app.send = () => assert.fail('Opening the chooser must not mutate saved work');
+    app.startNewSession();
+    assert.equal(opened, 1);
+    assert.equal(app.currentSessionId, 'existing');
+    assert.equal(app.currentCwd, 'D:/alpha');
+    assert.equal(app.userInput.value, 'unfinished work');
+    app.isRunning = true;
+    app.startNewSession();
+    assert.equal(opened, 1);
+    app.isRunning = false;
+    app._pendingProjectSwitchId = 'switching';
+    app.startNewSession();
+    assert.equal(opened, 1);
+});
+
+test('native and fallback folder choices keep the new-session intent', () => {
+    const app = setup(() => {});
+    const chosen = [];
+    app.startNewSession = path => chosen.push(path);
+    app._pendingFolderPickConsumer = 'new-session';
+    app.handleEvent({event: 'folder_picked', path: 'D:/alpha'});
+    assert.deepEqual(chosen, ['D:/alpha']);
+    assert.equal(app._pendingFolderPickConsumer, null);
+    app._pendingFolderPickConsumer = 'new-session';
+    app._promptForProjectPath = (label, callback) => {
+        assert.equal(label, 'New session folder');
+        callback('D:/new-project');
+    };
+    app.handleEvent({event: 'folder_picker_unavailable'});
+    assert.deepEqual(chosen, ['D:/alpha', 'D:/new-project']);
 });

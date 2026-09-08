@@ -1,8 +1,9 @@
 # Desktop workflow
 
-Applies to v0.17.1. Provider connections and the unified sidebar arrived in
-v0.17.0; v0.17.1 adds the compact toolbar and session rows. See
-[release notes](v0.17.1-release-notes.md) and [Unreleased](unreleased.md).
+Applies to v0.17.2. Provider connections and the unified sidebar arrived in
+v0.17.0; v0.17.1 added the compact toolbar and session rows, and v0.17.2 adds
+the new-session project chooser. See [release notes](v0.17.2-release-notes.md)
+and [Unreleased](unreleased.md).
 
 ## Projects and sessions
 
@@ -16,6 +17,15 @@ a session in that project.
 conversation is created when the first message is submitted. Selecting a saved
 session restores its conversation and model choice. Drafts are scoped to their
 project/session and survive navigation and reloads.
+
+**Project chooser:** New session and `Ctrl+N` first open a searchable
+list of existing projects. Select one to start a draft there, or choose
+**Choose folder…** to open the desktop folder picker for another project.
+Browser mode offers an absolute-path field when a native picker is unavailable.
+Cancel preserves the current session and draft. The plus button beside a project
+continues to start a session there directly. A new conversation appears beneath
+its chosen project after the first message; no empty session is saved by opening
+or cancelling the chooser.
 
 **Find projects or sessions** matches project names, paths, and session titles.
 The scope selector offers **All sessions** and **Pinned**. Expanded projects

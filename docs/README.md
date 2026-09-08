@@ -1,6 +1,6 @@
 # Documentation index
 
-The current released baseline is [Resonant 0.17.1](v0.17.1-release-notes.md).
+The current released baseline is [Resonant 0.17.2](v0.17.2-release-notes.md).
 [Unreleased changes](unreleased.md) describe work in the checkout that has not
 yet shipped. Versioned release notes and dated evaluations record their own
 point in time; they are not instructions to restore an old design.
@@ -28,6 +28,7 @@ point in time; they are not instructions to restore an old design.
 
 - [Release runbook](../RELEASING.md)
 - [Release pipeline architecture](release-pipeline.md)
+- [0.17.2 release notes and validation](v0.17.2-release-notes.md)
 - [0.17.1 release notes and validation](v0.17.1-release-notes.md)
 - [0.17.0 release notes and validation](v0.17.0-release-notes.md)
 - [0.16.0 release notes](v0.16.0-release-notes.md)

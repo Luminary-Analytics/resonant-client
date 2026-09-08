@@ -6,6 +6,7 @@ from resonant_client.backends import (
     EVENT_DONE,
     EVENT_TEXT_DELTA,
     _build_codex_prompt,
+    codex_cli_model_labels,
     codex_cli_models,
     resolve_codex_cli_path,
 )
@@ -18,6 +19,16 @@ def test_codex_models_include_configured_model(monkeypatch):
 
     assert models[0] == "gpt-6-preview"
     assert "gpt-5.5" in models
+    assert "gpt-6-astra" in models
+
+
+def test_codex_astra_is_available_without_changing_the_default(monkeypatch):
+    monkeypatch.delenv("RESONANT_CODEX_MODELS", raising=False)
+    monkeypatch.setattr("resonant_client.backends._load_codex_config", lambda: {})
+
+    assert codex_cli_models()[0] == "gpt-5.5"
+    assert "gpt-6-astra" in codex_cli_models()
+    assert codex_cli_model_labels()["gpt-6-astra"] == "GPT-6 Astra"
 
 
 def test_codex_models_can_be_overridden_by_env(monkeypatch):

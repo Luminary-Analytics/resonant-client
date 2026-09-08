@@ -17,6 +17,7 @@ for the engineering contract that governs harness changes.
   from the configured endpoint.
 - **Kimi:** Moonshot's API with native tools, multimodal content, reasoning
   continuity, retries, and cache accounting.
+- **OpenRouter:** a searchable model catalog, native tools, and provider-reported API costs.
 - **Codex:** an installed Codex CLI, using the same project and permission
   boundaries.
 
@@ -131,12 +132,47 @@ and OpenAI-format image content use the same agent runtime as other providers.
 ### Kimi
 
 Create a key in the [Kimi API platform](https://platform.kimi.ai/), then add it
-under **Settings > Kimi API** or set `MOONSHOT_API_KEY`.
+under **Settings > API keys** or set `MOONSHOT_API_KEY`.
 
 ### Codex
 
-Install and authenticate the Codex CLI. Resonant detects the executable and
-offers the models exposed by that provider adapter.
+Install the Codex CLI, then open **Settings > Connections > Sign in with ChatGPT**.
+Follow the browser link and select **Refresh account & models** after signing in.
+Resonant displays the connected account, its available models, and remaining
+subscription usage when Codex reports it. Existing Codex API-key authentication
+is labeled separately because it is billed separately from a ChatGPT subscription.
+Credentials remain managed by Codex. This uses the official
+[Codex app-server account protocol](https://learn.chatgpt.com/docs/app-server)
+for connection management and the installed CLI for coding runs.
+
+### OpenRouter
+
+Add an OpenRouter key under **Settings > API keys**, or set `OPENROUTER_API_KEY`.
+Use **Settings > Connections > Check connection & refresh models** to verify it.
+Resonant discovers models that support text output and tools from the
+[OpenRouter catalog](https://openrouter.ai/docs/quickstart), excluding batch variants.
+Streaming, native tool calls, reasoning continuation data, and provider-reported
+costs use OpenRouter's API. API keys are stored locally in `~/.resonant/settings.json`
+and are masked in the settings UI and session configuration.
+
+### Choosing providers per session
+
+Click **Models** beside the composer to search across connected providers and
+star favorites. The adjacent quick selector keeps favorites and a small set of
+models immediately available. Model prices in the picker are catalog prices;
+reported run costs can differ due to caching or provider routing.
+
+Check **Use for new sessions in this project** when selecting a model to save a
+project default. Leave it unchecked for a session-only override. New sessions
+return to the project default; saved conversations retain their own selection.
+Changing models preserves conversation history and drafts. Project instructions
+and relevant project notes are included in both provider paths; Codex receives a
+text handoff with recent history and retained conversation summaries, rather than
+the original provider's native session. Image attachments in that text handoff
+are not transferred to Codex.
+
+Provider changes are manual and require the current run to finish or stop.
+There is no automatic cross-provider fallback or role routing in this workflow.
 
 ## Browser Tools
 
@@ -186,6 +222,7 @@ now that browsing works out of the box.
 | `RESONANT_DEFAULT_BACKEND` | `ollama` | Explicit default provider |
 | `RESONANT_DEFAULT_MODEL` | auto-discovered | Explicit default model |
 | `MOONSHOT_API_KEY` | none | Kimi API key |
+| `OPENROUTER_API_KEY` | none | OpenRouter API key |
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API URL |
 | `RESONANT_OLLAMA_NUM_CTX` | capability-derived | Ollama context override |
 | `RESONANT_OLLAMA_NUM_BATCH` | Ollama default | Optional batch override |

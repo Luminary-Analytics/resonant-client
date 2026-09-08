@@ -68,6 +68,7 @@ class CostTracker:
         input_tokens: int,
         output_tokens: int,
         cached_tokens: int = 0,
+        actual_cost: float | None = None,
     ) -> float:
         """Record token usage, returns cost in USD for this call."""
         pricing = _match_pricing(model)
@@ -79,6 +80,11 @@ class CostTracker:
             + cached * cached_rate
             + output_tokens * pricing["output"]
         ) / 1_000_000
+        if actual_cost is not None:
+            import math
+            amount = float(actual_cost)
+            if math.isfinite(amount) and amount >= 0:
+                cost = amount
         today = date.today().isoformat()
 
         with self._lock:

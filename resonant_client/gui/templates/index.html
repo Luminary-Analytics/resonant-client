@@ -181,28 +181,17 @@
                 <span aria-hidden="true">⌕</span>
                 <input type="search" placeholder="Find projects or sessions" aria-label="Find projects or sessions" id="search-input" />
             </div>
-            <details class="sidebar-projects" open>
-                <summary>Projects</summary>
-                <button id="rail-open-project" class="project-add-button" type="button" aria-label="Add project" title="Add project">+</button>
-                <div id="rail-projects" class="rail-projects" aria-label="Projects"><div class="agent-empty">Loading projects…</div></div>
-            </details>
-            <div class="sidebar-project-card">
-                <div class="sidebar-project-mark" aria-hidden="true">◇</div>
-                <div class="sidebar-project-copy">
-                    <div id="sidebar-shell-project-name" class="sidebar-shell-project-name">Resonant</div>
-                    <div id="sidebar-shell-project-path" class="sidebar-shell-project-path">Open a workspace</div>
-                </div>
-                <button class="sidebar-project-menu" type="button" title="Project actions" aria-label="Project actions">...</button>
-            </div>
+            <div hidden id="rail-projects"></div>
+            <div hidden><span id="sidebar-shell-project-name"></span><span id="sidebar-shell-project-path"></span></div>
             <button id="new-agent-btn" class="sidebar-new-session" title="New session &mdash; Ctrl+N" aria-label="New session">
                 <span class="sns-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
                 <span class="sns-label">New session</span>
                 <span class="sns-shortcut">Ctrl+N</span>
             </button>
-            <div class="sidebar-session-heading"><span>Sessions <span id="session-count"></span></span>
-                <select id="sidebar-session-scope" aria-label="Session scope">
-                    <option value="project">This project</option><option value="all">All projects</option><option value="pinned">Pinned</option>
-                </select>
+            <div class="sidebar-session-heading unified-heading"><span>Projects <span id="session-count"></span></span>
+                <div class="sidebar-heading-actions"><select id="sidebar-session-scope" aria-label="Session scope">
+                    <option value="all">All sessions</option><option value="pinned">Pinned</option>
+                </select><button id="rail-open-project" class="project-add-button" type="button" aria-label="Add project" title="Add project">+</button></div>
             </div>
             <button id="sidebar-project-switch" hidden><span id="sidebar-project-switch-label">All projects</span></button>
             <!-- v0.5.3a3 — Sidebar roadmap inspector. Hidden when the
@@ -216,7 +205,7 @@
                  + failed), each row clickable to switch sessions. Hidden
                  when no autonomous missions exist. -->
             <div id="autonomous-mission-browser" class="autonomous-mission-browser" hidden></div>
-            <div id="agent-list" class="agent-list">
+            <div id="agent-list" class="agent-list unified-project-list">
                 <div class="agent-empty">Loading sessions…</div>
             </div>
             <div class="sidebar-footer">
@@ -431,6 +420,7 @@
                                         <option value="high">High</option>
                                         <option value="max">Max</option>
                                     </select>
+                                    <button id="browse-models" type="button" class="btn-sm" title="Search models, manage favorites and project defaults">Models</button>
                                     <select id="model-selector" class="model-selector" title="Switch backend / model for this session">
                                         <option value="">No model</option>
                                     </select>

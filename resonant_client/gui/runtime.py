@@ -104,6 +104,9 @@ class BackendSpec:
                 cwd=self.cwd or None,
                 permission_mode=self.permission_mode or None,
             )
+        if backend_type == "openrouter":
+            return create_backend("openrouter", model=self.model,
+                                  api_key=self.resolve_api_key(settings), thinking=self.thinking_mode or None)
         if backend_type == "kimi":
             return create_backend(
                 "kimi",
@@ -122,5 +125,5 @@ class BackendSpec:
 
         raise ValueError(
             f"Backend '{backend_type}' is not supported. Resonant "
-            f"supports Ollama, EXO, Kimi, Codex, and Claude Code."
+            f"supports Ollama, EXO, Kimi, OpenRouter, Codex, and Claude Code."
         )

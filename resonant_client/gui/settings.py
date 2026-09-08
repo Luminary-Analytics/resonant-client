@@ -46,7 +46,9 @@ DEFAULTS = {
         # unknown keys; nothing reads them anymore.
     },
     # Secrets are masked before settings are sent to the frontend.
-    "api_keys": {"kimi": "", "telegram_bot": ""},
+    "api_keys": {"kimi": "", "openrouter": "", "telegram_bot": ""},
+    "project_models": {},
+    "model_favorites": {"models": []},
     # Chat-channel gateway (`resonant gateway`): drive the agent from
     # Telegram. Only allowlisted chat IDs are served.
     "gateway": {

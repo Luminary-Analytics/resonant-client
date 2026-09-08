@@ -43,6 +43,7 @@ from ..backends import (
     resolve_claude_cli_path,
     resolve_codex_cli_path,
 )
+from ..openrouter import OpenRouterBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url
 from . import ws_commands
@@ -717,11 +718,22 @@ class AppState:
             except Exception:
                 return {"models": [], "downloaded_models": [], "running_models": []}
 
-        with ThreadPoolExecutor(max_workers=2) as pool:
+        router_key, router_source, router_env, router_setting = self._api_key_details("openrouter", "OPENROUTER_API_KEY")
+        def _probe_router():
+            if not router_key:
+                return []
+            try:
+                return OpenRouterBackend.catalog()
+            except Exception:
+                return list(OpenRouterBackend._catalog)
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
             ollama_future = pool.submit(_probe_ollama)
             exo_future = pool.submit(_probe_exo)
+            router_future = pool.submit(_probe_router)
             ollama_info = ollama_future.result()
             exo_catalog = exo_future.result()
+            router_catalog = router_future.result()
 
         if ollama_info:
             available["ollama"] = ollama_info
@@ -774,6 +786,24 @@ class AppState:
                 "api_key_setting": kimi_setting,
             }
 
+        if router_key:
+            catalog = router_catalog
+            # Keep explicitly saved choices usable during a discovery outage.
+            saved = self.settings.get("general", "default_model", "")
+            models = [row["id"] for row in catalog]
+            if not models and self.settings.get("general", "default_backend", "") == "openrouter" and saved:
+                models = [saved]
+            available["openrouter"] = {
+                "models": models, "model_labels": {row["id"]: row.get("name", row["id"]) for row in catalog},
+                "api_key_source": router_source, "api_key_env": router_env, "api_key_setting": router_setting,
+                "model_details": {row["id"]: {"context_length": row.get("context_length"), "pricing": row.get("pricing")} for row in catalog},
+            }
+        # Preserve an account-discovered Codex model list across routine probes.
+        known_codex = getattr(self, "codex_connection", {})
+        if "codex" in available and known_codex.get("models"):
+            rows = known_codex["models"]
+            available["codex"]["models"] = [row.get("model") or row["id"] for row in rows]
+            available["codex"]["model_labels"] = {row.get("model") or row["id"]: row.get("displayName") or row["id"] for row in rows}
         self.available_backends = available
         self._last_backend_probe = time.time()
         return available
@@ -831,6 +861,16 @@ class AppState:
             spec.permission_mode = self.permission_mode
             return spec
 
+        if backend_type == "openrouter":
+            api_key, source, env_var, setting = self._api_key_details("openrouter", "OPENROUTER_API_KEY")
+            if not api_key:
+                raise ValueError("Add your OpenRouter API key in Settings → API keys.")
+            models = (self.available_backends.get("openrouter") or {}).get("models") or []
+            selected = model or self._resolve_default_model(models)
+            if not selected:
+                raise ValueError("Refresh OpenRouter models in Settings → Connections, then choose a model.")
+            return BackendSpec(backend_type="openrouter", model=selected, api_key_source=source,
+                               api_key_env=env_var, api_key_setting=setting)
         if backend_type == "kimi":
             info = self.available_backends.get("kimi") or {}
             api_key, source, env_var, setting = self._api_key_details(
@@ -874,7 +914,7 @@ class AppState:
         if backend_type != "ollama":
             raise ValueError(
                 f"Backend '{backend_type}' is not supported. Resonant "
-                f"supports Ollama, EXO, Kimi, Codex, and Claude Code."
+                f"supports Ollama, EXO, Kimi, OpenRouter, Codex, and Claude Code."
             )
 
         info = self.available_backends.get("ollama")
@@ -1320,7 +1360,7 @@ class AppState:
         backend_order = []
         if configured_backend:
             backend_order.append(configured_backend)
-        backend_order.extend(k for k in ("ollama", "exo", "kimi", "codex", "claude-code") if k not in backend_order)
+        backend_order.extend(k for k in ("ollama", "exo", "kimi", "codex", "openrouter", "claude-code") if k not in backend_order)
 
         for backend_type in backend_order:
             info = self.available_backends.get(backend_type) or {}
@@ -1367,7 +1407,7 @@ class AppState:
             backend_order.append(configured)
         backend_order.extend(
             backend_type
-            for backend_type in ("exo", "kimi", "codex", "claude-code", "ollama")
+            for backend_type in ("exo", "kimi", "codex", "openrouter", "claude-code", "ollama")
             if backend_type != failed and backend_type not in backend_order
         )
         for backend_type in backend_order:
@@ -1388,6 +1428,9 @@ class AppState:
         record = self.project.current_session
         if record and record.backend_type and record.model:
             return record.backend_type, record.model
+        preference = self.settings.get("project_models", os.path.normcase(os.path.abspath(self.project.project_path)), {}) or {}
+        if preference.get("backend") and preference.get("model"):
+            return preference["backend"], preference["model"]
         for summary in self.project.list_sessions():
             backend_type = str(summary.get("backend_type") or "").strip()
             model = str(summary.get("model") or "").strip()
@@ -1552,7 +1595,7 @@ class AppState:
 
         if (
             self.backend_spec and
-            self.backend_spec.backend_type in {"ollama", "exo", "kimi"} and
+            self.backend_spec.backend_type in {"ollama", "exo", "kimi", "openrouter"} and
             section in {"api_keys", "engram", "general", "network"}
         ):
             try:
@@ -1606,6 +1649,8 @@ class AppState:
             else:
                 self.settings.update_section(section, value or {})
 
+        if section in {"model_favorites", "project_models"}:
+            return self.settings.get_masked()
         return self.apply_settings(section, key)
 
     def get_init_data(self, refresh_only: bool = False) -> dict:
@@ -1617,6 +1662,8 @@ class AppState:
                 entry["models"] = info["models"]
             if "model_labels" in info:
                 entry["model_labels"] = info["model_labels"]
+            if "model_details" in info:
+                entry["model_details"] = info["model_details"]
             if "url" in info:
                 entry["url"] = info["url"]
             if "cli_path" in info:
@@ -2839,6 +2886,7 @@ async def _run_session_streaming(
                         in_tok,
                         out_tok,
                         stats.get("cached_tokens", 0),
+                        **({"actual_cost": stats["cost_usd"]} if stats.get("cost_usd") is not None else {}),
                     )
                     stats["cost_usd"] = round(cost, 6)
                     stats["session_cost_usd"] = state.costs.get_session_cost()["cost_usd"]
@@ -3020,6 +3068,8 @@ async def _app_lifespan(app):
         yield
     finally:
         from ..engine.previews import previews
+        from ..codex_account import codex_account
+        await asyncio.to_thread(codex_account.close)
         await asyncio.to_thread(previews.close)
 
 

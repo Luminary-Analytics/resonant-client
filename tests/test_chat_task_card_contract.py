@@ -432,7 +432,7 @@ def test_settings_navigation_is_idempotent_and_background_events_cannot_close_it
     show_body = source[show_start:show_end]
     assert "if (!force && this.currentView !== 'agents') return;" in show_body
 
-    new_start = source.index("    startNewSession() {")
+    new_start = source.index("    startNewSession(")
     new_end = source.index("\n    showNewSessionSetup()", new_start)
     new_session_body = source[new_start:new_end]
     assert "if (this.currentView !== 'agents') this.switchView('agents');" in new_session_body

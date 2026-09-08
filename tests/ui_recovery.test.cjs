@@ -73,3 +73,24 @@ test('typing then erasing before restoration deletes the older stored draft', as
     await app._saveDraft();
     assert.equal(writes.at(-1).text, '');
 });
+
+test('unified sidebar groups sessions, bounds rows, and reveals the active conversation', () => {
+    const app = setup(() => {});
+    app.currentCwd = 'D:/alpha';
+    app.currentSessionId = 'a-9';
+    app._getProjectRailItems = () => [
+        {key:app._projectKey('D:/alpha'),path:'D:/alpha',name:'Alpha'},
+        {key:app._projectKey('D:/beta'),path:'D:/beta',name:'Beta'}];
+    const rows = Array.from({length:10}, (_,i) => ({id:`a-${i}`,title:`Task ${i}`,updated_at:100-i,project_path:'D:/alpha'}));
+    rows.push({id:'b',title:'Checkout repair',updated_at:200,project_path:'D:/beta',pinned:true});
+    const groups = app._sidebarProjectGroups(rows);
+    assert.equal(groups[0].matches.length, 10);
+    assert.equal(groups[0].visible.length, 7);
+    assert.ok(groups[0].visible.some(s => s.id === 'a-9'));
+    assert.equal(groups[1].visible.length, 0);
+    const search = app._sidebarProjectGroups(rows, 'checkout');
+    assert.equal(search.length, 1);
+    assert.equal(search[0].project.name, 'Beta');
+    assert.equal(search[0].visible[0].id, 'b');
+    assert.equal(app._sidebarProjectGroups(rows, 'alpha')[0].matches.length, 10);
+});

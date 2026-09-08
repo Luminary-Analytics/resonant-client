@@ -19,6 +19,97 @@
 
 class ResonantSettingsView {
 
+    _renderProviderConnections() {
+        const connections = this.providerConnections || {};
+        const codex = connections.codex || {};
+        const router = connections.openrouter || {};
+        const account = codex.account;
+        const subscription = account?.type?.startsWith('chatgpt');
+        const accountLabel = subscription ? `ChatGPT ${account.planType || ''} · ${account.email || 'Connected'}`
+            : account ? 'Codex API-key access (billed separately)' : 'Connect your ChatGPT subscription through Codex';
+        const limits = codex.rate_limits?.rateLimitsByLimitId || (codex.rate_limits?.rateLimits ? { codex: codex.rate_limits.rateLimits } : {});
+        const quota = Object.entries(limits).flatMap(([name, bucket]) => ['primary', 'secondary'].map(key => {
+            const window = bucket[key];
+            if (typeof window?.usedPercent !== 'number') return '';
+            const reset = window.resetsAt ? ` · resets ${new Date(window.resetsAt * 1000).toLocaleString()}` : '';
+            return `<div class="provider-note">${this.escapeHtml(bucket.limitName || name)}: ${Math.max(0, 100 - window.usedPercent).toFixed(0)}% remaining${this.escapeHtml(reset)}</div>`;
+        })).join('');
+        let loginLink = '';
+        try {
+            const url = new URL(codex.auth_url);
+            if (url.protocol === 'https:' && ['chatgpt.com', 'openai.com'].some(domain => url.hostname === domain || url.hostname.endsWith(`.${domain}`))) {
+                loginLink = `<a href="${this.escapeHtml(url.href)}" target="_blank" rel="noopener noreferrer">Continue sign-in in your browser</a><button class="btn-sm" data-provider="codex" data-provider-action="cancel">Cancel sign-in</button>`;
+            }
+        } catch (_) { /* No pending browser login. */ }
+        return `<div class="provider-connection">
+            <strong>ChatGPT / Codex</strong><p>${this.escapeHtml(codex.error || accountLabel)}</p>
+            ${quota}${subscription && !quota ? '<p class="provider-note">Usage limits unavailable. Refresh to try again.</p>' : ''}
+            <div class="provider-actions"><button class="btn-sm" data-provider="codex" data-provider-action="login">Sign in with ChatGPT</button>
+            <button class="btn-sm" data-provider="codex" data-provider-action="status">Refresh account & models</button>${loginLink}</div>
+            <p class="provider-note">Uses your installed Codex CLI and its sign-in. After signing in, refresh the account. <a href="https://developers.openai.com/codex/cli" target="_blank" rel="noopener noreferrer">Install Codex CLI</a></p>
+            </div><div class="provider-connection"><strong>OpenRouter</strong>
+            <p>${this.escapeHtml(router.error || (router.status === 'ready' ? 'Connected · API usage is billed through OpenRouter' : 'Add an OpenRouter key in API keys below, then check the connection.'))}</p>
+            ${typeof router.usage === 'number' ? `<p class="provider-note">Key usage: $${router.usage.toFixed(4)}${typeof router.limit_remaining === 'number' ? ` · key allowance remaining: $${router.limit_remaining.toFixed(2)}` : ''}</p>` : ''}
+            <button class="btn-sm" data-provider="openrouter" data-provider-action="status">Check connection & refresh models</button></div>`;
+    }
+
+    openProviderPicker() {
+        document.getElementById('provider-picker')?.remove();
+        const dialog = document.createElement('dialog');
+        dialog.id = 'provider-picker';
+        dialog.className = 'provider-picker';
+        dialog.setAttribute('aria-labelledby', 'provider-picker-title');
+        dialog.innerHTML = `<div class="provider-picker-heading"><h2 id="provider-picker-title">Choose a model</h2><button type="button" class="btn-sm" data-close aria-label="Close model picker">Close</button></div>
+            <input type="search" placeholder="Search providers or models" aria-label="Search providers or models" autofocus>
+            <label class="provider-remember"><input type="checkbox" data-remember> Use for new sessions in this project</label>
+            <div class="provider-model-list"></div><div class="provider-picker-footer"><button class="btn-sm" data-connections>Manage connections</button><span data-results></span></div>`;
+        const search = dialog.querySelector('input[type=search]');
+        const list = dialog.querySelector('.provider-model-list');
+        const labels = this._getBackendLabels();
+        const render = () => {
+            const favorites = this.settings?.model_favorites?.models || [];
+            const query = search.value.trim().toLowerCase();
+            const models = Object.entries(this.backends || {}).flatMap(([backend, info]) => (info.models || []).map(model => ({
+                backend, model, id: `${backend}:${model}`, label: info.model_labels?.[model] || model,
+                details: info.model_details?.[model] || {},
+            }))).filter(row => `${labels[row.backend] || row.backend} ${row.label} ${row.model}`.toLowerCase().includes(query))
+                .sort((a, b) => Number(favorites.includes(b.id)) - Number(favorites.includes(a.id)) || Number(b.id === `${this.currentBackendName}:${this.currentModelName}`) - Number(a.id === `${this.currentBackendName}:${this.currentModelName}`) || a.backend.localeCompare(b.backend) || a.label.localeCompare(b.label));
+            list.replaceChildren();
+            for (const row of models.slice(0, 80)) {
+                const item = document.createElement('div');
+                item.className = 'provider-model-row';
+                const active = row.backend === this.currentBackendName && row.model === this.currentModelName;
+                const price = row.details.pricing;
+                const pricing = price && price.prompt != null && price.completion != null && Number.isFinite(Number(price.prompt)) && Number.isFinite(Number(price.completion)) && Number(price.prompt) >= 0 && Number(price.completion) >= 0
+                    ? ` · $${(Number(price.prompt) * 1e6).toFixed(2)} in / $${(Number(price.completion) * 1e6).toFixed(2)} out per 1M tokens` : '';
+                item.innerHTML = `<button type="button" class="provider-model-choice" ${active ? 'aria-current="true"' : ''}><strong>${this.escapeHtml(row.label)}${active ? ' ✓' : ''}</strong><span>${this.escapeHtml(labels[row.backend] || row.backend)}${this.escapeHtml(pricing)}</span></button>
+                    <button type="button" class="provider-star" aria-label="${favorites.includes(row.id) ? 'Unfavorite' : 'Favorite'} ${this.escapeHtml(row.label)}" aria-pressed="${favorites.includes(row.id)}">${favorites.includes(row.id) ? '★' : '☆'}</button>`;
+                item.querySelector('.provider-model-choice').onclick = () => {
+                    this.send({command: 'switch_model', backend: row.backend, model: row.model, remember_project: dialog.querySelector('[data-remember]').checked});
+                    dialog.close();
+                };
+                item.querySelector('.provider-star').onclick = () => {
+                    const updated = favorites.includes(row.id) ? favorites.filter(id => id !== row.id) : [...favorites, row.id];
+                    this.settings ||= {};
+                    this.settings.model_favorites = {models: updated};
+                    this.send({command: 'update_settings', section: 'model_favorites', key: 'models', value: updated});
+                    render();
+                    [...list.querySelectorAll('.provider-star')].find(btn => btn.getAttribute('aria-label').endsWith(` ${row.label}`))?.focus();
+                };
+                list.appendChild(item);
+            }
+            if (!models.length) list.textContent = 'No matching models. Connect a provider or refresh its models in Settings.';
+            dialog.querySelector('[data-results]').textContent = models.length > 80 ? `Showing 80 of ${models.length} · narrow your search` : `${models.length} models`;
+        };
+        search.addEventListener('input', render);
+        dialog.querySelector('[data-close]').onclick = () => dialog.close();
+        dialog.querySelector('[data-connections]').onclick = () => { dialog.close(); this.switchView('settings'); };
+        dialog.addEventListener('close', () => dialog.remove());
+        document.body.appendChild(dialog);
+        render();
+        dialog.showModal();
+    }
+
 
     toggleStatusPopover() {
         this.statusPopoverOpen = !this.statusPopoverOpen;
@@ -432,6 +523,7 @@ class ResonantSettingsView {
         );
 
         const sections = [
+            { id: "provider_connections", title: "Connections", open: true, custom: true },
             {
                 id: 'cost_tracking', title: 'Usage & Cost', open: true,
                 fields: [
@@ -450,7 +542,8 @@ class ResonantSettingsView {
                           { value: 'ollama', label: 'Ollama' },
                           { value: 'exo', label: 'EXO' },
                           { value: 'kimi', label: 'Kimi API' },
-                          { value: 'codex', label: 'Codex' },
+                          { value: 'codex', label: 'ChatGPT / Codex' },
+                          { value: 'openrouter', label: 'OpenRouter' },
                           { value: '', label: 'Auto' },
                       ]
                     },
@@ -526,8 +619,10 @@ class ResonantSettingsView {
                 ]
             },
             {
-                id: 'api_keys', title: 'Kimi API', open: false,
+                id: 'api_keys', title: 'API keys', open: false,
                 fields: [
+                    { key: 'openrouter', label: 'OpenRouter API key', type: 'password',
+                      hint: 'Stored locally in ~/.resonant/settings.json. OPENROUTER_API_KEY is also supported. API calls use your OpenRouter credits.' },
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
                       hint: 'Stored locally in ~/.resonant/settings.json. MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
                 ]
@@ -556,7 +651,9 @@ class ResonantSettingsView {
             el.dataset.settingsSection = section.id;
 
             let bodyHtml = '';
-            if (section.id === 'cost_tracking') {
+            if (section.id === 'provider_connections') {
+                bodyHtml = this._renderProviderConnections();
+            } else if (section.id === 'cost_tracking') {
                 bodyHtml = this._renderCostDashboard(data);
             } else if (section.id === 'rag') {
                 const rag = this.ragStats || {};
@@ -780,6 +877,13 @@ class ResonantSettingsView {
             this.settingsBody.appendChild(el);
         }
 
+        this.settingsBody.querySelectorAll('[data-provider-action]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                btn.disabled = true;
+                btn.textContent = 'Connecting…';
+                this.send({command: 'provider_connection', provider: btn.dataset.provider, action: btn.dataset.providerAction});
+            });
+        });
         // Bind change events for settings inputs
         this.settingsBody.querySelectorAll('select, input').forEach(input => {
             const eventType = input.type === 'checkbox' ? 'change' : 'blur';

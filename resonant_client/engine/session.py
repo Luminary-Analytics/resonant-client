@@ -1648,7 +1648,7 @@ class Session:
                 from .project_memory import ProjectMemory
                 notes = ProjectMemory(self.project_path).context(user_msg)
                 if notes:
-                    turn_context += '\n\n' + notes
+                    turn_context += '\n\n--- PROJECT MEMORY ---\n' + notes + '\n--- END PROJECT MEMORY ---'
                     turn_sources['project_memory'] = notes
             except (OSError, ValueError) as exc:
                 logger.warning('Project memory unavailable: %s', exc)
@@ -2110,7 +2110,7 @@ class Session:
             provider_metadata_by_call_id = {
                 item.get("call_id", ""): {
                     key: item[key]
-                    for key in ("assistant_content", "response_id", "response_tool_calls")
+                    for key in ("assistant_content", "response_id", "response_tool_calls", "reasoning_details", "provider_model")
                     if key in item
                 }
                 for item in tool_calls

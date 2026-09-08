@@ -1807,15 +1807,45 @@ async def _cmd_clear(ctx: CommandContext) -> None:
         return
     session_mode = ctx.msg.get("session_mode", "code")
     session_role = ctx.msg.get("session_role", "generator")
+    draft_only = ctx.msg.get('draft_only') is True
+    if draft_only and ctx.runs.busy:
+        await ctx.send({'event': 'error', 'request_id': request_id,
+                        'message': 'Let the current run finish, or stop it, before starting a new session.'})
+        return
+    prepared = None
+    if draft_only:
+        project_key = os.path.normcase(os.path.abspath(ctx.state.project.project_path))
+        preference = ctx.state.settings.get("project_models", project_key, {}) or {}
+        if preference.get("backend") and preference.get("model"):
+            def prepare():
+                spec = ctx.state.build_backend_spec(preference["backend"], preference["model"], project_path=ctx.state.project.project_path)
+                backend = spec.create_backend(ctx.state.settings)
+                session = ctx.state.build_session(backend=backend, backend_spec=spec,
+                                                  project_path=ctx.state.project.project_path,
+                                                  session_mode=session_mode, session_role=session_role)
+                return backend, spec, session
+            try:
+                prepared = await asyncio.to_thread(prepare)
+            except Exception as exc:
+                await ctx.send({"event": "error", "request_id": request_id, "message": str(exc)})
+                await ctx.send(ctx.state.get_init_data(refresh_only=True))
+                return
+    if draft_only:
+        ctx.state.project.current_session = None
+        ctx.state.session = None
+        ctx.state._first_message_sent = False
+        if prepared:
+            ctx.state.backend, ctx.state.backend_spec, ctx.state.session = prepared
     if ctx.state.backend:
         backend_type = getattr(ctx.state.backend, "name", "")
         model = getattr(ctx.state.backend, "model", "")
-        ctx.state.project.create_session(
-            backend_type=backend_type,
-            model=model,
-            session_role=session_role,
-        )
-        ctx.state.session = ctx.state.build_session(
+        if not draft_only:
+            ctx.state.project.create_session(
+                backend_type=backend_type,
+                model=model,
+                session_role=session_role,
+            )
+        ctx.state.session = prepared[2] if prepared else ctx.state.build_session(
             backend=ctx.state.backend,
             backend_spec=ctx.state.backend_spec,
             project_path=ctx.state.project.project_path,
@@ -1838,12 +1868,18 @@ async def _cmd_clear(ctx: CommandContext) -> None:
         if len(ctx.runs.clear_cache) > 32:
             ctx.runs.clear_cache.pop(next(iter(ctx.runs.clear_cache)))
     await ctx.send(response)
+    if prepared:
+        await ctx.send(ctx.state.get_init_data(refresh_only=True))
 
 
 
 
 @command("switch_model")
 async def _cmd_switch_model(ctx: CommandContext) -> None:
+    if ctx.runs.busy:
+        await ctx.send({"event": "model_switch_blocked", "message": "Finish or stop the current run before changing models."})
+        await ctx.send(ctx.state.get_init_data(refresh_only=True))
+        return
     model = ctx.msg.get("model", "")
     backend_type = ctx.msg.get("backend", "")
     if not backend_type and ctx.state.backend and hasattr(ctx.state.backend, "name"):
@@ -1872,7 +1908,7 @@ async def _cmd_switch_model(ctx: CommandContext) -> None:
             # even though the session-level history survived the
             # swap, the new backend can't see it. Emit a one-time
             # warning so the user knows.
-            if backend_type in ctx.state.CLI_WRAPPED_BACKENDS:
+            if backend_type in ctx.state.CLI_WRAPPED_BACKENDS and backend_type != "codex":
                 await ctx.send({
                     "event": "backend_swap_warning",
                     "backend": backend_type,
@@ -1883,6 +1919,10 @@ async def _cmd_switch_model(ctx: CommandContext) -> None:
                         f"original thread with full context."
                     ),
                 })
+            if ctx.msg.get("remember_project") is True:
+                project_key = os.path.normcase(os.path.abspath(ctx.state.project.project_path))
+                ctx.state.settings.set("project_models", project_key, {"backend": backend_type, "model": model})
+                await ctx.send({"event": "settings", "data": ctx.state.settings.get_masked()})
             await ctx.send(ctx.state.get_init_data())
         except Exception as e:
             await ctx.send({"event": "error", "message": str(e)})
@@ -2711,14 +2751,53 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
     key = ctx.msg.get("key")
     value = ctx.msg.get("value")
     clear_secret = bool(ctx.msg.get("clear_secret", False))
-    data = ctx.state.update_setting_value(
-        section,
-        key,
-        value,
-        clear_secret=clear_secret,
-    )
+    data = await asyncio.to_thread(ctx.state.update_setting_value, section, key, value, clear_secret=clear_secret)
     await ctx.send({"event": "settings", "data": data})
     await ctx.send(ctx.state.get_init_data(refresh_only=True))
+
+
+@command("provider_connection")
+async def _cmd_provider_connection(ctx: CommandContext) -> None:
+    from ..codex_account import codex_account
+    from ..openrouter import OpenRouterBackend
+
+    provider = ctx.msg.get("provider")
+    action = ctx.msg.get("action", "status")
+    try:
+        if provider == "codex":
+            if action == "login":
+                if ctx.runs.busy:
+                    raise ValueError("Finish or stop the current run before changing the connected account.")
+                data = await asyncio.to_thread(codex_account.login)
+            elif action == "cancel":
+                await asyncio.to_thread(codex_account.cancel_login)
+                data = {"cancelled": True}
+            elif action == "status":
+                data = await asyncio.to_thread(codex_account.status)
+                account = data.get("account")
+                data["account"] = ({key: account.get(key) for key in ("type", "email", "planType")}
+                                   if account else None)
+                ctx.state.codex_connection = data
+                rows = data.get("models") or []
+                if rows:
+                    ctx.state.available_backends.setdefault("codex", {}).update({
+                        "models": [row.get("model") or row["id"] for row in rows],
+                        "model_labels": {row.get("model") or row["id"]: row.get("displayName") or row["id"] for row in rows},
+                    })
+            else:
+                raise ValueError("Unknown connection action.")
+        elif provider == "openrouter" and action == "status":
+            api_key, _, _, _ = ctx.state._api_key_details("openrouter", "OPENROUTER_API_KEY")
+            data = await asyncio.to_thread(OpenRouterBackend(api_key, "connection-check").health)
+            await asyncio.to_thread(OpenRouterBackend.catalog, force=True)
+            await asyncio.to_thread(ctx.state.detect_backends, force=True)
+        else:
+            raise ValueError("Unknown provider connection.")
+        await ctx.send({"event": "provider_connection", "provider": provider, "data": data})
+        if action == "status":
+            await ctx.send(ctx.state.get_init_data(refresh_only=True))
+    except Exception as exc:
+        await ctx.send({"event": "provider_connection", "provider": provider, "data": {"error": str(exc)}})
 
 # ── Cost Tracking ───────────────────────────────
 

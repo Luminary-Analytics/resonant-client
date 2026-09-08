@@ -278,14 +278,14 @@ def test_project_switch_does_not_reprobe_global_providers():
     assert "state.backend = None" not in source
 
 
-def test_project_rail_puts_add_first_and_has_no_permanent_brand():
+def test_unified_sidebar_puts_add_before_conversations():
     repo_root = Path(__file__).parent.parent
     template = (repo_root / "resonant_client/gui/templates/index.html").read_text(
         encoding="utf-8",
     )
 
     add_position = template.index('id="rail-open-project"')
-    projects_position = template.index('id="rail-projects"')
+    projects_position = template.index('id="agent-list"')
 
     assert add_position < projects_position
     assert 'aria-label="Add project"' in template

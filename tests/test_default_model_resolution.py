@@ -160,7 +160,10 @@ class TestDefaultChatBackendChoice:
 class TestProjectChatBackendChoice:
     def test_keeps_latest_project_model_when_provider_catalog_temporarily_loses_it(self):
         state = AppState.__new__(AppState)
+        state.settings = MagicMock()
+        state.settings.get.return_value = {}
         state.project = MagicMock()
+        state.project.project_path = "/tmp/project"
         state.project.current_session = None
         state.project.list_sessions.return_value = [{
             "backend_type": "exo",
@@ -179,7 +182,10 @@ class TestProjectChatBackendChoice:
 
     def test_falls_back_to_global_default_for_project_without_history(self):
         state = AppState.__new__(AppState)
+        state.settings = MagicMock()
+        state.settings.get.return_value = {}
         state.project = MagicMock()
+        state.project.project_path = "/tmp/project"
         state.project.current_session = None
         state.project.list_sessions.return_value = []
         state.default_chat_backend_choice = MagicMock(return_value=("codex", "gpt-5.5"))

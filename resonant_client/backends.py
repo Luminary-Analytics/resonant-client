@@ -1687,12 +1687,14 @@ class OllamaBackend:
 
 _CODEX_DEFAULT_MODELS = [
     "gpt-5.5",
+    "gpt-6-astra",
     "gpt-5.4-mini",
     "gpt-5.3-codex-spark",
 ]
 
 _CODEX_MODEL_LABELS = {
     "gpt-5.5": "gpt-5.5",
+    "gpt-6-astra": "GPT-6 Astra",
     "gpt-5.4-mini": "gpt-5.4-mini",
     "gpt-5.3-codex-spark": "gpt-5.3-codex-spark",
 }
@@ -1728,12 +1730,11 @@ def _codex_configured_model(config: dict | None = None) -> str:
 
 
 def codex_cli_models(config: dict | None = None) -> list[str]:
-    """Return the Codex model list Resonant should expose.
+    """Return bootstrap models until the account catalog is refreshed.
 
-    Codex CLI does not currently expose a stable "list models" command. Keep a
-    small official-docs-backed default list, prepend the user's configured
-    Codex model if present, and allow early/new rollouts via
-    RESONANT_CODEX_MODELS.
+    Keep a small default list, prepend the user's configured Codex model if
+    present, and allow explicit overrides via RESONANT_CODEX_MODELS. The GUI
+    replaces this list with models discovered through the Codex app server.
     """
     configured = _codex_configured_model(config)
     env_models = _split_model_list(os.environ.get("RESONANT_CODEX_MODELS", ""))
@@ -1791,6 +1792,7 @@ def _codex_context_blocks(instructions: str) -> str:
     patterns = [
         r"--- PROJECT INSTRUCTIONS.*?--- END PROJECT INSTRUCTIONS ---",
         r"--- RECALLED MEMORIES ---.*?--- END MEMORIES ---",
+        r"--- PROJECT MEMORY ---.*?--- END PROJECT MEMORY ---",
         r"--- RELEVANT FILES ---.*?--- END RELEVANT FILES ---",
     ]
     for pattern in patterns:
@@ -1828,7 +1830,9 @@ def _format_codex_history(history: list) -> str:
         per_item_limit = int(os.environ.get("RESONANT_CODEX_HISTORY_ITEM_CHARS", "4000") or "4000")
     except ValueError:
         per_item_limit = 4000
-    selected = list(history or [])[-max(0, max_turns):]
+    items = list(history or [])
+    cutoff = max(0, len(items) - max(1, max_turns))
+    selected = [turn for i, turn in enumerate(items) if i >= cutoff or turn.get("role") == "system" or (i == 0 and turn.get("role") == "user")]
     lines: list[str] = []
     for turn in selected:
         role = str(turn.get("role", "") or "unknown")
@@ -2371,6 +2375,7 @@ class KimiBackend:
         payload = self._payload(user_msg, conversation_history, instructions, tools, max_tokens)
         headers = self._request_headers()
         reasoning_parts: list[str] = []
+        reasoning_details: dict[int, dict] = {}
         content_parts: list[str] = []
         pending_text_parts: list[str] = []
         text_mode_undecided = True
@@ -2562,6 +2567,7 @@ class KimiBackend:
                                     })
                                     if _wait_with_cancel(delay, cancel_event):
                                         return
+                                    reasoning_details.clear()
                                     reasoning_parts.clear()
                                     content_parts.clear()
                                     pending_text_parts.clear()
@@ -2603,7 +2609,17 @@ class KimiBackend:
                                     stream_state["visible_phase"] = phase
                                     stream_state["visible_progress_at"] = now
                                     yield (EVENT_BACKEND_STATUS, {"kind": "generation_progress", "phase": phase, "model": self.model})
-                            reasoning = str(delta.get("reasoning_content") or "")
+                            for detail in delta.get("reasoning_details") or []:
+                                if not isinstance(detail, dict):
+                                    continue
+                                index = int(detail.get("index") or 0)
+                                accumulated = reasoning_details.setdefault(index, {})
+                                for key, value in detail.items():
+                                    if key in {"text", "summary", "data"} and isinstance(value, str):
+                                        accumulated[key] = str(accumulated.get(key) or "") + value
+                                    else:
+                                        accumulated[key] = value
+                            reasoning = str(delta.get("reasoning_content") or delta.get("reasoning") or "")
                             if reasoning:
                                 reasoning_parts.append(reasoning)
                             text_delta = str(delta.get("content") or "")
@@ -2719,6 +2735,8 @@ class KimiBackend:
                     "arguments": call["function"]["arguments"],
                     "call_id": call["id"],
                     "reasoning_content": reasoning_content,
+                    **({"provider_model": self.model} if self.name == "openrouter" else {}),
+                    **({"reasoning_details": list(reasoning_details.values()), "provider_model": self.model} if reasoning_details else {}),
                     "assistant_content": assistant_content,
                     "response_id": stable_response_id,
                     "response_tool_calls": complete_calls,
@@ -2730,6 +2748,9 @@ class KimiBackend:
                 "output_tokens": int(usage.get("completion_tokens") or 0),
                 "cached_tokens": int(prompt_details.get("cached_tokens") or 0),
             }
+            if self.name == "openrouter":
+                stats["provider"] = "openrouter"
+                stats["cost_usd"] = usage.get("cost")
             yield (EVENT_DONE, {
                 "model": self.model,
                 "stats": stats,
@@ -3904,6 +3925,9 @@ def create_backend(
             cwd=cwd,
             permission_mode=permission_mode,
         )
+    if backend_type == "openrouter":
+        from .openrouter import OpenRouterBackend
+        return OpenRouterBackend(api_key=api_key or "", model=model or "", thinking=thinking)
     if backend_type == "kimi":
         return KimiBackend(
             api_key=api_key or "",
@@ -3920,7 +3944,7 @@ def create_backend(
     if backend_type != "ollama":
         raise ValueError(
             f"Unsupported backend {backend_type!r}. Resonant supports "
-            f"Ollama, EXO, Kimi, Codex, and Claude Code."
+            f"Ollama, EXO, Kimi, OpenRouter, Codex, and Claude Code."
         )
     if not model:
         raise ValueError("Model name required for Ollama backend")

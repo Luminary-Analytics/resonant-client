@@ -926,7 +926,8 @@ async def _open_workspace_path(ctx: CommandContext) -> None:
 
 @command("init")
 async def _cmd_init(ctx: CommandContext) -> None:
-    if not ctx.state.backend and ctx.state.available_backends:
+    discovering = bool(getattr(ctx.state, "_discovery_pending", False))
+    if not discovering and not ctx.state.backend and ctx.state.available_backends:
         try:
             await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -2022,6 +2023,7 @@ async def _cmd_fork_session(ctx: CommandContext) -> None:
         history_page = snapshot["page"]
         await ctx.send({
             "event": "session_loaded",
+            "cwd": ctx.state.project.project_path,
             "current_session_id": forked.id,
             "session_role": forked.session_role,
             "display_events": history_page["events"],
@@ -2058,6 +2060,7 @@ async def _cmd_switch_session(ctx: CommandContext) -> None:
         await ctx.send({
             "event": "session_loaded",
             "session_id": record.id,
+            "cwd": ctx.state.project.project_path,
             "title": record.title,
             "backend_type": record.backend_type,
             "model": record.model,
@@ -2452,6 +2455,13 @@ async def _cmd_set_project(ctx: CommandContext) -> None:
         # Re-probing every project click made an unreachable provider's network
         # timeout part of navigation latency.
         if ctx.state.available_backends:
+            # Publish the selected workspace before potentially slow runtime setup.
+            # Runtime construction stays serialized to avoid attaching it to a
+            # different workspace when users click projects quickly.
+            navigation = ctx.state.get_init_data()
+            navigation.update(project_switch_id=project_switch_id,
+                              runtime_preparing=True, current_backend='', current_model='')
+            await ctx.send(navigation)
             try:
                 await asyncio.get_event_loop().run_in_executor(
                     None,

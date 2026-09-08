@@ -64,3 +64,11 @@ jobs:
         # -q overrides the `-v` in pyproject addopts (CLI args win) to keep the
         # CI log readable; failures still print with --tb=short.
         run: python -m pytest -q
+
+      - name: Set up Node for frontend regression checks
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test draft recovery
+        run: node --test tests/ui_recovery.test.cjs

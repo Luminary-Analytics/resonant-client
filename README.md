@@ -1,4 +1,4 @@
-# Resonant Client
+# Resonant
 
 **A provider-adaptive multimodal coding agent for local and hosted models.**
 

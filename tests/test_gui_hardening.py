@@ -334,11 +334,15 @@ def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
                 "project_switch_id": "switch-latest",
             })
             init = websocket.receive_json()
+            ready = websocket.receive_json()
             notice = websocket.receive_json()
 
     assert init["event"] == "init"
     assert init["project_switch_id"] == "switch-latest"
     assert init["cwd"] == str(target).replace("\\", "/")
+    assert init['runtime_preparing'] is True
+    assert ready['event'] == 'init'
+    assert ready['project_switch_id'] == 'switch-latest'
     assert notice["event"] == "ui_notice"
     assert notice["project_switch_id"] == "switch-latest"
 

@@ -1271,7 +1271,7 @@ AGENT_TOOLS.extend([
         ("check_run", "Execute a named acceptance check and record its actual exit status as verification evidence. Identify the requirement tested. Use the project's test command; a successful setup command or page load does not prove behavior. Rerun a failed check after fixing it.",
          {"command": {"type": "string"}, "requirement": {"type": "string"}, "timeout": {"type": "integer"}}, ["command", "requirement"]),
         ("memory_save", "Save or update a concise project fact, constraint or decision with its source. Agent notes are labeled model assertions. Include relative source files for automatic freshness checks. Do not store credentials or conversation dumps.",
-         {"text": {"type": "string"}, "source": {"type": "string"}, "kind": {"type": "string", "enum": ["fact", "constraint", "decision", "procedure"]}, "sources": {"type": "array", "items": {"type": "string"}}, "id": {"type": "string"}}, ["text", "source"]),
+         {"text": {"type": "string"}, "source": {"type": "string"}, "kind": {"type": "string", "enum": ["fact", "constraint", "decision", "procedure", "build_command", "convention", "fix"]}, "sources": {"type": "array", "items": {"type": "string"}}, "id": {"type": "string"}}, ["text", "source"]),
     ]
 ])
 

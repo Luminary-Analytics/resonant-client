@@ -1,5 +1,5 @@
 """
-Resonant Client GUI — Session & Project Manager
+Resonant GUI — Session & Project Manager
 
 Manages persistent agentic-coding sessions organized by project folder.
 Sessions are stored as JSON files under ~/.resonant/projects/<hash>/sessions/.
@@ -88,7 +88,7 @@ def _is_pytest_temp_path(path: str) -> bool:
 # shortcut launches resonant.exe, Windows sets cwd to the install
 # location; ProjectManager() used to take that as the project path,
 # producing permission-denied storms when the agent tried to write to
-# `C:\Program Files\Resonant Client`. We detect the install/system
+# `C:\Program Files\Resonant`. We detect the install/system
 # locations and fall back to a writable workspace instead.
 _UNSAFE_CWD_PREFIXES_WIN = (
     "c:\\program files",
@@ -437,13 +437,16 @@ def _session_files_by_mtime(directory: Path) -> list[tuple[Path, os.stat_result]
     """Enumerate session files with one stat call each, newest first."""
     files: list[tuple[Path, os.stat_result]] = []
     try:
-        candidates = directory.glob("*.json")
-        for filepath in candidates:
-            try:
-                files.append((filepath, filepath.stat()))
-            except OSError:
-                # A session can be deleted concurrently with a sidebar refresh.
-                continue
+        # On Windows, scandir returns modification times with the directory
+        # entry, avoiding a separate filesystem round trip for every session.
+        with os.scandir(directory) as candidates:
+            for entry in candidates:
+                if not entry.name.endswith(".json") or not entry.is_file():
+                    continue
+                try:
+                    files.append((Path(entry.path), entry.stat()))
+                except OSError:
+                    continue
     except OSError:
         return []
     files.sort(key=lambda item: item[1].st_mtime_ns, reverse=True)
@@ -904,7 +907,7 @@ class ProjectManager:
         except Exception as e:
             logger.error(f"Failed to save recent projects: {e}")
 
-    def get_recent_projects(self, *, limit: int = 10) -> list:
+    def get_recent_projects(self, *, limit: int = 20) -> list:
         """Get list of recent project paths.
 
         Filters out:
@@ -1013,6 +1016,20 @@ class ProjectManager:
 
         all_sessions.sort(key=lambda s: s.get("updated_at", 0), reverse=True)
         return all_sessions
+
+    def navigation_snapshot(self) -> dict:
+        """Local-only initial navigation; never probes models or hydrates history."""
+        all_sessions = self.list_all_sessions()
+        current_path = os.path.normcase(os.path.normpath(self.project_path))
+        return {
+            "event": "navigation_ready",
+            "cwd": self.project_path.replace("\\", "/"),
+            "sessions": [s for s in all_sessions if os.path.normcase(os.path.normpath(s["project_path"])) == current_path],
+            "all_sessions": all_sessions,
+            "recent_projects": self.get_recent_projects(),
+            "playground_project": self.get_playground_project(),
+            "current_session_id": self.current_session.id if self.current_session else "",
+        }
 
     def create_session(
         self,

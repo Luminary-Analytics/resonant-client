@@ -13009,5 +13009,56 @@ body.is-window-dragging * {
 #project-resources-dialog input:not([type=hidden]), #project-resources-dialog textarea, #project-resources-dialog select { width: 100%; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 6px; background: var(--bg-input); color: var(--text); font: inherit; }
 #project-resources-dialog :focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 #project-resources-dialog a { color: var(--brand2); margin-right: 12px; }
+
+/* Saved-work navigation: named projects and bounded session rendering. */
+:root { --brand: #147d69; --brand2: #54e3c2; --accent: var(--brand2); }
+.onboarding-card { background: #121b18; border-color: #254f43; }
+.onboarding-pill { background: #185d4c; color: #c0f4e2; }
+#managed-previews-button, #project-memory-button { white-space: nowrap; flex-shrink: 0; }
+#sidebar { width: 292px; flex: 0 0 292px; padding: 0 12px; }
+#sidebar.collapsed { width: 0; flex-basis: 0; padding: 0; }
+.sidebar-brand { display: flex; align-items: center; gap: 10px; padding: 16px 6px 12px; font-size: 17px; font-weight: 650; letter-spacing: -.4px; color: var(--text); }
+.sidebar-brand img { flex: none; }
+.sidebar-search { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; padding: 8px 10px; border: 1px solid var(--border-strong); border-radius: 8px; background: #191c1c; color: #99aaa7; }
+.sidebar-search input { width: 100%; min-width: 0; background: transparent; border: 0; outline: none; color: var(--text); font: inherit; font-size: 12px; }
+.sidebar-search:focus-within { border-color: var(--brand2); box-shadow: 0 0 0 2px #00d6c918; }
+.sidebar-projects { flex: none; position: relative; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+.sidebar-projects summary { cursor: pointer; padding: 6px 6px 9px; color: #a8b1af; font-size: 11px; font-weight: 650; letter-spacing: .5px; }
+.project-add-button { position: absolute; top: 0; right: 3px; width: 27px; height: 27px; border: 0; border-radius: 5px; color: var(--text-secondary); background: transparent; font-size: 20px; cursor: pointer; }
+.project-add-button:hover { background: var(--bg-hover); color: var(--text); }
+.rail-projects { display: flex; flex-direction: column; align-items: stretch; gap: 2px; max-height: min(25vh, 228px); overflow-y: auto; width: 100%; padding: 0 2px; }
+.project-nav-row { display: flex; align-items: center; min-width: 0; border-radius: 6px; }
+.project-nav-row:has(.active) { background: #17312c; }
+.rail-project-icon { display: flex; flex: 1; align-items: center; gap: 9px; min-width: 0; width: auto; height: 34px; margin: 0; padding: 5px 7px; border: 0; border-radius: 6px; box-shadow: none; background: transparent; color: #b9c3c0; text-align: left; }
+.rail-project-icon:hover, .project-nav-menu:hover { background: #ffffff08; }
+.rail-project-icon.active { background: transparent; border: 0; box-shadow: none; color: #79e5c9; }
+.rail-project-icon::before, .rail-project-icon::after { display: none; }
+.rail-project-initials { display: grid; place-items: center; flex: 0 0 23px; width: 23px; height: 23px; font-size: 9px; border-radius: 5px; color: #b8cec7; background: #24302d; border: 1px solid #ffffff10; }
+.project-nav-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 500; }
+.rail-project-count, .rail-project-icon.active .rail-project-count { position: static; margin-left: auto; flex: none; border: 0; background: transparent; color: #8aa69d; font-size: 10px; box-shadow: none; }
+.project-nav-menu { flex: 0 0 25px; height: 28px; border: 0; border-radius: 4px; background: transparent; color: #85918e; cursor: pointer; }
+.sidebar-project-card { padding: 12px 5px 8px; grid-template-columns: minmax(0, 1fr) 24px; gap: 5px; }
+.sidebar-project-mark { display: none; }
+.sidebar-shell-project-name { font-size: 12px; }
+.sidebar-shell-project-path { font-size: 10px; }
+.sidebar-new-session { flex: none; margin: 2px 2px 12px; background: #17312c; color: #b9f1e0; border-color: #285045; height: 34px; }
+.sidebar-new-session .sns-shortcut { display: inline; margin-left: auto; font-size: 10px; font-weight: 400; opacity: .6; }
+.sidebar-session-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; flex: none; padding: 0 5px 9px; font-size: 11px; color: #a8b1af; }
+#session-count { color: #6d8b80; margin-left: 4px; font-variant-numeric: tabular-nums; }
+#sidebar-session-scope { max-width: 135px; color: #bbc6c2; background: #1c2220; border: 1px solid var(--border); border-radius: 5px; padding: 4px 5px; font: inherit; cursor: pointer; }
+.agent-list { min-height: 80px; flex: 1; overflow-y: auto; overscroll-behavior: contain; }
+.agent-row { border-radius: 7px; margin-bottom: 2px; }
+.agent-row.active { background: #ffffff09; box-shadow: inset 2px 0 #54e3c2; }
+.agent-row-title { font-size: 12px; }
+.agent-row-date { color: #788881; font-size: 10px; }
+.sidebar-show-more { display: block; width: 100%; padding: 10px; margin-top: 5px; border: 1px solid var(--border); border-radius: 6px; color: #9ad3c1; background: transparent; font: inherit; font-size: 11px; cursor: pointer; }
+.sidebar-show-more:hover { background: #ffffff06; }
+#sidebar :is(button, summary, select):focus-visible { outline: 2px solid #54e3c2; outline-offset: -2px; }
+.agent-context-menu button.ctx-item { display: block; width: 100%; border: 0; background: transparent; text-align: left; font: inherit; color: var(--text); cursor: pointer; }
+.agent-context-menu button.ctx-item:disabled { opacity: .4; cursor: default; }
+.agent-context-menu button.ctx-item:hover, .agent-context-menu button.ctx-item:focus-visible { background: var(--bg-hover); outline: 1px solid var(--brand2); }
+.welcome-brand .welcome-icon { width: 64px; height: 64px; border-radius: 17px; }
+@media (max-width: 900px) { #sidebar { width: 254px; flex-basis: 254px; } }
+@media (max-height: 650px) { .rail-projects { max-height: 120px; } .sidebar-brand { padding-top: 8px; padding-bottom: 8px; } .sidebar-search { margin-bottom: 7px; } }
 #project-resources-dialog details { margin-top: 14px; }
 #project-resources-dialog pre { font: 12px/1.5 var(--font-mono); overflow-wrap: anywhere; white-space: pre-wrap; margin-top: 8px; }

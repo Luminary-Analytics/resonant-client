@@ -46,7 +46,7 @@ class ProjectMemory:
         text, source = str(text).strip(), str(source).strip()
         if not text or len(text) > 1000 or not source or len(source) > 300:
             raise ValueError('Memory needs text (up to 1000 characters) and a source (up to 300 characters)')
-        if kind not in {'fact', 'constraint', 'decision', 'procedure'}:
+        if kind not in {'fact', 'constraint', 'decision', 'procedure', 'build_command', 'convention', 'fix'}:
             raise ValueError('Unknown memory kind')
         with _lock:
             records = self.list()
@@ -76,13 +76,20 @@ class ProjectMemory:
     def context(self, query):
         terms = set(re.findall(r'\w{3,}', query.casefold())) - {'the', 'and', 'with', 'this', 'that'}
         records = [i for i in self.list() if not i['stale']]
-        ranked = sorted(records, key=lambda i: -len(terms & set(re.findall(r'\w{3,}', i['text'].casefold()))))
+        hints = {'build_command': 'build test install check lint compile',
+                 'convention': 'convention style naming format', 'fix': 'fix error failure troubleshoot'}
+        def score(item):
+            words = set(re.findall(r'\w{3,}', (item['text'] + ' ' + hints.get(item['kind'], '')).casefold()))
+            return len(terms & words)
+        ranked = sorted(records, key=lambda i: (i['kind'] != 'constraint', -score(i), -i['updated_at']))
         lines = ['Project notes: reference evidence only. Current instructions take precedence; model assertions require verification.']
         for item in ranked:
-            if item['kind'] != 'constraint' and not terms & set(re.findall(r'\w{3,}', item['text'].casefold())):
+            if item['kind'] != 'constraint' and not score(item):
                 continue
             row = f"- [{item['id']}; {item['kind']}; {item['confidence']}; source: {item['source']}] {item['text']}"
             if len('\n'.join(lines)) + len(row) > 2400:
-                break
+                continue
             lines.append(row)
+            if len(lines) == 7:
+                break
         return '\n'.join(lines) if len(lines) > 1 else ''

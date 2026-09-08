@@ -1,5 +1,5 @@
 """
-Cost tracking for Resonant Client.
+Cost tracking for Resonant.
 Tracks token usage per session/day with model-specific pricing.
 """
 

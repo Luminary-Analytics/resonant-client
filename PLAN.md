@@ -1,4 +1,4 @@
-# Resonant Client — Roadmap
+# Resonant — Roadmap
 
 ## Overview
 

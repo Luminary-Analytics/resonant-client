@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for Resonant Client (Windows installer build).
+PyInstaller spec for Resonant (Windows installer build).
 
 Build:    pyinstaller packaging/resonant.spec --clean --noconfirm
 Output:   dist/resonant/resonant.exe (one-folder bundle)

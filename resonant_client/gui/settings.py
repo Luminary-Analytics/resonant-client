@@ -1,5 +1,5 @@
 """
-Persistent settings manager for Resonant Client.
+Persistent settings manager for Resonant.
 Reads/writes ~/.resonant/settings.json with section-based access.
 """
 

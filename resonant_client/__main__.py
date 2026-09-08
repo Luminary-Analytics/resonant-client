@@ -1,4 +1,4 @@
-"""Entry point for the Resonant Client."""
+"""Entry point for the Resonant."""
 import os
 import sys
 

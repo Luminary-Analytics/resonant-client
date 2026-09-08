@@ -1,4 +1,4 @@
-# Releasing Resonant Client
+# Releasing Resonant
 
 Operational runbook for shipping a new release. Designed so any future contributor (or LLM session) can ship `v0.X.Y+1` in under 10 minutes once the prerequisites are met.
 
@@ -94,8 +94,8 @@ curl -s https://luminary-analytics.github.io/resonant-client/appcast.xml | grep 
 ### 6. (Optional) Smoke-test the installer
 
 Download the installer from the Releases page and run it on a fresh VM or your machine. The installer:
-- Installs to `%LOCALAPPDATA%\Programs\Resonant Client\`
-- Adds Start Menu entry "Resonant Client"
+- Installs to `%ProgramFiles%\Resonant\`
+- Adds Start Menu entry "Resonant"
 - Auto-launches the app on completion (which opens a browser to `localhost:8909`)
 
 ---

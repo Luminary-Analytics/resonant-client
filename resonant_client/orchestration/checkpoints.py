@@ -130,7 +130,7 @@ class IterationCheckpointStore:
         Path(index_name).unlink(missing_ok=True)
         env = os.environ.copy()
         env["GIT_INDEX_FILE"] = index_name
-        env.setdefault("GIT_AUTHOR_NAME", "Resonant Client")
+        env.setdefault("GIT_AUTHOR_NAME", "Resonant")
         env.setdefault("GIT_AUTHOR_EMAIL", "checkpoint@resonant.local")
         env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
         env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])

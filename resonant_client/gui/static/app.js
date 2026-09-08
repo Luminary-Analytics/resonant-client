@@ -485,6 +485,95 @@ class ResonantApp {
         }
     }
 
+    _clearDraft() {
+        if (this._draftScope) {
+            this._draftScope.edited = true;
+            this._draftScope.savedText = undefined;
+        }
+        return this._saveDraft();
+    }
+
+    _markDraftEdited() {
+        if (!this._draftScope) return;
+        this._draftScope.edited = true;
+        // Clearing text while the initial read is pending must still write an
+        // empty draft, even though the last known local value was also empty.
+        this._draftScope.savedText = undefined;
+    }
+
+    _saveDraft() {
+        if (!this._draftScope) return Promise.resolve();
+        const scope = this._draftScope;
+        const text = this.userInput.value;
+        if (text === scope.savedText) return this._draftWrites || Promise.resolve();
+        scope.savedText = text;
+        const payload = { project: scope.project, session_id: scope.session, text };
+        // Keep writes ordered, including clearing a sent draft. Drafts live on
+        // disk because desktop launches can use a different localhost port.
+        this._draftWrites = (this._draftWrites || Promise.resolve()).catch(() => {}).then(async () => {
+            const response = await fetch('/api/ui-state', {method: 'POST',
+                headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload), keepalive: new Blob([JSON.stringify(payload)]).size < 60000});
+            if (!response.ok) throw new Error('Draft save failed');
+        }).catch(() => {
+            scope.savedText = undefined;
+            this.showToastMessage('Your draft could not be saved. Keep Resonant open and try again.');
+        });
+        return this._draftWrites;
+    }
+
+    _activateDraft(project, session = '', migrateNew = false) {
+        if (!project) return;
+        const key = JSON.stringify([this._projectKey(project), session]);
+        if (this._draftScope?.key === key) return;
+        const previous = this._draftScope;
+        const carry = migrateNew && previous && !previous.session &&
+            this._projectKey(previous.project) === this._projectKey(project) ? this.userInput.value : '';
+        if (carry) this.userInput.value = '';
+        const pending = this._saveDraft();
+        const scope = {key, project, session, savedText: ''};
+        this._draftScope = scope;
+        this.userInput.value = carry;
+        this.userInput.style.height = 'auto';
+        this.attachedImages = [];
+        this.renderAttachedImages();
+        if (carry) { this._saveDraft(); return; }
+        pending.then(async () => {
+            const response = await fetch(`/api/ui-state?${new URLSearchParams({project, session_id: session})}`);
+            if (!response.ok) throw new Error('Draft load failed');
+            const draft = await response.json();
+            // A late read must never replace typing or a different conversation.
+            if (this._draftScope !== scope || scope.edited || this.userInput.value) return;
+            this.userInput.value = typeof draft.text === 'string' ? draft.text : '';
+            scope.savedText = this.userInput.value;
+            this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
+            this._syncComposerGutter?.();
+        }).catch(() => this.showToastMessage('Your saved draft could not be loaded.'));
+    }
+
+    _setSidebarCollapsed(collapsed) {
+        const sidebar = document.getElementById('sidebar');
+        if (collapsed && sidebar.contains(document.activeElement)) {
+            document.getElementById('titlebar-sidebar-toggle')?.focus();
+        }
+        sidebar.classList.toggle('collapsed', collapsed);
+        sidebar.inert = collapsed;
+        sidebar.setAttribute('aria-hidden', String(collapsed));
+        for (const id of ['sidebar-toggle', 'titlebar-sidebar-toggle']) {
+            const button = document.getElementById(id);
+            button?.setAttribute('aria-expanded', String(!collapsed));
+            button?.setAttribute('aria-controls', 'sidebar');
+        }
+    }
+
+    _showRuntimePreparing(label = 'Preparing model…') {
+        this._setSystemStatus('warning', label);
+        const banner = document.getElementById('runtime-banner');
+        if (banner) {
+            banner.textContent = `${label} You can browse saved work and keep drafting.`;
+            banner.hidden = false;
+        }
+    }
+
     _setSystemStatus(state, label) {
         this.systemStatus = state || 'connected';
         this.systemStatusLabel = label || 'Connected';
@@ -900,6 +989,9 @@ class ResonantApp {
         // Auto-resize textarea + drive the @-file fuzzy popup off the same
         // input event (avoids needing a second listener that could race).
         this.userInput.addEventListener('input', () => {
+            this._markDraftEdited();
+            clearTimeout(this._draftTimer);
+            this._draftTimer = setTimeout(() => this._saveDraft(), 250);
             this.userInput.style.height = 'auto';
             this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
             this._syncComposerGutter?.();
@@ -913,10 +1005,12 @@ class ResonantApp {
             }
         });
         this.userInput.addEventListener('blur', () => {
+            this._saveDraft();
             // Close on blur, but with a tiny delay so clicking a popup item
             // doesn't get cancelled by the focus loss.
             setTimeout(() => this._closeFileFuzzy(), 120);
         });
+        window.addEventListener('pagehide', () => this._saveDraft());
 
         if (this.chatContainer && this.chatScrollEndBtn) {
             this.chatContainer.addEventListener('scroll', () => {
@@ -1004,6 +1098,7 @@ class ResonantApp {
             }
             this.startIntent(text);
             this.userInput.value = '';
+            this._clearDraft();
             this.userInput.style.height = 'auto';
         });
 
@@ -1045,17 +1140,31 @@ class ResonantApp {
      * dialog, new session, and the add-project button. */
     _bindSidebarChrome() {
         // Sidebar toggle
-        document.getElementById('sidebar-toggle').addEventListener('click', () => {
-            document.getElementById('sidebar').classList.toggle('collapsed');
-        });
         const sidebar = document.getElementById('sidebar');
         const mobileSidebarQuery = window.matchMedia('(max-width: 820px)');
+        this._sidebarPreferences = {};
+        let preferenceChanged = false;
+        document.getElementById('sidebar-toggle').addEventListener('click', () => {
+            preferenceChanged = true;
+            const collapsed = !sidebar.classList.contains('collapsed');
+            this._sidebarPreferences[mobileSidebarQuery.matches ? 'mobile' : 'desktop'] = collapsed;
+            this._setSidebarCollapsed(collapsed);
+            this._sidebarWrite = (this._sidebarWrite || Promise.resolve()).catch(() => {}).then(() =>
+                fetch('/api/ui-state', {method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({sidebar: this._sidebarPreferences}), keepalive: true}));
+        });
         const syncMobileSidebar = () => {
             if (!sidebar) return;
-            sidebar.classList.toggle('collapsed', mobileSidebarQuery.matches);
+            const mode = mobileSidebarQuery.matches ? 'mobile' : 'desktop';
+            this._setSidebarCollapsed(this._sidebarPreferences[mode] ?? mobileSidebarQuery.matches);
         };
         syncMobileSidebar();
         mobileSidebarQuery.addEventListener?.('change', syncMobileSidebar);
+        fetch('/api/ui-state').then(r => r.json()).then(data => {
+            if (preferenceChanged) return;
+            this._sidebarPreferences = data.sidebar || {};
+            syncMobileSidebar();
+        }).catch(() => {});
         document.getElementById('titlebar-sidebar-toggle')?.addEventListener('click', () => {
             document.getElementById('sidebar-toggle')?.click();
         });
@@ -1084,6 +1193,11 @@ class ResonantApp {
 
         this.statusPopoverTrigger?.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (this.statusPopover?.hidden) {
+                this.requestSkillList();
+                this.requestMcpList();
+                this.requestLspList();
+            }
             this.toggleStatusPopover();
         });
         this.statusPopover?.addEventListener('click', (e) => {
@@ -1336,6 +1450,10 @@ class ResonantApp {
         });
 
         // Sidebar search → live filter
+        document.getElementById('sidebar-session-scope')?.addEventListener('change', (e) => {
+            if (e.target.value === 'pinned') this._setPinnedFilter(true);
+            else this._setProjectFilter(e.target.value === 'all' ? '' : this.currentCwd);
+        });
         document.getElementById('search-input')?.addEventListener('input', () => {
             this.renderFilteredSessions();
         });
@@ -1450,6 +1568,7 @@ class ResonantApp {
 
     _clearComposerAfterSend() {
         this.userInput.value = '';
+        this._clearDraft();
         this.userInput.style.height = 'auto';
         this._syncComposerGutter?.();
         this.attachedImages = [];
@@ -1617,6 +1736,11 @@ class ResonantApp {
     }
 
     sendMessage(options = {}) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            this._saveDraft();
+            this.showToastMessage('Reconnecting. Your message is still in the composer.');
+            return;
+        }
         const autoRetry = !!(options && options.autoRetry === true);
         if (!autoRetry) this._autoFallbackDepth = 0;
         const text = this.userInput.value.trim();
@@ -1633,6 +1757,7 @@ class ResonantApp {
             if (cmd) {
                 this._runShellShortcut(cmd, /* feedToLlm= */ false);
                 this.userInput.value = '';
+            this._clearDraft();
                 this.userInput.style.height = 'auto';
                 this._syncComposerGutter?.();
                 return;
@@ -1646,6 +1771,7 @@ class ResonantApp {
                 }
                 this._runShellShortcut(cmd, /* feedToLlm= */ true);
                 this.userInput.value = '';
+            this._clearDraft();
                 this.userInput.style.height = 'auto';
                 this._syncComposerGutter?.();
                 return;
@@ -1662,6 +1788,7 @@ class ResonantApp {
         if (text.startsWith('/plan ')) {
             this.startIntent(text.slice('/plan '.length).trim());
             this.userInput.value = '';
+            this._clearDraft();
             this.userInput.style.height = 'auto';
             this._syncComposerGutter?.();
             return;
@@ -1674,6 +1801,7 @@ class ResonantApp {
         if (text === '/pin') {
             this.send({ command: 'pin_session' });
             this.userInput.value = '';
+            this._clearDraft();
             this.userInput.style.height = 'auto';
             this._syncComposerGutter?.();
             return;
@@ -3258,12 +3386,29 @@ class ResonantApp {
                 this.applyResumePrompt(event.prompt || '');
                 break;
             case 'sessions_updated':
+                if ('current_session_id' in event) this._activateDraft(this.currentCwd, event.current_session_id || '', true);
                 this.sessions = event.sessions || [];
                 if (event.all_sessions) this.allSessions = event.all_sessions;
                 this.currentSessionId = event.current_session_id || '';
                 this.renderFilteredSessions();
                 this._syncMissionUI();
                 this._syncSessionTitle();
+                break;
+            case 'navigation_ready':
+                this._activateDraft(event.cwd, event.current_session_id || '');
+                this.recentProjects = event.recent_projects || [];
+                this.playgroundProject = event.playground_project;
+                this.currentCwd = event.cwd || '';
+                this.sessions = event.sessions || [];
+                this.allSessions = event.all_sessions || [];
+                this.currentSessionId = event.current_session_id || '';
+                if (!this._projectFilterUserCleared) this._projectFilter = this.currentCwd;
+                this._updateHeaderProjectPath(this.currentCwd);
+                this._navigationReady = true;
+                this.renderFilteredSessions();
+                break;
+            case 'backends_discovered':
+                this.send({ command: 'init' });
                 break;
             case 'session_cleared':
                 if (
@@ -3283,6 +3428,7 @@ class ResonantApp {
                     this.chatMessages.innerHTML = '';
                     this._resetTaskCardState();
                 }
+                this._activateDraft(event.cwd || this.currentCwd, event.current_session_id || '');
                 this.sessions = event.sessions || [];
                 if (Array.isArray(event.all_sessions)) {
                     this.allSessions = event.all_sessions;
@@ -3338,6 +3484,12 @@ class ResonantApp {
                 }
                 break;
             case 'session_loaded':
+                this._activateDraft(event.cwd || this.currentCwd, event.current_session_id || '');
+                if (event.cwd) {
+                    this.currentCwd = event.cwd;
+                    this._updateHeaderProjectPath(event.cwd);
+                }
+                if (event.runtime_pending) this._showRuntimePreparing();
                 this.chatMessages.innerHTML = '';
                 this._resetTaskCardState();
                 this.currentSessionId = event.current_session_id || '';
@@ -3758,6 +3910,7 @@ class ResonantApp {
             harness_cycles,
         } = event;
 
+        this._activateDraft(cwd || this.currentCwd, current_session_id || '', true);
         // Update project info
         if (cwd) {
             const short = cwd.split('/').pop();
@@ -3832,10 +3985,7 @@ class ResonantApp {
         // Fetch git status
         this.requestGitStatus();
 
-        // v0.6.2a3 — Fetch skill list so the Skills sidebar group populates.
-        this.requestSkillList();
-        this.requestMcpList();
-        this.requestLspList();
+        // Status catalogs are loaded when opened, not ahead of navigation.
 
         if (sessions) {
             this.sessions = sessions;
@@ -3962,6 +4112,12 @@ class ResonantApp {
         // No backend loaded. Note this branch previously left the model
         // selector untouched, so it kept displaying whichever model was last
         // shown — the visible half of the same contradiction.
+        if (event.runtime_loading || event.runtime_preparing) {
+            this.populateModelSelector(backends, '', '', { unloaded: true });
+            this._showRuntimePreparing(event.runtime_preparing ? 'Preparing model…' : 'Finding models…');
+            this.showChatInterface();
+            return;
+        }
         this.populateModelSelector(backends, '', '', { unloaded: true });
         const haveProviders = Object.keys(this.backends || {}).length > 0;
         this._setSystemStatus('warning',
@@ -4176,13 +4332,12 @@ class ResonantApp {
                 <span class="onboarding-pill">Welcome</span>
                 <button class="onboarding-dismiss" aria-label="Dismiss" title="Dismiss">&times;</button>
             </div>
-            <h3 class="onboarding-title">A laser-focused agentic IDE</h3>
-            <p class="onboarding-sub">Resonant adapts its coding harness to the capabilities of your configured model and provider.</p>
+            <h3 class="onboarding-title">Pick up where you left off</h3>
+            <p class="onboarding-sub">Open a project, choose your model, and describe what you want to build.</p>
             <ul class="onboarding-list">
-                <li><span class="onboarding-bullet">⚡</span><span><strong>Batch + sub-agents</strong> &mdash; ask the model to fan out reads or spawn isolated investigations</span></li>
-                <li><span class="onboarding-bullet">🔍</span><span><strong>Auto-lint &amp; auto-test on edit</strong> &mdash; toggle in Settings &rarr; General</span></li>
-                <li><span class="onboarding-bullet">🛡</span><span><strong>Inline diff review</strong> &mdash; accept/reject edits without a popup</span></li>
-                <li><span class="onboarding-bullet">↪</span><span><strong>Fork from any message</strong> &mdash; explore alternate paths without losing your thread</span></li>
+                <li><span class="onboarding-bullet">◇</span><span><strong>Your projects</strong> &mdash; switch folders from the sidebar.</span></li>
+                <li><span class="onboarding-bullet">⌕</span><span><strong>Find any session</strong> &mdash; use search or press Ctrl+K.</span></li>
+                <li><span class="onboarding-bullet">↗</span><span><strong>See the result</strong> &mdash; open previews and review named checks as work progresses.</span></li>
             </ul>
             <p class="onboarding-cta">Pick a workspace folder below to get started.</p>
         `;
@@ -4202,7 +4357,7 @@ class ResonantApp {
         const empty = document.createElement('div');
         empty.className = 'chat-empty-state';
         empty.innerHTML = `
-            <img class="chat-empty-logo" src="/static/resonant.png" alt="" aria-hidden="true">
+            <img class="chat-empty-logo" src="/static/favicon.svg" alt="" aria-hidden="true">
             <h2 class="chat-empty-title">Resonant</h2>
             <p class="chat-empty-sub">Local-first multimodal coding agent for open-source models</p>
         `;
@@ -6168,7 +6323,7 @@ class ResonantApp {
                         this.showStatusMessage('Bundling diagnostics…');
                         this.send({ command: 'save_diagnostics' });
                         break;
-                    case 'about': this.showStatusMessage('Resonant Client - local-first multimodal coding agent'); break;
+                    case 'about': this.showStatusMessage('Resonant - local-first multimodal coding agent'); break;
                 }
                 closeAppMenu();
             });
@@ -6275,6 +6430,15 @@ class ResonantApp {
     // ── Command Palette ─────────────────────────────────────────
 
     _cmdPaletteCommands() {
+        const projects = this._getProjectRailItems().map(p => ({
+            id: `project:${p.key}`, icon: '◇', label: p.name, hint: 'Project',
+            action: () => this._selectRailProject(p.path),
+        }));
+        const sessions = (this.allSessions || this.sessions || []).map(s => ({
+            id: `session:${s.project_path}:${s.id}`, icon: '↗', label: s.title || 'New session',
+            hint: s.project_name || this._projectNameFromPath(s.project_path || this.currentCwd),
+            action: () => this.send({ command: 'switch_session', session_id: s.id, project_path: s.project_path }),
+        }));
         return [
             { id: 'new-agent',  icon: '+', label: 'New session',        hint: 'Ctrl+N',       action: () => document.getElementById('new-agent-btn')?.click() },
             { id: 'settings',   icon: '\u2699', label: 'Open Settings',            hint: 'Ctrl+,', action: () => this.switchView('settings') },
@@ -6283,12 +6447,15 @@ class ResonantApp {
             { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
             { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
             { id: 'shortcuts',  icon: '\u2328', label: 'Keyboard shortcuts',       hint: 'Ctrl+/', action: () => this.toggleShortcutsOverlay() },
+            ...projects, ...sessions,
         ];
     }
 
     openCommandPalette() {
         const overlay = document.getElementById('command-palette');
         if (!overlay) return;
+        if (this._cmdPaletteKeyHandler) this.closeCommandPalette();
+        this._cmdPaletteReturnFocus = document.activeElement;
         overlay.style.display = 'flex';
         const input = document.getElementById('cmd-palette-input');
         if (input) { input.value = ''; input.focus(); }
@@ -6324,15 +6491,15 @@ class ResonantApp {
         document.addEventListener('keydown', onKey, true);
 
         if (input) {
-            input.addEventListener('input', () => {
+            input.oninput = () => {
                 this._cmdPaletteIdx = 0;
                 this._renderCommandPaletteResults(input.value);
-            });
+            };
         }
 
-        overlay.addEventListener('click', (e) => {
+        overlay.onclick = (e) => {
             if (e.target === overlay) this.closeCommandPalette();
-        }, { once: true });
+        };
     }
 
     closeCommandPalette() {
@@ -6342,6 +6509,7 @@ class ResonantApp {
             document.removeEventListener('keydown', this._cmdPaletteKeyHandler, true);
             this._cmdPaletteKeyHandler = null;
         }
+        this._cmdPaletteReturnFocus?.focus();
     }
 
     _renderCommandPaletteResults(query) {
@@ -6349,7 +6517,8 @@ class ResonantApp {
         if (!container) return;
         const q = (query || '').toLowerCase().trim();
         let cmds = this._cmdPaletteCommands();
-        if (q) cmds = cmds.filter(c => c.label.toLowerCase().includes(q));
+        if (q) cmds = cmds.filter(c => `${c.label} ${c.hint}`.toLowerCase().includes(q));
+        cmds = cmds.slice(0, 30);
 
         if (!cmds.length) {
             container.innerHTML = '<div class="cmd-palette-empty">No matching commands</div>';
@@ -9453,20 +9622,36 @@ class ResonantApp {
             // v0.6.6 — "Pinned" quick-filter: only pinned sessions, across all projects.
             filtered = filtered.filter(s => s && s.pinned);
         } else if (projFilter) {
-            filtered = filtered.filter(s => (s.project_path || '').replace(/\\/g, '/') === projFilter);
+            filtered = filtered.filter(s => this._projectKey(s.project_path || this.currentCwd) === this._projectKey(projFilter));
         }
         if (searchVal) {
-            filtered = filtered.filter(s => (s.title || '').toLowerCase().includes(searchVal));
+            filtered = filtered.filter(s => [s.title, s.project_name, s.project_path].some(v => String(v || '').toLowerCase().includes(searchVal)));
         }
-
+        const filterKey = `${projFilter}|${this._pinnedOnly}|${searchVal}`;
+        if (filterKey !== this._sessionFilterKey) {
+            this._sessionFilterKey = filterKey;
+            this._visibleSessionLimit = 40;
+        }
+        const count = document.getElementById('session-count');
+        if (count) count.textContent = String(filtered.length);
+        const scope = document.getElementById('sidebar-session-scope');
+        if (scope) scope.value = this._pinnedOnly ? 'pinned' : (projFilter ? 'project' : 'all');
         this._renderProjectTree(filtered);
         this.renderProjectRail();
     }
 
     _renderProjectTree(sessions) {
         if (!this.sessionList) return;
+        const ordered = (Array.isArray(sessions) ? sessions.filter(Boolean) : [])
+            .slice().sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)) || (b.updated_at || 0) - (a.updated_at || 0));
+        const visibleSessions = ordered.slice(0, this._visibleSessionLimit || 40);
+        const signature = JSON.stringify([visibleSessions, this.currentSessionId, ordered.length,
+            visibleSessions.map(s => this._sessionIndicator(s).state), this._sessionFilterKey]);
+        if (signature === this._sessionRenderSignature) return;
+        this._sessionRenderSignature = signature;
+        const focusedId = document.activeElement?.closest('[data-session-id]')?.dataset.sessionId;
+        const scrollTop = this.sessionList.scrollTop;
         this.sessionList.innerHTML = '';
-        const visibleSessions = Array.isArray(sessions) ? sessions.filter(Boolean) : [];
 
         // Pinned sessions float to the top in their own group, removed from
         // their original section to avoid double-listing.
@@ -9484,8 +9669,21 @@ class ResonantApp {
         }
 
         if (!pinned.length && !unpinned.length) {
-            this.sessionList.innerHTML = '<div class="agent-empty">No sessions yet</div>';
+            this.sessionList.innerHTML = `<div class="agent-empty">${document.getElementById('search-input')?.value ? 'No matching sessions' : 'No sessions here yet. Start a new session above.'}</div>`;
         }
+        if (ordered.length > visibleSessions.length) {
+            const more = document.createElement('button');
+            more.className = 'sidebar-show-more';
+            more.textContent = `Show more sessions (${ordered.length - visibleSessions.length} remaining)`;
+            more.addEventListener('click', () => {
+                this._visibleSessionLimit = (this._visibleSessionLimit || 40) + 40;
+                this.renderFilteredSessions();
+                this.sessionList.querySelectorAll('[data-session-id]')[visibleSessions.length]?.focus();
+            });
+            this.sessionList.appendChild(more);
+        }
+        this.sessionList.scrollTop = scrollTop;
+        if (focusedId) [...this.sessionList.querySelectorAll('[data-session-id]')].find(el => el.dataset.sessionId === focusedId)?.focus({ preventScroll: true });
     }
 
     _createTreeSessionRow(session) {
@@ -9494,6 +9692,7 @@ class ResonantApp {
         el.setAttribute('role', 'button');
         el.setAttribute('tabindex', '0');
         el.dataset.sessionId = session.id;
+        if (session.id === this.currentSessionId) el.setAttribute('aria-current', 'true');
 
         const date = new Date(session.updated_at * 1000);
         const timeStr = this.formatRelativeTime(date);
@@ -9507,7 +9706,7 @@ class ResonantApp {
         const autoBadge = '';
         el.innerHTML = `
             <div class="agent-row-title"><span class="agent-row-status is-${indicator.state}" role="img" aria-label="${indicator.label}" title="${indicator.label}"><span aria-hidden="true"></span></span>${this.escapeHtml(session.title || 'New session')}</div>
-            <div class="agent-row-date">${autoBadge}${roleTag}${session.model || ''} \u00B7 ${timeStr}</div>
+            <div class="agent-row-date">${autoBadge}${roleTag}${this.escapeHtml(!this._projectFilter ? (session.project_name || this._projectNameFromPath(session.project_path || this.currentCwd)) : (session.model || ''))} \u00B7 ${timeStr}</div>
             <div class="agent-row-actions">
                 <button class="agent-menu-btn" title="More actions">&#8943;</button>
             </div>
@@ -9736,6 +9935,11 @@ class ResonantApp {
             if (this._projectKey(project?.path || '') === playgroundKey) continue;
             addProject(project?.path || '', project?.name || '');
         }
+        if (this.playgroundProject?.path) {
+            addProject(this.playgroundProject.path, this.playgroundProject.name || 'Playground');
+            byKey.get(playgroundKey).permanent = true;
+        }
+        addProject(this.currentCwd || '');
 
         const allKeys = new Set(candidateOrder);
         const previousOrder = Array.isArray(this._projectRailOrder) ? this._projectRailOrder : [];
@@ -9752,11 +9956,19 @@ class ResonantApp {
 
     renderProjectRail() {
         if (!this.railProjects) return;
-        const projects = this._getProjectRailItems();
+        const query = (document.getElementById('search-input')?.value || '').trim().toLowerCase();
+        const projects = this._getProjectRailItems().filter(p => !query || `${p.name} ${p.path}`.toLowerCase().includes(query));
         const currentPath = this._normalizeProjectPath(
             this._pendingProjectPath || this.currentCwd || '',
         );
         const currentKey = this._projectKey(currentPath);
+        const signature = JSON.stringify([projects, currentKey]);
+        if (signature === this._projectRenderSignature) return;
+        const revealActive = this._renderedProjectKey !== currentKey;
+        this._renderedProjectKey = currentKey;
+        this._projectRenderSignature = signature;
+        const focusedPath = document.activeElement?.dataset.path;
+        const scrollTop = this.railProjects.scrollTop;
         this.railProjects.innerHTML = '';
 
         for (const [index, project] of projects.entries()) {
@@ -9770,10 +9982,11 @@ class ResonantApp {
                 ? `${project.name} project, active`
                 : `Open project ${project.name}`);
             btn.dataset.path = project.path;
+            if (isActive) btn.setAttribute('aria-current', 'true');
             btn.style.setProperty('--rail-project-bg', bg);
             btn.style.setProperty('--rail-project-bg-2', bg2);
             btn.style.setProperty('--rail-project-border', border);
-            btn.innerHTML = `<span class="rail-project-initials">${this.escapeHtml(this._projectInitials(project.name))}</span>`;
+            btn.innerHTML = `<span class="rail-project-initials" aria-hidden="true">${this.escapeHtml(this._projectInitials(project.name))}</span><span class="project-nav-name">${this.escapeHtml(project.name)}</span>`;
             if (project.count > 0) {
                 const badge = document.createElement('span');
                 badge.className = 'rail-project-count';
@@ -9789,8 +10002,27 @@ class ResonantApp {
                 ev.stopPropagation();
                 this.showProjectContextMenu(ev, project);
             });
-            this.railProjects.appendChild(btn);
+            const row = document.createElement('div');
+            row.className = 'project-nav-row';
+            row.appendChild(btn);
+            const menu = document.createElement('button');
+            menu.className = 'project-nav-menu';
+            menu.type = 'button';
+            menu.textContent = '⋯';
+            menu.setAttribute('aria-label', `Actions for ${project.name}`);
+            menu.addEventListener('click', (ev) => {
+                ev.stopPropagation();
+                const rect = menu.getBoundingClientRect();
+                const popup = this.showProjectContextMenu({ clientX: rect.left, clientY: rect.bottom }, project);
+                popup?.querySelector('button, [role="menuitem"], .session-ctx-item')?.focus();
+            });
+            row.appendChild(menu);
+            this.railProjects.appendChild(row);
         }
+        if (!projects.length) this.railProjects.innerHTML = '<div class="agent-empty">No matching projects</div>';
+        this.railProjects.scrollTop = scrollTop;
+        if (revealActive) this.railProjects.querySelector('[aria-current="true"]')?.scrollIntoView({ block: 'nearest' });
+        if (focusedPath) [...this.railProjects.querySelectorAll('[data-path]')].find(el => el.dataset.path === focusedPath)?.focus({ preventScroll: true });
     }
 
     /**
@@ -9815,16 +10047,28 @@ class ResonantApp {
         const menu = document.createElement('div');
         menu.className = 'agent-context-menu';
         const permanent = !!project.permanent;
+        const returnFocus = document.activeElement;
+        menu.setAttribute('role', 'menu');
         menu.innerHTML = `
-            <div class="ctx-item" data-action="open">&#128194; Open</div>
-            <div class="ctx-item" data-action="rename">&#9998; Rename</div>
+            <button type="button" role="menuitem" class="ctx-item" data-action="open">Open project</button>
+            <button type="button" role="menuitem" class="ctx-item" data-action="rename" ${permanent ? 'disabled' : ''}>Rename</button>
             <div class="ctx-separator"></div>
-            <div class="ctx-item${permanent ? ' is-disabled' : ' danger'}" data-action="forget">
-                &#10006; Remove from sidebar
-            </div>
+            <button type="button" role="menuitem" class="ctx-item${permanent ? ' is-disabled' : ' danger'}" data-action="forget" ${permanent ? 'disabled' : ''}>Remove from sidebar</button>
         `;
         menu.style.left = `${e.clientX}px`;
         menu.style.top = `${e.clientY}px`;
+        menu.addEventListener('keydown', ev => {
+            if (ev.key === 'Escape' || ev.key === 'Tab') {
+                ev.preventDefault();
+                menu.remove();
+                returnFocus?.focus();
+            } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                const items = [...menu.querySelectorAll('button:not(:disabled)')];
+                const direction = ev.key === 'ArrowDown' ? 1 : -1;
+                items[(items.indexOf(document.activeElement) + direction + items.length) % items.length]?.focus();
+            }
+        });
 
         menu.addEventListener('click', (ev) => {
             const action = ev.target.closest('.ctx-item')?.dataset.action;
@@ -9846,6 +10090,7 @@ class ResonantApp {
                 }
             }
             menu.remove();
+            returnFocus?.focus();
         });
 
         document.body.appendChild(menu);
@@ -9865,12 +10110,14 @@ class ResonantApp {
     _selectRailProject(path) {
         const norm = this._normalizeProjectPath(path);
         if (!norm) return;
+        const search = document.getElementById('search-input');
+        if (search) search.value = '';
         const confirmed = this._normalizeProjectPath(this.currentCwd || '');
         const cur = this._normalizeProjectPath(
             this._pendingProjectPath || this.currentCwd || '',
         );
         if (norm === cur) {
-            this.renderProjectRail();
+            this._setProjectFilter(norm);
             return;
         }
         if (norm === confirmed && !this._pendingProjectSwitchId) {
@@ -10139,10 +10386,10 @@ class ResonantApp {
             const refresh = document.createElement('button'); refresh.textContent = 'Refresh status';
             refresh.onclick = () => this.send({command: 'preview_list'}); dialog.appendChild(refresh);
         } else {
-            dialog.innerHTML += '<p>Small project facts and decisions with sources. Stale notes are excluded from recall. Model assertions still need verification.</p>';
+            dialog.innerHTML += '<p>Keep build commands, project conventions, and recurring fixes here. Resonant recalls at most six relevant notes. Changed source files exclude a note until you review it; an unchanged file does not prove a command succeeded.</p>';
             for (const note of this._projectNotes || []) {
                 const section = document.createElement('section');
-                section.innerHTML = `<p>${esc(note.text)}</p><small>${esc(note.kind)} · ${esc(note.confidence)} · ${note.stale ? 'Stale' : 'Source unchanged'} · ${esc(note.source)}</small><p><button data-edit>Edit</button> <button data-delete>Delete</button></p>`;
+                section.innerHTML = `<p>${esc(note.text)}</p><small>${esc(note.kind)} · ${esc(note.confidence)} · ${note.stale ? 'Needs review: source changed' : note.sources?.length ? 'Source files unchanged' : 'No source files tracked'} · ${esc(note.source)}</small><p><button data-edit>Edit</button> <button data-delete>Delete</button></p>`;
                 section.querySelector('[data-edit]').onclick = () => {
                     const form = dialog.querySelector('form');
                     form.elements.id.value = note.id; form.elements.text.value = note.text;
@@ -10153,7 +10400,7 @@ class ResonantApp {
                 dialog.appendChild(section);
             }
             const form = document.createElement('form');
-            form.innerHTML = '<input type="hidden" name="id"><p><label>Note <textarea name="text" required maxlength="1000" rows="3" style="width:100%"></textarea></label></p><p><label>Source <input name="source" required maxlength="300" placeholder="Decision in this task, or file and line"></label></p><p><label>Kind <select name="kind"><option value="decision">Decision</option><option value="fact">Fact</option><option value="constraint">Constraint</option><option value="procedure">Procedure</option></select></label></p><p><label>Source files <input name="sources" placeholder="Relative paths, separated by commas"></label></p><button type="submit">Save note</button>';
+            form.innerHTML = '<input type="hidden" name="id"><p><label>Note <textarea name="text" required maxlength="1000" rows="3" style="width:100%"></textarea></label></p><p><label>Source <input name="source" required maxlength="300" placeholder="Decision in this task, or file and line"></label></p><p><label>Kind <select name="kind"><option value="decision">Decision</option><option value="fact">Fact</option><option value="constraint">Constraint</option><option value="procedure">Procedure</option><option value="build_command">Build or test command</option><option value="convention">Project convention</option><option value="fix">Recurring fix</option></select></label></p><p><label>Source files <input name="sources" placeholder="Relative paths, separated by commas"></label></p><button type="submit">Save note</button>';
             form.onsubmit = e => { e.preventDefault(); const values = Object.fromEntries(new FormData(form)); this.send({command: 'memory_save', ...values, sources: values.sources.split(',').map(s => s.trim()).filter(Boolean)}); };
             dialog.appendChild(form);
         }

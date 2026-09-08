@@ -1,6 +1,6 @@
 # Instructions
 
-This is Resonant Client: a provider-adaptive agentic coding desktop app. Its
+This is Resonant: a provider-adaptive agentic coding desktop app. Its
 flagship mission is making open models served through Ollama or EXO excellent
 at difficult, long-running coding work; Kimi and Codex adapters are also
 supported through the same model-neutral runtime contract.

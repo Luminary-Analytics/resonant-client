@@ -1,5 +1,5 @@
 """
-Resonant Client GUI — Server Launcher
+Resonant GUI — Server Launcher
 
 Starts the Starlette/uvicorn server and opens either a pywebview
 native window or a browser tab for the GUI.

@@ -1,4 +1,4 @@
-# Resonant Client — Roadmap
+# Resonant — Roadmap
 
 The current roadmap is governed by the
 [agentic harness north star](docs/agentic-harness-north-star.md). The highest

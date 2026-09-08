@@ -1,4 +1,4 @@
-# Resonant Client — Architecture Guide
+# Resonant — Architecture Guide
 
 This document describes every major module, data flow, and extension point in `resonant-client`. It is written so that any LLM or developer can pick up the codebase and contribute effectively.
 
@@ -11,7 +11,7 @@ not override that contract.
 
 ## Overview
 
-Resonant Client is an **Ollama-native agentic-coding desktop app** — an
+Resonant is an **Ollama-native agentic-coding desktop app** — an
 open-source flagship (MIT, since v0.6.3) for local-first, self-improving
 autonomous coding. The flagship configuration is **`glm-5.2:cloud`
 on Ollama running on the Mac Studio at `10.0.0.133`** (756B, 1M context,
@@ -417,7 +417,7 @@ pytest tests/test_grill_me_rigorous.py     # grill prompt invariants (incl. F1 R
 
 ## Release & Distribution
 
-As of v0.2.0 (April 2026), Resonant Client ships as a Windows installer with silent auto-update. The full pipeline is:
+As of v0.2.0 (April 2026), Resonant ships as a Windows installer with silent auto-update. The full pipeline is:
 
 1. `git push origin vX.Y.Z` triggers `.github/workflows/release.yml`
 2. CI builds a PyInstaller bundle, wraps it in an Inno Setup installer, signs it with EdDSA, publishes a GitHub Release, and updates `appcast.xml` on the `gh-pages` branch

@@ -1,5 +1,5 @@
 """
-Backend abstraction for Resonant Client.
+Backend abstraction for Resonant.
 
 Ollama is the local-first default, EXO provides distributed local inference,
 Kimi connects directly to Moonshot's OpenAI-compatible API, and Codex delegates
@@ -3919,7 +3919,7 @@ def create_backend(
         )
     if backend_type != "ollama":
         raise ValueError(
-            f"Unsupported backend {backend_type!r}. Resonant Client supports "
+            f"Unsupported backend {backend_type!r}. Resonant supports "
             f"Ollama, EXO, Kimi, Codex, and Claude Code."
         )
     if not model:

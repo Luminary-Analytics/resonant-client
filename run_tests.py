@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Resonant Client Test Runner
+Resonant Test Runner
 
 Run all tests:          python run_tests.py
 Run fast unit tests:    python run_tests.py --unit
@@ -17,7 +17,7 @@ import sys
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Resonant Client tests")
+    parser = argparse.ArgumentParser(description="Run Resonant tests")
     parser.add_argument("--unit", action="store_true", help="Run only unit tests")
     parser.add_argument("--integration", action="store_true", help="Run only integration tests")
     parser.add_argument("--adversarial", action="store_true", help="Run only adversarial tests")

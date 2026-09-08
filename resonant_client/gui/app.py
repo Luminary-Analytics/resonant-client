@@ -1,5 +1,5 @@
 """
-Resonant Client GUI — ASGI Application
+Resonant GUI — ASGI Application
 
 Starlette app with WebSocket endpoint for streaming EngineEvents
 to the web-based frontend. The engine runs in a background thread;
@@ -678,7 +678,7 @@ class AppState:
         # few seconds, so re-probing on a burst of UI actions buys nothing and
         # costs the user a frozen interface. `force=True` is for the explicit
         # "check again" paths, where the user has just changed something.
-        if not force and self.available_backends and not self._backend_probe_is_stale():
+        if not force and getattr(self, "_last_backend_probe", 0) and not self._backend_probe_is_stale():
             return self.available_backends
 
         self.refresh_network_defaults()
@@ -873,7 +873,7 @@ class AppState:
 
         if backend_type != "ollama":
             raise ValueError(
-                f"Backend '{backend_type}' is not supported. Resonant Client "
+                f"Backend '{backend_type}' is not supported. Resonant "
                 f"supports Ollama, EXO, Kimi, Codex, and Claude Code."
             )
 
@@ -1639,6 +1639,7 @@ class AppState:
 
         return {
             "event": "init",
+            "runtime_loading": bool(getattr(self, "_discovery_pending", False)),
             "refresh_only": refresh_only,
             "backends": backends_info,
             "current_backend": current_backend,
@@ -1686,6 +1687,28 @@ class AppState:
 
 
 state = AppState()
+
+
+async def _discover_for_navigation(target_state):
+    """Discover providers without blocking saved-project navigation.
+
+    Runtime construction stays in the serialized command handler. This task
+    only publishes availability, so a project switch cannot race a backend
+    being built for the previous workspace.
+    """
+    try:
+        await asyncio.to_thread(target_state.detect_backends)
+    except Exception:
+        logger.exception("Background provider discovery failed")
+    finally:
+        # Clear loading before notifying clients: their init request can arrive
+        # while send_json is still yielding, before this task reports done().
+        target_state._discovery_pending = False
+        for ws in tuple(getattr(target_state, "_navigation_viewers", ())):
+            try:
+                await ws.send_json({"event": "backends_discovered"})
+            except Exception:
+                logger.debug("Provider discovery viewer disconnected")
 
 
 # ── Autonomous-event forwarding helper (v0.5.6a3) ─────────────────────
@@ -1954,26 +1977,17 @@ async def websocket_endpoint(ws: WebSocket):
     state._ws_ref = ws
     state._ws_loop = asyncio.get_event_loop()
 
-    # Initialize if needed
+    # Saved work does not depend on a reachable inference server. Send the
+    # complete navigation catalog before any network or model setup work.
     if not state.available_backends:
-        state.refresh_network_defaults()
-        state.project._save_recent_project()
-        # Send sessions immediately so sidebar populates while backends are detected
-        await ws.send_json({
-            "event": "sessions_updated",
-            "sessions": state.project.list_sessions(),
-            "current_session_id": state.project.current_session.id if state.project.current_session else "",
-        })
-        await asyncio.get_event_loop().run_in_executor(None, state.detect_backends)
-
-    if not state.backend and state.available_backends:
-        try:
-            await asyncio.get_event_loop().run_in_executor(
-                None,
-                lambda: state.ensure_default_runtime_session(),
-            )
-        except Exception:
-            logger.exception("default runtime session startup failed")
+        await ws.send_json(await asyncio.to_thread(state.project.navigation_snapshot))
+    if not hasattr(state, "_navigation_viewers"):
+        state._navigation_viewers = set()
+    state._navigation_viewers.add(ws)
+    discovery = getattr(state, "_discovery_task", None)
+    if not state.available_backends and (discovery is None or discovery.done()):
+        state._discovery_pending = True
+        state._discovery_task = asyncio.create_task(_discover_for_navigation(state))
 
     # Initialize codebase index if not already set
     if not state.codebase_index and state.project:
@@ -2542,6 +2556,7 @@ async def websocket_endpoint(ws: WebSocket):
         logger.error(f"WebSocket error: {e}")
     finally:
         runs.detach(ws)
+        state._navigation_viewers.discard(ws)
         if getattr(state, "_ws_ref", None) is ws:
             state._ws_ref = None
 
@@ -2971,6 +2986,32 @@ async def homepage(request):
     )
 
 
+async def ui_state_endpoint(request):
+    from starlette.responses import JSONResponse
+    from .ui_state import ui_state
+    # Draft writes require JSON from this app's origin, never cross-site forms.
+    origin = request.headers.get('origin')
+    if origin and origin.rstrip('/') != str(request.base_url).rstrip('/'):
+        return JSONResponse({'error': 'Origin not allowed'}, status_code=403)
+    try:
+        write = request.method == 'POST'
+        if write:
+            if request.headers.get('content-type', '').split(';')[0] != 'application/json':
+                return JSONResponse({'error': 'JSON required'}, status_code=415)
+            body = await request.body()
+            if len(body) > 600000:
+                return JSONResponse({'error': 'Draft is too large'}, status_code=413)
+            data = json.loads(body)
+        else:
+            data = dict(request.query_params)
+        if not isinstance(data, dict):
+            raise ValueError('Invalid UI state')
+        return JSONResponse(await asyncio.to_thread(ui_state, data, write=write),
+                            headers={'Cache-Control': 'no-store'})
+    except (ValueError, OSError) as exc:
+        return JSONResponse({'error': str(exc)}, status_code=400)
+
+
 # ── Starlette App ─────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -2986,6 +3027,7 @@ app = Starlette(
     lifespan=_app_lifespan,
     routes=[
         Route("/", homepage),
+        Route("/api/ui-state", ui_state_endpoint, methods=['GET', 'POST']),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

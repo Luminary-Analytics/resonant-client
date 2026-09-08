@@ -121,6 +121,6 @@ class BackendSpec:
             )
 
         raise ValueError(
-            f"Backend '{backend_type}' is not supported. Resonant Client "
+            f"Backend '{backend_type}' is not supported. Resonant "
             f"supports Ollama, EXO, Kimi, Codex, and Claude Code."
         )

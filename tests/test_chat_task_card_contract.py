@@ -122,13 +122,13 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     assert '.live-run-toggle[aria-expanded="true"] .live-run-chevron' in styles
     assert "if (run.renderKey === renderKey) return;" in source
     assert "elapsed clocks update" in source
-    assert ".task-activity > .live-run-surface" in styles
-    assert ".task-activity > .live-run-surface .live-run-divider" in styles
-    assert ".task-activity > .live-run-surface .live-run-detail-status" in styles
-    assert '.task-activity:not(:has(.live-run-toggle[aria-expanded="true"]))' in styles
-    assert "> :not(.live-run-surface)" in styles
+    assert ".task-card > .live-run-surface" in styles
+    assert ".task-card > .live-run-surface .live-run-divider" in styles
+    assert ".task-card > .live-run-surface .live-run-detail-status" in styles
+    assert '.task-card-running:not(:has(> .live-run-surface .live-run-toggle[aria-expanded="true"]))' in styles
+    assert "> .task-activity > *" in styles
     assert "scrollbar-gutter: stable" in styles
-    live_dock_rule = styles[styles.index(".task-activity > .live-run-surface {"):]
+    live_dock_rule = styles[styles.index(".task-card > .live-run-surface {"):]
     live_dock_rule = live_dock_rule[:live_dock_rule.index("}")]
     assert "border: 0" in live_dock_rule
     input_bar_override = styles.index(".input-bar {\n    position: absolute;")
@@ -139,9 +139,9 @@ def test_running_task_has_persistent_progress_todos_and_subtask_visibility():
     card_start = source.index("    _beginTaskCard(")
     card_end = source.index("\n    _ensureTaskCard", card_start)
     card_body = source[card_start:card_end]
-    assert "activity.appendChild(this.liveRunSurface);" in card_body
+    assert card_body.index("card.appendChild(result);") < card_body.index("card.appendChild(this.liveRunSurface);")
     assert "liveEl: this.liveRunSurface" in card_body
-    assert "activity?.querySelector(':scope > .live-run-surface')?.remove();" in source
+    assert "if (task?.liveEl) task.liveEl.hidden = true;" in source
     assert "if (this._liveRun === run)" in source
 
 

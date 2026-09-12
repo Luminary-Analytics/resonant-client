@@ -1,6 +1,6 @@
 # Resonant architecture
 
-Current baseline: [v0.18.0](docs/v0.18.0-release-notes.md), including the compact
+Current baseline: [v0.18.1](docs/v0.18.1-release-notes.md), including the compact
 toolbar, sidebar, new-session project chooser, and SONN connection. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
 product priorities live in the [harness north star](docs/agentic-harness-north-star.md).
 
@@ -20,6 +20,7 @@ these services; it is not required for ordinary chat-based coding.
 | --- | --- | --- |
 | Providers | `backends.py`, `openrouter.py`, `sonn.py`, `capabilities.py`, `content.py` | Wire formats, streaming, capability discovery, normalized content |
 | Codex connection | `codex_account.py` | App-server lifecycle, account/login/model/quota RPCs |
+| Session naming | `engine/session_titles.py`, `gui/session_titles.py` | Immediate task titles and bounded post-turn refinement, guarded against renames/navigation |
 | Model context | `engine/model_prompts.py`, `protocol.py`, `engine/compression.py` | Stable prompt, tool schemas/parsing, context compaction |
 | Agent loop | `engine/session.py`, `engine/tools.py`, `engine/sandbox.py` | Model/tool iteration, execution, permissions, cancellation |
 | GUI server | `gui/app.py`, `gui/ws_commands.py`, `gui/chat_loop.py` | Startup, state, commands, streaming and active-run lifecycle |
@@ -48,7 +49,11 @@ Paths in the table are relative to `resonant_client/`.
    preserves the active draft; first-message persistence creates the saved record.
 5. `ChatRunLoop` coordinates active runs, queued follow-ups, cancellation, and
    commands. A model switch is rejected while a run is active.
-6. Engine events travel through a thread-safe queue to WebSocket clients;
+6. The shared live-progress surface is the active
+   task card's final child, after activity and response. Completion may offer
+   a local next-prompt placeholder; it remains outside persisted drafts until
+   the user accepts it. See [0.18.1 notes](docs/v0.18.1-release-notes.md).
+7. Engine events travel through a thread-safe queue to WebSocket clients;
    classic JavaScript scripts and descriptor-based mixins render them.
 
 Preserve render signatures, scroll/focus restoration, session-scoped draft

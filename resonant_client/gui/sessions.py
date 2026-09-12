@@ -482,11 +482,13 @@ class SessionRecord:
         director_run_id: str = "",
         event_log: str = "",
         session_format_version: int = SESSION_LEDGER_VERSION,
+        title_source: str = "",
     ):
         self.id = session_id or str(uuid.uuid4())[:8]
         if not is_valid_session_id(self.id):
             raise ValueError(f"Invalid session id: {self.id!r}")
         self.title = title
+        self.title_source = title_source
         self.project_path = project_path
         self.backend_type = backend_type
         self.model = model
@@ -607,6 +609,7 @@ class SessionRecord:
         data = {
             "id": self.id,
             "title": self.title,
+            "title_source": self.title_source,
             "project_path": self.project_path,
             "backend_type": self.backend_type,
             "model": self.model,
@@ -655,6 +658,7 @@ class SessionRecord:
         return cls(
             session_id=data.get("id", ""),
             title=data.get("title", ""),
+            title_source=data.get("title_source", ""),
             project_path=data.get("project_path", ""),
             backend_type=data.get("backend_type", ""),
             model=data.get("model", ""),
@@ -1113,11 +1117,13 @@ class ProjectManager:
 
     def update_session_title(self, first_message: str):
         """Auto-title the session from the first user message."""
-        if self.current_session and self.current_session.title == "New session":
-            title = first_message.strip()
-            if len(title) > 60:
-                title = title[:57] + "..."
-            self.current_session.title = title
+        from ..engine.session_titles import fallback_session_title
+
+        if (self.current_session and self.current_session.title == "New session"
+                and self.current_session.title_source != "manual"):
+            self.current_session.title = fallback_session_title(first_message)
+            self.current_session.title_source = "auto"
+            self.current_session.save()
 
     def delete_session(self, session_id: str):
         """Delete a session by ID."""

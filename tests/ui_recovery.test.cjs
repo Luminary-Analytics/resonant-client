@@ -7,7 +7,7 @@ const source = fs.readFileSync(path.join(__dirname, '../resonant_client/gui/stat
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function setup(fetch) {
-    const context = vm.createContext({fetch, URLSearchParams, Blob, console, WebSocket: {OPEN: 1}});
+    const context = vm.createContext({fetch, URLSearchParams, Blob, console, Event, document: {getElementById: () => null}, WebSocket: {OPEN: 1}});
     vm.runInContext(source + '\nthis.App = ResonantApp;', context);
     const app = Object.create(context.App.prototype);
     app.userInput = {value: '', style: {}, scrollHeight: 40};
@@ -133,4 +133,82 @@ test('native and fallback folder choices keep the new-session intent', () => {
     };
     app.handleEvent({event: 'folder_picker_unavailable'});
     assert.deepEqual(chosen, ['D:/alpha', 'D:/new-project']);
+});
+
+
+test('next prompt prefers explicit next steps and avoids failed or empty turns', () => {
+    const app = setup(() => {});
+    assert.equal(app._nextPromptSuggestion('Done.\n## Next steps\n- Add keyboard navigation to the project list.'),
+        "Let's do the next step: Add keyboard navigation to the project list.");
+    assert.equal(app._nextPromptSuggestion('Done', {outcome:'failed'}, true), '');
+    assert.equal(app._nextPromptSuggestion(''), '');
+    assert.match(app._nextPromptSuggestion('Updated the parser.', {}, true), /Review these changes/);
+    assert.match(app._nextPromptSuggestion('I recommend the smaller approach.'), /implementation plan/);
+    assert.doesNotMatch(app._nextPromptSuggestion('Next step: Deploy directly to production.'), /Deploy/);
+});
+
+test('Tab accepts a suggestion as an editable draft without sending; Escape dismisses', () => {
+    const app = setup(() => {});
+    app._draftScope = {key:'project:a'};
+    let edits = 0, prevented = 0;
+    app.userInput.dispatchEvent = event => { assert.equal(event.type, 'input'); edits++; };
+    app.sendMessage = () => assert.fail('Accepting must never send');
+    const key = name => ({key:name, preventDefault:() => prevented++});
+    app._promptSuggestion = {text:'Add keyboard navigation.', scope:'project:a'};
+    assert.equal(app._handlePromptSuggestionKey({...key('Tab'), shiftKey:true}), false);
+    assert.equal(app._handlePromptSuggestionKey({...key('Tab'), isComposing:true}), false);
+    assert.equal(app._handlePromptSuggestionKey(key('Tab')), true);
+    assert.equal(app.userInput.value, 'Add keyboard navigation.');
+    assert.equal(edits, 1);
+    app.userInput.value = '';
+    app._promptSuggestion = {text:'Another suggestion', scope:'project:a'};
+    assert.equal(app._handlePromptSuggestionKey(key('Escape')), true);
+    assert.equal(app.userInput.value, '');
+    assert.equal(app._promptSuggestion, null);
+    assert.equal(prevented, 2);
+});
+
+test('suggestion never replaces typed text or crosses a session boundary', () => {
+    const app = setup(() => {});
+    app._draftScope = {key:'project:b'};
+    app._promptSuggestion = {text:'From A', scope:'project:a'};
+    const tab = {key:'Tab', preventDefault:() => assert.fail('Keep normal Tab navigation')};
+    assert.equal(app._handlePromptSuggestionKey(tab), false);
+    app._promptSuggestion.scope = 'project:b';
+    app.userInput.value = 'My own direction';
+    assert.equal(app._handlePromptSuggestionKey(tab), false);
+    app.userInput.value = '';
+    app._fuzzyOpen = true;
+    assert.equal(app._handlePromptSuggestionKey(tab), false);
+    app._fuzzyOpen = false;
+    app.isRunning = true;
+    assert.equal(app._handlePromptSuggestionKey(tab), false);
+});
+
+
+test('completion suggestions preserve drafts and skip replay, errors, and queued follow-ups', () => {
+    const app = setup(() => {});
+    app._draftScope = {key:'project:a'};
+    const task = {resultEl:{querySelectorAll:() => [{innerText:'Next steps\nAdd keyboard navigation to the project list.'}]}};
+    app.userInput.value = 'My draft';
+    app._offerPromptSuggestion({}, task);
+    assert.equal(app.userInput.value, 'My draft');
+    assert.equal(app._promptSuggestion, null);
+    app.userInput.value = '';
+    app.isReplaying = true;
+    app._offerPromptSuggestion({}, task);
+    assert.equal(app._promptSuggestion, null);
+    app.isReplaying = false;
+    app._agentRunErrored = true;
+    app._offerPromptSuggestion({}, task);
+    assert.equal(app._promptSuggestion, null);
+    app._agentRunErrored = false;
+    app._queuedMessages = new Map([['queued', {}]]);
+    app._offerPromptSuggestion({}, task);
+    assert.equal(app._promptSuggestion, null);
+    app._queuedMessages.clear();
+    app._offerPromptSuggestion({}, task);
+    assert.equal(app._promptSuggestion.scope, 'project:a');
+    assert.match(app.userInput.placeholder, /keyboard navigation/);
+    assert.equal(app.userInput.value, '');
 });

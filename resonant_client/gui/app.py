@@ -1991,7 +1991,11 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     if not state.project.current_session:
         state.ensure_persisted_current_session(session_role=session_role)
 
-    if not state._first_message_sent:
+    from .session_titles import cancel_title_refinement, schedule_title_refinement
+    cancel_title_refinement(state)
+    first_turn = not state._first_message_sent
+    title_record = state.project.current_session
+    if first_turn:
         state.project.update_session_title(text)
     await ws.send_json({
         "event": "sessions_updated", "sessions": state.project.list_sessions(),
@@ -2045,6 +2049,8 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
             state.project.current_session.id if state.project.current_session else ""
         ),
     })
+    if first_turn and not state.cancel_requested.is_set():
+        schedule_title_refinement(state, ws, title_record, text)
 
 
 async def websocket_endpoint(ws: WebSocket):

@@ -2226,13 +2226,12 @@ async def _cmd_rename_session(ctx: CommandContext) -> None:
     session_id = ctx.msg.get("session_id", "")
     new_title = ctx.msg.get("title", "").strip()
     if session_id and new_title:
-        record = ctx.state.project.load_session(session_id)
+        current = ctx.state.project.current_session
+        record = current if current and current.id == session_id else ctx.state.project.load_session(session_id, activate=False)
         if record:
             record.title = new_title
+            record.title_source = "manual"
             record.save()
-            # Restore current session pointer if it changed
-            if ctx.state.project.current_session and ctx.state.project.current_session.id != session_id:
-                ctx.state.project.load_session(ctx.state.project.current_session.id)
         await ctx.send({
             "event": "sessions_updated",
             "sessions": ctx.state.project.list_sessions(),

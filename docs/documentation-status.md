@@ -1,6 +1,6 @@
 # Documentation status
 
-Reviewed for status and routing on September 12, 2026, against v0.18.0.
+Reviewed for status and routing on September 12, 2026, against v0.18.1.
 This catalog distinguishes guidance from historical evidence; classification
 alone is not a claim that every old result has been rerun or every API is live.
 SONN validation is recorded in [0.18.0 notes](v0.18.0-release-notes.md).
@@ -130,6 +130,7 @@ guidance needs an explicit status notice and a current replacement.
 - [docs/v0.16.0-release-notes.md](v0.16.0-release-notes.md)
 - [docs/v0.17.0-release-notes.md](v0.17.0-release-notes.md)
 - [docs/v0.17.1-release-notes.md](v0.17.1-release-notes.md)
+- [docs/v0.18.1-release-notes.md](v0.18.1-release-notes.md)
 - [docs/v0.18.0-release-notes.md](v0.18.0-release-notes.md)
 - [docs/v0.17.2-release-notes.md](v0.17.2-release-notes.md)
 - [docs/v0.5.10-release-notes.md](v0.5.10-release-notes.md)

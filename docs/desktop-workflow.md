@@ -1,8 +1,8 @@
 # Desktop workflow
 
-Applies to v0.18.0. Provider connections and the unified sidebar arrived in
+Applies to v0.18.1. Provider connections and the unified sidebar arrived in
 v0.17.0; v0.17.1 added the compact toolbar and session rows, and v0.17.2 adds
-the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.18.0-release-notes.md)
+the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.18.1-release-notes.md)
 and [Unreleased](unreleased.md).
 
 ## Projects and sessions
@@ -90,3 +90,30 @@ procedures, with project scope, pinning, and suppression controls. See
 Codex shows remaining subscription usage when the CLI account service reports
 it. OpenRouter shows provider-reported run costs and connection usage; model
 picker prices are catalog prices, which can differ from actual charges.
+
+## Conversation progress, suggestions, and titles
+
+Available in [0.18.1](v0.18.1-release-notes.md). The working
+status follows the latest assistant output at the bottom of the active turn.
+It stays below streamed text and tool details. Scrolling up to read history does
+not pull you back down; the new-messages button returns to the current work.
+Session rows are slightly indented beneath their project names.
+
+After a completed turn, an empty composer can show a suggested next prompt.
+**Tab** accepts it as an editable draft; **Enter** sends only after acceptance.
+Type your own message to ignore it, or press **Escape** to dismiss it.
+**Shift+Tab** continues normal keyboard navigation. Existing text and attachments
+are preserved. Suggestions are transient and scoped to the current conversation;
+they are not regenerated when replaying history. An accepted suggestion is saved
+like any other draft.
+
+Suggestions are chosen locally from the last reply's explicit next step, change
+summary, or recommendation. They do not use an additional model request and are
+not a claim that a model has planned or authorized the next action.
+
+New sessions also get a short task title from the first prompt. A local title
+appears immediately. With native model connections, a small tool-free request
+refines it after the first turn; slow or failed requests keep the local title.
+This uses the chosen model and can incur provider usage. Codex and Claude Code
+use the local title without starting a separate CLI run. You can rename any
+session yourself; automatic naming never overrides a manual title.

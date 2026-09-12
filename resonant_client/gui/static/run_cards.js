@@ -816,15 +816,6 @@ class ResonantRunCards {
 
         const activity = document.createElement('div');
         activity.className = 'task-activity';
-        // Keep in-flight work in the conversation, directly beneath the
-        // user's request. ChatGPT's desktop app treats activity as part of
-        // the response rather than as a second dashboard docked to the
-        // composer. The element is shared and moves to each new turn.
-        if (this.liveRunSurface) {
-            this.liveRunSurface.hidden = true;
-            activity.appendChild(this.liveRunSurface);
-        }
-
         const result = document.createElement('div');
         result.className = 'task-result';
         result.hidden = true;
@@ -837,6 +828,12 @@ class ResonantRunCards {
         card.appendChild(activity);
         card.appendChild(result);
         card.appendChild(footer);
+        // A shared progress surface follows all output in the active turn.
+        // Keeping it outside activity also keeps it visible when tools collapse.
+        if (this.liveRunSurface) {
+            this.liveRunSurface.hidden = true;
+            card.appendChild(this.liveRunSurface);
+        }
         this.chatMessages.appendChild(card);
 
         const task = {

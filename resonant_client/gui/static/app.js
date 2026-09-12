@@ -525,6 +525,7 @@ class ResonantApp {
         if (!project) return;
         const key = JSON.stringify([this._projectKey(project), session]);
         if (this._draftScope?.key === key) return;
+        this._clearPromptSuggestion();
         const previous = this._draftScope;
         const carry = migrateNew && previous && !previous.session &&
             this._projectKey(previous.project) === this._projectKey(project) ? this.userInput.value : '';
@@ -544,6 +545,7 @@ class ResonantApp {
             // A late read must never replace typing or a different conversation.
             if (this._draftScope !== scope || scope.edited || this.userInput.value) return;
             this.userInput.value = typeof draft.text === 'string' ? draft.text : '';
+            if (this.userInput.value) this._clearPromptSuggestion();
             scope.savedText = this.userInput.value;
             this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
             this._syncComposerGutter?.();
@@ -980,7 +982,8 @@ class ResonantApp {
             if (this._fuzzyOpen && this._handleFuzzyKeydown(e)) {
                 return;
             }
-            if (e.key === 'Enter' && !e.shiftKey) {
+            if (this._handlePromptSuggestionKey(e)) return;
+            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
                 e.preventDefault();
                 this.sendMessage();
             }
@@ -989,6 +992,7 @@ class ResonantApp {
         // Auto-resize textarea + drive the @-file fuzzy popup off the same
         // input event (avoids needing a second listener that could race).
         this.userInput.addEventListener('input', () => {
+            this._clearPromptSuggestion();
             this._markDraftEdited();
             clearTimeout(this._draftTimer);
             this._draftTimer = setTimeout(() => this._saveDraft(), 250);
@@ -1496,6 +1500,7 @@ class ResonantApp {
     }
 
     renderAttachedImages() {
+        if (this.attachedImages.length) this._clearPromptSuggestion();
         let container = document.getElementById('attached-images');
         if (!container) {
             container = document.createElement('div');
@@ -1568,6 +1573,7 @@ class ResonantApp {
     }
 
     _clearComposerAfterSend() {
+        this._clearPromptSuggestion();
         this.userInput.value = '';
         this._clearDraft();
         this.userInput.style.height = 'auto';
@@ -2837,6 +2843,7 @@ class ResonantApp {
 
     setRunning(running) {
         this.isRunning = running;
+        if (running) this._clearPromptSuggestion();
         this._setSessionActivity(running ? 'working' : 'idle');
         this.sendBtn.style.display = 'flex';
         this.stopBtn.style.display = running ? 'flex' : 'none';
@@ -6779,7 +6786,7 @@ class ResonantApp {
         // Live progress is transient. Keep only the concrete work rows in the
         // completed disclosure so expanding Activity never reveals an empty,
         // faded run dashboard.
-        activity?.querySelector(':scope > .live-run-surface')?.remove();
+        if (task?.liveEl) task.liveEl.hidden = true;
         if (!activity || activity.children.length === 0) return;
         if (activity.querySelector(':scope > .task-activity-details')) return;
 
@@ -6838,15 +6845,13 @@ class ResonantApp {
             return;
         }
 
-        const totalElapsed = event.total_elapsed || 0;
-        const totalSteps = event.total_steps || 0;
-
         // Per-turn footer — single dim line below the assistant's prose,
         // replaces the per-step "▣ model · tokens · 1.2s" footer that used
         // to repeat after every step.
         this._renderTurnFooter();
         this._finishActiveTask(event);
         this.setRunning(false);
+        this._offerPromptSuggestion(event, finishedTask);
         this.scrollToBottom();
 
         if (!this.isReplaying) {
@@ -6866,66 +6871,66 @@ class ResonantApp {
                 this._retryTask(finishedTask, { mode: 'retry', alternate: true, auto: true });
             }, 250);
         }
-        return;
+    }
 
-        const fileCount = (this._agentRunSummary && this._agentRunSummary.fileChanges)
-            ? this._agentRunSummary.fileChanges.length
-            : 0;
-        const todoTotal = (this._agentRunSummary && this._agentRunSummary.todos)
-            ? (this._agentRunSummary.todos.total || 0)
-            : 0;
-        const showRunCard = (
-            totalSteps >= 1 || fileCount > 0 || todoTotal > 0
-        );
-
-        if (showRunCard) {
-            const stepsForCard = totalSteps > 0 ? totalSteps : (fileCount > 0 ? 1 : 0);
-            this._renderAgentRunCompleteCard(totalElapsed, stepsForCard);
-        } else if (totalSteps > 1) {
-            const el = document.createElement('div');
-            el.className = 'session-end';
-            el.innerHTML = `<span class="check">✓</span> Done · ${totalSteps} steps · ${totalElapsed.toFixed(1)}s`;
-            this.chatMessages.appendChild(el);
+    /** Local suggestions use the finished answer and evidence; no extra API call. */
+    _nextPromptSuggestion(text, event = {}, changedFiles = false) {
+        if (['failed', 'blocked', 'interrupted', 'cancelled'].includes(event.outcome)) return '';
+        const plain = String(text || '').replace(/```[\s\S]*?```/g, '');
+        // Prefer a concrete next step explicitly offered in the final answer.
+        const next = plain.match(/(?:^|\n)\s*(?:#{1,6}\s*)?(?:\*\*)?next steps?(?:\*\*)?\s*:?[ \t]*(?:\n)?[ \t]*(?:[-*]|\d+[.)])?[ \t]*([^\n]+)/i);
+        if (next) {
+            const action = next[1].replace(/[*`_]/g, '').trim();
+            // Do not turn publication, destructive actions, or secrets into shortcuts.
+            if (action.length >= 12 && action.length <= 180 && !/https?:|\b(?:key|secret|token|deploy|push|publish|delete|remove|commit|password)\b/i.test(action)) {
+                return `Let's do the next step: ${action}`;
+            }
         }
+        if (changedFiles) return 'Review these changes for bugs and edge cases, and run the relevant checks.';
+        if (/\b(recommend|suggest|option|approach|plan)\b/i.test(plain)) return 'Turn your recommendation into a concrete implementation plan.';
+        return plain.trim() ? 'What would be the most useful next improvement to this work?' : '';
+    }
 
-        this.setRunning(false);
+    _offerPromptSuggestion(event, task) {
+        this._clearPromptSuggestion();
+        if (this.isReplaying || this.isRunning || this._agentRunErrored || this.userInput.value
+            || this.attachedImages?.length || this._queuedMessages?.size) return;
+        const messages = task?.resultEl?.querySelectorAll('.message-content');
+        const last = messages?.length ? messages[messages.length - 1] : null;
+        const text = last?.innerText || last?.textContent || '';
+        const suggestion = this._nextPromptSuggestion(text, event, !!this._agentRunSummary?.fileChanges?.length);
+        if (!suggestion) return;
+        this._promptSuggestion = {text: suggestion, scope: this._draftScope?.key};
+        this.userInput.placeholder = suggestion;
+        const hint = document.getElementById('composer-suggestion-hint');
+        if (hint) hint.hidden = false;
+        this._syncComposerGutter?.();
+    }
 
-        // Follow-up chips (not during replay)
-        if (!this.isReplaying) {
-            this._renderFollowUpChips();
-        }
-
-        this.scrollToBottom();
-
-        // Refresh git status after session (files may have changed)
-        if (!this.isReplaying) {
-            this.requestGitStatus();
+    _clearPromptSuggestion() {
+        this._promptSuggestion = null;
+        if (this.userInput) this.userInput.placeholder = this.isRunning
+            ? 'Write a follow-up for the running agent...' : 'Message Resonant';
+        if (typeof document !== 'undefined') {
+            const hint = document.getElementById('composer-suggestion-hint');
+            if (hint) hint.hidden = true;
         }
     }
 
-    _renderFollowUpChips() {
-        const suggestions = [];
-        const fc = (this._agentRunSummary && this._agentRunSummary.fileChanges) || [];
-        if (fc.length > 0) {
-            suggestions.push('Run tests');
-            suggestions.push('Explain the changes');
+    _handlePromptSuggestionKey(event) {
+        const suggestion = this._promptSuggestion;
+        if (!suggestion || this.isRunning || this.userInput.value || this._fuzzyOpen
+            || this.attachedImages?.length || suggestion.scope !== this._draftScope?.key
+            || event.isComposing || event.shiftKey || event.ctrlKey || event.altKey || event.metaKey) return false;
+        if (event.key !== 'Tab' && event.key !== 'Escape') return false;
+        event.preventDefault();
+        this._clearPromptSuggestion();
+        if (event.key === 'Tab') {
+            this.userInput.value = suggestion.text;
+            // Reuse draft persistence, textarea resize, and input observers.
+            this.userInput.dispatchEvent(new Event('input', {bubbles: true}));
         }
-        if (!suggestions.length) return;
-
-        const el = document.createElement('div');
-        el.className = 'follow-up-chips';
-        el.innerHTML = suggestions.map(s =>
-            `<button class="follow-up-chip">${this.escapeHtml(s)}</button>`
-        ).join('');
-        el.querySelectorAll('.follow-up-chip').forEach(btn => {
-            btn.addEventListener('click', () => {
-                el.remove();
-                this.userInput.value = btn.textContent;
-                this._syncComposerGutter?.();
-                this.sendMessage();
-            });
-        });
-        this.chatMessages.appendChild(el);
+        return true;
     }
 
     // ── Subagents ───────────────────────────────────────────────

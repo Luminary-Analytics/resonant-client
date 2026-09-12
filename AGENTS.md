@@ -49,6 +49,14 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
   plus buttons use that project directly. Cancel preserves the active draft.
   After choosing a project, start a draft there; do not persist empty
   conversations until the first message. Drafts remain scoped by project/session.
+- Live working status follows the active turn output; preserve manual scroll
+  position when the user reads older messages. Next-prompt suggestions are
+  transient, scoped to the conversation, and never replace typed drafts. Tab
+  accepts into the composer without sending; replay and cancelled/error turns
+  must not suggest work.
+- Automatic session titles summarize the first prompt. Preserve manual names;
+  background title results must be scoped to the original record and yield to
+  new coding work. Never start a CLI tool loop solely to name a session.
 - Saved conversations retain their provider/model. A saved project preference
   applies to new sessions. Provider changes require a stopped or finished run.
 - Deliver saved navigation before provider discovery. Network/account refreshes

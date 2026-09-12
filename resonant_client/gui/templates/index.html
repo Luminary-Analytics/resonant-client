@@ -352,6 +352,8 @@
                                 <div class="drop-hint">Drop image here</div>
                                 <textarea id="user-input"
                                           placeholder="Message Resonant"
+                                          aria-label="Message Resonant"
+                                          aria-describedby="composer-suggestion-hint"
                                           rows="2"
                                           autocomplete="off"
                                           spellcheck="false"></textarea>
@@ -366,6 +368,7 @@
                                     </svg>
                                 </button>
                             </div>
+                            <small id="composer-suggestion-hint" class="composer-suggestion-hint" hidden>Suggested next prompt · Tab to accept · Esc to dismiss</small>
                             <div class="input-footer">
                                 <div class="input-footer-left">
                                     <button class="add-context-btn" id="add-context-btn" title="Add context (paste/drop image, attach file)" aria-label="Add context">+</button>

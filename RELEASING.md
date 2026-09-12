@@ -125,4 +125,4 @@ signature as a SmartScreen-trusted publisher certificate.
   not automatically marked prerelease; verify GitHub/appcast behavior before
   using a prerelease channel.
 
-Current release evidence is recorded in [0.18.0 notes](docs/v0.18.0-release-notes.md).
+Current release evidence is recorded in [0.18.1 notes](docs/v0.18.1-release-notes.md).

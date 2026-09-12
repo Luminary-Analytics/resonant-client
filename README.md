@@ -13,7 +13,7 @@ for the engineering contract that governs harness changes.
 
 Start with the [desktop workflow](docs/desktop-workflow.md) for navigation and
 provider selection, or the [documentation index](docs/README.md) for contributor
-guides. [0.18.0](docs/v0.18.0-release-notes.md) adds SONN project connections;
+guides. [0.18.1](docs/v0.18.1-release-notes.md) improves live progress, session titles, and follow-up prompts;
 [Unreleased](docs/unreleased.md) tracks subsequent changes.
 
 ## Provider Support

@@ -1,10 +1,10 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-07-21
+Last updated: 2026-09-12
 
 This document describes the runtime Resonant uses for long-horizon coding with
-GLM, DeepSeek, and future open models. The design favors correct, verified
+its native provider adapters. The design favors correct, verified
 results and wall-clock performance over token minimization.
 
 ## Runtime contract
@@ -71,7 +71,8 @@ modality capabilities, preferred workers, concurrency, and project-local
 verified performance. No implicit token, context, output, time, or cost cap is
 introduced.
 
-The Agents panel includes a Director view with the current phase, frontier
+The historical Agents-panel Director view is not exposed by the current desktop
+frontend. Runtime data can describe the current phase, frontier
 model, worker pool, task dependencies, assignments, validation counts, and a
 project-local single-agent versus Director outcome comparison. See
 [`director-mode.md`](director-mode.md) for the complete contract and extension

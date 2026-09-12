@@ -2,10 +2,15 @@
 
 > **Audience:** contributors and LLMs picking up `resonant-client`.
 > **Status:** as-built through **v0.6.3** (2026-05-08). This is the
-> definitive architecture reference for the skill subsystem. For the
+> historical architecture reference for the original skill subsystem. For the
 > per-version change history see the `docs/v0.6.*-release-notes.md`
 > files; for the original design intent see `PLAN-SELF-IMPROVEMENT.md`
 > (note: that is the *plan*, this is the *as-built*).
+
+Current bounded retrieval, pins/suppression, bundled procedures, and sourced
+project notes are described in [skills](skills.md) and
+[priority improvements](priority-improvements.md). Extraction and reuse support
+learning, but do not establish a measured quality gain on every mission.
 
 ---
 

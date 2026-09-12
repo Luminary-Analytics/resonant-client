@@ -1,7 +1,7 @@
 # Release pipeline architecture
 
 The operational procedure is [RELEASING.md](../RELEASING.md). This document
-reflects the v0.17.0 workflow; measured sizes and durations are observations,
+reflects the workflow checked through v0.17.2; measured sizes and durations are observations,
 not permanent thresholds or guarantees.
 
 ## Source to installer

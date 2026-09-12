@@ -3928,6 +3928,10 @@ def create_backend(
     if backend_type == "openrouter":
         from .openrouter import OpenRouterBackend
         return OpenRouterBackend(api_key=api_key or "", model=model or "", thinking=thinking)
+    if backend_type == "sonn":
+        from .sonn import SonnBackend
+        return SonnBackend(api_key=api_key or "", model=model or SonnBackend.DEFAULT_MODEL,
+                           base_url=base_url or "")
     if backend_type == "kimi":
         return KimiBackend(
             api_key=api_key or "",
@@ -3944,7 +3948,7 @@ def create_backend(
     if backend_type != "ollama":
         raise ValueError(
             f"Unsupported backend {backend_type!r}. Resonant supports "
-            f"Ollama, EXO, Kimi, OpenRouter, Codex, and Claude Code."
+            f"Ollama, EXO, Kimi, OpenRouter, SONN, Codex, and Claude Code."
         )
     if not model:
         raise ValueError("Model name required for Ollama backend")

@@ -739,11 +739,13 @@ class TestStoppingRules:
             criteria=[("bash", "x")],
         )
         tracker = _StubCallTracker()
-        # Hang in dispatch so we have time to call stop().
+        # Synchronize with the wait hook; a fixed sleep races slow CI workers.
         block = threading.Event()
+        waiting = threading.Event()
 
         def wait_block(handle):
-            block.wait(timeout=2.0)
+            waiting.set()
+            assert block.wait(timeout=10.0)
             return DispatchOutcome(success=True, handle=handle)
 
         base = _make_hooks(tracker)
@@ -758,11 +760,13 @@ class TestStoppingRules:
         )
         daemon, events = _make_daemon(path, hooks)
         daemon.start()
-        # Wait for the daemon to enter wait_for_dispatch.
-        time.sleep(0.05)
-        daemon.stop("user_stop", "user clicked stop")
-        block.set()
-        daemon.join(timeout=2.0)
+        try:
+            assert waiting.wait(5.0), "Daemon did not reach the in-flight wait"
+            daemon.stop("user_stop", "user clicked stop")
+        finally:
+            block.set()
+            daemon.join(timeout=5.0)
+        assert not daemon.is_running()
 
         # cancel_dispatch should have been called on the in-flight handle.
         assert len(tracker.cancelled_handles) == 1

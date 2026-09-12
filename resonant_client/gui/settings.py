@@ -40,13 +40,15 @@ DEFAULTS = {
         "ollama_url": "",
         # Empty means use EXO_API_URL/EXO_BASE_URL or the local EXO endpoint.
         "exo_url": "",
+        # SONN requires an explicitly configured workspace/project API base URL.
+        "sonn_url": "",
         # v0.4.4 (T1.4) — `resonant_api_url` and `remote_engine_ws_url`
         # were dropped here. Pre-v0.4.0 settings.json files that still
         # carry those keys load fine — Python dict tolerance ignores
         # unknown keys; nothing reads them anymore.
     },
     # Secrets are masked before settings are sent to the frontend.
-    "api_keys": {"kimi": "", "openrouter": "", "telegram_bot": ""},
+    "api_keys": {"kimi": "", "openrouter": "", "sonn": "", "telegram_bot": ""},
     "project_models": {},
     "model_favorites": {"models": []},
     # Chat-channel gateway (`resonant gateway`): drive the agent from

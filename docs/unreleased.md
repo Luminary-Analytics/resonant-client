@@ -1,6 +1,8 @@
 # Unreleased
 
-No pending changes after [0.17.2](v0.17.2-release-notes.md).
+Changes after [0.18.0](v0.18.0-release-notes.md).
 
-Record future changes here until they are assigned to a release. Longer-term
-validation work remains in [ROADMAP.md](../ROADMAP.md).
+No unreleased implementation changes. Authenticated live SONN coding evaluation
+remains pending the user entering a key in Settings; see [SONN](sonn.md).
+Record future changes here. Longer-term validation work remains in
+[ROADMAP.md](../ROADMAP.md).

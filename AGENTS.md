@@ -12,11 +12,14 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.
-- Keep behavior capability-driven. Ollama, EXO, Kimi, and OpenRouter adapters
+- Keep behavior capability-driven. Ollama, EXO, Kimi, OpenRouter, and SONN adapters
   translate provider protocols into the engine contract. Codex and Claude Code
   run their own CLI tool loops; do not claim identical native tool behavior.
 - Preserve explicit model choices. Account discovery may update available
   models, but adding a model must not silently change a user's default.
+- SONN uses a user-configured project URL, `sonn-auto`, and standard Chat
+  Completions. Preserve the complete URL path; never commit project credentials
+  or infer vision/reasoning support from the routing alias. See [SONN](docs/sonn.md).
 - ChatGPT/Codex and OpenRouter are separate connections. Codex owns its login
   credentials; OpenRouter uses a separately billed API key. Never expose secrets
   in UI responses, diagnostics, fixtures, or serialized `BackendSpec` values.
@@ -94,6 +97,14 @@ Update user-facing instructions and architecture contracts with behavior
 changes. Keep versioned release notes factual; pending changes belong in
 [Unreleased](docs/unreleased.md). Do not rewrite historical test results as
 current validation or treat old plans as implementation instructions.
+
+Use [documentation status](docs/documentation-status.md) to distinguish active
+guides from historical designs and evaluations. Update active guidance against
+source and tests; mark superseded documents with replacement links. Preserve
+historical dates and results instead of making an old report appear revalidated.
+New provider integrations require a verified API contract, endpoint, authentication
+configuration, streaming/tool semantics, and capability behavior. Do not infer
+a new service's protocol from an old provider name or archived engine plan.
 
 Commit/push/deploy when requested. Release version changes belong in both
 `pyproject.toml` and `resonant_client/__init__.py`; publish a matching tag and

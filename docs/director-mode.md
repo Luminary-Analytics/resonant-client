@@ -1,8 +1,8 @@
 # Director Mode
 
-Status: implemented foundation and canonical extension contract  
+Status: runtime foundation and extension contract; no current desktop controls
 Audience: users, maintainers, coding agents, and model-adapter authors  
-Last updated: 2026-07-21
+Last updated: 2026-09-12
 
 Director Mode lets one selected frontier model supervise a selected pool of
 worker models. It is designed for difficult, long-running coding tasks where
@@ -26,28 +26,18 @@ authority. The Director must:
 The runtime enforces the control flow. It does not rely on the frontier model
 remembering the policy in prose.
 
-## User workflow
+## Availability and configuration
 
-The **Director** control in the chat composer opens session-local setup:
+The current desktop template and frontend do not expose a Director composer
+control or an Agents → Director view. Earlier descriptions of those controls
+are superseded. Use the [desktop guide](desktop-workflow.md) for supported UI
+flows; this document describes the engine foundation and integration contract.
 
-- enable or disable Director Mode;
-- select the frontier Director model;
-- select one or more worker models;
-- mark workers as vision-capable when appropriate;
-- choose safe parallelism;
-- require deterministic validation and independent Director review; and
-- optionally integrate automatically, but only after gates pass.
-
-The strongest available model is the recommended Director. Worker selection is
-fully explicit; Resonant does not silently spend against an unselected provider.
-Changing this configuration between runs rebuilds the session runtime while
-preserving conversation history. Switching or forking sessions restores the
-configuration; a fork starts a new Director run so it cannot mutate the source
-graph.
-
-The **Agents → Director** view shows the current phase, task graph, dependencies,
-worker assignments, validation counts, worker pool, and a project-local quality
-benchmark. Normal agent transcripts and controls remain in the Agents view.
+Integrations using `DirectorConfig` must explicitly choose the Director and
+worker models, capabilities, parallelism, evidence policy, and integration
+policy. Configuration persistence, session reconstruction, and user-facing
+controls require verification in the consuming surface. The presence of engine
+types or isolated tests does not establish that a desktop workflow is available.
 
 ## Durable state
 

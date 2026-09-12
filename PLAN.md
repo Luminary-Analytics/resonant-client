@@ -1,5 +1,9 @@
 # Resonant — Roadmap
 
+> Historical April 2026 refocus plan. The single-model and machine-specific
+> defaults below are superseded. Use [ROADMAP.md](ROADMAP.md),
+> [ARCHITECTURE.md](ARCHITECTURE.md), and [AGENTS.md](AGENTS.md) for current work.
+
 ## Overview
 
 The client was refocused (April 2026) to a single agentic-coding experience powered by `deepseek-v4-flash:cloud` on Ollama running on the Mac Studio at `10.0.0.133`. Chat / Workspaces / Automations / Background-agents tabs were removed.

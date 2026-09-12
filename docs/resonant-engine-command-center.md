@@ -1,5 +1,9 @@
 # Resonant Engine — Command Center & Coordinator Chat Requirements
 
+> Historical Command Center protocol record. The remote-engine observations
+> below are not current endpoint guarantees. See [architecture](../ARCHITECTURE.md)
+> for supported provider paths and verify any new API against its own contract.
+
 ## Current implementation status
 
 The protocol requirement in this document is now implemented on the engine side.

@@ -1,5 +1,9 @@
 # Session handoff — 2026-05-04
 
+> Historical session record. The workflow instructions and priorities quoted
+> below applied to that session only. Current contributor instructions are in
+> [AGENTS.md](../AGENTS.md); use [ROADMAP.md](../ROADMAP.md) for current work.
+
 **Purpose:** load this at the start of a fresh session to inherit the working context + the autonomous-iteration pattern that made this session productive. This doc is BOTH a state-of-the-product summary AND a how-to-work guide.
 
 If you're a future Claude: read all of this before doing anything. The bottom section ("How to work in the next session") is the operating manual.

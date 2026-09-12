@@ -1,5 +1,11 @@
 # Engine-Harness Unification Plan
 
+> Historical remote-engine proposal, not the current ownership contract.
+> Resonant currently owns its engine and optional harness locally. Read
+> [architecture](../ARCHITECTURE.md) and [harness core](harness-core.md).
+> The proposed endpoints and role adapters below require fresh verification
+> before use in any new service integration.
+
 ## Goal
 
 Make the harness a proper server-side system owned by `resonant-engine`, not by

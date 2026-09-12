@@ -2751,6 +2751,10 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
     key = ctx.msg.get("key")
     value = ctx.msg.get("value")
     clear_secret = bool(ctx.msg.get("clear_secret", False))
+    if ctx.runs.busy and ((section == "api_keys" and key in {None, "sonn"})
+                         or (section == "network" and key in {None, "sonn_url"})):
+        await ctx.send({"event": "error", "message": "Finish or stop the current run before changing SONN settings."})
+        return
     data = await asyncio.to_thread(ctx.state.update_setting_value, section, key, value, clear_secret=clear_secret)
     await ctx.send({"event": "settings", "data": data})
     await ctx.send(ctx.state.get_init_data(refresh_only=True))
@@ -2760,6 +2764,8 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
 async def _cmd_provider_connection(ctx: CommandContext) -> None:
     from ..codex_account import codex_account
     from ..openrouter import OpenRouterBackend
+    from ..sonn import SonnBackend
+    from ..network_defaults import resolve_sonn_url
 
     provider = ctx.msg.get("provider")
     action = ctx.msg.get("action", "status")
@@ -2791,6 +2797,13 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
             data = await asyncio.to_thread(OpenRouterBackend(api_key, "connection-check").health)
             await asyncio.to_thread(OpenRouterBackend.catalog, force=True)
             await asyncio.to_thread(ctx.state.detect_backends, force=True)
+        elif provider == "sonn" and action == "status":
+            api_key, _, _, _ = ctx.state._api_key_details("sonn", "SONN_API_KEY")
+            base_url = resolve_sonn_url(settings_data=ctx.state.settings.get_all())
+            data = await asyncio.to_thread(SonnBackend(api_key, base_url=base_url).health)
+            ctx.state.available_backends["sonn"] = {
+                "url": base_url, "models": data["models"], "model_labels": data["model_labels"],
+            }
         else:
             raise ValueError("Unknown provider connection.")
         await ctx.send({"event": "provider_connection", "provider": provider, "data": data})

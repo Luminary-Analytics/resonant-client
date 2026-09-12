@@ -1,7 +1,10 @@
 # Engineering state — 2026-07-27
 
-Status: current working reference for the v0.11.7–v0.11.12 stretch
+Status: historical working reference for the v0.11.7–v0.11.12 stretch
 Audience: contributors and coding agents picking this repo up cold
+
+For current ownership and delivery status, use [architecture](../ARCHITECTURE.md),
+[ROADMAP.md](../ROADMAP.md), and the [documentation index](README.md).
 
 `docs/agentic-harness-north-star.md` still outranks this document on product
 and architecture direction. `ROADMAP.md` remains the backlog of record. This

@@ -1,8 +1,8 @@
 # Desktop workflow
 
-Applies to v0.17.2. Provider connections and the unified sidebar arrived in
+Applies to v0.18.0. Provider connections and the unified sidebar arrived in
 v0.17.0; v0.17.1 added the compact toolbar and session rows, and v0.17.2 adds
-the new-session project chooser. See [release notes](v0.17.2-release-notes.md)
+the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.18.0-release-notes.md)
 and [Unreleased](unreleased.md).
 
 ## Projects and sessions

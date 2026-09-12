@@ -29,7 +29,7 @@ have explicit size ceilings.
 
 ## Fast execution path
 
-The normal engine-driven coding path (Ollama, EXO, Kimi, and OpenRouter) is deliberately small:
+The normal engine-driven coding path (Ollama, EXO, Kimi, OpenRouter, and SONN) is deliberately small:
 
 1. Send a byte-stable system prompt and a ten-tool coding core: read, write,
    edit, shell, glob, grep, parallel read batch, sub-agent, user decision, and
@@ -45,8 +45,8 @@ The normal engine-driven coding path (Ollama, EXO, Kimi, and OpenRouter) is deli
 
 Uncommon desktop, process, recording, REPL, and git tools are loaded by
 `search_tools` only when required. Ollama receives loaded schemas in subsequent
-top-level `tools`; Kimi uses its provider-native in-history catalog. OpenRouter
-uses top-level tool schemas and removes Moonshot-specific catalog messages. Director
+top-level `tools`; Kimi uses its provider-native in-history catalog. OpenRouter and SONN
+use top-level tool schemas and removes Moonshot-specific catalog messages. Director
 mode explicitly adds its orchestration tools and is not limited to the normal
 coding core.
 

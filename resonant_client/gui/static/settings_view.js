@@ -23,6 +23,7 @@ class ResonantSettingsView {
         const connections = this.providerConnections || {};
         const codex = connections.codex || {};
         const router = connections.openrouter || {};
+        const sonn = connections.sonn || {};
         const account = codex.account;
         const subscription = account?.type?.startsWith('chatgpt');
         const accountLabel = subscription ? `ChatGPT ${account.planType || ''} · ${account.email || 'Connected'}`
@@ -50,7 +51,10 @@ class ResonantSettingsView {
             </div><div class="provider-connection"><strong>OpenRouter</strong>
             <p>${this.escapeHtml(router.error || (router.status === 'ready' ? 'Connected · API usage is billed through OpenRouter' : 'Add an OpenRouter key in API keys below, then check the connection.'))}</p>
             ${typeof router.usage === 'number' ? `<p class="provider-note">Key usage: $${router.usage.toFixed(4)}${typeof router.limit_remaining === 'number' ? ` · key allowance remaining: $${router.limit_remaining.toFixed(2)}` : ''}</p>` : ''}
-            <button class="btn-sm" data-provider="openrouter" data-provider-action="status">Check connection & refresh models</button></div>`;
+            <button class="btn-sm" data-provider="openrouter" data-provider-action="status">Check connection & refresh models</button></div>
+            <div class="provider-connection"><strong>SONN</strong>
+            <p>${this.escapeHtml(sonn.error || (sonn.status === 'ready' ? `Connected · ${sonn.model_count} models available` : 'Set your project API base URL in Network and your SONN key in API keys below.'))}</p>
+            <button class="btn-sm" data-provider="sonn" data-provider-action="status">Check SONN connection & refresh models</button></div>`;
     }
 
     openProviderPicker() {
@@ -544,6 +548,7 @@ class ResonantSettingsView {
                           { value: 'kimi', label: 'Kimi API' },
                           { value: 'codex', label: 'ChatGPT / Codex' },
                           { value: 'openrouter', label: 'OpenRouter' },
+                          { value: 'sonn', label: 'SONN' },
                           { value: '', label: 'Auto' },
                       ]
                     },
@@ -616,11 +621,16 @@ class ResonantSettingsView {
                     { key: 'ollama_url', label: 'Ollama URL (e.g. http://127.0.0.1:11434)', type: 'text' },
                     { key: 'exo_url', label: 'EXO OpenAI API URL', type: 'text',
                       hint: 'Default: http://127.0.0.1:52415/v1. EXO_API_URL and EXO_BASE_URL are also supported.' },
+                    { key: 'sonn_url', label: 'SONN API base URL', type: 'text',
+                      placeholder: 'https://getsonn.com/v1/workspace/projects/<project-id>/openai/v1',
+                      hint: 'Paste your project connection URL ending in /openai/v1. SONN_API_URL is also supported. Model: sonn-auto.' },
                 ]
             },
             {
                 id: 'api_keys', title: 'API keys', open: false,
                 fields: [
+                    { key: 'sonn', label: 'SONN API key', type: 'password',
+                      hint: 'Enter your private invitation key. Stored locally in ~/.resonant/settings.json and hidden after saving. SONN_API_KEY is also supported.' },
                     { key: 'openrouter', label: 'OpenRouter API key', type: 'password',
                       hint: 'Stored locally in ~/.resonant/settings.json. OPENROUTER_API_KEY is also supported. API calls use your OpenRouter credits.' },
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
@@ -828,26 +838,24 @@ class ResonantSettingsView {
                         const opts = field.options.map(o =>
                             `<option value="${o.value}" ${val === o.value ? 'selected' : ''}>${o.label}</option>`
                         ).join('');
-                        input = `<select class="settings-select" data-section="${section.id}" data-key="${field.key}">${opts}</select>`;
+                        input = `<select class="settings-select" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}">${opts}</select>`;
                     } else if (field.type === 'toggle') {
                         const checked = val ? 'checked' : '';
-                        input = `<label style="cursor:pointer"><input type="checkbox" ${checked} data-section="${section.id}" data-key="${field.key}" style="cursor:pointer" /> ${val ? 'On' : 'Off'}</label>`;
+                        input = `<label style="cursor:pointer"><input type="checkbox" ${checked} data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" style="cursor:pointer" /> ${val ? 'On' : 'Off'}</label>`;
                     } else if (field.type === 'password') {
                         const hasSecret = Boolean(this.settings._meta?.api_keys_present?.[field.key]);
                         input = `
                             <div style="display:flex;align-items:center;gap:8px;">
-                                <input class="settings-input" type="password" value="" data-section="${section.id}" data-key="${field.key}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}" style="flex:1" />
+                                <input class="settings-input" type="password" value="" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}" style="flex:1" />
                                 <span style="color:var(--muted);font-size:11px;white-space:nowrap">${hasSecret ? 'Stored' : 'Not set'}</span>
-                                ${hasSecret ? `<button class="btn-sm settings-clear-secret" data-section="${section.id}" data-key="${field.key}" style="font-size:11px">Clear</button>` : ''}
+                                ${hasSecret ? `<button class="btn-sm settings-clear-secret" data-section="${section.id}" data-key="${field.key}" aria-label="Clear ${this.escapeHtml(field.label)}" style="font-size:11px">Clear</button>` : ''}
                             </div>
                         `;
-                    } else if (field.type === 'password') {
-                        input = `<input class="settings-input" type="password" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}" placeholder="••••" />`;
                     } else if (field.type === 'number') {
-                        input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${section.id}" data-key="${field.key}" placeholder="None" style="width:80px" />`;
+                        input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None" style="width:80px" />`;
                     } else {
                         const ph = field.placeholder ? ` placeholder="${this.escapeHtml(field.placeholder)}"` : '';
-                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}"${ph} />`;
+                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph} />`;
                     }
                     const hint = field.hint ? `<div class="settings-row-hint">${this.escapeHtml(field.hint)}</div>` : '';
                     bodyHtml += `<div class="settings-row"><span class="settings-row-label">${field.label}</span><div class="settings-row-value">${input}${hint}</div></div>`;

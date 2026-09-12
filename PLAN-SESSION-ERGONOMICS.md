@@ -40,8 +40,8 @@ All four tasks below are ✅ shipped. Each line points to the implementing files
 
 **Lives in:**
 - [resonant_client/gui/sessions.py](resonant_client/gui/sessions.py) — `ProjectManager.fork_session(source_id, fork_at_message_index) -> SessionRecord`
-- [resonant_client/gui/app.py:6004](resonant_client/gui/app.py:6004) — WebSocket handler `fork_session` (rebuilds backend, restores conversation_history, sends `session_forked` then `session_loaded`)
-- [resonant_client/gui/static/app.js:4278](resonant_client/gui/static/app.js:4278) — `data-action="fork"` button on `.msg-user` hover-actions; `_forkFromUserMessage(el)` computes the user-message index and sends the WebSocket command
+- [resonant_client/gui/app.py:6004](resonant_client/gui/app.py) — WebSocket handler `fork_session` (rebuilds backend, restores conversation_history, sends `session_forked` then `session_loaded`)
+- [resonant_client/gui/static/app.js:4278](resonant_client/gui/static/app.js) — `data-action="fork"` button on `.msg-user` hover-actions; `_forkFromUserMessage(el)` computes the user-message index and sends the WebSocket command
 - [tests/test_session_ergonomics.py](tests/test_session_ergonomics.py) — covers fork-from-first / fork-from-last / fork-with-subagent slicing
 
 **Verify:**
@@ -60,7 +60,7 @@ Manual:
 ### Task 2.2 — Inline diff in chat (replace permission modal for `file_edit` / `file_write`) ✅ Shipped
 
 **Lives in:**
-- [resonant_client/gui/static/app.js:4187](resonant_client/gui/static/app.js:4187) — `_renderInlineDiffPermission(toolName, args, review)` called from the `tool.permission` handler at line 4098 when `tool_name in {file_edit, file_write}`
+- [resonant_client/gui/static/app.js:4187](resonant_client/gui/static/app.js) — `_renderInlineDiffPermission(toolName, args, review)` called from the `tool.permission` handler at line 4098 when `tool_name in {file_edit, file_write}`
 - [resonant_client/gui/static/styles.css](resonant_client/gui/static/styles.css) — `.inline-diff`, `.inline-diff-header`, `.inline-diff-body`, `.inline-diff-actions`, `.inline-diff-summary` styles
 - [resonant_client/gui/templates/index.html](resonant_client/gui/templates/index.html) — `#permission-dialog` retained for `bash` and other risky non-edit tools (no template change needed; the modal still drives those)
 - [resonant_client/gui/app.py](resonant_client/gui/app.py) — no change (same `tool.permission` event drives both rendering paths)
@@ -79,8 +79,8 @@ Trigger an agent edit, confirm the diff appears inline at the bottom of `#chat-m
 ### Task 2.3 — Session replay scrubber ✅ Shipped
 
 **Lives in:**
-- [resonant_client/gui/static/app.js:4380](resonant_client/gui/static/app.js:4380) — `_enterReplayMode(events)`, `_toggleReplayPlay`, `_renderUpToEventIndex`
-- [resonant_client/gui/app.py:5971](resonant_client/gui/app.py:5971) — WebSocket handler `get_session_replay_events`
+- [resonant_client/gui/static/app.js:4380](resonant_client/gui/static/app.js) — `_enterReplayMode(events)`, `_toggleReplayPlay`, `_renderUpToEventIndex`
+- [resonant_client/gui/app.py:5971](resonant_client/gui/app.py) — WebSocket handler `get_session_replay_events`
 - [resonant_client/gui/static/styles.css](resonant_client/gui/static/styles.css) — `.replay-scrubber` floating bar above the input
 - [resonant_client/gui/templates/index.html](resonant_client/gui/templates/index.html) — scrubber element is created on demand by JS (no static markup needed)
 - Replay entry point: a "▶ Replay" item on the session row's context menu
@@ -100,7 +100,7 @@ Manual:
 ### Task 2.4 — Voice input (push-to-talk) ✅ Shipped
 
 **Lives in:**
-- [resonant_client/gui/static/app.js:1954](resonant_client/gui/static/app.js:1954) — `_setupVoiceInput()` (Web Speech API primary, graceful fallback message in unsupported runtimes)
+- [resonant_client/gui/static/app.js:1954](resonant_client/gui/static/app.js) — `_setupVoiceInput()` (Web Speech API primary, graceful fallback message in unsupported runtimes)
 - [resonant_client/gui/templates/index.html](resonant_client/gui/templates/index.html) — `#mic-btn` in `.input-footer-left`
 - [resonant_client/gui/static/styles.css](resonant_client/gui/static/styles.css) — `.mic-btn` idle / recording (red-pulse) / error states
 - Desktop fallback (`whisper.cpp` shim) deliberately deferred — see "Future / nice-to-haves" below
@@ -111,7 +111,7 @@ Manual in Chromium (or pywebview's WebView2, which exposes `webkitSpeechRecognit
 2. Release → text appears in `#user-input`.
 3. Press Enter → agent runs `glob` or `bash ls`.
 
-If the runtime doesn't expose SpeechRecognition, the mic button shows a tooltip: *"Voice input not supported (try a Chromium browser, or wire whisper.cpp on the desktop)"* — see [app.js:1970](resonant_client/gui/static/app.js:1970).
+If the runtime doesn't expose SpeechRecognition, the mic button shows a tooltip: *"Voice input not supported (try a Chromium browser, or wire whisper.cpp on the desktop)"* — see [app.js:1970](resonant_client/gui/static/app.js).
 
 **Done when (✅):** Hold-to-talk transcription works end-to-end on Chromium / WebView2. Falls back to a clear tooltip message on unsupported runtimes.
 

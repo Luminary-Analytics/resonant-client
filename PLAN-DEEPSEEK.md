@@ -16,26 +16,26 @@ Surface the model's specific capabilities so the user can drive them. `deepseek-
 
 Files a future executor (or anyone extending this cluster) must read first:
 
-- [resonant_client/backends.py:164](resonant_client/backends.py:164) — `OllamaBackend.__init__` (accepts `thinking="low"|"med"|"high"|None`)
-- [resonant_client/backends.py:204](resonant_client/backends.py:204) — `OllamaBackend.get_runtime_telemetry()`
+- [resonant_client/backends.py:164](resonant_client/backends.py) — `OllamaBackend.__init__` (accepts `thinking="low"|"med"|"high"|None`)
+- [resonant_client/backends.py:204](resonant_client/backends.py) — `OllamaBackend.get_runtime_telemetry()`
 - [resonant_client/gui/sessions.py](resonant_client/gui/sessions.py) — `SessionRecord.thinking_mode` field
-- [resonant_client/gui/runtime.py:36](resonant_client/gui/runtime.py:36) — `BackendSpec.thinking_mode`
-- [resonant_client/gui/app.py:170](resonant_client/gui/app.py:170) — `_apply_big_context_profile()` env-var override at startup and on settings change
-- [resonant_client/gui/app.py:5917](resonant_client/gui/app.py:5917) — WebSocket handler `get_model_telemetry`
-- [resonant_client/gui/static/app.js:186](resonant_client/gui/static/app.js:186) — `thinkingModeSelector` element binding; change handler at line 366; `_updateThinkingModeVisibility` at line 1942; `setThinkingMode` sync at line 2053
-- [resonant_client/gui/templates/index.html:306](resonant_client/gui/templates/index.html:306) — `<select id="thinking-mode-selector">` (hidden until model name starts with `deepseek-v`)
+- [resonant_client/gui/runtime.py:36](resonant_client/gui/runtime.py) — `BackendSpec.thinking_mode`
+- [resonant_client/gui/app.py:170](resonant_client/gui/app.py) — `_apply_big_context_profile()` env-var override at startup and on settings change
+- [resonant_client/gui/app.py:5917](resonant_client/gui/app.py) — WebSocket handler `get_model_telemetry`
+- [resonant_client/gui/static/app.js:186](resonant_client/gui/static/app.js) — `thinkingModeSelector` element binding; change handler at line 366; `_updateThinkingModeVisibility` at line 1942; `setThinkingMode` sync at line 2053
+- [resonant_client/gui/templates/index.html:306](resonant_client/gui/templates/index.html) — `<select id="thinking-mode-selector">` (hidden until model name starts with `deepseek-v`)
 - [Ollama API docs](https://github.com/ollama/ollama/blob/main/docs/api.md) — `/api/chat` options, `/api/show`, `/api/ps`
 
 ## Prior art (do NOT reinvent)
 
 | Feature | Where it lives now |
 |---|---|
-| `OllamaBackend._ollama_options` env-driven (num_ctx, num_batch, num_gpu) | [backends.py:172](resonant_client/backends.py:172) |
-| `RESONANT_OLLAMA_NUM_CTX=32768` default | [backends.py:180](resonant_client/backends.py:180) |
-| `keep_alive=120m` for warm-loaded models | [backends.py:197](resonant_client/backends.py:197) |
+| `OllamaBackend._ollama_options` env-driven (num_ctx, num_batch, num_gpu) | [backends.py:172](resonant_client/backends.py) |
+| `RESONANT_OLLAMA_NUM_CTX=32768` default | [backends.py:180](resonant_client/backends.py) |
+| `keep_alive=120m` for warm-loaded models | [backends.py:197](resonant_client/backends.py) |
 | `deepseek-v4-flash:cloud` first in `CLOUD_MODELS` | [backends.py](resonant_client/backends.py) |
 | Harness state badge in header (consumes `model_telemetry`) | [app.js](resonant_client/gui/static/app.js) `updateHarnessBadge` |
-| Per-session `thinking_mode` round-trips through `SessionRecord` and `BackendSpec` | [sessions.py](resonant_client/gui/sessions.py), [runtime.py:36](resonant_client/gui/runtime.py:36) |
+| Per-session `thinking_mode` round-trips through `SessionRecord` and `BackendSpec` | [sessions.py](resonant_client/gui/sessions.py), [runtime.py:36](resonant_client/gui/runtime.py) |
 
 ## Important constraint (READ FIRST when extending)
 
@@ -54,12 +54,12 @@ All three tasks below are ✅ shipped. Each line points to the implementing file
 ### Task 3.1 — Thinking-mode toggle (per-session) ✅ Shipped
 
 **Lives in:**
-- [resonant_client/backends.py:164](resonant_client/backends.py:164) — `OllamaBackend(__init__, thinking=None)` normalizes `low`/`med`/`high` and adds `{"think": value}` to `_ollama_options`
-- [resonant_client/backends.py:217](resonant_client/backends.py:217) — `get_runtime_telemetry` exposes `supports_thinking` / `active_thinking`
+- [resonant_client/backends.py:164](resonant_client/backends.py) — `OllamaBackend(__init__, thinking=None)` normalizes `low`/`med`/`high` and adds `{"think": value}` to `_ollama_options`
+- [resonant_client/backends.py:217](resonant_client/backends.py) — `get_runtime_telemetry` exposes `supports_thinking` / `active_thinking`
 - [resonant_client/gui/sessions.py](resonant_client/gui/sessions.py) — `SessionRecord.thinking_mode: str = ""` round-trips through `to_dict`/`from_dict`/`to_summary`
-- [resonant_client/gui/runtime.py:36](resonant_client/gui/runtime.py:36) — `BackendSpec.thinking_mode` field; passed to `create_backend("ollama", thinking=...)` at line 95
+- [resonant_client/gui/runtime.py:36](resonant_client/gui/runtime.py) — `BackendSpec.thinking_mode` field; passed to `create_backend("ollama", thinking=...)` at line 95
 - [resonant_client/gui/app.py](resonant_client/gui/app.py) — WebSocket `set_thinking_mode` handler that persists, rebuilds backend, swaps session, sends back the new init payload
-- [resonant_client/gui/templates/index.html:306](resonant_client/gui/templates/index.html:306) — `<select id="thinking-mode-selector">` next to `#model-selector`
+- [resonant_client/gui/templates/index.html:306](resonant_client/gui/templates/index.html) — `<select id="thinking-mode-selector">` next to `#model-selector`
 - [resonant_client/gui/static/app.js](resonant_client/gui/static/app.js) — selector visible only when model starts with `deepseek-v`; change handler shows confirm dialog warning about ~30–90s model reload
 
 **Verify:**
@@ -83,7 +83,7 @@ python -c "from resonant_client.backends import OllamaBackend; \
 ### Task 3.2 — 1M-context Settings preset ✅ Shipped
 
 **Lives in:**
-- [resonant_client/gui/app.py:170](resonant_client/gui/app.py:170) — `_apply_big_context_profile()` reads `general.big_context_profile`; if true and the user hasn't already overridden via env var, sets `RESONANT_OLLAMA_NUM_CTX=131072` and `RESONANT_OLLAMA_NUM_BATCH=2048` **before** any `OllamaBackend.__init__` runs
+- [resonant_client/gui/app.py:170](resonant_client/gui/app.py) — `_apply_big_context_profile()` reads `general.big_context_profile`; if true and the user hasn't already overridden via env var, sets `RESONANT_OLLAMA_NUM_CTX=131072` and `RESONANT_OLLAMA_NUM_BATCH=2048` **before** any `OllamaBackend.__init__` runs
 - [resonant_client/gui/app.py](resonant_client/gui/app.py) — `update_settings` re-applies the profile and pushes a "reload backend to take effect" notice
 - [resonant_client/gui/static/app.js](resonant_client/gui/static/app.js) — Settings UI toggle in the General section with helper text "Bumps Ollama context to 131k tokens and batch to 2048. Best for large-repo sessions. Requires model reload."
 - [resonant_client/gui/settings.py](resonant_client/gui/settings.py) — no schema change; `general.big_context_profile` lives as a free-form key
@@ -110,8 +110,8 @@ RESONANT_OLLAMA_NUM_CTX=99 python -c "from resonant_client.backends import Ollam
 ### Task 3.3 — MoE expert-utilization telemetry ✅ Shipped (best-effort)
 
 **Lives in:**
-- [resonant_client/backends.py:204](resonant_client/backends.py:204) — `OllamaBackend.get_runtime_telemetry(timeout=5.0)`: hits `/api/ps`, parses `loaded_model`, `context_length`, `memory_mb`, `supports_thinking`, `active_thinking`, plus any MoE fields present in `/api/show` `parameters` (best-effort — Ollama's exposure varies per build)
-- [resonant_client/gui/app.py:5917](resonant_client/gui/app.py:5917) — WebSocket handler `get_model_telemetry` (on-demand fetch; no leaking poller thread)
+- [resonant_client/backends.py:204](resonant_client/backends.py) — `OllamaBackend.get_runtime_telemetry(timeout=5.0)`: hits `/api/ps`, parses `loaded_model`, `context_length`, `memory_mb`, `supports_thinking`, `active_thinking`, plus any MoE fields present in `/api/show` `parameters` (best-effort — Ollama's exposure varies per build)
+- [resonant_client/gui/app.py:5917](resonant_client/gui/app.py) — WebSocket handler `get_model_telemetry` (on-demand fetch; no leaking poller thread)
 - [resonant_client/gui/static/app.js](resonant_client/gui/static/app.js) — `model_telemetry` event handler updates the harness-badge tooltip with "deepseek · 131k ctx · 14.3GB" and (when present) "experts: X/N"
 
 **Design note (✅):** The plan originally called for a 30s polling thread. We landed on **on-demand fetch via the WebSocket command** instead — simpler, no thread-leak risk on disconnect, and the badge refreshes naturally on user focus. If we ever want a live counter we can add the poller, but the cost (one HTTP call per 30s per connected client) wasn't worth it for an info-only display.

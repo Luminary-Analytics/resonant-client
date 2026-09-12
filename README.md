@@ -13,7 +13,7 @@ for the engineering contract that governs harness changes.
 
 Start with the [desktop workflow](docs/desktop-workflow.md) for navigation and
 provider selection, or the [documentation index](docs/README.md) for contributor
-guides. [0.17.2](docs/v0.17.2-release-notes.md) adds project selection for new sessions;
+guides. [0.18.0](docs/v0.18.0-release-notes.md) adds SONN project connections;
 [Unreleased](docs/unreleased.md) tracks subsequent changes.
 
 ## Provider Support
@@ -25,6 +25,7 @@ guides. [0.17.2](docs/v0.17.2-release-notes.md) adds project selection for new s
 - **Kimi:** Moonshot's API with native tools, multimodal content, reasoning
   continuity, retries, and cache accounting.
 - **OpenRouter:** a searchable model catalog, native tools, and provider-reported API costs.
+- **SONN:** project-scoped Chat Completions with `sonn-auto`, model discovery, and native function tools. See [SONN setup](docs/sonn.md).
 - **Codex:** an installed Codex CLI, using the same project and permission
   boundaries.
 - **Claude Code:** an installed CLI adapter for existing Claude Code users.
@@ -70,8 +71,8 @@ for their context-handoff and verification boundaries.
 
 - Native frameless window with sessions grouped under projects in one sidebar
 - Project/session filtering, pinned scope, and a global command palette
-- New-session drafts that become saved conversations on the first message
-- Folder picker for opening projects
+- New-session project chooser with searchable existing projects and a folder picker
+- Drafts become saved conversations under the chosen project on the first message
 - Searchable provider/model picker, favorites, and explicit project defaults
 - Inline file diff review
 - Collapsible long-task status with EXO connection/model-progress telemetry
@@ -159,6 +160,14 @@ for connection management and the installed CLI for coding runs.
 GPT-6 Astra uses the model ID `gpt-6-astra`. Refresh account models to see the
 connected account's catalog; bootstrap model entries do not guarantee access.
 
+### SONN
+
+Enter your project API base URL under **Settings > Network** and your private
+invitation key under **Settings > API keys**. Use **Connections > Check SONN
+connection & refresh models**, then select `sonn-auto` in **Models**. Connection
+checks do not change your selected provider. See [SONN setup and validation
+boundaries](docs/sonn.md).
+
 ### OpenRouter
 
 Add an OpenRouter key under **Settings > API keys**, or set `OPENROUTER_API_KEY`.
@@ -245,6 +254,8 @@ now that browsing works out of the box.
 | `RESONANT_DEFAULT_BACKEND` | `ollama` | Explicit default provider |
 | `RESONANT_DEFAULT_MODEL` | auto-discovered | Explicit default model |
 | `MOONSHOT_API_KEY` | none | Kimi API key |
+| `SONN_API_URL` | none | Complete SONN project API base URL ending in `/openai/v1` |
+| `SONN_API_KEY` | none | SONN private invitation key |
 | `OPENROUTER_API_KEY` | none | OpenRouter API key |
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API URL |
 | `RESONANT_OLLAMA_NUM_CTX` | capability-derived | Ollama context override |

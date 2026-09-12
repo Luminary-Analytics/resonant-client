@@ -2,7 +2,7 @@
 
 > Template for capturing real-world resonant-client autonomous-mission
 > runs. Copy this file to `docs/field-observations/<date>-<project>.md`
-> and fill in as the run proceeds. Findings here feed v0.5.6+ planning.
+> and fill in as the run proceeds. Findings feed the current [roadmap](../ROADMAP.md).
 
 ---
 

@@ -4472,6 +4472,10 @@ class ResonantApp {
                 label: 'OpenRouter',
                 backends: ['openrouter'],
             },
+            sonn: {
+                label: 'SONN',
+                backends: ['sonn'],
+            },
             ollama: {
                 label: 'Ollama',
                 backends: ['ollama'],
@@ -4480,7 +4484,7 @@ class ResonantApp {
     }
 
     _getBackendLabels() {
-        return { codex: 'ChatGPT / Codex', openrouter: 'OpenRouter', exo: 'EXO', kimi: 'Kimi API', ollama: 'Ollama' };
+        return { codex: 'ChatGPT / Codex', openrouter: 'OpenRouter', sonn: 'SONN', exo: 'EXO', kimi: 'Kimi API', ollama: 'Ollama' };
     }
 
     _getPreferredBackendSelection(backends) {
@@ -4490,7 +4494,7 @@ class ResonantApp {
         if (preferredConfiguredBackend && backends?.[preferredConfiguredBackend]?.models?.length) {
             backendOrder.push(preferredConfiguredBackend);
         }
-        for (const candidate of ['ollama', 'exo', 'kimi', 'codex', 'openrouter']) {
+        for (const candidate of ['ollama', 'exo', 'kimi', 'codex', 'openrouter', 'sonn']) {
             if (!backendOrder.includes(candidate)) backendOrder.push(candidate);
         }
         for (const backend of backendOrder) {

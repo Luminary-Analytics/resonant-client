@@ -107,6 +107,15 @@ def resolve_exo_url(
     return value if value.endswith("/v1") else f"{value}/v1"
 
 
+def resolve_sonn_url(explicit: str | None = None, *, settings_data: Mapping[str, Any] | None = None) -> str:
+    """Resolve SONN's project-scoped base URL without altering its path."""
+    return (
+        str(explicit or "").strip()
+        or str(os.environ.get("SONN_API_URL", "") or "").strip()
+        or _get_setting("network", "sonn_url", "", settings_data=settings_data).strip()
+    ).rstrip("/")
+
+
 # v0.4.4 (T1.4) — `resolve_resonant_api_url` and
 # `resolve_remote_engine_ws_url` were removed in this release.
 # ResonantBackend was cut in v0.4.0 and these resolvers had no other

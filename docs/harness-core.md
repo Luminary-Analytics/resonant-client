@@ -1,77 +1,52 @@
-# Harness Core Boundary
+# Harness core boundary
 
-`resonant-client` originally hosted both a user-facing client and the model
-orchestration harness used for planner/generator/evaluator loops. That local
-split still exists for compatibility, but the canonical direction has changed:
-`resonant-engine` is now the system of record for harness state and remote step
-/ cycle execution when the active backend is `resonant`.
+Current ownership is local to this package. Resonant's normal model/tool loop
+lives in `resonant_client/engine/`; the optional planner/generator/evaluator
+workflow lives in `resonant_client/harness/`. The former remote `resonant`
+backend and engine-hosted role names in early migration plans do not describe
+the current provider/runtime contract. See [ARCHITECTURE.md](../ARCHITECTURE.md).
 
-**Two important conventions as of 2026-04:**
+## Enabling the optional workflow
 
-1. **The harness is opt-in.** Set `general.harness_enabled = true` in Settings
-   (or in `~/.resonant/settings.json`) to wake up planner/generator/evaluator
-   roles, sprint contracts, and the autonomous orchestrator cycle. Default is
-   off — fresh projects get a plain agentic loop, no harness preamble.
-2. **State lives outside the user's repo.** Storage path is
-   `~/.resonant/projects/<sha1(project_path)[:12]>/harness/`, mirroring Claude
-   Code's `~/.claude/projects/<proj>/` layout. Override the parent dir with
-   `RESONANT_STATE_HOME` (used by tests). Legacy `.resonant-harness/` folders
-   are migrated transparently on first load — see
-   `HarnessWorkspace.maybe_migrate_legacy_layout`.
+`general.harness_enabled` defaults to `false` in `gui/settings.py`. Enable it
+explicitly for sprint roles and harness cycles. Ordinary coding sessions still
+use the engine and its tools when this optional workflow is disabled.
 
-Current split:
+Harness state lives under `~/.resonant/projects/<project-hash>/harness/`.
+`RESONANT_STATE_HOME` overrides the state root for this subsystem.
+`HarnessWorkspace.maybe_migrate_legacy_layout` migrates old project-local
+`.resonant-harness/` artifacts. Do not introduce new runtime state into a user's
+checkout.
 
-- `resonant_client/harness/state.py`
-  - out-of-repo artifact layout (`~/.resonant/projects/<hash>/harness/`)
-  - one-shot legacy migration from `.resonant-harness/`
-  - structured state dataclasses
-  - progress / contract / evaluator report mutation helpers
-- `resonant_client/harness/orchestrator.py`
-  - background cycle state machine
-  - planner / generator / evaluator loop control
-  - retry / escalation / stop conditions
-- `resonant_client/harness/service.py`
-  - harness summary assembly
-  - contract/status normalization
-  - harness instructions and output contracts
-  - resume-prompt construction
-- `resonant_client/gui/app.py`
-  - client integration
-  - backend execution
-  - backend/model selection
-  - UI-facing command handling
+## Module ownership
 
-Compatibility:
+Paths below are relative to `resonant_client/`.
 
-- `resonant_client/gui/harness_state.py`
-- `resonant_client/gui/harness_orchestrator.py`
+| Module | Responsibility |
+| --- | --- |
+| `harness/state.py` | Workspace paths, legacy migration, structured state, persisted progress/contracts/reports |
+| `harness/orchestrator.py` | Background cycle lifecycle, role steps, retries, and stopping |
+| `harness/service.py` | Summary assembly, output contracts, normalization, and resume instructions |
+| `harness/prompts.py` | Role prompt construction through the explicit application interface |
+| `gui/runtime.py` | `BackendSpec` and shared backend/session construction |
+| `gui/app.py` | Application state and runtime integration |
+| `gui/ws_commands.py` | UI command dispatch and harness controls |
+| `engine/session.py` | Model/tool execution, conversation state, cancellation, and verification |
 
-remain as thin import shims so existing imports do not break while the package
-boundary settles.
+`gui/harness_state.py` and `gui/harness_orchestrator.py` remain compatibility
+import shims. Add behavior to the owning module, not to those shims.
 
-Current remote ownership:
+## Provider boundaries
 
-- canonical harness state: `resonant-engine`
-- remote step execution: `resonant-engine`
-- remote cycle registry and lifecycle: `resonant-engine`
-- remote harness mutations and teacher recovery: `resonant-engine`
-- remote recurring harness-cycle schedules: `resonant-engine`
-- GUI/TUI rendering and controls: `resonant-client`
+Native adapters feed Resonant's engine contract. Installed Codex and Claude
+Code adapters execute their own CLI tool loops. Explicit provider/model choices,
+project instructions, permission settings, and saved conversation state must
+survive runtime reconstruction. Optional role settings do not authorize silent
+model switching.
 
-Current remote role runtime for the `resonant` backend:
-
-- planner: engine-hosted `localcodingmodel-planner-clean`
-- generator: engine-hosted `localcodingmodel-router`
-- generator retry / repair: engine-hosted `localcodingmodel-generator-repair`
-- evaluator: engine-hosted `resonant-engine`
-
-Remaining local responsibilities inside `resonant-client` are now transitional:
-
-1. local compatibility for non-`resonant` backends
-2. UI event handling and session/project views
-3. fallback local harness control when the engine backend is not active
-4. local non-harness scheduling for non-`resonant` session tasks
-
-Follow-on architecture plan:
-
-- [engine-harness-unification-plan.md](./engine-harness-unification-plan.md)
+Any new API integration needs its actual service contract and tests. The
+[old engine-unification plan](engine-harness-unification-plan.md) is historical
+design context, not evidence that a service currently implements those endpoints.
+See [prompt architecture](model-prompt-architecture.md),
+[modern runtime](modern-agent-runtime.md), and
+[documentation status](documentation-status.md) for current guidance.

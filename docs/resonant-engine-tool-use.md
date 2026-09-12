@@ -1,5 +1,9 @@
 # Resonant Engine — Tool Use Requirements for Command Center
 
+> Historical protocol record for the former remote-engine integration.
+> `ResonantBackend` and Command Center references below describe that version,
+> not the current adapter catalog. See [architecture](../ARCHITECTURE.md).
+
 ## Current Status
 
 This protocol work is now implemented on the engine side for `/v1/responses`.

@@ -1,8 +1,10 @@
 # GLM-5.2 and DeepSeek V4 Pro agent-context playbook
 
-Status: active model-family playbook subordinate to the canonical
-[agentic harness north star](agentic-harness-north-star.md). The objective is
-maximum useful context and time to a trustworthy result—not minimum token use.
+Status: historical model-family evaluation and design playbook. Runtime behavior
+is now capability-driven and uses a model-neutral prompt contract. Model window,
+effort, and vendor claims below describe the earlier investigation and require
+fresh verification. Use the [harness north star](agentic-harness-north-star.md)
+and [prompt architecture](model-prompt-architecture.md) for current policy.
 
 This is the operating plan for making Resonant's two flagship open-model
 agents reliable over long coding sessions. It separates **capacity** (how many

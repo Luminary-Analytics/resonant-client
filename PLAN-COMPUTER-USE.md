@@ -44,7 +44,7 @@ Files a future executor (or anyone extending this cluster) must read first:
 | Image clipboard read (Ctrl+V paste path) | [engine/clipboard.py](resonant_client/engine/clipboard.py) |
 | `with_auto_screenshot` post-action wrapper | [engine/computer_use.py](resonant_client/engine/computer_use.py) |
 | `get_window_rect()` returning client rect | [engine/computer_use.py](resonant_client/engine/computer_use.py) |
-| `_resolve_target_region()` precedence (region > target_window > monitor > primary) | [engine/computer.py:126](resonant_client/engine/computer.py:126) |
+| `_resolve_target_region()` precedence (region > target_window > monitor > primary) | [engine/computer.py:126](resonant_client/engine/computer.py) |
 
 If you ever try to "add" one of these, **stop and re-read the existing implementation first**.
 
@@ -73,7 +73,7 @@ pytest tests/test_computer_use_upgrades.py -k computer_wait -v
 ### Task 1.2 — Window-targeted screenshots and clicks ✅ Shipped
 
 **Lives in:**
-- [resonant_client/engine/computer.py:126](resonant_client/engine/computer.py:126) — `_resolve_target_region(args)` (precedence: target_window > monitor > primary)
+- [resonant_client/engine/computer.py:126](resonant_client/engine/computer.py) — `_resolve_target_region(args)` (precedence: target_window > monitor > primary)
 - [resonant_client/engine/computer.py](resonant_client/engine/computer.py) — `exec_computer_screenshot` and `exec_computer_click` honor `target_window` and translate window-relative `(x,y)` to screen coords
 - [resonant_client/engine/computer_use.py](resonant_client/engine/computer_use.py) — `get_window_rect(title_substring)` (Win32 + macOS + Linux paths)
 - [resonant_client/engine/tools.py](resonant_client/engine/tools.py) — `computer_screenshot` / `computer_click` schemas include `target_window: string`

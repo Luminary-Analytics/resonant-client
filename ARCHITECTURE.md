@@ -1,13 +1,13 @@
 # Resonant architecture
 
-Current baseline: [v0.17.2](docs/v0.17.2-release-notes.md), including the compact
-toolbar, sidebar, and new-session project chooser. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
+Current baseline: [v0.18.0](docs/v0.18.0-release-notes.md), including the compact
+toolbar, sidebar, new-session project chooser, and SONN connection. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
 product priorities live in the [harness north star](docs/agentic-harness-north-star.md).
 
 ## Runtime boundaries
 
 Resonant is a Python agent runtime with a Starlette/WebSocket GUI, a Rich TUI,
-and a pywebview desktop shell. Ollama, EXO, Kimi, and OpenRouter supply models to
+and a pywebview desktop shell. Ollama, EXO, Kimi, OpenRouter, and SONN supply models to
 Resonant's engine loop. Codex and Claude Code adapters instead run installed
 CLIs, whose native tool execution remains inside those CLIs.
 
@@ -18,7 +18,7 @@ these services; it is not required for ordinary chat-based coding.
 
 | Area | Entry points | Responsibility |
 | --- | --- | --- |
-| Providers | `backends.py`, `openrouter.py`, `capabilities.py`, `content.py` | Wire formats, streaming, capability discovery, normalized content |
+| Providers | `backends.py`, `openrouter.py`, `sonn.py`, `capabilities.py`, `content.py` | Wire formats, streaming, capability discovery, normalized content |
 | Codex connection | `codex_account.py` | App-server lifecycle, account/login/model/quota RPCs |
 | Model context | `engine/model_prompts.py`, `protocol.py`, `engine/compression.py` | Stable prompt, tool schemas/parsing, context compaction |
 | Agent loop | `engine/session.py`, `engine/tools.py`, `engine/sandbox.py` | Model/tool iteration, execution, permissions, cancellation |
@@ -43,7 +43,9 @@ Paths in the table are relative to `resonant_client/`.
 3. The frontend groups sessions by project on one scroll surface. Each expanded
    project shows six rows initially, retaining an active session outside that
    slice. Search filters the full loaded catalog; Show more adds 20 rows.
-4. New session opens a draft. First-message persistence creates the saved record.
+4. New session asks for an existing project or a folder, then opens a draft
+   there. Project-row plus buttons choose their project directly. Cancellation
+   preserves the active draft; first-message persistence creates the saved record.
 5. `ChatRunLoop` coordinates active runs, queued follow-ups, cancellation, and
    commands. A model switch is rejected while a run is active.
 6. Engine events travel through a thread-safe queue to WebSocket clients;
@@ -69,6 +71,15 @@ output and excludes batch variants. Tool requests require compatible provider
 parameters. Reasoning continuation is replayed only for its originating model;
 provider-reported `usage.cost` flows into the GUI cost tracker. Credentials are
 resolved from settings/environment, not embedded in `BackendSpec`.
+
+`SonnBackend` uses a configured project URL without modifying its path. It sends
+standard Chat Completions messages and top-level function tools, retaining
+system summaries without Moonshot or OpenRouter extensions. Authenticated model
+discovery is cached for five minutes per URL and credential fingerprint, bounded
+to 16 entries. URL/key changes rebuild the active backend after a run stops;
+removing credentials disables sending until a valid connection is selected.
+Keys are resolved locally and omitted from serialized backend specs and UI
+responses. See [SONN contract and limits](docs/sonn.md).
 
 Session metadata takes precedence when reopening a saved conversation. New
 sessions use a saved project preference before recent/global defaults. Model

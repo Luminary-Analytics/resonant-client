@@ -1,5 +1,10 @@
 # PLAN — Agent Self-Improvement (Skills + Memory Nudges + Curator)
 
+> Historical design proposal. Subsequent skill extraction, curation, provenance,
+> and retrieval work shipped. Use [skills](docs/skills.md),
+> [priority improvements](docs/priority-improvements.md), and
+> [ROADMAP.md](ROADMAP.md) for current behavior and remaining work.
+
 > **Status: 📐 Design / iterating** · **Last updated: 2026-05-06** · v1 draft, ready for review
 >
 > Forward-looking design doc, NOT a foundation cluster. v0.6.x candidate work; will lift to ROADMAP as concrete tasks once the design settles.

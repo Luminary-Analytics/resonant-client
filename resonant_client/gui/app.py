@@ -44,8 +44,9 @@ from ..backends import (
     resolve_codex_cli_path,
 )
 from ..openrouter import OpenRouterBackend
+from ..sonn import SonnBackend
 from ..engine import Session
-from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url
+from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
 from . import ws_commands
 from .chat_loop import ChatRunLoop
 # Payload builders moved to ws_commands.py with the handlers that use them.
@@ -727,13 +728,25 @@ class AppState:
             except Exception:
                 return list(OpenRouterBackend._catalog)
 
-        with ThreadPoolExecutor(max_workers=3) as pool:
+        sonn_key, sonn_source, sonn_env, sonn_setting = self._api_key_details("sonn", "SONN_API_KEY")
+        sonn_url = resolve_sonn_url(settings_data=self.settings.get_all())
+        def _probe_sonn():
+            if not sonn_key or not sonn_url:
+                return []
+            try:
+                return SonnBackend.catalog(sonn_key, base_url=sonn_url, force=force)
+            except (ValueError, OSError):
+                return []
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
             ollama_future = pool.submit(_probe_ollama)
             exo_future = pool.submit(_probe_exo)
             router_future = pool.submit(_probe_router)
+            sonn_future = pool.submit(_probe_sonn)
             ollama_info = ollama_future.result()
             exo_catalog = exo_future.result()
             router_catalog = router_future.result()
+            sonn_catalog = sonn_future.result()
 
         if ollama_info:
             available["ollama"] = ollama_info
@@ -798,6 +811,14 @@ class AppState:
                 "api_key_source": router_source, "api_key_env": router_env, "api_key_setting": router_setting,
                 "model_details": {row["id"]: {"context_length": row.get("context_length"), "pricing": row.get("pricing")} for row in catalog},
             }
+        if sonn_key and sonn_url:
+            # Keep the documented routing alias usable during discovery outages.
+            models = [row["id"] for row in sonn_catalog] or [SonnBackend.DEFAULT_MODEL]
+            available["sonn"] = {
+                "url": sonn_url, "models": models,
+                "model_labels": {row["id"]: row["name"] for row in sonn_catalog},
+                "api_key_source": sonn_source, "api_key_env": sonn_env, "api_key_setting": sonn_setting,
+            }
         # Preserve an account-discovered Codex model list across routine probes.
         known_codex = getattr(self, "codex_connection", {})
         if "codex" in available and known_codex.get("models"):
@@ -832,6 +853,7 @@ class AppState:
 
         if (
             self.backend_spec and
+            backend_type != "sonn" and
             self.backend_spec.backend_type == backend_type and
             (not model or self.backend_spec.model == model)
         ):
@@ -871,6 +893,16 @@ class AppState:
                 raise ValueError("Refresh OpenRouter models in Settings → Connections, then choose a model.")
             return BackendSpec(backend_type="openrouter", model=selected, api_key_source=source,
                                api_key_env=env_var, api_key_setting=setting)
+        if backend_type == "sonn":
+            api_key, source, env_var, setting = self._api_key_details("sonn", "SONN_API_KEY")
+            if not api_key:
+                raise ValueError("Add your SONN API key in Settings → API keys.")
+            base_url = SonnBackend.validate_base_url(resolve_sonn_url(settings_data=self.settings.get_all()))
+            models = (self.available_backends.get("sonn") or {}).get("models") or [SonnBackend.DEFAULT_MODEL]
+            selected = model or (self.backend_spec.model if self.backend_spec and self.backend_spec.backend_type == "sonn"
+                                 else self._resolve_default_model(models)) or SonnBackend.DEFAULT_MODEL
+            return BackendSpec(backend_type="sonn", model=selected, base_url=base_url,
+                               api_key_source=source, api_key_env=env_var, api_key_setting=setting)
         if backend_type == "kimi":
             info = self.available_backends.get("kimi") or {}
             api_key, source, env_var, setting = self._api_key_details(
@@ -914,7 +946,7 @@ class AppState:
         if backend_type != "ollama":
             raise ValueError(
                 f"Backend '{backend_type}' is not supported. Resonant "
-                f"supports Ollama, EXO, Kimi, OpenRouter, Codex, and Claude Code."
+                f"supports Ollama, EXO, Kimi, OpenRouter, SONN, Codex, and Claude Code."
             )
 
         info = self.available_backends.get("ollama")
@@ -1360,7 +1392,7 @@ class AppState:
         backend_order = []
         if configured_backend:
             backend_order.append(configured_backend)
-        backend_order.extend(k for k in ("ollama", "exo", "kimi", "codex", "openrouter", "claude-code") if k not in backend_order)
+        backend_order.extend(k for k in ("ollama", "exo", "kimi", "codex", "openrouter", "claude-code", "sonn") if k not in backend_order)
 
         for backend_type in backend_order:
             info = self.available_backends.get(backend_type) or {}
@@ -1407,7 +1439,7 @@ class AppState:
             backend_order.append(configured)
         backend_order.extend(
             backend_type
-            for backend_type in ("exo", "kimi", "codex", "openrouter", "claude-code", "ollama")
+            for backend_type in ("exo", "kimi", "codex", "openrouter", "claude-code", "ollama", "sonn")
             if backend_type != failed and backend_type not in backend_order
         )
         for backend_type in backend_order:
@@ -1595,7 +1627,7 @@ class AppState:
 
         if (
             self.backend_spec and
-            self.backend_spec.backend_type in {"ollama", "exo", "kimi", "openrouter"} and
+            self.backend_spec.backend_type in {"ollama", "exo", "kimi", "openrouter", "sonn"} and
             section in {"api_keys", "engram", "general", "network"}
         ):
             try:
@@ -1603,10 +1635,19 @@ class AppState:
                     self.backend_spec.url = self.ollama_url
                 if section == "network" and self.backend_spec.backend_type == "exo":
                     self.backend_spec.base_url = self.exo_url
+                if self.backend_spec.backend_type == "sonn":
+                    self.backend_spec = self.build_backend_spec("sonn", self.backend_spec.model)
                 self.backend = self.backend_spec.create_backend(self.settings)
                 if self.session:
                     self.session.backend = self.backend
-            except Exception:
+            except Exception as exc:
+                if self.backend_spec.backend_type == "sonn":
+                    # Do not keep sending with the previous key after it is cleared.
+                    if self.session and self.project.current_session:
+                        self.project.save_current_session(engine_session=self.session)
+                    self.backend = None
+                    self.session = None
+                    self.runtime_error = f"{exc} Re-select SONN after correcting the settings."
                 logger.warning("Failed to refresh current backend after settings update", exc_info=True)
 
         return self.settings.get_masked()

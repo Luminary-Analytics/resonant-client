@@ -8,13 +8,14 @@ maintainability, and wall-clock performance rank above token or compute
 efficiency. The dated release and cluster histories below remain useful records
 but do not override that direction.
 
-## Current delivery status (2026-09-08)
+## Current delivery status (2026-09-12)
 
 [0.17.0](docs/v0.17.0-release-notes.md) shipped the unified project/session
 sidebar, ChatGPT/Codex connections, OpenRouter, searchable models, favorites,
 project defaults, and GPT-6 Astra availability. [0.17.1](docs/v0.17.1-release-notes.md)
-adds compact toolbar icons, folder disclosures, single-line sessions, and current
-contributor documentation.
+added compact toolbar icons, folder disclosures, single-line sessions, and current
+contributor documentation. [0.17.2](docs/v0.17.2-release-notes.md) added the
+new-session project chooser, folder selection, and composer keyboard access.
 
 The main desktop workflow supports ChatGPT/Codex and OpenRouter while retaining
 Ollama, EXO, Kimi, and other installed CLI support. Model preferences are explicit;
@@ -24,7 +25,9 @@ See the [desktop guide](docs/desktop-workflow.md) and
 
 Next validation work includes repeated live provider coding evaluations and
 cold-start/history-replay measurements. Compact viewport checks are recorded in
-the 0.17.1 release notes.
+the 0.17.1 release notes; the 0.17.2 notes record chooser performance and packaged
+project/draft checks. New integration work belongs in [Unreleased](docs/unreleased.md)
+until its protocol, behavior, tests, and deployment have been verified.
 Mocked tool-cycle tests and catalog checks do not establish live model quality
 or a latency SLA. Keep the older roadmap below as historical context; confirm
 whether an item has since shipped before treating it as open work.
@@ -285,3 +288,10 @@ Within a cluster, tasks can typically be done in any order. Hard dependencies ar
 **Foundation (pre-v0.2.0):** when a new task is added to a cluster (1–8), append it to its `PLAN-*.md` and bump the count in the foundation status table above.
 
 **Post-refocus (v0.3.x+):** development is release-organized rather than cluster-batched. Each minor version gets a `docs/vX.Y.Z-release-notes.md` with a TL;DR table + per-alpha sections + validation block + carry-over. When a new capability track stabilizes (≥2 minor versions of work, with public surface area), add it as a row in the "Capability tracks" table above. When a row's notes get long, split the track into its own `PLAN-*.md` and link.
+
+## SONN delivery (v0.18.0)
+
+Project-scoped SONN connections, Settings credentials, authenticated discovery,
+and standard Chat Completions streaming are implemented. See [setup](docs/sonn.md)
+and [release validation](docs/v0.18.0-release-notes.md). Next: authenticated live
+coding evaluation after the user supplies a key in Settings.

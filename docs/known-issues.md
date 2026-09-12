@@ -4,22 +4,35 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
-## Current provider and validation limitations (2026-09-08)
+## Current provider and validation limitations (2026-09-12)
 
+- SONN is verified with mock HTTP/SSE responses and a real engine file-write
+  loop. Authenticated live SONN discovery and coding remain pending a key
+  entered in Settings; no routed vision or reasoning capability is claimed.
 - Codex text handoffs preserve selected text context, not native provider
   threads or image attachments. CLI tool displays do not prove Resonant's
   named acceptance checks ran.
 - OpenRouter live catalog and Codex account discovery were checked for v0.17.0;
   provider generation tests used mocked responses. Paid live coding behavior
   still needs repeated evaluation.
-- `tests/test_processes.py::TestKillGuardrails::test_refuses_self` depends on
+- `tests/test_processes.py::TestKillGuardrails::test_refuses_self` previously depended on
   the runner PID being above the process floor. The separate v0.17.0 CI job
   received a low PID and asserted the wrong refusal reason. The guard refused
   correctly, release tests passed, and the separate job passed on rerun. The
   test setup is deterministic in v0.17.1: a mocked self PID above the floor
   isolates the intended guard without changing production process safety.
-- Compact toolbar/sidebar polish ships in [v0.17.1](v0.17.1-release-notes.md).
-  Its release notes record desktop, compact-layout, and packaged validation.
+- The v0.17.2 Release job initially failed
+  `TestStoppingRules.test_user_stop_takes_priority`: its fixed 50 ms sleep does
+  not guarantee the worker has reached the waiting state before stop is called.
+  Local and separate CI checks passed, and the release retry passed at the same
+  commit. v0.18.0 replaces the fixed sleep with event synchronization so the
+  test waits for the daemon to reach its wait hook before stopping it. This is
+  a test reliability fix, not a production cancellation change.
+- Compact toolbar/sidebar polish shipped in [v0.17.1](v0.17.1-release-notes.md),
+  followed by the [v0.17.2 project chooser](v0.17.2-release-notes.md).
+  Their notes record browser and packaged validation. Native folder-result
+  routing is tested automatically; the OS picker itself was not exercised in
+  that release's browser-based checks.
 
 ## Historical numbered ledger
 

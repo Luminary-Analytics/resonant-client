@@ -95,7 +95,7 @@ one detection regex, one button handler. Zero orchestration changes.
 - `resonant_client/orchestration/grill_me.py` — system prompt + structured
   output schema + spec-detection helper
 - Slash-command wiring in `gui/static/app.js` (`/grill <description>`) that
-  mirrors the `/plan` pattern at [app.js:715-720](resonant_client/gui/static/app.js)
+  mirrors the historical `/plan` pattern in [app.js](../resonant_client/gui/static/app.js)
 - Backend support for the system-prompt overlay on a session (per-message
   prefix, no Session-class changes)
 - Spec-detection on text.done — when the model emits the spec sentinel,

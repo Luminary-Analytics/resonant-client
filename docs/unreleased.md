@@ -1,6 +1,6 @@
 # Unreleased
 
-Changes after [0.18.1](v0.18.1-release-notes.md).
+Changes after [0.18.2](v0.18.2-release-notes.md).
 
 No unreleased implementation changes. Authenticated live SONN coding evaluation
 remains pending a key entered in Settings; see [SONN](sonn.md).

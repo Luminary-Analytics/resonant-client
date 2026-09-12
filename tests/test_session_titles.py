@@ -85,55 +85,59 @@ def test_title_is_persisted_immediately_and_manual_names_are_preserved(manager):
     assert record.title == 'New session'
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize('interference', ['none', 'rename', 'navigate', 'new_turn'])
-async def test_background_refinement_is_scoped_and_yields_to_user_work(manager, monkeypatch, interference):
-    from resonant_client.gui import session_titles
-    started, release = threading.Event(), threading.Event()
-    def generate(backend, prompt, cancel):
-        started.set()
-        assert release.wait(5)
-        return 'Improve session navigation'
-    monkeypatch.setattr(session_titles, 'generate_session_title', generate)
-    record = manager.create_session()
-    manager.update_session_title('Can you improve the sessions?')
-    original = record.title
-    state = SimpleNamespace(project=manager, backend=SimpleNamespace(handles_tools=False))
-    sent = []
-    async def send(payload):
-        sent.append(payload)
-    try:
-        schedule_title_refinement(state, SimpleNamespace(send_json=send), record, 'prompt')
-        assert await asyncio.to_thread(started.wait, 2)
-        assert record.title == original  # The UI remains usable while inference waits.
-        if interference == 'rename':
-            record.title_source = 'manual'
-            record.title = 'My chosen title'
-        elif interference == 'navigate':
-            manager.current_session = None
-        elif interference == 'new_turn':
-            cancel_title_refinement(state)
-        release.set()
-        await state._session_title_task
-        assert bool(sent) == (interference == 'none')
-        assert record.title == ('Improve session navigation' if interference == 'none'
-                                else 'My chosen title' if interference == 'rename' else original)
-    finally:
-        release.set()
+def test_background_refinement_is_scoped_and_yields_to_user_work(manager, monkeypatch, interference):
+    async def run():
+        from resonant_client.gui import session_titles
+        started, release = threading.Event(), threading.Event()
+        def generate(backend, prompt, cancel):
+            started.set()
+            assert release.wait(5)
+            return 'Improve session navigation'
+        monkeypatch.setattr(session_titles, 'generate_session_title', generate)
+        record = manager.create_session()
+        manager.update_session_title('Can you improve the sessions?')
+        original = record.title
+        state = SimpleNamespace(project=manager, backend=SimpleNamespace(handles_tools=False))
+        sent = []
+        async def send(payload):
+            sent.append(payload)
+        try:
+            schedule_title_refinement(state, SimpleNamespace(send_json=send), record, 'prompt')
+            assert await asyncio.to_thread(started.wait, 2)
+            assert record.title == original  # The UI remains usable while inference waits.
+            if interference == 'rename':
+                record.title_source = 'manual'
+                record.title = 'My chosen title'
+            elif interference == 'navigate':
+                manager.current_session = None
+            elif interference == 'new_turn':
+                cancel_title_refinement(state)
+            release.set()
+            await state._session_title_task
+            assert bool(sent) == (interference == 'none')
+            assert record.title == ('Improve session navigation' if interference == 'none'
+                                    else 'My chosen title' if interference == 'rename' else original)
+        finally:
+            release.set()
+
+    asyncio.run(run())
 
 
-@pytest.mark.asyncio
-async def test_renaming_another_session_does_not_switch_active_conversation(manager):
-    other = manager.create_session()
-    current = manager.create_session()
-    async def send(payload):
-        pass
-    ctx = CommandContext(ws=SimpleNamespace(send_json=send), state=SimpleNamespace(project=manager),
-                         msg={'session_id': other.id, 'title': 'My task'}, runs=None)
-    await _cmd_rename_session(ctx)
-    assert manager.current_session is current
-    saved = manager.load_session(other.id, activate=False)
-    assert saved.title == 'My task' and saved.title_source == 'manual'
+def test_renaming_another_session_does_not_switch_active_conversation(manager):
+    async def run():
+        other = manager.create_session()
+        current = manager.create_session()
+        async def send(payload):
+            pass
+        ctx = CommandContext(ws=SimpleNamespace(send_json=send), state=SimpleNamespace(project=manager),
+                             msg={'session_id': other.id, 'title': 'My task'}, runs=None)
+        await _cmd_rename_session(ctx)
+        assert manager.current_session is current
+        saved = manager.load_session(other.id, activate=False)
+        assert saved.title == 'My task' and saved.title_source == 'manual'
+
+    asyncio.run(run())
 
 
 def test_provider_failure_before_streaming_keeps_local_title():
@@ -142,21 +146,23 @@ def test_provider_failure_before_streaming_keeps_local_title():
     assert generate_session_title(SimpleNamespace(handles_tools=False, stream=fail), 'prompt', threading.Event()) == ''
 
 
-@pytest.mark.asyncio
-async def test_slow_title_request_is_cancelled_without_changing_title(manager, monkeypatch):
-    from resonant_client.gui import session_titles
-    finished = threading.Event()
-    def slow(backend, prompt, cancel):
-        assert cancel.wait(2)
-        finished.set()
-        return 'Late title'
-    monkeypatch.setattr(session_titles, 'generate_session_title', slow)
-    monkeypatch.setattr(session_titles, 'TITLE_TIMEOUT_SECONDS', 0.02)
-    record = manager.create_session()
-    manager.update_session_title('Build a dashboard')
-    state = SimpleNamespace(project=manager, backend=SimpleNamespace(handles_tools=False))
-    schedule_title_refinement(state, None, record, 'prompt')
-    await state._session_title_task
-    assert state._session_title_cancel.is_set()
-    assert await asyncio.to_thread(finished.wait, 2)
-    assert record.title == 'Build a dashboard'
+def test_slow_title_request_is_cancelled_without_changing_title(manager, monkeypatch):
+    async def run():
+        from resonant_client.gui import session_titles
+        finished = threading.Event()
+        def slow(backend, prompt, cancel):
+            assert cancel.wait(2)
+            finished.set()
+            return 'Late title'
+        monkeypatch.setattr(session_titles, 'generate_session_title', slow)
+        monkeypatch.setattr(session_titles, 'TITLE_TIMEOUT_SECONDS', 0.02)
+        record = manager.create_session()
+        manager.update_session_title('Build a dashboard')
+        state = SimpleNamespace(project=manager, backend=SimpleNamespace(handles_tools=False))
+        schedule_title_refinement(state, None, record, 'prompt')
+        await state._session_title_task
+        assert state._session_title_cancel.is_set()
+        assert await asyncio.to_thread(finished.wait, 2)
+        assert record.title == 'Build a dashboard'
+
+    asyncio.run(run())

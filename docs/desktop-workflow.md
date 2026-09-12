@@ -1,8 +1,8 @@
 # Desktop workflow
 
-Applies to v0.18.1. Provider connections and the unified sidebar arrived in
+Applies to v0.18.2. Provider connections and the unified sidebar arrived in
 v0.17.0; v0.17.1 added the compact toolbar and session rows, and v0.17.2 adds
-the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.18.1-release-notes.md)
+the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.18.2-release-notes.md)
 and [Unreleased](unreleased.md).
 
 ## Projects and sessions
@@ -93,7 +93,7 @@ picker prices are catalog prices, which can differ from actual charges.
 
 ## Conversation progress, suggestions, and titles
 
-Available in [0.18.1](v0.18.1-release-notes.md). The working
+Available in [0.18.2](v0.18.2-release-notes.md). The working
 status follows the latest assistant output at the bottom of the active turn.
 It stays below streamed text and tool details. Scrolling up to read history does
 not pull you back down; the new-messages button returns to the current work.

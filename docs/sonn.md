@@ -1,12 +1,12 @@
 # SONN connection
 
-Available in Resonant v0.18.0. SONN supplies a project-scoped Chat Completions
-endpoint; Resonant runs the coding tools and retains project instructions,
+Available in SONN Client v0.18.0. SONN supplies a project-scoped Chat Completions
+endpoint; SONN Client runs the coding tools and retains project instructions,
 permissions, notes, history, and verification through its existing engine.
 
 ## Set up in the desktop app
 
-1. Open **Settings > Network**. Paste your complete SONN API base URL, for example
+1. Open **Settings > Connections > Network**. Paste your complete SONN API base URL, for example
    `https://getsonn.com/v1/workspace/projects/<project-id>/openai/v1`.
 2. Under **API keys**, enter your private invitation in **SONN API key**, then
    leave the field to save. The field becomes empty and shows **Stored**. Keys
@@ -28,6 +28,32 @@ except for HTTP loopback endpoints used by local services and tests. Embedded
 URL credentials, query strings, and fragments are rejected.
 
 ## Wire contract and capabilities
+
+### SONN account and credits
+
+The bottom-left profile belongs to SONN. **SONN account & credits** reads
+`GET /v1/workspace` with the configured invitation as a Bearer credential, at the
+same origin/prefix as the documented project URL. The invitation is account-wide;
+the project URL chooses the inference project. It is not a project-restricted key.
+
+This contract was checked against SONN's `product/src/sonn_server/workspace.py`
+(`handle`) and `sonn_billing/service.py` (`customer_account`) in the Lumina_DO
+source on September 13, 2026. `identity.user` is an authenticated identifier;
+there is no full-name/avatar or OAuth contract in this version. Profile's
+display name is a local label. ChatGPT account identity never supplies this profile.
+
+The account panel shows available, reserved, and total-charged integer microusd
+values as dollars. Missing amounts remain unavailable, not zero. SONN is prepaid;
+billing-off and test-checkout modes are explicit. The last-check timestamp marks
+a snapshot. Refresh reads account state without generation; top-ups are handled
+in the SONN web workspace. No automatic checkout or credit purchase occurs.
+
+Account requests have an eight-second HTTP timeout and a two-megabyte response
+limit, reject redirects, and expose only allowlisted identity/billing fields.
+Credential/URL changes invalidate in-flight results. Keys remain in the existing
+secret store and are never included in workspace links or frontend account events.
+
+### Model transport
 
 - `GET {base_url}/models`, with `Authorization: Bearer <key>`, discovers model IDs
   from the standard `data` array. The documented fallback is `sonn-auto`.

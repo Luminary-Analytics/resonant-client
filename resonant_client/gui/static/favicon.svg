@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
-  <title>Resonant</title>
-  <rect x="1" y="1" width="62" height="62" rx="17" fill="#0D2626" stroke="#20504B" stroke-width="2"/>
-  <path d="M10 32 C16 32 16 18 22 18 C28 18 28 46 34 46 C40 46 40 18 46 18 C52 18 50 32 54 32" stroke="#54E3C2" stroke-width="5" stroke-linecap="round"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>SONN continuity mark</title>
+  <defs><linearGradient id="mint" x1="10" y1="9" x2="51" y2="56" gradientUnits="userSpaceOnUse"><stop stop-color="#dbffe3"/><stop offset="1" stop-color="#78d9a2"/></linearGradient></defs>
+  <path d="M32 32C24 16 8 18 8 32C8 46 24 48 32 32C40 16 56 18 56 32C56 46 40 48 32 32Z" transform="rotate(-55 32 32)" stroke="url(#mint)" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

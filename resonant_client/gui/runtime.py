@@ -91,19 +91,23 @@ class BackendSpec:
                 thinking=self.thinking_mode or None,
             )
         if backend_type == "codex":
-            return create_backend(
+            backend = create_backend(
                 "codex",
                 model=self.model,
                 cwd=self.cwd or None,
                 permission_mode=self.permission_mode or None,
             )
+            backend._editor_settings = settings
+            return backend
         if backend_type == "claude-code":
-            return create_backend(
+            backend = create_backend(
                 "claude-code",
                 model=self.model,
                 cwd=self.cwd or None,
                 permission_mode=self.permission_mode or None,
             )
+            backend._editor_settings = settings
+            return backend
         if backend_type == "openrouter":
             return create_backend("openrouter", model=self.model,
                                   api_key=self.resolve_api_key(settings), thinking=self.thinking_mode or None)

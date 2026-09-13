@@ -1,8 +1,12 @@
-# Resonant
+# SONN Client
+
+Formerly Resonant. The desktop coding client for SONN, with optional direct
+connections to other model providers. The 0.19.0 rebrand preserves existing
+`resonant` commands, installation paths, saved data, and the updater feed.
 
 **A provider-adaptive multimodal coding agent for local and hosted models.**
 
-Resonant gives different model providers the same durable coding harness:
+SONN Client gives different model providers the same durable coding harness:
 repository-aware system prompts, native tools, focused clarification, long-task
 state, verification, and a desktop workflow with projects and sessions in one sidebar. Product
 behavior is capability-driven; named models are not silently promoted or given
@@ -13,8 +17,12 @@ for the engineering contract that governs harness changes.
 
 Start with the [desktop workflow](docs/desktop-workflow.md) for navigation and
 provider selection, or the [documentation index](docs/README.md) for contributor
-guides. [0.18.2](docs/v0.18.2-release-notes.md) improves live progress, session titles, and follow-up prompts;
+guides. [0.19.0](docs/v0.19.0-release-notes.md) introduces SONN Client, account integration, and searchable Settings;
 [Unreleased](docs/unreleased.md) tracks subsequent changes.
+
+Version 0.19.0 adds a bottom-left SONN account menu, local display
+name, and optional Echo companion. Settings opens a dedicated searchable category
+sidebar with focused pages for preferences, connections, and integrations.
 
 ## Provider Support
 
@@ -31,7 +39,7 @@ guides. [0.18.2](docs/v0.18.2-release-notes.md) improves live progress, session 
 - **Claude Code:** an installed CLI adapter for existing Claude Code users.
 
 Provider adapters may translate wire formats, reasoning tokens, and message
-roles. Resonant's engine contract stays model-neutral. Installed CLI adapters
+roles. SONN Client's engine contract stays model-neutral. Installed CLI adapters
 use their own native tool loops; see the [architecture guide](ARCHITECTURE.md)
 for their context-handoff and verification boundaries.
 
@@ -61,6 +69,8 @@ for their context-handoff and verification boundaries.
 
 - File, search, shell, git, batch, task, skill, and user-input tools
 - User-configured MCP servers
+- Built-in Blender, Unity, and Unreal Engine 5 connection setup through community
+  MCP bridges ([setup and validation](docs/creative-editors.md))
 - Skills, plugins, LSP status, and project instructions
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
@@ -86,7 +96,7 @@ for their context-handoff and verification boundaries.
 The sprint and autonomous workflows remain optional and off by default. They
 provide planner, generator, evaluator, specialist, and recovery flows for users
 who need structured long-running execution. Specialist model overrides are
-explicit user configuration; Resonant does not silently switch models by role.
+explicit user configuration; SONN Client does not silently switch models by role.
 
 ## Install
 
@@ -126,18 +136,18 @@ ollama serve
 ollama pull your-model
 ```
 
-Resonant probes `http://127.0.0.1:11434` by default. Set `OLLAMA_HOST` or use
+SONN Client probes `http://127.0.0.1:11434` by default. Set `OLLAMA_HOST` or use
 **Settings > Network** for a remote endpoint.
 
 ### EXO
 
-Resonant connects directly to EXO's OpenAI-compatible API. The bundled default
+SONN Client connects directly to EXO's OpenAI-compatible API. The bundled default
 is `http://127.0.0.1:52415/v1`; change **Settings > Network > EXO OpenAI API
 URL** or set `EXO_API_URL` for another cluster.
 
 The model picker orders running models first, downloaded models second, and the
 remaining EXO catalog after them. When a downloaded model is selected but not
-running, Resonant requests the first valid EXO placement and waits for the
+running, SONN Client requests the first valid EXO placement and waits for the
 instance to become ready before starting the turn. Tool calls, streaming usage,
 and OpenAI-format image content use the same agent runtime as other providers.
 
@@ -150,7 +160,7 @@ under **Settings > API keys** or set `MOONSHOT_API_KEY`.
 
 Install the Codex CLI, then open **Settings > Connections > Sign in with ChatGPT**.
 Follow the browser link and select **Refresh account & models** after signing in.
-Resonant displays the connected account, its available models, and remaining
+SONN Client displays the connected account, its available models, and remaining
 subscription usage when Codex reports it. Existing Codex API-key authentication
 is labeled separately because it is billed separately from a ChatGPT subscription.
 Credentials remain managed by Codex. This uses the official
@@ -172,7 +182,7 @@ boundaries](docs/sonn.md).
 
 Add an OpenRouter key under **Settings > API keys**, or set `OPENROUTER_API_KEY`.
 Use **Settings > Connections > Check connection & refresh models** to verify it.
-Resonant discovers models that support text output and tools from the
+SONN Client discovers models that support text output and tools from the
 [OpenRouter catalog](https://openrouter.ai/docs/quickstart), excluding batch variants.
 Streaming, native tool calls, reasoning continuation data, and provider-reported
 costs use OpenRouter's API. API keys are stored locally in `~/.resonant/settings.json`
@@ -184,7 +194,7 @@ Its API usage is billed separately from ChatGPT/Codex subscription usage.
 ### Claude Code
 
 Install and authenticate Claude Code, then select its discovered CLI models in
-the model picker. Resonant uses the installed CLI's native execution path.
+the model picker. SONN Client uses the installed CLI's native execution path.
 ChatGPT connection controls apply to Codex, not Claude Code.
 
 ### Choosing providers per session
@@ -213,7 +223,7 @@ the Chrome DevTools Protocol — navigate, click, type, read, screenshot, run
 JavaScript, and manage tabs. Nothing to install or configure: Chrome starts on
 first use.
 
-Chrome runs under a dedicated Resonant profile (`~/.resonant/browser-profile`)
+Chrome runs under a dedicated SONN Client profile (`~/.resonant/browser-profile`)
 rather than your everyday one, because Chrome locks a profile directory while
 it is in use — sharing yours would mean you and the agent could not browse at
 the same time. Log into sites once in that window and the session persists.
@@ -232,7 +242,7 @@ this adds nothing to the installer.
 | `RESONANT_BROWSER_CHROME_PATH` | auto-detected | Chrome executable |
 | `RESONANT_BROWSER_USER_DATA_DIR` | `~/.resonant/browser-profile` | Profile directory |
 | `RESONANT_BROWSER_HEADLESS` | `0` | Run without a visible window |
-| `RESONANT_BROWSER_GROUP_TITLE` | `Resonant` | Tab group label |
+| `RESONANT_BROWSER_GROUP_TITLE` | `SONN Client` | Tab group label |
 
 [BrowserOS](https://github.com/browseros-ai/BrowserOS) and other browser MCP
 servers still work if you prefer them. Enable **Settings > MCP Servers >

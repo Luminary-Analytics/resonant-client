@@ -782,7 +782,7 @@ class ResonantRunCards {
 
         const label = document.createElement('div');
         label.className = 'task-card-label';
-        label.textContent = options.synthetic ? 'Resonant' : 'You';
+        label.textContent = options.synthetic ? 'SONN Client' : 'You';
 
         const request = document.createElement('div');
         request.className = 'task-request-text';

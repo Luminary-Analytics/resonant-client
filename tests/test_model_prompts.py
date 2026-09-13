@@ -45,7 +45,7 @@ def test_profiles_share_model_neutral_guidance():
     kimi = build_model_prompt("kimi-k3")
 
     for prompt in (glm, deepseek, generic, kimi):
-        assert "You are Resonant, a thoughtful technical collaborator" in prompt
+        assert "You are SONN Client, a thoughtful technical collaborator" in prompt
         assert "Read relevant code and project instructions before editing" in prompt
         assert "match\nthe user's tone" in prompt
         assert "Treat tool activity as background" in prompt
@@ -93,7 +93,7 @@ def test_plan_mode_keeps_model_profile_and_disables_tools():
         plan_mode=True,
         model_name="glm-5.2:cloud",
     )
-    assert "You are Resonant, a thoughtful technical collaborator" in prompt
+    assert "You are SONN Client, a thoughtful technical collaborator" in prompt
     assert "CURRENT MODE: PLAN" in prompt
     assert "Do not call tools" in prompt
     assert "RESONANT TOOL NOTES" not in prompt

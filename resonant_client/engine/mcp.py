@@ -9,9 +9,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+import queue
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -23,6 +25,36 @@ from resonant_client.processes import background_process_kwargs
 logger = logging.getLogger(__name__)
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
+
+
+def normalize_tool_result(result: dict) -> tuple[str, dict]:
+    """Preserve one bounded MCP screenshot without dumping base64 into text."""
+    import base64
+    content = result.get("content")
+    if not isinstance(content, list):
+        return (content if isinstance(content, str) else json.dumps(result, default=str)), {}
+    texts, metadata = [], {}
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text":
+            texts.append(str(item.get("text", "")))
+        elif item.get("type") == "image":
+            mime, data = item.get("mimeType"), item.get("data", "")
+            if (not metadata and mime in {"image/png", "image/jpeg", "image/webp"}
+                    and isinstance(data, str) and len(data) <= 8_000_000):
+                try:
+                    base64.b64decode(data, validate=True)
+                    metadata = {"screenshot_b64": data, "media_type": mime}
+                    texts.append("Editor screenshot attached.")
+                except (ValueError, TypeError):
+                    texts.append("Invalid MCP image omitted.")
+            else:
+                texts.append("Additional, unsupported or oversized MCP image omitted.")
+        elif item.get("type") == "resource":
+            resource = item.get("resource", {})
+            texts.append(str(resource.get("text") or resource.get("uri") or "Embedded resource"))
+    return "\n".join(texts) or "MCP tool returned no text.", metadata
 
 
 @dataclass
@@ -123,6 +155,9 @@ class MCPConnection:
         self._request_id = 0
         self.connected = False
         self.last_error = ""
+        self._stdout_queue: queue.Queue = queue.Queue()
+        self.request_timeout = 60.0
+        self._resource_tools: set[str] = set()
 
     def connect(self) -> bool:
         """Open the configured transport, initialize MCP, and discover tools."""
@@ -136,8 +171,8 @@ class MCPConnection:
                     raise ValueError("HTTP MCP server requires a URL")
                 self._http_client = httpx.Client(
                     transport=self._http_transport,
-                    timeout=httpx.Timeout(15.0, connect=3.0),
-                    follow_redirects=True,
+                    timeout=httpx.Timeout(60.0, connect=3.0),
+                    follow_redirects=False,
                 )
             else:
                 if not self.config.command:
@@ -149,10 +184,26 @@ class MCPConnection:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     env=env,
-                    shell=(sys.platform == "win32"),
+                    shell=(sys.platform == "win32" and self.config.command.lower().endswith((".cmd", ".bat"))),
                     **background_process_kwargs(),
                 )
+                self._stdout_queue = queue.Queue()
+                # Drain both pipes: verbose bridge logs must not deadlock stdout.
+                process, responses = self._process, self._stdout_queue
+                def read_stdout():
+                    try:
+                        for line in process.stdout:
+                            responses.put(line)
+                    finally:
+                        responses.put(None)
+                def drain_stderr():
+                    for _ in process.stderr:
+                        pass  # Do not copy potentially sensitive bridge logs into diagnostics.
+                threading.Thread(target=read_stdout, daemon=True).start()
+                threading.Thread(target=drain_stderr, daemon=True).start()
 
             init_result = self._send_request(
                 "initialize",
@@ -169,7 +220,20 @@ class MCPConnection:
             )
 
             self._send_notification("notifications/initialized", {})
-            tools_result = self._send_request("tools/list", {}) or {}
+            all_tools, cursor, seen = [], None, set()
+            for _ in range(20):
+                tools_result = self._send_request("tools/list", {"cursor": cursor} if cursor else {})
+                if not tools_result or "tools" not in tools_result:
+                    raise RuntimeError("MCP tools/list failed")
+                all_tools.extend(tools_result["tools"])
+                cursor = tools_result.get("nextCursor")
+                if not cursor:
+                    break
+                if cursor in seen:
+                    raise RuntimeError("MCP tools/list repeated a pagination cursor")
+                seen.add(cursor)
+            else:
+                raise RuntimeError("MCP tool catalog exceeds 20 pages")
             self._tools = [
                 MCPTool(
                     server_name=self.config.name,
@@ -177,9 +241,22 @@ class MCPConnection:
                     description=tool.get("description", ""),
                     input_schema=tool.get("inputSchema", {}),
                 )
-                for tool in tools_result.get("tools", [])
+                for tool in all_tools
                 if tool.get("name")
             ]
+            if "resources" in init_result.get("capabilities", {}):
+                # Unity exposes editor state/instances as MCP resources, not
+                # tools. Adapt the standard read API for native tool-only models.
+                for name, description, schema in [
+                    ("resonant_list_resources", "List editor resources and resource templates; inspect URIs before reading.",
+                     {"type": "object", "properties": {"cursor": {"type": "string"},
+                       "templates": {"type": "boolean"}}}),
+                    ("resonant_read_resource", "Read an editor resource by its discovered URI.",
+                     {"type": "object", "properties": {"uri": {"type": "string"}}, "required": ["uri"]}),
+                ]:
+                    if name not in {tool.name for tool in self._tools}:
+                        self._resource_tools.add(name)
+                        self._tools.append(MCPTool(self.config.name, name, description, schema))
             self.connected = True
             logger.info(
                 "MCP server '%s' connected over %s with %d tools",
@@ -198,6 +275,7 @@ class MCPConnection:
         """Close the active transport and clear discovered tools."""
         self.connected = False
         self._tools = []
+        self._resource_tools.clear()
         if self._http_client:
             try:
                 if self._session_id:
@@ -222,11 +300,30 @@ class MCPConnection:
             self._process = None
 
     def call_tool(self, tool_name: str, arguments: dict) -> dict:
-        result = self._send_request(
-            "tools/call",
-            {"name": tool_name, "arguments": arguments},
-        )
-        return result if result is not None else {"error": "No response from MCP server"}
+        if tool_name not in {tool.name for tool in self.tools}:
+            return {"error": "Tool was not advertised by this MCP server"}
+        try:
+            if tool_name in self._resource_tools:
+                if tool_name == "resonant_read_resource":
+                    result = self._send_request("resources/read", {"uri": str(arguments.get("uri") or "")})
+                    if result is None:
+                        return {"error": "MCP resource read failed"}
+                    return {"content": [{"type": "resource", "resource": resource}
+                                        for resource in result.get("contents", [])]}
+                method = "resources/templates/list" if arguments.get("templates") else "resources/list"
+                result = self._send_request(method, {"cursor": arguments["cursor"]} if arguments.get("cursor") else {})
+                return ({"content": [{"type": "text", "text": json.dumps(result)}]}
+                        if result is not None else {"error": "MCP resource discovery failed"})
+            result = self._send_request(
+                "tools/call", {"name": tool_name, "arguments": arguments},
+            )
+            return result if result is not None else {"error": "No response from MCP server"}
+        except Exception as exc:
+            # Do not retry a mutating editor call: the editor may have executed it
+            # even when its reply was lost. A timeout is an unknown outcome.
+            self.last_error = f"MCP call failed ({type(exc).__name__}); inspect the editor before retrying."
+            self.disconnect()
+            return {"error": self.last_error}
 
     @property
     def tools(self) -> list[MCPTool]:
@@ -272,9 +369,24 @@ class MCPConnection:
         self._process.stdin.flush()
         if not expect_response:
             return None
-        assert self._process.stdout is not None
-        line = self._process.stdout.readline()
-        return json.loads(line.strip()) if line else None
+        deadline = time.monotonic() + self.request_timeout
+        while time.monotonic() < deadline:
+            try:
+                line = self._stdout_queue.get(timeout=max(0.001, deadline - time.monotonic()))
+            except queue.Empty:
+                raise TimeoutError("MCP server did not respond before the deadline") from None
+            if line is None:
+                return None
+            try:
+                message = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(message, dict):
+                continue
+            # Notifications and server-originated requests are not our response.
+            if message.get("id") == payload.get("id") and "method" not in message:
+                return message
+        raise TimeoutError("MCP server did not respond before the deadline")
 
     def _send_http_payload(self, payload: dict, *, expect_response: bool) -> dict | None:
         if not self._http_client:
@@ -439,7 +551,7 @@ class MCPManager:
                     "enabled": config.enabled,
                     "connected": connection.connected if connection else False,
                     "tools": len(connection.tools) if connection and connection.connected else 0,
-                    "error": error,
+                    "error": error or (connection.last_error if connection else ""),
                 }
             )
         return servers

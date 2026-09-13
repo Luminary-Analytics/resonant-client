@@ -134,7 +134,7 @@ def _meta_text(version: str, resonant_dir: Path) -> str:
             settings_blob = "(settings.json unreadable)"
 
     lines = [
-        "# Resonant diagnostics",
+        "# SONN Client diagnostics",
         "",
         f"version: {version}",
         f"python: {sys.version.split()[0]}",

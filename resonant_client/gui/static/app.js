@@ -1,5 +1,5 @@
 /**
- * Resonant GUI — Frontend Application
+ * SONN Client GUI — Frontend Application
  *
  * Handles WebSocket communication, event rendering, streaming markdown,
  * tool call display, and step collapsing.
@@ -115,7 +115,7 @@ function inferActionLabel(toolCounts) {
 
 
 // ═══════════════════════════════════════════════════════════════════
-//  Resonant App Class
+//  SONN Client App Class
 // ═══════════════════════════════════════════════════════════════════
 
 // Events whose handling is a single delegation. A table rather than 45 more
@@ -455,6 +455,9 @@ class ResonantApp {
         };
 
         this.ws.onclose = () => {
+            this.sonnAccount = null;
+            this._sonnAccountPending = false;
+            this._renderAccountMenu();
             // Show "Reconnecting..." during retry attempts to avoid flickering
             if (this.reconnectAttempts < 10) {
                 this._setSystemStatus('warning', 'Reconnecting...');
@@ -516,7 +519,7 @@ class ResonantApp {
             if (!response.ok) throw new Error('Draft save failed');
         }).catch(() => {
             scope.savedText = undefined;
-            this.showToastMessage('Your draft could not be saved. Keep Resonant open and try again.');
+            this.showToastMessage('Your draft could not be saved. Keep SONN Client open and try again.');
         });
         return this._draftWrites;
     }
@@ -710,7 +713,7 @@ class ResonantApp {
         if (!plugins.length) {
             return this._statusRow({
                 dot: 'muted',
-                title: 'No Resonant plugins installed',
+                title: 'No SONN Client plugins installed',
                 detail: 'Plugin packages will appear here when they are enabled.',
                 meta: this._statusPill('empty'),
             });
@@ -723,7 +726,7 @@ class ResonantApp {
             const meta = plugin.version ? `${status} ${plugin.version}` : status;
             return this._statusRow({
                 dot: ok ? 'ok' : disabled ? 'muted' : 'warn',
-                title: plugin.name || plugin.id || 'Resonant plugin',
+                title: plugin.name || plugin.id || 'SONN Client plugin',
                 detail,
                 meta: this._statusPill(meta),
             });
@@ -1176,15 +1179,10 @@ class ResonantApp {
         document.getElementById('titlebar-command')?.addEventListener('click', () => {
             this.openCommandPalette();
         });
-        document.getElementById('titlebar-settings')?.addEventListener('click', () => {
-            // Navigation controls must be idempotent. Treating the gear as a
-            // toggle meant a quick second click (or an impatient double-click
-            // while the settings payload rendered) immediately closed the
-            // view again. The explicit Back button owns the close action.
-            this.switchView('settings');
-        });
+        this._initAccountMenu();
         document.getElementById('settings-back')?.addEventListener('click', () => {
             this.switchView('agents');
+            if (this.userInput?.getClientRects().length) this.userInput.focus();
         });
         document.getElementById('rail-open-project')?.addEventListener('click', () => {
             this.openProjectFolder('register');
@@ -1819,7 +1817,7 @@ class ResonantApp {
         }
 
         if (text.startsWith('/grill') || text.startsWith('/mission')) {
-            this.showStatusMessage('That workflow is hidden in the redesigned UI. Start a normal session and ask Resonant directly.');
+            this.showStatusMessage('That workflow is hidden in the redesigned UI. Start a normal session and ask SONN Client directly.');
             return;
         }
 
@@ -2465,7 +2463,7 @@ class ResonantApp {
         if (shellName || shellPath) {
             const path = (cwd || '').replace(/\\/g, '/');
             const parts = path.split('/').filter(Boolean);
-            const short = parts[parts.length - 1] || 'Resonant';
+            const short = parts[parts.length - 1] || 'SONN Client';
             if (shellName) shellName.textContent = short;
             if (shellPath) {
                 shellPath.textContent = path || 'Open a workspace';
@@ -2843,6 +2841,7 @@ class ResonantApp {
 
     setRunning(running) {
         this.isRunning = running;
+        this._renderAccountMenu();
         if (running) this._clearPromptSuggestion();
         this._setSessionActivity(running ? 'working' : 'idle');
         this.sendBtn.style.display = 'flex';
@@ -2850,7 +2849,7 @@ class ResonantApp {
         this.userInput.disabled = false;
         this.userInput.placeholder = running
             ? 'Write a follow-up for the running agent...'
-            : 'Message Resonant';
+            : 'Message SONN Client';
         const sendLabel = running
             ? 'Queue follow-up (Enter) — Shift+Enter for newline'
             : 'Send message (Enter) — Shift+Enter for newline';
@@ -3724,13 +3723,21 @@ class ResonantApp {
             case 'model_switch_blocked':
                 this.showToastMessage(event.message);
                 break;
+            case 'sonn_account':
+                this.sonnAccount = event.data || null;
+                this._sonnAccountPending = false;
+                this._renderAccountMenu();
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
             case 'provider_connection':
                 this.providerConnections ||= {};
                 this.providerConnections[event.provider] = event.data || {};
+                this._renderAccountMenu();
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
             case 'settings':
                 this.settings = event.data || {};
+                this._renderAccountMenu();
                 if (!this.isRunning) {
                     this.setPermissionMode(
                         this.settings.general?.default_permission_mode || this.permissionMode || 'bypass',
@@ -3860,6 +3867,23 @@ class ResonantApp {
                 if (this.currentView === 'settings') {
                     this.renderSettingsView();
                 }
+                break;
+            case 'editor_integrations':
+                this.editorIntegrations = event.editors || [];
+                if (event.editor) {
+                    this._editorBusy = null;
+                    this._editorMessages = this._editorMessages || {};
+                    this._editorMessages[event.editor] = event.message || '';
+                    this._editorChecks = this._editorChecks || {};
+                    delete this._editorChecks[event.editor];
+                }
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'editor_check':
+                this._editorBusy = null;
+                this._editorChecks = this._editorChecks || {};
+                this._editorChecks[event.editor] = event.output || 'No editor details returned.';
+                if (this.currentView === 'settings') this.renderSettingsView();
                 break;
             case 'lsp_list':
                 this.lspItems = event.servers || event.items || [];
@@ -4005,6 +4029,7 @@ class ResonantApp {
         // Store settings
         if (event.settings) {
             this.settings = event.settings;
+            this._renderAccountMenu();
         }
         this.setPermissionMode(
             event.permission_mode || this.settings.general?.default_permission_mode || 'bypass',
@@ -6144,7 +6169,9 @@ class ResonantApp {
     // ── View Switching ────────────────────────────────────────────
 
     switchView(viewName) {
+        if (viewName === 'settings' && this.currentView !== 'settings') this._settingsLoadedPage = null;
         this.currentView = viewName;
+        document.body.classList.toggle('settings-open', viewName === 'settings');
 
         // Hide all views
         this.welcomeScreen.style.display = 'none';
@@ -6187,10 +6214,6 @@ class ResonantApp {
                 break;
             case 'settings':
                 this.settingsView.style.display = 'flex';
-                if (!this.providerConnections?.codex) this.send({command: 'provider_connection', provider: 'codex', action: 'status'});
-                this.send({ command: 'get_costs' });
-                this.send({ command: 'evaluation_list' });
-                this.send({ command: 'checkpoint_list' });
                 if (!this.settings || !Object.keys(this.settings).length) {
                     this.send({ command: 'get_settings' });
                 } else {
@@ -6381,7 +6404,7 @@ class ResonantApp {
                         this.showStatusMessage('Bundling diagnostics…');
                         this.send({ command: 'save_diagnostics' });
                         break;
-                    case 'about': this.showStatusMessage('Resonant - local-first multimodal coding agent'); break;
+                    case 'about': this.showStatusMessage('SONN Client - local-first multimodal coding agent'); break;
                 }
                 closeAppMenu();
             });
@@ -6459,15 +6482,17 @@ class ResonantApp {
             return;
         }
 
-        // Don't intercept other shortcuts when in input
-        if (inInput) return;
-
-        // Ctrl+, → settings
+        // Settings remains reachable from a draft when the sidebar is hidden.
         if ((e.ctrlKey || e.metaKey) && e.key === ',') {
             e.preventDefault();
+            this._closeAccountMenu();
             this.switchView('settings');
+            document.getElementById('settings-back')?.focus();
             return;
         }
+
+        // Don't intercept other shortcuts when in input
+        if (inInput) return;
 
         // Ctrl+Shift+D → toggle sidebar
         if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'D') {
@@ -6910,7 +6935,7 @@ class ResonantApp {
     _clearPromptSuggestion() {
         this._promptSuggestion = null;
         if (this.userInput) this.userInput.placeholder = this.isRunning
-            ? 'Write a follow-up for the running agent...' : 'Message Resonant';
+            ? 'Write a follow-up for the running agent...' : 'Message SONN Client';
         if (typeof document !== 'undefined') {
             const hint = document.getElementById('composer-suggestion-hint');
             if (hint) hint.hidden = true;
@@ -9853,7 +9878,7 @@ class ResonantApp {
     _sessionIndicator(session) {
         const explicit = this._sessionActivity.get(session.id);
         if (explicit === 'needs-input') return { state: explicit, label: 'Needs your input' };
-        if (explicit === 'working') return { state: explicit, label: 'Resonant is working' };
+        if (explicit === 'working') return { state: explicit, label: 'SONN Client is working' };
 
         const phase = String(session?.mission_state?.phase || '').toLowerCase();
         const isOrphan = (this._autonomousOrphans || []).some((item) =>
@@ -9861,7 +9886,7 @@ class ResonantApp {
         );
         if (isOrphan) return { state: 'needs-input', label: 'Needs your attention' };
         if (['planning_dispatched', 'executing', 'reviewing', 'autonomous_running'].includes(phase)) {
-            return { state: 'working', label: 'Resonant is working' };
+            return { state: 'working', label: 'SONN Client is working' };
         }
         return { state: 'idle', label: 'Idle' };
     }
@@ -9881,7 +9906,7 @@ class ResonantApp {
         const marker = row?.querySelector('.agent-row-status');
         if (!marker) return;
         const labels = {
-            working: 'Resonant is working',
+            working: 'SONN Client is working',
             'needs-input': 'Needs your input',
             idle: 'Idle',
         };
@@ -10509,7 +10534,7 @@ class ResonantApp {
         const previews = kind === 'previews';
         dialog.innerHTML = `<header><h2 id="project-resources-title">${previews ? 'Project previews' : 'Project notes'}</h2><button data-close>Close</button></header>`;
         if (previews) {
-            dialog.innerHTML += '<p>Previews stay available across tasks and project switches until stopped or Resonant closes.</p>';
+            dialog.innerHTML += '<p>Previews stay available across tasks and project switches until stopped or SONN Client closes.</p>';
             if (!this._managedPreviews?.length) dialog.innerHTML += '<p>No previews started for this project.</p>';
             for (const p of this._managedPreviews || []) {
                 const section = document.createElement('section');
@@ -10520,7 +10545,7 @@ class ResonantApp {
             const refresh = document.createElement('button'); refresh.textContent = 'Refresh status';
             refresh.onclick = () => this.send({command: 'preview_list'}); dialog.appendChild(refresh);
         } else {
-            dialog.innerHTML += '<p>Keep build commands, project conventions, and recurring fixes here. Resonant recalls at most six relevant notes. Changed source files exclude a note until you review it; an unchanged file does not prove a command succeeded.</p>';
+            dialog.innerHTML += '<p>Keep build commands, project conventions, and recurring fixes here. SONN Client recalls at most six relevant notes. Changed source files exclude a note until you review it; an unchanged file does not prove a command succeeded.</p>';
             for (const note of this._projectNotes || []) {
                 const section = document.createElement('section');
                 section.innerHTML = `<p>${esc(note.text)}</p><small>${esc(note.kind)} · ${esc(note.confidence)} · ${note.stale ? 'Needs review: source changed' : note.sources?.length ? 'Source files unchanged' : 'No source files tracked'} · ${esc(note.source)}</small><p><button data-edit>Edit</button> <button data-delete>Delete</button></p>`;

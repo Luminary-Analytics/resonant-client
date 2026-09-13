@@ -1,46 +1,48 @@
-"""Build Resonant's vector wave mark and matching Windows icon sizes.
+"""Rasterize the shared SONN continuity mark for compatible desktop icon files.
 
-Run with the existing desktop Pillow dependency: python scripts/build_brand_assets.py
-The same cubic curves define the SVG and raster exports.
+The SVG is copied from SONN's product brand assets. Run with Pillow installed:
+python scripts/build_brand_assets.py. Existing filenames remain upgrade-compatible.
 """
+import math
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-
 DEST = Path(__file__).resolve().parents[1] / "resonant_client/gui/static"
 CURVES = [
-    ((10, 32), (16, 32), (16, 18), (22, 18)),
-    ((22, 18), (28, 18), (28, 46), (34, 46)),
-    ((34, 46), (40, 46), (40, 18), (46, 18)),
-    ((46, 18), (52, 18), (50, 32), (54, 32)),
+    ((32, 32), (24, 16), (8, 18), (8, 32)),
+    ((8, 32), (8, 46), (24, 48), (32, 32)),
+    ((32, 32), (40, 16), (56, 18), (56, 32)),
+    ((56, 32), (56, 46), (40, 48), (32, 32)),
 ]
-SVG = '''<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
-  <title>Resonant</title>
-  <rect x="1" y="1" width="62" height="62" rx="17" fill="#0D2626" stroke="#20504B" stroke-width="2"/>
-  <path d="M10 32 C16 32 16 18 22 18 C28 18 28 46 34 46 C40 46 40 18 46 18 C52 18 50 32 54 32" stroke="#54E3C2" stroke-width="5" stroke-linecap="round"/>
-</svg>
-'''
 
 
 def main():
-    (DEST / "favicon.svg").write_text(SVG, encoding="utf-8")
-    scale = 16
-    image = Image.new("RGBA", (64 * scale, 64 * scale))
-    draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((scale, scale, 63 * scale, 63 * scale), radius=17 * scale,
-                           fill="#0D2626", outline="#20504B", width=2 * scale)
+    scale = 8
+    mask = Image.new("L", (64 * scale, 64 * scale))
+    draw = ImageDraw.Draw(mask)
     points = []
+    angle = math.radians(-55)
     for curve in CURVES:
         for step in range(101):
             t = step / 100
             weights = ((1-t)**3, 3*(1-t)**2*t, 3*(1-t)*t*t, t**3)
-            points.append(tuple(sum(w*p[axis] for w, p in zip(weights, curve)) * scale for axis in (0, 1)))
-    draw.line(points, fill="#54E3C2", width=5 * scale, joint="curve")
-    for x, y in (points[0], points[-1]):
-        r = 2.5 * scale
-        draw.ellipse((x-r, y-r, x+r, y+r), fill="#54E3C2")
-    image.resize((512, 512), Image.Resampling.LANCZOS).save(DEST / "resonant.png")
+            x, y = (sum(w*p[axis] for w, p in zip(weights, curve)) - 32 for axis in (0, 1))
+            points.append(((32+x*math.cos(angle)-y*math.sin(angle))*scale,
+                           (32+x*math.sin(angle)+y*math.cos(angle))*scale))
+    draw.line(points, fill=255, width=8 * scale, joint="curve")
+    image = Image.new("RGBA", mask.size)
+    pixels = image.load()
+    for y in range(mask.height):
+        for x in range(mask.width):
+            # The SVG's gradient rotates with the path.
+            dx, dy = x/scale-32, y/scale-32
+            px = dx*math.cos(-angle)-dy*math.sin(-angle)+32
+            py = dx*math.sin(-angle)+dy*math.cos(-angle)+32
+            t = max(0, min(1, ((px-10)*41+(py-9)*47)/(41**2+47**2)))
+            pixels[x, y] = tuple(round(a+(b-a)*t) for a, b in zip((219,255,227),(120,217,162))) + (255,)
+    image.putalpha(mask)
+    image.save(DEST / "resonant.png")
     image.resize((256, 256), Image.Resampling.LANCZOS).save(
         DEST / "resonant.ico", sizes=[(s, s) for s in (16, 24, 32, 48, 64, 128, 256)],
     )

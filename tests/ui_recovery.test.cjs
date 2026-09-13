@@ -212,3 +212,100 @@ test('completion suggestions preserve drafts and skip replay, errors, and queued
     assert.match(app.userInput.placeholder, /keyboard navigation/);
     assert.equal(app.userInput.value, '');
 });
+
+// The application account must never inherit another provider's identity.
+function accountView(settings = {}, sonnAccount, document = {}) {
+    const context = vm.createContext({window: {}, document});
+    const mixin = fs.readFileSync(path.join(__dirname, '../resonant_client/gui/static/settings_view.js'), 'utf8');
+    vm.runInContext(mixin + '\nthis.View = ResonantSettingsView;', context);
+    const app = Object.create(context.View.prototype);
+    app.settings = settings;
+    app.sonnAccount = sonnAccount;
+    app.providerConnections = {codex: {account: {type:'chatgpt',email:'other@example.test',planType:'pro'}}};
+    return app;
+}
+
+test('a Codex connection never supplies the SONN account identity', () => {
+    const app = accountView();
+    assert.equal(app._accountSummary().name, 'SONN account');
+    assert.equal(app._accountSummary().detail, 'Not connected to SONN');
+    assert.equal(app._accountSummary().initials, 'S');
+});
+
+test('local display name preserves the authenticated SONN identifier and prepaid status', () => {
+    const app = accountView({general: {display_name: 'Alex Morgan'}}, {
+        user: 'user-fixture', billing: {enabled:true},
+    });
+    const summary = app._accountSummary();
+    assert.equal(summary.name, 'Alex Morgan');
+    assert.equal(summary.initials, 'AM');
+    assert.equal(summary.detail, 'SONN · Prepaid credits');
+    assert.equal(summary.status, 'Account: user-fixture');
+    app.settings.general.display_name = ' ';
+    assert.equal(app._accountSummary().name, 'user-fixture');
+});
+
+test('billing-off and failed SONN discovery never appear as a paid subscription', () => {
+    const app = accountView({}, {user:'user-fixture',billing:{enabled:false}});
+    assert.equal(app._accountSummary().detail, 'SONN · Billing off');
+    app.sonnAccount = {error:'Account unavailable'};
+    assert.equal(app._accountSummary().detail, 'Not connected to SONN');
+    assert.equal(app._accountSummary().name, 'SONN account');
+});
+
+test('Settings shortcut works from a composer draft without sending or clearing it', () => {
+    const app = setup();
+    app.userInput.value = 'Keep this draft';
+    app._closeAccountMenu = () => {};
+    const views = [];
+    app.switchView = view => views.push(view);
+    let prevented = false;
+    app._handleKeyboardShortcut({target: {tagName: 'TEXTAREA'}, ctrlKey: true, key: ',', preventDefault() {prevented = true;}});
+    assert.equal(prevented, true);
+    assert.deepEqual(views, ['settings']);
+    assert.equal(app.userInput.value, 'Keep this draft');
+});
+
+test('settings search finds field help and keeps stored values out of the index', () => {
+    const app = accountView({api_keys:{sonn:'private-fixture-value'}});
+    const pages = app._settingsPages(), sections = app._settingsSections();
+    const matches = query => Array.from(app._matchingSettingsPages(pages, sections, query), page => page.id);
+    assert.deepEqual(matches('private-fixture-value'), []);
+    assert.deepEqual(matches('permission'), ['general']);
+    assert.deepEqual(matches('Blender'), ['creative_editors']);
+    assert.deepEqual(matches('SONN API key'), ['provider_connections']);
+    assert.deepEqual(matches('Echo'), ['pets']);
+});
+
+test('all editable settings remain reachable through the category pages', () => {
+    const app = accountView();
+    for (const section of app._settingsSections()) {
+        for (const field of section.fields || []) {
+            assert.ok(app._settingsPages().some(page => page.sections.includes(section.id)
+                && (!page.fields || page.fields.includes(field.key))), `${section.id}.${field.key}`);
+        }
+    }
+});
+
+test('background settings refresh defers while a field is being edited', () => {
+    const editable = {value:'unfinished draft', matches:() => true};
+    const app = accountView({}, null, {activeElement:editable});
+    app._initSettingsNavigation = () => {};
+    app.settingsBody = {contains:element => element === editable};
+    app.renderSettingsView();
+    assert.equal(app._settingsRenderPending, true);
+    assert.equal(editable.value, 'unfinished draft');
+});
+
+test('settings requests are limited to the page being visited', () => {
+    const app = accountView();
+    const sent = [];
+    app.send = message => sent.push(message.command);
+    app._loadSettingsPage('general');
+    assert.deepEqual(sent, []);
+    app._loadSettingsPage('creative_editors');
+    app._loadSettingsPage('creative_editors');
+    assert.deepEqual(sent, ['editor_list']);
+    app._loadSettingsPage('cost_tracking');
+    assert.deepEqual(sent, ['editor_list','get_costs']);
+});

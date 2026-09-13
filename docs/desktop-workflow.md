@@ -1,8 +1,8 @@
 # Desktop workflow
 
-Applies to v0.18.2. Provider connections and the unified sidebar arrived in
+Applies to SONN Client 0.19.0. Provider connections and the unified sidebar arrived in
 v0.17.0; v0.17.1 added the compact toolbar and session rows, and v0.17.2 adds
-the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.18.2-release-notes.md)
+the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.19.0-release-notes.md)
 and [Unreleased](unreleased.md).
 
 ## Projects and sessions
@@ -42,10 +42,10 @@ touch devices. The active session has a quiet background highlight.
 
 ## Search and toolbar
 
-**Search Resonant** (`Ctrl+K`) opens the command palette for actions, projects,
+**Search SONN Client** (`Ctrl+K`) opens the command palette for actions, projects,
 and sessions. It complements the sidebar's local filter.
 
-The toolbar provides runtime status, Settings, managed project previews,
+The toolbar provides runtime status, managed project previews,
 project notes, and the browser/design preview panel. Managed previews list
 running project servers; the preview-panel toggle opens the adjacent viewing
 surface. These are separate controls.
@@ -55,12 +55,57 @@ with accessible names and hover tooltips. Search has dedicated layout space so
 the `Ctrl+K` hint and right-side controls do not overlap. The shortcut hint hides
 on compact screens; the search button remains available.
 
+## Profile, settings, and Echo
+
+Open **Profile and settings** at the bottom-left of the sidebar for **SONN account
+& credits**, **Provider connections**, and **Settings**. The footer stays below the
+scrollable projects. `Ctrl+,` and the application menu open Settings with the
+sidebar hidden. Tab or arrow keys navigate the menu; Escape returns focus.
+
+Set your project URL and private invitation under **Settings > Connections > Network / API keys**,
+then choose **SONN account & credits > Connect / refresh SONN account**. This uses
+SONN's authenticated workspace API without generating tokens or changing models.
+The account identifier, available credits, reserved credits, and total charged
+come from SONN. A timestamp marks the last balance check; these are snapshots.
+Account reads happen on demand, not on startup. See [SONN setup](sonn.md).
+
+SONN currently reports a user identifier, not a full name or avatar. **Profile > Display name** is an optional local label; the authenticated account identifier
+remains visible in account details. ChatGPT/OpenRouter connections and their
+usage are separate from the SONN account. SONN uses prepaid credits, not a claimed
+subscription plan. Billing-off and test-checkout states are labeled explicitly.
+Manage credits or enter the invitation in the web workspace through **Open SONN
+workspace**; no token is placed in that link or copied into browser storage.
+
+**Show Echo** enables an optional teal companion above the profile button. Hide it
+from the menu, its close button, or **Settings > Pets**. This preference survives
+restarts. Echo makes no model calls and sends no notifications. Its gentle working
+animation respects reduced-motion preferences; chat progress remains authoritative.
+
+## Settings navigation
+
+Settings temporarily replaces the project sidebar with its own navigation and
+**Back to app**. Returning restores the session and its draft; opening Settings
+does not change the saved sidebar preference or preview layout. Pages are grouped
+under Personal, Integrations, Coding, and Advanced. General separates Permissions,
+Models, and Workflow; Profile, Appearance, Pets, Account, and Usage have focused
+pages. Connections groups provider sign-in, Network, and API keys.
+
+**Search settings** filters categories using setting labels and help text. It
+never searches saved field values, secrets, or account data. Arrow keys navigate
+categories; Enter opens one. Escape clears a search, and **Clear search** recovers
+from no matches. At narrow phone widths, categories become a horizontal strip.
+
+Text fields save when focus leaves them; switches and selects save when changed.
+Background responses defer rebuilding an actively edited field. Account, editor,
+usage, and diagnostic requests load on the relevant page rather than all at once.
+Settings supports dark and light palettes while retaining the SONN accent.
+
 ## ChatGPT/Codex and OpenRouter
 
 1. Install Codex CLI. Open **Settings > Connections > Sign in with ChatGPT**,
    follow the browser link, then select **Refresh account & models**. Existing
    CLI authentication is reused; API-key authentication is labeled separately.
-2. Add an OpenRouter key under **Settings > API keys**, or use
+2. Add an OpenRouter key under **Settings > Connections > API keys**, or use
    `OPENROUTER_API_KEY`. Under **Connections**, check the connection and refresh
    models. OpenRouter usage is separate from the ChatGPT subscription.
 3. Open **Models** beside the composer to search providers and star favorites.
@@ -117,3 +162,9 @@ refines it after the first turn; slow or failed requests keep the local title.
 This uses the chosen model and can incur provider usage. Codex and Claude Code
 use the local title without starting a separate CLI run. You can rename any
 session yourself; automatic naming never overrides a manual title.
+## Creative editors
+
+Settings > Creative editors provides guided Blender, Unity, and Unreal Engine 5
+connections. Connect a running bridge, check its open scene, and return to chat.
+Disable removes it from subsequent turns; reconnect after restarting SONN Client.
+See [setup, model support, and validation](creative-editors.md).

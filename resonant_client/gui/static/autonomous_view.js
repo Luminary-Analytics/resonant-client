@@ -483,7 +483,7 @@ class ResonantAutonomousView {
         // keeps working without one, so this is the moment most worth an
         // interrupt — an unnoticed park is dead wall-clock time.
         this.notifyDesktop(
-            'Resonant needs a decision',
+            'SONN Client needs a decision',
             request.question || 'The autonomous session is waiting on your input.',
             { tag: 'resonant-autonomous' },
         );

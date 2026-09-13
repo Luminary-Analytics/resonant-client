@@ -1,12 +1,12 @@
 # Contributor instructions
 
-Resonant is an open-source, provider-adaptive coding agent and desktop app.
+SONN Client (formerly Resonant) is an open-source, provider-adaptive coding agent and desktop app.
 Read this file first, then the documentation relevant to the change. This is the
 shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point here.
 
 ## Product and architecture
 
-- Use **Resonant** in product copy. Keep existing `resonant-client` package,
+- Use **SONN Client** in product copy. Keep existing `resonant-client` package,
   repository, executable compatibility strings, and updater identifiers unless
   a migration is part of the task.
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
@@ -61,6 +61,15 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
   applies to new sessions. Provider changes require a stopped or finished run.
 - Deliver saved navigation before provider discovery. Network/account refreshes
   must not block the UI event loop. Preserve discovered account models on probes.
+- Settings use a dedicated searchable category sidebar while open; preserve
+  session drafts, saved sidebar/preview layout, and fields being edited during
+  background refreshes. Search labels/help, never credentials or account data.
+  Load remote settings data only for the selected page.
+- Settings live in the bottom-left profile menu, with keyboard/application-menu
+  fallbacks. Keep the local display name separate from the authenticated SONN identity and
+  fetch account details on demand through SONN’s verified workspace API. ChatGPT
+  identity must never supply the SONN profile. Echo is optional, respects reduced motion,
+  and must not introduce model calls, polling, or completion claims.
 - Use accessible names, tooltips, visible keyboard focus, and reliable targets
   for icon buttons. Session dates are hover details in the compact sidebar;
   retain working/needs-input states and pinned-session visibility.
@@ -77,6 +86,11 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
   model runs provide different evidence; describe which was actually exercised.
 - Project notes need provenance; stale source fingerprints exclude them from
   recall. Preserve bounded skill retrieval and explicit pin/suppression policy.
+- Creative editor connections are opt-in managed MCP profiles. Preserve separate
+  bridge connectivity and scene-check evidence; never infer the active editor
+  project from a connected server. Editor scripts execute outside the path
+  sandbox. CLI editor handoff is per process and Full-auto only; never write
+  global Codex/Claude configuration. See [creative editors](docs/creative-editors.md).
 
 ## Validation
 

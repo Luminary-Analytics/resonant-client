@@ -1,5 +1,5 @@
 """
-Resonant GUI — Server Launcher
+SONN Client GUI — Server Launcher
 
 Starts the Starlette/uvicorn server and opens either a pywebview
 native window or a browser tab for the GUI.
@@ -42,7 +42,7 @@ def launch_gui(
     browser: bool = False,
 ):
     """
-    Launch the Resonant GUI application.
+    Launch the SONN Client GUI application.
 
     Args:
         host: Host to bind the server to
@@ -79,7 +79,7 @@ def launch_gui(
         print(f"Error: Server failed to start on {url}")
         sys.exit(1)
 
-    print(f"  Resonant GUI running at {url}")
+    print(f"  SONN Client GUI running at {url}")
 
     def _run_in_browser():
         print(f"  Open in browser: {url}")
@@ -167,7 +167,7 @@ def launch_gui(
             ico_path = os.path.join(icon_dir, "resonant.ico")
 
             wv_kwargs = dict(
-                title="Resonant",
+                title="SONN Client",
                 url=url,
                 width=1200,
                 height=800,
@@ -216,7 +216,7 @@ def launch_gui(
                     LoadImageW.restype = wintypes.HANDLE
 
                     # Find our window by title
-                    hwnd = user32.FindWindowW(None, "Resonant")
+                    hwnd = user32.FindWindowW(None, "SONN Client")
                     if not hwnd:
                         hwnd = user32.GetForegroundWindow()
 
@@ -248,7 +248,7 @@ def launch_gui(
 def main():
     """CLI entry point for resonant-gui."""
     parser = argparse.ArgumentParser(
-        description="Resonant Code Agent — Desktop GUI",
+        description="SONN Client Code Agent — Desktop GUI",
     )
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)

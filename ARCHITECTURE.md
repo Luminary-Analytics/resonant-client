@@ -1,14 +1,14 @@
-# Resonant architecture
+# SONN Client architecture
 
-Current baseline: [v0.18.1](docs/v0.18.1-release-notes.md), including the compact
+Current baseline: [v0.19.0](docs/v0.19.0-release-notes.md), including the compact
 toolbar, sidebar, new-session project chooser, and SONN connection. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
 product priorities live in the [harness north star](docs/agentic-harness-north-star.md).
 
 ## Runtime boundaries
 
-Resonant is a Python agent runtime with a Starlette/WebSocket GUI, a Rich TUI,
+SONN Client is a Python agent runtime with a Starlette/WebSocket GUI, a Rich TUI,
 and a pywebview desktop shell. Ollama, EXO, Kimi, OpenRouter, and SONN supply models to
-Resonant's engine loop. Codex and Claude Code adapters instead run installed
+SONN Client's engine loop. Codex and Claude Code adapters instead run installed
 CLIs, whose native tool execution remains inside those CLIs.
 
 The GUI owns interaction and rendering. Runtime construction owns provider,
@@ -30,6 +30,7 @@ these services; it is not required for ordinary chat-based coding.
 | Desktop UI | `gui/templates/index.html`, `gui/static/app.js`, `gui/static/styles.css` | Sidebar, composer, model picker, command palette, shell |
 | Settings UI | `gui/static/settings_view.js` | Connection flows, API keys, preferences |
 | Project resources | `engine/previews.py`, `engine/project_memory.py` | Managed preview servers, sourced project notes |
+| Creative editors | `engine/editor_integrations.py`, `engine/mcp.py` | Opt-in bridge profiles, live tool/resource discovery, scene probes, and per-process CLI configuration |
 | Costs and diagnostics | `gui/costs.py`, `gui/diagnostics.py`, `engine/turn_outcomes.py` | Usage/cost display, redacted diagnostics, completion evidence |
 | Durable workers | `engine/agents.py`, `engine/agent_runtime.py`, `engine/worktrees.py` | Worker state, execution, isolated writers |
 | Context and evidence | `engine/context_broker.py`, `engine/artifacts.py`, `engine/checkpoint_timeline.py`, `engine/flight_recorder.py` | Context attachments, artifacts, rewind, traces |
@@ -52,7 +53,7 @@ Paths in the table are relative to `resonant_client/`.
 6. The shared live-progress surface is the active
    task card's final child, after activity and response. Completion may offer
    a local next-prompt placeholder; it remains outside persisted drafts until
-   the user accepts it. See [0.18.1 notes](docs/v0.18.1-release-notes.md).
+   the user accepts it. See [0.18.2 notes](docs/v0.18.2-release-notes.md).
 7. Engine events travel through a thread-safe queue to WebSocket clients;
    classic JavaScript scripts and descriptor-based mixins render them.
 
@@ -60,6 +61,15 @@ Preserve render signatures, scroll/focus restoration, session-scoped draft
 writes, and immediate catalog updates after session mutations. The compact
 sidebar uses single-line rows and hover dates; see release status and accessible
 control behavior in the [desktop guide](docs/desktop-workflow.md).
+
+The bottom-left profile footer stays outside the project scroll surface. Its
+menu reads `sonn_account` events from `sonn_account.py`, independently of provider
+connection identity. Account reads are on demand, bounded, and redacted; settings
+changes invalidate prior results.
+`general.display_name` and `general.show_companion` persist local preferences;
+the optional Echo companion renders locally from the current run state, without
+timers or model calls. The profile menu and its keyboard/focus handling live in
+the existing settings mixin.
 
 ## Provider connections and selection
 
@@ -95,9 +105,19 @@ fallback or role routing.
 Codex receives project instructions, relevant notes, recent text history, and
 retained summaries. This is a text handoff, not native thread continuation;
 image attachments are not transferred. CLI tool displays must not be treated
-as evidence that Resonant's own tool handlers executed.
+as evidence that SONN Client's own tool handlers executed.
 
 ## Instructions, notes, and skills
+
+Unreleased creative editor support uses managed `resonant_blender`,
+`resonant_unity`, and `resonant_unreal` MCP entries. Setup lives in Settings;
+commands validate constrained local inputs and refresh the session's tools
+without rebuilding its backend or changing its model. Bridge programs remain
+external dependencies. MCP tool images retain their image-result representation;
+resources are adapted into read tools for native providers. CLI configuration
+is generated at invocation from current settings and is never serialized in a
+`BackendSpec`. See [creative editors](docs/creative-editors.md) for ownership,
+permission boundaries, setup versions, and live versus fixture evidence.
 
 `gui/project_instructions.py` prefers `AGENTS.md`, then `.agents/AGENTS.md`,
 `RESONANT.md`, `.resonant/RESONANT.md`, and `CLAUDE.md` at a given scope. Global
@@ -131,3 +151,12 @@ WebSocket dependencies work; verify the packaged app before releasing.
 See [RELEASING.md](RELEASING.md), [prompt architecture](docs/model-prompt-architecture.md),
 [durable runtime](docs/modern-agent-runtime.md), and the
 [documentation index](docs/README.md) for deeper references.
+
+## Settings pages
+
+The settings mixin owns a category catalog mapped to the existing section/key
+schema. It renders only the selected page and fetches page-specific account,
+connection, editor, usage, or diagnostic data on navigation. The settings sidebar
+replaces project navigation through a view class without persisting sidebar or
+preview changes. Search indexes static labels/help rather than user values.
+Background render requests defer while a field has focus, then flush after editing.

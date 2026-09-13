@@ -1794,6 +1794,7 @@ def _codex_context_blocks(instructions: str) -> str:
         r"--- RECALLED MEMORIES ---.*?--- END MEMORIES ---",
         r"--- PROJECT MEMORY ---.*?--- END PROJECT MEMORY ---",
         r"--- RELEVANT FILES ---.*?--- END RELEVANT FILES ---",
+        r"--- CREATIVE EDITORS ---.*?--- END CREATIVE EDITORS ---",
     ]
     for pattern in patterns:
         match = re.search(pattern, instructions or "", flags=re.DOTALL)
@@ -3451,6 +3452,9 @@ class CodexCliBackend:
             "-C",
             self.cwd,
         ]
+        from .engine.editor_integrations import cli_arguments
+        if self.permission_mode == "bypass":
+            cmd.extend(cli_arguments(getattr(self, "_editor_settings", None), "codex"))
         cmd.append("-")
         return cmd
 
@@ -3750,6 +3754,7 @@ class ClaudeCodeCliBackend:
         return "".join(data.get("delta", "") for event, data in events if event == EVENT_TEXT_DELTA).strip()
 
     def _command(self) -> list[str]:
+        from .engine.editor_integrations import cli_arguments
         return [
             self.cli_path,
             "-p",
@@ -3760,7 +3765,8 @@ class ClaudeCodeCliBackend:
             self.model,
             "--permission-mode",
             self.cli_permission_mode,
-        ]
+        ] + (cli_arguments(getattr(self, "_editor_settings", None), "claude-code")
+             if self.permission_mode == "bypass" else [])
 
     def stream(
         self,

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Resonant</title>
+    <title>SONN Client</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ asset_version }}">
     <!-- Everything below is served locally. Until v0.11.14 these five came
          from fonts.googleapis.com and cdn.jsdelivr.net, all in <head> and so
@@ -84,7 +84,7 @@
                 <div class="menubar-item" data-menu="go">
                     <span>Go</span>
                     <div class="menubar-dropdown">
-                        <div class="menubar-action" data-action="cmd-palette">Search Resonant <span class="menubar-shortcut">Ctrl+K</span></div>
+                        <div class="menubar-action" data-action="cmd-palette">Search SONN Client <span class="menubar-shortcut">Ctrl+K</span></div>
                         <div class="menubar-action" data-action="project-switch">Projects</div>
                         <div class="menubar-action" data-action="open-folder">Open Project&hellip;</div>
                     </div>
@@ -105,14 +105,14 @@
                         <div class="menubar-action" data-action="check-updates">Check for Updates&hellip;</div>
                         <div class="menubar-action" data-action="save-diagnostics">Save Diagnostics ZIP&hellip;</div>
                         <div class="menubar-sep"></div>
-                        <div class="menubar-action" data-action="about">About Resonant</div>
+                        <div class="menubar-action" data-action="about">About SONN Client</div>
                     </div>
                 </div>
             </nav>
         </div>
         <div class="titlebar-center">
             <button id="titlebar-command" class="titlebar-command" type="button" title="Command palette (Ctrl+K)" aria-label="Open command palette">
-                <span class="titlebar-command-text">Search Resonant</span>
+                <span class="titlebar-command-text">Search SONN Client</span>
                 <kbd>Ctrl+K</kbd>
             </button>
             <span id="header-project" class="titlebar-project" title="Current project" aria-label="Current project"></span>
@@ -138,12 +138,6 @@
                     <div id="status-popover-body" class="status-popover-body"></div>
                 </div>
             </div>
-            <button id="titlebar-settings" class="titlebar-icon-btn" type="button" title="Settings (Ctrl+,)" aria-label="Settings">
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                    <path d="M6.9 2.2h2.2l.35 1.45c.28.1.55.21.8.36l1.28-.78 1.55 1.55-.78 1.28c.15.25.27.52.36.8l1.44.35v2.2l-1.44.35c-.1.28-.21.55-.36.8l.78 1.28-1.55 1.55-1.28-.78c-.25.15-.52.27-.8.36l-.35 1.44H6.9l-.35-1.44a4.9 4.9 0 01-.8-.36l-1.28.78-1.55-1.55.78-1.28a4.9 4.9 0 01-.36-.8L1.9 9.4V7.2l1.44-.35c.1-.28.21-.55.36-.8l-.78-1.28 1.55-1.55 1.28.78c.25-.15.52-.27.8-.36L6.9 2.2z" stroke="currentColor" stroke-width="1.05" stroke-linejoin="round"/>
-                    <circle cx="8" cy="8.3" r="2" stroke="currentColor" stroke-width="1.15"/>
-                </svg>
-            </button>
             <button id="sidebar-toggle" class="titlebar-icon-btn titlebar-sidebar-legacy" title="Toggle sidebar (Ctrl+Shift+D)" aria-label="Toggle sidebar">
                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                     <rect x="1" y="1" width="5" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
@@ -185,7 +179,7 @@
     <div id="app">
         <!-- ═══ Sidebar — project switcher + search + sessions + footer nav ═══ -->
         <aside id="sidebar" role="navigation" aria-label="Projects and sessions">
-            <div class="sidebar-brand"><img src="/static/favicon.svg?v={{ asset_version }}" width="30" height="30" alt=""><span>Resonant</span></div>
+            <div class="sidebar-brand"><img src="/static/favicon.svg?v={{ asset_version }}" width="30" height="30" alt=""><span>SONN Client</span></div>
             <div class="sidebar-search">
                 <span aria-hidden="true">⌕</span>
                 <input type="search" placeholder="Find projects or sessions" aria-label="Find projects or sessions" id="search-input" />
@@ -218,6 +212,27 @@
                 <div class="agent-empty">Loading sessions…</div>
             </div>
             <div class="sidebar-footer">
+                <div id="sidebar-companion" class="sidebar-companion" hidden>
+                    <svg class="echo-pet" width="52" height="44" viewBox="0 0 64 54" fill="none" aria-hidden="true">
+                        <path d="M13 24L9 9l15 8c5-2 11-2 16 0l15-8-4 15c9 19-1 25-19 25S4 43 13 24Z" fill="currentColor" fill-opacity=".15" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                        <path d="M20 29v4m24-4v4m-18 5q6 5 12 0" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                        <path d="m26 22 4-5 4 8 4-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span><strong>Echo</strong><small id="echo-status">Ready when you are</small></span>
+                    <button id="echo-hide" type="button" aria-label="Hide Echo" title="Hide Echo">×</button>
+                </div>
+                <div id="account-popover" class="account-popover" role="dialog" aria-label="Your profile and account" hidden>
+                    <div class="account-summary"><strong id="account-menu-name">SONN account</strong><span id="account-menu-detail">Not connected to SONN</span><small id="account-menu-status"></small></div>
+                    <button type="button" id="account-usage">SONN account &amp; credits</button>
+                    <button type="button" id="account-connections">Provider connections <span aria-hidden="true">↗</span></button>
+                    <button type="button" id="account-pet" aria-pressed="false">Show Echo <span aria-hidden="true">✧</span></button>
+                    <button type="button" id="account-settings">Settings <kbd>Ctrl+,</kbd></button>
+                </div>
+                <button type="button" id="sidebar-account" class="sidebar-account" aria-label="Profile and settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-popover">
+                    <span id="account-avatar" class="account-avatar" aria-hidden="true">S</span>
+                    <span class="account-copy"><strong id="account-name">SONN account</strong><small id="account-detail">Not connected to SONN</small></span>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 9 3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
                 <!-- Hidden DOM nodes preserved so existing JS that reads sidebar-project-name / sidebar-cwd
                      (e.g. for tooltip text or empty-state placeholder) keeps working. -->
                 <div id="project-selector" hidden>
@@ -241,7 +256,7 @@
                         <div class="welcome-content">
                             <div class="welcome-brand">
                                 <img class="welcome-icon" src="/static/favicon.svg?v={{ asset_version }}" width="64" height="64" alt="">
-                                <h1>Resonant</h1>
+                                <h1>SONN Client</h1>
                             </div>
                             <p class="welcome-subtitle">Local-first multimodal coding agent for open-source models</p>
 
@@ -281,7 +296,7 @@
                              Mission toggle (off-state) or Mission badge (on-state).
                              See docs/long-running-agents.md (Phase 1 UI). -->
                         <div id="chat-header" class="chat-header">
-                            <div id="chat-session-title" class="chat-session-title">Resonant</div>
+                            <div id="chat-session-title" class="chat-session-title">SONN Client</div>
                             <!-- v0.3.3 — surface the active project path so misconfigurations
                                  are visible BEFORE the agent writes anywhere. Click to swap
                                  projects via the native folder picker. -->
@@ -351,8 +366,8 @@
                             <div class="input-top">
                                 <div class="drop-hint">Drop image here</div>
                                 <textarea id="user-input"
-                                          placeholder="Message Resonant"
-                                          aria-label="Message Resonant"
+                                          placeholder="Message SONN Client"
+                                          aria-label="Message SONN Client"
                                           aria-describedby="composer-suggestion-hint"
                                           rows="2"
                                           autocomplete="off"
@@ -443,18 +458,18 @@
 
                     <!-- ═══ Settings / Customize View ═══ -->
                     <div id="settings-view" class="feature-view" style="display:none">
-                        <div class="feature-view-header">
+                        <aside class="settings-sidebar" aria-label="Settings navigation">
                             <button id="settings-back" class="feature-view-back" type="button" title="Back to session" aria-label="Back to session">
-                                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-                                    <path d="M10 4L6 8l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                                </svg>
-                                <span>Back to session</span>
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m7 3-5 5 5 5M2 8h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <span>Back to app</span>
                             </button>
-                            <h2>Settings</h2>
-                            <p class="feature-view-sub">Local runtime and workspace preferences</p>
-                        </div>
-                        <div class="feature-view-body" id="settings-body">
-                            <!-- Sections rendered by JS -->
+                            <label class="settings-search"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.5" stroke="currentColor"/><path d="m10.5 10.5 3 3" stroke="currentColor"/></svg><input id="settings-search" type="search" placeholder="Search settings…" aria-label="Search settings" autocomplete="off"></label>
+                            <nav id="settings-nav" aria-label="Settings categories"></nav>
+                        </aside>
+                        <div class="settings-content" id="settings-content">
+                            <header class="settings-page-header"><p class="settings-eyebrow">Settings</p><h2 id="settings-page-title" tabindex="-1">General</h2><p id="settings-page-description"></p></header>
+                            <div id="settings-empty" class="settings-empty" hidden><p>No settings match your search.</p><button id="settings-clear-search" class="btn-sm" type="button">Clear search</button></div>
+                            <div class="feature-view-body" id="settings-body"></div>
                         </div>
                     </div>
 

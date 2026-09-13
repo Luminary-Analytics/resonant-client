@@ -45,7 +45,7 @@
   #define AppVersion "0.2.0"
 #endif
 
-#define AppName        "Resonant"
+#define AppName        "SONN Client"
 #define AppPublisher   "Luminary Analytics"
 #define AppURL         "https://github.com/Luminary-Analytics/resonant-client"
 #define AppExeName     "resonant.exe"
@@ -58,8 +58,9 @@ AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
-DefaultDirName={autopf}\{#AppName}
-DefaultGroupName={#AppName}
+; Keep the existing directory and program group for in-place upgrades.
+DefaultDirName={autopf}\Resonant
+DefaultGroupName=Resonant
 DisableProgramGroupPage=yes
 DisableWelcomePage=yes
 PrivilegesRequired=admin
@@ -88,6 +89,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; Pull in everything PyInstaller produced. The recursive subdirs flag picks
 ; up _internal/ with all the bundled libs and the WinSparkle.dll inside it.
 Source: "..\dist\resonant\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[InstallDelete]
+; Remove only old shortcuts; application data and installation paths stay intact.
+Type: files; Name: "{group}\Resonant.lnk"
+Type: files; Name: "{group}\Uninstall Resonant.lnk"
+Type: files; Name: "{userdesktop}\Resonant.lnk"
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Parameters: "gui"

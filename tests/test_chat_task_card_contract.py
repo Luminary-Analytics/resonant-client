@@ -208,7 +208,7 @@ def test_completed_chat_prioritizes_the_answer_over_success_telemetry():
     assert '.task-card[data-user-message="synthetic"] .task-card-header' in styles
     assert "border-radius: 18px 18px 4px 18px" in styles
     assert "max-height: min(48vh, 440px)" in styles
-    assert ": 'Message Resonant';" in source
+    assert ": 'Message SONN Client';" in source
 
 
 def test_streaming_text_does_not_use_a_lonely_blinking_cursor():
@@ -381,7 +381,7 @@ def test_session_list_has_semantic_activity_indicators():
     assert "this._sessionActivity = new Map();" in source
     assert "_sessionIndicator(session)" in source
     assert "_setSessionActivity(state, sessionId = this.currentSessionId)" in source
-    assert "state: 'working', label: 'Resonant is working'" in source
+    assert "state: 'working', label: 'SONN Client is working'" in source
     assert "state: 'needs-input', label: 'Needs your attention'" in source
     assert "return { state: 'idle', label: 'Idle' };" in source
     assert 'class="agent-row-status is-${indicator.state}"' in source
@@ -422,7 +422,6 @@ def test_user_blocking_events_update_session_indicator():
 def test_settings_navigation_is_idempotent_and_background_events_cannot_close_it():
     source = frontend_source()
 
-    assert "Navigation controls must be idempotent." in source
     assert "this.switchView('settings');" in source
     assert "this.switchView(view);" in source
     assert "view === 'settings' && this.currentView === 'settings'" not in source

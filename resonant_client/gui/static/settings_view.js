@@ -18,6 +18,166 @@
  */
 
 class ResonantSettingsView {
+    _accountSummary() {
+        const account = this.sonnAccount;
+        const text = value => typeof value === 'string' ? value.trim().slice(0, 160) : '';
+        const connected = !!account?.user && !account.error;
+        const name = text(this.settings?.general?.display_name) || (connected ? text(account.user) : 'SONN account');
+        const detail = connected ? (account.billing?.enabled ? 'SONN · Prepaid credits' : 'SONN · Billing off') : 'Not connected to SONN';
+        const status = this._sonnAccountPending ? 'Checking SONN account…' : account?.error || (connected
+            ? `Account: ${text(account.user)}` : 'Connect with your SONN private invitation');
+        const initials = name === 'SONN account' ? 'S' : name.includes('@') ? Array.from(name)[0].toUpperCase()
+            : name.split(/\s+/).slice(0, 2).map(word => Array.from(word)[0]).join('').toUpperCase();
+        return {name, detail, status, initials};
+    }
+
+    _requestSonnAccount() {
+        if (this._sonnAccountPending) return;
+        this._sonnAccountPending = true;
+        this._renderAccountMenu();
+        this.send({command: 'sonn_account'});
+    }
+
+    _renderSonnAccount() {
+        const account = this.sonnAccount;
+        const summary = this._accountSummary();
+        const escape = value => this.escapeHtml(String(value ?? ''));
+        const money = value => Number.isSafeInteger(value)
+            ? new Intl.NumberFormat('en-US', {style: 'currency', currency: 'USD'}).format(value / 1000000) : 'Unavailable';
+        const billing = account?.billing;
+        return `<div class="provider-connection">
+            <strong>${escape(summary.name)}</strong><p>${escape(summary.detail)}</p><p role="status">${escape(summary.status)}</p>
+            ${account?.user && !account.error ? `<div class="sonn-account-balances">
+                <div><small>Available credits</small><strong>${billing?.enabled ? money(billing.available_credit_microusd) : 'Billing off'}</strong></div>
+                <div><small>Reserved credits</small><strong>${money(billing?.reserved_credit_microusd)}</strong></div>
+                <div><small>Total charged</small><strong>${money(billing?.total_charged_microusd)}</strong></div>
+            </div><p class="provider-note">${account.checkout_mode === 'test' ? 'Test checkout mode. ' : ''}Prepaid account credits, not a subscription. Provider usage outside SONN is separate.</p>
+            <p class="provider-note">Last checked: ${escape(new Date(account.checked_at).toLocaleString())}</p>` : ''}
+            <button class="btn-sm" id="sonn-account-refresh" ${this._sonnAccountPending ? 'disabled' : ''}>${this._sonnAccountPending ? 'Checking…' : 'Connect / refresh SONN account'}</button>
+            <a href="https://getsonn.com/workspace" target="_blank" rel="noopener noreferrer">Open SONN workspace</a>
+            <p class="provider-note">Uses your SONN project URL and private invitation in Connections → Network and API keys. SONN currently reports an account identifier; Display name in Profile is a local label. Manage credits in the SONN workspace.</p>
+        </div>`;
+    }
+
+    _renderAccountMenu() {
+        const summary = this._accountSummary();
+        for (const [id, value] of Object.entries({
+            'account-name': summary.name, 'account-menu-name': summary.name,
+            'account-detail': summary.detail, 'account-menu-detail': summary.detail,
+            'account-menu-status': summary.status, 'account-avatar': summary.initials,
+        })) {
+            const element = document.getElementById(id);
+            if (element) { element.textContent = value; element.title = value; }
+        }
+        const visible = this.settings?.general?.show_companion === true;
+        const pet = document.getElementById('sidebar-companion');
+        if (pet) { pet.hidden = !visible; pet.classList.toggle('working', !!this.isRunning); }
+        const status = document.getElementById('echo-status');
+        if (status) status.textContent = this.isRunning ? 'Keeping you company…' : 'Ready when you are';
+        const toggle = document.getElementById('account-pet');
+        if (toggle) {
+            toggle.textContent = visible ? 'Hide Echo' : 'Show Echo';
+            toggle.setAttribute('aria-pressed', String(visible));
+        }
+    }
+
+    _setCompanion(visible) {
+        this.settings ||= {};
+        this.settings.general ||= {};
+        this.settings.general.show_companion = visible;
+        this._renderAccountMenu();
+        this.send({command: 'update_settings', section: 'general', key: 'show_companion', value: visible});
+    }
+
+    _closeAccountMenu(restoreFocus = false) {
+        const popover = document.getElementById('account-popover');
+        const trigger = document.getElementById('sidebar-account');
+        if (popover) popover.hidden = true;
+        trigger?.setAttribute('aria-expanded', 'false');
+        if (restoreFocus) trigger?.focus();
+    }
+
+    _initAccountMenu() {
+        const trigger = document.getElementById('sidebar-account');
+        const popover = document.getElementById('account-popover');
+        if (!trigger || !popover) return;
+        trigger.addEventListener('click', () => {
+            if (!popover.hidden) { this._closeAccountMenu(); return; }
+            this._renderAccountMenu();
+            popover.hidden = false;
+            trigger.setAttribute('aria-expanded', 'true');
+            popover.querySelector('button')?.focus();
+            // Account reads never enter the startup or generation path.
+            if (!this.sonnAccount) this._requestSonnAccount();
+        });
+        document.addEventListener('pointerdown', event => {
+            if (!popover.hidden && !popover.contains(event.target) && !trigger.contains(event.target)) this._closeAccountMenu();
+        });
+        document.addEventListener('focusin', event => {
+            if (!popover.hidden && !popover.contains(event.target) && !trigger.contains(event.target)) this._closeAccountMenu();
+        });
+        popover.addEventListener('keydown', event => {
+            if (event.key === 'Escape') {
+                event.preventDefault(); event.stopPropagation(); this._closeAccountMenu(true);
+            } else if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
+                const buttons = [...popover.querySelectorAll('button')];
+                let index = buttons.indexOf(document.activeElement);
+                index = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+                    : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+                event.preventDefault(); buttons[index]?.focus();
+            }
+        });
+        const openSettings = sectionId => {
+            this._closeAccountMenu();
+            this._settingsActivePage = sectionId || this._settingsActivePage || 'general';
+            this._settingsQuery = '';
+            const search = document.getElementById('settings-search');
+            if (search) search.value = '';
+            this.switchView('settings');
+            document.getElementById('settings-back')?.focus();
+        };
+        document.getElementById('account-settings')?.addEventListener('click', () => openSettings(false));
+        document.getElementById('account-connections')?.addEventListener('click', () => openSettings('provider_connections'));
+        document.getElementById('account-usage')?.addEventListener('click', () => openSettings('sonn_account'));
+        document.getElementById('account-pet')?.addEventListener('click', () => this._setCompanion(!this.settings?.general?.show_companion));
+        document.getElementById('echo-hide')?.addEventListener('click', () => {
+            this._setCompanion(false); trigger.focus();
+        });
+        this._renderAccountMenu();
+    }
+
+    _renderEditorIntegrations() {
+        const editors = this.editorIntegrations || [];
+        if (!editors.length) return '<p class="editor-help">Loading editor setup…</p>';
+        return `<p class="editor-help">Connect a running editor to work on scenes and assets from chat. Setup uses community MCP bridges. Reconnect here after restarting SONN Client. Codex and Claude Code receive enabled bridges on their next Full-auto turn; other modes keep editor tools disabled in those CLIs.</p>
+            <div class="editor-grid">${editors.map(editor => {
+                const escape = value => this.escapeHtml(String(value ?? ''));
+                const busy = this._editorBusy === editor.id;
+                const status = editor.connected ? `Bridge connected · ${editor.tools} tools` : editor.enabled ? 'Configured · not connected' : editor.configured ? 'Disabled' : 'Not configured';
+                const value = this._editorDrafts?.[editor.id] ?? editor.value;
+                return `<article class="editor-card" aria-label="${escape(editor.title)} integration">
+                    <div><h3>${escape(editor.title)}</h3><p class="editor-help">${escape(editor.summary)}</p></div>
+                    <p class="editor-connection-status" role="status">${escape(status)}</p>
+                    <details><summary>Setup ${escape(editor.title)}</summary>
+                        <ol>${editor.steps.map(step => `<li>${escape(step)}</li>`).join('')}</ol>
+                        <a href="${escape(editor.url)}" target="_blank" rel="noopener noreferrer">Open setup guide</a>
+                        <p class="editor-help">The editor and its add-on must be installed separately. ${editor.id === 'blender' ? 'Connecting may download the pinned bridge using uv. ' : ''}Editor actions use the editor's filesystem access, outside SONN Client's project sandbox.</p>
+                    </details>
+                    <label class="editor-field">${escape(editor.label)}
+                        <input class="settings-input" data-editor-input="${editor.id}" value="${escape(value)}" ${editor.field === 'port' ? 'inputmode="numeric"' : ''} />
+                    </label>
+                    <div class="editor-actions">
+                        <button class="btn-sm" data-editor="${editor.id}" data-editor-action="connect" ${busy ? 'disabled' : ''}>${editor.connected ? 'Reconnect' : 'Connect'}</button>
+                        <button class="btn-sm" data-editor="${editor.id}" data-editor-action="check" ${busy || !editor.connected ? 'disabled' : ''}>Check editor</button>
+                        <button class="btn-sm" data-editor="${editor.id}" data-editor-action="disconnect" ${busy || !editor.enabled ? 'disabled' : ''}>Disable</button>
+                    </div>
+                    ${editor.error ? `<p class="editor-error">${escape(editor.error)}</p>` : ''}
+                    ${this._editorMessages?.[editor.id] ? `<p role="status" class="editor-help">${escape(this._editorMessages[editor.id])}</p>` : ''}
+                    ${this._editorChecks?.[editor.id] ? `<details open><summary>Last editor check</summary><pre class="editor-check-output">${escape(this._editorChecks[editor.id])}</pre></details>` : ''}
+                </article>`;
+            }).join('')}</div>`;
+    }
+
 
     _renderProviderConnections() {
         const connections = this.providerConnections || {};
@@ -359,7 +519,7 @@ class ResonantSettingsView {
 
         const headline = reason === 'connected-but-empty'
             ? 'Ollama is reachable but no models are pulled yet.'
-            : 'Resonant needs Ollama. We couldn\'t reach it.';
+            : 'SONN Client needs Ollama. We couldn\'t reach it.';
 
         const wizard = document.createElement('div');
         wizard.className = 'ollama-wizard';
@@ -369,7 +529,7 @@ class ResonantSettingsView {
                 <span>${this.escapeHtml(headline)}</span>
             </div>
             <p class="ollama-wizard-blurb">
-                Resonant uses the models exposed by your configured Ollama
+                SONN Client uses the models exposed by your configured Ollama
                 endpoint. Model capabilities are detected at runtime.
             </p>
 
@@ -517,17 +677,114 @@ class ResonantSettingsView {
     }
 
 
-    renderSettingsView() {
-        if (!this.settingsBody) return;
+    _settingsPages() {
+        return [
+            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','auto_lint_after_edits','auto_test_after_edits','auto_test_command','big_context_profile','harness_enabled'], keywords:'permissions approval workflow'},
+            {id:'profile', title:'Profile', group:'Personal', icon:'person', description:'Personalize your local workspace identity.', sections:['general'], fields:['display_name']},
+            {id:'appearance', title:'Appearance', group:'Personal', icon:'sun', description:'Make the workspace feel right for you.', sections:['appearance']},
+            {id:'pets', title:'Pets', group:'Personal', icon:'pet', description:'A little company while you build.', sections:['general'], fields:['show_companion'], keywords:'Echo companion'},
+            {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
+            {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
+            {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication'},
+            {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
+            {id:'mcp_servers', title:'MCP servers', group:'Integrations', icon:'plug', description:'Connect tools supplied by external servers.', sections:['mcp_servers']},
+            {id:'engram', title:'Memory', group:'Coding', icon:'book', description:'Configure the optional Engram memory service.', sections:['engram']},
+            {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
+            {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
+            {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
+            {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
+            {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
+            {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
+        ];
+    }
 
-        const openSectionIds = new Set(
-            [...this.settingsBody.querySelectorAll('.settings-section.open')]
-                .map(element => element.dataset.settingsSection)
-                .filter(Boolean)
-        );
+    _matchingSettingsPages(pages, sections, query) {
+        const words = query.toLowerCase().trim().split(/\s+/).filter(Boolean);
+        return pages.filter(page => {
+            // Search labels and help, never stored values, account data, or secrets.
+            const fields = sections.filter(section => page.sections.includes(section.id))
+                .flatMap(section => section.fields || []).filter(field => !page.fields || page.fields.includes(field.key));
+            const headings = page.fields ? [] : sections.filter(section => page.sections.includes(section.id)).map(section => section.title);
+            const text = [page.title, page.description, page.keywords, ...headings, ...fields.flatMap(field => [field.label, field.hint])].join(' ').toLowerCase();
+            return words.every(word => text.includes(word));
+        });
+    }
 
-        const sections = [
+    _initSettingsNavigation() {
+        if (this._settingsNavigationReady) return;
+        this._settingsNavigationReady = true;
+        const search = document.getElementById('settings-search');
+        const applySearch = () => {
+            this._settingsQuery = search.value;
+            this.renderSettingsView({force:true});
+            document.getElementById('settings-content').scrollTop = 0;
+        };
+        search.addEventListener('input', applySearch);
+        search.addEventListener('keydown', event => {
+            if (event.key === 'Escape' && search.value) {
+                event.preventDefault(); event.stopPropagation(); search.value = ''; applySearch();
+            } else if (event.key === 'ArrowDown') {
+                event.preventDefault(); document.querySelector('#settings-nav button')?.focus();
+            }
+        });
+        document.getElementById('settings-clear-search').addEventListener('click', () => {
+            search.value = ''; applySearch(); search.focus();
+        });
+        document.getElementById('settings-nav').addEventListener('keydown', event => {
+            if (!['ArrowDown','ArrowUp','Home','End'].includes(event.key)) return;
+            const buttons = [...document.querySelectorAll('#settings-nav button')];
+            const index = buttons.indexOf(document.activeElement);
+            const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1
+                : (index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+            event.preventDefault(); buttons[next]?.focus();
+        });
+        this.settingsBody.addEventListener('focusout', () => queueMicrotask(() => {
+            if (this._settingsRenderPending) this.renderSettingsView();
+        }));
+    }
+
+    _renderSettingsNavigation(pages) {
+        const icons = {
+            settings:'M6 2h4l1 3 3 1v4l-3 1-1 3H6l-1-3-3-1V6l3-1z M6 8a2 2 0 1 0 4 0 2 2 0 0 0-4 0',
+            person:'M5 5a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M2 14c0-6 12-6 12 0',
+            sun:'M5 8a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M8 1v1m0 12v1M1 8h1m12 0h1M3 3l1 1m8 8 1 1M3 13l1-1m8-8 1-1',
+            pet:'M3 6 2 2l5 2h2l5-2-1 4c4 10-14 10-10 0z M5 8h.1M11 8h.1M6 11h4',
+            chart:'M2 2v12h12M5 10V7m4 3V4m4 6V6',
+            globe:'M1 8a7 7 0 1 0 14 0A7 7 0 1 0 1 8M1 8h14M8 1c-4 4-4 10 0 14 4-4 4-10 0-14',
+            cube:'m8 1 6 3v8l-6 3-6-3V4z M2 4l6 4 6-4M8 8v7',
+            plug:'M5 1v4m6-4v4M3 5h10v3a5 5 0 0 1-10 0z M8 13v2',
+            book:'M8 3C5 1 2 1 1 2v11c3-1 5 0 7 1 2-1 4-2 7-1V2c-1-1-4-1-7 1z M8 3v11',
+            history:'M2 5a6 6 0 1 1 0 6M2 1v4h4M8 4v4l3 2',
+        };
+        const nav = document.getElementById('settings-nav');
+        const scrollTop = nav.scrollTop, scrollLeft = nav.scrollLeft;
+        nav.innerHTML = ['Personal','Integrations','Coding','Advanced'].map(group => {
+            const items = pages.filter(page => page.group === group);
+            return items.length ? `<div class="settings-nav-group"><h3>${group}</h3>${items.map(page => `<button type="button" id="settings-nav-${page.id}" data-settings-page="${page.id}" ${page.id === this._settingsActivePage ? 'aria-current="page"' : ''}><svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="${icons[page.icon]}" stroke="currentColor" stroke-width="1.15" stroke-linecap="round" stroke-linejoin="round"/></svg><span>${this.escapeHtml(page.title)}</span></button>`).join('')}</div>` : '';
+        }).join('');
+        nav.scrollTop = scrollTop;
+        nav.scrollLeft = scrollLeft;
+        nav.querySelectorAll('[data-settings-page]').forEach(button => button.addEventListener('click', () => {
+            this._settingsActivePage = button.dataset.settingsPage;
+            this.renderSettingsView({force:true});
+            document.getElementById('settings-content').scrollTop = 0;
+        }));
+    }
+
+    _loadSettingsPage(page) {
+        if (this._settingsLoadedPage === page) return;
+        this._settingsLoadedPage = page;
+        if (page === 'sonn_account' && !this.sonnAccount) this._requestSonnAccount();
+        if (page === 'provider_connections' && !this.providerConnections?.codex) this.send({command:'provider_connection', provider:'codex', action:'status'});
+        const command = {creative_editors:'editor_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list'}[page];
+        if (command) this.send({command});
+    }
+
+    _settingsSections() {
+        return [
+            { id: "sonn_account", title: "SONN account & credits", open: true, custom: true },
             { id: "provider_connections", title: "Connections", open: true, custom: true },
+            { id: 'creative_editors', title: 'Creative editors', open: true, custom: true },
             {
                 id: 'cost_tracking', title: 'Usage & Cost', open: true,
                 fields: [
@@ -538,6 +795,10 @@ class ResonantSettingsView {
             {
                 id: 'general', title: 'General', open: true,
                 fields: [
+                    { key: 'display_name', label: 'Display name', type: 'text',
+                      placeholder: 'Your name', hint: 'Local sidebar label. Leave blank to use your SONN account identifier. This does not change your SONN account.' },
+                    { key: 'show_companion', label: 'Show Echo, your sidebar companion', type: 'toggle',
+                      hint: 'A quiet little companion. No model calls or notifications; respects reduced motion.' },
                     // v0.4.0 — single backend; the Auto option is the
                     // only sensible value. Kept the select for schema
                     // compatibility with older settings.json.
@@ -572,7 +833,7 @@ class ResonantSettingsView {
                     { key: 'big_context_profile', label: 'Large-context profile', type: 'toggle',
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
-                      hint: 'Off by default. Enable to use Resonant\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.resonant/, not in your repo.' },
+                      hint: 'Off by default. Enable to use SONN Client\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.resonant/, not in your repo.' },
                 ]
             },
             {
@@ -584,7 +845,7 @@ class ResonantSettingsView {
                     { key: 'density', label: 'Density', type: 'select',
                       options: [{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]
                     },
-                    { key: 'font_size', label: 'Base font size', type: 'select',
+                    { key: 'font_size', label: 'Base font size', type: 'select', default: '13.5',
                       options: [
                           { value: '12', label: '12px' },
                           { value: '13', label: '13px' },
@@ -652,17 +913,51 @@ class ResonantSettingsView {
                 id: 'mcp_servers', title: 'MCP Servers', custom: true },
         ];
 
+    }
+
+    renderSettingsView({force = false} = {}) {
+        if (!this.settingsBody) return;
+        this._initSettingsNavigation();
+        const focused = document.activeElement;
+        if (!force && this.settingsBody.contains(focused) && focused.matches('input, select, textarea')) {
+            this._settingsRenderPending = true;
+            return;
+        }
+        this._settingsRenderPending = false;
+        const focusId = focused?.id;
+        const sections = this._settingsSections();
+        const pages = this._settingsPages();
+        const matches = this._matchingSettingsPages(pages, sections, this._settingsQuery || '');
+        const page = matches.find(item => item.id === this._settingsActivePage) || matches[0];
+        if (page) this._settingsActivePage = page.id;
+        this._renderSettingsNavigation(matches);
+        document.getElementById('settings-page-title').textContent = page?.title || 'Search settings';
+        document.getElementById('settings-page-description').textContent = page?.description || '';
+        document.getElementById('settings-empty').hidden = !!page;
+        const scroll = document.getElementById('settings-content');
+        const scrollTop = scroll.scrollTop;
+        const visibleSections = page ? sections.filter(section => page.sections.includes(section.id)).map(section => ({
+            ...section, fields: section.fields?.filter(field => !page.fields || page.fields.includes(field.key)),
+        })).flatMap(section => page.id === 'general' ? [
+            {heading:'Permissions', keys:['default_permission_mode']},
+            {heading:'Models', keys:['default_backend','default_model','big_context_profile']},
+            {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','harness_enabled']},
+        ].map(group => ({...section, heading:group.heading, fields:section.fields.filter(field => group.keys.includes(field.key))})) : [section]) : [];
         this.settingsBody.innerHTML = '';
 
-        for (const section of sections) {
+        for (const section of visibleSections) {
             const data = this.settings[section.id] || {};
             const el = document.createElement('div');
-            el.className = `settings-section${section.open || openSectionIds.has(section.id) ? ' open' : ''}`;
+            el.className = 'settings-section open';
             el.dataset.settingsSection = section.id;
 
             let bodyHtml = '';
-            if (section.id === 'provider_connections') {
+            if (section.id === 'sonn_account') {
+                bodyHtml = this._renderSonnAccount();
+            } else if (section.id === 'provider_connections') {
                 bodyHtml = this._renderProviderConnections();
+            } else if (section.id === 'creative_editors') {
+                bodyHtml = this._renderEditorIntegrations();
             } else if (section.id === 'cost_tracking') {
                 bodyHtml = this._renderCostDashboard(data);
             } else if (section.id === 'rag') {
@@ -802,7 +1097,8 @@ class ResonantSettingsView {
                 }
                 bodyHtml += `<div class="settings-row" style="margin-top:8px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Edit hooks in ~/.resonant/settings.json</span></div>`;
             } else if (section.id === 'mcp_servers') {
-                const servers = typeof data === 'object' && !Array.isArray(data) ? Object.entries(data) : [];
+                const servers = typeof data === 'object' && !Array.isArray(data)
+                    ? Object.entries(data).filter(([name, cfg]) => !(cfg?.editor_integration && name === `resonant_${cfg.editor_integration}`)) : [];
                 if (servers.length === 0) {
                     bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No MCP servers configured</span></div>`;
                 } else {
@@ -832,7 +1128,7 @@ class ResonantSettingsView {
                 bodyHtml = `<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">Configure in settings.json</span></div>`;
             } else if (section.fields) {
                 for (const field of section.fields) {
-                    const val = data[field.key] ?? '';
+                    const val = data[field.key] ?? field.default ?? '';
                     let input = '';
                     if (field.type === 'select') {
                         const opts = field.options.map(o =>
@@ -841,7 +1137,7 @@ class ResonantSettingsView {
                         input = `<select class="settings-select" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}">${opts}</select>`;
                     } else if (field.type === 'toggle') {
                         const checked = val ? 'checked' : '';
-                        input = `<label style="cursor:pointer"><input type="checkbox" ${checked} data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" style="cursor:pointer" /> ${val ? 'On' : 'Off'}</label>`;
+                        input = `<label class="settings-toggle"><input type="checkbox" ${checked} data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" /><span class="settings-toggle-track" aria-hidden="true"></span></label>`;
                     } else if (field.type === 'password') {
                         const hasSecret = Boolean(this.settings._meta?.api_keys_present?.[field.key]);
                         input = `
@@ -858,33 +1154,21 @@ class ResonantSettingsView {
                         input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph} />`;
                     }
                     const hint = field.hint ? `<div class="settings-row-hint">${this.escapeHtml(field.hint)}</div>` : '';
-                    bodyHtml += `<div class="settings-row"><span class="settings-row-label">${field.label}</span><div class="settings-row-value">${input}${hint}</div></div>`;
+                    bodyHtml += `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${this.escapeHtml(field.label)}</span>${hint}</div><div class="settings-row-value">${input}</div></div>`;
                 }
             }
 
-            el.innerHTML = `
-                <div class="settings-section-header">
-                    <span class="settings-section-title">${section.title}</span>
-                    <span class="settings-section-arrow">▶</span>
-                </div>
-                <div class="settings-section-body">${bodyHtml}</div>
-            `;
-
-            // Toggle open/close — click anywhere on header toggles the section
-            const header = el.querySelector('.settings-section-header');
-            header.addEventListener('click', (e) => {
-                // Don't toggle if clicking on an input/select inside the header
-                if (e.target.closest('input, select, textarea, button')) return;
-                el.classList.toggle('open');
-            });
-            // Also handle clicks on the arrow and title directly
-            header.addEventListener('mousedown', (e) => {
-                e.preventDefault(); // Prevent text selection on double-click
-            });
-
+            el.innerHTML = `<h3 class="settings-section-header"><span class="settings-section-title">${this.escapeHtml(section.heading || (section.id === 'general' ? page.title : section.title))}</span></h3><div class="settings-section-body">${bodyHtml}</div>`;
             this.settingsBody.appendChild(el);
         }
 
+        scroll.scrollTop = scrollTop;
+        if (page) this._loadSettingsPage(page.id);
+        if (focusId && focused !== document.getElementById(focusId)) document.getElementById(focusId)?.focus({preventScroll: true});
+        document.getElementById('sonn-account-refresh')?.addEventListener('click', () => {
+            this._requestSonnAccount();
+            this.renderSettingsView();
+        });
         this.settingsBody.querySelectorAll('[data-provider-action]').forEach(btn => {
             btn.addEventListener('click', () => {
                 btn.disabled = true;
@@ -894,7 +1178,7 @@ class ResonantSettingsView {
         });
         // Bind change events for settings inputs
         this.settingsBody.querySelectorAll('select, input').forEach(input => {
-            const eventType = input.type === 'checkbox' ? 'change' : 'blur';
+            const eventType = input.type === 'checkbox' || input.tagName === 'SELECT' ? 'change' : 'blur';
             input.addEventListener(eventType, () => {
                 const section = input.dataset.section;
                 const key = input.dataset.key;
@@ -903,7 +1187,7 @@ class ResonantSettingsView {
                 if (input.type === 'checkbox') {
                     value = input.checked;
                     const label = input.parentElement;
-                    if (label) label.lastChild.textContent = value ? ' On' : ' Off';
+                    if (label && !label.classList.contains('settings-toggle')) label.lastChild.textContent = value ? ' On' : ' Off';
                 } else if (input.type === 'number') {
                     value = input.value ? Number(input.value) : null;
                 } else if (input.type === 'password') {
@@ -939,6 +1223,26 @@ class ResonantSettingsView {
         });
 
         // MCP connect buttons
+        this.settingsBody.querySelectorAll('[data-editor-action]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const editor = btn.dataset.editor;
+                const action = btn.dataset.editorAction;
+                const input = this.settingsBody.querySelector(`[data-editor-input="${editor}"]`);
+                this._editorDrafts = this._editorDrafts || {};
+                if (input) this._editorDrafts[editor] = input.value;
+                this._editorBusy = editor;
+                this.send({ command: action === 'check' ? 'editor_check' : 'editor_connect',
+                    editor, action, value: input?.value || '' });
+                btn.disabled = true;
+                btn.textContent = action === 'check' ? 'Checking…' : 'Connecting…';
+            });
+        });
+        this.settingsBody.querySelectorAll('[data-editor-input]').forEach(input => {
+            input.addEventListener('input', () => {
+                this._editorDrafts = this._editorDrafts || {};
+                this._editorDrafts[input.dataset.editorInput] = input.value;
+            });
+        });
         this.settingsBody.querySelectorAll('.mcp-connect-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 const serverName = btn.dataset.server;

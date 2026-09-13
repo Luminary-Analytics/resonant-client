@@ -99,7 +99,7 @@ def test_backend_spec_recreates_expected_backend(monkeypatch, spec, settings_dat
 
     def fake_create_backend(*args, **kwargs):
         calls.append((args, kwargs))
-        return {"args": args, "kwargs": kwargs}
+        return SimpleNamespace(args=args, kwargs=kwargs)
 
     monkeypatch.setattr("resonant_client.gui.runtime.create_backend", fake_create_backend)
     for key, value in env.items():
@@ -107,8 +107,8 @@ def test_backend_spec_recreates_expected_backend(monkeypatch, spec, settings_dat
 
     backend = spec.create_backend(_SettingsStub(settings_data))
 
-    assert backend["args"] == expected_args
-    assert backend["kwargs"] == expected_kwargs
+    assert backend.args == expected_args
+    assert backend.kwargs == expected_kwargs
     assert calls == [(expected_args, expected_kwargs)]
 
 

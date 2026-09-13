@@ -1,4 +1,4 @@
-# Releasing Resonant
+# Releasing SONN Client
 
 The release is complete when the tagged source, published Windows installer,
 and public signed update feed agree. A successful push alone is not deployment.
@@ -125,4 +125,15 @@ signature as a SmartScreen-trusted publisher certificate.
   not automatically marked prerelease; verify GitHub/appcast behavior before
   using a prerelease channel.
 
-Current release evidence is recorded in [0.18.2 notes](docs/v0.18.2-release-notes.md).
+Current release evidence is recorded in [0.19.0 notes](docs/v0.19.0-release-notes.md).
+
+## SONN Client branding compatibility
+
+The product display name is SONN Client; `resonant.exe`, `resonant-client`,
+installer filenames, `~/.resonant`, the existing installer AppId, install
+folder/program group, WinSparkle registry path, and appcast URL stay unchanged.
+The installer removes only the old Resonant shortcut files when installing
+SONN Client shortcuts. Verify an upgrade before release; do not publish a new
+feed or rename release assets as an incidental branding change. Regenerate
+Windows icons with `python scripts/build_brand_assets.py`; the source favicon
+is SONN's shared continuity SVG from its product brand assets.

@@ -1081,7 +1081,7 @@ class Session:
             return PathSandbox.is_read_only_tool(tool_name)
         elif self.autonomy_tier == "auto-edit":
             # File tools are OK, exec tools need approval
-            return not PathSandbox.is_exec_tool(tool_name)
+            return not (PathSandbox.is_exec_tool(tool_name) or tool_name.startswith("mcp_"))
         else:  # full-auto
             return True
 
@@ -1707,6 +1707,10 @@ class Session:
             prompt_role=self.prompt_role,
             role_instructions=self.role_instructions,
         ) + turn_context
+        from .editor_integrations import workflow_instructions
+        editor_context = workflow_instructions(getattr(self, "_settings_ref", None))
+        if editor_context:
+            base_instructions += "\n\n--- CREATIVE EDITORS ---\n" + editor_context + "\n--- END CREATIVE EDITORS ---"
         self._active_instructions = base_instructions
 
         while True:
@@ -2510,25 +2514,14 @@ class Session:
                     import time as _time
                     mcp_start = _time.time()
                     mcp_result = self._mcp_manager.call_tool(fn_name, fn_args)
-                    content = mcp_result.get("content")
-                    if isinstance(content, list):
-                        text_parts = [
-                            item.get("text", "")
-                            for item in content
-                            if isinstance(item, dict) and item.get("type") == "text"
-                        ]
-                        mcp_output = "\n".join(part for part in text_parts if part)
-                        if not mcp_output:
-                            mcp_output = json.dumps(content, ensure_ascii=False)
-                    elif isinstance(content, str):
-                        mcp_output = content
-                    else:
-                        mcp_output = json.dumps(mcp_result, ensure_ascii=False, default=str)
+                    from .mcp import normalize_tool_result
+                    mcp_output, mcp_metadata = normalize_tool_result(mcp_result)
                     from .tools import ToolResult
                     result = ToolResult(
                         output=mcp_output,
                         is_error=bool(mcp_result.get("isError") or "error" in mcp_result),
                         elapsed=_time.time() - mcp_start,
+                        metadata=mcp_metadata,
                     )
 
                     # MCP browser/computer tools do not pass through
@@ -2557,17 +2550,24 @@ class Session:
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
                                     output=result.output, is_error=result.is_error,
-                                    elapsed=result.elapsed, metadata={},
+                                    elapsed=result.elapsed, metadata=result.metadata,
                                     denied=False)
                     self.conversation_history.append({
                         "role": "tool_call", "name": fn_name,
                         "arguments": fn_args_str, "call_id": call_id,
                         "content": f"Called {fn_name}",
                     })
-                    self.conversation_history.append({
+                    mcp_history = {
                         "role": "tool_result", "call_id": call_id,
                         "content": result.output,
-                    })
+                        "name": fn_name, "is_error": result.is_error,
+                    }
+                    if result.metadata.get("screenshot_b64"):
+                        mcp_history["image"] = {
+                            "type": "base64", "data": result.metadata["screenshot_b64"],
+                            "media_type": result.metadata["media_type"],
+                        }
+                    self.conversation_history.append(mcp_history)
                     (turn_failed_tools if result.is_error else turn_successful_tools).append(fn_name)
                 else:
                     # Allowlist guard: when this Session was constructed with a

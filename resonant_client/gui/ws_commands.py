@@ -518,6 +518,9 @@ async def _evaluation_start(ctx: CommandContext) -> None:
 async def _get_settings(ctx: CommandContext) -> None:
     await ctx.send({"event": "settings", "data": ctx.state.settings.get_masked()})
 
+    if getattr(ctx.state, "mcp_manager", None) is not None:
+        await _editor_list(ctx)
+
 
 @command("get_costs")
 async def _get_costs(ctx: CommandContext) -> None:
@@ -595,6 +598,71 @@ async def _save_resonant_md_command(ctx: CommandContext) -> None:
 # ---------------------------------------------------------------------------
 # MCP servers
 # ---------------------------------------------------------------------------
+
+
+@command("editor_list")
+async def _editor_list(ctx: CommandContext) -> None:
+    from ..engine.editor_integrations import catalog
+    await ctx.send({"event": "editor_integrations", "editors": catalog(ctx.state.settings, ctx.state.mcp_manager)})
+
+
+@command("editor_connect")
+async def _editor_connect(ctx: CommandContext) -> None:
+    """Configure one known bridge and discover its actual tool surface."""
+    from ..engine.editor_integrations import build_config, catalog, configured_editors, server_name
+    editor = str(ctx.msg.get("editor") or "")
+    action = str(ctx.msg.get("action") or "connect")
+    message = ""
+    try:
+        if ctx.runs is not None and ctx.runs.busy:
+            raise ValueError("Stop the active run before changing editor connections.")
+        name = server_name(editor)
+        existing = (ctx.state.settings.get("mcp_servers") or {}).get(name)
+        if existing and name not in configured_editors(ctx.state.settings):
+            raise ValueError("That reserved server name is already in use. Rename it in MCP settings first.")
+        if action == "disconnect":
+            await asyncio.to_thread(ctx.state.mcp_manager.disconnect, name)
+            if existing:
+                ctx.state.settings.set("mcp_servers", name, {**existing, "enabled": False})
+            message = "Disconnected. Editor tools are disabled for subsequent turns."
+        elif action == "connect":
+            config = await asyncio.to_thread(build_config, editor, str(ctx.msg.get("value") or ""))
+            ctx.state.settings.set("mcp_servers", name, config)
+            success = await asyncio.to_thread(ctx.state.mcp_manager.connect, name)
+            message = ("Bridge connected. Use Check editor to verify the open scene."
+                       if success else "Could not connect. Check the setup steps and start the editor bridge.")
+        else:
+            raise ValueError("Unknown editor connection action")
+        if ctx.state.session:
+            ctx.state.session.mcp_tools = ctx.state.mcp_manager.get_all_tools()
+        ctx.state._intent_service = None
+    except (ValueError, OSError) as exc:
+        message = str(exc)
+    await ctx.send({"event": "editor_integrations", "editors": catalog(ctx.state.settings, ctx.state.mcp_manager),
+                    "editor": editor, "message": message})
+    await ctx.send({"event": "mcp_list", "servers": ctx.state.mcp_manager.list_servers()})
+    await ctx.send({"event": "settings", "data": ctx.state.settings.get_masked()})
+
+
+@command("editor_check")
+async def _editor_check(ctx: CommandContext) -> None:
+    """Run only the catalog's read-only scene probe, never arbitrary UI-supplied code."""
+    from ..engine.editor_integrations import EDITORS, server_name
+    from ..engine.mcp import normalize_tool_result
+    editor = str(ctx.msg.get("editor") or "")
+    try:
+        if ctx.runs is not None and ctx.runs.busy:
+            raise ValueError("Wait for the active run to finish before checking the editor.")
+        name = server_name(editor)
+        tool, args = EDITORS[editor]["probe"]
+        result = await asyncio.to_thread(ctx.state.mcp_manager.call_tool, f"mcp_{name}_{tool}", args)
+        output, _ = normalize_tool_result(result)
+        # The raw reply is evidence, not a permanent 'healthy' badge. Some
+        # bridges return domain errors in successful MCP text envelopes.
+        await ctx.send({"event": "editor_check", "editor": editor, "output": output[:12000],
+                        "is_error": bool(result.get("error") or result.get("isError"))})
+    except (ValueError, OSError) as exc:
+        await ctx.send({"event": "editor_check", "editor": editor, "output": str(exc), "is_error": True})
 
 
 @command("mcp_list")
@@ -2755,8 +2823,30 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         await ctx.send({"event": "error", "message": "Finish or stop the current run before changing SONN settings."})
         return
     data = await asyncio.to_thread(ctx.state.update_setting_value, section, key, value, clear_secret=clear_secret)
+    if ((section == "api_keys" and key in {None, "sonn"})
+            or (section == "network" and key in {None, "sonn_url"})):
+        ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
+        await ctx.send({"event": "sonn_account", "data": None})
     await ctx.send({"event": "settings", "data": data})
     await ctx.send(ctx.state.get_init_data(refresh_only=True))
+
+
+@command("sonn_account")
+async def _cmd_sonn_account(ctx: CommandContext) -> None:
+    from ..network_defaults import resolve_sonn_url
+    from ..sonn_account import read_account
+
+    revision = getattr(ctx.state, "sonn_account_revision", 0)
+    api_key, _, _, _ = ctx.state._api_key_details("sonn", "SONN_API_KEY")
+    base_url = resolve_sonn_url(settings_data=ctx.state.settings.get_all())
+    try:
+        data = await asyncio.to_thread(read_account, api_key, base_url=base_url)
+    except ValueError as exc:
+        data = {"error": str(exc)}
+    except Exception:
+        data = {"error": "SONN account details are unavailable. Try refreshing later."}
+    if revision == getattr(ctx.state, "sonn_account_revision", 0):
+        await ctx.send({"event": "sonn_account", "data": data})
 
 
 @command("provider_connection")

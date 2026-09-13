@@ -13,6 +13,8 @@ logger = logging.getLogger(__name__)
 
 DEFAULTS = {
     "general": {
+        "display_name": "",
+        "show_companion": False,
         "default_backend": "",
         "default_model": "",
         "default_permission_mode": "bypass",

@@ -1,9 +1,12 @@
 # Documentation status
 
-Reviewed for status and routing on September 12, 2026, against v0.18.2.
+Reviewed for status and routing on September 13, 2026, against
+SONN Client 0.19.0: branding, account mapping, and Settings navigation.
 This catalog distinguishes guidance from historical evidence; classification
 alone is not a claim that every old result has been rerun or every API is live.
-SONN validation is recorded in [0.18.0 notes](v0.18.0-release-notes.md).
+SONN transport validation is recorded in [0.18.0 notes](v0.18.0-release-notes.md);
+the current [account contract](sonn.md) and [0.19.0 notes](v0.19.0-release-notes.md) record the
+new authenticated account read. Historical Resonant names remain historical.
 Future changes are recorded in [Unreleased](unreleased.md).
 
 Start with [AGENTS.md](../AGENTS.md), [architecture](../ARCHITECTURE.md), and the
@@ -19,6 +22,9 @@ a current guide should update its replacements and links here; newly obsolete
 guidance needs an explicit status notice and a current replacement.
 
 ## Current guidance
+
+- [Creative editor integrations](creative-editors.md): setup,
+  ownership, permission boundaries, and explicitly scoped validation.
 
 - [AGENTS.md](../AGENTS.md)
 - [ARCHITECTURE.md](../ARCHITECTURE.md)

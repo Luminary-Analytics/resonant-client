@@ -27,6 +27,7 @@ from ..backends import (
     EVENT_DONE,
     EVENT_ERROR,
     EVENT_BACKEND_STATUS,
+    EVENT_EXTERNAL_TOOL,
 )
 from ..events import EngineEvent, make_event
 from ..content import build_user_content
@@ -1474,6 +1475,7 @@ class Session:
         empty_response_retries = 0
         step_limit_reached = False
         implementation_started = False
+        cli_tool_starts = {}
 
         def consume_steering() -> list[dict[str, str]]:
             """Append live direction once before the next model inference."""
@@ -1897,6 +1899,47 @@ class Session:
                                         call_id=data.get("call_id", ""),
                                         icon=get_tool_icon(fn_name),
                                         presentation=tool_presentation(fn_name, fn_args))
+
+                    elif event_type == EVENT_EXTERNAL_TOOL and getattr(self.backend, 'handles_tools', False):
+                        # Observations only: Codex already owns execution and permissions.
+                        name, call_id = data['name'], data['call_id']
+                        arguments = data.get('arguments', {})
+                        if data['stage'] == 'started':
+                            turn_tool_names.append(name)
+                            cli_tool_starts[call_id] = (time.time(), file_fingerprints(turn_changed_files, self.project_path))
+                            presentation = tool_presentation(name, arguments)
+                            if name == 'codex_file_change':
+                                presentation.update(kind='edit', view='diff', label='Codex file changes')
+                            yield make_event(EngineEvent.TOOL_CALL, name=name, call_id=call_id,
+                                             arguments=arguments, arguments_str=json.dumps(arguments),
+                                             icon=get_tool_icon(name), presentation=presentation,
+                                             external=True, source='codex')
+                        else:
+                            started, fingerprints = cli_tool_starts.pop(call_id, (time.time(), {}))
+                            metadata = dict(data.get('metadata') or {})
+                            if data.get('is_error'):
+                                turn_failed_tools.append(name)
+                            else:
+                                turn_successful_tools.append(name)
+                                # Do not fingerprint paths outside the session workspace.
+                                root = Path(self.project_path or getattr(self.backend, 'cwd', os.getcwd())).resolve()
+                                changed = []
+                                for value in data.get('changed_files') or []:
+                                    path = (root / value).resolve()
+                                    if path.is_relative_to(root):
+                                        changed.append(str(path))
+                                turn_changed_files.extend(changed)
+                                if changed:
+                                    phase_timings.setdefault('first_edit', round(time.time() - total_start, 3))
+                            if metadata.get('check'):
+                                check = {**metadata['check'], 'call_id': call_id, 'files': fingerprints}
+                                turn_checks.append(check)
+                                metadata['check'] = check
+                                turn_validation_tools.append(name)
+                            yield make_event(EngineEvent.TOOL_RESULT, name=name, call_id=call_id,
+                                             output=data.get('output', ''), is_error=bool(data.get('is_error')),
+                                             elapsed=time.time() - started, metadata=metadata,
+                                             denied=False, external=True, source='codex')
 
                     elif event_type == EVENT_DONE:
                         cog_state = data.get("cognitive_state")
@@ -2875,6 +2918,7 @@ class Session:
 
             if (
                 not has_tool_calls
+                and not getattr(self.backend, 'handles_tools', False)
                 and request_requires_workspace_change(active_goal)
                 and not turn_changed_files
                 and response_promises_future_action(full_text)

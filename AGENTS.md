@@ -76,6 +76,11 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
 - Codex receives a text handoff of instructions, project notes, recent history,
   and retained summaries. It does not receive the original native provider
   session or image attachments through that handoff.
+- Forward Codex JSONL messages and tool lifecycle observations as they arrive.
+  CLI observations never enter native tool execution. Count only successful
+  file-change results, and retain exit status and source for named CLI checks;
+  prose claims and arbitrary shell success are not verification. Partial text
+  must not mask a later CLI failure.
 - OpenRouter uses its own tool/message format, capability catalog, and reported
   costs. Preserve reasoning continuation only for the originating model.
 - Never silently use a system/install directory as the project. Respect the

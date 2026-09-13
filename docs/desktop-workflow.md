@@ -1,6 +1,6 @@
 # Desktop workflow
 
-Applies to SONN Client 0.19.0. Provider connections and the unified sidebar arrived in
+Applies to SONN Client 0.19.1. Provider connections and the unified sidebar arrived in
 v0.17.0; v0.17.1 added the compact toolbar and session rows, and v0.17.2 adds
 the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.19.0-release-notes.md)
 and [Unreleased](unreleased.md).
@@ -124,6 +124,13 @@ Finish or stop the active run before changing providers. History and drafts are
 retained, but Codex receives a text handoff rather than the original provider's
 native session. Image attachments are not included in that handoff. The current
 workflow uses manual provider selection, not automatic cross-provider fallback.
+
+Since 0.19.1, the Codex adapter streams progress messages and tool activity while
+the CLI runs. Successful file-change events populate the completion card;
+recognized standalone test/lint commands include their CLI exit result and
+file fingerprints. Missing, failed, or stale checks remain visible as unverified.
+This fixes delayed output and false missing-edit warnings after switching from
+SONN to Codex; it does not rewrite previously saved completion cards.
 
 ## Notes, skills, and costs
 

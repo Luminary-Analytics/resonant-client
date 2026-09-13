@@ -17,7 +17,7 @@ for the engineering contract that governs harness changes.
 
 Start with the [desktop workflow](docs/desktop-workflow.md) for navigation and
 provider selection, or the [documentation index](docs/README.md) for contributor
-guides. [0.19.0](docs/v0.19.0-release-notes.md) introduces SONN Client, account integration, and searchable Settings;
+guides. [0.19.1](docs/v0.19.1-release-notes.md) fixes Codex live progress and completion evidence;
 [Unreleased](docs/unreleased.md) tracks subsequent changes.
 
 Version 0.19.0 adds a bottom-left SONN account menu, local display

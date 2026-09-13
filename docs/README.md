@@ -1,6 +1,6 @@
 # SONN Client documentation index
 
-The current release is [SONN Client 0.19.0](v0.19.0-release-notes.md).
+The current release is [SONN Client 0.19.1](v0.19.1-release-notes.md).
 [Unreleased changes](unreleased.md) describe work in the checkout that has not
 yet shipped. Versioned release notes and dated evaluations record their own
 point in time; they are not instructions to restore an old design.
@@ -32,6 +32,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 
 - [Release runbook](../RELEASING.md)
 - [Release pipeline architecture](release-pipeline.md)
+- [0.19.1 release notes and validation](v0.19.1-release-notes.md)
 - [0.19.0 release notes and validation](v0.19.0-release-notes.md)
 - [0.18.2 release notes and validation](v0.18.2-release-notes.md)
 - [0.18.1 unpublished release attempt](v0.18.1-release-notes.md)

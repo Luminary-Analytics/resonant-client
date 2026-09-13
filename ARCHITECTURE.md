@@ -1,6 +1,6 @@
 # SONN Client architecture
 
-Current baseline: [v0.19.0](docs/v0.19.0-release-notes.md), including the compact
+Current baseline: [v0.19.1](docs/v0.19.1-release-notes.md), including the compact
 toolbar, sidebar, new-session project chooser, and SONN connection. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
 product priorities live in the [harness north star](docs/agentic-harness-north-star.md).
 
@@ -151,6 +151,16 @@ WebSocket dependencies work; verify the packaged app before releasing.
 See [RELEASING.md](RELEASING.md), [prompt architecture](docs/model-prompt-architecture.md),
 [durable runtime](docs/modern-agent-runtime.md), and the
 [documentation index](docs/README.md) for deeper references.
+
+## Codex CLI observations
+
+Codex streaming (0.19.1): `codex_events.py` translates CLI JSONL into text,
+activity, and `external.tool` observations. Session forwards observations as
+tool lifecycle events without executing them, records successful workspace
+file changes, and fingerprints files when a named CLI check starts. Completion
+requires an observed result; failed commands and stale checks stay unverified.
+The adapter drains both pipes before finalizing and preserves terminal failures
+even after partial text. Closing a stream terminates its owned CLI process.
 
 ## Settings pages
 

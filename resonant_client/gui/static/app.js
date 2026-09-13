@@ -14,6 +14,10 @@ const TOOL_DISPLAY = {
     file_write: { icon: '←', label: 'Write', color: 'ok' },
     file_edit:  { icon: '~', label: 'Edit',  color: 'warn' },
     bash:       { icon: '$', label: 'Shell', color: 'tool' },
+    codex_command: { icon: '$', label: 'Codex command', color: 'tool' },
+    codex_file_change: { icon: '~', label: 'Codex edits', color: 'warn' },
+    codex_mcp: { icon: '⚙', label: 'Codex integration', color: 'tool' },
+    codex_web_search: { icon: '/', label: 'Codex web search', color: 'tool' },
     glob:       { icon: '✱', label: 'Glob',  color: 'tool' },
     grep:       { icon: '/', label: 'Grep',  color: 'tool' },
     task:       { icon: '│', label: 'Task',  color: 'brand2' },
@@ -67,8 +71,8 @@ function getToolInfo(name) {
 function inferActionLabel(toolCounts) {
     const reads = (toolCounts.file_read || 0);
     const writes = (toolCounts.file_write || 0);
-    const edits = (toolCounts.file_edit || 0);
-    const shells = (toolCounts.bash || 0);
+    const edits = (toolCounts.file_edit || 0) + (toolCounts.codex_file_change || 0);
+    const shells = (toolCounts.bash || 0) + (toolCounts.codex_command || 0);
     const greps = (toolCounts.grep || 0);
     const globs = (toolCounts.glob || 0);
     const tasks = (toolCounts.task || 0);
@@ -5215,7 +5219,7 @@ class ResonantApp {
         const callId = event.call_id || '';
         const nameLower = name.toLowerCase();
         const readTools = new Set(['file_read', 'glob', 'grep', 'git_status', 'git_diff']);
-        const writeTools = new Set(['file_write', 'file_edit', 'apply_patch', 'git_commit']);
+        const writeTools = new Set(['file_write', 'file_edit', 'apply_patch', 'git_commit', 'codex_file_change']);
         const validationTools = new Set(['check_run']);
         if (readTools.has(nameLower)) {
             this._advanceLiveMilestone('inspect', 'Inspect the project');
@@ -5223,7 +5227,7 @@ class ResonantApp {
             this._advanceLiveMilestone('change', 'Implement the changes');
         } else if (validationTools.has(nameLower)) {
             this._advanceLiveMilestone('verify', 'Running acceptance checks');
-        } else if (nameLower === 'bash') {
+        } else if (nameLower === 'bash' || nameLower === 'codex_command') {
             this._advanceLiveMilestone('command', 'Run a command');
         }
         const toolActivity = this._liveRunToolActivity(name, event.arguments || {});
@@ -8748,7 +8752,7 @@ class ResonantApp {
                 this._liveRun.lastProgressAt = Date.now();
                 this._liveRun.lastTransportAt = Date.now();
             }
-            const label = {generating_code: 'Generating code', reasoning: 'Reasoning', responding: 'Writing response'}[event.phase] || 'Generating';
+            const label = {working: 'Working', generating_code: 'Generating code', reasoning: 'Reasoning', responding: 'Writing response'}[event.phase] || 'Generating';
             this._setLiveRunPhase(label, `${label} with ${event.model || 'the model'}`);
         } else if (event.kind === 'empty_response_retry') {
             if (!this._cancelInFlight && !this._cancelInterrupted) this._renderEmptyResponseRetryBanner(event);

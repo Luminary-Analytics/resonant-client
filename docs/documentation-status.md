@@ -1,7 +1,8 @@
 # Documentation status
 
 Reviewed for status and routing on September 13, 2026, against
-SONN Client 0.19.0: branding, account mapping, and Settings navigation.
+SONN Client 0.19.1: branding, account mapping, Settings navigation, and Codex
+streaming/completion evidence.
 This catalog distinguishes guidance from historical evidence; classification
 alone is not a claim that every old result has been rerun or every API is live.
 SONN transport validation is recorded in [0.18.0 notes](v0.18.0-release-notes.md);

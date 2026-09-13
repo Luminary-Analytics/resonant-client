@@ -58,6 +58,8 @@ EVENT_ERROR = "error"                     # {"message": "..."}
 #                             renders this as a persistent chip (the
 #                             per-retry banner auto-fades).
 EVENT_BACKEND_STATUS = "backend.status"
+# Observations from a CLI-owned tool loop; never executable engine requests.
+EVENT_EXTERNAL_TOOL = "external.tool"
 
 
 def _new_call_id(name: str, arguments: str, ordinal: int = 0) -> str:
@@ -3490,100 +3492,105 @@ class CodexCliBackend:
             return
 
         try:
-            assert proc.stdin is not None
-            proc.stdin.write(prompt)
-            proc.stdin.close()
-        except Exception:
-            pass
-
-        output_q: "queue.Queue[tuple[str, str]]" = queue.Queue()
-
-        def _reader(stream, stream_name: str) -> None:
             try:
-                for line in iter(stream.readline, ""):
-                    output_q.put((stream_name, line))
-            finally:
+                assert proc.stdin is not None
+                proc.stdin.write(prompt)
+                proc.stdin.close()
+            except Exception:
+                pass
+
+            output_q: "queue.Queue[tuple[str, str]]" = queue.Queue()
+
+            def _reader(stream, stream_name: str) -> None:
                 try:
-                    stream.close()
-                except Exception:
-                    pass
+                    for line in iter(stream.readline, ""):
+                        output_q.put((stream_name, line))
+                finally:
+                    output_q.put(("eof", stream_name))
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
 
-        threads = []
-        for stream, name in ((proc.stdout, "stdout"), (proc.stderr, "stderr")):
-            if stream is None:
-                continue
-            t = threading.Thread(target=_reader, args=(stream, name), daemon=True)
-            t.start()
-            threads.append(t)
+            threads = []
+            for stream, name in ((proc.stdout, "stdout"), (proc.stderr, "stderr")):
+                if stream is None:
+                    continue
+                t = threading.Thread(target=_reader, args=(stream, name), daemon=True)
+                t.start()
+                threads.append(t)
 
-        agent_messages: list[str] = []
-        stderr_tail: list[str] = []
-        usage: dict = {}
-        error_message = ""
+            from .codex_events import CodexEvents
+            translator = CodexEvents(self.model)
+            readers_done = 0
+            stderr_tail: list[str] = []
+            usage: dict = {}
+            error_message = ""
 
-        while True:
-            if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
+            while True:
+                if cancel_event is not None and cancel_event.is_set() and proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    yield (EVENT_ERROR, {"message": "Codex CLI run cancelled"})
+                    return
+
                 try:
-                    proc.kill()
-                except Exception:
-                    pass
-                yield (EVENT_ERROR, {"message": "Codex CLI run cancelled"})
-                return
+                    stream_name, line = output_q.get(timeout=0.1)
+                except queue.Empty:
+                    if proc.poll() is not None and readers_done == len(threads) and output_q.empty():
+                        break
+                    continue
 
-            try:
-                stream_name, line = output_q.get(timeout=0.1)
-            except queue.Empty:
-                if proc.poll() is not None and output_q.empty():
-                    break
-                continue
+                if stream_name == "eof":
+                    readers_done += 1
+                    continue
 
-            if stream_name == "stderr":
-                text = line.strip()
-                if text:
-                    stderr_tail.append(text)
-                    stderr_tail = stderr_tail[-12:]
-                continue
-
-            raw = line.strip()
-            if not raw:
-                continue
-            try:
-                event = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
-            etype = event.get("type", "")
-            if etype == "item.completed":
-                item = event.get("item") or {}
-                if item.get("type") == "agent_message":
-                    text = str(item.get("text", "") or "")
+                if stream_name == "stderr":
+                    text = line.strip()
                     if text:
-                        agent_messages.append(text)
-            elif etype == "turn.completed":
-                usage = event.get("usage") or {}
-            elif etype == "error":
-                error_message = str(event.get("message", "") or "")
-            elif etype == "turn.failed":
-                err = event.get("error") or {}
-                error_message = str(err.get("message", "") or error_message)
+                        stderr_tail.append(text)
+                        stderr_tail = stderr_tail[-12:]
+                    continue
 
-        for t in threads:
-            t.join(timeout=0.2)
+                raw = line.strip()
+                if not raw:
+                    continue
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                etype = event.get("type", "")
+                yield from translator.translate(event)
+                if etype == "turn.completed":
+                    usage = event.get("usage") or {}
+                elif etype == "error":
+                    error_message = str(event.get("message", "") or "")
+                elif etype == "turn.failed":
+                    err = event.get("error") or {}
+                    error_message = str(err.get("message", "") or error_message)
 
-        returncode = proc.poll()
-        final_text = "\n\n".join(m.strip() for m in agent_messages if m.strip()).strip()
-        if final_text:
-            yield (EVENT_TEXT_DELTA, {"delta": final_text})
+            for t in threads:
+                t.join(timeout=0.2)
+
+            returncode = proc.poll()
+            if error_message:
+                yield (EVENT_ERROR, {"message": error_message})
+                return
+            if returncode:
+                detail = "\n".join(stderr_tail).strip()
+                yield (EVENT_ERROR, {"message": detail or f"Codex CLI exited with code {returncode}"})
+                return
             yield (EVENT_DONE, {"model": self.model, "stats": usage or None, "cognitive_state": None})
-            return
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            try:
+                proc.wait(timeout=2)
+            except Exception:
+                pass
 
-        if error_message:
-            yield (EVENT_ERROR, {"message": error_message})
-            return
-        if returncode:
-            detail = "\n".join(stderr_tail).strip()
-            yield (EVENT_ERROR, {"message": detail or f"Codex CLI exited with code {returncode}"})
-            return
-        yield (EVENT_DONE, {"model": self.model, "stats": usage or None, "cognitive_state": None})
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,7 @@
 import io
 import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from resonant_client.backends import (
     CodexCliBackend,
@@ -155,6 +157,9 @@ class _FakeProc:
     def kill(self):
         self.killed = True
 
+    def wait(self, timeout=None):
+        return 0
+
 
 def test_codex_stream_parses_jsonl_final_message(monkeypatch, tmp_path):
     fake_proc = _FakeProc()
@@ -172,3 +177,51 @@ def test_codex_stream_parses_jsonl_final_message(monkeypatch, tmp_path):
     done = [data for event, data in events if event == EVENT_DONE][0]
     assert done["model"] == "gpt-5.5"
     assert done["stats"]["input_tokens"] == 10
+
+
+def test_codex_yields_message_before_process_exits(monkeypatch, tmp_path):
+    release = threading.Event()
+    class GatedOutput(io.StringIO):
+        def readline(self, *args):
+            if self.tell():
+                release.wait(3)
+            return super().readline(*args)
+    proc = _FakeProc()
+    proc.stdout = GatedOutput(json.dumps({'type': 'item.completed', 'item': {
+        'id': 'first', 'type': 'agent_message', 'text': 'Starting the change.'}}) + '\n')
+    proc.poll = lambda: 0 if release.is_set() else None
+    monkeypatch.setattr('resonant_client.backends.subprocess.Popen', lambda *a, **kw: proc)
+    backend = CodexCliBackend('astra', cwd=str(tmp_path), cli_path='codex')
+    stream = backend.stream('fix it', [], '', [])
+    with ThreadPoolExecutor() as pool:
+        first = pool.submit(next, stream)
+        try:
+            assert first.result(timeout=2) == (EVENT_TEXT_DELTA, {'delta': 'Starting the change.'})
+            assert proc.poll() is None
+        finally:
+            release.set()
+        assert list(stream)[-1][0] == EVENT_DONE
+
+
+def test_codex_partial_text_does_not_hide_terminal_failure(monkeypatch, tmp_path):
+    proc = _FakeProc()
+    proc.stdout = io.StringIO('\n'.join(json.dumps(e) for e in [
+        {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Working.'}},
+        {'type': 'turn.failed', 'error': {'message': 'Connection lost'}},
+    ]) + '\n')
+    monkeypatch.setattr('resonant_client.backends.subprocess.Popen', lambda *a, **kw: proc)
+    backend = CodexCliBackend('astra', cwd=str(tmp_path), cli_path='codex')
+    events = list(backend.stream('fix it', [], '', []))
+    assert events[-1] == ('error', {'message': 'Connection lost'})
+    assert not any(kind == EVENT_DONE for kind, _ in events)
+
+
+def test_closing_codex_stream_stops_its_process(monkeypatch, tmp_path):
+    proc = _FakeProc()
+    proc.poll = lambda: 0 if proc.killed else None
+    monkeypatch.setattr('resonant_client.backends.subprocess.Popen', lambda *a, **kw: proc)
+    backend = CodexCliBackend('astra', cwd=str(tmp_path), cli_path='codex')
+    stream = backend.stream('fix it', [], '', [])
+    assert next(stream)[0] == EVENT_TEXT_DELTA
+    stream.close()
+    assert proc.killed

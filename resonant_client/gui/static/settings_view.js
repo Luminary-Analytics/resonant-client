@@ -679,7 +679,7 @@ class ResonantSettingsView {
 
     _settingsPages() {
         return [
-            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','auto_lint_after_edits','auto_test_after_edits','auto_test_command','big_context_profile','harness_enabled'], keywords:'permissions approval workflow'},
+            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled'], keywords:'permissions approval workflow'},
             {id:'profile', title:'Profile', group:'Personal', icon:'person', description:'Personalize your local workspace identity.', sections:['general'], fields:['display_name']},
             {id:'appearance', title:'Appearance', group:'Personal', icon:'sun', description:'Make the workspace feel right for you.', sections:['appearance']},
             {id:'pets', title:'Pets', group:'Personal', icon:'pet', description:'A little company while you build.', sections:['general'], fields:['show_companion'], keywords:'Echo companion'},
@@ -830,6 +830,8 @@ class ResonantSettingsView {
                       hint: 'After every file_edit/file_write, run the test command on the matching test file. Failures are injected back as a follow-up turn.' },
                     { key: 'auto_test_command', label: 'Auto-test command', type: 'text',
                       hint: 'Default: "pytest -x". For JS/TS: "npx jest" or "npx vitest run".' },
+                    { key: 'max_model_requests', label: 'Model requests per turn', type: 'number',
+                      hint: '0 means unlimited. Native coding runs pause at this limit and retain work; send Continue to resume. Includes recovery attempts, excludes auxiliary summaries and delegated workers. This is not a dollar limit or a CLI-provider limit.' },
                     { key: 'big_context_profile', label: 'Large-context profile', type: 'toggle',
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
@@ -941,7 +943,7 @@ class ResonantSettingsView {
         })).flatMap(section => page.id === 'general' ? [
             {heading:'Permissions', keys:['default_permission_mode']},
             {heading:'Models', keys:['default_backend','default_model','big_context_profile']},
-            {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','harness_enabled']},
+            {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled']},
         ].map(group => ({...section, heading:group.heading, fields:section.fields.filter(field => group.keys.includes(field.key))})) : [section]) : [];
         this.settingsBody.innerHTML = '';
 

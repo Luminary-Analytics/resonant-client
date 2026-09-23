@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resonant-client"
-version = "0.19.1"
+version = "0.19.2.dev11"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
-# v0.6.2 — relicensed Proprietary → MIT. Resonant is now an
+# v0.6.2 â€” relicensed Proprietary â†’ MIT. Resonant is now an
 # open-source harness for local-first self-improving autonomous
 # coding. See LICENSE at the repo root.
 license = {text = "MIT"}
@@ -42,7 +42,7 @@ desktop = [
     # undeclared until v0.11.7 and only ever worked on machines where an
     # unrelated package happened to pull psutil in. build_clean.ps1 installs
     # [gui,desktop], so every shipped .exe answered both tools with
-    # "psutil not installed" — two advertised tools dead in every release.
+    # "psutil not installed" â€” two advertised tools dead in every release.
     "psutil>=5.9.0",
 ]
 gui = [
@@ -53,7 +53,7 @@ gui = [
     # WebSocket server is core to the GUI's agent-loop streaming. Was
     # previously only in the `[server]` extras group, which meant CI
     # builds installed `[gui,desktop,...]` but NOT websockets, so the
-    # bundled exe couldn't upgrade WebSocket connections — every page
+    # bundled exe couldn't upgrade WebSocket connections â€” every page
     # reload sat on "Reconnecting..." forever. Bug #24, fixed v0.2.7.
     "websockets>=12.0",
 ]
@@ -99,7 +99,7 @@ addopts = [
     "--strict-markers",
 ]
 # NOTE: `-x` (exit on first failure) deliberately NOT in addopts. It hides the
-# blast radius of a regression — one failure is reported where twenty may
+# blast radius of a regression â€” one failure is reported where twenty may
 # exist, which is exactly the wrong signal on a CI gate or a refactor. Pass
 # `-x` explicitly when bisecting locally.
 filterwarnings = [
@@ -118,21 +118,21 @@ target-version = "py311"
 # change that caused it.
 #
 # These four are ruff's historical defaults (pyflakes + the pycodestyle errors
-# worth enforcing). Widening the set is a deliberate, separate piece of work —
+# worth enforcing). Widening the set is a deliberate, separate piece of work â€”
 # edit this list, fix the fallout, and pin the new contract here.
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-# `resonant_client/**` is held to the full default rule set and is clean — the
+# `resonant_client/**` is held to the full default rule set and is clean â€” the
 # CI gate depends on that staying true. Test/support code gets a narrow set of
 # stylistic exemptions so the gate still catches real problems (undefined
 # names, unused imports, redefinitions) everywhere.
 #
-#   E402 — tests import after sys.path/monkeypatch setup by design
-#   E702 — compact one-line fixture setup in smoke scripts
-#   E731 — lambda stubs are the point in backend-substitution tests
-#   E741 — `l` as a line variable in diff-parsing assertions
-#   F841 — fixture return values captured for readability, not used
+#   E402 â€” tests import after sys.path/monkeypatch setup by design
+#   E702 â€” compact one-line fixture setup in smoke scripts
+#   E731 â€” lambda stubs are the point in backend-substitution tests
+#   E741 â€” `l` as a line variable in diff-parsing assertions
+#   F841 â€” fixture return values captured for readability, not used
 "tests/**" = ["E402", "E702", "E731", "E741", "F841"]
 "scripts/**" = ["E702"]
 "packaging/**" = ["F841"]
@@ -166,7 +166,7 @@ resonant-skill = "resonant_client.orchestration.skill_cli:main"
 include = ["resonant_client*"]
 
 [tool.setuptools.package-data]
-# v0.6.0a1 — bundled skills ship inside the package so importlib.resources
+# v0.6.0a1 â€” bundled skills ship inside the package so importlib.resources
 # can find them in pip / wheel / pyinstaller installs, not just source
 # checkouts.
 "resonant_client.orchestration.bundled_skills" = ["*.md"]

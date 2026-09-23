@@ -19,6 +19,7 @@ DEFAULTS = {
         "default_model": "",
         "default_permission_mode": "bypass",
         "theme": "dark",
+        "max_model_requests": 0,
         # Sprint workflow (planner / generator / evaluator). Off by default — most
         # users want a plain agentic loop and never opt into the structured
         # planner/generator/evaluator pattern. When off, no .resonant-harness/

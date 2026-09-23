@@ -42,6 +42,7 @@ from .tools import (
 from .agents import get_agent_type
 from .agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
 from .artifacts import ArtifactKind, ArtifactStore
+from .repair_progress import RepairProgress, recovery_guidance
 from .compression import (
     CONTEXT_HEADROOM_RATIO,
     compress,
@@ -103,7 +104,7 @@ CORE_TOOL_NAMES = frozenset({
 # discovery copy stays in AGENT_TOOLS for search_tools ranking and UI help, but
 # does not need to occupy the model's stable prefix.
 _CORE_TOOL_DESCRIPTIONS = {
-    "bash": "Run a time-limited shell command. Use check_run for acceptance checks and preview_start for servers.",
+    "bash": "Run a short shell command; children are cleaned up at completion. Use check_run for checks, preview_start for servers and job_start for long workers.",
     "file_read": "Read a file, optionally by line offset and limit.",
     "file_write": "Create or overwrite a file with complete content.",
     "file_edit": "Replace uniquely identified text in an existing file.",
@@ -563,14 +564,25 @@ class Session:
         role_instructions: Optional[str] = None,
         prompt_role: str = "primary",
         pause_event: Optional[threading.Event] = None,
+        max_model_requests: Optional[int] = None,
+        action_guard=None,
     ):
         self.backend = backend
+        self.action_guard = action_guard
         try:
             parsed_max_steps = int(max_steps) if max_steps is not None else 0
         except (TypeError, ValueError):
             parsed_max_steps = 0
         self.max_steps: Optional[int] = parsed_max_steps if parsed_max_steps > 0 else None
         self.max_tokens = max_tokens
+        # Separate from productive steps: empty-response and completion retries
+        # still dispatch requests. A configured limit must count them too.
+        if max_model_requests in (None, "", 0, "0"):
+            self.max_model_requests = None
+        else:
+            self.max_model_requests = int(max_model_requests)
+            if self.max_model_requests < 1 or float(max_model_requests) != self.max_model_requests:
+                raise ValueError("Model request limit must be zero or a positive integer")
         self.auto_approve = auto_approve
         self.auto_plan = auto_plan
         self.conversation_history: list = []
@@ -984,6 +996,9 @@ class Session:
         """Request cooperative cancellation for the current run."""
         self._cancel_event.set()
         self.discard_steering()
+        cancel_task = getattr(self.backend, 'cancel_task', None)
+        if callable(cancel_task):
+            cancel_task()
 
     def pause(self) -> None:
         """Pause at the next safe agent-loop boundary."""
@@ -1250,7 +1265,7 @@ class Session:
                     linter_name = lint_result.get("linter", "linter")
                     truncated = errors_text if len(errors_text) <= 4000 else errors_text[:4000] + "\n…(truncated)"
                     msg = f"[auto-lint] {linter_name} reported issues in {edited_path}:\n{truncated}"
-                    self.conversation_history.append({"role": "user", "content": msg})
+                    self.conversation_history.append({"role": "user", "content": msg, "input_origin": "generated"})
                     yield make_event(
                         EngineEvent.STATUS,
                         message=f"Auto-lint feedback injected ({linter_name})",
@@ -1277,7 +1292,7 @@ class Session:
                     target = test_result.get("target", "")
                     truncated = output if len(output) <= 4000 else output[:4000] + "\n…(truncated)"
                     msg = f"[auto-test] tests failed for {edited_path} (ran: {target}):\n{truncated}"
-                    self.conversation_history.append({"role": "user", "content": msg})
+                    self.conversation_history.append({"role": "user", "content": msg, "input_origin": "generated"})
                     yield make_event(
                         EngineEvent.STATUS,
                         message=f"Auto-test feedback injected ({target})",
@@ -1473,7 +1488,10 @@ class Session:
         # v0.4.11 (T2.6) — same per-turn reset for the windowed-cycle nudge.
         self._windowed_cycle_nudged = False
         empty_response_retries = 0
+        repair_progress = RepairProgress()
         step_limit_reached = False
+        model_requests = 0
+        request_limit_reached = False
         implementation_started = False
         cli_tool_starts = {}
 
@@ -1536,6 +1554,8 @@ class Session:
                 "validation_tools": validation_tools,
                 "empty_response_attempts": empty_response_attempts,
                 "promise_continuations": promise_continuations,
+                "model_requests": model_requests,
+                "request_limit_reached": request_limit_reached,
             }
             provider_stats = {
                 str(key): value
@@ -1716,6 +1736,9 @@ class Session:
         self._active_instructions = base_instructions
 
         while True:
+            if self.max_model_requests is not None and model_requests >= self.max_model_requests:
+                request_limit_reached = True
+                break
             if self.max_steps is not None and iteration >= self.max_steps:
                 step_limit_reached = True
                 break
@@ -1851,6 +1874,7 @@ class Session:
             done_model = None
 
             try:
+                model_requests += 1
                 for event_type, data in self.backend.stream(
                     user_msg=current_msg,
                     conversation_history=self.conversation_history,
@@ -2017,7 +2041,7 @@ class Session:
                 )
                 if after_model.additional_context:
                     self.conversation_history.append({
-                        "role": "user",
+                        "role": "user", "input_origin": "generated",
                         "content": f"[Lifecycle feedback]\n{after_model.additional_context}",
                     })
 
@@ -2172,6 +2196,12 @@ class Session:
                 call_id = item.get("call_id", "")
                 fn_args = item.get("_normalized_arguments", {})
                 argument_error = item.get("_argument_error", "")
+                if self.action_guard is not None:
+                    try:
+                        self.action_guard.validate_tool(fn_name)
+                    except RuntimeError as exc:
+                        yield make_event(EngineEvent.ERROR, message=str(exc), code='worker_action_blocked')
+                        return
                 if fn_name == 'check_run':
                     turn_checks.append({'command': fn_args.get('command', ''),
                         'requirement': fn_args.get('requirement', ''), 'status': 'not_run',
@@ -2253,7 +2283,7 @@ class Session:
                         fn_args_str = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
                     if hook_result.additional_context:
                         self.conversation_history.append({
-                            "role": "user",
+                            "role": "user", "input_origin": "generated",
                             "content": f"[Pre-tool lifecycle context]\n{hook_result.additional_context}",
                         })
 
@@ -2675,6 +2705,12 @@ class Session:
                         except (ValueError, OSError) as exc:
                             result = ToolResult(output=str(exc), is_error=True)
                     else:
+                        if self.action_guard is not None:
+                            try:
+                                self.action_guard.claim_tool(call_id, fn_name, fn_args)
+                            except RuntimeError as exc:
+                                yield make_event(EngineEvent.ERROR, message=str(exc), code='worker_action_blocked')
+                                return
                         result = execute_tool(
                             fn_name, fn_args,
                             cancel_event=self._cancel_event,
@@ -2682,6 +2718,12 @@ class Session:
                             settings=getattr(self, "_settings_ref", None),
                             session_name=self.browser_session_name,
                         )
+                        if self.action_guard is not None:
+                            try:
+                                self.action_guard.report_tool(call_id, result.output, result.is_error)
+                            except RuntimeError as exc:
+                                yield make_event(EngineEvent.ERROR, message=str(exc), code='worker_action_unresolved')
+                                return
 
                     history_output, context_meta = self._compact_tool_result_for_context(
                         fn_name,
@@ -2775,6 +2817,15 @@ class Session:
                         }
                     self.conversation_history.append(tool_result_entry)
 
+                    cycle_path = repair_progress.observe(fn_name, fn_args, is_error=result.is_error)
+                    if cycle_path:
+                        self.conversation_history.append({
+                            "role": "user", "input_origin": "generated",
+                            "content": recovery_guidance(cycle_path),
+                        })
+                        yield make_event(EngineEvent.BACKEND_STATUS,
+                                         kind="repair_cycle_detected", path=cycle_path)
+
                     # Auto-lint / auto-test feedback loop: after a successful edit,
                     # optionally run the project linter (and/or tests) on the changed file
                     # and inject the output back into the conversation as a synthetic user
@@ -2821,7 +2872,7 @@ class Session:
                             )
                             if not validation_hook.allowed:
                                 self.conversation_history.append({
-                                    "role": "user",
+                                    "role": "user", "input_origin": "generated",
                                     "content": (
                                         "[Validation gate rejected completion]\n"
                                         f"{validation_hook.reason or validation_hook.error}"
@@ -3034,8 +3085,16 @@ class Session:
                 logger.warning(f"Engram session summary failed: {e}")
 
         if step_limit_reached:
-            terminal_error = f"Reached {self.max_steps} step limit — use /clear to reset"
+            terminal_error = f"Reached {self.max_steps} step limit. Work is retained; send Continue to resume."
             yield make_event(EngineEvent.ERROR, message=terminal_error)
+
+        if request_limit_reached:
+            terminal_error = (
+                f"Paused after {model_requests} model requests. Work and conversation are retained. "
+                "Send Continue to resume with a fresh request allowance."
+            )
+            yield make_event(EngineEvent.ERROR, message=terminal_error,
+                             code="request_limit_reached", recoverable=True)
 
         final_steps = exec_step if exec_step > 0 else iteration
         final_payload = completion_payload(total_elapsed, final_steps)

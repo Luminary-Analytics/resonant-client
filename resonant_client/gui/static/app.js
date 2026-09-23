@@ -956,6 +956,7 @@ class ResonantApp {
      * here is the only coupling between them.
      */
     bindEvents() {
+        this.bindEmployeeTaskPanel();
         document.getElementById('managed-previews-button')?.addEventListener('click', () => {
             this._showManagedPreviews = true;
             this.send({command: 'preview_list'});
@@ -2552,6 +2553,12 @@ class ResonantApp {
 
     openProjectFolder(consumer = null) {
         this._pendingFolderPickConsumer = consumer;
+        // A browser tab can share a server with the desktop window. Only this
+        // page's native bridge establishes that its user can see a native picker.
+        if (typeof pywebview === 'undefined' || !pywebview.api) {
+            this.handleEvent({event: 'folder_picker_unavailable'});
+            return;
+        }
         this.send({
             command: 'folder_dialog',
             directory: (this.currentCwd || '').trim(),
@@ -3259,6 +3266,9 @@ class ResonantApp {
         }
 
         switch (type) {
+            case 'employee_task_state':
+                this.receiveEmployeeTaskState(event);
+                break;
             case 'previews_updated':
                 if (this._normalizeProjectPath(event.project) !== this._normalizeProjectPath(this.currentCwd)) break;
                 this._managedPreviews = event.previews || [];
@@ -4623,6 +4633,8 @@ class ResonantApp {
     }
 
     populateModelSelector(backends, currentBackend, currentModel, { unloaded = false } = {}) {
+        const employeeTaskButton = document.getElementById('employee-task-button');
+        if (employeeTaskButton) employeeTaskButton.hidden = currentBackend !== 'sonn';
         // Keep the quick selector compact; the searchable picker holds the full catalog.
         const favorites = this.settings?.model_favorites?.models || [];
         const quickChoices = Object.fromEntries(Object.entries(backends || {}).map(([key, info]) => {
@@ -8731,7 +8743,7 @@ class ResonantApp {
                     );
                 }
             }
-        } else if (event.kind === 'ollama_retry' || event.kind === 'ollama_timeout' || event.kind === 'kimi_retry' || event.kind === 'exo_retry') {
+        } else if (event.kind === 'ollama_retry' || event.kind === 'ollama_timeout' || event.kind === 'kimi_retry' || event.kind === 'exo_retry' || event.kind === 'sonn_retry') {
             // v0.6.4 (F6) — ollama_timeout (a slow open-phase call
             // being retried) shares the transient retry banner; the
             // renderer phrases it differently from a 5xx retry.
@@ -8879,7 +8891,9 @@ class ResonantApp {
         // an ollama_timeout event carries no status_code — it's a
         // slow open-phase call, not an error response.
         let reason;
-        if (event.kind === 'exo_retry' && event.reason === 'runner_restart') {
+        if (event.kind === 'sonn_retry') {
+            reason = 'is catching up on learning; paid generation has not started';
+        } else if (event.kind === 'exo_retry' && event.reason === 'runner_restart') {
             reason = 'lost an EXO runner before the step committed';
         } else if (event.kind === 'ollama_timeout') {
             reason = 'slow to respond';
@@ -10580,6 +10594,10 @@ class ResonantApp {
     }
 
     selectProjectFolder(path) {
+        if (this.isRunning) {
+            this.showToastMessage('Finish or stop the current run before opening another project. Your work is retained.');
+            return;
+        }
         this._showManagedPreviews = false;
         document.getElementById('project-resources-dialog')?.remove();
         const title = document.getElementById('chat-session-title');
@@ -10821,6 +10839,7 @@ function applyMixin(target, MixinClass, label) {
 applyMixin(ResonantApp.prototype, window.ResonantAutonomousView, 'autonomous-view');
 applyMixin(ResonantApp.prototype, window.ResonantSettingsView, 'settings-view');
 applyMixin(ResonantApp.prototype, window.ResonantRunCards, 'run-cards');
+applyMixin(ResonantApp.prototype, window.ResonantEmployeeTasks, 'employee-tasks');
 
 
 // ═══════════════════════════════════════════════════════════════════

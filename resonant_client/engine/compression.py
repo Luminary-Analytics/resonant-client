@@ -376,7 +376,8 @@ def compress(
         stream_options = {}
         if getattr(session, "_cancel_event", None) is not None:
             stream_options["cancel_event"] = session._cancel_event
-        for event_type, data in backend.stream(
+        from .request_purpose import auxiliary_stream
+        for event_type, data in auxiliary_stream(backend, "compression",
             user_msg=summary_prompt,
             conversation_history=[],
             instructions="You are a conversation summarizer. Be concise and factual.",
@@ -386,6 +387,10 @@ def compress(
         ):
             if event_type == "text.delta":
                 summary += data.get("delta", "")
+            elif event_type in {"error", "cancelled"}:
+                # Format recovery must not turn an uncertain provider failure
+                # or cancellation into another automatic paid dispatch.
+                return history, ""
             elif event_type == "done":
                 break
     except Exception as e:
@@ -394,8 +399,36 @@ def compress(
 
     structured_summary = _validated_summary(summary)
     if structured_summary is None:
-        logger.warning("Compaction summary failed its retention schema; retaining history")
-        return history, ""
+        # A malformed/empty model answer must not strand an otherwise
+        # recoverable long tool loop. Preserve the complete transcript before
+        # falling back to mechanical requirements and evidence retention.
+        # Restricted workers without artifact_read keep the old fail-closed path.
+        if artifact_store is None:
+            logger.warning("Compaction summary failed its retention schema; retaining history")
+            return history, ""
+        try:
+            archive = artifact_store.put_text(
+                json.dumps(session.conversation_history, ensure_ascii=False),
+                label="Conversation before compaction recovery",
+                source="compaction-recovery",
+                media_type="application/json",
+            )
+            reference = artifact_store.reference(archive)
+        except Exception:
+            logger.warning("Unable to archive conversation; retaining history", exc_info=True)
+            return history, ""
+        structured_summary = {
+            "summary": "Mechanical context recovery: no valid model summary was accepted.",
+            "decisions": "Not inferred. Consult the preserved requirements and original transcript.",
+            "changes": "Only recorded tool evidence below is available; no completion is inferred.",
+            "verification": "Preserved observations retain their original success/failure status.",
+            "unresolved_failures": "Not resolved by compaction; inspect the retained failures.",
+            "next_action": (
+                "Continue the latest user request. Read missing historical details with "
+                "artifact_read (load via search_tools if needed): " + reference
+            ),
+        }
+        logger.info("Compaction recovered using archived transcript %s", archive.id)
     summary = structured_summary["summary"]
 
     # Build compressed history

@@ -2366,6 +2366,10 @@ class KimiBackend:
         """Return whether an in-stream provider error is safe to replay."""
         return False
 
+    def _http_retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
+        """Delay for an already classified HTTP rejection; None stops retrying."""
+        return 1.5 * (2 ** attempt)
+
     def stream(
         self,
         user_msg: str,
@@ -2468,8 +2472,8 @@ class KimiBackend:
                                 retryable,
                                 self.model,
                             )
-                            if retryable and attempt < 2:
-                                delay = 1.5 * (2 ** attempt)
+                            delay = self._http_retry_delay(response, attempt) if retryable and attempt < 2 else None
+                            if delay is not None:
                                 yield (EVENT_BACKEND_STATUS, {
                                     "kind": self.RETRY_EVENT_KIND,
                                     "status_code": response.status_code,

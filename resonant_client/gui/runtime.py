@@ -8,10 +8,30 @@ backends across session loads / reconnects.
 from __future__ import annotations
 
 import os
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from ..backends import create_backend
+
+
+def bind_sonn_conversation(backend, project_path: str, session_id: str) -> bool:
+    """Bind SONN requests to a saved conversation without exposing local paths.
+
+    Recompute from durable GUI identity before each turn, including restored
+    sessions and provider switches. Other providers keep their own contracts.
+    """
+    from ..sonn import SonnBackend
+
+    if not isinstance(backend, SonnBackend):
+        return False
+    if not str(project_path or "").strip() or not str(session_id or "").strip():
+        raise ValueError("SONN requires a project and saved session before generation")
+    project = os.path.normcase(os.path.abspath(project_path))
+    identity = json.dumps([project, str(session_id)], ensure_ascii=False)
+    backend.conversation_id = "sonn-client:" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    return True
 
 
 def _normalize_source(value: str) -> str:

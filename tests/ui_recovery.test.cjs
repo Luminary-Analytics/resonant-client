@@ -6,8 +6,8 @@ const path = require('node:path');
 const source = fs.readFileSync(path.join(__dirname, '../resonant_client/gui/static/app.js'), 'utf8').split('function applyMixin(')[0];
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
-function setup(fetch) {
-    const context = vm.createContext({fetch, URLSearchParams, Blob, console, Event, document: {getElementById: () => null}, WebSocket: {OPEN: 1}});
+function setup(fetch, globals = {}) {
+    const context = vm.createContext({fetch, URLSearchParams, Blob, console, Event, document: {getElementById: () => null}, WebSocket: {OPEN: 1}, ...globals});
     vm.runInContext(source + '\nthis.App = ResonantApp;', context);
     const app = Object.create(context.App.prototype);
     app.userInput = {value: '', style: {}, scrollHeight: 40};
@@ -266,6 +266,31 @@ test('Settings shortcut works from a composer draft without sending or clearing 
     assert.equal(app.userInput.value, 'Keep this draft');
 });
 
+test('browser folder actions never block on a desktop server picker', () => {
+    for (const consumer of ['register', 'new-session', null]) {
+        const app = setup(() => {});
+        app.send = () => assert.fail('Browser must not request a native dialog');
+        const choices = [];
+        app.registerProjectFolder = path => choices.push(['register', path]);
+        app.startNewSession = path => choices.push(['new-session', path]);
+        app.selectProjectFolder = path => choices.push([null, path]);
+        app._promptForProjectPath = (_label, callback) => callback('D:/warehouse');
+        app.openProjectFolder(consumer);
+        assert.deepEqual(choices, [[consumer, 'D:/warehouse']]);
+        assert.equal(app._pendingFolderPickConsumer, null);
+    }
+});
+
+test('native page still opens the native picker and retains intent', () => {
+    const app = setup(() => {}, {pywebview: {api: {}}});
+    app.currentCwd = 'D:/current';
+    const sent = [];
+    app.send = message => sent.push(JSON.parse(JSON.stringify(message)));
+    app.openProjectFolder('new-session');
+    assert.deepEqual(sent, [{command: 'folder_dialog', directory: 'D:/current'}]);
+    assert.equal(app._pendingFolderPickConsumer, 'new-session');
+});
+
 test('settings search finds field help and keeps stored values out of the index', () => {
     const app = accountView({api_keys:{sonn:'private-fixture-value'}});
     const pages = app._settingsPages(), sections = app._settingsSections();
@@ -308,4 +333,18 @@ test('settings requests are limited to the page being visited', () => {
     assert.deepEqual(sent, ['editor_list']);
     app._loadSettingsPage('cost_tracking');
     assert.deepEqual(sent, ['editor_list','get_costs']);
+});
+
+test('opening another project during a run preserves view and sends no navigation', () => {
+    const app = setup();
+    app.isRunning = true;
+    app.currentCwd = 'D:/original';
+    app.currentSessionId = 'active';
+    const notices = [];
+    app.showToastMessage = message => notices.push(message);
+    app.send = () => { throw new Error('must not navigate'); };
+    app.selectProjectFolder('D:/other');
+    assert.equal(app.currentCwd, 'D:/original');
+    assert.equal(app.currentSessionId, 'active');
+    assert.match(notices[0], /Finish or stop/);
 });

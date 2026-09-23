@@ -7,6 +7,7 @@ import hashlib
 import json
 import threading
 import time
+import uuid
 from urllib.parse import urlsplit
 
 import httpx
@@ -105,6 +106,10 @@ class SonnBackend(KimiBackend):
             raise ValueError("Add your SONN API key in Settings → API keys, or set SONN_API_KEY.")
         self.model = str(model or self.DEFAULT_MODEL).strip()
         self.name = "sonn"
+        self.conversation_id = ""
+        self._auxiliary = False
+        self.task_controller = None
+        self._task_request_id = ''
         self.handles_tools = False
         self.thinking_mode = ""
         self._transport = transport
@@ -130,7 +135,22 @@ class SonnBackend(KimiBackend):
         return ExoBackend._api_content(self, content)
 
     def _messages(self, conversation_history, instructions, user_msg, **kwargs):
-        history = [turn for turn in conversation_history if turn.get("role") != "tool_catalog"]
+        history = []
+        for turn in conversation_history:
+            if turn.get("role") == "tool_catalog":
+                continue
+            if turn.get("role") == "tool_result" and turn.get("image"):
+                # Kimi's shared adapter appends tool screenshots as synthetic
+                # user image messages, bypassing _api_content. SONN's gateway
+                # accepts text only. Preserve the image locally and retain this
+                # as a tool observation, never an extra human learning input.
+                turn = {key: value for key, value in turn.items() if key != "image"}
+                turn["content"] = str(turn.get("content") or "") + (
+                    "\nImage artifact retained locally. This SONN connection accepts text only; "
+                    "inspect browser DOM, accessibility or evaluation results for page behavior. "
+                    "This notice is not evidence of visual appearance."
+                )
+            history.append(turn)
         messages = super()._messages(history, instructions, user_msg, **kwargs)
         retained = [{"role": "system", "content": str(turn.get("content") or "")}
                     for turn in history if turn.get("role") == "system" and turn.get("content")]
@@ -144,12 +164,94 @@ class SonnBackend(KimiBackend):
             "model": self.model, "messages": self._messages(conversation_history, instructions, user_msg),
             "stream": True, "stream_options": {"include_usage": True},
         }
+        if self.conversation_id:
+            # SONN scopes this conversation label to the authenticated project.
+            # It is continuity metadata, never account-selection authority.
+            payload["user"] = self.conversation_id
+        if self._auxiliary:
+            payload["metadata"] = {
+                "sonn_input_origin": "generated", "sonn_capture_inputs": False,
+                "sonn_observation_learning": False, "sonn_human_learning": False,
+                "sonn_learning_control": "none",
+            }
+        else:
+            # Match user turns in order, not by a set of their text: a human can
+            # legitimately repeat text previously produced by the harness.
+            users = iter(turn for turn in conversation_history if turn.get("role") == "user")
+            current = next(users, None)
+            excluded = []
+            for index, message in enumerate(payload["messages"]):
+                if message.get("role") != "user":
+                    continue
+                if current is not None and message["content"] == self._api_content(current.get("content", "")):
+                    if current.get("input_origin") == "generated":
+                        excluded.append(index)
+                    current = next(users, None)
+                elif conversation_history:
+                    # An appended continuation or tool image is not a new
+                    # human message. Human turns are persisted before dispatch.
+                    excluded.append(index)
+            if excluded:
+                payload["metadata"] = {"sonn_generated_user_indices": excluded}
         converted = _convert_tools_for_ollama(tools)
         if converted:
             payload["tools"] = list({tool["function"]["name"]: tool for tool in converted}.values())
         if max_tokens:
             payload["max_tokens"] = max(1, int(max_tokens))
+        if self.task_controller:
+            task_state = self.task_controller.state()
+            payload.setdefault('metadata', {}).update(sonn_task_id=task_state['root_id'],
+                                                     sonn_max_internal_calls=1)
+            if self._auxiliary:
+                payload['metadata']['sonn_task_purpose'] = 'compression'
+            advice = task_state.get('advice')
+            if advice and advice.get('following_request') == self._task_request_id:
+                payload['metadata']['sonn_after_advice'] = advice['request_id']
         return payload
+
+    def enable_employee_task(self, journal_path, *, ceiling_microusd, descriptor=None):
+        """Explicitly bind this native run to a durable, server-enforced allowance."""
+        from .sonn_tasks import SonnTaskController
+        self.task_controller = SonnTaskController(self, journal_path, ceiling_microusd=ceiling_microusd,
+                                                  descriptor=descriptor)
+        return self.task_controller.start()
+
+    def _request_headers(self):
+        headers = super()._request_headers()
+        if self._task_request_id:
+            headers['Idempotency-Key'] = self._task_request_id
+        return headers
+
+    def consult_employee(self, question, *, source_teaching_ids=None, mode='advise'):
+        """Request bounded advice; the next execution receives its generated context."""
+        if self.task_controller is None:
+            from .sonn_tasks import SonnTaskError
+            raise SonnTaskError('A saved employee root task is required for frontier advice')
+        return self.task_controller.ask_advice(question, source_teaching_ids=source_teaching_ids, mode=mode)
+
+    def stream_auxiliary(self, *, purpose: str, **kwargs):
+        """Use an isolated request without mutating a concurrent coding stream."""
+        if self.task_controller and purpose != 'compression':
+            yield EVENT_ERROR, {'message': 'Optional generation is deferred during a bounded employee task.',
+                                'code': 'sonn_task_auxiliary_deferred'}
+            return
+        auxiliary = copy.copy(self)
+        auxiliary._auxiliary = True
+        auxiliary.conversation_id = self.conversation_id if self.task_controller else "sonn-client:aux:" + uuid.uuid4().hex
+        yield from auxiliary.stream(**kwargs)
+
+    def cancel_task(self):
+        """Keep Stop responsive while cancelling the captured server root."""
+        controller = self.task_controller
+        if controller:
+            controller.mark_cancelled()
+            def notify():
+                from .sonn_tasks import SonnTaskError
+                try:
+                    controller.cancel()
+                except SonnTaskError:
+                    pass  # Local cancellation persists; recovery keeps uncertain holds.
+            threading.Thread(target=notify, name='sonn-task-cancel', daemon=True).start()
 
     @classmethod
     def _user_error_message(cls, status_code, error_type, message):
@@ -157,20 +259,84 @@ class SonnBackend(KimiBackend):
             return "SONN rejected the request. Check your API key and access to the configured project."
         if status_code == 404:
             return "SONN endpoint or model not found. Check the project API base URL and model name."
-        if status_code in {402, 429}:
-            return "SONN usage or rate limit reached. Check your account allowance or retry later."
-        return f"SONN request failed (HTTP {status_code}). Check the connection settings and retry."
+        if status_code == 402:
+            return "SONN has insufficient available prepaid credit. Check your workspace balance and pending reservations."
+        if status_code == 429:
+            if error_type == "learning_queue_full":
+                return ("SONN is catching up on saved learning observations. This request was rejected "
+                        "before paid generation. Completed work is retained; continue after the learning queue drains.")
+            return "SONN is temporarily rate limited or at capacity. Wait before continuing."
+        if status_code == 422:
+            return "This request exceeds a SONN project or model limit. Check the context, output and per-request allowance in your workspace."
+        if status_code >= 500:
+            return (f"SONN service or upstream generation failed (HTTP {status_code}). "
+                    "Completed work is retained. Check request status and pending reservations before continuing; "
+                    "the request was not automatically retried.")
+        return f"SONN rejected the request (HTTP {status_code}). Check its format and the selected model."
+
+    @classmethod
+    def _is_retryable_error(cls, status_code, error_type, message):
+        # Only this structured admission code is issued before reservation and
+        # upstream dispatch. A generic 429, timeout or stream failure is uncertain.
+        return status_code == 429 and error_type == "learning_queue_full"
+
+    def _http_retry_delay(self, response, attempt):
+        # Worker ticks are approximately one minute apart. Bound the two waits,
+        # respect a longer advertised cooldown, and keep Stop interruptible.
+        raw = response.headers.get("retry-after", "60")
+        try:
+            seconds = int(raw)
+        except (ValueError, TypeError):
+            return None
+        return max(60, seconds) if 0 <= seconds <= 120 else None
+
+    @staticmethod
+    def _is_retryable_stream_error(message):
+        return False
+
+    def _progress_idle_timeout_seconds(self):
+        return 0.0  # Use SONN's configured HTTP read timeout, not EXO runner state.
+
+    def _timeout_error_message(self):
+        return ("SONN stopped responding before this request completed. Completed work is retained. "
+                "Check request status and pending reservations before continuing; "
+                "the request was not automatically retried.")
 
     @classmethod
     def _error_details(cls, response):
         error_type, detail = KimiBackend._error_details(response)
+        try:
+            body = response.json()
+            error = body.get("error") if isinstance(body, dict) else None
+            if (response.status_code == 429 and isinstance(error, dict)
+                    and error.get("code") == "learning_queue_full"):
+                return "learning_queue_full", cls._user_error_message(429, "learning_queue_full", "")
+        except (ValueError, TypeError):
+            pass
         quota = "insufficient_quota" if cls._is_quota_error(error_type, detail) else ""
         return quota, cls._user_error_message(response.status_code, quota, "")
 
     def stream(self, *args, **kwargs):
+        from .sonn_tasks import SonnTaskError
+        try:
+            if self.task_controller:
+                _, self._task_request_id = self.task_controller.begin_request(
+                    purpose='compression' if self._auxiliary else 'execution')
+        except SonnTaskError as exc:
+            yield EVENT_ERROR, {'message': str(exc), 'code': 'sonn_task_unresolved'}
+            return
         for event, data in super().stream(*args, **kwargs):
+            if self.task_controller and event == 'done':
+                try:
+                    self.task_controller.recover()
+                except SonnTaskError as exc:
+                    yield EVENT_ERROR, {'message': str(exc), 'code': 'sonn_task_unresolved'}
+                    return
             if event == EVENT_ERROR and data.get("message", "").startswith("SONN generation failed:"):
-                data = {**data, "message": "SONN generation failed. Check your project/model access and retry."}
+                data = {**data, "code": "sonn_stream_failed", "message": (
+                    "SONN generation was interrupted by a service or upstream stream failure. "
+                    "Completed work is retained. Check request status and pending reservations before continuing; "
+                    "the request was not automatically retried.")}
             yield event, data
 
     def health(self) -> dict:

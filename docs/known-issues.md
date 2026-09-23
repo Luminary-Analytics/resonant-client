@@ -4,11 +4,22 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
-## Current provider and validation limitations (2026-09-12)
+## Current provider and validation limitations (2026-09-14)
 
-- SONN is verified with mock HTTP/SSE responses and a real engine file-write
-  loop. Authenticated live SONN discovery and coding remain pending a key
-  entered in Settings; no routed vision or reasoning capability is claimed.
+- Authenticated live SONN discovery and coding have been exercised through the
+  partner client. The Blender batch uses the browser frontend with the native
+  engine; desktop-window input remains unqualified. The route is text-only.
+  Account connection does not select SONN automatically for a new project.
+- Browser Add project can open a native folder picker on the desktop server,
+  leaving browser users waiting. The source fix detects the requesting page's
+  native bridge and opens a typed-path modal. It passes 22 UI checks plus actual
+  isolated browser interaction; it is not in the running dev11 package.
+- Product Studio exhausted four capped turns and needed operator camera fixes
+  and docs. Warehouse stopped after its first capped turn with scene/export/
+  render artifacts; its manifest reports a 24.97-second animation. Full motion,
+  recovery and long-duration qualification remains pending. Retained tool traces
+  are not proof of abstract lesson promotion or reliable transfer. See
+  [Blender qualification](blender-qualification-20260914.md).
 - Codex text handoffs preserve selected text context, not native provider
   threads or image attachments. CLI tool displays do not prove Resonant's
   named acceptance checks ran.

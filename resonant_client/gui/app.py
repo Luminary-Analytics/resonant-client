@@ -66,7 +66,7 @@ from .project_instructions import (
     get_instruction_info,
     load_project_instructions,
 )
-from .runtime import BackendSpec
+from .runtime import BackendSpec, bind_sonn_conversation
 from .evaluation_dashboard import EvaluationManager
 from ..harness import HarnessWorkspace, HarnessOrchestrator, HarnessService
 from ..harness.prompts import HarnessPrompts
@@ -1160,6 +1160,7 @@ class AppState:
         session = Session(
             backend=backend,
             max_tokens=max_tokens,
+            max_model_requests=self.settings.get("general", "max_model_requests", 0),
             auto_approve=self._session_auto_approve() if auto_approve is None else auto_approve,
             allowed_tools=allowed_tools,
             project_instructions=project_instructions,
@@ -1960,6 +1961,10 @@ def _make_autonomous_event_forwarder(
 
 async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     """Run one serialized chat turn without blocking the WS receive loop."""
+    if msg.get('command') == 'employee_task':
+        from .employee_tasks import command as task_command
+        await task_command(state, ws.send_json, msg)
+        return
     text = str(msg.get("text") or "").strip()
     if not text:
         return
@@ -2024,9 +2029,11 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     reset_cancel = getattr(state.session, "reset_cancel", None)
     if callable(reset_cancel):
         reset_cancel()
+    run_session = state.session
+    run_record = state.project.current_session
     display_events = await _run_session_streaming(
         ws,
-        state.session,
+        run_session,
         text_for_session,
         images=images,
         display_user_msg=text,
@@ -2036,11 +2043,11 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     # Close the run's steering window before the next serialized chat turn.
     # This catches the tiny race where direction arrives after the engine's
     # final safe boundary but before the websocket runner marks itself idle.
-    discard_steering = getattr(state.session, "discard_steering", None)
+    discard_steering = getattr(run_session, "discard_steering", None)
     if callable(discard_steering):
         discard_steering()
 
-    state.project.save_current_session(state.session, display_events=display_events)
+    state.project.save_session(run_record, run_session, display_events=display_events)
     await ws.send_json({
         "event": "sessions_updated",
         "sessions": state.project.list_sessions(),
@@ -2741,6 +2748,14 @@ async def _run_session_streaming(
     }
     display_events.append(user_display_event)
     active_record = getattr(state.project, "current_session", None)
+    if event_source is None:
+        bind_sonn_conversation(
+            session.backend,
+            getattr(state.project, "project_path", ""),
+            getattr(active_record, "id", ""),
+        )
+        from .employee_tasks import restore_task
+        restore_task(session.backend, getattr(state.project, 'project_path', ''), getattr(active_record, 'id', ''))
     if active_record is not None:
         try:
             active_record.append_display_events([user_display_event])
@@ -2817,6 +2832,13 @@ async def _run_session_streaming(
                 images=images,
             )
             for event in source:
+                if active_record is not None and event.get("event") == "step.end":
+                    # Only checkpoint the engine projection here. The UI thread
+                    # appends display events independently; syncing its partial
+                    # in-memory projection here could rewind newly queued events.
+                    import copy
+                    active_record.conversation_history = copy.deepcopy(session.conversation_history)
+                    active_record.ledger.sync_conversation(active_record.conversation_history)
                 event_queue.put(event)
         except Exception as e:
             event_queue.put(make_event(EngineEvent.ERROR, message=str(e)))
@@ -2825,6 +2847,7 @@ async def _run_session_streaming(
 
     thread = threading.Thread(target=_engine_thread, daemon=True)
     state.active_thread = thread
+    state.active_session = session
     thread.start()
 
     # Events to skip when saving for replay (streaming deltas are redundant
@@ -3023,6 +3046,7 @@ async def _run_session_streaming(
                 await ws.send_json({"event": "error", "message": f"Failed to apply harness update: {exc}"})
     finally:
         state.active_thread = None
+        state.active_session = None
         session.checkpoint_display_provider = lambda record=active_record: list(
             getattr(record, "display_events", []) or []
         )

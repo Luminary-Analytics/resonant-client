@@ -82,7 +82,9 @@ def test_new_composer_does_not_create_empty_sessions(tmp_path, monkeypatch):
             state._chat_run_loop.task = SimpleNamespace(done=lambda: False)
             try:
                 ws.send_json({'command': 'clear', 'draft_only': True, 'request_id': 'while-running'})
-                assert ws.receive_json()['event'] == 'error'
+                notice = ws.receive_json()
+                assert notice['event'] == 'ui_notice'
+                assert 'Finish or stop' in notice['message']
                 assert state.project.current_session is record
             finally:
                 state._chat_run_loop.task = None

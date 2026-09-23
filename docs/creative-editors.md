@@ -1,5 +1,10 @@
 # Creative editors
 
+For current local-candidate evidence, see [September 14 Blender qualification](blender-qualification-20260914.md).
+Published editor setup and local dev11 managed-job capabilities have separate
+release status. A readable export or a completed render manifest is not complete
+scene, motion, recovery or autonomous-build qualification.
+
 SONN Client provides built-in setup for **Blender**, **Unity**, and **Unreal Engine 5**
 under **Settings > Creative editors**. The connection lifecycle, model tools,
 screenshots, and workflow instructions are integrated into SONN Client. The actual
@@ -131,3 +136,24 @@ assets, compile modified Blueprints, and verify the result in PIE.”
   command-construction tests, and the installed Codex CLI accepted the generated
   Unity profile in a configuration-listing check. No billable CLI/model turn was
   run for this work.
+
+## September14 Blender qualification follow-up
+
+A live blender-mcp1.9.1 check showed that get_scene_info requires user_prompt.
+The local dev10 candidate supplies the explicit Check editor action; the old
+empty-argument probe failed schema validation despite a connected bridge.
+The repaired production command handler passed against Blender5.1.2;23editor/MCP
+regression checks pass. Model-driven project builds and long-render recovery
+remain separate qualification gates.
+## Long render jobs (local dev11 candidate)
+
+Use `job_start` with the actual foreground Blender worker command for long
+renders. Ordinary `bash` tools clean up their child processes when they finish;
+changing detached-process flags does not provide a supported job lifetime.
+Managed jobs return promptly, expose bounded logs through `job_status`, and
+support `job_cancel`. There is one running job per project and a maximum
+20-minute deadline. Jobs survive browser reconnects, but the native client
+process owns their trees and stops them on exit. Store resumable manifests in
+the project, inspect checkpoints after restart, then explicitly start the
+worker again. No automatic command replay or arbitrary PID adoption occurs.
+An exit code of zero does not prove that rendered artifacts meet the task.

@@ -13,6 +13,7 @@ from typing import Optional
 # Tools classified as read-only (safe even in suggest mode)
 READ_ONLY_TOOLS = frozenset({
     "preview_status",
+    "job_status",
     "artifact_read",
     "file_read", "glob", "grep",
     "skill_view",
@@ -29,7 +30,7 @@ FILE_WRITE_TOOLS = frozenset({
 
 # Tools that execute commands (need full-auto or explicit approval)
 EXEC_TOOLS = frozenset({
-    "bash", "batch", "check_run", "preview_start", "preview_stop",
+    "bash", "batch", "check_run", "preview_start", "preview_stop", "job_start", "job_cancel",
 })
 
 

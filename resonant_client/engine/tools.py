@@ -1264,6 +1264,10 @@ AGENT_TOOLS.extend([
     {"type": "function", "function": {"name": name, "description": description,
         "parameters": {"type": "object", "properties": properties, "required": required}}}
     for name, description, properties, required in [
+        ("job_start", "Start a bounded project-owned background task such as a Blender render. Pass the actual foreground worker program and arguments, not a launcher that exits early. Returns promptly; job_status reports progress logs and exit state. One running job per project, maximum 20 minutes. Survives tool completion and browser reconnect, but client exit stops its process tree. Save application checkpoints and inspect them before explicitly resuming after restart. Completion only proves the process exited; verify artifacts separately.",
+         {"command": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "minimum": 1, "maximum": 1200}}, ["command"]),
+        ("job_status", "Read this project's background jobs, elapsed time, bounded output and exit state. Poll with useful intervals, not a tight loop. Old client-process handles are not adopted after restart.", {"id": {"type": "string"}}, []),
+        ("job_cancel", "Cancel this project's managed job and its process tree. Partial application checkpoints remain for explicit recovery. Use this before starting a replacement worker.", {"id": {"type": "string"}}, ["id"]),
         ("preview_start", "Start a project-owned development server that survives tool completion. Use program/arguments (no shell operators), a free loopback port, and wait for readiness. Returns a handle, URL and bounded logs. Stop with preview_stop.",
          {"command": {"type": "array", "items": {"type": "string"}}, "url": {"type": "string"}, "timeout": {"type": "integer"}}, ["command", "url"]),
         ("preview_status", "Read this project's managed previews and recent logs.", {"id": {"type": "string"}}, []),
@@ -1578,6 +1582,16 @@ def execute_tool(
             )
 
     try:
+        if name in {"job_start", "job_status", "job_cancel"}:
+            from .jobs import jobs
+            root = project_path or os.getcwd()
+            if name == "job_start":
+                data = jobs.start(root, arguments.get("command"), timeout=arguments.get("timeout", 1200), cancel_event=cancel_event)
+            elif name == "job_cancel":
+                data = jobs.cancel(root, arguments.get("id", ""))
+            else:
+                data = jobs.status(root, arguments["id"]) if arguments.get("id") else jobs.list(root)
+            return ToolResult(json.dumps(data), elapsed=time.time()-start, metadata={"job": data})
         if name == "memory_save":
             from .project_memory import ProjectMemory
             data = ProjectMemory(project_path or os.getcwd()).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
@@ -1949,6 +1963,18 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
     managed_cmd = _normalize_managed_bash_command(cmd)
     timeout = args.get("timeout", 30)
     cwd = args.get("cwd", os.getcwd())
+
+    if sys.platform == "win32" and ("\n" in managed_cmd or "\r" in managed_cmd):
+        # cmd.exe /c may silently truncate a quoted multiline command and still
+        # return zero. Never report that as a completed diagnostic or test.
+        return ToolResult(
+            "Multiline shell commands are not supported by this Windows runner. "
+            "No command was executed. Write the script to a project file, then run "
+            "it with a single-line command (for example: node diagnostic.cjs).",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"command": cmd, "not_executed": True, "reason": "windows_multiline_command"},
+        )
 
     try:
         returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(

@@ -129,6 +129,24 @@ def test_setup_connect_probe_and_disable(settings, monkeypatch):
     assert not settings.get("mcp_servers", "resonant_unity")["enabled"]
 
 
+def test_blender_scene_check_supplies_required_intent_and_ignores_injected_arguments():
+    calls, sent = [], []
+    def call_tool(name, args):
+        assert name == 'mcp_resonant_blender_get_scene_info'
+        assert isinstance(args.get('user_prompt'), str) and args['user_prompt']
+        calls.append((name, args))
+        return {'content': [{'type': 'text', 'text': '{"object_count":0}'}]}
+    async def send(value):
+        sent.append(value)
+    ctx = CommandContext(ws=SimpleNamespace(send_json=send),
+        state=SimpleNamespace(mcp_manager=SimpleNamespace(call_tool=call_tool)),
+        msg={'editor': 'blender', 'arguments': {'code': 'must not execute'}, 'user_prompt': 'injected'},
+        runs=SimpleNamespace(busy=False))
+    asyncio.run(HANDLERS['editor_check'](ctx))
+    assert calls == [('mcp_resonant_blender_get_scene_info', {'user_prompt': 'Check editor'})]
+    assert sent[-1]['is_error'] is False and 'object_count' in sent[-1]['output']
+
+
 def test_connection_change_is_rejected_during_a_run(settings):
     state = SimpleNamespace(settings=settings, mcp_manager=MCPManager(settings), session=None)
     sent = []

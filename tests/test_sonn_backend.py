@@ -157,6 +157,144 @@ def test_in_stream_error_is_redacted():
     assert any(event == EVENT_ERROR for event, _ in events)
 
 
+@pytest.mark.parametrize("status,expected", [
+    (402, "prepaid credit"), (422, "project or model limit"),
+    (429, "at capacity"), (502, "upstream generation failed"),
+    (504, "not automatically retried"),
+])
+def test_sonn_failure_categories_do_not_replay_paid_requests(status, expected):
+    calls = []
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(status, json={"error": {"message": "private-provider-secret"}})
+    backend = SonnBackend("key", base_url=BASE, transport=httpx.MockTransport(handle))
+    events = list(backend.stream("hello", [], "", []))
+    errors = [data for event, data in events if event == EVENT_ERROR]
+    assert len(calls) == 1
+    assert expected in errors[0]["message"]
+    assert "private-provider-secret" not in json.dumps(events)
+
+
+def test_interrupted_stream_never_executes_partial_tool_or_inherits_exo_retry():
+    calls = []
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, text=sse(
+            {"choices": [{"delta": {"tool_calls": [{"index": 0, "id": "write-1",
+                "type": "function", "function": {"name": "file_write", "arguments": '{"path":'}}]}}]},
+            {"error": {"message": "runner crashed private-provider-secret"}},
+        ))
+    backend = SonnBackend("key", base_url=BASE, transport=httpx.MockTransport(handle))
+    events = list(backend.stream("hello", [], "", []))
+    assert len(calls) == 1
+    assert not any(event in (EVENT_TOOL_CALL, EVENT_DONE) for event, _ in events)
+    error = next(data for event, data in events if event == EVENT_ERROR)
+    assert error["code"] == "sonn_stream_failed"
+    assert "Completed work is retained" in error["message"]
+    assert "access" not in error["message"]
+    assert "private-provider-secret" not in json.dumps(events)
+
+
+def test_sonn_timeout_does_not_depend_on_exo_attributes():
+    backend = SonnBackend("key", base_url=BASE, transport=httpx.MockTransport(
+        lambda request: (_ for _ in ()).throw(httpx.ReadTimeout("private-provider-secret"))))
+    events = list(backend.stream("hello", [], "", []))
+    error = next(data for event, data in events if event == EVENT_ERROR)
+    assert "SONN stopped responding" in error["message"]
+    assert "private-provider-secret" not in json.dumps(events)
+    assert backend._progress_idle_timeout_seconds() == 0
+
+
+def test_learning_queue_wait_replays_exact_input_then_generates_once(monkeypatch):
+    import resonant_client.backends as module
+    calls, waits = [], []
+    monkeypatch.setattr(module, "_wait_with_cancel", lambda delay, cancel: waits.append(delay) or False)
+    def handle(request):
+        calls.append(request.content)
+        if len(calls) < 3:
+            return httpx.Response(429, headers={"retry-after": "75"}, json={
+                "error": {"code": "learning_queue_full", "message": "private-secret"}})
+        return httpx.Response(200, text=sse({"choices": [{"delta": {"content": "Completed"}}]}))
+    backend = SonnBackend("key", base_url=BASE, transport=httpx.MockTransport(handle))
+    backend.conversation_id = "persistent-conversation"
+    events = list(backend.stream("continue", [], "", []))
+    assert len(calls) == 3 and len(set(calls)) == 1
+    assert waits == [75, 75]
+    assert sum(event == EVENT_DONE for event, _ in events) == 1
+    assert not any(event == EVENT_ERROR for event, _ in events)
+    assert "private-secret" not in json.dumps(events)
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_learning_queue_wait_is_bounded_and_cancellable(monkeypatch, cancel):
+    import resonant_client.backends as module
+    calls, waits = [], []
+    stop = threading.Event()
+    def wait(delay, event):
+        waits.append(delay)
+        if cancel:
+            event.set()
+        return event.is_set()
+    monkeypatch.setattr(module, "_wait_with_cancel", wait)
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(429, json={"error": {"code": "learning_queue_full"}})
+    backend = SonnBackend("key", base_url=BASE, transport=httpx.MockTransport(handle))
+    events = list(backend.stream("hello", [], "", [], cancel_event=stop))
+    assert len(calls) == (1 if cancel else 3)
+    assert waits == ([60] if cancel else [60, 60])
+    assert not any(event == EVENT_DONE for event, _ in events)
+    if not cancel:
+        assert "before paid generation" in next(data["message"] for event, data in events if event == EVENT_ERROR)
+
+
+@pytest.mark.parametrize("status,body,cooldown", [
+    (429, {"error": {"type": "learning_queue_full"}}, "60"),
+    (429, {"error": {"message": "learning_queue_full"}}, "60"),
+    (502, {"error": {"code": "learning_queue_full"}}, "60"),
+    (429, {"error": {"code": "provider_rate_limited"}}, "60"),
+    (429, {"error": {"code": "learning_queue_full"}}, "3600"),
+    (429, {"error": {"code": "learning_queue_full"}}, "invalid"),
+])
+def test_only_bounded_structured_predispatch_rejection_can_retry(status, body, cooldown):
+    calls = []
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(status, headers={"retry-after": cooldown}, json=body)
+    events = list(SonnBackend("key", base_url=BASE, transport=httpx.MockTransport(handle)).stream("hello", [], "", []))
+    assert len(calls) == 1
+    assert any(event == EVENT_ERROR for event, _ in events)
+
+
+def test_screenshot_tool_history_remains_text_only_and_is_not_a_human_turn():
+    import copy
+    history = [
+        {"role": "user", "content": "Inspect the browser"},
+        {"role": "tool_call", "call_id": "screen-1", "name": "browser_screenshot", "arguments": {}},
+        {"role": "tool_result", "call_id": "screen-1", "name": "browser_screenshot",
+         "content": "Captured browser artifact screenshot-1.",
+         "image": {"type": "base64", "data": "aW1hZ2UtYnl0ZXM=", "media_type": "image/png"}},
+    ]
+    original = copy.deepcopy(history)
+    payloads = []
+    def handle(request):
+        payload = json.loads(request.content)
+        payloads.append(payload)
+        assert all(isinstance(message["content"], str) for message in payload["messages"])
+        return httpx.Response(200, text=sse({"choices": [{"delta": {"content": "I will inspect the DOM."}}]}))
+    backend = SonnBackend("key", base_url=BASE, transport=httpx.MockTransport(handle))
+    events = list(backend.stream("", history, "", []))
+    assert any(event == EVENT_DONE for event, _ in events)
+    assert history == original  # Keep the actual screenshot available locally.
+    messages = payloads[0]["messages"]
+    assert len([m for m in messages if m["role"] == "user"]) == 1
+    result = next(m for m in messages if m["role"] == "tool")
+    assert result["tool_call_id"] == "screen-1"
+    assert "Captured browser artifact" in result["content"]
+    assert "accepts text only" in result["content"]
+    assert "aW1hZ2UtYnl0ZXM=" not in json.dumps(payloads)
+
+
 def test_cancellation_closes_blocked_stream_without_remote_cancel_endpoint():
     started, closed, cancel = threading.Event(), threading.Event(), threading.Event()
     class BlockingStream(httpx.SyncByteStream):

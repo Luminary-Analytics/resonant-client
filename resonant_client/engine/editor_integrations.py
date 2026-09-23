@@ -22,7 +22,9 @@ EDITORS = {
             "In Blender, enable MCP for Blender in Preferences > Add-ons.",
             "Open its viewport sidebar panel and start the MCP server. Connect below.",
         ],
-        "probe": ("get_scene_info", {}),
+        # blender-mcp 1.9.1 requires user_prompt even for read-only inspection.
+        # This is the explicit setup-button action, not a generated build goal.
+        "probe": ("get_scene_info", {"user_prompt": "Check editor"}),
         "guidance": "Inspect the active .blend and scene before edits. Preserve existing objects. "
                     "Use Blender Python only through the discovered bridge tools. Verify materials, "
                     "transforms and output with a viewport capture or render; save only to the intended project.",

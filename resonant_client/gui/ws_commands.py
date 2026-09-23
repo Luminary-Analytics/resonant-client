@@ -172,6 +172,18 @@ async def _in_executor(func, *args):
     return await asyncio.get_event_loop().run_in_executor(None, func, *args)
 
 
+async def _block_active_navigation(ctx: CommandContext) -> bool:
+    """The native chat loop owns one active workspace until its turn ends."""
+    if ctx.runs is None or not ctx.runs.busy:
+        return False
+    await ctx.send({"event": "ui_notice", "message":
+                    "Finish or stop the current run before changing projects or sessions. Your work is retained."})
+    payload = ctx.state.get_init_data(refresh_only=True)
+    payload["project_switch_id"] = str(ctx.msg.get("project_switch_id", ""))
+    await ctx.send(payload)
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Model / prompt / context inspection
 # ---------------------------------------------------------------------------
@@ -1282,6 +1294,30 @@ async def _cmd_message(ctx: CommandContext) -> None:
     return
 
 
+@command('employee_task')
+async def _employee_task(ctx: CommandContext) -> None:
+    """Serialize control/advice with the current conversation's native execution."""
+    from .employee_tasks import command as execute
+    allowed = {'command', 'action', 'project', 'session_id', 'request_id', 'ceiling_microusd', 'descriptor', 'question', 'consultation_mode'}
+    if set(ctx.msg) - allowed:
+        await ctx.send_error('Unsupported employee task fields')
+        return
+    if ctx.msg.get('action', 'view') in ('view', 'graph'):
+        if ctx.runs is not None and ctx.runs.busy:
+            await ctx.send({'event': 'employee_task_state', 'project': ctx.project_path,
+                'session_id': getattr(ctx.state.project.current_session, 'id', ''),
+                'request_id': ctx.msg.get('request_id'), 'error': 'Refresh task details after the active operation completes.'})
+            return
+        await execute(ctx.state, ctx.send, ctx.msg)
+        return
+    if ctx.runs is None or ctx.runs.busy:
+        await ctx.send({'event': 'employee_task_state', 'project': ctx.project_path,
+            'session_id': getattr(ctx.state.project.current_session, 'id', ''),
+            'request_id': ctx.msg.get('request_id'), 'error': 'Finish or stop the active operation before changing the task.'})
+        return
+    await ctx.runs.enqueue(dict(ctx.msg))
+
+
 
 @command("status_update")
 async def _cmd_status_update(ctx: CommandContext) -> None:
@@ -1420,8 +1456,9 @@ async def _cmd_cancel(ctx: CommandContext) -> None:
         "cancel_id": cancel_id,
     })
     ctx.state.cancel_requested.set()
-    if ctx.state.session:
-        ctx.state.session.cancel()
+    active_session = getattr(ctx.state, "active_session", None) or ctx.state.session
+    if active_session:
+        active_session.cancel()
     if cleared_ids:
         await ctx.send({
             "event": "message.queue_cleared",
@@ -1868,6 +1905,8 @@ async def _cmd_list_project_files(ctx: CommandContext) -> None:
 
 @command("clear")
 async def _cmd_clear(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     # Create a new session (don't destroy old one)
     request_id = str(ctx.msg.get("request_id") or "").strip()
     if request_id and request_id in ctx.runs.clear_cache:
@@ -2097,6 +2136,8 @@ async def _cmd_project_memory(ctx: CommandContext) -> None:
 
 @command("fork_session")
 async def _cmd_fork_session(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     source_id = ctx.msg.get("session_id", "")
     idx = int(ctx.msg.get("user_message_index", 0))
     forked = ctx.state.project.fork_session(source_id, idx)
@@ -2144,6 +2185,8 @@ async def _cmd_fork_session(ctx: CommandContext) -> None:
 
 @command("switch_session")
 async def _cmd_switch_session(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     session_id = ctx.msg.get("session_id", "")
     # If session is from a different project, switch project first
     project_path = ctx.msg.get("project_path", "")
@@ -2537,6 +2580,8 @@ async def _cmd_register_project(ctx: CommandContext) -> None:
 
 @command("set_project")
 async def _cmd_set_project(ctx: CommandContext) -> None:
+    if await _block_active_navigation(ctx):
+        return
     project_path = ctx.msg.get("path", "").strip()
     project_switch_id = str(ctx.msg.get("project_switch_id", "")).strip()
     if not project_path:
@@ -2554,6 +2599,8 @@ async def _cmd_set_project(ctx: CommandContext) -> None:
         # The engine session is project-scoped, but HTTP provider clients are
         # not. Detach the old conversation before applying the new context and
         # let ensure_default_runtime_session reuse a compatible client.
+        if await _block_active_navigation(ctx):
+            return
         ctx.state.session = None
         ctx.state.apply_project_context(resolved_project_path, refresh_index=True)
         ctx.state._first_message_sent = False

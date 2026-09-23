@@ -1,8 +1,23 @@
 # Documentation status
 
-Reviewed for status and routing on September 13, 2026, against
-SONN Client 0.19.1: branding, account mapping, Settings navigation, and Codex
-streaming/completion evidence.
+**September 23, 2026: AI Employee work remains PAUSED by the user.**
+The [consolidated product checkpoint](D:/Repos/Lumina_DO/SelfOrganizingNN/product/AI_EMPLOYEES_CHECKPOINT_2026_09_23.md)
+records subsequent paid research, negative/control results and remaining work.
+No added SONN learning value or qualified employee/router release is established.
+The heartbeat remains paused. Documentation maintenance does not resume work,
+spending or grants, and changes no native implementation or installed bundle.
+The dated September 15/18 records below are historical.
+
+September 15 AI Employee documentation checkpoint: implementation is paused by the
+user. The [client handoff](ai-employees-handoff.md) records source-only integration,
+3,351 passing native tests / 3 skipped, remaining attribution/supervision/host work
+and the linked product handoff. Existing package/release results below retain their
+own dates; the installed bundle has not been rebuilt for AI Employees.
+
+Reviewed September 14, 2026 (03:34 UTC September 15 checkpoint), including
+local dev11 Blender jobs, browser-picker recovery, account learning evidence
+and stopped build status. Published 0.19.1 notes retain their original scope;
+local candidate changes are not a public release.
 This catalog distinguishes guidance from historical evidence; classification
 alone is not a claim that every old result has been rerun or every API is live.
 SONN transport validation is recorded in [0.18.0 notes](v0.18.0-release-notes.md);

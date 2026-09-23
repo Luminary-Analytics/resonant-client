@@ -1,7 +1,8 @@
 param(
     [string]$BundleRoot = "dist/resonant",
     [string]$ManifestPath = "dist/bundle-manifest.json",
-    [switch]$KeepEnvironment
+    [switch]$KeepEnvironment,
+    [switch]$ValidateOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -24,6 +25,21 @@ Assert-ChildPath $bundle $repo
 Assert-ChildPath $build $repo
 Assert-ChildPath $dist $repo
 Assert-ChildPath $eggInfo $repo
+
+# Check before deleting ANY build files. Windows may otherwise delete most of
+# a running bundle and only then fail on a loaded DLL, breaking the active app.
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    $bundlePrefix = $bundle.TrimEnd('\') + '\'
+    $activeBundleProcesses = @(Get-CimInstance Win32_Process -Filter "Name='resonant.exe'" |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundlePrefix, [StringComparison]::OrdinalIgnoreCase) })
+    if ($activeBundleProcesses.Count -gt 0) {
+        throw "Refusing to clean a running bundle at $bundle. Close that candidate or build in a separate source copy. No files were removed."
+    }
+}
+if ($ValidateOnly) {
+    Write-Output "Build paths validated; target bundle is not running. No files were changed."
+    return
+}
 
 try {
     Push-Location $repo

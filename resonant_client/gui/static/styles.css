@@ -13315,3 +13315,17 @@ body.is-window-dragging * {
     --text: #222824; --muted: #606963; --dim: #717a74;
     --border: #e3e8e5; --border-strong: #c8d1cb; --brand: #147d69;
 }
+
+/* Bounded SONN task panel. */
+#employee-task-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+#employee-task-dialog h2 { font-size: 18px; margin: 0; }
+#employee-task-dialog .dialog-body { line-height: 1.55; overflow-wrap: anywhere; }
+#employee-task-dialog p { margin: 0 0 12px; }
+#employee-task-dialog form { border-top: 1px solid var(--border); padding-top: 18px; margin-top: 8px; }
+#employee-task-dialog label { display: grid; gap: 8px; margin-bottom: 14px; font-weight: 600; }
+#employee-task-dialog input, #employee-task-dialog select, #employee-task-dialog textarea { min-width: 0; width: 100%; box-sizing: border-box; padding: 10px; font: inherit; }
+#employee-task-dialog button { min-height: 36px; }
+#employee-task-dialog .dialog-btn.deny { color: var(--text); }
+#employee-task-dialog details { margin-bottom: 16px; color: var(--muted); font-size: 12px; }
+#employee-task-dialog button:disabled { opacity: 0.5; cursor: default; }
+#employee-task-dialog [data-status] { margin-top: 12px; color: var(--muted); }

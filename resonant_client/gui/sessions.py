@@ -1088,32 +1088,36 @@ class ProjectManager:
 
     def save_current_session(self, engine_session=None, display_events=None):
         """Save the current session's state."""
-        if not self.current_session:
+        self.save_session(self.current_session, engine_session, display_events)
+
+    def save_session(self, record, engine_session=None, display_events=None):
+        """Persist a captured run owner, independent of sidebar selection."""
+        if not record:
             return
 
-        self.current_session.updated_at = time.time()
+        record.updated_at = time.time()
 
         if engine_session and hasattr(engine_session, "conversation_history"):
-            self.current_session.conversation_history = engine_session.conversation_history
-            self.current_session.message_count = sum(
+            record.conversation_history = engine_session.conversation_history
+            record.message_count = sum(
                 1 for m in engine_session.conversation_history
                 if m.get("role") == "user"
             )
             director_run = getattr(engine_session, "director_run", None)
             if director_run is not None:
-                self.current_session.orchestration_mode = "director"
-                self.current_session.director_config = director_run.config.to_dict()
-                self.current_session.director_run_id = director_run.id
+                record.orchestration_mode = "director"
+                record.director_config = director_run.config.to_dict()
+                record.director_run_id = director_run.id
 
         if display_events:
             # Streaming normally persisted these records already. Legacy and
             # test callers may still provide one complete end-of-turn batch.
-            existing = self.current_session.display_events
+            existing = record.display_events
             count = len(display_events)
             if count > len(existing) or existing[-count:] != display_events:
-                self.current_session.append_display_events(display_events)
+                record.append_display_events(display_events)
 
-        self.current_session.save()
+        record.save()
 
     def update_session_title(self, first_message: str):
         """Auto-title the session from the first user message."""

@@ -297,6 +297,8 @@
                              See docs/long-running-agents.md (Phase 1 UI). -->
                         <div id="chat-header" class="chat-header">
                             <div id="chat-session-title" class="chat-session-title">SONN Client</div>
+                            <button type="button" id="employee-task-button" class="mission-toggle" hidden
+                                    aria-haspopup="dialog">Employee task</button>
                             <!-- v0.3.3 — surface the active project path so misconfigurations
                                  are visible BEFORE the agent writes anywhere. Click to swap
                                  projects via the native folder picker. -->
@@ -649,6 +651,7 @@
     <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
     <script src="/static/settings_view.js?v={{ asset_version }}"></script>
     <script src="/static/run_cards.js?v={{ asset_version }}"></script>
+    <script src="/static/employee_tasks.js?v={{ asset_version }}"></script>
     <div class="window-resize-edge window-resize-top" data-resize-edge="top" aria-hidden="true"></div>
     <div class="window-resize-edge window-resize-right" data-resize-edge="right" aria-hidden="true"></div>
     <div class="window-resize-edge window-resize-bottom" data-resize-edge="bottom" aria-hidden="true"></div>

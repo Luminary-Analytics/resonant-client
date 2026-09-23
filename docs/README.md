@@ -1,5 +1,22 @@
 # SONN Client documentation index
 
+**September 23, 2026: AI Employee work remains PAUSED by the user.**
+The [consolidated product checkpoint](D:/Repos/Lumina_DO/SelfOrganizingNN/product/AI_EMPLOYEES_CHECKPOINT_2026_09_23.md)
+records subsequent paid research, negative/control results and remaining work.
+No added SONN learning value or qualified employee/router release is established.
+The heartbeat remains paused. Documentation maintenance does not resume work,
+spending or grants, and changes no native implementation or installed bundle.
+The dated September 15/18 records below are historical.
+
+[AI Employee paused handoff](ai-employees-handoff.md) is the September 15 resume
+entry point for integrated task/advice/panel/worker source changes. The installed
+bundle is unchanged; automatic supervision and learned-benefit gates remain open.
+
+[September 14 Blender qualification](blender-qualification-20260914.md) records
+local dev11 capabilities, actual native-engine/browser runs, remaining gaps and
+the source-only project-picker fix. Consult it before interpreting older setup
+or evaluation notes as the current candidate state.
+
 The current release is [SONN Client 0.19.1](v0.19.1-release-notes.md).
 [Unreleased changes](unreleased.md) describe work in the checkout that has not
 yet shipped. Versioned release notes and dated evaluations record their own

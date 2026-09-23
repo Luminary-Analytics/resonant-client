@@ -9,7 +9,8 @@ Architecture
 - EdDSA public key is hard-coded in this module. The matching private
   key lives at `~/.resonant/keys/eddsa_priv.key` on the developer's
   machine and never enters the repo.
-- Appcast URL points at the GitHub Pages site for the public repo.
+- Appcast URL points at the GitHub Pages site, which also hosts the
+  installers. The source repository itself may be private.
 - WinSparkle runs its own background thread for periodic checks; we
   fire-and-forget the init.
 

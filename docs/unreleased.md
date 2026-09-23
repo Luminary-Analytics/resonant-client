@@ -100,6 +100,17 @@ parser before this fix and accepted afterward, without changing saved history.
   Only the structured pre-dispatch code qualifies; uncertain paid failures remain terminal.
 
 - Fix Blender Check editor argument compatibility with pinned blender-mcp1.9.1; live command-handler check and regression coverage.
+## Installers and updates served from GitHub Pages
+
+The release workflow now copies each stable installer to the GitHub Pages site
+under `downloads/vX.Y.Z/` and points the signed appcast there, instead of at the
+GitHub Release asset. This lets the source repository become private without
+breaking updates for installed apps, as long as Pages stays public. The feed URL
+in `updater.py` is unchanged, so no client rebuild is required. The Pages site
+keeps the three newest installers and is published as one fresh commit per
+release. Pre-release tags no longer reach the appcast. The installer's publisher
+and support links now point to getsonn.com and the download page.
+
 ## Local dev11 long-job candidate
 
 Adds project-owned `job_start`, `job_status`, and `job_cancel` for bounded

@@ -47,7 +47,9 @@
 
 #define AppName        "SONN Client"
 #define AppPublisher   "Luminary Analytics"
-#define AppURL         "https://github.com/Luminary-Analytics/resonant-client"
+; The source repository may be private; installer links use public pages.
+#define AppURL         "https://getsonn.com"
+#define AppUpdatesPage "https://luminary-analytics.github.io/resonant-client/"
 #define AppExeName     "resonant.exe"
 
 [Setup]
@@ -56,8 +58,8 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL={#AppURL}
-AppSupportURL={#AppURL}/issues
-AppUpdatesURL={#AppURL}/releases
+AppSupportURL={#AppURL}
+AppUpdatesURL={#AppUpdatesPage}
 ; Keep the existing directory and program group for in-place upgrades.
 DefaultDirName={autopf}\Resonant
 DefaultGroupName=Resonant

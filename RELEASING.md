@@ -59,8 +59,14 @@ do not move or reuse a published tag.
 
 The tag triggers `.github/workflows/release.yml`. It checks the package version,
 runs lint/tests, builds the bundle and Inno Setup installer, signs the installer
-for WinSparkle, creates a GitHub Release, and commits its appcast entry to
-`gh-pages`. GitHub Pages then publishes that branch in a separate deployment.
+for WinSparkle and creates a GitHub Release. For stable `X.Y.Z` tags it then
+copies the installer to the Pages site under `downloads/vX.Y.Z/`, keeps the
+newest three installers, points the new appcast entry at that copy, and
+publishes `gh-pages` as one fresh commit. GitHub Pages then deploys it.
+
+Installed apps download from Pages, not from the GitHub Release, because the
+source repository may be private and its Release assets then need sign-in.
+Pre-release tags skip the Pages step so installed apps never auto-update to one.
 
 Inspect the release, Tests, and Build check runs for the exact commit SHA.
 Identify the release run ID before watching it; another workflow may be newer.
@@ -83,8 +89,11 @@ use a file to preserve literal text and newlines.
 - The Pages deployment succeeded, and the live feed at
   [appcast.xml](https://luminary-analytics.github.io/resonant-client/appcast.xml)
   has the intended version as its first item.
-- Its enclosure points to that release asset, with matching byte length and a
+- Its enclosure points to `downloads/vX.Y.Z/resonant-setup-X.Y.Z.exe` on the
+  Pages site. Download it without signing in and confirm the byte length and a
   nonempty EdDSA signature. A local `gh-pages` commit alone is insufficient.
+- The [download page](https://luminary-analytics.github.io/resonant-client/)
+  links to the new installer.
 - The working tree and pushed branch state match the intended result.
 
 Existing installations discover the release on their next update check;
@@ -93,7 +102,10 @@ publication does not prove every installed client has updated.
 ## Signing and infrastructure
 
 The workflow needs repository contents write access, the `EDDSA_PRIVATE_KEY`
-secret, and Pages configured for `gh-pages` at the root. The public verification
+secret, and Pages configured for `gh-pages` at the root. If the repository is
+private, Pages must still publish publicly; that needs a paid GitHub plan such as
+Team. On the free plan, making the repository private unpublishes the site and
+stops every installed app from updating. The public verification
 key is embedded in `resonant_client/updater.py`; the private key stays outside
 source control. WinSparkle tools are under `packaging/winsparkle/`.
 
@@ -120,10 +132,10 @@ signature as a SmartScreen-trusted publisher certificate.
   signature or rerun an already successful release casually.
 - **Version/source correction:** prefer a new version for changed source. Rerun
   failed jobs at the existing SHA only when the source and version are correct.
-- **Pre-releases:** the tag glob accepts more than stable semver, but the current
-  workflow marks prerelease status using a hyphen check. Python `a1` tags are
-  not automatically marked prerelease; verify GitHub/appcast behavior before
-  using a prerelease channel.
+- **Pre-releases:** the tag glob accepts more than stable semver. A hyphenated
+  tag is marked prerelease and is not published to Pages or the appcast.
+  `publish_pages.py` also rejects anything other than `X.Y.Z`, so a Python
+  `a1`-style tag fails the Pages step instead of reaching installed apps.
 
 Current release evidence is recorded in [0.19.1 notes](docs/v0.19.1-release-notes.md).
 

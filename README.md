@@ -103,7 +103,7 @@ explicit user configuration; SONN Client does not silently switch models by role
 ### Windows installer
 
 Download the latest `resonant-setup-X.Y.Z.exe` from the
-[Releases page](https://github.com/Luminary-Analytics/resonant-client/releases).
+[SONN Client download page](https://luminary-analytics.github.io/resonant-client/).
 
 - Installs without an administrator prompt
 - Adds a Start Menu shortcut

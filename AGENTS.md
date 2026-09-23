@@ -8,7 +8,7 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
-SONN Client (formerly Resonant) is an open-source, provider-adaptive coding agent and desktop app.
+SONN Client (formerly Resonant) is a provider-adaptive coding agent and desktop app.
 Read this file first, then the documentation relevant to the change. This is the
 shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point here.
 

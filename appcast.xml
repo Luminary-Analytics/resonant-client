@@ -1,0 +1,961 @@
+<?xml version='1.0' encoding='utf-8'?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>Resonant Client Updates</title>
+        <link>https://luminary-analytics.github.io/resonant-client/</link>
+        <description>Auto-update channel for Resonant Client</description>
+        <language>en</language>
+        <item>
+            <title>Version 0.19.1</title>
+            <pubDate>Sun, 13 Sep 2026 19:48:55 +0000</pubDate>
+            <sparkle:version>0.19.1</sparkle:version>
+            <sparkle:shortVersionString>0.19.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.19.1. See &lt;a href="https://luminary-analytics.github.io/resonant-client/"&gt;the download page&lt;/a&gt;.&lt;/p&gt;</description>
+            <enclosure url="https://luminary-analytics.github.io/resonant-client/downloads/v0.19.1/resonant-setup-0.19.1.exe" sparkle:version="0.19.1" sparkle:shortVersionString="0.19.1" length="26143496" type="application/octet-stream" sparkle:edSignature="SullTrAT1HIko+QU48gjLGYS+PQri+L8qgKIrA+PVgIDM3RRMItTdq4KF/dbcTox8Q52KKlXV43gt7XCDFhuCA==" />
+        </item>
+        <item>
+            <title>Version 0.19.0</title>
+            <pubDate>Sun, 13 Sep 2026 19:18:57 +0000</pubDate>
+            <sparkle:version>0.19.0</sparkle:version>
+            <sparkle:shortVersionString>0.19.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.19.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.19.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.19.0/resonant-setup-0.19.0.exe" sparkle:version="0.19.0" sparkle:shortVersionString="0.19.0" length="26137679" type="application/octet-stream" sparkle:edSignature="EMfBmBEMpdYd2Gv2kzitFcYHV4zEmPQBV3RMLd3bNvs6ibLMC2AkrcjAWBk5Q7zN0SBHhMqhO/cujYvkN5wZBA==" />
+        </item>
+        <item>
+            <title>Version 0.18.2</title>
+            <pubDate>Sat, 12 Sep 2026 19:05:42 +0000</pubDate>
+            <sparkle:version>0.18.2</sparkle:version>
+            <sparkle:shortVersionString>0.18.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.18.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.18.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.18.2/resonant-setup-0.18.2.exe" sparkle:version="0.18.2" sparkle:shortVersionString="0.18.2" length="26132269" type="application/octet-stream" sparkle:edSignature="5DqTZXBLpInATuh1lVwU28iY2zAxZBCx5g8jcXBDUifSNxlTI2amOjVLiz0oUzwvgH83U089XDcvAVlJ1zTMDA==" />
+        </item>
+        <item>
+            <title>Version 0.18.0</title>
+            <pubDate>Sat, 12 Sep 2026 18:04:55 +0000</pubDate>
+            <sparkle:version>0.18.0</sparkle:version>
+            <sparkle:shortVersionString>0.18.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.18.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.18.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.18.0/resonant-setup-0.18.0.exe" sparkle:version="0.18.0" sparkle:shortVersionString="0.18.0" length="26128002" type="application/octet-stream" sparkle:edSignature="a12Q77nrBFSHaTCFYlT9yeAU6CuatdmWWlmJJh3oEq0wh0Hyxm7lNHgXlAUD3YsVG8E01c/bglA4on0adTGqCg==" />
+        </item>
+        <item>
+            <title>Version 0.17.2</title>
+            <pubDate>Tue, 08 Sep 2026 19:16:43 +0000</pubDate>
+            <sparkle:version>0.17.2</sparkle:version>
+            <sparkle:shortVersionString>0.17.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.17.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.17.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.17.2/resonant-setup-0.17.2.exe" sparkle:version="0.17.2" sparkle:shortVersionString="0.17.2" length="26116500" type="application/octet-stream" sparkle:edSignature="IZyymhYM5AYJ0J0F4zsS3sKY/QTxR/Er8gvUJY0dLNH0i7r38V/vryje1siBkcJm4buey2vF9kFNULR2NYgIBg==" />
+        </item>
+        <item>
+            <title>Version 0.17.1</title>
+            <pubDate>Tue, 08 Sep 2026 18:39:11 +0000</pubDate>
+            <sparkle:version>0.17.1</sparkle:version>
+            <sparkle:shortVersionString>0.17.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.17.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.17.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.17.1/resonant-setup-0.17.1.exe" sparkle:version="0.17.1" sparkle:shortVersionString="0.17.1" length="26114950" type="application/octet-stream" sparkle:edSignature="qeWufVZph6L34+1998x7W09PVZfDO7JHzWATJbyoYAHCUVYZBNbENAn4zogdHCNXN2qrRaG3YFbATOsB9MkbCA==" />
+        </item>
+        <item>
+            <title>Version 0.17.0</title>
+            <pubDate>Tue, 08 Sep 2026 15:08:12 +0000</pubDate>
+            <sparkle:version>0.17.0</sparkle:version>
+            <sparkle:shortVersionString>0.17.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.17.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.17.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.17.0/resonant-setup-0.17.0.exe" sparkle:version="0.17.0" sparkle:shortVersionString="0.17.0" length="26113856" type="application/octet-stream" sparkle:edSignature="JoIcFkspY79ixH4m0YDuj90V4gElFnEUSSas0zodNSpCYGkDCLwYKcGwk1GCYBFhkiU5mlNlCHaPx6JyB7GhAA==" />
+        </item>
+        <item>
+            <title>Version 0.16.0</title>
+            <pubDate>Tue, 08 Sep 2026 12:55:36 +0000</pubDate>
+            <sparkle:version>0.16.0</sparkle:version>
+            <sparkle:shortVersionString>0.16.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.16.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.16.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.16.0/resonant-setup-0.16.0.exe" sparkle:version="0.16.0" sparkle:shortVersionString="0.16.0" length="26098563" type="application/octet-stream" sparkle:edSignature="loVz/mPmjym6Du+/hnq1o5KtR+j2MDQB3JhfzIz8h1OtLPCT4e+O64KsdG+KTRdUn/3fI+lx1pBXjt2ES9/WDQ==" />
+        </item>
+        <item>
+            <title>Version 0.15.0</title>
+            <pubDate>Sat, 05 Sep 2026 17:22:07 +0000</pubDate>
+            <sparkle:version>0.15.0</sparkle:version>
+            <sparkle:shortVersionString>0.15.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.15.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.15.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.15.0/resonant-setup-0.15.0.exe" sparkle:version="0.15.0" sparkle:shortVersionString="0.15.0" length="25854585" type="application/octet-stream" sparkle:edSignature="szXqjsPogGzxkXm/qsOXcN0nx3qrrOHnYjdpf3nf73328mDk3NbzDdvbXinjWsQP1NuZ0nsTEz5pcvmJTrzxCA==" />
+        </item>
+        <item>
+            <title>Version 0.14.2</title>
+            <pubDate>Mon, 31 Aug 2026 15:31:17 +0000</pubDate>
+            <sparkle:version>0.14.2</sparkle:version>
+            <sparkle:shortVersionString>0.14.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.14.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.14.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.14.2/resonant-setup-0.14.2.exe" sparkle:version="0.14.2" sparkle:shortVersionString="0.14.2" length="25763950" type="application/octet-stream" sparkle:edSignature="qedYYOnVnrINDh8w+ZU0BpJ8jXur2EjjIdNu8XJ4OkrbUJ5nidtb+U696RDJxFFXFMj7o0B2JMvtygiaF1ZbBA==" />
+        </item>
+        <item>
+            <title>Version 0.14.1</title>
+            <pubDate>Sat, 29 Aug 2026 22:34:34 +0000</pubDate>
+            <sparkle:version>0.14.1</sparkle:version>
+            <sparkle:shortVersionString>0.14.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.14.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.14.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.14.1/resonant-setup-0.14.1.exe" sparkle:version="0.14.1" sparkle:shortVersionString="0.14.1" length="25756692" type="application/octet-stream" sparkle:edSignature="DWdAeK+IZoAjDCXxu/dJKjcU1igfQpFEUIdo6GSHTSDLL7RnIXEPXqSiaCe9Z0HXu4C9b/cfHEWQusHt4le/Dg==" />
+        </item>
+        <item>
+            <title>Version 0.14.0</title>
+            <pubDate>Sat, 29 Aug 2026 13:05:48 +0000</pubDate>
+            <sparkle:version>0.14.0</sparkle:version>
+            <sparkle:shortVersionString>0.14.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.14.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.14.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.14.0/resonant-setup-0.14.0.exe" sparkle:version="0.14.0" sparkle:shortVersionString="0.14.0" length="25747907" type="application/octet-stream" sparkle:edSignature="P6oR8XhQfYzDRCu9qJDo1HbxhD1HytPkYMVwN85dW84sAZadboMhQ/BYvkrYmxYGH6DleojmB79t5RyLQEubCw==" />
+        </item>
+        <item>
+            <title>Version 0.13.2</title>
+            <pubDate>Sat, 15 Aug 2026 15:48:16 +0000</pubDate>
+            <sparkle:version>0.13.2</sparkle:version>
+            <sparkle:shortVersionString>0.13.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.13.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.13.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.13.2/resonant-setup-0.13.2.exe" sparkle:version="0.13.2" sparkle:shortVersionString="0.13.2" length="25728707" type="application/octet-stream" sparkle:edSignature="GHCLh2vYmhqxbfxMKLzghSfEWiaKdXMpLMeaNpcQ/i1qEPmm8bkxT2Apb6zAV5DHlaA0mtv8AWHf2Bky4DwgCw==" />
+        </item>
+        <item>
+            <title>Version 0.13.1</title>
+            <pubDate>Sat, 15 Aug 2026 03:41:22 +0000</pubDate>
+            <sparkle:version>0.13.1</sparkle:version>
+            <sparkle:shortVersionString>0.13.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.13.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.13.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.13.1/resonant-setup-0.13.1.exe" sparkle:version="0.13.1" sparkle:shortVersionString="0.13.1" length="25722405" type="application/octet-stream" sparkle:edSignature="JdUHkd6ToMpdvjZdRCNZ8CfK4SAUL4dp+tsy11BAav20eEY5/vAD2p1TDN6O+QhXw2xGJwftwCftz2oIJKuOBA==" />
+        </item>
+        <item>
+            <title>Version 0.13.0</title>
+            <pubDate>Thu, 13 Aug 2026 02:14:49 +0000</pubDate>
+            <sparkle:version>0.13.0</sparkle:version>
+            <sparkle:shortVersionString>0.13.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.13.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.13.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.13.0/resonant-setup-0.13.0.exe" sparkle:version="0.13.0" sparkle:shortVersionString="0.13.0" length="25663126" type="application/octet-stream" sparkle:edSignature="vzSKJOCGe8J+ub9tdFEyjsIo+9mYk3E75pS3Bz5sZh4cHySkKhJYnjq4F5YwvFZXSdJp2z4+QrTerKNygIqHDQ==" />
+        </item>
+        <item>
+            <title>Version 0.12.5</title>
+            <pubDate>Sat, 01 Aug 2026 14:44:47 +0000</pubDate>
+            <sparkle:version>0.12.5</sparkle:version>
+            <sparkle:shortVersionString>0.12.5</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.12.5. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.12.5"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.12.5/resonant-setup-0.12.5.exe" sparkle:version="0.12.5" sparkle:shortVersionString="0.12.5" length="25610319" type="application/octet-stream" sparkle:edSignature="9/w4BIUfAi1s/SnEX1VHFJBUNAxwT0+BnChcQzHrvVnVFk0f2OtFkc/LG6SGFzU46aDJZabNbHe+MC4MOQC4BA==" />
+        </item>
+        <item>
+            <title>Version 0.12.4</title>
+            <pubDate>Sat, 01 Aug 2026 14:00:14 +0000</pubDate>
+            <sparkle:version>0.12.4</sparkle:version>
+            <sparkle:shortVersionString>0.12.4</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.12.4. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.12.4"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.12.4/resonant-setup-0.12.4.exe" sparkle:version="0.12.4" sparkle:shortVersionString="0.12.4" length="25609425" type="application/octet-stream" sparkle:edSignature="dtEDtDeWrg9t828uNtNZKHXzkX/QxWdYuxxVucz833icZCdlTcj42WTB2tQdvXsbTNvfiX+o6NAKpPgT9g3rAg==" />
+        </item>
+        <item>
+            <title>Version 0.12.3</title>
+            <pubDate>Sat, 01 Aug 2026 13:05:47 +0000</pubDate>
+            <sparkle:version>0.12.3</sparkle:version>
+            <sparkle:shortVersionString>0.12.3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.12.3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.12.3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.12.3/resonant-setup-0.12.3.exe" sparkle:version="0.12.3" sparkle:shortVersionString="0.12.3" length="25608165" type="application/octet-stream" sparkle:edSignature="NXz7ob5WHtt7jfpwT/dectmdHCDYPSllgsd+IrSugRdGRxQDcc0jrF+mjJMFC51xxJJ979bmox53Xuh2itYxBg==" />
+        </item>
+        <item>
+            <title>Version 0.12.2</title>
+            <pubDate>Wed, 29 Jul 2026 18:05:46 +0000</pubDate>
+            <sparkle:version>0.12.2</sparkle:version>
+            <sparkle:shortVersionString>0.12.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.12.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.12.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.12.2/resonant-setup-0.12.2.exe" sparkle:version="0.12.2" sparkle:shortVersionString="0.12.2" length="25548531" type="application/octet-stream" sparkle:edSignature="nLLTgJQgfxNQW1SLbN+LenyV8wb31xzOVNot/bz+PJWWGwX1Pd3OeefwyNxALYLA78y0yuPIcTDjdYh/0fD3Dg==" />
+        </item>
+        <item>
+            <title>Version 0.12.1</title>
+            <pubDate>Wed, 29 Jul 2026 13:05:58 +0000</pubDate>
+            <sparkle:version>0.12.1</sparkle:version>
+            <sparkle:shortVersionString>0.12.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.12.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.12.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.12.1/resonant-setup-0.12.1.exe" sparkle:version="0.12.1" sparkle:shortVersionString="0.12.1" length="25546397" type="application/octet-stream" sparkle:edSignature="RSxvHHdnBPdKsNjthdI+iZd7321qzgIi6Cc8PpLQqlWCi/i6dEN9CLoxWo7ghrzlXv30byASTTzF1rp4DHiOAQ==" />
+        </item>
+        <item>
+            <title>Version 0.12.0</title>
+            <pubDate>Wed, 29 Jul 2026 12:32:47 +0000</pubDate>
+            <sparkle:version>0.12.0</sparkle:version>
+            <sparkle:shortVersionString>0.12.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.12.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.12.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.12.0/resonant-setup-0.12.0.exe" sparkle:version="0.12.0" sparkle:shortVersionString="0.12.0" length="25546225" type="application/octet-stream" sparkle:edSignature="jGct3kR8W8Vnghk5QAMgnMLmsl/l9/EAViJHxhrlqW3xdXMrh0XRH7F7SsbSiHiHJWgIWZgwJSFdtJSE9TSgCQ==" />
+        </item>
+        <item>
+            <title>Version 0.11.16</title>
+            <pubDate>Wed, 29 Jul 2026 01:41:50 +0000</pubDate>
+            <sparkle:version>0.11.16</sparkle:version>
+            <sparkle:shortVersionString>0.11.16</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.16. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.16"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.16/resonant-setup-0.11.16.exe" sparkle:version="0.11.16" sparkle:shortVersionString="0.11.16" length="25513664" type="application/octet-stream" sparkle:edSignature="966XZ9DqkdY8t6yEjPdQRCN4lG9SSn7VR6xqCmME9hsZ65ZTEb6Tx3f4xp8xzUXQX5RTqBX00IND3aa9lasKDA==" />
+        </item>
+        <item>
+            <title>Version 0.11.15</title>
+            <pubDate>Tue, 28 Jul 2026 23:14:41 +0000</pubDate>
+            <sparkle:version>0.11.15</sparkle:version>
+            <sparkle:shortVersionString>0.11.15</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.15. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.15"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.15/resonant-setup-0.11.15.exe" sparkle:version="0.11.15" sparkle:shortVersionString="0.11.15" length="25510181" type="application/octet-stream" sparkle:edSignature="oNeDVdbS7hysX4Z3HNWoJqAQkHq4GjH4XtjPslPWe+jheaobW/NzX6l18K0IflythhOGzS/yDerYHf53m0y5CA==" />
+        </item>
+        <item>
+            <title>Version 0.11.14</title>
+            <pubDate>Tue, 28 Jul 2026 18:24:13 +0000</pubDate>
+            <sparkle:version>0.11.14</sparkle:version>
+            <sparkle:shortVersionString>0.11.14</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.14. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.14"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.14/resonant-setup-0.11.14.exe" sparkle:version="0.11.14" sparkle:shortVersionString="0.11.14" length="25481380" type="application/octet-stream" sparkle:edSignature="O1j1Z3T3Jm2ehvck4WN32+8pERslD6zLo8FULUiumlQMomwUvUxzXL4j4TmUQzJCO/dQELPPNgkY3MR+nYJpDg==" />
+        </item>
+        <item>
+            <title>Version 0.11.13</title>
+            <pubDate>Tue, 28 Jul 2026 12:33:26 +0000</pubDate>
+            <sparkle:version>0.11.13</sparkle:version>
+            <sparkle:shortVersionString>0.11.13</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.13. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.13"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.13/resonant-setup-0.11.13.exe" sparkle:version="0.11.13" sparkle:shortVersionString="0.11.13" length="25334636" type="application/octet-stream" sparkle:edSignature="9usmwRS6hQAq5ejpb+NQ9xfw0vxU521cLndGzu1xynGnaBMYuvYBvnXHiPOhz5auK/n5OzF3mZ1yfoEd4wyQAA==" />
+        </item>
+        <item>
+            <title>Version 0.11.12</title>
+            <pubDate>Mon, 27 Jul 2026 14:22:29 +0000</pubDate>
+            <sparkle:version>0.11.12</sparkle:version>
+            <sparkle:shortVersionString>0.11.12</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.12. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.12"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.12/resonant-setup-0.11.12.exe" sparkle:version="0.11.12" sparkle:shortVersionString="0.11.12" length="25333702" type="application/octet-stream" sparkle:edSignature="79S97azhY4FecfFsilEEiY3A6KmP+HDS/fJ7DpmM1KnNmyqmZGfN6Z2bltggoo9xL4Udg9LlNh0RL7isEO5eAA==" />
+        </item>
+        <item>
+            <title>Version 0.11.11</title>
+            <pubDate>Mon, 27 Jul 2026 05:28:33 +0000</pubDate>
+            <sparkle:version>0.11.11</sparkle:version>
+            <sparkle:shortVersionString>0.11.11</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.11. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.11"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.11/resonant-setup-0.11.11.exe" sparkle:version="0.11.11" sparkle:shortVersionString="0.11.11" length="25331412" type="application/octet-stream" sparkle:edSignature="dqG1so12xVw3YaU0D3iIX/NHH9pAwEaBv/+qidhlrfsnOL+1z9OJmh7FJxkRhN6c2uPbH9J2KuPUSnCwCLEdDA==" />
+        </item>
+        <item>
+            <title>Version 0.11.10</title>
+            <pubDate>Mon, 27 Jul 2026 01:47:56 +0000</pubDate>
+            <sparkle:version>0.11.10</sparkle:version>
+            <sparkle:shortVersionString>0.11.10</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.10. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.10"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.10/resonant-setup-0.11.10.exe" sparkle:version="0.11.10" sparkle:shortVersionString="0.11.10" length="25317286" type="application/octet-stream" sparkle:edSignature="sdCwJ4z25kkks7RbcNp7AZ5xRfcc8+d8yfjcfgC529lc+PG0acZENMlp3AA9wW1GLBWolOkHDWwz1CogCkIVAw==" />
+        </item>
+        <item>
+            <title>Version 0.11.9</title>
+            <pubDate>Sun, 26 Jul 2026 21:23:31 +0000</pubDate>
+            <sparkle:version>0.11.9</sparkle:version>
+            <sparkle:shortVersionString>0.11.9</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.9. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.9"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.9/resonant-setup-0.11.9.exe" sparkle:version="0.11.9" sparkle:shortVersionString="0.11.9" length="25310854" type="application/octet-stream" sparkle:edSignature="ffIRLw14P3Zt097QX/88bdF7zBcVXMDCBOXrSSPox1sBW2sK+sgh8mB0wIAe0xVUr7dju2vWtx9vHHp9JQMVCg==" />
+        </item>
+        <item>
+            <title>Version 0.11.8</title>
+            <pubDate>Sun, 26 Jul 2026 20:41:52 +0000</pubDate>
+            <sparkle:version>0.11.8</sparkle:version>
+            <sparkle:shortVersionString>0.11.8</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.8. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.8"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.8/resonant-setup-0.11.8.exe" sparkle:version="0.11.8" sparkle:shortVersionString="0.11.8" length="24172832" type="application/octet-stream" sparkle:edSignature="JByZ3hGnFXAwuYxOBULs/qUfHiv9p8b0Um9zexJrfi/ZtI6W+ooxIWqnLWv40MLOsrb9Vdmz8KzZJZNUis3VAQ==" />
+        </item>
+        <item>
+            <title>Version 0.11.7</title>
+            <pubDate>Sun, 26 Jul 2026 18:35:09 +0000</pubDate>
+            <sparkle:version>0.11.7</sparkle:version>
+            <sparkle:shortVersionString>0.11.7</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.7. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.7"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.7/resonant-setup-0.11.7.exe" sparkle:version="0.11.7" sparkle:shortVersionString="0.11.7" length="24160033" type="application/octet-stream" sparkle:edSignature="5Ds2lqVRhvCrxKYhtjwr6ERuk59zbdaNfjebwAB7JJGSpr5i4iMrydvr4idXP+0czHMt2ov9ETnInXEUSiaHCQ==" />
+        </item>
+        <item>
+            <title>Version 0.11.6</title>
+            <pubDate>Fri, 24 Jul 2026 19:21:34 +0000</pubDate>
+            <sparkle:version>0.11.6</sparkle:version>
+            <sparkle:shortVersionString>0.11.6</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.6. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.6"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.6/resonant-setup-0.11.6.exe" sparkle:version="0.11.6" sparkle:shortVersionString="0.11.6" length="24044519" type="application/octet-stream" sparkle:edSignature="U/wEmvhb0M0YDBnfEDAwzFiNEOrwNn5Oe/MwSntfOyTTE/a27/3+qDVX0Qkohdos3qjPkPlMML6nD0v24I1iDQ==" />
+        </item>
+        <item>
+            <title>Version 0.11.5</title>
+            <pubDate>Fri, 24 Jul 2026 19:03:40 +0000</pubDate>
+            <sparkle:version>0.11.5</sparkle:version>
+            <sparkle:shortVersionString>0.11.5</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.5. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.5"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.5/resonant-setup-0.11.5.exe" sparkle:version="0.11.5" sparkle:shortVersionString="0.11.5" length="24046552" type="application/octet-stream" sparkle:edSignature="KI1gRuehYUfOzJVkE6Tlz8ZCYRdvTvA4I/7MnmM5FZba60cCZkGu4Fa/vvgxSXnB3aOSYRcCzaIh3F+ZAmTdAw==" />
+        </item>
+        <item>
+            <title>Version 0.11.4</title>
+            <pubDate>Fri, 24 Jul 2026 04:18:24 +0000</pubDate>
+            <sparkle:version>0.11.4</sparkle:version>
+            <sparkle:shortVersionString>0.11.4</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.4. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.4"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.4/resonant-setup-0.11.4.exe" sparkle:version="0.11.4" sparkle:shortVersionString="0.11.4" length="24042464" type="application/octet-stream" sparkle:edSignature="CCdu7jJ9GwwoM5i3HRAv8tE9GPXCW1pxEIxwltFkIiuoVJH/I8j/41ZuUw4ypxVxjTGka+2QKf6nWAAFd/2JDQ==" />
+        </item>
+        <item>
+            <title>Version 0.11.3</title>
+            <pubDate>Thu, 23 Jul 2026 22:45:14 +0000</pubDate>
+            <sparkle:version>0.11.3</sparkle:version>
+            <sparkle:shortVersionString>0.11.3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.3/resonant-setup-0.11.3.exe" sparkle:version="0.11.3" sparkle:shortVersionString="0.11.3" length="24037355" type="application/octet-stream" sparkle:edSignature="Cwb/OTggDr8yMwXjF/IuMaCDtpCmYqYCf/GBwKWQuv9lndCgV52UGNopY5h3KYyACSduZEgfd3X2yWhTCdxnDA==" />
+        </item>
+        <item>
+            <title>Version 0.11.2</title>
+            <pubDate>Thu, 23 Jul 2026 20:53:50 +0000</pubDate>
+            <sparkle:version>0.11.2</sparkle:version>
+            <sparkle:shortVersionString>0.11.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.2/resonant-setup-0.11.2.exe" sparkle:version="0.11.2" sparkle:shortVersionString="0.11.2" length="24032656" type="application/octet-stream" sparkle:edSignature="PEkhs2vu+ALky2B7cP5ZVlMb6rwTgNrYdWaRXwWRQ++PKrdImXhXkrBYLRIVRNNLyARkRXzs/2x6McaU7lfHDw==" />
+        </item>
+        <item>
+            <title>Version 0.11.1</title>
+            <pubDate>Wed, 22 Jul 2026 20:51:30 +0000</pubDate>
+            <sparkle:version>0.11.1</sparkle:version>
+            <sparkle:shortVersionString>0.11.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.1/resonant-setup-0.11.1.exe" sparkle:version="0.11.1" sparkle:shortVersionString="0.11.1" length="24025294" type="application/octet-stream" sparkle:edSignature="7aVk3KMkwh+ngxoncPzDgCHZLaviTwJqEuySKr5hUFGUBEDzR1eDX+OaDT2KfCq2pShEC0Ta1fX45EgKufmDDw==" />
+        </item>
+        <item>
+            <title>Version 0.11.0</title>
+            <pubDate>Tue, 21 Jul 2026 22:42:14 +0000</pubDate>
+            <sparkle:version>0.11.0</sparkle:version>
+            <sparkle:shortVersionString>0.11.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.11.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.11.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.11.0/resonant-setup-0.11.0.exe" sparkle:version="0.11.0" sparkle:shortVersionString="0.11.0" length="24019064" type="application/octet-stream" sparkle:edSignature="9ZpOJS4aw6vvwhFvxlpYJeifDX6qQR4REBtmydbKp/eGfHT/wegqfunNRcwev8qU1JIApVe0QEJ3HxRLHY25CQ==" />
+        </item>
+        <item>
+            <title>Version 0.10.0</title>
+            <pubDate>Mon, 20 Jul 2026 03:22:10 +0000</pubDate>
+            <sparkle:version>0.10.0</sparkle:version>
+            <sparkle:shortVersionString>0.10.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.10.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.10.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.10.0/resonant-setup-0.10.0.exe" sparkle:version="0.10.0" sparkle:shortVersionString="0.10.0" length="23973235" type="application/octet-stream" sparkle:edSignature="lnLIvFmg5izXrCrBrHRSySPwzeGV93nQ8D8DpO8ifSjHyn/j5dnFjnPBIcpyUeUajXNLOSq2JPGrsnDnqeMOAg==" />
+        </item>
+        <item>
+            <title>Version 0.9.15</title>
+            <pubDate>Sun, 19 Jul 2026 13:54:37 +0000</pubDate>
+            <sparkle:version>0.9.15</sparkle:version>
+            <sparkle:shortVersionString>0.9.15</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.15. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.15"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.15/resonant-setup-0.9.15.exe" sparkle:version="0.9.15" sparkle:shortVersionString="0.9.15" length="23888556" type="application/octet-stream" sparkle:edSignature="G0bBO+OH7JokeGXSnVALLlIFsyd0W2QbV+HVeHqMoFEkgaMQEhQ0hwRXNaQL0YXCijTuXWcLUxejEeniF7VPAA==" />
+        </item>
+        <item>
+            <title>Version 0.9.14</title>
+            <pubDate>Sat, 18 Jul 2026 23:33:46 +0000</pubDate>
+            <sparkle:version>0.9.14</sparkle:version>
+            <sparkle:shortVersionString>0.9.14</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.14. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.14"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.14/resonant-setup-0.9.14.exe" sparkle:version="0.9.14" sparkle:shortVersionString="0.9.14" length="23877455" type="application/octet-stream" sparkle:edSignature="DfzyM+sbrs5qV7/Q1cmu97C1d1KeklkFlhTeV2duXQKPE62x+SQORlLT5GW2bAmzkW/O8dHr8hguKB8UQ1gqDQ==" />
+        </item>
+        <item>
+            <title>Version 0.9.13</title>
+            <pubDate>Sat, 18 Jul 2026 19:32:48 +0000</pubDate>
+            <sparkle:version>0.9.13</sparkle:version>
+            <sparkle:shortVersionString>0.9.13</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.13. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.13"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.13/resonant-setup-0.9.13.exe" sparkle:version="0.9.13" sparkle:shortVersionString="0.9.13" length="23886095" type="application/octet-stream" sparkle:edSignature="W9yO6gGmXCI2T81pQR8FeAPynIR0zR95WdUNSeOu3Vg5CGruTAY3ydYf/3uUgvGgGApbqMgsE/BHXWw6KEboAA==" />
+        </item>
+        <item>
+            <title>Version 0.9.12</title>
+            <pubDate>Sat, 18 Jul 2026 16:38:06 +0000</pubDate>
+            <sparkle:version>0.9.12</sparkle:version>
+            <sparkle:shortVersionString>0.9.12</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.12. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.12"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.12/resonant-setup-0.9.12.exe" sparkle:version="0.9.12" sparkle:shortVersionString="0.9.12" length="23898313" type="application/octet-stream" sparkle:edSignature="8NgO4tnfBoq95UyKBbVDiJA5ySA4q/Hz9JIURSpBt13SpcVsGiopC9Vi8C+kcaSnDLIdY6ViiBDvF7jqUo2xBg==" />
+        </item>
+        <item>
+            <title>Version 0.9.11</title>
+            <pubDate>Sat, 18 Jul 2026 15:57:44 +0000</pubDate>
+            <sparkle:version>0.9.11</sparkle:version>
+            <sparkle:shortVersionString>0.9.11</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.11. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.11"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.11/resonant-setup-0.9.11.exe" sparkle:version="0.9.11" sparkle:shortVersionString="0.9.11" length="23894802" type="application/octet-stream" sparkle:edSignature="d3MVPHiQLIKKd3LcxOQt+1ju8KyVg4mhY2jGGbD/I+MtHFpk0dNUtkCfU7asvIlVkGb2S+WP/jaav47H9t6/DA==" />
+        </item>
+        <item>
+            <title>Version 0.9.10</title>
+            <pubDate>Sat, 18 Jul 2026 15:38:23 +0000</pubDate>
+            <sparkle:version>0.9.10</sparkle:version>
+            <sparkle:shortVersionString>0.9.10</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.10. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.10"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.10/resonant-setup-0.9.10.exe" sparkle:version="0.9.10" sparkle:shortVersionString="0.9.10" length="23898835" type="application/octet-stream" sparkle:edSignature="hes6NiLaoYkFwrUuBs1looE5SvsGrzcYyICfaQuPqIkcHcCzJS/wijeIgdUoRmm71aGmyJ9j3MoWIyefc2V2Cw==" />
+        </item>
+        <item>
+            <title>Version 0.9.9</title>
+            <pubDate>Sat, 18 Jul 2026 00:50:02 +0000</pubDate>
+            <sparkle:version>0.9.9</sparkle:version>
+            <sparkle:shortVersionString>0.9.9</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.9. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.9"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.9/resonant-setup-0.9.9.exe" sparkle:version="0.9.9" sparkle:shortVersionString="0.9.9" length="23897580" type="application/octet-stream" sparkle:edSignature="uaOrP6robobvX0CerwSSuipv5muoYxDEIjqGO5UhNxVK6kfNfJkvqCehDUA/D67x/o9htCNAR95m/hMG/YlJCg==" />
+        </item>
+        <item>
+            <title>Version 0.9.8</title>
+            <pubDate>Thu, 16 Jul 2026 15:22:15 +0000</pubDate>
+            <sparkle:version>0.9.8</sparkle:version>
+            <sparkle:shortVersionString>0.9.8</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.8. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.8"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.8/resonant-setup-0.9.8.exe" sparkle:version="0.9.8" sparkle:shortVersionString="0.9.8" length="23886576" type="application/octet-stream" sparkle:edSignature="FygeOtwmGbS4gUe2mgVf2Ffn0ABvGJ9FP/JYVIl1tOiEKYfXaV4Whvrq941SxsRh7lv+etmvpj68e2Cut2B3Cw==" />
+        </item>
+        <item>
+            <title>Version 0.9.7</title>
+            <pubDate>Thu, 16 Jul 2026 02:57:17 +0000</pubDate>
+            <sparkle:version>0.9.7</sparkle:version>
+            <sparkle:shortVersionString>0.9.7</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.7. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.7"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.7/resonant-setup-0.9.7.exe" sparkle:version="0.9.7" sparkle:shortVersionString="0.9.7" length="23882085" type="application/octet-stream" sparkle:edSignature="WIjdQHwGMQqSct3XUSDclc2P5oJYx4MgM35gGrL0ey8pMahHG/X7YiIJzhQImzu58dMAVPF4I7ZXrZQP0G5iAQ==" />
+        </item>
+        <item>
+            <title>Version 0.9.6</title>
+            <pubDate>Thu, 16 Jul 2026 02:28:44 +0000</pubDate>
+            <sparkle:version>0.9.6</sparkle:version>
+            <sparkle:shortVersionString>0.9.6</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.6. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.6"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.6/resonant-setup-0.9.6.exe" sparkle:version="0.9.6" sparkle:shortVersionString="0.9.6" length="23885321" type="application/octet-stream" sparkle:edSignature="iZ6VPwMachDFtIkHPYaBS7Up53IwlkPBsaVt3HMDea4i5anvbpRx58sDEGUNwNokwlarlg5fO3zPwacZHQBKCw==" />
+        </item>
+        <item>
+            <title>Version 0.9.5</title>
+            <pubDate>Thu, 16 Jul 2026 02:10:32 +0000</pubDate>
+            <sparkle:version>0.9.5</sparkle:version>
+            <sparkle:shortVersionString>0.9.5</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.5. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.5"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.5/resonant-setup-0.9.5.exe" sparkle:version="0.9.5" sparkle:shortVersionString="0.9.5" length="23879741" type="application/octet-stream" sparkle:edSignature="Xe9/j4K/H/Bx31ULxR82gIAyCUcP6bDtXGW8WK1/exIkhknHyULcI2dyPBigLAfFa2r8IBXtX/mZdN3ePCJhAQ==" />
+        </item>
+        <item>
+            <title>Version 0.9.4</title>
+            <pubDate>Sun, 12 Jul 2026 18:07:20 +0000</pubDate>
+            <sparkle:version>0.9.4</sparkle:version>
+            <sparkle:shortVersionString>0.9.4</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.4. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.4"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.4/resonant-setup-0.9.4.exe" sparkle:version="0.9.4" sparkle:shortVersionString="0.9.4" length="23880038" type="application/octet-stream" sparkle:edSignature="A7QzChf+HtL4ea9f2hK1a7EYJ3R3zUYNk/jKVt1QtUNwclnE+ycelmnJCtF9JeJOurfutnsj8YxpS3oprjWhDg==" />
+        </item>
+        <item>
+            <title>Version 0.9.3</title>
+            <pubDate>Sun, 12 Jul 2026 16:41:37 +0000</pubDate>
+            <sparkle:version>0.9.3</sparkle:version>
+            <sparkle:shortVersionString>0.9.3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.3/resonant-setup-0.9.3.exe" sparkle:version="0.9.3" sparkle:shortVersionString="0.9.3" length="23875575" type="application/octet-stream" sparkle:edSignature="+s65yOdHKs6jmsZVeaC5QUMOvVHM3JEjTssgVzJFGTl9CbSSExB8PKsAAPcGMUp8LN4YlNeRBxIT4Sq3TrgvAQ==" />
+        </item>
+        <item>
+            <title>Version 0.9.2</title>
+            <pubDate>Sun, 12 Jul 2026 16:09:03 +0000</pubDate>
+            <sparkle:version>0.9.2</sparkle:version>
+            <sparkle:shortVersionString>0.9.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.2/resonant-setup-0.9.2.exe" sparkle:version="0.9.2" sparkle:shortVersionString="0.9.2" length="23873719" type="application/octet-stream" sparkle:edSignature="tDs6ZKsPnNlFJLWVwDIZYe8VrSdAfx2m17dBmIpMOjrfWX0cmxCr8HjcbiZ5rynmAZ9DQM+6ZnvyyGhNlOj1Aw==" />
+        </item>
+        <item>
+            <title>Version 0.9.1</title>
+            <pubDate>Sun, 12 Jul 2026 02:53:28 +0000</pubDate>
+            <sparkle:version>0.9.1</sparkle:version>
+            <sparkle:shortVersionString>0.9.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.1/resonant-setup-0.9.1.exe" sparkle:version="0.9.1" sparkle:shortVersionString="0.9.1" length="23873304" type="application/octet-stream" sparkle:edSignature="1gpDrTmhZkH9DRsBCTNtlrxScbx68vBn4spHrW2n2FKr/jMDr4KYdGb6qvUuKNGCP4jDdBsGffRWU5+cdO9zAQ==" />
+        </item>
+        <item>
+            <title>Version 0.9.0</title>
+            <pubDate>Sat, 11 Jul 2026 17:59:42 +0000</pubDate>
+            <sparkle:version>0.9.0</sparkle:version>
+            <sparkle:shortVersionString>0.9.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.9.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.9.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.9.0/resonant-setup-0.9.0.exe" sparkle:version="0.9.0" sparkle:shortVersionString="0.9.0" length="23871111" type="application/octet-stream" sparkle:edSignature="dAhhEUvYkBml+o01nE03caw47TzaS+D/W75cGus1oagn67u4iz8HMI2pXSPdkskeVwa98glCMre91Ps+qQIdDg==" />
+        </item>
+        <item>
+            <title>Version 0.8.2</title>
+            <pubDate>Sat, 11 Jul 2026 04:23:22 +0000</pubDate>
+            <sparkle:version>0.8.2</sparkle:version>
+            <sparkle:shortVersionString>0.8.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.8.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.8.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.8.2/resonant-setup-0.8.2.exe" sparkle:version="0.8.2" sparkle:shortVersionString="0.8.2" length="23850046" type="application/octet-stream" sparkle:edSignature="LBbEW5NvNv3s4TIvcYQHxLOVzOC2fwqE8leg4Aw/kzWCaAEmbDCm2cL6U0T/ChhgnVqfAJ9lPLTEhbzU/ZPZAA==" />
+        </item>
+        <item>
+            <title>Version 0.8.1</title>
+            <pubDate>Sat, 11 Jul 2026 03:27:03 +0000</pubDate>
+            <sparkle:version>0.8.1</sparkle:version>
+            <sparkle:shortVersionString>0.8.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.8.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.8.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.8.1/resonant-setup-0.8.1.exe" sparkle:version="0.8.1" sparkle:shortVersionString="0.8.1" length="23851825" type="application/octet-stream" sparkle:edSignature="HyTauuO9PHKpIBfZjb7xNjoXHMcyUDBimObMD19eKFJu+f43CcLjS7hdzEE9OLESTgaZEATVxzpx2sED4nfqAA==" />
+        </item>
+        <item>
+            <title>Version 0.8.0</title>
+            <pubDate>Fri, 10 Jul 2026 18:13:21 +0000</pubDate>
+            <sparkle:version>0.8.0</sparkle:version>
+            <sparkle:shortVersionString>0.8.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.8.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.8.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.8.0/resonant-setup-0.8.0.exe" sparkle:version="0.8.0" sparkle:shortVersionString="0.8.0" length="23840628" type="application/octet-stream" sparkle:edSignature="3rss2TymW5kvVwScmcZzFW1kfoyoK2ocz62bFi8d87cVg50hDX0tTb10DS55x4oxB8o2z49Dc+ogCAlSHdjpDQ==" />
+        </item>
+        <item>
+            <title>Version 0.7.0</title>
+            <pubDate>Fri, 10 Jul 2026 12:36:14 +0000</pubDate>
+            <sparkle:version>0.7.0</sparkle:version>
+            <sparkle:shortVersionString>0.7.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.7.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.7.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.7.0/resonant-setup-0.7.0.exe" sparkle:version="0.7.0" sparkle:shortVersionString="0.7.0" length="23810901" type="application/octet-stream" sparkle:edSignature="MfQzXOGYe5HOK/UYnuiT4LtvFjgMGaPZZ8sBCFUb+gEAkE15l9zzKPUQUMQrMlMTwT4GOvmkRIOVXSgLjfjEBA==" />
+        </item>
+        <item>
+            <title>Version 0.6.17</title>
+            <pubDate>Tue, 07 Jul 2026 20:49:35 +0000</pubDate>
+            <sparkle:version>0.6.17</sparkle:version>
+            <sparkle:shortVersionString>0.6.17</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.17. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.17"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.17/resonant-setup-0.6.17.exe" sparkle:version="0.6.17" sparkle:shortVersionString="0.6.17" length="23777305" type="application/octet-stream" sparkle:edSignature="ri++Yzvb41tuqGRlOGJwBCrueWpOHEHtxSWRr/fAahbuyoyjS5M7Niq9+VJgFl4dFyELMUcfMO+5hzuUdDc2AQ==" />
+        </item>
+        <item>
+            <title>Version 0.6.16</title>
+            <pubDate>Mon, 06 Jul 2026 15:02:35 +0000</pubDate>
+            <sparkle:version>0.6.16</sparkle:version>
+            <sparkle:shortVersionString>0.6.16</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.16. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.16"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.16/resonant-setup-0.6.16.exe" sparkle:version="0.6.16" sparkle:shortVersionString="0.6.16" length="23778750" type="application/octet-stream" sparkle:edSignature="PcVE+fX+GFuFH6DL8a/qPB84wUUwvjbFBnjS1+7ObNqfupPXlx3UXME+ERe1yDpxXkkT4y5jDOJoCJT5ELOPAw==" />
+        </item>
+        <item>
+            <title>Version 0.6.15</title>
+            <pubDate>Thu, 02 Jul 2026 15:02:05 +0000</pubDate>
+            <sparkle:version>0.6.15</sparkle:version>
+            <sparkle:shortVersionString>0.6.15</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.15. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.15"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.15/resonant-setup-0.6.15.exe" sparkle:version="0.6.15" sparkle:shortVersionString="0.6.15" length="23821655" type="application/octet-stream" sparkle:edSignature="NyvjRG8bMOVpy3hK40K3Or1b9YjjbX83tHnPdBMplv8T3J9BpEqJCB7piS2mEzmcSCavUQ9JSSBnJy1aspmOCA==" />
+        </item>
+        <item>
+            <title>Version 0.6.14</title>
+            <pubDate>Thu, 02 Jul 2026 14:33:49 +0000</pubDate>
+            <sparkle:version>0.6.14</sparkle:version>
+            <sparkle:shortVersionString>0.6.14</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.14. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.14"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.14/resonant-setup-0.6.14.exe" sparkle:version="0.6.14" sparkle:shortVersionString="0.6.14" length="23821795" type="application/octet-stream" sparkle:edSignature="SEe5b8Yizl4r0qHGja1v9MzLDJ+EhMnhNQKYRciDKjWMn1E3OaS18cn+42TigBw16riQzE34WUOttOkHwDgJCQ==" />
+        </item>
+        <item>
+            <title>Version 0.6.13</title>
+            <pubDate>Thu, 02 Jul 2026 13:49:08 +0000</pubDate>
+            <sparkle:version>0.6.13</sparkle:version>
+            <sparkle:shortVersionString>0.6.13</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.13. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.13"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.13/resonant-setup-0.6.13.exe" sparkle:version="0.6.13" sparkle:shortVersionString="0.6.13" length="23818147" type="application/octet-stream" sparkle:edSignature="n4wIsgMlV5/qrpx36m0/DXP4hyd1GBVH7s9j/P7tlwlq/aFoWpJAGYBx0Hfx8as26/j08F2dSwiD+WdXwjspAw==" />
+        </item>
+        <item>
+            <title>Version 0.6.12</title>
+            <pubDate>Thu, 02 Jul 2026 13:18:37 +0000</pubDate>
+            <sparkle:version>0.6.12</sparkle:version>
+            <sparkle:shortVersionString>0.6.12</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.12. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.12"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.12/resonant-setup-0.6.12.exe" sparkle:version="0.6.12" sparkle:shortVersionString="0.6.12" length="23819912" type="application/octet-stream" sparkle:edSignature="HHwQ5osuJWVQtNygWgJr+gphrSmd3G6UtQ9HkrDwQKnIbmfY17QTHOKCzRfTTdzjTAy5bRTIl4EUAuA/41DSBQ==" />
+        </item>
+        <item>
+            <title>Version 0.6.11</title>
+            <pubDate>Thu, 02 Jul 2026 04:36:16 +0000</pubDate>
+            <sparkle:version>0.6.11</sparkle:version>
+            <sparkle:shortVersionString>0.6.11</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.11. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.11"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.11/resonant-setup-0.6.11.exe" sparkle:version="0.6.11" sparkle:shortVersionString="0.6.11" length="23814655" type="application/octet-stream" sparkle:edSignature="Rm5UzoTQu1Zra67ch/TEoR1pY6NUWSCJtMXoDPgSmxBskmiagOfVlgjjqm9y1R67JzS76rGChHj3e/MQwYBDDA==" />
+        </item>
+        <item>
+            <title>Version 0.6.10</title>
+            <pubDate>Thu, 02 Jul 2026 03:43:50 +0000</pubDate>
+            <sparkle:version>0.6.10</sparkle:version>
+            <sparkle:shortVersionString>0.6.10</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.10. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.10"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.10/resonant-setup-0.6.10.exe" sparkle:version="0.6.10" sparkle:shortVersionString="0.6.10" length="23817227" type="application/octet-stream" sparkle:edSignature="PacXTn1VPg/SE2vsbBqW6gK5J0LL5Jb6lt6tH8Vnv4dJe8KBYoCApcM1gEihOdilBKeXRjOTWPTy+hg6mOOgBg==" />
+        </item>
+        <item>
+            <title>Version 0.6.9</title>
+            <pubDate>Thu, 02 Jul 2026 03:33:39 +0000</pubDate>
+            <sparkle:version>0.6.9</sparkle:version>
+            <sparkle:shortVersionString>0.6.9</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.9. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.9"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.9/resonant-setup-0.6.9.exe" sparkle:version="0.6.9" sparkle:shortVersionString="0.6.9" length="23814618" type="application/octet-stream" sparkle:edSignature="53WgLkBebwQwdbAtr/bDhvxj4CfzEoY1R55wjkXyv+haVCWOxAxvbVlCnPo4YfOYxwTe4czyusiQNls9Ox5QCA==" />
+        </item>
+        <item>
+            <title>Version 0.6.8</title>
+            <pubDate>Sun, 28 Jun 2026 16:56:37 +0000</pubDate>
+            <sparkle:version>0.6.8</sparkle:version>
+            <sparkle:shortVersionString>0.6.8</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.8. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.8"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.8/resonant-setup-0.6.8.exe" sparkle:version="0.6.8" sparkle:shortVersionString="0.6.8" length="23795097" type="application/octet-stream" sparkle:edSignature="vJtZO5lmLZsVZPLestJh36qClPt6/tU0OTHc5zN1vnFvFD1UIvNrnRoGm8Qkj+LQWFn3NWQPe+znK4hYMQwcDA==" />
+        </item>
+        <item>
+            <title>Version 0.6.7</title>
+            <pubDate>Sat, 20 Jun 2026 21:56:44 +0000</pubDate>
+            <sparkle:version>0.6.7</sparkle:version>
+            <sparkle:shortVersionString>0.6.7</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.7. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.7"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.7/resonant-setup-0.6.7.exe" sparkle:version="0.6.7" sparkle:shortVersionString="0.6.7" length="23788323" type="application/octet-stream" sparkle:edSignature="hqs4x4VhOX68EGObYIvWzy+BJHE4Yt70G6WzR0xq0tO/6s/xDDHDc4AWFboYEfNaaAPK5FqgFpm0EhXmNm9xBg==" />
+        </item>
+        <item>
+            <title>Version 0.6.6</title>
+            <pubDate>Fri, 19 Jun 2026 20:53:17 +0000</pubDate>
+            <sparkle:version>0.6.6</sparkle:version>
+            <sparkle:shortVersionString>0.6.6</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.6. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.6"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.6/resonant-setup-0.6.6.exe" sparkle:version="0.6.6" sparkle:shortVersionString="0.6.6" length="23788844" type="application/octet-stream" sparkle:edSignature="Cu3T29K80XziYL7q7SrxGg8fk5x6PbK3IFTwai2ctJbXcSES0TrSzAa28ms8J2Bi7aSe1KsTaa7QRzIwvP5bDA==" />
+        </item>
+        <item>
+            <title>Version 0.6.5</title>
+            <pubDate>Fri, 19 Jun 2026 19:06:26 +0000</pubDate>
+            <sparkle:version>0.6.5</sparkle:version>
+            <sparkle:shortVersionString>0.6.5</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.5. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.5"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.5/resonant-setup-0.6.5.exe" sparkle:version="0.6.5" sparkle:shortVersionString="0.6.5" length="23791789" type="application/octet-stream" sparkle:edSignature="zy2N70YaIS3KPZV/Q+Y8MTOja7mHb7LBuwffo8qsq//a6UhMQxSooxUFPl1PE+j5zckV392P7DZVCXDJXvd3Dg==" />
+        </item>
+        <item>
+            <title>Version 0.6.4</title>
+            <pubDate>Sun, 17 May 2026 12:49:10 +0000</pubDate>
+            <sparkle:version>0.6.4</sparkle:version>
+            <sparkle:shortVersionString>0.6.4</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.4. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.4"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.4/resonant-setup-0.6.4.exe" sparkle:version="0.6.4" sparkle:shortVersionString="0.6.4" length="23341315" type="application/octet-stream" sparkle:edSignature="DLMIWBetFeNt/ueoapX2ul3CFjVGs6UONKs/2sO8UrPhe+mb3/3N8nEiVdklIrs+kdjD+RaG8fJLqTrv+va6BA==" />
+        </item>
+        <item>
+            <title>Version 0.6.1</title>
+            <pubDate>Wed, 06 May 2026 18:13:01 +0000</pubDate>
+            <sparkle:version>0.6.1</sparkle:version>
+            <sparkle:shortVersionString>0.6.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.1/resonant-setup-0.6.1.exe" sparkle:version="0.6.1" sparkle:shortVersionString="0.6.1" length="23306214" type="application/octet-stream" sparkle:edSignature="mSS3KmBz1Tzsu41smppCW/CdfuXaVl1Y06CQYdO4RJV4T6t9LHF8TZBC3NejjI0bgQDr6JlwtuFrzCWuRSHpCw==" />
+        </item>
+        <item>
+            <title>Version 0.6.1a3</title>
+            <pubDate>Wed, 06 May 2026 18:10:14 +0000</pubDate>
+            <sparkle:version>0.6.1a3</sparkle:version>
+            <sparkle:shortVersionString>0.6.1a3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.1a3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.1a3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.1a3/resonant-setup-0.6.1a3.exe" sparkle:version="0.6.1a3" sparkle:shortVersionString="0.6.1a3" length="23305555" type="application/octet-stream" sparkle:edSignature="aEOtgmJr8z4n/rB1XMr8XdhJYJZfWaNNCjQyg8LMdAMOWIxOmWj2k4hd8opSmLZ3O+lgiW0u1Ts+1vdExZ4vCA==" />
+        </item>
+        <item>
+            <title>Version 0.6.1a2</title>
+            <pubDate>Wed, 06 May 2026 18:05:31 +0000</pubDate>
+            <sparkle:version>0.6.1a2</sparkle:version>
+            <sparkle:shortVersionString>0.6.1a2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.1a2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.1a2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.1a2/resonant-setup-0.6.1a2.exe" sparkle:version="0.6.1a2" sparkle:shortVersionString="0.6.1a2" length="23303144" type="application/octet-stream" sparkle:edSignature="rztHTCQAkTbxxtX+4c/v9xP67LvHiY7Px8OqbXji6/qhzC2hsp+Un0y1pQW2mAKZhds0sIcxUdygypk7KMiNBw==" />
+        </item>
+        <item>
+            <title>Version 0.6.1a1</title>
+            <pubDate>Wed, 06 May 2026 18:00:09 +0000</pubDate>
+            <sparkle:version>0.6.1a1</sparkle:version>
+            <sparkle:shortVersionString>0.6.1a1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.1a1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.1a1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.1a1/resonant-setup-0.6.1a1.exe" sparkle:version="0.6.1a1" sparkle:shortVersionString="0.6.1a1" length="23296408" type="application/octet-stream" sparkle:edSignature="tWVTcAYbh9S9dUv9RHMQEhL3laUeGjte+hDkTQaphQ+Y8cgtihD1HJGg93amga4hqNByGwItQpSL4O39Di5IBQ==" />
+        </item>
+        <item>
+            <title>Version 0.6.0</title>
+            <pubDate>Wed, 06 May 2026 17:49:58 +0000</pubDate>
+            <sparkle:version>0.6.0</sparkle:version>
+            <sparkle:shortVersionString>0.6.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.0/resonant-setup-0.6.0.exe" sparkle:version="0.6.0" sparkle:shortVersionString="0.6.0" length="23295158" type="application/octet-stream" sparkle:edSignature="0yVoVVFZeFFw9F5J8v5t4TameBZdPuzyao8ldOUcOwuDWioCl8E7C0l4XBr4W7LdFGFX1YnmkXxJ2vqaq2CuDA==" />
+        </item>
+        <item>
+            <title>Version 0.6.0a4</title>
+            <pubDate>Wed, 06 May 2026 17:42:00 +0000</pubDate>
+            <sparkle:version>0.6.0a4</sparkle:version>
+            <sparkle:shortVersionString>0.6.0a4</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.0a4. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.0a4"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.0a4/resonant-setup-0.6.0a4.exe" sparkle:version="0.6.0a4" sparkle:shortVersionString="0.6.0a4" length="23293145" type="application/octet-stream" sparkle:edSignature="kbg6LfJVe41qzyBOQSL7MrumCXBFsAHpwAcPFWTZ9jyvOvSLciATlWAj3i1D8v+6IBWFFQS6tQ4KThwarSbVBA==" />
+        </item>
+        <item>
+            <title>Version 0.6.0a3</title>
+            <pubDate>Wed, 06 May 2026 17:35:00 +0000</pubDate>
+            <sparkle:version>0.6.0a3</sparkle:version>
+            <sparkle:shortVersionString>0.6.0a3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.0a3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.0a3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.0a3/resonant-setup-0.6.0a3.exe" sparkle:version="0.6.0a3" sparkle:shortVersionString="0.6.0a3" length="23288352" type="application/octet-stream" sparkle:edSignature="sA0OOFhmAIPvzb9fye7VMeWw1m9+OTyqlnApBI7ae1yMHdMxfVWUBUrDOA7VZsx7mR6tpVozjvaC+Qe14a7JDA==" />
+        </item>
+        <item>
+            <title>Version 0.6.0a2</title>
+            <pubDate>Wed, 06 May 2026 17:30:33 +0000</pubDate>
+            <sparkle:version>0.6.0a2</sparkle:version>
+            <sparkle:shortVersionString>0.6.0a2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.0a2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.0a2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.0a2/resonant-setup-0.6.0a2.exe" sparkle:version="0.6.0a2" sparkle:shortVersionString="0.6.0a2" length="23280678" type="application/octet-stream" sparkle:edSignature="XC7cLzN1VnFt+grIB8pdxHwr9jwtl2/4GkwpxEgm4zeuiMnaZRWao/I62OzM16zyVdZHHoBWQDCMl4ns9yNZAw==" />
+        </item>
+        <item>
+            <title>Version 0.6.0a1</title>
+            <pubDate>Wed, 06 May 2026 17:25:56 +0000</pubDate>
+            <sparkle:version>0.6.0a1</sparkle:version>
+            <sparkle:shortVersionString>0.6.0a1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.6.0a1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.6.0a1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.6.0a1/resonant-setup-0.6.0a1.exe" sparkle:version="0.6.0a1" sparkle:shortVersionString="0.6.0a1" length="23270433" type="application/octet-stream" sparkle:edSignature="EBNGTkdqkQ2FLHmu5SOnhoxe8hJvK4S5zK2YYyZOqqNOYgMHaLbGIGuEC5C1sX8Aj19zuEwJGDeEhAwbjWwaDQ==" />
+        </item>
+        <item>
+            <title>Version 0.5.18a1</title>
+            <pubDate>Wed, 06 May 2026 05:36:15 +0000</pubDate>
+            <sparkle:version>0.5.18a1</sparkle:version>
+            <sparkle:shortVersionString>0.5.18a1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.18a1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.18a1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.18a1/resonant-setup-0.5.18a1.exe" sparkle:version="0.5.18a1" sparkle:shortVersionString="0.5.18a1" length="23260837" type="application/octet-stream" sparkle:edSignature="2onw5lC0RLRd3bF1ExkYqTwVqHuVxKJZjF8mwvSurnGIobofwQVoRoPCS8esuqpebHzqkzz3EjGk6JU7+FKsCw==" />
+        </item>
+        <item>
+            <title>Version 0.5.18</title>
+            <pubDate>Wed, 06 May 2026 05:36:06 +0000</pubDate>
+            <sparkle:version>0.5.18</sparkle:version>
+            <sparkle:shortVersionString>0.5.18</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.18. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.18"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.18/resonant-setup-0.5.18.exe" sparkle:version="0.5.18" sparkle:shortVersionString="0.5.18" length="23263294" type="application/octet-stream" sparkle:edSignature="XZpHmCRfBowoxUYYw+V7AWzVBIZVCN/PcQqaUWW7/yaXpNAO/QB/0yB0gIGC8G22kGIr/3veEMawTzszbWN9BA==" />
+        </item>
+        <item>
+            <title>Version 0.5.16</title>
+            <pubDate>Wed, 06 May 2026 05:16:26 +0000</pubDate>
+            <sparkle:version>0.5.16</sparkle:version>
+            <sparkle:shortVersionString>0.5.16</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.16. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.16"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.16/resonant-setup-0.5.16.exe" sparkle:version="0.5.16" sparkle:shortVersionString="0.5.16" length="23259630" type="application/octet-stream" sparkle:edSignature="PjYrPmpt4YcSmpXlKu94I148q2pgwSpAVVUWTO6Syh+AcivQxZBZybUDXbg1xwGJUJEbVusSRqTtgzF9X3DbAg==" />
+        </item>
+        <item>
+            <title>Version 0.5.15</title>
+            <pubDate>Tue, 05 May 2026 05:50:19 +0000</pubDate>
+            <sparkle:version>0.5.15</sparkle:version>
+            <sparkle:shortVersionString>0.5.15</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.15. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.15"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.15/resonant-setup-0.5.15.exe" sparkle:version="0.5.15" sparkle:shortVersionString="0.5.15" length="23267040" type="application/octet-stream" sparkle:edSignature="bRcp49de+sMjeTcRN1MxjYP6aHEn9ks0Xiso/9k7VW9/hHLprxQwnd4ZdSOgqhaQ9zEkOWJkAA8ig8b3dD5JBw==" />
+        </item>
+        <item>
+            <title>Version 0.5.15a1</title>
+            <pubDate>Tue, 05 May 2026 05:49:14 +0000</pubDate>
+            <sparkle:version>0.5.15a1</sparkle:version>
+            <sparkle:shortVersionString>0.5.15a1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.15a1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.15a1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.15a1/resonant-setup-0.5.15a1.exe" sparkle:version="0.5.15a1" sparkle:shortVersionString="0.5.15a1" length="23270197" type="application/octet-stream" sparkle:edSignature="Ju3r2hQ0QWx1vHmabsnHv9dDsAB7bws1hlw6jzmXEj4R+1oiu8IoZA5aiz7kZSJbDxWhGjv71uIjU6CMNHxaBQ==" />
+        </item>
+        <item>
+            <title>Version 0.5.14</title>
+            <pubDate>Tue, 05 May 2026 05:40:45 +0000</pubDate>
+            <sparkle:version>0.5.14</sparkle:version>
+            <sparkle:shortVersionString>0.5.14</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.14. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.14"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.14/resonant-setup-0.5.14.exe" sparkle:version="0.5.14" sparkle:shortVersionString="0.5.14" length="23267331" type="application/octet-stream" sparkle:edSignature="e+2lnc3s0QtPL9nE0depDhOSqRJhaMtNFOM8f76fkZ7nNkGZyCi6jcKt57eVysSaCPO3T6gamMDe5iXsYicuDw==" />
+        </item>
+        <item>
+            <title>Version 0.5.13a2</title>
+            <pubDate>Tue, 05 May 2026 05:28:34 +0000</pubDate>
+            <sparkle:version>0.5.13a2</sparkle:version>
+            <sparkle:shortVersionString>0.5.13a2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.13a2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.13a2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.13a2/resonant-setup-0.5.13a2.exe" sparkle:version="0.5.13a2" sparkle:shortVersionString="0.5.13a2" length="23268327" type="application/octet-stream" sparkle:edSignature="Fqs+luXb7xv82c3Nw+VFXsz2uOvPqZvRq70hjndKBuK1rZNX+k+MRiTBVecEMkH5cRCEJ8EJy9A0exwkxeAdCA==" />
+        </item>
+        <item>
+            <title>Version 0.5.13a1</title>
+            <pubDate>Tue, 05 May 2026 05:28:20 +0000</pubDate>
+            <sparkle:version>0.5.13a1</sparkle:version>
+            <sparkle:shortVersionString>0.5.13a1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.13a1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.13a1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.13a1/resonant-setup-0.5.13a1.exe" sparkle:version="0.5.13a1" sparkle:shortVersionString="0.5.13a1" length="23268941" type="application/octet-stream" sparkle:edSignature="MeqBjvjMQGqDxJq4smOGwhfeCTOaOdnwyECobQK9uB8F2GO+Qolt+XRMYjwWXBNqeByC/PS9oA5GvyRr5igVAA==" />
+        </item>
+        <item>
+            <title>Version 0.5.0a2</title>
+            <pubDate>Sat, 02 May 2026 14:20:32 +0000</pubDate>
+            <sparkle:version>0.5.0a2</sparkle:version>
+            <sparkle:shortVersionString>0.5.0a2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.0a2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.0a2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.0a2/resonant-setup-0.5.0a2.exe" sparkle:version="0.5.0a2" sparkle:shortVersionString="0.5.0a2" length="23070116" type="application/octet-stream" sparkle:edSignature="XK2B246hjSfWJJkvbOJXtyfat33lePyCjmF6iHHa3Y2nfkjxOm1GSYa4hRL5iIakUVAozmAUP+uXfT4lJVHJAQ==" />
+        </item>
+        <item>
+            <title>Version 0.5.0a1</title>
+            <pubDate>Sat, 02 May 2026 14:04:06 +0000</pubDate>
+            <sparkle:version>0.5.0a1</sparkle:version>
+            <sparkle:shortVersionString>0.5.0a1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.5.0a1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.5.0a1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.5.0a1/resonant-setup-0.5.0a1.exe" sparkle:version="0.5.0a1" sparkle:shortVersionString="0.5.0a1" length="23059209" type="application/octet-stream" sparkle:edSignature="8kUaJpoN+9Cw/KDso921fshagjT3FHyR4/Ldikxab8ctC/NzsF0I40voJtIZ2hkUSc9+e1wUhJOFtOrMCiLHCg==" />
+        </item>
+        <item>
+            <title>Version 0.4.11</title>
+            <pubDate>Sat, 02 May 2026 10:52:59 +0000</pubDate>
+            <sparkle:version>0.4.11</sparkle:version>
+            <sparkle:shortVersionString>0.4.11</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.11. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.11"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.11/resonant-setup-0.4.11.exe" sparkle:version="0.4.11" sparkle:shortVersionString="0.4.11" length="23042859" type="application/octet-stream" sparkle:edSignature="2NEzk6gWKvOrB5m+2HJUewH+xtUZ7zbcZ2dbZdVYSSaaN149z1/uULCCVI9aR07Uskn3QANFjkFJf0lSHT2KCA==" />
+        </item>
+        <item>
+            <title>Version 0.4.10</title>
+            <pubDate>Sat, 02 May 2026 10:18:21 +0000</pubDate>
+            <sparkle:version>0.4.10</sparkle:version>
+            <sparkle:shortVersionString>0.4.10</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.10. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.10"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.10/resonant-setup-0.4.10.exe" sparkle:version="0.4.10" sparkle:shortVersionString="0.4.10" length="23041466" type="application/octet-stream" sparkle:edSignature="xpKhpvB6XesYo2evUSOrIU5FocgrtYhMlWZxhh8RbVCMCdRnSi0pCEzjVCwMDdB/xQ/wcapf42T3T/0V0LwTCA==" />
+        </item>
+        <item>
+            <title>Version 0.4.9</title>
+            <pubDate>Sat, 02 May 2026 09:40:18 +0000</pubDate>
+            <sparkle:version>0.4.9</sparkle:version>
+            <sparkle:shortVersionString>0.4.9</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.9. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.9"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.9/resonant-setup-0.4.9.exe" sparkle:version="0.4.9" sparkle:shortVersionString="0.4.9" length="23041545" type="application/octet-stream" sparkle:edSignature="+3W6LxcVk5a7wHAZyyJPza6mRCHYFr+Omufg/egio97gqxhIEDDOSLnLQNFMDnYKe2Dsr3AwMeLG5BF0n0JHDg==" />
+        </item>
+        <item>
+            <title>Version 0.4.8</title>
+            <pubDate>Sat, 02 May 2026 09:04:55 +0000</pubDate>
+            <sparkle:version>0.4.8</sparkle:version>
+            <sparkle:shortVersionString>0.4.8</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.8. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.8"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.8/resonant-setup-0.4.8.exe" sparkle:version="0.4.8" sparkle:shortVersionString="0.4.8" length="23036891" type="application/octet-stream" sparkle:edSignature="M+W5t0BMqpk0EtybxUe0LzFBIlLUqBSuC/QxHhEvVfvX9fwgOnWdrJB38PyRM5aYtftyyqQSiWwIMV3XYULSDQ==" />
+        </item>
+        <item>
+            <title>Version 0.4.7</title>
+            <pubDate>Sat, 02 May 2026 08:29:47 +0000</pubDate>
+            <sparkle:version>0.4.7</sparkle:version>
+            <sparkle:shortVersionString>0.4.7</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.7. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.7"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.7/resonant-setup-0.4.7.exe" sparkle:version="0.4.7" sparkle:shortVersionString="0.4.7" length="23039492" type="application/octet-stream" sparkle:edSignature="Fi5UCdAUqmSn7UqRYu5XE/p2ji6UwVELmcKCA7CVQW8UEAf2tpKEXFjJ9OqpGkyliMcLoBa8nBlyGDHy5DSJAA==" />
+        </item>
+        <item>
+            <title>Version 0.4.6</title>
+            <pubDate>Sat, 02 May 2026 07:55:05 +0000</pubDate>
+            <sparkle:version>0.4.6</sparkle:version>
+            <sparkle:shortVersionString>0.4.6</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.6. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.6"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.6/resonant-setup-0.4.6.exe" sparkle:version="0.4.6" sparkle:shortVersionString="0.4.6" length="23037179" type="application/octet-stream" sparkle:edSignature="QAMOAZ2AhWZMvI6OV1VXtuM2cqPqZJKOHAkd7RRLqwkDdvRj9e9KDR0x424bLKiyOJEvTROdoDP2UnNIajRcAw==" />
+        </item>
+        <item>
+            <title>Version 0.4.5</title>
+            <pubDate>Sat, 02 May 2026 07:20:40 +0000</pubDate>
+            <sparkle:version>0.4.5</sparkle:version>
+            <sparkle:shortVersionString>0.4.5</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.5. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.5"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.5/resonant-setup-0.4.5.exe" sparkle:version="0.4.5" sparkle:shortVersionString="0.4.5" length="23037531" type="application/octet-stream" sparkle:edSignature="4FoFJs9nZpF1klgY1foduiOn0F5t7HJUpM0TlcmFRLhWTPsVHF/LTRlql7I3wCGH78BiP387DcyqXC2TltRMDw==" />
+        </item>
+        <item>
+            <title>Version 0.4.4</title>
+            <pubDate>Sat, 02 May 2026 06:44:51 +0000</pubDate>
+            <sparkle:version>0.4.4</sparkle:version>
+            <sparkle:shortVersionString>0.4.4</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.4. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.4"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.4/resonant-setup-0.4.4.exe" sparkle:version="0.4.4" sparkle:shortVersionString="0.4.4" length="23038251" type="application/octet-stream" sparkle:edSignature="iuL12qHzAMaabVKJkdfytM2Scd7cS1y+6CXZ7dUn+c4E5fMqLVtveTPU6GArJN0z3zwTQUqEx0j8zQ/OyW8rBw==" />
+        </item>
+        <item>
+            <title>Version 0.4.3</title>
+            <pubDate>Sat, 02 May 2026 06:07:49 +0000</pubDate>
+            <sparkle:version>0.4.3</sparkle:version>
+            <sparkle:shortVersionString>0.4.3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.3/resonant-setup-0.4.3.exe" sparkle:version="0.4.3" sparkle:shortVersionString="0.4.3" length="23042589" type="application/octet-stream" sparkle:edSignature="MF6zEXDeEfWzhbx4bXxS+GQr+2XMFVxZs5QAHExYA0AWtNiHPUWE5D0BbllC5GevQO9RtsHfU3Y7Q7XlGOSfBA==" />
+        </item>
+        <item>
+            <title>Version 0.4.2</title>
+            <pubDate>Sat, 02 May 2026 05:32:16 +0000</pubDate>
+            <sparkle:version>0.4.2</sparkle:version>
+            <sparkle:shortVersionString>0.4.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.2/resonant-setup-0.4.2.exe" sparkle:version="0.4.2" sparkle:shortVersionString="0.4.2" length="23037377" type="application/octet-stream" sparkle:edSignature="zdl9bhl5dbl4BY1AACtFoiKKPOK1aopKyT/oZPXee7FA8BLUtLIUuBt0Xd700vK90GcyK4moH1jqQLOBlWscCg==" />
+        </item>
+        <item>
+            <title>Version 0.4.1</title>
+            <pubDate>Sat, 02 May 2026 04:58:00 +0000</pubDate>
+            <sparkle:version>0.4.1</sparkle:version>
+            <sparkle:shortVersionString>0.4.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.1/resonant-setup-0.4.1.exe" sparkle:version="0.4.1" sparkle:shortVersionString="0.4.1" length="23040171" type="application/octet-stream" sparkle:edSignature="hhEqRLaR3EwLQIFa6DdKCD/0pC0fmfUQzGH9wFZ76oeozYs2Pca5euP249cdwaOyg+JZ66PhaAgWAcv0mkbuAA==" />
+        </item>
+        <item>
+            <title>Version 0.4.0</title>
+            <pubDate>Sat, 02 May 2026 04:10:43 +0000</pubDate>
+            <sparkle:version>0.4.0</sparkle:version>
+            <sparkle:shortVersionString>0.4.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.4.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.4.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.4.0/resonant-setup-0.4.0.exe" sparkle:version="0.4.0" sparkle:shortVersionString="0.4.0" length="23041166" type="application/octet-stream" sparkle:edSignature="uAIlpd5dUNwNsAnS3EmrXzrEsDEW0DYqPgt8fR/l6CuGZ1sn8yughG5icavEeRvsa45K4NR1iqO61sFvFOCUAA==" />
+        </item>
+        <item>
+            <title>Version 0.3.5</title>
+            <pubDate>Sat, 02 May 2026 00:50:16 +0000</pubDate>
+            <sparkle:version>0.3.5</sparkle:version>
+            <sparkle:shortVersionString>0.3.5</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.3.5. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.3.5"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.3.5/resonant-setup-0.3.5.exe" sparkle:version="0.3.5" sparkle:shortVersionString="0.3.5" length="27716046" type="application/octet-stream" sparkle:edSignature="RS3OeuaBL26Kago/ZO8/opQFV0Zf9iEv4E50wCEoy4YDJ+kPYnihN3xyj+9h4lROBnYMVSF+/0SDAkTeqfENDg==" />
+        </item>
+        <item>
+            <title>Version 0.3.4</title>
+            <pubDate>Fri, 01 May 2026 23:41:24 +0000</pubDate>
+            <sparkle:version>0.3.4</sparkle:version>
+            <sparkle:shortVersionString>0.3.4</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.3.4. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.3.4"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.3.4/resonant-setup-0.3.4.exe" sparkle:version="0.3.4" sparkle:shortVersionString="0.3.4" length="27711595" type="application/octet-stream" sparkle:edSignature="DcXG/1vGCKg5zn9NSu/mRhR1XHd4C2lcEuGcsJ7AnLp3VpbvBC9KMKOKDoL4PEVEf/HXncJBVadUo8yvOtXTAw==" />
+        </item>
+        <item>
+            <title>Version 0.3.3</title>
+            <pubDate>Fri, 01 May 2026 21:30:59 +0000</pubDate>
+            <sparkle:version>0.3.3</sparkle:version>
+            <sparkle:shortVersionString>0.3.3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.3.3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.3.3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.3.3/resonant-setup-0.3.3.exe" sparkle:version="0.3.3" sparkle:shortVersionString="0.3.3" length="27704071" type="application/octet-stream" sparkle:edSignature="Ofjfk3lIP6UlgIGh4x+WAkmio/I3BAfneBCu24YMIWvxWlxtTA5vwpZYddSI79j3hYfl2mz+1TVlqFaLgG3ABg==" />
+        </item>
+        <item>
+            <title>Version 0.3.2</title>
+            <pubDate>Fri, 01 May 2026 19:49:33 +0000</pubDate>
+            <sparkle:version>0.3.2</sparkle:version>
+            <sparkle:shortVersionString>0.3.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.3.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.3.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.3.2/resonant-setup-0.3.2.exe" sparkle:version="0.3.2" sparkle:shortVersionString="0.3.2" length="27700062" type="application/octet-stream" sparkle:edSignature="qTOuYzMAfZB06fCg14x+nS8mfZempBCYHvCBA26MeyXxG3ufCKp6IuVlDrdQTsMwUtfxgHPBzqXwEN1wVjt7BA==" />
+        </item>
+        <item>
+            <title>Version 0.3.1</title>
+            <pubDate>Fri, 01 May 2026 15:15:17 +0000</pubDate>
+            <sparkle:version>0.3.1</sparkle:version>
+            <sparkle:shortVersionString>0.3.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.3.1. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.3.1"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.3.1/resonant-setup-0.3.1.exe" sparkle:version="0.3.1" sparkle:shortVersionString="0.3.1" length="27693323" type="application/octet-stream" sparkle:edSignature="9zTWh7JqwYjbW3YATnX2Xm8E8Z5jE4tRcUa033kSFYwygB9KC4HPl3tPlnGEEm7wLQTPSOuaOrUZRE/fXduUBg==" />
+        </item>
+        <item>
+            <title>Version 0.3.0</title>
+            <pubDate>Thu, 30 Apr 2026 18:50:25 +0000</pubDate>
+            <sparkle:version>0.3.0</sparkle:version>
+            <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.3.0. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.3.0"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.3.0/resonant-setup-0.3.0.exe" sparkle:version="0.3.0" sparkle:shortVersionString="0.3.0" length="27674930" type="application/octet-stream" sparkle:edSignature="wBG0MhkewNq+P8P11PY0ZBToHRhuUG5uLO2Hw5LAe9Fqz0lTiYk9FAmFaJo70PUi5djw+K9qb4xNSbkyFyGVCQ==" />
+        </item>
+        <item>
+            <title>Version 0.2.7</title>
+            <pubDate>Tue, 28 Apr 2026 21:04:11 +0000</pubDate>
+            <sparkle:version>0.2.7</sparkle:version>
+            <sparkle:shortVersionString>0.2.7</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.2.7. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.7"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.7/resonant-setup-0.2.7.exe" sparkle:version="0.2.7" sparkle:shortVersionString="0.2.7" length="27658563" type="application/octet-stream" sparkle:edSignature="lCUYOhrO8VYB91KNA3oEF1hQ+E0KC0ezcHYBbbo7p5VkUrcr50iAbShexzWVkLp0ME4cAzUSMUOp/Rip4SzDAQ==" />
+        </item>
+        <item>
+            <title>Version 0.2.6</title>
+            <pubDate>Tue, 28 Apr 2026 20:44:18 +0000</pubDate>
+            <sparkle:version>0.2.6</sparkle:version>
+            <sparkle:shortVersionString>0.2.6</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.2.6. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.6"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.6/resonant-setup-0.2.6.exe" sparkle:version="0.2.6" sparkle:shortVersionString="0.2.6" length="27370452" type="application/octet-stream" sparkle:edSignature="ftTjoyfUxke2ARofdUSU2J2nCQf5zx66fLlWYM8scRDaVeJLRnEDL+nvcv9LuH6prrjsqodOZYtwwHAxVgLLDQ==" />
+        </item>
+        <item>
+            <title>Version 0.2.5</title>
+            <pubDate>Tue, 28 Apr 2026 20:09:14 +0000</pubDate>
+            <sparkle:version>0.2.5</sparkle:version>
+            <sparkle:shortVersionString>0.2.5</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.2.5. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.5"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.5/resonant-setup-0.2.5.exe" sparkle:version="0.2.5" sparkle:shortVersionString="0.2.5" length="27370212" type="application/octet-stream" sparkle:edSignature="3EWfz+Env6QNQt69mgUAwmINa1oGMArV1ZFyWYine7aK0Wqh63Cl4nF+JwT2gawwQwItRfEmwOTFnoqrP5JQBQ==" />
+        </item>
+        <item>
+            <title>Version 0.2.4</title>
+            <pubDate>Tue, 28 Apr 2026 19:53:42 +0000</pubDate>
+            <sparkle:version>0.2.4</sparkle:version>
+            <sparkle:shortVersionString>0.2.4</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.2.4. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.4"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.4/resonant-setup-0.2.4.exe" sparkle:version="0.2.4" sparkle:shortVersionString="0.2.4" length="27369810" type="application/octet-stream" sparkle:edSignature="SN3Q2d5hD5cJAlc/FmgsQ+ZE15KXo4P0rv5GWEx5qpulKEwDO3CrYvuQ2ProHTxi9CKlSYP3jop+Yebg+b9/AA==" />
+        </item>
+        <item>
+            <title>Version 0.2.3</title>
+            <pubDate>Tue, 28 Apr 2026 19:42:05 +0000</pubDate>
+            <sparkle:version>0.2.3</sparkle:version>
+            <sparkle:shortVersionString>0.2.3</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.2.3. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.3"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.3/resonant-setup-0.2.3.exe" sparkle:version="0.2.3" sparkle:shortVersionString="0.2.3" length="27370324" type="application/octet-stream" sparkle:edSignature="v2//WgGG1mTpuol/8VIFIyODjEXCZBFx7jgWccyup8ulSDjPnEfmXY73XsCafzzHt+S/RQPLSnLzwuN6HPwWDA==" />
+        </item>
+        <item>
+            <title>Version 0.2.2</title>
+            <pubDate>Tue, 28 Apr 2026 17:38:26 +0000</pubDate>
+            <sparkle:version>0.2.2</sparkle:version>
+            <sparkle:shortVersionString>0.2.2</sparkle:shortVersionString>
+            <description>&lt;p&gt;Release v0.2.2. See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.2"&gt;GitHub release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.2/resonant-setup-0.2.2.exe" sparkle:version="0.2.2" sparkle:shortVersionString="0.2.2" length="27369707" type="application/octet-stream" sparkle:edSignature="38DkqTZU5OQfj1IErGUeQ2ZrkBi0nF5PXsG8Um9HcPcD6L8+pF71JLh/bvVV2pMIJN+csmZCHDzuu+bBphA9BA==" />
+        </item>
+        <item>
+            <title>Version 0.2.1</title>
+            <pubDate>Tue, 28 Apr 2026 17:12:02 +0000</pubDate>
+            <sparkle:version>0.2.1</sparkle:version>
+            <sparkle:shortVersionString>0.2.1</sparkle:shortVersionString>
+            <description>&lt;p&gt;Resonant Client 0.2.1 — backend swap context loss fix (#9, #10), project-switch UI race fix (#7, #8), appcast updater idempotency fix (#13). See the &lt;a href="https://github.com/Luminary-Analytics/resonant-client/releases/tag/v0.2.1"&gt;release page&lt;/a&gt; for details.&lt;/p&gt;</description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.1/resonant-setup-0.2.1.exe" sparkle:version="0.2.1" sparkle:shortVersionString="0.2.1" length="27365568" type="application/octet-stream" sparkle:edSignature="FdP+tw76blwOEMDiQ/dE3SWv4GijS3vo8hu1WSYvf+ohqKCzWol4FIfJUh+1foHoDzr8IegcVGarKrQ4JYNBDA==" />
+        </item>
+        <item>
+            <title>Version 0.2.0</title>
+            <pubDate>Tue, 28 Apr 2026 00:00:00 +0000</pubDate>
+            <sparkle:version>0.2.0</sparkle:version>
+            <sparkle:shortVersionString>0.2.0</sparkle:shortVersionString>
+            <description>
+                &lt;h2&gt;Resonant Client 0.2.0&lt;/h2&gt;
+                &lt;p&gt;Initial public release with auto-update support.&lt;/p&gt;
+                &lt;ul&gt;
+                    &lt;li&gt;PyInstaller bundle for one-click Windows install&lt;/li&gt;
+                    &lt;li&gt;WinSparkle auto-update channel (this!)&lt;/li&gt;
+                    &lt;li&gt;Agentic coding loop with deepseek-v4-flash:cloud as flagship&lt;/li&gt;
+                &lt;/ul&gt;
+            </description>
+            <enclosure url="https://github.com/Luminary-Analytics/resonant-client/releases/download/v0.2.0/resonant-setup-0.2.0.exe" sparkle:version="0.2.0" sparkle:shortVersionString="0.2.0" length="27281447" type="application/octet-stream" sparkle:edSignature="iWM2C3x4BUu/TUvfDSOWkP642wlltjMtYHe+598lpPG1vMAFp5/jXBufm6rC3+0j5wfUo3grxYucJ/m7zfjrDw==" />
+        </item>
+    </channel>
+</rss>

@@ -8,9 +8,10 @@ name: Release
 #   2. Wraps it into an Inno Setup installer (resonant-setup-X.Y.Z.exe)
 #   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
 #   4. Creates a GitHub Release, uploads the signed installer
-#   5. Updates appcast.xml on the gh-pages branch with the new entry
-#   6. Pushes gh-pages — WinSparkle in deployed v0.2.X exes will pick up the
-#      new release within 24h (or on next launch if the cached check is stale)
+#   5. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
+#      keeps the newest three installers and updates appcast.xml to point there
+#   6. Publishes gh-pages as one fresh commit. WinSparkle in installed copies
+#      picks up the release within 24h (or on next launch if the check is stale)
 
 on:
   push:
@@ -157,34 +158,52 @@ jobs:
           files: |
             dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe
 
+      # Installed apps poll the GitHub Pages feed and download installers
+      # anonymously. The source repository may be private, so Release assets
+      # are not reachable for them; the Pages site hosts the newest installers
+      # too. Pre-release tags are not published to the feed.
       - name: Checkout gh-pages branch
+        if: ${{ !contains(steps.version.outputs.version, '-') }}
         uses: actions/checkout@v4
         with:
           ref: gh-pages
           path: gh-pages-checkout
 
-      - name: Update appcast.xml on gh-pages
+      - name: Publish installer and appcast to the Pages site
+        if: ${{ !contains(steps.version.outputs.version, '-') }}
         shell: pwsh
         run: |
-          # Build release-notes HTML from the GitHub-generated release body, or
-          # fall back to a simple line if that's not available.
-          $notes = "<p>Release v${{ steps.version.outputs.version }}. See the <a href=`"https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}`">GitHub release page</a> for details.</p>"
+          $owner = "${{ github.repository_owner }}".ToLowerInvariant()
+          $repo = "${{ github.event.repository.name }}"
+          $pages = "https://$owner.github.io/$repo"
+          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+          python packaging/publish_pages.py `
+              --site "gh-pages-checkout" `
+              --installer $installer `
+              --version "${{ steps.version.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { throw "publish_pages.py failed" }
 
+          $notes = "<p>SONN Client ${{ steps.version.outputs.version }}. See <a href=`"$pages/`">$pages/</a>.</p>"
           python packaging/update_appcast.py `
               --version "${{ steps.version.outputs.version }}" `
-              --installer "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe" `
+              --installer $installer `
               --signature "${{ steps.sign.outputs.signature }}" `
               --notes $notes `
               --appcast "gh-pages-checkout/appcast.xml" `
-              --download-base "https://github.com/${{ github.repository }}/releases/download"
+              --download-base "$pages/downloads"
+          if ($LASTEXITCODE -ne 0) { throw "update_appcast.py failed" }
 
-      - name: Push appcast update to gh-pages
+      # Publish gh-pages as one fresh commit so removed installers do not
+      # accumulate in branch history. appcast.xml keeps the version history.
+      - name: Push the Pages site
+        if: ${{ !contains(steps.version.outputs.version, '-') }}
         shell: bash
         working-directory: gh-pages-checkout
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add appcast.xml
+          git add -A
           git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
-          git commit -m "release: appcast entry for v${{ steps.version.outputs.version }}"
-          git push origin gh-pages
+          tree=$(git write-tree)
+          commit=$(git commit-tree "$tree" -m "release: SONN Client ${{ steps.version.outputs.version }} installer and appcast")
+          git push --force origin "$commit:refs/heads/gh-pages"

@@ -29,10 +29,15 @@ produce an EdDSA signature of the installer. The matching public key lives in
 `resonant_client/updater.py`. The private key must never enter source control,
 logs, documentation, or fixtures.
 
-The workflow publishes the installer as a GitHub Release asset, then runs
-`packaging/update_appcast.py` against `gh-pages/appcast.xml`. Each entry includes
-version, URL, byte length, release notes, and signature. GitHub Pages publishes
-the branch separately. The live feed URL is:
+The workflow publishes the installer as a GitHub Release asset. For stable
+tags, `packaging/publish_pages.py` copies it to `gh-pages/downloads/vX.Y.Z/`,
+keeps the newest three installers and regenerates the download page. Then
+`packaging/update_appcast.py` adds an entry to `gh-pages/appcast.xml` whose URL
+points at that Pages copy, with byte length, notes and signature. The branch is
+pushed as one fresh commit so old installers do not accumulate in its history;
+the appcast file itself keeps the version history. The Pages copy exists because
+the source repository may be private, which puts Release assets behind sign-in.
+The live feed URL is:
 
 [Resonant update feed](https://luminary-analytics.github.io/resonant-client/appcast.xml).
 
@@ -45,7 +50,8 @@ signature/length synchronized.
 
 A release is ready when the exact tagged commit passed its checks, the installer
 is uploaded to a published release, the Pages deployment succeeded, and the
-public feed serves the matching version, asset length, and signature. Neither
+public feed serves the matching version and signature with a Pages-hosted
+installer of the matching length that downloads without signing in. Neither
 pushing a tag nor committing an appcast proves the public feed is current.
 
 The pipeline currently publishes Windows installers. Release-note prose needs
@@ -57,7 +63,8 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 
 | File | Responsibility |
 | --- | --- |
-| `.github/workflows/release.yml` | Test, build, sign, release, update appcast |
+| `.github/workflows/release.yml` | Test, build, sign, release, publish Pages site |
+| `packaging/publish_pages.py` | Pages-hosted installers and download page |
 | `.github/workflows/tests.yml` | Source correctness checks |
 | `.github/workflows/build-check.yml` | Packaging checks without publication |
 | `scripts/build_clean.ps1` | Isolated Windows build and cleanup |

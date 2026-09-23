@@ -1,8 +1,32 @@
 # Contributor instructions
 
+**September 23, 2026: AI Employee work remains PAUSED by the user.**
+The [consolidated product checkpoint](D:/Repos/Lumina_DO/SelfOrganizingNN/product/AI_EMPLOYEES_CHECKPOINT_2026_09_23.md)
+records subsequent paid research, negative/control results and remaining work.
+No added SONN learning value or qualified employee/router release is established.
+The heartbeat remains paused. Documentation maintenance does not resume work,
+spending or grants, and changes no native implementation or installed bundle.
+The dated September 15/18 records below are historical.
+
 SONN Client (formerly Resonant) is an open-source, provider-adaptive coding agent and desktop app.
 Read this file first, then the documentation relevant to the change. This is the
 shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point here.
+
+## AI Employee integration boundaries
+
+The user paused AI Employee work to resume later. Read the
+[client handoff](docs/ai-employees-handoff.md) and its linked product PRD/handoff
+before continuing. The associated heartbeat is paused; documentation maintenance
+does not resume implementation or paid qualification. Existing task/advice/panel/
+worker changes are integrated source-only; the running bundle remains unchanged.
+Preserve the dirty checkout and historical source-integration receipts.
+
+The next outcome-integration seam must bind each native action to its originating
+model request. Final-node success, ordinary client-reported grades and private
+qualification results must not become blanket route-training credit. Workers keep
+one-node capabilities, file-only tools, isolated epochs and private journals; never
+give them owner credentials or independent-verifier authority. Automatic supervision,
+host enrollment and actual packaged/learned-benefit qualification remain open.
 
 ## Product and architecture
 
@@ -20,6 +44,14 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
 - SONN uses a user-configured project URL, `sonn-auto`, and standard Chat
   Completions. Preserve the complete URL path; never commit project credentials
   or infer vision/reasoning support from the routing alias. See [SONN](docs/sonn.md).
+- Preserve saved SONN conversation identity across ordinary turns and reloads.
+  Auxiliary title/compression requests and generated lifecycle/repair messages
+  must not become human learning input. Keep actual tool observations distinct.
+  Malformed-summary recovery requires a readable complete transcript archive and
+  factual retained evidence. Never replace a provider error with format recovery
+  or infer success from compaction.
+  Test graphical features through real browser events, alongside backend checks;
+  repeated edit reversals require diagnostic evidence, not weaker assertions.
 - ChatGPT/Codex and OpenRouter are separate connections. Codex owns its login
   credentials; OpenRouter uses a separately billed API key. Never expose secrets
   in UI responses, diagnostics, fixtures, or serialized `BackendSpec` values.
@@ -49,6 +81,10 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
   plus buttons use that project directly. Cancel preserves the active draft.
   After choosing a project, start a draft there; do not persist empty
   conversations until the first message. Drafts remain scoped by project/session.
+  Browser pages can share a server with the desktop wrapper. Choose native
+  dialogs from the requesting page's native bridge capability, not merely a
+  server-side window. Keep typed-path selection, cancellation and new-session
+  intent working without a native picker.
 - Live working status follows the active turn output; preserve manual scroll
   position when the user reads older messages. Next-prompt suggestions are
   transient, scoped to the conversation, and never replace typed drafts. Tab
@@ -86,8 +122,22 @@ shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point h
 - Never silently use a system/install directory as the project. Respect the
   sandbox and permission modes; writer worktrees must not reset, stash, or merge
   over a dirty user checkout. `working_subdir` may narrow, never broaden, scope.
+- Long foreground workers use `job_start`, `job_status`, and `job_cancel`.
+  Ordinary shell children are cleaned up at tool completion. Managed jobs are
+  project-owned, limited to20minutes, and stopped on client exit; explicit
+  application checkpoint recovery is required after restart. Do not detach a
+  launcher, silently replay jobs, or equate process exit with artifact quality.
+  A stopped model turn may leave an owned worker running. Inspect job state and
+  durable manifests before restart or claiming idle. Distinguish job-reported
+  duration from independent artifact checks and actual long-duration evidence.
+- The native chat loop owns one active workspace. Do not swap project/session
+  state during a run; Stop and persistence must use captured run ownership.
+  Keep main request allowances distinct from tool counts, auxiliary requests and
+  dollar budgets. Preserve partial checkpoints and interrupted request uncertainty.
 - Keep cancellation and user input live. Report completion only after work and
-  relevant checks finish. Named checks, screenshots, mock responses, and live
+  relevant checks finish. Use enforced execution limits for qualification; a
+  prompt-only tool-call limit is not enforcement. Preserve observed overruns and
+  operator stops even if the application tests pass. Named checks, screenshots, mock responses, and live
   model runs provide different evidence; describe which was actually exercised.
 - Project notes need provenance; stale source fingerprints exclude them from
   recall. Preserve bounded skill retrieval and explicit pin/suppression policy.
@@ -113,7 +163,9 @@ node --test tests/ui_recovery.test.cjs
 git diff --check
 ```
 
-Use `scripts/build_clean.ps1` for Windows release builds. Verify the packaged
+Use `scripts/build_clean.ps1` for Windows release builds. Never clean a running
+bundle; use a separate source copy for a candidate build while testing. The
+script's `-ValidateOnly` checks the running-target guard without cleanup. Verify the packaged
 executable, HTTP UI, WebSocket connection, startup logs, and changed packaged
 assets. Stop only fixture processes you started. See [RELEASING.md](RELEASING.md)
 for publishing and update-feed verification.
@@ -142,3 +194,12 @@ Start with [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), and the
 [desktop workflow](docs/desktop-workflow.md), [prompt architecture](docs/model-prompt-architecture.md),
 [durable runtime](docs/modern-agent-runtime.md), and
 [notes, previews, and acceptance checks](docs/priority-improvements.md).
+
+Windows native shell tools reject multiline commands because cmd.exe can silently
+truncate them. Use project script files and single-line invocations; never treat
+a zero exit code with missing expected evidence as a successful diagnostic.
+
+SONN's text-only transport must also handle tool-result screenshots; user-content
+conversion alone does not cover images appended by shared adapters. Preserve
+local artifacts and tool provenance, and never claim visual analysis from a
+text placeholder. Verify the next model call after a browser screenshot.

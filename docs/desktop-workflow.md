@@ -27,6 +27,15 @@ continues to start a session there directly. A new conversation appears beneath
 its chosen project after the first message; no empty session is saved by opening
 or cancelling the chooser.
 
+**Browser pages (Unreleased):** the app server accepts only pages opened from
+a one-time launch link. In the desktop window, **File > Open in Browser** (also
+in the command palette) opens the running app in your default browser.
+`resonant-gui --browser` prints a one-time link instead. A used link cannot open
+another browser, but the tab it opened keeps working through reloads and
+reconnects, as do new tabs of that browser at the same address, until SONN
+Client exits. After a restart, paste the new link into an existing tab. A page
+opened without a link explains how to get one. See [Unreleased](unreleased.md).
+
 **Find projects or sessions** matches project names, paths, and session titles.
 The scope selector offers **All sessions** and **Pinned**. Expanded projects
 initially show six matching sessions, plus the active conversation if needed.

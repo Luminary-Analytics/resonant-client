@@ -3,7 +3,7 @@ import threading
 import time
 from pathlib import Path
 
-from starlette.testclient import TestClient
+from tests.gui_access import LocalClient
 
 
 def test_project_navigation_does_not_wait_for_model_discovery(tmp_path, monkeypatch):
@@ -28,7 +28,7 @@ def test_project_navigation_does_not_wait_for_model_discovery(tmp_path, monkeypa
         state.available_backends = {}
 
     monkeypatch.setattr(state, "detect_backends", delayed_discovery)
-    with TestClient(gui.app) as client:
+    with LocalClient(gui.app) as client:
         try:
             with client.websocket_connect("/ws") as ws:
                 navigation = ws.receive_json()
@@ -83,7 +83,7 @@ def test_project_selection_is_visible_before_runtime_setup(tmp_path, monkeypatch
     monkeypatch.setattr(state, 'ensure_default_runtime_session', prepare)
     target = tmp_path / 'target'
     target.mkdir()
-    with TestClient(gui.app) as client:
+    with LocalClient(gui.app) as client:
         try:
             with client.websocket_connect('/ws') as ws:
                 ws.send_json({'command': 'set_project', 'path': str(target), 'project_switch_id': 'next'})

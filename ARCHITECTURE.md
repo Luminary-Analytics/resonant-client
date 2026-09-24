@@ -24,6 +24,7 @@ these services; it is not required for ordinary chat-based coding.
 | Model context | `engine/model_prompts.py`, `protocol.py`, `engine/compression.py` | Stable prompt, tool schemas/parsing, context compaction |
 | Agent loop | `engine/session.py`, `engine/tools.py`, `engine/sandbox.py` | Model/tool iteration, execution, permissions, cancellation |
 | GUI server | `gui/app.py`, `gui/ws_commands.py`, `gui/chat_loop.py` | Startup, state, commands, streaming and active-run lifecycle |
+| Local access | `gui/local_access.py`, `gui/static/local_access.js`, `gui/server.py` | Per-launch token, one-time launch links, Host/Origin checks |
 | Construction | `gui/runtime.py` | Serializable `BackendSpec`, shared session construction |
 | Saved work | `gui/sessions.py`, `gui/session_ledger.py`, `gui/ui_state.py` | Projects, session metadata, transcript ledger, composer drafts |
 | Configuration | `gui/settings.py`, `network_defaults.py`, `gui/project_instructions.py` | Settings, endpoint resolution, layered repository instructions |
@@ -56,6 +57,18 @@ Paths in the table are relative to `resonant_client/`.
    the user accepts it. See [0.18.2 notes](docs/v0.18.2-release-notes.md).
 7. Engine events travel through a thread-safe queue to WebSocket clients;
    classic JavaScript scripts and descriptor-based mixins render them.
+
+Loopback is not a trust boundary: other accounts, sandboxed processes, and web
+pages (WebSockets bypass CORS; DNS rebinding) can reach 127.0.0.1. The socket
+and `/api/ui-state` therefore require an exact `Host`, this server's `Origin`,
+and the per-process access token. They check these before accepting a WebSocket.
+Pages redeem a one-time code from the launch
+link's URL fragment at `/api/access` and keep the token in origin storage, which
+is port-isolated unlike cookies; they send it as a `sonn.access.<token>`
+WebSocket subprotocol or an `X-SONN-Access` header. Codes come from the
+launcher (desktop window, `--browser` link) or the desktop bridge's
+`open_in_browser`, never from a web request. The server never logs or prints
+the token.
 
 Preserve render signatures, scroll/focus restoration, session-scoped draft
 writes, and immediate catalog updates after session mutations. The compact

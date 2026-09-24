@@ -1,6 +1,6 @@
 """Model Context Protocol server integration.
 
-Resonant supports local stdio servers and streamable HTTP servers. Tools are
+Lumi supports local stdio servers and streamable HTTP servers. Tools are
 exposed to models with the stable prefix ``mcp_<server>_<tool>``.
 """
 
@@ -210,7 +210,7 @@ class MCPConnection:
                 {
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {},
-                    "clientInfo": {"name": "resonant", "version": __version__},
+                    "clientInfo": {"name": "lumi", "version": __version__},
                 },
             )
             if not init_result or "capabilities" not in init_result:

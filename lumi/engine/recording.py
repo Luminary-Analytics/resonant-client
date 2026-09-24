@@ -1,5 +1,5 @@
 """
-Screen recording for the Resonant Engine.
+Screen recording for the Lumi engine.
 
 Provides a `Recorder` class that captures the screen (or a region/monitor) to
 an MP4 file. Used by the `screen_record_start` / `screen_record_stop` tools.

@@ -1,5 +1,5 @@
 """
-Resonant smoke harness — codifies the iterative dev cycle that
+Lumi smoke harness — codifies the iterative dev cycle that
 v0.5.0–v0.5.2 was running by hand.
 
 The harness lets you reproduce, vary, and compare end-to-end autonomous

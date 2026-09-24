@@ -260,7 +260,7 @@ class TestAwaitUserDispatch:
             event for event in events
             if event.get("event") == "tool.result" and event.get("name") == "await_user"
         )
-        assert "question suppressed by Resonant policy" in result["output"]
+        assert "question suppressed by Lumi policy" in result["output"]
         assert result["metadata"]["suppressed"] is True
 
     def test_ordinary_question_after_implementation_is_suppressed(self, tmp_path):

@@ -1,5 +1,5 @@
 """
-Process management tools for the Resonant Engine.
+Process management tools for the Lumi engine.
 
 Provides:
 - list_processes(name_filter)  → compact text table for the agent

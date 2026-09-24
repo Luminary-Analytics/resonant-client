@@ -1,4 +1,4 @@
-"""Interactive-session wiring for Resonant's learned skill library."""
+"""Interactive-session wiring for Lumi's learned skill library."""
 
 from __future__ import annotations
 

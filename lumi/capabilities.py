@@ -1,4 +1,4 @@
-"""Capability profiles for models across Resonant providers.
+"""Capability profiles for models across Lumi providers.
 
 Profiles combine conservative family knowledge with runtime metadata from
 ``/api/show``. Product behavior should query these capabilities instead of

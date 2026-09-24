@@ -86,7 +86,7 @@ def test_editor_guidance_survives_cli_handoff(settings):
     prompt = _build_codex_prompt(user_msg="Build a level", conversation_history=[], cwd="fixture",
                                 instructions=f"--- CREATIVE EDITORS ---\n{guidance}\n--- END CREATIVE EDITORS ---")
     assert "Wait for compilation/domain reload" in prompt
-    assert "outside Resonant's path sandbox" in prompt
+    assert "outside Lumi's path sandbox" in prompt
 
 
 def test_setup_connect_probe_and_disable(settings, monkeypatch):

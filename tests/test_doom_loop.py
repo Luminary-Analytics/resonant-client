@@ -1,7 +1,7 @@
 """Regression tests for non-blocking repetition guidance.
 
 Long-running work must never fail because it performed many repository reads or
-revisited a tool signature. Resonant may steer a model once, but only explicit
+revisited a tool signature. Lumi may steer a model once, but only explicit
 budgets and user cancellation terminate the agent loop.
 """
 

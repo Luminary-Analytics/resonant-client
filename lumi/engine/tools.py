@@ -1,5 +1,5 @@
 """
-Tool definitions and execution for the Resonant Engine.
+Tool definitions and execution for the Lumi engine.
 
 Extracted from tui.py — this is the "hands" of the agent.
 Tools run server-side (same machine as the engine).
@@ -320,7 +320,7 @@ AGENT_TOOLS = [
             "name": "skill_view",
             "description": (
                 "Read the full procedure and verification notes for a relevant "
-                "Resonant skill surfaced in the prompt."
+                "Lumi skill surfaced in the prompt."
             ),
             "parameters": {
                 "type": "object",
@@ -341,7 +341,7 @@ AGENT_TOOLS = [
         "function": {
             "name": "search_tools",
             "description": (
-                "Discover specialized Resonant tools that are not in the current core tool set. "
+                "Discover specialized Lumi tools that are not in the current core tool set. "
                 "Search by capability such as browser interaction, desktop control, git writes, "
                 "process management, clipboard, recording, or Python/Node REPL. Call once with a "
                 "specific capability query, then use the returned tools directly."
@@ -394,7 +394,7 @@ AGENT_TOOLS = [
                 "asking where to put new files when conventions are unclear. "
                 "When meaningful answers can be enumerated, provide 2-5 options "
                 "and set recommended_option to the exact option you recommend "
-                "so Resonant renders its native recommended-answer prompt. "
+                "so Lumi renders its native recommended-answer prompt. "
                 "Do NOT use for things you can answer yourself by reading code "
                 "(file paths, API shapes, existing function names). The user's "
                 "answer is returned as the tool result."
@@ -436,13 +436,13 @@ AGENT_TOOLS = [
         }
     },
     # ── Browser tools (native Chrome DevTools Protocol) ──────────────
-    # Chrome runs under a dedicated Resonant profile and is launched on first
+    # Chrome runs under a dedicated Lumi profile and is launched on first
     # use; no MCP server and no Playwright involved.
     {
         "type": "function",
         "function": {
             "name": "browser_navigate",
-            "description": "Navigate Resonant's dedicated Chrome profile to a URL. Starts it automatically and identifies its tabs in a purple group named for this session. Use this to open web pages, follow links, or search the web.",
+            "description": "Navigate Lumi's dedicated Chrome profile to a URL. Starts it automatically and identifies its tabs in a purple group named for this session. Use this to open web pages, follow links, or search the web.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -1480,7 +1480,7 @@ def _computer_use_indicator_enabled(settings: object) -> bool:
     """Whether to show the on-screen indicator. Defaults to on.
 
     Deliberately opt-*out*. Someone watching their own mouse move needs to know
-    it is Resonant; making that visibility something you have to switch on
+    it is Lumi; making that visibility something you have to switch on
     inverts the default that matters.
     """
     if settings is None:
@@ -1537,7 +1537,7 @@ def execute_tool(
 
     # Give the dedicated Chrome profile a human session label before the
     # first browser call launches it. Subsequent calls also refresh the active
-    # tab's purple group when the user switches Resonant sessions.
+    # tab's purple group when the user switches Lumi sessions.
     if name.startswith("browser_"):
         try:
             from .browser import set_browser_session_name
@@ -1944,7 +1944,7 @@ def _run_subprocess_with_cancel(
 
 
 def _normalize_managed_bash_command(command: str) -> str:
-    """Keep background-launch syntax inside Resonant's managed lifecycle."""
+    """Keep background-launch syntax inside Lumi's managed lifecycle."""
     managed_cmd = str(command or "")
     if sys.platform == "win32":
         # Detached `start /B` children outlive cmd.exe and retain its pipes,

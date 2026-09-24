@@ -1,5 +1,5 @@
 """
-Diff Review Engine for Resonant.
+Diff Review Engine for Lumi.
 
 Generates rich diff previews for tool calls that modify files,
 enabling users to review changes before they're applied.

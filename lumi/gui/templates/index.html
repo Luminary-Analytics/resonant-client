@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SONN Client</title>
+    <title>Lumi</title>
     <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ asset_version }}">
     <!-- Everything below is served locally. Until v0.11.14 these five came
          from fonts.googleapis.com and cdn.jsdelivr.net, all in <head> and so
@@ -27,7 +27,7 @@
 
          Safe despite app.js loading at the end of <body> without `defer`:
          app.js only *registers* a DOMContentLoaded handler at top level and
-         constructs ResonantApp inside it, and deferred scripts are guaranteed
+         constructs LumiApp inside it, and deferred scripts are guaranteed
          to have executed before DOMContentLoaded fires. Keep it that way — a
          top-level `marked.`/`hljs.`/`DOMPurify.` call in app.js would run
          before these have loaded. -->
@@ -89,7 +89,7 @@
                 <div class="menubar-item" data-menu="go">
                     <span>Go</span>
                     <div class="menubar-dropdown">
-                        <div class="menubar-action" data-action="cmd-palette">Search SONN Client <span class="menubar-shortcut">Ctrl+K</span></div>
+                        <div class="menubar-action" data-action="cmd-palette">Search Lumi <span class="menubar-shortcut">Ctrl+K</span></div>
                         <div class="menubar-action" data-action="project-switch">Projects</div>
                         <div class="menubar-action" data-action="open-folder">Open Project&hellip;</div>
                     </div>
@@ -110,14 +110,14 @@
                         <div class="menubar-action" data-action="check-updates">Check for Updates&hellip;</div>
                         <div class="menubar-action" data-action="save-diagnostics">Save Diagnostics ZIP&hellip;</div>
                         <div class="menubar-sep"></div>
-                        <div class="menubar-action" data-action="about">About SONN Client</div>
+                        <div class="menubar-action" data-action="about">About Lumi</div>
                     </div>
                 </div>
             </nav>
         </div>
         <div class="titlebar-center">
             <button id="titlebar-command" class="titlebar-command" type="button" title="Command palette (Ctrl+K)" aria-label="Open command palette">
-                <span class="titlebar-command-text">Search SONN Client</span>
+                <span class="titlebar-command-text">Search Lumi</span>
                 <kbd>Ctrl+K</kbd>
             </button>
             <span id="header-project" class="titlebar-project" title="Current project" aria-label="Current project"></span>
@@ -184,7 +184,7 @@
     <div id="app">
         <!-- ═══ Sidebar — project switcher + search + sessions + footer nav ═══ -->
         <aside id="sidebar" role="navigation" aria-label="Projects and sessions">
-            <div class="sidebar-brand"><img src="/static/favicon.svg?v={{ asset_version }}" width="30" height="30" alt=""><span>SONN Client</span></div>
+            <div class="sidebar-brand"><img src="/static/favicon.svg?v={{ asset_version }}" width="30" height="30" alt=""><span>Lumi</span></div>
             <div class="sidebar-search">
                 <span aria-hidden="true">⌕</span>
                 <input type="search" placeholder="Find projects or sessions" aria-label="Find projects or sessions" id="search-input" />
@@ -261,17 +261,17 @@
                         <div class="welcome-content">
                             <div class="welcome-brand">
                                 <img class="welcome-icon" src="/static/favicon.svg?v={{ asset_version }}" width="64" height="64" alt="">
-                                <h1>SONN Client</h1>
+                                <h1>Lumi</h1>
                             </div>
                             <p class="welcome-subtitle">Local-first multimodal coding agent for open-source models</p>
 
                             <!-- Shown when the server refuses this page's access token
                                  (static/local_access.js); nothing else here works then. -->
                             <div id="access-required" class="access-required" role="alert" hidden>
-                                <p class="access-required-title">Open SONN Client from its launch link</p>
-                                <p>This page is not connected to the running SONN Client. Open it from the
-                                   SONN Client window with <strong>File &gt; Open in Browser</strong>, or use the
-                                   one-time link printed when SONN Client started in browser mode.</p>
+                                <p class="access-required-title">Open Lumi from its launch link</p>
+                                <p>This page is not connected to the running Lumi. Open it from the
+                                   Lumi window with <strong>File &gt; Open in Browser</strong>, or use the
+                                   one-time link printed when Lumi started in browser mode.</p>
                             </div>
 
                             <!-- Step 1: Workspace folder -->
@@ -310,7 +310,7 @@
                              Mission toggle (off-state) or Mission badge (on-state).
                              See docs/long-running-agents.md (Phase 1 UI). -->
                         <div id="chat-header" class="chat-header">
-                            <div id="chat-session-title" class="chat-session-title">SONN Client</div>
+                            <div id="chat-session-title" class="chat-session-title">Lumi</div>
                             <button type="button" id="employee-task-button" class="mission-toggle" hidden
                                     aria-haspopup="dialog">Employee task</button>
                             <!-- v0.3.3 — surface the active project path so misconfigurations
@@ -382,8 +382,8 @@
                             <div class="input-top">
                                 <div class="drop-hint">Drop image here</div>
                                 <textarea id="user-input"
-                                          placeholder="Message SONN Client"
-                                          aria-label="Message SONN Client"
+                                          placeholder="Message Lumi"
+                                          aria-label="Message Lumi"
                                           aria-describedby="composer-suggestion-hint"
                                           rows="2"
                                           autocomplete="off"
@@ -659,7 +659,7 @@
     </div>
 
     <script src="/static/plan_graph_view.js?v={{ asset_version }}"></script>
-    <!-- Mixed into ResonantApp.prototype at class-definition time, so these
+    <!-- Mixed into LumiApp.prototype at class-definition time, so these
          must load before app.js. app.js throws a named error if one is
          missing, rather than failing later at call time. -->
     <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>

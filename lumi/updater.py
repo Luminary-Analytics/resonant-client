@@ -48,12 +48,12 @@ EDDSA_PUBLIC_KEY = "HgNb0s7xavpa1bFyX/8B24AnuUdgekpvgO6HQU+zv8k="
 
 APPCAST_URL = "https://luminary-analytics.github.io/resonant-client/appcast.xml"
 COMPANY_NAME = "Luminary Analytics"
-APP_NAME = "SONN Client"
+APP_NAME = "Lumi"
 
 # WinSparkle stores user prefs (last-checked time, "skip this version", etc.)
 # under HKCU\Software\<COMPANY>\<APP>\WinSparkle. Explicit registry path keeps
 # it predictable across upgrades.
-REGISTRY_PATH = r"Software\Luminary Analytics\Resonant Client\WinSparkle"
+REGISTRY_PATH = r"Software\Luminary Analytics\Lumi\WinSparkle"
 
 # How often WinSparkle's background thread polls the appcast (in seconds).
 # 24h is the default and the right answer — silent, low-noise, fresh enough.

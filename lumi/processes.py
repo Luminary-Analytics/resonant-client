@@ -46,7 +46,7 @@ def close_windows_job(job):
 def background_process_kwargs(*, new_process_group: bool = False) -> dict[str, Any]:
     """Return platform kwargs for an invisible background child process.
 
-    Resonant is a GUI application. On Windows, console children must not flash
+    Lumi is a GUI application. On Windows, console children must not flash
     terminal windows while the agent works. A separate process group remains
     optional because the main tool runner uses it for tree-aware cancellation.
     """

@@ -1,5 +1,5 @@
 /**
- * SONN Client GUI — Frontend Application
+ * Lumi GUI — Frontend Application
  *
  * Handles WebSocket communication, event rendering, streaming markdown,
  * tool call display, and step collapsing.
@@ -119,7 +119,7 @@ function inferActionLabel(toolCounts) {
 
 
 // ═══════════════════════════════════════════════════════════════════
-//  SONN Client App Class
+//  Lumi App Class
 // ═══════════════════════════════════════════════════════════════════
 
 // Events whose handling is a single delegation. A table rather than 45 more
@@ -179,7 +179,7 @@ const LUMI_EVENT_DELEGATES = {
 };
 
 
-class ResonantApp {
+class LumiApp {
     constructor() {
         this.ws = null;
         this.reconnectAttempts = 0;
@@ -513,9 +513,9 @@ class ResonantApp {
         if (projectStep) projectStep.style.display = 'none';
         const banner = document.getElementById('runtime-banner');
         if (banner) {
-            banner.textContent = 'This page is not connected to the running SONN Client. '
-                + 'Open it from the SONN Client window with File > Open in Browser, or use '
-                + 'the one-time link printed when SONN Client started in browser mode.';
+            banner.textContent = 'This page is not connected to the running Lumi. '
+                + 'Open it from the Lumi window with File > Open in Browser, or use '
+                + 'the one-time link printed when Lumi started in browser mode.';
             banner.hidden = false;
         }
     }
@@ -575,7 +575,7 @@ class ResonantApp {
             if (!response.ok) throw new Error('Draft save failed');
         }).catch(() => {
             scope.savedText = undefined;
-            this.showToastMessage('Your draft could not be saved. Keep SONN Client open and try again.');
+            this.showToastMessage('Your draft could not be saved. Keep Lumi open and try again.');
         });
         return this._draftWrites;
     }
@@ -769,7 +769,7 @@ class ResonantApp {
         if (!plugins.length) {
             return this._statusRow({
                 dot: 'muted',
-                title: 'No SONN Client plugins installed',
+                title: 'No Lumi plugins installed',
                 detail: 'Plugin packages will appear here when they are enabled.',
                 meta: this._statusPill('empty'),
             });
@@ -782,7 +782,7 @@ class ResonantApp {
             const meta = plugin.version ? `${status} ${plugin.version}` : status;
             return this._statusRow({
                 dot: ok ? 'ok' : disabled ? 'muted' : 'warn',
-                title: plugin.name || plugin.id || 'SONN Client plugin',
+                title: plugin.name || plugin.id || 'Lumi plugin',
                 detail,
                 meta: this._statusPill(meta),
             });
@@ -1463,7 +1463,7 @@ class ResonantApp {
                 document.removeEventListener('mousemove', onMove);
                 document.removeEventListener('mouseup', onUp);
                 if (this.previewPanel.style.width) {
-                    localStorage.setItem('resonant:preview-width', this.previewPanel.style.width);
+                    localStorage.setItem('lumi:preview-width', this.previewPanel.style.width);
                 }
             };
 
@@ -1878,7 +1878,7 @@ class ResonantApp {
         }
 
         if (text.startsWith('/grill') || text.startsWith('/mission')) {
-            this.showStatusMessage('That workflow is hidden in the redesigned UI. Start a normal session and ask SONN Client directly.');
+            this.showStatusMessage('That workflow is hidden in the redesigned UI. Start a normal session and ask Lumi directly.');
             return;
         }
 
@@ -2524,7 +2524,7 @@ class ResonantApp {
         if (shellName || shellPath) {
             const path = (cwd || '').replace(/\\/g, '/');
             const parts = path.split('/').filter(Boolean);
-            const short = parts[parts.length - 1] || 'SONN Client';
+            const short = parts[parts.length - 1] || 'Lumi';
             if (shellName) shellName.textContent = short;
             if (shellPath) {
                 shellPath.textContent = path || 'Open a workspace';
@@ -2916,7 +2916,7 @@ class ResonantApp {
         this.userInput.disabled = false;
         this.userInput.placeholder = running
             ? 'Write a follow-up for the running agent...'
-            : 'Message SONN Client';
+            : 'Message Lumi';
         const sendLabel = running
             ? 'Queue follow-up (Enter) — Shift+Enter for newline'
             : 'Send message (Enter) — Shift+Enter for newline';
@@ -4455,7 +4455,7 @@ class ResonantApp {
     /** First-run onboarding card on the welcome screen. Dismissed permanently via localStorage. */
     _maybeRenderOnboardingCard() {
         try {
-            if (localStorage.getItem('resonant_onboarding_seen') === '1') return;
+            if (localStorage.getItem('lumi_onboarding_seen') === '1') return;
         } catch (_) { /* private mode, etc. — show once anyway */ }
 
         // Don't render twice
@@ -4482,7 +4482,7 @@ class ResonantApp {
             <p class="onboarding-cta">Pick a workspace folder below to get started.</p>
         `;
         card.querySelector('.onboarding-dismiss').addEventListener('click', () => {
-            try { localStorage.setItem('resonant_onboarding_seen', '1'); } catch (_) {}
+            try { localStorage.setItem('lumi_onboarding_seen', '1'); } catch (_) {}
             card.remove();
         });
         projectStep.parentNode.insertBefore(card, projectStep);
@@ -6004,25 +6004,25 @@ class ResonantApp {
         this.previewResize.style.display = 'block';
         this.previewToggle.classList.add('active');
         this.previewToggle.classList.remove('has-update');
-        const savedW = localStorage.getItem('resonant:preview-width');
+        const savedW = localStorage.getItem('lumi:preview-width');
         if (savedW) {
             this.previewPanel.style.width = savedW;
             this.previewPanel.style.minWidth = '320px';
         }
-        localStorage.setItem('resonant:preview-open', '1');
+        localStorage.setItem('lumi:preview-open', '1');
     }
 
     closePreviewPanel() {
         this.previewOpen = false;
         if (this.previewPanel.style.width) {
-            localStorage.setItem('resonant:preview-width', this.previewPanel.style.width);
+            localStorage.setItem('lumi:preview-width', this.previewPanel.style.width);
         }
         this.previewPanel.classList.remove('open');
         this.previewPanel.style.width = '';
         this.previewPanel.style.minWidth = '';
         this.previewResize.style.display = 'none';
         this.previewToggle.classList.remove('active');
-        localStorage.setItem('resonant:preview-open', '0');
+        localStorage.setItem('lumi:preview-open', '0');
     }
 
     /**
@@ -6513,7 +6513,7 @@ class ResonantApp {
                         this.showStatusMessage('Bundling diagnostics…');
                         this.send({ command: 'save_diagnostics' });
                         break;
-                    case 'about': this.showStatusMessage('SONN Client - local-first multimodal coding agent'); break;
+                    case 'about': this.showStatusMessage('Lumi - local-first multimodal coding agent'); break;
                 }
                 closeAppMenu();
             });
@@ -6534,7 +6534,7 @@ class ResonantApp {
             console.error('Open in browser failed:', err);
         }
         this.showStatusMessage(opened
-            ? 'Opened SONN Client in your browser.'
+            ? 'Opened Lumi in your browser.'
             : 'Could not open your default browser.');
     }
 
@@ -6543,23 +6543,23 @@ class ResonantApp {
     _applyAppearance(key, value) {
         if (key === 'theme') {
             document.documentElement.setAttribute('data-theme', value === 'light' ? 'light' : '');
-            localStorage.setItem('resonant:theme', value);
+            localStorage.setItem('lumi:theme', value);
         } else if (key === 'density') {
             document.documentElement.setAttribute('data-density', value === 'compact' ? 'compact' : '');
-            localStorage.setItem('resonant:density', value);
+            localStorage.setItem('lumi:density', value);
         } else if (key === 'font_size') {
             const px = parseFloat(value) || 13.5;
             document.documentElement.style.setProperty('--text-base', px + 'px');
-            localStorage.setItem('resonant:font-size', String(px));
+            localStorage.setItem('lumi:font-size', String(px));
         }
     }
 
     _restoreAppearance() {
-        const theme = localStorage.getItem('resonant:theme');
+        const theme = localStorage.getItem('lumi:theme');
         if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
-        const density = localStorage.getItem('resonant:density');
+        const density = localStorage.getItem('lumi:density');
         if (density === 'compact') document.documentElement.setAttribute('data-density', 'compact');
-        const fontSize = localStorage.getItem('resonant:font-size');
+        const fontSize = localStorage.getItem('lumi:font-size');
         if (fontSize) document.documentElement.style.setProperty('--text-base', fontSize + 'px');
     }
 
@@ -7065,7 +7065,7 @@ class ResonantApp {
     _clearPromptSuggestion() {
         this._promptSuggestion = null;
         if (this.userInput) this.userInput.placeholder = this.isRunning
-            ? 'Write a follow-up for the running agent...' : 'Message SONN Client';
+            ? 'Write a follow-up for the running agent...' : 'Message Lumi';
         if (typeof document !== 'undefined') {
             const hint = document.getElementById('composer-suggestion-hint');
             if (hint) hint.hidden = true;
@@ -8649,7 +8649,7 @@ class ResonantApp {
                 body: String(body || '').slice(0, 240),
                 // A tag collapses repeats: a run that parks twice replaces its
                 // own notification instead of stacking.
-                tag: tag || 'resonant-run',
+                tag: tag || 'lumi-run',
                 icon: '/static/resonant.png',
             });
             note.onclick = () => { window.focus(); note.close(); };
@@ -10056,7 +10056,7 @@ class ResonantApp {
     _sessionIndicator(session) {
         const explicit = this._sessionActivity.get(session.id);
         if (explicit === 'needs-input') return { state: explicit, label: 'Needs your input' };
-        if (explicit === 'working') return { state: explicit, label: 'SONN Client is working' };
+        if (explicit === 'working') return { state: explicit, label: 'Lumi is working' };
 
         const phase = String(session?.mission_state?.phase || '').toLowerCase();
         const isOrphan = (this._autonomousOrphans || []).some((item) =>
@@ -10064,7 +10064,7 @@ class ResonantApp {
         );
         if (isOrphan) return { state: 'needs-input', label: 'Needs your attention' };
         if (['planning_dispatched', 'executing', 'reviewing', 'autonomous_running'].includes(phase)) {
-            return { state: 'working', label: 'SONN Client is working' };
+            return { state: 'working', label: 'Lumi is working' };
         }
         return { state: 'idle', label: 'Idle' };
     }
@@ -10084,7 +10084,7 @@ class ResonantApp {
         const marker = row?.querySelector('.agent-row-status');
         if (!marker) return;
         const labels = {
-            working: 'SONN Client is working',
+            working: 'Lumi is working',
             'needs-input': 'Needs your input',
             idle: 'Idle',
         };
@@ -10712,7 +10712,7 @@ class ResonantApp {
         const previews = kind === 'previews';
         dialog.innerHTML = `<header><h2 id="project-resources-title">${previews ? 'Project previews' : 'Project notes'}</h2><button data-close>Close</button></header>`;
         if (previews) {
-            dialog.innerHTML += '<p>Previews stay available across tasks and project switches until stopped or SONN Client closes.</p>';
+            dialog.innerHTML += '<p>Previews stay available across tasks and project switches until stopped or Lumi closes.</p>';
             if (!this._managedPreviews?.length) dialog.innerHTML += '<p>No previews started for this project.</p>';
             for (const p of this._managedPreviews || []) {
                 const section = document.createElement('section');
@@ -10723,7 +10723,7 @@ class ResonantApp {
             const refresh = document.createElement('button'); refresh.textContent = 'Refresh status';
             refresh.onclick = () => this.send({command: 'preview_list'}); dialog.appendChild(refresh);
         } else {
-            dialog.innerHTML += '<p>Keep build commands, project conventions, and recurring fixes here. SONN Client recalls at most six relevant notes. Changed source files exclude a note until you review it; an unchanged file does not prove a command succeeded.</p>';
+            dialog.innerHTML += '<p>Keep build commands, project conventions, and recurring fixes here. Lumi recalls at most six relevant notes. Changed source files exclude a note until you review it; an unchanged file does not prove a command succeeded.</p>';
             for (const note of this._projectNotes || []) {
                 const section = document.createElement('section');
                 section.innerHTML = `<p>${esc(note.text)}</p><small>${esc(note.kind)} · ${esc(note.confidence)} · ${note.stale ? 'Needs review: source changed' : note.sources?.length ? 'Source files unchanged' : 'No source files tracked'} · ${esc(note.source)}</small><p><button data-edit>Edit</button> <button data-delete>Delete</button></p>`;
@@ -10972,7 +10972,7 @@ class ResonantApp {
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Fold a mixin class's methods onto ResonantApp.prototype.
+ * Fold a mixin class's methods onto LumiApp.prototype.
  *
  * `Object.assign` is the obvious choice and the wrong one: class methods are
  * non-enumerable, so it would copy nothing and every mixed-in call would fail
@@ -10990,16 +10990,16 @@ function applyMixin(target, MixinClass, label) {
     delete descriptors.constructor;
     for (const name of Object.keys(descriptors)) {
         if (Object.prototype.hasOwnProperty.call(target, name)) {
-            throw new Error(`Mixin "${label}" would overwrite ResonantApp.${name}`);
+            throw new Error(`Mixin "${label}" would overwrite LumiApp.${name}`);
         }
     }
     Object.defineProperties(target, descriptors);
 }
 
-applyMixin(ResonantApp.prototype, window.ResonantAutonomousView, 'autonomous-view');
-applyMixin(ResonantApp.prototype, window.ResonantSettingsView, 'settings-view');
-applyMixin(ResonantApp.prototype, window.ResonantRunCards, 'run-cards');
-applyMixin(ResonantApp.prototype, window.ResonantEmployeeTasks, 'employee-tasks');
+applyMixin(LumiApp.prototype, window.LumiAutonomousView, 'autonomous-view');
+applyMixin(LumiApp.prototype, window.LumiSettingsView, 'settings-view');
+applyMixin(LumiApp.prototype, window.LumiRunCards, 'run-cards');
+applyMixin(LumiApp.prototype, window.LumiEmployeeTasks, 'employee-tasks');
 
 
 // ═══════════════════════════════════════════════════════════════════
@@ -11007,5 +11007,5 @@ applyMixin(ResonantApp.prototype, window.ResonantEmployeeTasks, 'employee-tasks'
 // ═══════════════════════════════════════════════════════════════════
 
 document.addEventListener('DOMContentLoaded', () => {
-    window.app = new ResonantApp();
+    window.app = new LumiApp();
 });

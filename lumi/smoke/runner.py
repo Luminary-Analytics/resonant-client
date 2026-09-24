@@ -409,7 +409,7 @@ def run_smoke(
 
     if project_path is None:
         project_path = make_fresh_project(
-            prefix=f"resonant-{spec.name}-{model_label}-",
+            prefix=f"lumi-{spec.name}-{model_label}-",
             # v0.5.8a4 — seed pre-existing files for refactor-style
             # specs (refactor-py); empty for greenfield specs.
             seed_files=dict(spec.seed_files) if spec.seed_files else None,

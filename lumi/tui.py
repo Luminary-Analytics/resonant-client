@@ -1,5 +1,5 @@
 """
-Resonant Code Agent — TUI Client
+Lumi Code Agent — TUI Client
 
 A thin terminal interface that renders EngineEvents.
 Can run in two modes:
@@ -936,7 +936,7 @@ def print_banner(backend=None, health_info: dict = None):
     }
     tagline = taglines.get(backend_name, "agentic coding")
 
-    console.print(f"  [{C_BRAND}]{G_SPLIT}[/{C_BRAND}] [{C_BRAND} bold]Resonant[/{C_BRAND} bold]  [{C_DIM}]{tagline}[/{C_DIM}]")
+    console.print(f"  [{C_BRAND}]{G_SPLIT}[/{C_BRAND}] [{C_BRAND} bold]Lumi[/{C_BRAND} bold]  [{C_DIM}]{tagline}[/{C_DIM}]")
     console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
 
     # Status rows — clean key-value with colored dots
@@ -950,7 +950,7 @@ def print_banner(backend=None, health_info: dict = None):
         if model:
             console.print(f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_TEXT}]{model}[/{C_TEXT}]", end="")
 
-        # Resonant-specific status
+        # Lumi-specific status
         if backend_name == "resonant":
             patterns = health_info.get('memory_patterns', 0)
             energy = health_info.get('energy', 0)
@@ -1237,7 +1237,7 @@ def _history_path() -> Path:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Resonant Code Agent — Agentic Coding TUI",
+        description="Lumi Code Agent — Agentic Coding TUI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -1595,7 +1595,7 @@ Examples:
                     backend_desc += f" · {session.backend.model}"
 
                 console.print()
-                console.print(f"  [{C_BRAND}]{G_SPLIT}[/{C_BRAND}] [{C_BRAND} bold]Resonant Code Agent[/{C_BRAND} bold]  [{C_DIM}]{backend_desc}[/{C_DIM}]")
+                console.print(f"  [{C_BRAND}]{G_SPLIT}[/{C_BRAND}] [{C_BRAND} bold]Lumi Code Agent[/{C_BRAND} bold]  [{C_DIM}]{backend_desc}[/{C_DIM}]")
                 console.print(f"  [{C_DIMMER}]{G_DASH * 55}[/{C_DIMMER}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Commands[/{C_BRAND2}]")
@@ -1603,7 +1603,7 @@ Examples:
                 console.print(f"    [{C_TEXT}]/plan[/{C_TEXT}]             [{C_MUTED}]toggle plan mode (think → approve → act)[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/autoplan[/{C_TEXT}]         [{C_MUTED}]toggle auto-plan (classify complexity first)[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/model[/{C_TEXT}]            [{C_MUTED}]switch model[/{C_MUTED}]")
-                console.print(f"    [{C_TEXT}]/backend[/{C_TEXT}]          [{C_MUTED}]switch backend (Ollama, Claude, OpenAI, Resonant)[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]/backend[/{C_TEXT}]          [{C_MUTED}]switch backend (Ollama, Claude, OpenAI, Lumi)[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/cd[/{C_TEXT}] <dir>         [{C_MUTED}]change directory[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/clear[/{C_TEXT}]            [{C_MUTED}]reset conversation[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/status[/{C_TEXT}]           [{C_MUTED}]backend status[/{C_MUTED}]")

@@ -1,5 +1,5 @@
 """
-Persistent settings manager for Resonant.
+Persistent settings manager for Lumi.
 Reads/writes ~/.lumi/settings.json with section-based access.
 """
 
@@ -34,7 +34,7 @@ DEFAULTS = {
         "autonomy_external_paths": [],   # empty → use the defaults from autonomy.py
         # On-screen glow and banner while the agent drives the mouse and
         # keyboard. Opt-*out*, deliberately: someone watching their own cursor
-        # move needs to know it is Resonant, and making that visibility
+        # move needs to know it is Lumi, and making that visibility
         # something you must switch on inverts the default that matters.
         # Windows only; a no-op elsewhere.
         "computer_use_indicator": True,

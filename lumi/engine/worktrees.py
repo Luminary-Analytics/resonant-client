@@ -57,7 +57,7 @@ class WorktreeManager:
             raise WorktreeError("Worktree isolation requires a git repository")
         safe_id = re.sub(r"[^A-Za-z0-9._-]+", "-", agent_id).strip(".-") or "agent"
         digest = hashlib.sha256(f"{agent_id}:{time.time_ns()}".encode()).hexdigest()[:8]
-        branch = f"resonant/agent/{safe_id}-{digest}"
+        branch = f"lumi/agent/{safe_id}-{digest}"
         destination = (self.root / f"{safe_id}-{digest}").resolve()
         self._assert_under_root(destination)
         result = self._git("worktree", "add", "-b", branch, str(destination), base_ref, check=False)
@@ -87,11 +87,11 @@ class WorktreeManager:
             return lease
         self._git_at(worktree, "add", "-A", "--", ".")
         env = os.environ.copy()
-        env.setdefault("GIT_AUTHOR_NAME", "Resonant Agent")
+        env.setdefault("GIT_AUTHOR_NAME", "Lumi Agent")
         env.setdefault("GIT_AUTHOR_EMAIL", "agent@resonant.local")
         env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
         env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
-        commit_message = message or f"Resonant agent {lease.agent_id} handoff"
+        commit_message = message or f"Lumi agent {lease.agent_id} handoff"
         self._git_at(worktree, "commit", "-m", commit_message, env=env)
         lease.commit = self._git_at(worktree, "rev-parse", "HEAD").stdout.strip()
         lease.status = "ready"

@@ -1,5 +1,5 @@
 """
-Resonant GUI — Session & Project Manager
+Lumi GUI — Session & Project Manager
 
 Manages persistent agentic-coding sessions organized by project folder.
 Sessions are stored as JSON files under ~/.lumi/projects/<hash>/sessions/.
@@ -58,6 +58,14 @@ def is_valid_session_id(value: str) -> bool:
     """Whether a session id is safe to use as one storage filename stem."""
     return bool(_SESSION_ID_PATTERN.fullmatch(str(value or "")))
 
+def _documents_projects_dir() -> Path:
+    """`~/Documents/Lumi Projects`, or the pre-rebrand `Resonant Projects` if it exists."""
+    documents = Path.home() / "Documents"
+    legacy = documents / "Resonant Projects"
+    current = documents / "Lumi Projects"
+    return legacy if legacy.is_dir() and not current.exists() else current
+
+
 def _state_dir() -> Path:
     """Resolve the state directory at call time, never at import time.
 
@@ -89,7 +97,7 @@ def _is_pytest_temp_path(path: str) -> bool:
 # shortcut launches resonant.exe, Windows sets cwd to the install
 # location; ProjectManager() used to take that as the project path,
 # producing permission-denied storms when the agent tried to write to
-# `C:\Program Files\Resonant`. We detect the install/system
+# `C:\Program Files\Lumi`. We detect the install/system
 # locations and fall back to a writable workspace instead.
 _UNSAFE_CWD_PREFIXES_WIN = (
     "c:\\program files",
@@ -121,7 +129,7 @@ def _is_unsafe_cwd(path: str) -> bool:
 
 
 def _looks_like_resonant_source(path: str) -> bool:
-    """True when a source/dev launch cwd points at Resonant itself.
+    """True when a source/dev launch cwd points at Lumi itself.
 
     The desktop app's project should be the user's workspace, not the
     application repo just because the dev server was launched from there.
@@ -191,7 +199,7 @@ def _playground_project_path() -> str:
         if usable(candidate):
             return os.path.normpath(str(candidate))
 
-    docs = Path.home() / "Documents" / "Resonant Projects"
+    docs = _documents_projects_dir()
     try:
         docs.mkdir(parents=True, exist_ok=True)
         return str(docs)
@@ -213,7 +221,7 @@ def _safe_default_project_path() -> str:
     Resolution order:
       1. Most-recent project from `~/.lumi/recent_projects.json`
          (filtered to existing dirs).
-      2. `~/Documents/Resonant Projects` — created if missing.
+      2. `~/Documents/Lumi Projects` — created if missing.
       3. `~/.lumi/workspace` — last-resort fallback inside our own
          data dir, always writable.
 
@@ -224,8 +232,8 @@ def _safe_default_project_path() -> str:
     root" workflow keeps working.
     """
     # Honor cwd when it's user-writable (preserves dev workflow). The
-    # Resonant source repo is excluded HERE only — a dev-server launch
-    # from the repo shouldn't make Resonant its own project, but a repo
+    # Lumi source repo is excluded HERE only — a dev-server launch
+    # from the repo shouldn't make Lumi its own project, but a repo
     # the user explicitly opened (and that recents remembers) must still
     # restore on the next launch.
     cwd = os.getcwd()
@@ -258,7 +266,7 @@ def _safe_default_project_path() -> str:
                 # project hash pytest deletes a few runs later.
                 if _is_pytest_temp_path(path):
                     continue
-                # When cwd was vetoed as the Resonant source repo (a dev
+                # When cwd was vetoed as the Lumi source repo (a dev
                 # launch from the checkout), don't let the recents loop
                 # hand the same checkout straight back. Normal desktop
                 # launches (cwd = install dir) restore it fine.
@@ -269,8 +277,8 @@ def _safe_default_project_path() -> str:
     except Exception:
         pass
 
-    # Fresh user — try ~/Documents/Resonant Projects.
-    docs = Path.home() / "Documents" / "Resonant Projects"
+    # Fresh user — try ~/Documents/Lumi Projects.
+    docs = _documents_projects_dir()
     try:
         docs.mkdir(parents=True, exist_ok=True)
         return str(docs)
@@ -753,7 +761,7 @@ class ProjectManager:
     def __init__(self, project_path: str = ""):
         # v0.3.3 — never silently take os.getcwd() when cwd is an OS or
         # app-install location (Bug #25). _safe_default_project_path
-        # falls back through recent-projects → ~/Documents/Resonant
+        # falls back through recent-projects → ~/Documents/Lumi
         # Projects → ~/.lumi/workspace.
         self.project_path = project_path or _safe_default_project_path()
         self.current_session: Optional[SessionRecord] = None

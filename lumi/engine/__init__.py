@@ -1,5 +1,5 @@
 """
-Resonant Engine — the server-side brain.
+Lumi engine — the server-side brain.
 
 Manages backends, tools, sessions, and the agentic loop.
 Can run embedded (in-process with TUI) or as a standalone server.

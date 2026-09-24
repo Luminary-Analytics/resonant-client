@@ -1,5 +1,5 @@
 """
-Engram Memory Integration for Resonant Engine.
+Engram Memory Integration for the Lumi engine.
 
 Connects to the Engram memory system for persistent, context-aware recall
 across sessions. Uses MCP transport or direct HTTP to the engram server.

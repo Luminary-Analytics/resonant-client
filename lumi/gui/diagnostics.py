@@ -101,10 +101,10 @@ def _read_redacted(path: Path, *, max_bytes: int = 2 * 1024 * 1024) -> bytes:
 #
 # A successful bundle looks like:
 #
-#   resonant-diagnostics-2026-05-01T223045.zip
+#   lumi-diagnostics-2026-05-01T223045.zip
 #     ├── meta.txt                            ← version, platform, settings (redacted)
 #     ├── logs/
-#     │   ├── resonant-startup.log
+#     │   ├── lumi-startup.log
 #     │   └── 2026-05-01/<session_id>.jsonl   ← per-session event logs
 #     └── intents/
 #         └── <project_hash>/<intent_id>/audit.jsonl
@@ -124,12 +124,12 @@ LATEST_N_ITERS_PER_INTENT = 30
 MAX_BYTES_PER_FILE = 2 * 1024 * 1024  # 2 MB head-truncated
 
 
-def _meta_text(version: str, resonant_dir: Path) -> str:
+def _meta_text(version: str, state_dir: Path) -> str:
     """Tiny text manifest at the top of the bundle so a triager has
     everything they need without unzipping (version, platform, env).
     """
     settings_blob = ""
-    settings_path = resonant_dir / "settings.json"
+    settings_path = state_dir / "settings.json"
     if settings_path.is_file():
         try:
             settings_blob = settings_path.read_text(encoding="utf-8", errors="replace")
@@ -138,7 +138,7 @@ def _meta_text(version: str, resonant_dir: Path) -> str:
             settings_blob = "(settings.json unreadable)"
 
     lines = [
-        "# SONN Client diagnostics",
+        "# Lumi diagnostics",
         "",
         f"version: {version}",
         f"python: {sys.version.split()[0]}",
@@ -280,7 +280,7 @@ def _build_mission_summary(
 
 
 def build_diagnostics_zip(
-    resonant_dir: Path,
+    state_dir: Path,
     output_dir: Path,
     *,
     version: str = "unknown",
@@ -292,27 +292,29 @@ def build_diagnostics_zip(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     timestamp = time.strftime("%Y-%m-%dT%H%M%S", time.gmtime())
-    zip_path = output_dir / f"resonant-diagnostics-{timestamp}.zip"
+    zip_path = output_dir / f"lumi-diagnostics-{timestamp}.zip"
 
-    logs_dir = resonant_dir / "logs"
-    projects_dir = resonant_dir / "projects"
+    logs_dir = state_dir / "logs"
+    projects_dir = state_dir / "projects"
 
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         # Top-level manifest.
-        zf.writestr("meta.txt", _meta_text(version, resonant_dir))
+        zf.writestr("meta.txt", _meta_text(version, state_dir))
 
-        # Startup log (rotates as the user runs; capture the latest).
-        startup_log = logs_dir / "resonant-startup.log"
-        if startup_log.is_file():
-            zf.writestr("logs/resonant-startup.log",
-                       _read_redacted(startup_log, max_bytes=MAX_BYTES_PER_FILE))
+        # Startup logs (rotate as the user runs; capture the latest). A
+        # migrated install also has the pre-rebrand resonant-startup.log.
+        for startup_name in ("lumi-startup.log", "resonant-startup.log"):
+            startup_log = logs_dir / startup_name
+            if startup_log.is_file():
+                zf.writestr(f"logs/{startup_name}",
+                           _read_redacted(startup_log, max_bytes=MAX_BYTES_PER_FILE))
 
         # v0.5.9a5 — costs.json. Just dates + numbers (no secrets),
         # but still pass through redact() as defense-in-depth in case
         # a future schema adds string fields. Tells the triager
         # whether the user was hitting their daily budget alert when
         # the issue happened.
-        costs_path = resonant_dir / "costs.json"
+        costs_path = state_dir / "costs.json"
         if costs_path.is_file():
             try:
                 zf.writestr(

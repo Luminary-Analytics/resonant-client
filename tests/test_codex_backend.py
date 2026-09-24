@@ -70,7 +70,7 @@ def test_codex_prompt_uses_native_tools_not_resonant_xml():
         cwd="D:/Repo",
     )
 
-    assert "Do not emit Resonant <tool_call> XML" in prompt
+    assert "Do not emit Lumi <tool_call> XML" in prompt
     assert "Keep it tight." in prompt
     assert "prior" in prompt
     assert "fix it" in prompt

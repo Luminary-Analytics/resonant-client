@@ -1,5 +1,5 @@
 """
-Hook System for Resonant Engine.
+Hook System for the Lumi engine.
 
 Hooks allow users to run shell commands in response to engine events.
 Similar to Claude Code's hook system:

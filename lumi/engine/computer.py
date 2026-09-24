@@ -174,9 +174,9 @@ def _take_screenshot(region: dict = None) -> tuple[bytes, int, int]:
 
     Returns (png_bytes, width, height).
 
-    The "Resonant is using the computer" halo is taken down for the duration of
+    The "Lumi is using the computer" halo is taken down for the duration of
     the grab. The agent decides where to click from these images, so leaving the
-    overlay in them would feed Resonant's own border and banner back to the
+    overlay in them would feed Lumi's own border and banner back to the
     model as part of the application it is looking at — and the banner sits
     exactly where a title bar or toolbar usually is.
     """

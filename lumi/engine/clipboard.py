@@ -173,7 +173,7 @@ def _read_windows() -> tuple[Optional[bytes], str]:
     Uses System.Windows.Forms.Clipboard to extract the image
     and save as PNG to a temp file.
     """
-    tmp = os.path.join(tempfile.gettempdir(), "resonant_clipboard.png")
+    tmp = os.path.join(tempfile.gettempdir(), "lumi_clipboard.png")
 
     ps_script = f"""
 Add-Type -AssemblyName System.Windows.Forms
@@ -208,7 +208,7 @@ def _read_macos() -> tuple[Optional[bytes], str]:
 
     Extracts PNGf class from clipboard and writes to temp file.
     """
-    tmp = os.path.join(tempfile.gettempdir(), "resonant_clipboard.png")
+    tmp = os.path.join(tempfile.gettempdir(), "lumi_clipboard.png")
 
     applescript = f'''
         try

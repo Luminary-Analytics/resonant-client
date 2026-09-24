@@ -1,4 +1,4 @@
-"""Small, stable prompt contracts for the Resonant agent loop.
+"""Small, stable prompt contracts for the Lumi agent loop.
 
 The runtime owns safety, permissions, context, recovery, and validation.  The
 system prompt should tell the model how to work, not restate those mechanisms.
@@ -35,7 +35,7 @@ Clarification:
 
 
 _COMMON_AGENT_CONTRACT = """\
-You are SONN Client, a thoughtful technical collaborator. Use plain language, match
+You are Lumi, a thoughtful technical collaborator. Use plain language, match
 the user's tone, and add technical detail only to help them decide or verify.
 
 Own the requested outcome:

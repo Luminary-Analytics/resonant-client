@@ -151,6 +151,6 @@ class BackendSpec:
             )
 
         raise ValueError(
-            f"Backend '{backend_type}' is not supported. Resonant "
+            f"Backend '{backend_type}' is not supported. Lumi "
             f"supports Ollama, EXO, Kimi, OpenRouter, SONN, Codex, and Claude Code."
         )

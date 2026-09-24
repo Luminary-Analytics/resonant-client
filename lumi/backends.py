@@ -1,5 +1,5 @@
 """
-Backend abstraction for Resonant.
+Backend abstraction for Lumi.
 
 Ollama is the local-first default, EXO provides distributed local inference,
 Kimi connects directly to Moonshot's OpenAI-compatible API, and Codex delegates
@@ -459,7 +459,7 @@ class OllamaBackend:
     Detection runs once per model and is cached for the session.
     """
 
-    # Start with Resonant's small coding core and let search_tools add uncommon
+    # Start with Lumi's small coding core and let search_tools add uncommon
     # capabilities to subsequent requests. This avoids sending dozens of UI,
     # process, REPL, and git schemas through every local-model prefill.
     supports_dynamic_tool_catalog = True
@@ -1872,8 +1872,8 @@ def _build_codex_prompt(
     history = _format_codex_history(history_items)
 
     parts = [
-        "You are being invoked by Resonant through Codex CLI.",
-        "Use Codex's native tools and normal CLI behavior. Do not emit Resonant <tool_call> XML.",
+        "You are being invoked by Lumi through Codex CLI.",
+        "Use Codex's native tools and normal CLI behavior. Do not emit Lumi <tool_call> XML.",
         f"Working directory: {cwd}",
     ]
     if is_plan:
@@ -1888,14 +1888,14 @@ def _build_codex_prompt(
 
 _CODEX_PERMISSION_PROFILES = {
     # ``codex exec`` cannot relay an interactive approval request back through
-    # Resonant yet. Keep Ask and Plan genuinely non-mutating instead of letting
+    # Lumi yet. Keep Ask and Plan genuinely non-mutating instead of letting
     # a subprocess silently approve its own changes.
     "ask": ("read-only", "never"),
     "plan": ("read-only", "never"),
     # Auto-edit lets Codex use its patching tools while untrusted shell actions
     # are refused by the non-interactive CLI.
     "auto-edit": ("workspace-write", "untrusted"),
-    # Resonant's Full-auto remains sandboxed to the selected project.
+    # Lumi's Full-auto remains sandboxed to the selected project.
     "bypass": ("workspace-write", "never"),
 }
 
@@ -2830,7 +2830,7 @@ class ExoBackend(KimiBackend):
             structured_output=None,
             reasoning_levels=(),
             # EXO/MLX reports exact prefix-cache hits in OpenAI usage metadata.
-            # Resonant keeps its system/tool prefix stable to take advantage.
+            # Lumi keeps its system/tool prefix stable to take advantage.
             prompt_caching=True,
             native_continuation=True,
             max_safe_concurrency=4,
@@ -3198,7 +3198,7 @@ class ExoBackend(KimiBackend):
     def _timeout_error_message(self) -> str:
         seconds = int(self._stream_idle_timeout)
         return (
-            f"EXO stopped responding for {seconds} seconds, so Resonant ended "
+            f"EXO stopped responding for {seconds} seconds, so Lumi ended "
             "the stalled generation. Retry the turn or check the EXO cluster."
         )
 
@@ -3391,7 +3391,7 @@ class CodexCliBackend:
         self.configure_permission_mode(permission_mode or "bypass")
 
     def configure_permission_mode(self, mode: str) -> None:
-        """Apply Resonant's permission mode to the non-interactive CLI run."""
+        """Apply Lumi's permission mode to the non-interactive CLI run."""
         normalized = mode if mode in _CODEX_PERMISSION_PROFILES else "bypass"
         sandbox, approval = _CODEX_PERMISSION_PROFILES[normalized]
         self.permission_mode = normalized
@@ -3613,9 +3613,9 @@ _CLAUDE_CODE_MODEL_LABELS = {
     "haiku": "Claude Haiku (latest)",
 }
 
-# Map Resonant permission modes onto Claude Code's --permission-mode flag.
+# Map Lumi permission modes onto Claude Code's --permission-mode flag.
 # Like Codex, the non-interactive print mode cannot relay approval requests
-# back through Resonant, so Ask and Plan stay genuinely non-mutating.
+# back through Lumi, so Ask and Plan stay genuinely non-mutating.
 _CLAUDE_CODE_PERMISSION_PROFILES = {
     "ask": "plan",
     "plan": "plan",
@@ -3625,7 +3625,7 @@ _CLAUDE_CODE_PERMISSION_PROFILES = {
 
 
 def claude_code_cli_models() -> list[str]:
-    """Return the Claude Code model list Resonant should expose.
+    """Return the Claude Code model list Lumi should expose.
 
     Claude Code accepts model aliases (opus/sonnet/haiku) as well as full
     model names. LUMI_CLAUDE_MODELS overrides for early rollouts.
@@ -3676,7 +3676,7 @@ def claude_code_credentials_present() -> bool:
 class ClaudeCodeCliBackend:
     """Subscription-backed Claude Code CLI execution.
 
-    Mirrors CodexCliBackend: Resonant delegates the whole turn to the
+    Mirrors CodexCliBackend: Lumi delegates the whole turn to the
     installed `claude` CLI in non-interactive print mode. The CLI runs its
     own tools (handles_tools=True), authenticated by whatever login the
     user's Claude Code already has — no separate API key needed.
@@ -3707,7 +3707,7 @@ class ClaudeCodeCliBackend:
         self.configure_permission_mode(permission_mode or "bypass")
 
     def configure_permission_mode(self, mode: str) -> None:
-        """Apply Resonant's permission mode to the non-interactive CLI run."""
+        """Apply Lumi's permission mode to the non-interactive CLI run."""
         normalized = mode if mode in _CLAUDE_CODE_PERMISSION_PROFILES else "bypass"
         self.permission_mode = normalized
         self.cli_permission_mode = _CLAUDE_CODE_PERMISSION_PROFILES[normalized]
@@ -3964,7 +3964,7 @@ def create_backend(
         )
     if backend_type != "ollama":
         raise ValueError(
-            f"Unsupported backend {backend_type!r}. Resonant supports "
+            f"Unsupported backend {backend_type!r}. Lumi supports "
             f"Ollama, EXO, Kimi, OpenRouter, SONN, Codex, and Claude Code."
         )
     if not model:

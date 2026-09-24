@@ -176,7 +176,7 @@ class HarnessWorkspace:
             self.write_evaluator_report(EvaluatorReport())
         if not self.handoff_path.exists():
             self.handoff_path.write_text(
-                "# Resonant Harness Handoff\n\n- Summary:\n- Current sprint:\n- Next action:\n",
+                "# Lumi Harness Handoff\n\n- Summary:\n- Current sprint:\n- Next action:\n",
                 encoding="utf-8",
             )
         if not self.run_history_path.exists():

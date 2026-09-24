@@ -13,7 +13,7 @@ STYLES_CSS = APP_JS.with_name("styles.css")
 
 
 def frontend_source() -> str:
-    """All frontend scripts. ResonantApp is split across mixin files, so
+    """All frontend scripts. LumiApp is split across mixin files, so
     reading app.js alone would fail whenever a method moves between them."""
     return "\n".join(
         path.read_text(encoding="utf-8")

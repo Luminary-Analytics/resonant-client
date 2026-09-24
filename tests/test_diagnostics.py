@@ -169,7 +169,7 @@ class TestBuildDiagnosticsZip:
         out = tmp_path / "out"
         zip_path = build_diagnostics_zip(sample_resonant_dir, out, version="0.3.4")
         assert zip_path.exists()
-        assert zip_path.name.startswith("resonant-diagnostics-")
+        assert zip_path.name.startswith("lumi-diagnostics-")
         assert zip_path.suffix == ".zip"
 
     def test_meta_includes_version_and_platform(self, sample_resonant_dir, tmp_path):

@@ -2,14 +2,14 @@
 Tests for v0.3.3 project-path sanitization.
 
 When the bundled exe is launched via Start Menu shortcut, Windows sets
-`cwd = C:\\Program Files\\Resonant Client`. Pre-v0.3.3 ProjectManager()
+`cwd = C:\\Program Files\\Lumi`. Pre-v0.3.3 ProjectManager()
 took that as the project path silently → permission-denied storms when
 the agent tried to write into the install dir (Bug #25).
 
 `_safe_default_project_path` resolves through:
   1. cwd, IF cwd is user-writable AND not a system/install location
   2. most-recent-project from recent_projects.json (filtered to existing)
-  3. ~/Documents/Resonant Projects (created on demand)
+  3. ~/Documents/Lumi Projects (created on demand)
   4. ~/.resonant/workspace (last-resort fallback)
 """
 
@@ -43,7 +43,7 @@ def isolated_home(tmp_path, monkeypatch):
 class TestIsUnsafeCwd:
     @pytest.mark.skipif(os.name != "nt", reason="Windows-specific paths")
     def test_program_files_is_unsafe(self):
-        assert _is_unsafe_cwd("C:\\Program Files\\Resonant Client") is True
+        assert _is_unsafe_cwd("C:\\Program Files\\Lumi") is True
         assert _is_unsafe_cwd("C:\\Program Files (x86)\\Foo") is True
 
     @pytest.mark.skipif(os.name != "nt", reason="Windows-specific paths")
@@ -89,12 +89,12 @@ class TestSafeDefaultProjectPath:
     def test_falls_back_when_cwd_is_install_dir(self, monkeypatch, isolated_home):
         # Simulate the bundled-exe-from-Start-Menu case: cwd looks like
         # an install dir. Should NOT return cwd.
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
-                                                    else "/Applications/Resonant.app"))
-        # No recent projects → falls through to ~/Documents/Resonant Projects.
+                                                    else "/Applications/Lumi.app"))
+        # No recent projects → falls through to ~/Documents/Lumi Projects.
         result = _safe_default_project_path()
-        assert "Resonant Projects" in result or ".resonant" in result
+        assert "Lumi Projects" in result or ".resonant" in result
         # And whichever path is chosen, it must NOT be the install dir.
         if os.name == "nt":
             assert "Program Files" not in result
@@ -120,7 +120,7 @@ class TestSafeDefaultProjectPath:
             os.path, "isdir",
             lambda p: True if p == good_project else real_isdir(p),
         )
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
                                                     else "/Applications/X"))
         result = _safe_default_project_path()
@@ -146,13 +146,13 @@ class TestSafeDefaultProjectPath:
             os.path, "isdir",
             lambda p: True if p == good_project else real_isdir(p),
         )
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
                                                     else "/Applications/X"))
         assert _safe_default_project_path() == good_project
 
     def test_explicit_resonant_checkout_restores_from_recents(self, monkeypatch, isolated_home):
-        # Dogfooding case: the user explicitly opened the Resonant repo
+        # Dogfooding case: the user explicitly opened the Lumi repo
         # and it sits in recents. A normal desktop launch (cwd = install
         # dir, NOT the checkout) must restore it — the resonant-source
         # veto only applies to the dev-launch cwd default.
@@ -173,7 +173,7 @@ class TestSafeDefaultProjectPath:
             sessions_mod, "_looks_like_resonant_source",
             lambda p: str(p) == checkout,
         )
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
                                                     else "/Applications/X"))
         assert _safe_default_project_path() == checkout
@@ -214,14 +214,14 @@ class TestSafeDefaultProjectPath:
         recents.write_text(json.dumps([
             {"path": str(tmp_path / "missing"), "name": "missing", "last_used": 0},
         ]))
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
                                                     else "/Applications/X"))
         result = _safe_default_project_path()
         assert "missing" not in result
 
     def test_creates_documents_resonant_projects_when_needed(self, monkeypatch, isolated_home):
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
                                                     else "/usr/bin"))
         result = _safe_default_project_path()
@@ -242,14 +242,14 @@ class TestSafeDefaultProjectPath:
         recents.write_text(json.dumps([
             {"path": str(recent_project), "name": "advanced-tictactoe", "last_used": 0},
         ]))
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
                                                     else "/Applications/X"))
 
         assert _playground_project_path() == os.path.normpath(str(playground))
 
     def test_project_manager_exposes_permanent_playground(self, monkeypatch, isolated_home):
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
                                                     else "/Applications/X"))
         pm = ProjectManager()
@@ -329,9 +329,9 @@ class TestProjectManagerUsesSafeDefault:
     def test_unsafe_cwd_does_not_become_project(self, monkeypatch, isolated_home):
         # The Bug #25 regression test: when cwd is the install dir,
         # ProjectManager() must NOT take it.
-        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Resonant Client"
+        monkeypatch.setattr(os, "getcwd", lambda: ("C:\\Program Files\\Lumi"
                                                     if os.name == "nt"
-                                                    else "/Applications/Resonant.app"))
+                                                    else "/Applications/Lumi.app"))
         pm = ProjectManager()
         if os.name == "nt":
             assert "Program Files" not in pm.project_path

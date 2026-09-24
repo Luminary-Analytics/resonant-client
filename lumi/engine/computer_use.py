@@ -1,5 +1,5 @@
 """
-Full Computer Use orchestration for the Resonant Engine.
+Full Computer Use orchestration for the Lumi engine.
 
 Implements the autonomous screenshot → reason → act loop that enables
 the agent to control the desktop and browser visually, like a human would.
@@ -675,7 +675,7 @@ def exec_screen_ocr(args: dict, start: float) -> ToolResult:
                 import tempfile
                 import os
 
-                tmp = os.path.join(tempfile.gettempdir(), "resonant_ocr.png")
+                tmp = os.path.join(tempfile.gettempdir(), "lumi_ocr.png")
                 img.save(tmp, format="PNG")
 
                 ps_script = f"""

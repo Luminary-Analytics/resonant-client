@@ -1,12 +1,12 @@
 /*
- * Autonomous-session view methods for ResonantApp.
+ * Autonomous-session view methods for LumiApp.
  *
  * app.js reached 14,500 lines as a single class, the point at which "where
  * does this behaviour live" stops having a findable answer. This file holds
  * the autonomous-session half: mission lifecycle, roadmap inspector, decision
  * cards, health signals, and run banners.
  *
- * Mixed into ResonantApp.prototype rather than converted to an ES module. The
+ * Mixed into LumiApp.prototype rather than converted to an ES module. The
  * page loads classic scripts (see index.html) and moving the whole app to
  * modules is a separate change with its own risk. A prototype mixin needs no
  * build step, preserves `this`, and matches how plan_graph_view.js already
@@ -20,7 +20,7 @@
  * Load order matters: this file must load BEFORE app.js.
  */
 
-class ResonantAutonomousView {
+class LumiAutonomousView {
 
 
     /**
@@ -421,7 +421,7 @@ class ResonantAutonomousView {
             isComplete
                 ? `Finished after ${s.iterCount || 0} step${s.iterCount === 1 ? '' : 's'}.`
                 : `Stopped: ${(event && event.stop_reason) || 'paused'}.`,
-            { tag: 'resonant-autonomous' },
+            { tag: 'lumi-autonomous' },
         );
         // v0.5.4a4 — refresh inspector once more so it shows the final
         // criteria state. The session's `mission_state.phase` may not
@@ -446,7 +446,7 @@ class ResonantAutonomousView {
         this.notifyDesktop(
             'Autonomous session failed',
             event.message || event.reason || 'The session stopped before finishing.',
-            { tag: 'resonant-autonomous' },
+            { tag: 'lumi-autonomous' },
         );
         this._requestAutonomousMissionRoadmap();
         this._requestAutonomousMissionsList();
@@ -483,9 +483,9 @@ class ResonantAutonomousView {
         // keeps working without one, so this is the moment most worth an
         // interrupt — an unnoticed park is dead wall-clock time.
         this.notifyDesktop(
-            'SONN Client needs a decision',
+            'Lumi needs a decision',
             request.question || 'The autonomous session is waiting on your input.',
-            { tag: 'resonant-autonomous' },
+            { tag: 'lumi-autonomous' },
         );
         // Track active decision card so we can dismiss / replace it
         // cleanly (e.g. if the daemon emits a SECOND request in the
@@ -1585,7 +1585,7 @@ class ResonantAutonomousView {
         // v0.3.3 — Bug #25 fix. Mission must let the user pick where the
         // agent is allowed to write. Without this, the mission inherits
         // whatever os.getcwd() landed on at app launch — which for a
-        // Start-Menu shortcut on Windows is `C:\Program Files\Resonant
+        // Start-Menu shortcut on Windows is `C:\Program Files\Lumi
         // Client`. Permission-denied storms followed. The composer now
         // shows the chosen path inline with a picker + manual-edit
         // fallback. The chosen path is only applied on Start, not Cancel.
@@ -2149,4 +2149,4 @@ class ResonantAutonomousView {
 
 }
 
-window.ResonantAutonomousView = ResonantAutonomousView;
+window.LumiAutonomousView = LumiAutonomousView;

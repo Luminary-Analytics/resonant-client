@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════════
-   Resonant GUI — Agents window (Cursor 3–inspired)
+   Lumi GUI — Agents window (Cursor 3–inspired)
    ═══════════════════════════════════════════════════════════════════ */
 
 :root {
@@ -9947,7 +9947,7 @@ body {
 }
 
 /* ==========================================================================
-   Resonant shell redesign - opencode-inspired desktop surface
+   Lumi shell redesign - opencode-inspired desktop surface
    ========================================================================== */
 
 :root {
@@ -11864,7 +11864,7 @@ body.is-window-dragging * {
 }
 
 .titlebar-menus::before {
-    content: "SONN Client";
+    content: "Lumi";
     display: block;
     padding: 6px 14px 9px;
     color: var(--dim);
@@ -12256,7 +12256,7 @@ body.is-window-dragging * {
     }
 }
 
-/* Resonant task transcript — Codex-like hierarchy with a local-first accent. */
+/* Lumi task transcript — Codex-like hierarchy with a local-first accent. */
 .task-card {
     position: relative;
     gap: 10px;
@@ -12326,7 +12326,7 @@ body.is-window-dragging * {
 }
 
 .task-result:not([hidden])::before {
-    content: "SONN Client";
+    content: "Lumi";
     display: block;
     margin-bottom: 9px;
     color: #5eead4;

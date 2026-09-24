@@ -1,4 +1,4 @@
-"""Explicit quality-oriented model roles for the Resonant runtime."""
+"""Explicit quality-oriented model roles for the Lumi runtime."""
 
 from __future__ import annotations
 

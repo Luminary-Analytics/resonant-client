@@ -72,7 +72,7 @@ def test_bare_domains_become_https():
 def test_profile_is_not_the_users_real_chrome_directory(monkeypatch):
     """Chrome locks a profile while it runs.
 
-    Pointing at the user's own Chrome directory would mean Resonant and the
+    Pointing at the user's own Chrome directory would mean Lumi and the
     user cannot both browse, and the launch would fail whenever Chrome was
     already open.
     """

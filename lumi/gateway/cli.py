@@ -56,7 +56,7 @@ def _build_backend(settings: SettingsManager, backend_type: str, model: str):
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         prog="resonant gateway",
-        description="Chat with the Resonant agent from Telegram.",
+        description="Chat with the Lumi agent from Telegram.",
     )
     parser.add_argument("--backend", default="", help="Backend type (ollama, kimi, exo, codex, claude-code)")
     parser.add_argument("--model", default="", help="Model name for the backend")

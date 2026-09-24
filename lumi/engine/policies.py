@@ -1,5 +1,5 @@
 """
-Declarative Execution Policies for Resonant Sessions.
+Declarative Execution Policies for Lumi Sessions.
 
 Defines rules that control which tools are allowed, prompted, or denied.
 Inspired by Codex CLI's Starlark rule system, simplified to JSON.

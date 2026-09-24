@@ -30,7 +30,7 @@ class IterationCheckpointStore:
     def create(self, *, intent_id: str, iteration: int, item_id: str = "") -> dict:
         safe_intent = self._safe_component(intent_id or "mission")
         ref = f"{self.REF_ROOT}/{safe_intent}/{max(0, int(iteration)):04d}"
-        message = f"Resonant checkpoint {intent_id} iter {iteration} {item_id}".strip()
+        message = f"Lumi checkpoint {intent_id} iter {iteration} {item_id}".strip()
         commit = self._snapshot_commit(message)
         self._git("update-ref", ref, commit)
         return {
@@ -64,7 +64,7 @@ class IterationCheckpointStore:
 
     def compare(self, ref: str) -> dict:
         checkpoint = self._resolve_checkpoint(ref)
-        current = self._snapshot_commit("Resonant transient checkpoint comparison")
+        current = self._snapshot_commit("Lumi transient checkpoint comparison")
         return {
             "ref": ref,
             "checkpoint": checkpoint,
@@ -79,12 +79,12 @@ class IterationCheckpointStore:
         """Restore a checkpoint and preserve current content on a recovery branch."""
         checkpoint = self._resolve_checkpoint(ref)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
-        recovery_commit = self._snapshot_commit(f"Resonant recovery before restoring {ref}")
-        recovery_branch = f"resonant-recovery/{stamp}"
+        recovery_commit = self._snapshot_commit(f"Lumi recovery before restoring {ref}")
+        recovery_branch = f"lumi-recovery/{stamp}"
         suffix = 1
         while self._ref_exists(f"refs/heads/{recovery_branch}"):
             suffix += 1
-            recovery_branch = f"resonant-recovery/{stamp}-{suffix}"
+            recovery_branch = f"lumi-recovery/{stamp}-{suffix}"
         self._git("update-ref", f"refs/heads/{recovery_branch}", recovery_commit)
 
         changed = self._git(
@@ -130,7 +130,7 @@ class IterationCheckpointStore:
         Path(index_name).unlink(missing_ok=True)
         env = os.environ.copy()
         env["GIT_INDEX_FILE"] = index_name
-        env.setdefault("GIT_AUTHOR_NAME", "Resonant")
+        env.setdefault("GIT_AUTHOR_NAME", "Lumi")
         env.setdefault("GIT_AUTHOR_EMAIL", "checkpoint@resonant.local")
         env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
         env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
@@ -152,7 +152,7 @@ class IterationCheckpointStore:
 
     def _resolve_checkpoint(self, ref: str) -> str:
         if not ref.startswith(f"{self.REF_ROOT}/"):
-            raise CheckpointError("Only Resonant iteration checkpoint refs can be used")
+            raise CheckpointError("Only Lumi iteration checkpoint refs can be used")
         result = self._git("rev-parse", "--verify", f"{ref}^{{commit}}", check=False)
         if result.returncode != 0:
             raise CheckpointError(f"Checkpoint not found: {ref}")

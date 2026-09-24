@@ -1,5 +1,5 @@
 /**
- * SONN Client — launch access for this page.
+ * Lumi — launch access for this page.
  *
  * The server refuses the app WebSocket and its private HTTP endpoints unless a
  * request carries this launch's access token (see gui/local_access.py). The

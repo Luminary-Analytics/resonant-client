@@ -1,1 +1,1 @@
-"""Resonant GUI — desktop app with web-based rendering."""
+"""Lumi GUI — desktop app with web-based rendering."""

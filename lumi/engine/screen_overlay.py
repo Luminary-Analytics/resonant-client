@@ -1,9 +1,9 @@
 """On-screen glow shown while the agent is driving the computer.
 
-When Resonant moves the mouse and types, the user needs to know at a glance
+When Lumi moves the mouse and types, the user needs to know at a glance
 that the input is not theirs — otherwise the machine simply appears possessed.
 This draws a soft purple glow around the edges of the monitor being acted on,
-pulsing gently, with a banner reading "Resonant is using the computer".
+pulsing gently, with a banner reading "Lumi is using the computer".
 
 Implemented directly on Win32 through ctypes. The alternatives were a second
 pywebview window (heavy, and transparency support on Windows is patchy) or
@@ -22,7 +22,7 @@ Three properties matter and each is deliberate:
   click. An indicator that blocked the very input it is announcing would be
   worse than no indicator.
 - **Invisible to screen capture.** The agent screenshots the desktop to decide
-  where to click. If it saw the glow it would be reading Resonant's own chrome
+  where to click. If it saw the glow it would be reading Lumi's own chrome
   as part of the application under test, and the banner sits exactly where a
   title bar usually is. `hidden_for_capture()` takes it down for the grab.
 - **Non-fatal.** Every entry point swallows its own failures. A decorative
@@ -44,14 +44,14 @@ logger = logging.getLogger(__name__)
 
 IS_WINDOWS = hasattr(ctypes, "windll")
 
-BANNER_TEXT = "Resonant is using the computer"
+BANNER_TEXT = "Lumi is using the computer"
 
 # How far the glow reaches inward before it fades to nothing. Generous enough
 # to read as a glow rather than a thick border.
 GLOW_PX = 90
 # Alpha at the very edge of the screen, tapering to 0 at GLOW_PX inward.
 _EDGE_ALPHA = 190
-# Resonant purple, as (R, G, B).
+# Lumi purple, as (R, G, B).
 _GLOW_RGB = (124, 92, 255)
 
 _BANNER_HEIGHT = 36
@@ -349,7 +349,7 @@ def _build_glow_rows(width: int, height: int) -> bytearray:
 
 # ── cursor glow ──────────────────────────────────────────────────────
 #
-# The edge glow says "Resonant is driving". The cursor glow says *where*.
+# The edge glow says "Lumi is driving". The cursor glow says *where*.
 # Because the real system cursor is already visible, the overlay only traces
 # its familiar arrow silhouette instead of painting another pointer over it.
 
@@ -762,7 +762,7 @@ class _Overlay:
         wndclass = WNDCLASS()
         wndclass.lpfnWndProc = self._wndproc_ref
         wndclass.hInstance = ctypes.windll.kernel32.GetModuleHandleW(None)
-        wndclass.lpszClassName = "ResonantComputerUseHalo"
+        wndclass.lpszClassName = "LumiComputerUseHalo"
         if not user32.RegisterClassW(ctypes.byref(wndclass)):
             # 1410 is ERROR_CLASS_ALREADY_EXISTS, which is fine on a re-show.
             if ctypes.get_last_error() not in (0, 1410):
@@ -772,7 +772,7 @@ class _Overlay:
         self._hwnd = user32.CreateWindowExW(
             _WS_EX_LAYERED | _WS_EX_TRANSPARENT | _WS_EX_TOPMOST
             | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE,
-            "ResonantComputerUseHalo", "Resonant",
+            "LumiComputerUseHalo", "Lumi",
             _WS_POPUP,
             0, 0, 10, 10,
             None, None, wndclass.hInstance, None,
@@ -912,7 +912,7 @@ class _Overlay:
     # Every Win32 call touching the window happens on the single thread that
     # created it. This is not tidiness — `ShowWindow` on a window owned by
     # another thread posts to the owner's message queue and BLOCKS until the
-    # owner pumps it. Resonant's desktop tools run on worker threads and the
+    # owner pumps it. Lumi's desktop tools run on worker threads and the
     # linger timer fires on yet another, so a cross-thread hide deadlocked
     # both: the caller waited on a thread that was itself asleep.
     #
@@ -1021,7 +1021,7 @@ class _Overlay:
         self._ring_hwnd = user32.CreateWindowExW(
             _WS_EX_LAYERED | _WS_EX_TRANSPARENT | _WS_EX_TOPMOST
             | _WS_EX_TOOLWINDOW | _WS_EX_NOACTIVATE,
-            "ResonantComputerUseHalo", "Resonant cursor",
+            "LumiComputerUseHalo", "Lumi cursor",
             _WS_POPUP,
             0, 0, RING_BOX, RING_BOX,
             None, None, ctypes.windll.kernel32.GetModuleHandleW(None), None,
@@ -1464,7 +1464,7 @@ def hidden_for_capture():
     """Take the glow down for the duration of a screen grab.
 
     The agent decides where to click from these screenshots. Leaving the glow
-    in them would feed Resonant's own edge lighting and banner back to the
+    in them would feed Lumi's own edge lighting and banner back to the
     model as if it were part of the application on screen — and the banner
     sits exactly where a window's title bar or toolbar usually is.
 

@@ -8,7 +8,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function setup(fetch, globals = {}) {
     const context = vm.createContext({fetch, URLSearchParams, Blob, console, Event, document: {getElementById: () => null}, WebSocket: {OPEN: 1}, ...globals});
-    vm.runInContext(source + '\nthis.App = ResonantApp;', context);
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
     const app = Object.create(context.App.prototype);
     app.userInput = {value: '', style: {}, scrollHeight: 40};
     app.renderAttachedImages = () => {};
@@ -217,7 +217,7 @@ test('completion suggestions preserve drafts and skip replay, errors, and queued
 function accountView(settings = {}, sonnAccount, document = {}) {
     const context = vm.createContext({window: {}, document});
     const mixin = fs.readFileSync(path.join(__dirname, '../lumi/gui/static/settings_view.js'), 'utf8');
-    vm.runInContext(mixin + '\nthis.View = ResonantSettingsView;', context);
+    vm.runInContext(mixin + '\nthis.View = LumiSettingsView;', context);
     const app = Object.create(context.View.prototype);
     app.settings = settings;
     app.sonnAccount = sonnAccount;

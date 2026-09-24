@@ -1,5 +1,5 @@
 """
-Background planner/generator/evaluator cycle runner for Resonant harnesses.
+Background planner/generator/evaluator cycle runner for Lumi harnesses.
 
 This orchestrator is intentionally conservative: it chooses the next role from
 the current harness state (read from `~/.lumi/projects/<hash>/harness/`),

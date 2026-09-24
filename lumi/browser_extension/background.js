@@ -4,14 +4,14 @@
 // Why an extension at all: tab groups are the `chrome.tabGroups` extension
 // API. They are NOT part of the DevTools protocol — Chrome exposes 57 CDP
 // domains and none of them can create or modify a group. Everything else
-// Resonant's browser tools do runs over CDP with no extension involved; this
+// Lumi's browser tools do runs over CDP with no extension involved; this
 // exists solely for the grouping.
 //
-// Resonant writes config.js into a per-session copy of this directory before
+// Lumi writes config.js into a per-session copy of this directory before
 // launching Chrome, so the label can name the run rather than being fixed at
 // build time. Falling back to a constant keeps the extension loadable on its
 // own.
-let GROUP_TITLE = 'Resonant';
+let GROUP_TITLE = 'Lumi';
 let GROUP_COLOR = 'purple';
 try {
     importScripts('config.js');
@@ -62,7 +62,7 @@ async function groupTab(tabId) {
     });
 }
 
-// Called by Resonant over the extension service worker's DevTools target when
+// Called by Lumi over the extension service worker's DevTools target when
 // the active client session changes. Grouping is browser chrome, so unlike a
 // page-injected outline it remains visible without contaminating screenshots
 // or changing the page being tested.

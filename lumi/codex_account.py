@@ -1,6 +1,6 @@
 """Small stdio app-server client for Codex account and model discovery.
 
-Codex owns credentials and browser login. Resonant only receives account
+Codex owns credentials and browser login. Lumi only receives account
 metadata, model choices, and rate limits; tokens never pass through its UI.
 """
 
@@ -67,7 +67,7 @@ class CodexAccount:
 
         threading.Thread(target=read, daemon=True, name="resonant-codex-account").start()
         try:
-            self._rpc("initialize", {"clientInfo": {"name": "resonant", "title": "Resonant", "version": "1"}})
+            self._rpc("initialize", {"clientInfo": {"name": "lumi", "title": "Lumi", "version": "1"}})
             self._send({"method": "initialized", "params": {}})
         except Exception:
             self.close()

@@ -120,4 +120,4 @@ def resolve_sonn_url(explicit: str | None = None, *, settings_data: Mapping[str,
 # `resolve_remote_engine_ws_url` were removed in this release.
 # ResonantBackend was cut in v0.4.0 and these resolvers had no other
 # call sites. If a future feature needs a generic "what's the
-# Resonant API URL" lookup, copy the pattern from `resolve_ollama_url`.
+# Lumi API URL" lookup, copy the pattern from `resolve_ollama_url`.

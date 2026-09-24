@@ -3280,7 +3280,7 @@ def _workspace_language_hints(project_path: str, *, max_files: int = 1600) -> se
 def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None) -> dict:
     """Build the {event: "lsp_list", servers: [...]} status payload.
 
-    Resonant does not yet own a full LSP client, so this is an inventory:
+    Lumi does not yet own a full LSP client, so this is an inventory:
     explicitly configured servers plus common language-server binaries found
     on PATH for languages present in the current workspace.
     """
@@ -3408,7 +3408,7 @@ def _plugin_list_payload(*, settings: SettingsManager | None = None) -> dict:
     """Build the {event: "plugin_list", plugins: [...]} status payload.
 
     Skills are a prompt/runtime capability and remain in the sidebar. This
-    payload is reserved for Resonant plugin packages so pinned skills do not
+    payload is reserved for Lumi plugin packages so pinned skills do not
     appear as plugins in the OpenCode-style status popover.
     """
     configured = settings.get("plugins") if settings else {}

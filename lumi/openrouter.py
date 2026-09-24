@@ -69,7 +69,7 @@ class OpenRouterBackend(KimiBackend):
         return False
 
     def _request_headers(self):
-        return {**super()._request_headers(), "X-OpenRouter-Title": "Resonant"}
+        return {**super()._request_headers(), "X-OpenRouter-Title": "Lumi"}
 
     def _api_content(self, content):
         return ExoBackend._api_content(self, content)

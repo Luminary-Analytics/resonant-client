@@ -1,5 +1,5 @@
 """
-First-class git tools for the Resonant Engine.
+First-class git tools for the Lumi engine.
 
 Wraps `git` subprocess calls with structured output so the UI can render
 file lists, diff hunks, commit cards, and log tables instead of raw stdout.

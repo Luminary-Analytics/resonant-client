@@ -86,7 +86,7 @@ def build_config(editor: str, value: str, *, check_dependencies: bool = True) ->
     executable = "uvx" if editor == "blender" else "uv"
     command = shutil.which(executable)
     if check_dependencies and not command:
-        raise ValueError(f"Install uv and restart Resonant so {executable} is available, then connect again.")
+        raise ValueError(f"Install uv and restart Lumi so {executable} is available, then connect again.")
     if editor == "blender":
         try:
             port = int(value)
@@ -149,7 +149,7 @@ def workflow_instructions(settings) -> str:
              "First verify the open project/scene matches the user's intended workspace. "
              "A connected MCP server alone does not prove the editor is open. If unavailable, "
              "report setup requirements; do not invent successful editor actions. Editor-side scripts "
-             "run with the editor's filesystem access, outside Resonant's path sandbox."]
+             "run with the editor's filesystem access, outside Lumi's path sandbox."]
     lines.extend(f"{EDITORS[key]['title']}: {EDITORS[key]['guidance']}" for key in enabled)
     return "\n".join(lines)
 

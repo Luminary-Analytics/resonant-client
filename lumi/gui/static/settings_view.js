@@ -1,5 +1,5 @@
 /*
- * Settings and overlay surfaces for ResonantApp.
+ * Settings and overlay surfaces for LumiApp.
  *
  * Everything that opens *over* the main view: the settings page, the Ollama
  * setup wizard, the model picker, the project switcher, the shortcuts overlay,
@@ -10,14 +10,14 @@
  * dispatch and the second runs a `!cmd` shell shortcut; neither is an overlay,
  * they just share a word.
  *
- * Mixed into ResonantApp.prototype by applyMixin in app.js — see
+ * Mixed into LumiApp.prototype by applyMixin in app.js — see
  * autonomous_view.js for why a prototype mixin rather than an ES module, and
  * why Object.assign would silently copy nothing here.
  *
  * Load order matters: this file must load BEFORE app.js.
  */
 
-class ResonantSettingsView {
+class LumiSettingsView {
     _accountSummary() {
         const account = this.sonnAccount;
         const text = value => typeof value === 'string' ? value.trim().slice(0, 160) : '';
@@ -149,7 +149,7 @@ class ResonantSettingsView {
     _renderEditorIntegrations() {
         const editors = this.editorIntegrations || [];
         if (!editors.length) return '<p class="editor-help">Loading editor setup…</p>';
-        return `<p class="editor-help">Connect a running editor to work on scenes and assets from chat. Setup uses community MCP bridges. Reconnect here after restarting SONN Client. Codex and Claude Code receive enabled bridges on their next Full-auto turn; other modes keep editor tools disabled in those CLIs.</p>
+        return `<p class="editor-help">Connect a running editor to work on scenes and assets from chat. Setup uses community MCP bridges. Reconnect here after restarting Lumi. Codex and Claude Code receive enabled bridges on their next Full-auto turn; other modes keep editor tools disabled in those CLIs.</p>
             <div class="editor-grid">${editors.map(editor => {
                 const escape = value => this.escapeHtml(String(value ?? ''));
                 const busy = this._editorBusy === editor.id;
@@ -161,7 +161,7 @@ class ResonantSettingsView {
                     <details><summary>Setup ${escape(editor.title)}</summary>
                         <ol>${editor.steps.map(step => `<li>${escape(step)}</li>`).join('')}</ol>
                         <a href="${escape(editor.url)}" target="_blank" rel="noopener noreferrer">Open setup guide</a>
-                        <p class="editor-help">The editor and its add-on must be installed separately. ${editor.id === 'blender' ? 'Connecting may download the pinned bridge using uv. ' : ''}Editor actions use the editor's filesystem access, outside SONN Client's project sandbox.</p>
+                        <p class="editor-help">The editor and its add-on must be installed separately. ${editor.id === 'blender' ? 'Connecting may download the pinned bridge using uv. ' : ''}Editor actions use the editor's filesystem access, outside Lumi's project sandbox.</p>
                     </details>
                     <label class="editor-field">${escape(editor.label)}
                         <input class="settings-input" data-editor-input="${editor.id}" value="${escape(value)}" ${editor.field === 'port' ? 'inputmode="numeric"' : ''} />
@@ -580,7 +580,7 @@ class ResonantSettingsView {
 
         const headline = reason === 'connected-but-empty'
             ? 'Ollama is reachable but no models are pulled yet.'
-            : 'SONN Client needs Ollama. We couldn\'t reach it.';
+            : 'Lumi needs Ollama. We couldn\'t reach it.';
 
         const wizard = document.createElement('div');
         wizard.className = 'ollama-wizard';
@@ -590,7 +590,7 @@ class ResonantSettingsView {
                 <span>${this.escapeHtml(headline)}</span>
             </div>
             <p class="ollama-wizard-blurb">
-                SONN Client uses the models exposed by your configured Ollama
+                Lumi uses the models exposed by your configured Ollama
                 endpoint. Model capabilities are detected at runtime.
             </p>
 
@@ -897,7 +897,7 @@ class ResonantSettingsView {
                     { key: 'big_context_profile', label: 'Large-context profile', type: 'toggle',
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
-                      hint: 'Off by default. Enable to use SONN Client\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.lumi/, not in your repo.' },
+                      hint: 'Off by default. Enable to use Lumi\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.lumi/, not in your repo.' },
                 ]
             },
             {
@@ -1138,11 +1138,11 @@ class ResonantSettingsView {
                 const checkpoints = this.iterationCheckpoints || [];
                 const comparison = this.checkpointComparison;
                 bodyHtml = `
-                    <div class="settings-row-hint checkpoint-hint">Each autonomous iteration snapshots tracked and untracked work without moving HEAD. Restore first preserves the failed state on a resonant-recovery/* branch.</div>
+                    <div class="settings-row-hint checkpoint-hint">Each autonomous iteration snapshots tracked and untracked work without moving HEAD. Restore first preserves the failed state on a lumi-recovery/* branch.</div>
                     <div class="checkpoint-list">
                         ${checkpoints.length ? checkpoints.map(item => `
                             <div class="checkpoint-record">
-                                <div><strong>${this.escapeHtml((item.message || 'Iteration checkpoint').replace('Resonant checkpoint ', ''))}</strong><small>${this.escapeHtml(item.commit?.slice(0, 10) || '')} · ${this.escapeHtml(item.created_at || '')}</small></div>
+                                <div><strong>${this.escapeHtml((item.message || 'Iteration checkpoint').replace('Lumi checkpoint ', ''))}</strong><small>${this.escapeHtml(item.commit?.slice(0, 10) || '')} · ${this.escapeHtml(item.created_at || '')}</small></div>
                                 <button class="btn-sm checkpoint-compare" data-ref="${this.escapeHtml(item.ref)}">Compare</button>
                                 <button class="btn-sm checkpoint-restore" data-ref="${this.escapeHtml(item.ref)}">Restore</button>
                             </div>
@@ -1404,7 +1404,7 @@ class ResonantSettingsView {
         this.settingsBody.querySelectorAll('.checkpoint-restore').forEach(btn => {
             btn.addEventListener('click', () => {
                 const ref = btn.dataset.ref;
-                if (!confirm('Restore this checkpoint? Your current files will be preserved on a resonant-recovery/* branch first.')) return;
+                if (!confirm('Restore this checkpoint? Your current files will be preserved on a lumi-recovery/* branch first.')) return;
                 btn.disabled = true;
                 btn.textContent = 'Restoring…';
                 this.send({ command: 'checkpoint_restore', ref });
@@ -1746,7 +1746,7 @@ class ResonantSettingsView {
 
         popover.innerHTML = `
             <div class="git-popover-header">
-                <span>RESONANT.md</span>
+                <span>Project instructions</span>
                 <button class="icon-btn resonant-md-popover-close">&times;</button>
             </div>
             <div class="resonant-md-popover-body" style="padding:12px;display:flex;flex-direction:column;gap:8px;">
@@ -1804,4 +1804,4 @@ class ResonantSettingsView {
 
 }
 
-window.ResonantSettingsView = ResonantSettingsView;
+window.LumiSettingsView = LumiSettingsView;

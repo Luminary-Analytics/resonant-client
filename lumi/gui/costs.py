@@ -1,5 +1,5 @@
 """
-Cost tracking for Resonant.
+Cost tracking for Lumi.
 Tracks token usage per session/day with model-specific pricing.
 """
 

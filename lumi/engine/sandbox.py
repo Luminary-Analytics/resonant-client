@@ -1,5 +1,5 @@
 """
-Path Sandboxing for Resonant Agent Sessions.
+Path Sandboxing for Lumi Agent Sessions.
 
 Ensures file operations stay within the project directory.
 Inspired by Codex CLI's approach: more autonomy = tighter sandbox.

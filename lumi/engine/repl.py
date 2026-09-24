@@ -1,5 +1,5 @@
 """
-Persistent REPL processes for the Resonant Engine.
+Persistent REPL processes for the Lumi engine.
 
 Spawns a long-lived `python` or `node` interpreter, sends code via stdin,
 captures stdout/stderr until a per-call sentinel marker appears.

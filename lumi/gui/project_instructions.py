@@ -4,7 +4,7 @@ Project conventions loader.
 Reads project-specific instructions from a markdown file at the project root.
 Prefers `AGENTS.md` (the cross-tool standard adopted by Codex CLI, OpenCode,
 Cursor, OpenHands as of 2026) and falls back to legacy `RESONANT.md` for older
-Resonant projects. `CLAUDE.md` (Anthropic's pattern) is recognized as a final
+Lumi projects. `CLAUDE.md` (Anthropic's pattern) is recognized as a final
 fallback so users coming from Claude Code get continuity for free.
 """
 
@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 #
 # AGENTS.md is the cross-tool convention — committing one file gives a project
 # instant interop with Codex, OpenCode, Cursor, OpenHands, and (via bridge
-# import) Claude Code. RESONANT.md is the historical Resonant-only filename;
+# import) Claude Code. RESONANT.md is the historical Lumi-only filename;
 # kept for back-compat. CLAUDE.md is a courtesy fallback so users with an
 # existing Claude Code project don't have to copy/paste their conventions.
 INSTRUCTION_FILES = [

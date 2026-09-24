@@ -1,6 +1,6 @@
 """Native browser automation over the Chrome DevTools Protocol.
 
-Resonant drives the user's installed Chrome directly. There is no Playwright
+Lumi drives the user's installed Chrome directly. There is no Playwright
 and no bundled Chromium: CDP is JSON-RPC over a WebSocket plus a small HTTP
 discovery endpoint, so this needs only `httpx` (a core dependency) and
 `websockets` (already bundled for the GUI's own socket). Installer cost is
@@ -12,7 +12,7 @@ but Playwright was only ever used here as a CDP *client*, via
 `connect_over_cdp`, which never touches the downloaded browsers. The 150 MB
 bought nothing but a protocol implementation.
 
-Chrome runs under a dedicated Resonant profile rather than the user's everyday
+Chrome runs under a dedicated Lumi profile rather than the user's everyday
 one. Chrome refuses a second launch against a profile directory that is
 already in use, so attaching to a personal profile means either racing the
 user's own browser or killing it. A separate profile persists its own logins,
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 # port conflict can adjust without a rebuild.
 _CDP_PORT = int(os.environ.get("LUMI_BROWSER_CDP_PORT", "9222") or "9222")
 _HEADLESS = (os.environ.get("LUMI_BROWSER_HEADLESS", "") or "").strip().lower() in {"1", "true", "yes"}
-_GROUP_TITLE = os.environ.get("LUMI_BROWSER_GROUP_TITLE", "Resonant") or "Resonant"
+_GROUP_TITLE = os.environ.get("LUMI_BROWSER_GROUP_TITLE", "Lumi") or "Lumi"
 _GROUP_COLOR = os.environ.get("LUMI_BROWSER_GROUP_COLOR", "purple") or "purple"
 _LAUNCH_TIMEOUT = float(os.environ.get("LUMI_BROWSER_LAUNCH_TIMEOUT", "30") or "30")
 
@@ -61,7 +61,7 @@ _browser_activity_indicator = True
 
 
 def _group_title(session_name: str = "") -> str:
-    """A compact Chrome-safe label for the active Resonant session."""
+    """A compact Chrome-safe label for the active Lumi session."""
     cleaned = " ".join(str(session_name or "").split()).strip()
     if not cleaned or cleaned.lower() == "new session":
         return _GROUP_TITLE
@@ -387,7 +387,7 @@ class BrowserManager:
         return None
 
     def _sync_session_indicator(self) -> None:
-        """Name and color the group containing the tab Resonant is driving."""
+        """Name and color the group containing the tab Lumi is driving."""
         signature = (self._session_name, self._target_id)
         try:
             # Activating the target makes Chrome's purple group treatment land
@@ -502,7 +502,7 @@ class BrowserManager:
             "--no-first-run",
             "--no-default-browser-check",
             # Chrome only honours the debugging port on a fresh profile launch;
-            # this profile is Resonant's alone, so there is nothing to restore.
+            # this profile is Lumi's alone, so there is nothing to restore.
             "--restore-last-session=false",
         ]
         if _HEADLESS:
@@ -679,7 +679,7 @@ def _ensure(start: float) -> Optional[ToolResult]:
     """Start the browser if needed; return a ToolResult only on failure."""
     manager = get_browser()
     # The connected path is intentionally not skipped: ensure_started() also
-    # refreshes the extension context when a different Resonant session takes
+    # refreshes the extension context when a different Lumi session takes
     # over an already-running browser profile.
     message = manager.ensure_started()
     if message.startswith("Error"):

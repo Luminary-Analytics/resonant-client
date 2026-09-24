@@ -1,5 +1,5 @@
 """
-Session management for the Resonant Engine.
+Session management for the Lumi engine.
 
 A Session holds conversation history, manages the agentic loop,
 and coordinates between backends and tools.
@@ -149,7 +149,7 @@ def _tool_definition_name(tool: dict) -> str:
 def _dedupe_tool_definitions(tools: list[dict]) -> list[dict]:
     """Keep the first valid definition for every provider-visible name.
 
-    Resonant's built-ins are assembled before MCP additions, so a malformed or
+    Lumi's built-ins are assembled before MCP additions, so a malformed or
     legacy unprefixed MCP definition can never replace a trusted core tool.
     """
     unique: list[dict] = []
@@ -2653,7 +2653,7 @@ class Session:
                             for index, option in enumerate(clean_options)
                         ]
                     if suppressed_reason:
-                        answer = f"(question suppressed by Resonant policy: {suppressed_reason})"
+                        answer = f"(question suppressed by Lumi policy: {suppressed_reason})"
                         terminal_suppressed_question = bool(full_text.strip())
                     elif on_user_input:
                         try:
@@ -2706,7 +2706,7 @@ class Session:
                     # MCP browser/computer tools do not pass through
                     # execute_tool(), but users still need the same visible
                     # ownership signal. Show it after the call so an MCP
-                    # screenshot cannot capture Resonant's own border.
+                    # screenshot cannot capture Lumi's own border.
                     visual_name = fn_name.casefold()
                     if any(
                         marker in visual_name
@@ -3726,7 +3726,7 @@ class Session:
         if lease:
             try:
                 lease = self.worktree_manager.finalize(
-                    lease, message=f"Resonant {agent_type_name} agent {agent_id}",
+                    lease, message=f"Lumi {agent_type_name} agent {agent_id}",
                 )
                 if director_task is None:
                     lease = self.worktree_manager.integrate(lease)

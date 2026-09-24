@@ -1,5 +1,5 @@
 """
-Chat-channel gateway: drive Resonant sessions from external chat apps.
+Chat-channel gateway: drive Lumi sessions from external chat apps.
 
 The gateway runs headless (no GUI/TUI) and bridges channel messages to the
 engine's Session loop:

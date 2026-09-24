@@ -1,5 +1,5 @@
 """
-Resonant GUI — ASGI Application
+Lumi GUI — ASGI Application
 
 Starlette app with WebSocket endpoint for streaming EngineEvents
 to the web-based frontend. The engine runs in a background thread;
@@ -350,7 +350,7 @@ class AppState:
         """Resolve and materialize a selected project folder.
 
         Selecting a never-before-seen folder should create the project root and
-        its Resonant session storage in one flow. Existing folders are reused.
+        its Lumi session storage in one flow. Existing folders are reused.
         """
         resolved = cls._resolve_project_path(project_path)
         path = Path(resolved)
@@ -557,7 +557,7 @@ class AppState:
         """Discover MCP tools, degrading to none if a server is unreachable.
 
         MCP servers are separate processes — BrowserOS, the default profile,
-        runs entirely outside Resonant — so one being down or misconfigured is
+        runs entirely outside Lumi — so one being down or misconfigured is
         an ordinary condition, not a reason the user cannot chat.
 
         This used to be an unguarded call inside `_wire_session`, so a failing
@@ -1114,7 +1114,7 @@ class AppState:
 
         if backend_type != "ollama":
             raise ValueError(
-                f"Backend '{backend_type}' is not supported. Resonant "
+                f"Backend '{backend_type}' is not supported. Lumi "
                 f"supports Ollama, EXO, Kimi, OpenRouter, SONN, Codex, and Claude Code."
             )
 

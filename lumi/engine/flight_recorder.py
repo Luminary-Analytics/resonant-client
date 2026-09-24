@@ -161,9 +161,9 @@ class FlightRecorder:
             "resourceSpans": [{
                 "resource": {"attributes": [
                     {"key": "service.name", "value": {"stringValue": "resonant-client"}},
-                    {"key": "resonant.run_id", "value": {"stringValue": self.run_id}},
+                    {"key": "lumi.run_id", "value": {"stringValue": self.run_id}},
                 ]},
-                "scopeSpans": [{"scope": {"name": "resonant.flight-recorder"}, "spans": spans}],
+                "scopeSpans": [{"scope": {"name": "lumi.flight-recorder"}, "spans": spans}],
             }]
         }
         if destination:

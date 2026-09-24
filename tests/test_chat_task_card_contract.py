@@ -17,10 +17,10 @@ def handles_event(source: str, name: str) -> bool:
 
 
 def frontend_source() -> str:
-    """Every class-body script that contributes methods to ResonantApp.
+    """Every class-body script that contributes methods to LumiApp.
 
     These assertions are about behaviour existing in the frontend, not about
-    which file it sits in. `ResonantApp` is split across mixin files, so
+    which file it sits in. `LumiApp` is split across mixin files, so
     reading app.js alone would fail the moment a method moves — a refactor
     breaking a test that the refactor did not actually invalidate.
 
@@ -208,7 +208,7 @@ def test_completed_chat_prioritizes_the_answer_over_success_telemetry():
     assert '.task-card[data-user-message="synthetic"] .task-card-header' in styles
     assert "border-radius: 18px 18px 4px 18px" in styles
     assert "max-height: min(48vh, 440px)" in styles
-    assert ": 'Message SONN Client';" in source
+    assert ": 'Message Lumi';" in source
 
 
 def test_streaming_text_does_not_use_a_lonely_blinking_cursor():
@@ -381,7 +381,7 @@ def test_session_list_has_semantic_activity_indicators():
     assert "this._sessionActivity = new Map();" in source
     assert "_sessionIndicator(session)" in source
     assert "_setSessionActivity(state, sessionId = this.currentSessionId)" in source
-    assert "state: 'working', label: 'SONN Client is working'" in source
+    assert "state: 'working', label: 'Lumi is working'" in source
     assert "state: 'needs-input', label: 'Needs your attention'" in source
     assert "return { state: 'idle', label: 'Idle' };" in source
     assert 'class="agent-row-status is-${indicator.state}"' in source

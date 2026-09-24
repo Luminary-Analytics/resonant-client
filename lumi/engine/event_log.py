@@ -1,5 +1,5 @@
 """
-JSONL Event Logger for Resonant Sessions.
+JSONL Event Logger for Lumi Sessions.
 
 Writes every session event as a JSON line to a log file.
 Enables debugging, replay, dashboard analytics, and audit trails.

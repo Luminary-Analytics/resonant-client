@@ -4443,7 +4443,7 @@ class HarnessPrompts:
         harness.ensure_layout()
         recovery_prompt = "\n".join(
             part for part in (
-                "Recover the stalled Resonant harness run using repository and harness evidence.",
+                "Recover the stalled Lumi harness run using repository and harness evidence.",
                 f"Failed role: {normalized_role}",
                 f"Failure reason: {reason.strip() or 'unspecified'}",
                 f"Objective: {objective.strip()}" if objective.strip() else "",

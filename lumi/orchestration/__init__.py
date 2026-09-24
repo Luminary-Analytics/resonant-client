@@ -1,5 +1,5 @@
 """
-Organic AI orchestration primitives for Resonant.
+Organic AI orchestration primitives for Lumi.
 
 Five primitives, AI-native (not borrowed from human Agile cycles):
 

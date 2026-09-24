@@ -144,7 +144,7 @@ class DirectorConfig:
     """Session-local Director Mode configuration.
 
     Token, context, time, and cost budgets are intentionally absent from the
-    default contract.  Resonant's quality-first policy treats optional budget
+    default contract.  Lumi's quality-first policy treats optional budget
     guardrails as a user choice, not an implicit execution cap.
     """
 
@@ -962,7 +962,7 @@ class DirectorRun:
             f"capabilities={','.join(worker.capabilities) or 'standard'}"
             for worker in self.config.workers if worker.enabled
         ) or "- No worker pool configured; request configuration before dispatch."
-        return f"""You are the frontier Director for this Resonant session.
+        return f"""You are the frontier Director for this Lumi session.
 
 You own understanding, decomposition, delegation, evidence review, revision,
 acceptance, safe integration, and the final response. Do not perform broad

@@ -65,7 +65,7 @@ def populated_workspace(state_home, project_dir):
     ws.ensure_layout()
 
     ws.write_spec(ProductSpec(
-        title="Resonant Client",
+        title="Lumi",
         summary="Ollama-native agentic coder",
     ))
     ws.write_sprint_contract(SprintContract(
@@ -216,7 +216,7 @@ class TestBuildResumePromptSpecLines:
             project_path=str(project_dir),
             session_mode="sprint", session_role="planner",
         )
-        assert "Product title: Resonant Client" in out
+        assert "Product title: Lumi" in out
         assert "Product summary: Ollama-native agentic coder" in out
 
     def test_evaluator_omits_product_title(

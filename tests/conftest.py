@@ -1,5 +1,5 @@
 """
-Shared fixtures for Resonant Client test suite.
+Shared fixtures for Lumi test suite.
 
 Provides reusable test helpers, temp directories, mock backends,
 and tool definition factories used across all test modules.

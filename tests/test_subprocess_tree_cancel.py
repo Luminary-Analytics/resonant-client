@@ -69,7 +69,7 @@ def test_cancel_terminates_long_running_shell_process_tree(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows start /B behavior")
-@pytest.mark.parametrize("launch_prefix", ["start /B ", 'start "Resonant Server" /B '])
+@pytest.mark.parametrize("launch_prefix", ["start /B ", 'start "Lumi Server" /B '])
 def test_bash_keeps_start_b_server_attached_for_cancellation(tmp_path, launch_prefix):
     port = _free_port()
     cancel = threading.Event()

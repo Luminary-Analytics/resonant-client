@@ -56,7 +56,7 @@ class DisplayEventPage:
 
 
 class SessionEventLedger:
-    """Append-only JSONL ledger for one saved Resonant session."""
+    """Append-only JSONL ledger for one saved Lumi session."""
 
     def __init__(self, path: str | Path):
         self.path = Path(path)

@@ -1,19 +1,19 @@
 /*
- * Run-card and live-run rendering for ResonantApp.
+ * Run-card and live-run rendering for LumiApp.
  *
  * Everything that draws an agent turn while it happens and after it finishes:
  * the task card lifecycle, the live-run panel (clock, phase, todos, health,
  * status requests), collapsed tool-activity grouping, and the completion
  * summary including the expandable failure detail.
  *
- * Mixed into ResonantApp.prototype by applyMixin in app.js — see
+ * Mixed into LumiApp.prototype by applyMixin in app.js — see
  * autonomous_view.js for why a prototype mixin rather than an ES module, and
  * why Object.assign would silently copy nothing here.
  *
  * Load order matters: this file must load BEFORE app.js.
  */
 
-class ResonantRunCards {
+class LumiRunCards {
 
 
     // ── Collapsed Group ─────────────────────────────────────────
@@ -782,7 +782,7 @@ class ResonantRunCards {
 
         const label = document.createElement('div');
         label.className = 'task-card-label';
-        label.textContent = options.synthetic ? 'SONN Client' : 'You';
+        label.textContent = options.synthetic ? 'Lumi' : 'You';
 
         const request = document.createElement('div');
         request.className = 'task-request-text';
@@ -1391,4 +1391,4 @@ class ResonantRunCards {
 
 }
 
-window.ResonantRunCards = ResonantRunCards;
+window.LumiRunCards = LumiRunCards;

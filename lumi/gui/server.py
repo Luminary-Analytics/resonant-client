@@ -1,5 +1,5 @@
 """
-SONN Client GUI — Server Launcher
+Lumi GUI — Server Launcher
 
 Starts the Starlette/uvicorn server and opens either a pywebview
 native window or a browser tab for the GUI.
@@ -52,7 +52,7 @@ def launch_gui(
     browser: bool = False,
 ):
     """
-    Launch the SONN Client GUI application.
+    Launch the Lumi GUI application.
 
     Args:
         host: Host to bind the server to
@@ -92,7 +92,7 @@ def launch_gui(
         print(f"Error: Server failed to start on {url}")
         sys.exit(1)
 
-    print(f"  SONN Client GUI running at {url}")
+    print(f"  Lumi GUI running at {url}")
 
     def _run_in_browser():
         # The page is useless without this launch's access token, which it gets
@@ -197,7 +197,7 @@ def launch_gui(
             ico_path = os.path.join(icon_dir, "resonant.ico")
 
             wv_kwargs = dict(
-                title="SONN Client",
+                title="Lumi",
                 url=local_access.launch_url(url),
                 width=1200,
                 height=800,
@@ -216,7 +216,7 @@ def launch_gui(
                 try:
                     import ctypes
                     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
-                        "resonant.client.app"
+                        "LuminaryAnalytics.Lumi"
                     )
                 except Exception:
                     pass
@@ -246,7 +246,7 @@ def launch_gui(
                     LoadImageW.restype = wintypes.HANDLE
 
                     # Find our window by title
-                    hwnd = user32.FindWindowW(None, "SONN Client")
+                    hwnd = user32.FindWindowW(None, "Lumi")
                     if not hwnd:
                         hwnd = user32.GetForegroundWindow()
 

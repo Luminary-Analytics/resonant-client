@@ -1,5 +1,5 @@
 """
-Context Compression for Resonant Engine.
+Context Compression for the Lumi engine.
 
 When conversation history grows too large, older messages are summarized
 into a compact form while keeping recent turns intact.

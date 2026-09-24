@@ -54,14 +54,14 @@ def ws(state_home, project_dir):
 class TestSpecRoundTrip:
     def test_round_trip(self, ws):
         spec = ProductSpec(
-            title="Resonant",
+            title="Lumi",
             summary="agentic coder",
             user_stories=["as a dev I want X"],
             sprint_order=["sp-1", "sp-2"],
         )
         ws.write_spec(spec)
         loaded = ws.read_spec()
-        assert loaded.title == "Resonant"
+        assert loaded.title == "Lumi"
         assert loaded.summary == "agentic coder"
         assert loaded.user_stories == ["as a dev I want X"]
         assert loaded.sprint_order == ["sp-1", "sp-2"]

@@ -1,5 +1,5 @@
 /* Bounded SONN task controls. Private answers, journals and credentials stay on the host. */
-window.ResonantEmployeeTasks = class ResonantEmployeeTasks {
+window.LumiEmployeeTasks = class LumiEmployeeTasks {
     bindEmployeeTaskPanel() {
         document.getElementById('employee-task-button')?.addEventListener('click', () => this.openEmployeeTaskPanel());
     }

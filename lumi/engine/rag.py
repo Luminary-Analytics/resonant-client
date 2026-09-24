@@ -1,5 +1,5 @@
 """
-RAG (Retrieval-Augmented Generation) for Resonant Engine.
+RAG (Retrieval-Augmented Generation) for the Lumi engine.
 
 Indexes project codebases for semantic search, enabling the model to
 quickly find relevant files and code without manual glob/grep exploration.

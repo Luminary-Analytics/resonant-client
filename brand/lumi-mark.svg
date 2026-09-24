@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>Lumi mark</title>
+  <defs>
+    <radialGradient id="lumi-glow" cx="36" cy="28" r="18" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFC24B" stop-opacity="0.35"/>
+      <stop offset="0.444" stop-color="#FFC24B" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#FFC24B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <circle cx="36" cy="28" r="18" fill="url(#lumi-glow)"/>
+  <path d="M16 16V48H48" stroke="#F6F4EE" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="36" cy="28" r="8" fill="#FFC24B"/>
+</svg>

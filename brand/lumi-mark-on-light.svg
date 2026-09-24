@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">
+  <title>Lumi mark for light backgrounds</title>
+  <path d="M16 16V48H48" stroke="#15172E" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="36" cy="28" r="9.5" fill="#10122B"/>
+  <circle cx="36" cy="28" r="7" fill="#FFC24B"/>
+</svg>

@@ -46,6 +46,11 @@ logger = logging.getLogger(__name__)
 # in CI secret + signed first-update at the new key.
 EDDSA_PUBLIC_KEY = "HgNb0s7xavpa1bFyX/8B24AnuUdgekpvgO6HQU+zv8k="
 
+# Still the pre-rebrand Pages address on purpose: every installed SONN Client
+# polls it, so the first Lumi releases must be published here. Moving the feed
+# to a Lumi domain takes a bridge release whose binary points at the new URL,
+# published here first. Rename the repository only after that (GitHub does not
+# redirect Pages project sites after a rename).
 APPCAST_URL = "https://luminary-analytics.github.io/resonant-client/appcast.xml"
 COMPANY_NAME = "Luminary Analytics"
 APP_NAME = "Lumi"

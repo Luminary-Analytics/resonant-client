@@ -117,7 +117,7 @@ def test_pip_install_includes_the_extension():
 
 
 def test_spec_bundles_the_extension():
-    spec = (REPO / "packaging" / "resonant.spec").read_text(encoding="utf-8")
+    spec = (REPO / "packaging" / "lumi.spec").read_text(encoding="utf-8")
     assert 'PKG_ROOT / "browser_extension" / "manifest.json"' in spec
     assert 'PKG_ROOT / "browser_extension" / "background.js"' in spec
 

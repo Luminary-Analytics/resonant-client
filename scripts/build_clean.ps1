@@ -1,5 +1,5 @@
 param(
-    [string]$BundleRoot = "dist/resonant",
+    [string]$BundleRoot = "dist/lumi",
     [string]$ManifestPath = "dist/bundle-manifest.json",
     [switch]$KeepEnvironment,
     [switch]$ValidateOnly
@@ -11,7 +11,7 @@ $bundle = [IO.Path]::GetFullPath((Join-Path $repo $BundleRoot))
 $build = [IO.Path]::GetFullPath((Join-Path $repo "build"))
 $dist = [IO.Path]::GetFullPath((Join-Path $repo "dist"))
 $eggInfo = [IO.Path]::GetFullPath((Join-Path $repo "lumi.egg-info"))
-$tempRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "resonant-clean-build-$PID"))
+$tempRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "lumi-clean-build-$PID"))
 $pushed = $false
 
 function Assert-ChildPath([string]$Path, [string]$Parent) {
@@ -30,7 +30,7 @@ Assert-ChildPath $eggInfo $repo
 # a running bundle and only then fail on a loaded DLL, breaking the active app.
 if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     $bundlePrefix = $bundle.TrimEnd('\') + '\'
-    $activeBundleProcesses = @(Get-CimInstance Win32_Process -Filter "Name='resonant.exe'" |
+    $activeBundleProcesses = @(Get-CimInstance Win32_Process -Filter "Name='lumi.exe'" |
         Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($bundlePrefix, [StringComparison]::OrdinalIgnoreCase) })
     if ($activeBundleProcesses.Count -gt 0) {
         throw "Refusing to clean a running bundle at $bundle. Close that candidate or build in a separate source copy. No files were removed."
@@ -68,10 +68,10 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
     & $python -m pip install --disable-pip-version-check --no-cache-dir "${repo}[gui,desktop]" pyinstaller
     if ($LASTEXITCODE -ne 0) { throw "Build dependency install failed with exit code $LASTEXITCODE" }
-    & $python -m PyInstaller (Join-Path $repo "packaging/resonant.spec") --clean --noconfirm
+    & $python -m PyInstaller (Join-Path $repo "packaging/lumi.spec") --clean --noconfirm
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
-    if (-not (Test-Path -LiteralPath (Join-Path $bundle "resonant.exe"))) {
-        throw "Clean build did not produce $bundle\resonant.exe"
+    if (-not (Test-Path -LiteralPath (Join-Path $bundle "lumi.exe"))) {
+        throw "Clean build did not produce $bundle\lumi.exe"
     }
 
     & $python (Join-Path $repo "packaging/check_bundle.py") $bundle `

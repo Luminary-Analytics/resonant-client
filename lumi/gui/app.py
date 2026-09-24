@@ -103,7 +103,7 @@ logger = logging.getLogger(__name__)
 # "Internal Server Error".
 #
 # When frozen, PyInstaller exposes `sys._MEIPASS` pointing at the
-# unpacked bundle root. Our datas= list in packaging/resonant.spec
+# unpacked bundle root. Our datas= list in packaging/lumi.spec
 # places templates + static at `lumi/gui/templates/` and
 # `lumi/gui/static/` relative to that root. Use those real
 # paths for Jinja2 + StaticFiles when frozen; fall back to the dev

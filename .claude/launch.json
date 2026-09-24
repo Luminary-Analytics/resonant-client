@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "resonant-gui",
+      "name": "lumi-gui",
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "lumi", "gui", "--browser", "--port", "8909"],
       "port": 8909

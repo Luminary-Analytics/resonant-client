@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "resonant-client"
+name = "lumi"
 version = "0.19.2.dev11"
 description = "Provider-adaptive multimodal coding agent for local and hosted models"
 readme = "README.md"
@@ -156,6 +156,12 @@ exclude_lines = [
 ]
 
 [project.scripts]
+lumi = "lumi.__main__:main"
+lumi-tui = "lumi.__main__:main"
+lumi-gui = "lumi.gui.server:main"
+lumi-smoke = "lumi.smoke.cli:main"
+lumi-skill = "lumi.orchestration.skill_cli:main"
+# Pre-rebrand command names, kept so existing scripts and shortcuts work.
 resonant = "lumi.__main__:main"
 resonant-tui = "lumi.__main__:main"
 resonant-gui = "lumi.gui.server:main"
@@ -171,7 +177,7 @@ include = ["lumi*"]
 # checkouts.
 "lumi.orchestration.bundled_skills" = ["*.md"]
 # The unpacked Chrome extension behind the browser tools' tab grouping. Listed
-# here as well as in packaging/resonant.spec: the spec only covers the frozen
+# here as well as in packaging/lumi.spec: the spec only covers the frozen
 # .exe, and without this a `pip install` silently omits the extension and tabs
 # stop being grouped with no error anywhere.
 "lumi" = ["browser_extension/*"]

@@ -17,7 +17,7 @@ def _load():
 
 
 def _installer(tmp_path: Path, version: str) -> Path:
-    path = tmp_path / "dist" / f"resonant-setup-{version}.exe"
+    path = tmp_path / "dist" / f"lumi-setup-{version}.exe"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(f"installer {version}".encode())
     return path
@@ -28,10 +28,10 @@ def test_new_installer_is_copied_and_linked(tmp_path):
     site = tmp_path / "site"
     site.mkdir()
     target = pages.publish(site, _installer(tmp_path, "0.19.2"), "0.19.2")
-    assert target == site / "downloads" / "v0.19.2" / "resonant-setup-0.19.2.exe"
+    assert target == site / "downloads" / "v0.19.2" / "lumi-setup-0.19.2.exe"
     assert target.read_bytes() == b"installer 0.19.2"
     index = (site / "index.html").read_text(encoding="utf-8")
-    assert 'href="downloads/v0.19.2/resonant-setup-0.19.2.exe"' in index
+    assert 'href="downloads/v0.19.2/lumi-setup-0.19.2.exe"' in index
     assert (site / ".nojekyll").exists()
 
 

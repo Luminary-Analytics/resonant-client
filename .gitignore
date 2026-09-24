@@ -33,6 +33,7 @@ pytest-cache-files-*/
 
 # Resonant runtime
 .resonant/
+.lumi/
 
 # Claude Code local state (machine-specific)
 .claude/settings.local.json

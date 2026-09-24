@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   pytest:
-    # windows-latest matches the platform Resonant actually ships on, and the
+    # windows-latest matches the platform Lumi actually ships on, and the
     # platform-sensitive parts of the harness (subprocess-tree cancellation,
     # path validation, the grep/glob tools) behave differently elsewhere.
     runs-on: windows-latest

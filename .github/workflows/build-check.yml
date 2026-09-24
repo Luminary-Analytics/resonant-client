@@ -4,7 +4,7 @@ name: Build check
 #
 # Why this exists (bug #12 in docs/known-issues.md):
 #   The first v0.2.0 release CI failed because `plan_graph_view.js` was
-#   referenced by `packaging/resonant.spec` but had never been git-committed.
+#   referenced by `packaging/lumi.spec` but had never been git-committed.
 #   Local builds worked because the file was on disk; CI's clean checkout
 #   failed at PyInstaller. We learned about it only AFTER pushing the v0.2.0
 #   tag, requiring a tag delete + re-push. This workflow catches that class
@@ -12,8 +12,8 @@ name: Build check
 #
 # What this DOES:
 #   - Checks out the PR branch / main commit
-#   - Builds the PyInstaller bundle from packaging/resonant.spec
-#   - Runs `resonant.exe --version` to confirm the frozen exe boots
+#   - Builds the PyInstaller bundle from packaging/lumi.spec
+#   - Runs `lumi.exe --version` to confirm the frozen exe boots
 #
 # What this does NOT do:
 #   - Sign the bundle (no EdDSA, no secrets needed)
@@ -26,7 +26,7 @@ on:
   pull_request:
     paths:
       - 'lumi/**'
-      - 'packaging/resonant.spec'
+      - 'packaging/lumi.spec'
       - 'packaging/check_bundle.py'
       - 'packaging/bundle-policy.json'
       - 'scripts/build_clean.ps1'
@@ -38,7 +38,7 @@ on:
       - main
     paths:
       - 'lumi/**'
-      - 'packaging/resonant.spec'
+      - 'packaging/lumi.spec'
       - 'packaging/check_bundle.py'
       - 'packaging/bundle-policy.json'
       - 'scripts/build_clean.ps1'
@@ -64,8 +64,8 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/build_clean.ps1
-          if (-not (Test-Path "dist/resonant/resonant.exe")) {
-              throw "PyInstaller did not produce dist/resonant/resonant.exe — likely an untracked file referenced by the spec, or a missing hidden import. See https://github.com/Luminary-Analytics/resonant-client/blob/main/docs/known-issues.md#12 for context."
+          if (-not (Test-Path "dist/lumi/lumi.exe")) {
+              throw "PyInstaller did not produce dist/lumi/lumi.exe — likely an untracked file referenced by the spec, or a missing hidden import. See https://github.com/Luminary-Analytics/resonant-client/blob/main/docs/known-issues.md#12 for context."
           }
 
       - name: Smoke-test --version
@@ -74,9 +74,9 @@ jobs:
           # The executable is a Windows GUI subsystem binary (console=False),
           # so PowerShell's `&` cannot capture its stdout directly. Explicit
           # redirection gives the child a writable stdout handle.
-          $stdout = Join-Path $env:RUNNER_TEMP "resonant-version.out"
-          $stderr = Join-Path $env:RUNNER_TEMP "resonant-version.err"
-          $proc = Start-Process -FilePath "dist/resonant/resonant.exe" `
+          $stdout = Join-Path $env:RUNNER_TEMP "lumi-version.out"
+          $stderr = Join-Path $env:RUNNER_TEMP "lumi-version.err"
+          $proc = Start-Process -FilePath "dist/lumi/lumi.exe" `
               -ArgumentList "--version" -Wait -PassThru `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           if ($proc.ExitCode -ne 0) {
@@ -85,23 +85,23 @@ jobs:
 
           $output = (Get-Content $stdout -Raw).Trim()
           Write-Host "Version output: $output"
-          if ($output -notmatch "resonant-client \d+\.\d+\.\d+") {
+          if ($output -notmatch "lumi \d+\.\d+\.\d+") {
               throw "Bundled exe didn't print a recognizable version string: $output"
           }
 
       - name: Upload bundle manifest
         uses: actions/upload-artifact@v4
         with:
-          name: resonant-bundle-manifest
+          name: lumi-bundle-manifest
           path: dist/bundle-manifest.json
 
       - name: Verify WinSparkle DLL bundled
         shell: pwsh
         run: |
-          if (-not (Test-Path "dist/resonant/_internal/WinSparkle.dll")) {
-              throw "WinSparkle.dll missing from dist/resonant/_internal/ — auto-update will be a no-op in this build"
+          if (-not (Test-Path "dist/lumi/_internal/WinSparkle.dll")) {
+              throw "WinSparkle.dll missing from dist/lumi/_internal/ — auto-update will be a no-op in this build"
           }
-          $size = (Get-Item "dist/resonant/_internal/WinSparkle.dll").Length
+          $size = (Get-Item "dist/lumi/_internal/WinSparkle.dll").Length
           Write-Host "WinSparkle.dll: $([math]::Round($size / 1MB, 2)) MB"
 
       - name: Smoke-test live HTTP + WebSocket (frozen-only bug class)
@@ -109,12 +109,12 @@ jobs:
         run: |
           # The pre-release smoke discipline that caught bugs #19-#24.
           # See RELEASING.md "Frozen-only bug class" for the rationale.
-          $logPath = Join-Path $env:USERPROFILE ".resonant\logs\resonant-startup.log"
+          $logPath = Join-Path $env:USERPROFILE ".lumi\logs\lumi-startup.log"
           if (Test-Path $logPath) { Remove-Item $logPath -Force }
 
           # Browser mode prints the one-time launch link (it opens no browser);
           # the frozen no-console build sends that output to the startup log.
-          $proc = Start-Process -FilePath "dist/resonant/resonant.exe" `
+          $proc = Start-Process -FilePath "dist/lumi/lumi.exe" `
               -ArgumentList "gui","--browser","--port","8975" `
               -PassThru -WindowStyle Hidden
 

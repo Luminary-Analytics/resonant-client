@@ -26,6 +26,31 @@ def _client_host(host: str) -> str:
     return {"": "127.0.0.1", "0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
 
 
+def _brand_macos_process(icon_path: str) -> None:
+    """Show Lumi's name and icon in the macOS Dock and menu bar.
+
+    A packaged Lumi.app gets both from its Info.plist and lumi.icns. A run from
+    source is a Python process, which macOS would otherwise label "Python"
+    with Python's icon. pywebview's own `icon` option is GTK/Qt only.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import NSApplication, NSImage
+        from Foundation import NSBundle
+    except ImportError:
+        return
+    try:
+        info = NSBundle.mainBundle().infoDictionary()
+        if info is not None and info.get("CFBundleName") in (None, "Python"):
+            info["CFBundleName"] = "Lumi"
+        image = NSImage.alloc().initWithContentsOfFile_(icon_path)
+        if image is not None:
+            NSApplication.sharedApplication().setApplicationIconImage_(image)
+    except Exception:
+        logger.debug("Could not set the macOS app name and icon", exc_info=True)
+
+
 def _find_free_port() -> int:
     """Find a free TCP port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -194,7 +219,7 @@ def launch_gui(
 
             # Resolve the Windows icon used after the native HWND exists.
             icon_dir = os.path.join(os.path.dirname(__file__), "static")
-            ico_path = os.path.join(icon_dir, "resonant.ico")
+            ico_path = os.path.join(icon_dir, "lumi.ico")
 
             wv_kwargs = dict(
                 title="Lumi",
@@ -269,6 +294,7 @@ def launch_gui(
             except Exception:
                 pass
 
+            _brand_macos_process(os.path.join(icon_dir, "lumi-macos.png"))
             webview.start(debug=debug)
         except (ImportError, Exception) as exc:
             logger.debug("pywebview not available: %s", exc)

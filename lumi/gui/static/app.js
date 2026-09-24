@@ -4499,7 +4499,7 @@ class LumiApp {
         const empty = document.createElement('div');
         empty.className = 'chat-empty-state';
         empty.innerHTML = `
-            <img class="chat-empty-logo" src="${this.escapeHtml(document.querySelector('.sidebar-brand img')?.getAttribute('src') || '/static/favicon.svg')}" alt="" aria-hidden="true">
+            <img class="chat-empty-logo" src="/static/lumi-app-icon.svg" alt="" aria-hidden="true">
             <h2 class="chat-empty-title">What would you like to build?</h2>
             <p class="chat-empty-sub">${this.currentCwd ? `Start a session in ${this.escapeHtml(this._projectNameFromPath(this.currentCwd))}` : 'Choose a project to get started'}</p>
         `;
@@ -8650,7 +8650,7 @@ class LumiApp {
                 // A tag collapses repeats: a run that parks twice replaces its
                 // own notification instead of stacking.
                 tag: tag || 'lumi-run',
-                icon: '/static/resonant.png',
+                icon: '/static/lumi.png',
             });
             note.onclick = () => { window.focus(); note.close(); };
             return true;

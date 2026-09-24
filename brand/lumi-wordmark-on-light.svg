@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 72" fill="none">
+  <title>lumi</title>
+  <g stroke="#15172E" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 6V64"/>
+    <path d="M26 28V48A16 16 0 0 0 58 48"/>
+    <path d="M58 28V64"/>
+    <path d="M78 64V40A12 12 0 0 1 102 40V64"/>
+    <path d="M102 40A12 12 0 0 1 126 40V64"/>
+    <path d="M146 28V64"/>
+  </g>
+  <circle cx="146" cy="12" r="7" fill="#10122B"/>
+  <circle cx="146" cy="12" r="5" fill="#FFC24B"/>
+</svg>

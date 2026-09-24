@@ -5,7 +5,7 @@ name: Release
 #
 # What this workflow does end-to-end:
 #   1. Builds the PyInstaller bundle for the tagged version
-#   2. Wraps it into an Inno Setup installer (resonant-setup-X.Y.Z.exe)
+#   2. Wraps it into an Inno Setup installer (lumi-setup-X.Y.Z.exe)
 #   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
 #   4. Creates a GitHub Release, uploads the signed installer
 #   5. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
@@ -58,7 +58,7 @@ jobs:
           cache: 'pip'
 
       # Correctness gate. A signed installer that auto-updates every deployed
-      # copy of Resonant is the last artifact that should ever be cut from a red
+      # copy of Lumi is the last artifact that should ever be cut from a red
       # tree, and a tag push can race ahead of the PR that `tests.yml` gated.
       # ~2 minutes against a 30-minute job budget.
       - name: Install for tests
@@ -76,8 +76,8 @@ jobs:
         shell: pwsh
         run: |
           ./scripts/build_clean.ps1
-          if (-not (Test-Path "dist/resonant/resonant.exe")) {
-              throw "PyInstaller did not produce dist/resonant/resonant.exe"
+          if (-not (Test-Path "dist/lumi/lumi.exe")) {
+              throw "PyInstaller did not produce dist/lumi/lumi.exe"
           }
 
       - name: Smoke-test bundled exe
@@ -85,16 +85,16 @@ jobs:
         run: |
           # Just confirm --version works — quick sanity that the bundle is
           # not totally broken before we spend time wrapping it.
-          $stdout = Join-Path $env:RUNNER_TEMP "resonant-version.out"
-          $stderr = Join-Path $env:RUNNER_TEMP "resonant-version.err"
-          $proc = Start-Process -FilePath "dist/resonant/resonant.exe" `
+          $stdout = Join-Path $env:RUNNER_TEMP "lumi-version.out"
+          $stderr = Join-Path $env:RUNNER_TEMP "lumi-version.err"
+          $proc = Start-Process -FilePath "dist/lumi/lumi.exe" `
               -ArgumentList "--version" -Wait -PassThru `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           if ($proc.ExitCode -ne 0) {
               throw "Bundled exe --version exited $($proc.ExitCode): $(Get-Content $stderr -Raw)"
           }
           $output = (Get-Content $stdout -Raw).Trim()
-          if ($output -notmatch "resonant-client ${{ steps.version.outputs.version }}") {
+          if ($output -notmatch "lumi ${{ steps.version.outputs.version }}") {
               throw "Bundled exe reported wrong version: $output"
           }
           Write-Host "Smoke test passed: $output"
@@ -113,7 +113,7 @@ jobs:
               $iscc = (Get-ChildItem "C:\" -Filter "ISCC.exe" -Recurse -ErrorAction SilentlyContinue -Depth 5 | Select-Object -First 1).FullName
           }
           & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" "packaging/installer.iss"
-          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+          $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
           if (-not (Test-Path $installer)) {
               throw "Installer not produced at $installer"
           }
@@ -135,7 +135,7 @@ jobs:
           $env:EDDSA_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $keyPath
 
           $tool = "packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe"
-          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+          $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
 
           # winsparkle-tool sign prints just the base64 EdDSA signature to
           # stdout. The installer is the trailing positional arg, NOT --file.
@@ -151,12 +151,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: SONN Client ${{ steps.version.outputs.version }}
+          name: Lumi ${{ steps.version.outputs.version }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
           files: |
-            dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe
+            dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe
 
       # Installed apps poll the GitHub Pages feed and download installers
       # anonymously. The source repository may be private, so Release assets
@@ -176,14 +176,14 @@ jobs:
           $owner = "${{ github.repository_owner }}".ToLowerInvariant()
           $repo = "${{ github.event.repository.name }}"
           $pages = "https://$owner.github.io/$repo"
-          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+          $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
           python packaging/publish_pages.py `
               --site "gh-pages-checkout" `
               --installer $installer `
               --version "${{ steps.version.outputs.version }}"
           if ($LASTEXITCODE -ne 0) { throw "publish_pages.py failed" }
 
-          $notes = "<p>SONN Client ${{ steps.version.outputs.version }}. See <a href=`"$pages/`">$pages/</a>.</p>"
+          $notes = "<p>Lumi ${{ steps.version.outputs.version }}. See <a href=`"$pages/`">$pages/</a>.</p>"
           python packaging/update_appcast.py `
               --version "${{ steps.version.outputs.version }}" `
               --installer $installer `
@@ -205,5 +205,5 @@ jobs:
           git add -A
           git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
           tree=$(git write-tree)
-          commit=$(git commit-tree "$tree" -m "release: SONN Client ${{ steps.version.outputs.version }} installer and appcast")
+          commit=$(git commit-tree "$tree" -m "release: Lumi ${{ steps.version.outputs.version }} installer and appcast")
           git push --force origin "$commit:refs/heads/gh-pages"

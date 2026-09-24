@@ -1,13 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 """
-PyInstaller spec for Resonant (Windows installer build).
+PyInstaller spec for Lumi (Windows installer build; macOS app bundle).
 
-Build:    pyinstaller packaging/resonant.spec --clean --noconfirm
-Output:   dist/resonant/resonant.exe (one-folder bundle)
+Build:    pyinstaller packaging/lumi.spec --clean --noconfirm
+Output:   dist/lumi/lumi.exe (one-folder bundle); dist/Lumi.app on macOS
 
 Mode choices:
 - One-folder (this spec): faster startup, easier debugging, the Inno Setup
-  installer wraps the whole `dist/resonant/` directory anyway so the user
+  installer wraps the whole `dist/lumi/` directory anyway so the user
   never sees the multi-file mess.
 - Console=True for v0.x — keeps the terminal open so first-install
   Ollama-connection / port-bind issues are visible. Will flip to False once
@@ -54,6 +54,7 @@ NOT bundled (runtime-optional):
                        OS-shell fallbacks).
 """
 
+import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
@@ -61,7 +62,7 @@ block_cipher = None
 
 # ---- Project layout ----------------------------------------------------------
 
-# The .spec runs from the repo root when invoked as `pyinstaller packaging/resonant.spec`.
+# The .spec runs from the repo root when invoked as `pyinstaller packaging/lumi.spec`.
 PROJECT_ROOT = Path.cwd()
 PKG_ROOT = PROJECT_ROOT / "lumi"
 
@@ -95,9 +96,17 @@ datas = [
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "favicon.svg"),
      "lumi/gui/static"),
-    (str(PKG_ROOT / "gui" / "static" / "resonant.ico"),
+    (str(PKG_ROOT / "gui" / "static" / "lumi.ico"),
      "lumi/gui/static"),
-    (str(PKG_ROOT / "gui" / "static" / "resonant.png"),
+    (str(PKG_ROOT / "gui" / "static" / "lumi.png"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "lumi-macos.png"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "lumi-app-icon.svg"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "lumi-mark.svg"),
+     "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "lumi-wordmark.svg"),
      "lumi/gui/static"),
 
     # Unpacked Chrome extension backing the browser tools' tab grouping.
@@ -208,7 +217,7 @@ excludes = [
 # ---- Analysis ----------------------------------------------------------------
 
 # ---- Native binaries ---------------------------------------------------------
-# WinSparkle.dll for auto-update. Bundled next to resonant.exe so the ctypes
+# WinSparkle.dll for auto-update. Bundled next to lumi.exe so the ctypes
 # loader in lumi/updater.py can find it via sys._MEIPASS.
 
 WINSPARKLE_DLL = PROJECT_ROOT / "packaging" / "winsparkle" / "WinSparkle-0.9.2" / "x64" / "Release" / "WinSparkle.dll"
@@ -264,7 +273,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="resonant",
+    name="lumi",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -276,7 +285,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(PKG_ROOT / "gui" / "static" / "resonant.ico"),
+    icon=str(PKG_ROOT / "gui" / "static" / "lumi.ico"),
 )
 
 # ---- Collect (one-folder bundle) --------------------------------------------
@@ -289,5 +298,24 @@ coll = COLLECT(
     strip=False,
     upx=False,
     upx_exclude=[],
-    name="resonant",
+    name="lumi",
 )
+
+# ---- macOS app bundle ---------------------------------------------------------
+#
+# Gives a macOS build its name, Dock icon and bundle identity. Only the
+# branding is in place: no macOS build has been made or tested yet, and the
+# Windows-only pieces above (WinSparkle, rg.exe, the WebView2 backend) still
+# need macOS counterparts before one can ship.
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="Lumi.app",
+        icon=str(PROJECT_ROOT / "packaging" / "macos" / "lumi.icns"),
+        bundle_identifier="com.luminaryanalytics.lumi",
+        info_plist={
+            "CFBundleName": "Lumi",
+            "CFBundleDisplayName": "Lumi",
+            "NSHighResolutionCapable": True,
+        },
+    )

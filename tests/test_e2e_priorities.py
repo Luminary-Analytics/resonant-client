@@ -173,11 +173,12 @@ def test_skill_retrieval_budget_dedup_negative_query_and_suppression(tmp_path, m
 
 
 def test_pack_catalog_is_bounded_and_loads_body_lazily(tmp_path):
-    from resonant_client.engine.capability_packs import CapabilityPackManager
+    from resonant_client.engine.capability_packs import CapabilityPackManager, approve_pack
     root = tmp_path/'.resonant'/'packs'/'quality'; root.mkdir(parents=True)
-    (root/'resonant-pack.json').write_text(json.dumps({'id':'quality','enabled':True,'trust':'local','skills':['sqlite.md']}))
+    (root/'resonant-pack.json').write_text(json.dumps({'id':'quality','skills':['sqlite.md']}))
     (root/'sqlite.md').write_text('description: SQLite transaction rollback\n' + 'full procedure body\n'*2000)
-    manager = CapabilityPackManager(tmp_path)
+    [pack] = CapabilityPackManager(tmp_path).discover()
+    manager = CapabilityPackManager(tmp_path, configured=approve_pack({}, pack, reviewed_digest=pack.digest))
     catalog = manager.skill_context('sqlite rollback', max_tokens=150)
     assert len(catalog) <= 600
     assert 'full procedure body' not in catalog

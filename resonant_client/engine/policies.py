@@ -121,8 +121,16 @@ class ExecutionPolicy:
             return None
 
     def merge(self, other: "ExecutionPolicy") -> "ExecutionPolicy":
-        """Merge another policy (other's rules take precedence by being checked first)."""
-        return ExecutionPolicy(other.rules + self.rules)
+        """Layer another policy, such as a repository's resonant-policy.json, over this one.
+
+        The other policy's rules are checked before this policy's allow and
+        prompt rules, so a repository can tighten or refine them. This policy's
+        deny rules are checked before everything: a repository must not be able
+        to weaken a built-in deny with an earlier ``allow``.
+        """
+        denies = [rule for rule in self.rules if rule.action == PolicyAction.DENY.value]
+        defaults = [rule for rule in self.rules if rule.action != PolicyAction.DENY.value]
+        return ExecutionPolicy(denies + other.rules + defaults)
 
 
 # ── Built-in tier policies ──────────────────────────────────────

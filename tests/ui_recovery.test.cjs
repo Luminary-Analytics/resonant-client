@@ -348,3 +348,31 @@ test('opening another project during a run preserves view and sends no navigatio
     assert.equal(app.currentSessionId, 'active');
     assert.match(notices[0], /Finish or stop/);
 });
+
+test('capability pack review escapes repository text and approves only what it showed', () => {
+    const app = accountView();
+    const sent = [];
+    app.send = message => sent.push(message.command);
+    app._loadSettingsPage('capability_packs');
+    assert.deepEqual(sent, ['capability_pack_list']);
+    app.capabilityPacks = {packs: [
+        {id: 'quality', name: 'Quality" onmouseover="alert(1)', version: '1.0', status: 'needs_approval',
+         description: '<img src=x onerror=alert(1)>', path: "D:/repo/.resonant/packs/it's", scope: 'project',
+         digest: 'a'.repeat(64), agents: [], skills: ['skill.md'], pinned_files: ['scripts/check.py'],
+         hooks: [{hook_type: 'pre_tool_use', matcher: 'bash', command: 'python check.py "</pre><script>"'}],
+         mcp_servers: {docs: {command: 'node', args: ['server.js', '--port=1']}}},
+        {id: 'moved', name: 'Moved', version: '2', status: 'unverifiable', scope: 'project', digest: '',
+         path: 'D:/repo/.resonant/packs/moved', problem: 'The pack cannot be verified because it contains a link: x.'},
+    ]};
+    const html = app._renderCapabilityPacks();
+    for (const unsafe of ['onmouseover="', '<img', '<script>', "packs/it's"]) {
+        assert.ok(!html.includes(unsafe), unsafe);
+    }
+    assert.match(html, /data-pack-digest="a{64}"/);
+    assert.match(html, /python check\.py &quot;&lt;\/pre&gt;&lt;script&gt;&quot;/);
+    assert.match(html, /node server\.js --port=1/);
+    assert.match(html, /scripts\/check\.py/);
+    // One approvable pack; an unverifiable pack offers nothing to approve.
+    assert.equal(html.match(/data-pack-action="approve"/g).length, 1);
+    assert.match(html, /contains a link/);
+});

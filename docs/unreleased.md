@@ -8,6 +8,91 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 24 security fixes: capability-pack trust and tool approvals
+
+Source-only; not bundled or released. These are separate from the AI Employee pause.
+
+**Repository capability packs could approve themselves.** The client
+discovered `<project>/.resonant/packs` automatically, and a pack's own manifest
+could set `trust`, `enabled` and `sha256`. Opening a cloned repository could
+then connect the pack's MCP servers and register its shell hooks. The digest
+covered only the manifest.
+
+- Trust and enablement now come only from user settings. Manifest `trust`,
+  `enabled` and `sha256` are ignored.
+- Approval is location-bound. A repository pack can only be trusted by a user
+  approval of that pack directory, so an approval never follows a copied pack
+  into another repository. Pinned trust by pack id still works for packs
+  outside the project.
+- Every approval pins one digest covering every file in the pack (except
+  `.git`) plus the repository files that its hook and MCP commands name. Any
+  change turns the pack off until it is approved again. Packs with links, more
+  than 4,000 files, or more than 64 MB cannot be verified.
+- Pack hooks re-verify the digest before each run. Skills, agents and MCP
+  servers stop contributing once the pack changes.
+- Pack hooks now live on per-session runners. Opening another project
+  disconnects the previous project's pack MCP servers; previously only a
+  settings reload removed them.
+- **Settings > Capability packs** shows what each pack would run and offers
+  Approve or Revoke. If the pack changed after the list was drawn, approval is
+  refused with an explanation. A banner above the composer names packs that
+  are waiting for review.
+- A project's `resonant-policy.json` could weaken built-in denies: an earlier
+  `allow` beat, for example, Auto-edit's recursive-delete deny. Built-in denies
+  are now checked first. Repository rules can still tighten the policy, and a
+  policy `prompt` rule now requires approval.
+
+**A user's Deny could run the tool.** After a Deny, the engine emitted
+PERMISSION_REQUEST and read `HookResult`'s default decision, "allow", as
+approval. The GUI always attaches a hook runner, so in Ask mode a denied tool
+ran anyway.
+
+- The user's answer is final, and only an explicit `true` approves.
+- A missing or unknown hook decision is no decision. When no prompt can be
+  shown, only an explicit allow or deny from a matching PERMISSION_REQUEST hook
+  decides; otherwise the call fails closed. Arguments rewritten by a hook are
+  checked against the policy again.
+- Auto-edit used to run shell and MCP actions without asking. The GUI attached
+  a prompt only in Ask mode, and the engine fell back to a legacy
+  `auto_approve` flag. Auto-edit now asks before shell, MCP, browser, desktop,
+  REPL, process and git actions, and before any new tool. `auto_approve` now
+  follows the autonomy tier. Background work without a prompt, such as sprint
+  roles in Auto-edit, now skips calls that need approval.
+- Changing the permission mode now updates the live session's tier and policy.
+  Before, switching Full-auto to Ask mid-session kept auto-approving.
+- Delegated workers ask through the parent's prompt, one at a time, instead of
+  auto-approving; restarted workers use their own run's prompt.
+- Every prompt has a request id. Late or stale answers are ignored instead of
+  approving the next request, and a missing or non-boolean `approved` no longer
+  counts as approval.
+- The approval dialog now takes focus when it opens: Tab reaches Deny and
+  Allow, Escape denies, and focus returns to the composer. Denied shell cards
+  read "not run" instead of "running…".
+
+Validation: `ruff`, 23 Node UI tests (one new), `git diff --check`, and the
+full suite: 3,405 passed, 2 skipped. The new tests are in `test_permission_decisions.py`,
+`test_gui_permission_modes.py` and `test_capability_pack_trust.py`. Of these,
+45 were written before the fix: 41 failed against the unfixed code, and 4
+contract tests passed. Two more cover the restarted-worker prompt and dropping
+servers of a pack edited after approval; they were written with their fixes
+and mutation-checked. Real browser events drove the actual app, WebSocket,
+engine, hook runner and approve handler. The model was scripted, no provider
+was called, and the home and project were temporary. Checked there:
+
+- Opening a repository with a self-trusting pack ran neither its hook nor its
+  MCP server.
+- In Auto-edit, a shell command prompted. Deny left no file; Allow ran it.
+- After switching to Ask mid-session, a keyboard Deny (Tab, then Enter) and an
+  Escape each left no file.
+- Approving a pack edited after review was refused. Approving the current
+  content started its MCP server and ran its hook on the next turn.
+- Editing the approved pack stopped the hook, showed "Changed since approval",
+  and brought the banner back. Revoking worked.
+- The Settings page and dialog fit a 375 px viewport without horizontal
+  overflow.
+
+No live model run, packaged build or CLI-provider path was exercised.
+
 ## September 15 AI Employee source integration — paused
 
 The user paused implementation; see the [resume handoff](ai-employees-handoff.md).

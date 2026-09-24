@@ -98,6 +98,30 @@ from no matches. At narrow phone widths, categories become a horizontal strip.
 Text fields save when focus leaves them; switches and selects save when changed.
 Background responses defer rebuilding an actively edited field. Account, editor,
 usage, and diagnostic requests load on the relevant page rather than all at once.
+
+## Permission modes and approvals
+
+The composer's mode menu applies immediately to the current conversation,
+including a run in progress, for native providers. **Ask** runs read-only tools
+and asks before other actions; file edits and shell commands stay blocked.
+**Auto-edit** also accepts file edits and asks before shell, MCP, browser,
+desktop and git actions. **Plan** uses Auto-edit approvals for native providers.
+**Full-auto** runs everything inside the project sandbox. A project's
+`resonant-policy.json` can require more approval but cannot lift a built-in
+block.
+
+**Deny** is final: nothing, including a hook, runs the call afterward. The
+approval dialog takes focus when it opens, so typing in the composer cannot
+answer it. **Tab** reaches **Deny** and **Allow**, and **Escape** denies. Work
+that runs without an approval dialog, such as background sprint roles, skips
+calls that need approval instead of running them.
+
+**Settings > Capability packs** lists packs from the project's `.resonant/packs`
+and `~/.resonant/packs`, with the hooks and MCP servers each would run. Nothing
+in a pack runs until you approve it there; a pack's own manifest cannot approve
+it. Editing an approved pack turns it off until you review it again. When the
+open project has packs waiting for review, the banner above the composer links
+to that page.
 Settings supports dark and light palettes while retaining the SONN accent.
 
 ## ChatGPT/Codex and OpenRouter

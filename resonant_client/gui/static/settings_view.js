@@ -179,6 +179,67 @@ class ResonantSettingsView {
     }
 
 
+    _renderCapabilityPacks() {
+        const data = this.capabilityPacks;
+        if (!data) return '<p class="editor-help">Loading capability packs…</p>';
+        // Pack names, descriptions and commands come from repository files, so
+        // everything is escaped for attribute and text contexts alike.
+        const entities = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+        const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => entities[ch]);
+        const intro = '<p class="editor-help">A capability pack can add lifecycle hooks (shell commands), MCP servers, skills and agents. Nothing in a pack runs until you approve it here; a pack cannot approve itself. An approval covers this pack at this location with exactly the files it has now. If any of them change, the pack turns off until you review it again.</p>'
+            + (data.error ? `<p class="editor-error" role="alert">${esc(data.error)}</p>` : '');
+        const packs = Array.isArray(data.packs) ? data.packs : [];
+        if (!packs.length) {
+            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .resonant/packs or in ~/.resonant/packs.</span></div>`;
+        }
+        const statusText = {
+            approved: 'Approved · active',
+            disabled: 'Approved · disabled',
+            needs_approval: 'Not approved · off',
+            changed: 'Changed since approval · off',
+            unverifiable: 'Cannot be verified · off',
+        };
+        return `${intro}<div class="pack-list">${packs.map(pack => {
+            const hooks = (pack.hooks || []).map(hook => {
+                const target = hook.matcher || hook.tool_name;
+                return `<li><code>${esc(hook.hook_type || 'pre_tool_use')}${target ? ` · ${esc(target)}` : ''}</code><pre class="pack-command">${esc(hook.command)}</pre></li>`;
+            }).join('');
+            const servers = Object.entries(pack.mcp_servers || {}).map(([name, config]) => {
+                const args = Array.isArray(config?.args) ? config.args : [];
+                const endpoint = config?.url || [config?.command, ...args].filter(Boolean).join(' ');
+                return `<li><code>${esc(name)}</code><pre class="pack-command">${esc(endpoint)}</pre></li>`;
+            }).join('');
+            const pinned = (pack.pinned_files || []).map(file => `<li><code>${esc(file)}</code></li>`).join('');
+            const canApprove = Boolean(pack.digest) && ['needs_approval', 'changed', 'disabled'].includes(pack.status);
+            const canRevoke = ['approved', 'disabled', 'changed'].includes(pack.status);
+            const target = `data-pack-id="${esc(pack.id)}" data-pack-path="${esc(pack.path)}"`;
+            return `<article class="pack-card status-${esc(pack.status)}" aria-label="${esc(pack.name)} capability pack">
+                <div class="pack-card-head"><h3>${esc(pack.name)} <small>v${esc(pack.version)}</small></h3><span class="pack-status" role="status">${esc(statusText[pack.status] || pack.status)}</span></div>
+                ${pack.description ? `<p class="editor-help">${esc(pack.description)}</p>` : ''}
+                <p class="pack-meta">${pack.scope === 'project' ? 'From this repository' : 'Personal pack'} · <code>${esc(pack.path)}</code></p>
+                ${pack.problem ? `<p class="editor-error">${esc(pack.problem)}</p>` : ''}
+                <details ${pack.status === 'approved' ? '' : 'open'}><summary>What this pack would run</summary>
+                    ${hooks ? `<h4>Hooks (shell commands)</h4><ul>${hooks}</ul>` : '<p class="editor-help">No hooks.</p>'}
+                    ${servers ? `<h4>MCP servers</h4><ul>${servers}</ul>` : '<p class="editor-help">No MCP servers.</p>'}
+                    ${pinned ? `<h4>Repository files its commands run</h4><ul>${pinned}</ul>` : ''}
+                    <p class="editor-help">${(pack.agents || []).length} agents · ${(pack.skills || []).length} skills · content digest <code>${esc((pack.digest || '').slice(0, 12))}</code></p>
+                </details>
+                <div class="editor-actions">
+                    ${canApprove ? `<button type="button" class="btn-sm" data-pack-action="approve" ${target} data-pack-digest="${esc(pack.digest)}">Approve and enable</button>` : ''}
+                    ${canRevoke ? `<button type="button" class="btn-sm" data-pack-action="revoke" ${target}>Revoke approval</button>` : ''}
+                </div>
+            </article>`;
+        }).join('')}</div>`;
+    }
+
+    openSettingsPage(page) {
+        this._settingsActivePage = page || this._settingsActivePage || 'general';
+        this._settingsQuery = '';
+        const search = document.getElementById('settings-search');
+        if (search) search.value = '';
+        this.switchView('settings');
+    }
+
     _renderProviderConnections() {
         const connections = this.providerConnections || {};
         const codex = connections.codex || {};
@@ -691,6 +752,7 @@ class ResonantSettingsView {
             {id:'engram', title:'Memory', group:'Coding', icon:'book', description:'Configure the optional Engram memory service.', sections:['engram']},
             {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
             {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
+            {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
@@ -776,7 +838,7 @@ class ResonantSettingsView {
         this._settingsLoadedPage = page;
         if (page === 'sonn_account' && !this.sonnAccount) this._requestSonnAccount();
         if (page === 'provider_connections' && !this.providerConnections?.codex) this.send({command:'provider_connection', provider:'codex', action:'status'});
-        const command = {creative_editors:'editor_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list'}[page];
+        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list'}[page];
         if (command) this.send({command});
     }
 
@@ -820,7 +882,7 @@ class ResonantSettingsView {
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },
                           { value: 'ask', label: 'Suggest (read-only)' },
-                          { value: 'auto-edit', label: 'Auto-edit (files OK, shell asks)' },
+                          { value: 'auto-edit', label: 'Auto-edit (file edits OK, other actions ask)' },
                           { value: 'plan', label: 'Plan mode' },
                       ]
                     },
@@ -911,6 +973,7 @@ class ResonantSettingsView {
                 id: 'rag', title: 'Codebase Index (RAG)', custom: true },
             {
                 id: 'hooks', title: 'Hooks', custom: true },
+            { id: 'capability_packs', title: 'Capability packs', custom: true },
             {
                 id: 'mcp_servers', title: 'MCP Servers', custom: true },
         ];
@@ -960,6 +1023,8 @@ class ResonantSettingsView {
                 bodyHtml = this._renderProviderConnections();
             } else if (section.id === 'creative_editors') {
                 bodyHtml = this._renderEditorIntegrations();
+            } else if (section.id === 'capability_packs') {
+                bodyHtml = this._renderCapabilityPacks();
             } else if (section.id === 'cost_tracking') {
                 bodyHtml = this._renderCostDashboard(data);
             } else if (section.id === 'rag') {
@@ -1237,6 +1302,21 @@ class ResonantSettingsView {
                     editor, action, value: input?.value || '' });
                 btn.disabled = true;
                 btn.textContent = action === 'check' ? 'Checking…' : 'Connecting…';
+            });
+        });
+        this.settingsBody.querySelectorAll('[data-pack-action]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const approve = btn.dataset.packAction === 'approve';
+                this.send({
+                    command: approve ? 'capability_pack_approve' : 'capability_pack_revoke',
+                    pack_id: btn.dataset.packId,
+                    path: btn.dataset.packPath,
+                    // The digest of what was on screen: the server refuses the
+                    // approval if the pack changed after this list was drawn.
+                    ...(approve ? {digest: btn.dataset.packDigest} : {}),
+                });
+                btn.disabled = true;
+                btn.textContent = approve ? 'Approving…' : 'Revoking…';
             });
         });
         this.settingsBody.querySelectorAll('[data-editor-input]').forEach(input => {

@@ -1293,14 +1293,18 @@ class ResonantApp {
 
         // Permission dialog
         document.getElementById('permission-allow').addEventListener('click', () => {
-            this.send({ command: 'approve', approved: true });
-            this._setSessionActivity('working');
-            document.getElementById('permission-dialog').style.display = 'none';
+            this._answerPermission(this._pendingPermissionRequestId, true);
+            this._closePermissionDialog();
         });
         document.getElementById('permission-deny').addEventListener('click', () => {
-            this.send({ command: 'approve', approved: false });
-            this._setSessionActivity('working');
-            document.getElementById('permission-dialog').style.display = 'none';
+            this._answerPermission(this._pendingPermissionRequestId, false);
+            this._closePermissionDialog();
+        });
+        document.getElementById('permission-dialog').addEventListener('keydown', (event) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            document.getElementById('permission-deny').click();
         });
 
         // New session — show project picker / welcome screen
@@ -3923,7 +3927,12 @@ class ResonantApp {
                 break;
             case 'capability.pack_list':
                 this.runtimePacks = event.packs || [];
+                this.capabilityPacks = event;
                 this.renderRuntimeView();
+                if (this.currentView === 'settings') this.renderSettingsView();
+                if (Array.isArray(event.pending) && this._runtimeBannerState) {
+                    this._applyRuntimeError({...this._runtimeBannerState, capability_packs_pending: event.pending});
+                }
                 break;
             case 'mcp_list':
                 this.mcpServers = event.servers || [];
@@ -4518,7 +4527,7 @@ class ResonantApp {
         // Tooltip on the toggle reflects the current mode + a one-line explanation
         const tooltips = {
             ask: 'Ask permissions — confirm before every change',
-            'auto-edit': 'Auto-edit — files OK, shell asks',
+            'auto-edit': 'Auto-edit — file edits run; commands and other actions ask',
             plan: 'Plan mode — propose a plan before acting',
             bypass: 'Full-auto (sandboxed) — accept all changes inside the project',
         };
@@ -5713,6 +5722,7 @@ class ResonantApp {
         const image = event.image || null;
 
         if (denied) {
+            if (BLOCK_TOOLS.has(name)) this._settleDeniedBlockRow(name, event.call_id);
             this.appendToolStatus(name, '✗ denied', 'warn');
             return;
         }
@@ -5878,6 +5888,28 @@ class ResonantApp {
             detail.innerHTML = '';
             this._renderBlockRowDetail(row);
         }
+    }
+
+    /** A denied call never ran; its row must not keep reading "running…". */
+    _settleDeniedBlockRow(name, callId) {
+        let row = null;
+        if (callId && this._blockToolRows && this._blockToolRows.has(callId)) {
+            row = this._blockToolRows.get(callId);
+            this._blockToolRows.delete(callId);
+        } else {
+            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${name}"]`);
+            row = all[all.length - 1] || null;
+        }
+        if (!row) return;
+        const statusEl = row.querySelector('[data-status]');
+        if (statusEl) {
+            statusEl.classList.remove('pending');
+            statusEl.classList.add('err');
+            statusEl.textContent = '✗';
+        }
+        const metaEl = row.querySelector('[data-meta]');
+        if (metaEl) metaEl.textContent = 'not run';
+        row.dataset.isError = 'true';
     }
 
     appendToolStatus(name, text, color) {
@@ -7640,17 +7672,30 @@ class ResonantApp {
 
     // ── Permission ──────────────────────────────────────────────
 
+    /**
+     * Answer one permission prompt. The server accepts an answer only for the
+     * prompt that is still waiting, identified by its request id, so a late
+     * click can never approve a different request.
+     */
+    _answerPermission(requestId, approved) {
+        if (this._pendingPermissionRequestId === requestId) this._pendingPermissionRequestId = '';
+        this._setSessionActivity('working');
+        if (!requestId) return;
+        this.send({ command: 'approve', approved: approved === true, request_id: requestId });
+    }
+
     handleToolPermission(event) {
         this._setSessionActivity('needs-input');
         const name = event.name || '';
         const args = event.arguments || {};
         const review = event.review || null;
+        this._pendingPermissionRequestId = event.request_id || '';
 
         // For file edits, render inline in the conversation rather than modal —
         // less interruption, persists in the chat history. Other tools (bash etc.)
         // still get the modal because they're more consequential.
         if ((name === 'file_edit' || name === 'file_write') && review && review.hunks) {
-            this._renderInlineDiffPermission(name, args, review);
+            this._renderInlineDiffPermission(name, args, review, event.request_id || '');
             return;
         }
 
@@ -7735,11 +7780,24 @@ class ResonantApp {
             detailsEl.textContent = JSON.stringify(args, null, 2);
         }
 
-        document.getElementById('permission-dialog').style.display = 'flex';
+        const dialog = document.getElementById('permission-dialog');
+        dialog.style.display = 'flex';
+        // Move focus into the dialog itself, not onto a button, so keystrokes
+        // meant for the composer cannot answer it. Tab reaches Deny and Allow;
+        // Escape denies.
+        this._permissionReturnFocus = document.activeElement;
+        dialog.focus();
+    }
+
+    _closePermissionDialog() {
+        document.getElementById('permission-dialog').style.display = 'none';
+        const previous = this._permissionReturnFocus;
+        this._permissionReturnFocus = null;
+        (previous && previous.isConnected ? previous : this.userInput)?.focus?.();
     }
 
     /** Render an inline diff card with accept/reject buttons in the chat stream. */
-    _renderInlineDiffPermission(toolName, args, review) {
+    _renderInlineDiffPermission(toolName, args, review, requestId = '') {
         const block = document.createElement('div');
         block.className = 'inline-diff';
 
@@ -7782,8 +7840,7 @@ class ResonantApp {
         `;
 
         const onDecide = (approved) => {
-            this.send({ command: 'approve', approved });
-            this._setSessionActivity('working');
+            this._answerPermission(requestId, approved);
             block.querySelectorAll('button').forEach(b => b.disabled = true);
             const summary = document.createElement('div');
             summary.className = 'inline-diff-summary ' + (approved ? 'accepted' : 'rejected');
@@ -8668,6 +8725,7 @@ class ResonantApp {
     _applyRuntimeError(event) {
         const el = document.getElementById('runtime-banner');
         if (!el) return;
+        this._runtimeBannerState = event;
 
         const reason = (event && event.runtime_ready === false)
             ? (event.runtime_error || '') : '';
@@ -8683,7 +8741,15 @@ class ResonantApp {
                 .join('; ');
         }
 
-        if (!reason && !mcpNote) {
+        // Repository capability packs stay off until reviewed. Say so where
+        // the user will see it, instead of silently ignoring the pack.
+        const packs = (event && Array.isArray(event.capability_packs_pending)) ? event.capability_packs_pending : [];
+        const packNote = packs.length
+            ? `Capability pack${packs.length === 1 ? '' : 's'} awaiting your review: ${packs.map(p => p.name || p.id).join(', ')}. `
+                + 'Nothing in a pack runs until you approve it.'
+            : '';
+
+        if (!reason && !mcpNote && !packNote) {
             el.hidden = true;
             el.textContent = '';
             this._dismissedRuntimeNotice = '';
@@ -8694,7 +8760,7 @@ class ResonantApp {
         // with no way to close it is just noise once the user has read it —
         // but silencing it forever would hide a *different*, later problem, so
         // a changed message brings it back.
-        const signature = `${reason}||${mcpNote}`;
+        const signature = `${reason}||${mcpNote}||${packNote}`;
         if (this._dismissedRuntimeNotice === signature) {
             el.hidden = true;
             return;
@@ -8711,6 +8777,18 @@ class ResonantApp {
             const line = document.createElement('div');
             line.className = 'runtime-banner-mcp';
             line.textContent = `Tool server unavailable: ${mcpNote}`;
+            el.appendChild(line);
+        }
+        if (packNote) {
+            const line = document.createElement('div');
+            line.className = 'runtime-banner-packs';
+            line.textContent = packNote;
+            const review = document.createElement('button');
+            review.type = 'button';
+            review.className = 'runtime-banner-action';
+            review.textContent = 'Review packs';
+            review.addEventListener('click', () => this.openSettingsPage?.('capability_packs'));
+            line.appendChild(review);
             el.appendChild(line);
         }
 

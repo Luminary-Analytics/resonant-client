@@ -191,9 +191,12 @@ class AppState:
         self.exo_url = ""
         self.active_thread: Optional[threading.Thread] = None
         self.cancel_requested = threading.Event()
-        # Permission / choice flow
+        # Permission / choice flow. Each prompt carries a request id; an answer
+        # is accepted only for the prompt that is still waiting (see approve).
         self.permission_response = threading.Event()
-        self.permission_result = [True]
+        self.permission_result = [False]
+        self.permission_request_id = ""
+        self._permission_lock = threading.Lock()
         self.choice_response = threading.Event()
         self.choice_result = [""]
         # v0.3.5 — await_user tool flow. The agent's on_user_input
@@ -213,8 +216,8 @@ class AppState:
         self.settings = SettingsManager()
         self._migrate_stale_defaults()
         self._apply_big_context_preset()
-        self.permission_mode = str(
-            self.settings.get("general", "default_permission_mode", "bypass") or "bypass"
+        self.permission_mode = self.normalize_permission_mode(
+            self.settings.get("general", "default_permission_mode", "bypass")
         )
         self.costs = CostTracker()
         self._budget_alert_days: set[str] = set()
@@ -236,9 +239,15 @@ class AppState:
         self._ws_ref = None
         self._ws_loop = None
         self.evaluations = EvaluationManager(on_event=self._push_ws_event)
-        # Extension systems
+        # Extension systems. The shared hook runner holds settings hooks only;
+        # capability-pack hooks ride on per-session scoped runners.
         self.hook_runner = HookRunner(self.settings)
         self.mcp_manager = MCPManager(self.settings)
+        # Capability packs of the open project, and the MCP servers connected
+        # on their behalf (name -> config) so a project switch can drop them.
+        self.capability_packs = None
+        self._pack_mcp_servers: dict[str, dict] = {}
+        self._pack_mcp_lock = threading.Lock()
         self.base_engram = EngramIntegration(self.settings)
         self.base_engram.set_mcp_manager(self.mcp_manager)
         self.engram = self.base_engram.clone(namespace=self._project_namespace(self.project.project_path))
@@ -355,8 +364,48 @@ class AppState:
         digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
         return f"project:{digest}"
 
-    def _session_auto_approve(self, mode: Optional[str] = None) -> bool:
-        return (mode or self.permission_mode) != "ask"
+    PERMISSION_MODES = ("ask", "auto-edit", "plan", "bypass")
+    # Native engine tier for each GUI permission mode. Plan keeps its
+    # historical Auto-edit tier for native providers; CLI providers map modes
+    # through their own permission profiles.
+    _MODE_TIERS = {"ask": "suggest", "auto-edit": "auto-edit", "plan": "auto-edit", "bypass": "full-auto"}
+
+    @classmethod
+    def normalize_permission_mode(cls, mode: Any) -> str:
+        """A known permission mode. Empty means the default (Full-auto); an
+        unrecognized value fails closed to Ask instead of granting anything."""
+        value = str(mode or "").strip() or "bypass"
+        return value if value in cls.PERMISSION_MODES else "ask"
+
+    @classmethod
+    def autonomy_tier_for_mode(cls, mode: str) -> str:
+        return cls._MODE_TIERS.get(cls.normalize_permission_mode(mode), "suggest")
+
+    @staticmethod
+    def _execution_policy_for(tier: str, project_root: str):
+        """The tier's built-in policy with the project's resonant-policy.json layered on.
+
+        The project policy can tighten or refine the built-in rules; it cannot
+        override built-in denies (see ExecutionPolicy.merge).
+        """
+        from ..engine.policies import ExecutionPolicy, policy_for_tier
+
+        policy = policy_for_tier(tier)
+        project_policy = ExecutionPolicy.from_file(os.path.join(project_root, "resonant-policy.json"))
+        return policy.merge(project_policy) if project_policy else policy
+
+    def _apply_session_permissions(self, session: Session, mode: str) -> None:
+        """Make a native session's tier and policy match a permission mode."""
+        session.autonomy_tier = self.autonomy_tier_for_mode(mode)
+        root = getattr(session, "project_path", None) or self.project.project_path
+        try:
+            session.execution_policy = self._execution_policy_for(session.autonomy_tier, root)
+        except Exception:
+            # Never leave the session without the tier's built-in denies.
+            from ..engine.policies import policy_for_tier
+
+            logger.warning("Project execution policy could not be applied", exc_info=True)
+            session.execution_policy = policy_for_tier(session.autonomy_tier)
 
     @staticmethod
     def normalize_session_mode(value: str) -> str:
@@ -416,10 +465,12 @@ class AppState:
                 return
 
     def apply_permission_mode(self, mode: str, session: Optional[Session] = None) -> str:
-        self.permission_mode = mode or "bypass"
+        self.permission_mode = self.normalize_permission_mode(mode)
         target = session or self.session
         if target:
-            target.auto_approve = self._session_auto_approve(self.permission_mode)
+            # Takes effect on the live session, including a run in progress:
+            # the engine reads the tier and policy for every tool call.
+            self._apply_session_permissions(target, self.permission_mode)
             backend = getattr(target, "backend", None)
             configure = getattr(backend, "configure_permission_mode", None)
             if callable(configure):
@@ -482,6 +533,10 @@ class AppState:
         else:
             self.codebase_index._engram = self.engram
 
+        # Also disconnects the previous project's pack MCP servers. Its pack
+        # hooks lived on the previous sessions' scoped runners.
+        self.refresh_capability_packs(project_path)
+
         if self.session:
             self._wire_session(
                 self.session,
@@ -534,15 +589,12 @@ class AppState:
             if project_instructions is not None
             else load_project_instructions(target_path)
         )
-        session.hook_runner = self.hook_runner
-        session.mcp_tools = self._safe_mcp_tools()
         session._mcp_manager = self.mcp_manager
         session._engram = engram or self.engram
         session._codebase_index = codebase_index or self.codebase_index
         from ..engine.agent_runtime import AgentRegistry
         from ..engine.artifacts import ArtifactStore
         from ..engine.checkpoint_timeline import SessionCheckpointStore
-        from ..engine.capability_packs import CapabilityPackManager
         from ..engine.context_broker import ContextBroker
         from ..engine.flight_recorder import FlightRecorder
         from ..engine.model_roles import ModelRoleRouter
@@ -595,26 +647,9 @@ class AppState:
             artifact_store=artifact_store,
             codebase_index=session._codebase_index,
         )
-        capability_packs = CapabilityPackManager(
-            target_path,
-            configured=self.settings.get("plugins") or {},
-        )
-        capability_packs.discover()
-        self.hook_runner.add_hooks(capability_packs.hook_definitions())
-        # Trusted packs may contribute MCP servers. They are connected with an
-        # explicit config object, so no untrusted manifest reaches execution.
-        from ..engine.mcp import MCPServerConfig
-        for server_name, server_data in capability_packs.mcp_servers().items():
-            try:
-                self.mcp_manager.connect(
-                    server_name,
-                    MCPServerConfig.from_dict(server_name, server_data),
-                )
-            except Exception:
-                logger.warning("Capability-pack MCP connection failed: %s", server_name, exc_info=True)
-        # Re-read after the capability-pack servers have connected; this is the
-        # authoritative assignment and supersedes the one above.
-        session.mcp_tools = self._safe_mcp_tools()
+        # Approved packs only; their MCP servers were connected (or dropped)
+        # by refresh_capability_packs when the project was opened.
+        self._attach_capability_packs(session, self._capability_packs_for(target_path))
         session.agent_registry = agent_registry
         session.artifact_store = artifact_store
         session.checkpoint_store = checkpoint_store
@@ -638,16 +673,142 @@ class AppState:
             record.director_run_id = ""
             record.save()
         session.worktree_manager = worktree_manager
-        session.capability_packs = capability_packs
         session._settings_ref = self.settings
+        return session
+
+    # ── Capability packs ──────────────────────────────────────────────
+
+    def refresh_capability_packs(self, project_path: Optional[str] = None):
+        """Rediscover the open project's packs and reconcile their MCP servers.
+
+        Runs on every project switch, settings change and pack approval. Only
+        approved packs contribute; see engine/capability_packs.py.
+        """
+        from ..engine.capability_packs import CapabilityPackManager
+
+        manager = CapabilityPackManager(
+            project_path or self.project.project_path,
+            configured=self.settings.get("plugins") or {},
+        )
+        try:
+            manager.discover()
+        except Exception:
+            logger.warning("Capability pack discovery failed", exc_info=True)
+        self.capability_packs = manager
+        self._reconcile_pack_mcp_servers(manager.mcp_servers())
+        return manager
+
+    def _capability_packs_for(self, project_path: str):
+        manager = self.capability_packs
+        target = self._normalize_path(str(Path(project_path).expanduser().resolve()))
+        if manager is not None and self._normalize_path(str(manager.project_path)) == target:
+            return manager
+        # A session rooted elsewhere gets that root's approved hooks, skills
+        # and agents. MCP servers are connected only for the open project.
+        from ..engine.capability_packs import CapabilityPackManager
+
+        other = CapabilityPackManager(project_path, configured=self.settings.get("plugins") or {})
+        try:
+            other.discover()
+        except Exception:
+            logger.warning("Capability pack discovery failed for %s", project_path, exc_info=True)
+        return other
+
+    def _reconcile_pack_mcp_servers(self, desired: dict[str, dict]) -> None:
+        """Connect approved packs' MCP servers and disconnect every other pack server."""
+        # Listing packs (executor threads) and approvals can both reconcile.
+        with self._pack_mcp_lock:
+            self._reconcile_pack_mcp_servers_locked(desired)
+
+    def _reconcile_pack_mcp_servers_locked(self, desired: dict[str, dict]) -> None:
+        from ..engine.mcp import MCPServerConfig
+
+        configured = self.settings.get("mcp_servers") or {}
+        for name in list(self._pack_mcp_servers):
+            if desired.get(name) != self._pack_mcp_servers[name]:
+                try:
+                    self.mcp_manager.disconnect(name)
+                except Exception:
+                    logger.warning("Capability-pack MCP disconnect failed: %s", name, exc_info=True)
+                self._pack_mcp_servers.pop(name, None)
+        for name, config in desired.items():
+            if name in self._pack_mcp_servers:
+                continue
+            if name in configured:
+                # Never let a pack replace a server the user configured.
+                logger.warning("Capability-pack MCP server %s conflicts with a configured server", name)
+                continue
+            self._pack_mcp_servers[name] = dict(config)
+            try:
+                self.mcp_manager.connect(name, MCPServerConfig.from_dict(name, config))
+            except Exception:
+                logger.warning("Capability-pack MCP connection failed: %s", name, exc_info=True)
+
+    def _attach_capability_packs(self, session: Session, manager) -> None:
+        """Give a session its approved packs' hooks, skills, agents and MCP tools."""
         from ..orchestration.skill_loader import build_skill_context
+
+        session.hook_runner = self.hook_runner.scoped(manager.hook_definitions())
+        session.capability_packs = manager
+        root = str(manager.project_path)
+
         def _combined_skill_context(query):
-            built_in = build_skill_context(query, project_path=target_path, max_skills=6)
-            return (getattr(built_in, "block", "") or "") + capability_packs.skill_context(query)
+            built_in = build_skill_context(query, project_path=root, max_skills=6)
+            return (getattr(built_in, "block", "") or "") + manager.skill_context(query)
 
         session._skill_context_provider = _combined_skill_context
-        session.auto_approve = self._session_auto_approve()
-        return session
+        session.mcp_tools = self._safe_mcp_tools()
+
+    def capability_pack_payload(self) -> dict:
+        """Every discovered pack with what it would run, for review in Settings."""
+        manager = self.capability_packs or self.refresh_capability_packs()
+        packs = manager.discover()
+        # Rediscovery may find an approved pack edited on disk; stop its servers.
+        self._reconcile_pack_mcp_servers(manager.mcp_servers())
+        return {
+            "event": "capability.pack_list",
+            "project_path": str(manager.project_path),
+            "packs": [pack.to_dict() for pack in packs],
+            "pending": self.capability_packs_pending(),
+            "catalog": manager.context_catalog(),
+        }
+
+    def capability_packs_pending(self) -> list[dict]:
+        """Packs in the open project waiting for the user's decision."""
+        manager = self.capability_packs
+        if manager is None:
+            return []
+        return [
+            {"id": pack.id, "name": pack.name, "status": pack.status}
+            for pack in manager.pending()
+        ]
+
+    def set_capability_pack_approval(
+        self, pack_id: str, path: str, *, digest: str = "", approve: bool,
+    ) -> dict:
+        """Approve (pinning the reviewed ``digest``) or revoke one discovered pack."""
+        from ..engine.capability_packs import (
+            CapabilityPackError,
+            approve_pack,
+            pack_location_key,
+            revoke_pack_approval,
+        )
+
+        manager = self.refresh_capability_packs()
+        pack = manager.get(str(pack_id or ""))
+        if pack is None or not path or pack_location_key(pack.path) != pack_location_key(path):
+            raise CapabilityPackError("That capability pack is no longer in this project. Refresh the list.")
+        plugins = self.settings.get("plugins") or {}
+        if approve:
+            updated = approve_pack(plugins, pack, reviewed_digest=str(digest or ""))
+        else:
+            updated = revoke_pack_approval(plugins, pack)
+        self.settings.set("plugins", None, updated)
+        self.refresh_capability_packs()
+        if self.session is not None:
+            root = getattr(self.session, "project_path", None) or self.project.project_path
+            self._attach_capability_packs(self.session, self._capability_packs_for(root))
+        return self.capability_pack_payload()
 
     # How long a provider probe stays fresh enough to trust. Long enough that a
     # burst of UI actions does not re-probe an unreachable host repeatedly,
@@ -1163,7 +1324,7 @@ class AppState:
             backend=backend,
             max_tokens=max_tokens,
             max_model_requests=self.settings.get("general", "max_model_requests", 0),
-            auto_approve=self._session_auto_approve() if auto_approve is None else auto_approve,
+            auto_approve=bool(auto_approve),
             allowed_tools=allowed_tools,
             project_instructions=project_instructions,
             cancel_event=cancel_event,
@@ -1177,13 +1338,13 @@ class AppState:
         from ..engine.sandbox import PathSandbox
         session.sandbox = PathSandbox(effective_root, enabled=True)
 
-        # Set autonomy tier based on permission mode
-        if self.permission_mode == "ask":
-            session.autonomy_tier = "suggest"
-        elif self.permission_mode == "bypass":
-            session.autonomy_tier = "full-auto"
+        # Autonomy tier and execution policy (tier built-ins plus the project's
+        # resonant-policy.json) follow the permission mode; an explicit
+        # auto_approve selects Full-auto or Ask instead.
+        if auto_approve is None:
+            self._apply_session_permissions(session, self.permission_mode)
         else:
-            session.autonomy_tier = "auto-edit"
+            self._apply_session_permissions(session, "bypass" if auto_approve else "ask")
 
         # Attach JSONL event logger
         try:
@@ -1193,21 +1354,6 @@ class AppState:
                 session_id=_uuid.uuid4().hex[:12],
                 enabled=bool(self.settings.get("event_logging", "enabled", True)),
             )
-        except Exception:
-            pass
-
-        # Attach execution policy (tier-based defaults + project overrides)
-        try:
-            from ..engine.policies import policy_for_tier, ExecutionPolicy
-            base_policy = policy_for_tier(session.autonomy_tier)
-            # Check for project-level policy file
-            project_policy = ExecutionPolicy.from_file(
-                os.path.join(effective_root, "resonant-policy.json")
-            )
-            if project_policy:
-                session.execution_policy = base_policy.merge(project_policy)
-            else:
-                session.execution_policy = base_policy
         except Exception:
             pass
 
@@ -1599,7 +1745,10 @@ class AppState:
 
     def apply_settings(self, section: str = "", key: str | None = None):
         if section == "mcp_servers":
-            self.mcp_manager.disconnect_all()
+            with self._pack_mcp_lock:
+                self.mcp_manager.disconnect_all()
+                # Pack servers went too; apply_project_context reconnects approved ones.
+                self._pack_mcp_servers.clear()
 
         self.hook_runner.reload()
         self.base_engram.reload()
@@ -1746,6 +1895,8 @@ class AppState:
             "runtime_error": self.runtime_unavailable_reason(),
             "mcp_load_error": self.mcp_load_error,
             "mcp_unavailable": self.mcp_unavailable_servers(),
+            # Repository packs that stay off until the user reviews them.
+            "capability_packs_pending": self.capability_packs_pending(),
             "sessions": self.project.list_sessions(),
             "all_sessions": self.project.list_all_sessions(),
             "current_session_id": self.project.current_session.id if self.project.current_session else "",
@@ -2162,8 +2313,8 @@ async def websocket_endpoint(ws: WebSocket):
                 state.cancel_requested.clear()
                 session_for_restart = state.session
 
-                def _restart_source(_agent_id=agent_id, _session=session_for_restart):
-                    return _session.restart_agent(_agent_id)
+                def _restart_source(on_permission, _agent_id=agent_id, _session=session_for_restart):
+                    return _session.restart_agent(_agent_id, on_permission=on_permission)
 
                 await ws.send_json({
                     "event": "agent.restarted",
@@ -2730,7 +2881,7 @@ async def _run_session_streaming(
     display_user_msg: str | None = None,
     session_mode: str = "code",
     session_role: str = "generator",
-    event_source: Callable[[], Any] | None = None,
+    event_source: Callable[[Callable], Any] | None = None,
 ):
     """Run Session.run() in a thread, streaming events to WebSocket.
 
@@ -2738,9 +2889,10 @@ async def _run_session_streaming(
 
     `event_source` substitutes a different engine generator for the usual
     `session.run(...)` — used by the agent-restart path, which re-dispatches a
-    worker instead of taking a user turn. Everything downstream (streaming,
-    persistence, cancellation, replay) is identical, so a restarted worker is
-    observable and stoppable exactly like any other run.
+    worker instead of taking a user turn. It receives this run's approval
+    prompt. Everything downstream (streaming, persistence, cancellation,
+    replay) is identical, so a restarted worker is observable and stoppable
+    exactly like any other run.
     """
     event_queue: queue.Queue = queue.Queue()
     display_events: list = []
@@ -2774,26 +2926,44 @@ async def _run_session_streaming(
     )
 
     def on_permission(tool_name, tool_args):
-        """Push permission request to frontend with diff review data."""
+        """Ask the user about one tool call and wait for that prompt's answer.
+
+        Each prompt gets a fresh request id, and `approve` accepts an answer
+        only for the prompt still waiting. An answer that arrives late (after
+        a cancel, or a second click) is discarded here instead of approving
+        whatever is asked next. Only an explicit True approves.
+        """
         # Generate diff review for file-modifying tools
         project_path = state.project.project_path if state.project else ""
         review = generate_review(tool_name, tool_args, project_path)
+        request_id = uuid.uuid4().hex
 
         event_data = {
             "event": "tool_permission",
             "name": tool_name,
             "arguments": tool_args,
+            "request_id": request_id,
         }
         if review:
             event_data["review"] = review.to_dict()
 
+        with state._permission_lock:
+            state.permission_response.clear()
+            state.permission_result[0] = False
+            state.permission_request_id = request_id
         event_queue.put(event_data)
-        while True:
-            if session.cancel_requested or state.cancel_requested.is_set():
-                return False
-            if state.permission_response.wait(timeout=0.1):
-                state.permission_response.clear()
-                return state.permission_result[0]
+        try:
+            while True:
+                if session.cancel_requested or state.cancel_requested.is_set():
+                    return False
+                if state.permission_response.wait(timeout=0.1):
+                    with state._permission_lock:
+                        state.permission_response.clear()
+                        return state.permission_result[0] is True
+        finally:
+            with state._permission_lock:
+                if state.permission_request_id == request_id:
+                    state.permission_request_id = ""
 
     def on_choice(options):
         """Push choice request to frontend, block until response."""
@@ -2832,9 +3002,11 @@ async def _run_session_streaming(
 
     def _engine_thread():
         try:
-            source = event_source() if event_source is not None else session.run(
+            source = event_source(on_permission) if event_source is not None else session.run(
                 user_msg,
-                on_permission=on_permission if not session.auto_approve else None,
+                # Always attached: the engine asks only when the tier or policy
+                # requires it, and the permission mode can change mid-run.
+                on_permission=on_permission,
                 on_choice=on_choice,
                 on_user_input=on_user_input,
                 images=images,

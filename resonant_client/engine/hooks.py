@@ -15,13 +15,25 @@ import json
 import os
 import fnmatch
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Callable, Iterable, Optional
 
 from resonant_client.processes import background_process_kwargs
 
 logger = logging.getLogger(__name__)
+
+# Structured hooks may answer with these words; they normalize to three
+# decisions. A missing or unknown word is *no* decision, never an approval.
+_DECISION_ALIASES = {
+    "allow": "allow",
+    "approve": "allow",
+    "ask": "ask",
+    "deny": "deny",
+    "block": "deny",
+}
+# When several hooks answer, the most restrictive decision wins.
+_DECISION_RANK = {"": 0, "allow": 1, "ask": 2, "deny": 3}
 
 
 class HookType(str, Enum):
@@ -61,6 +73,10 @@ class HookDefinition:
     matcher: str = ""
     input_format: str = "env"  # env (legacy) | json
     timeout_seconds: float = 30.0
+    # Capability-pack hooks re-check their pack's approved digest right before
+    # the command runs, so a pack edited after approval (a `git pull`, say)
+    # cannot run new code under the old approval. Not serialized.
+    precondition: Optional[Callable[[], bool]] = field(default=None, repr=False, compare=False)
 
     def matches(self, hook_type: HookType, tool_name: str = "") -> bool:
         """Check if this hook should trigger for the given event."""
@@ -106,7 +122,10 @@ class HookResult:
     output: str = ""
     exit_code: int = 0
     error: str = ""
-    decision: str = "allow"
+    # "" means no matching hook decided anything. Otherwise "allow", "ask" or
+    # "deny": from a structured hook's answer, or "deny" for a gate hook that
+    # exited non-zero. Callers must not read the empty value as consent.
+    decision: str = ""
     reason: str = ""
     additional_context: str = ""
     modified_args: Optional[dict] = None
@@ -121,6 +140,8 @@ class HookRunner:
     def __init__(self, settings=None):
         self._settings = settings
         self._hooks: list[HookDefinition] = []
+        # Set on runners made by scoped(); their settings hooks come from here.
+        self._parent: Optional["HookRunner"] = None
         if settings:
             self._load_from_settings()
 
@@ -139,7 +160,23 @@ class HookRunner:
 
     def reload(self):
         """Reload hooks from settings."""
+        if self._parent is not None:
+            self._parent.reload()
+            return
         self._load_from_settings()
+
+    def scoped(self, hooks: Iterable[HookDefinition]) -> "HookRunner":
+        """Return a runner for one workspace: this runner's hooks plus ``hooks``.
+
+        Capability-pack hooks belong to the project whose packs supplied them.
+        Carrying them on a per-session runner, instead of adding them to the
+        shared one, means they end with that session (a project switch builds
+        new sessions) while settings reloads still reach every session.
+        """
+        runner = HookRunner()
+        runner._parent = self
+        runner._hooks = list(hooks)
+        return runner
 
     def run_hooks(
         self,
@@ -157,7 +194,7 @@ class HookRunner:
           RESONANT_PROJECT_PATH
         """
         context = context or {}
-        matching = [h for h in self._hooks if h.matches(hook_type, tool_name)]
+        matching = [h for h in self.hooks if h.matches(hook_type, tool_name)]
 
         if not matching:
             return HookResult(allowed=True)
@@ -165,6 +202,18 @@ class HookRunner:
         combined = HookResult(allowed=True)
 
         for hook in matching:
+            if hook.precondition is not None:
+                try:
+                    verified = bool(hook.precondition())
+                except Exception:
+                    logger.warning("Hook precondition failed: %s", hook.name or hook.command, exc_info=True)
+                    verified = False
+                if not verified:
+                    logger.warning(
+                        "Skipped hook %s: its capability pack changed after approval",
+                        hook.name or hook.command,
+                    )
+                    continue
             env = os.environ.copy()
             env["RESONANT_HOOK_TYPE"] = hook_type.value
             env["RESONANT_TOOL_NAME"] = tool_name or ""
@@ -201,9 +250,17 @@ class HookRunner:
                         response = {}
                         combined.error = "Structured hook returned invalid JSON"
                     if isinstance(response, dict):
-                        decision = str(response.get("decision") or "allow").lower()
-                        combined.decision = decision
-                        combined.reason = str(response.get("reason") or "")
+                        raw_decision = str(response.get("decision") or "").strip().lower()
+                        decision = _DECISION_ALIASES.get(raw_decision, "")
+                        if raw_decision and not decision:
+                            combined.error = f"Structured hook returned unknown decision: {raw_decision}"
+                        reason = str(response.get("reason") or "")
+                        if decision and _DECISION_RANK[decision] >= _DECISION_RANK[combined.decision]:
+                            combined.decision = decision
+                            if reason:
+                                combined.reason = reason
+                        elif reason and not combined.reason:
+                            combined.reason = reason
                         combined.additional_context += str(
                             response.get("additional_context")
                             or (response.get("hookSpecificOutput") or {}).get("additionalContext")
@@ -217,7 +274,7 @@ class HookRunner:
                             response.get("continue", True)
                         )
                         combined.metadata = response.get("metadata") or combined.metadata
-                        if decision in {"deny", "block", "ask"}:
+                        if decision in {"deny", "ask"}:
                             combined.allowed = False
 
                 if result.returncode != 0:
@@ -232,6 +289,9 @@ class HookRunner:
                         HookType.VALIDATION_COMPLETE,
                     }:
                         combined.allowed = False
+                        # A failing gate hook is an explicit block.
+                        combined.decision = "deny"
+                        combined.reason = combined.reason or combined.error.strip()
                         logger.info(f"Hook blocked tool {tool_name}: {hook.name or hook.command}")
                         break  # Stop on first blocking hook
 
@@ -256,13 +316,14 @@ class HookRunner:
 
     @property
     def hooks(self) -> list[HookDefinition]:
-        return self._hooks
+        inherited = self._parent.hooks if self._parent is not None else []
+        return [*inherited, *self._hooks]
 
     def add_hooks(self, hooks: list[HookDefinition]) -> None:
-        """Register trusted capability-pack hooks without duplicating them."""
+        """Register additional hooks on this runner without duplicating them."""
         existing = {
             (hook.hook_type, hook.command, hook.matcher, hook.tool_name)
-            for hook in self._hooks
+            for hook in self.hooks
         }
         for hook in hooks:
             key = (hook.hook_type, hook.command, hook.matcher, hook.tool_name)

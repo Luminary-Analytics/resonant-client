@@ -441,12 +441,56 @@ async def _artifact_list(ctx: CommandContext) -> None:
 
 @command("capability_pack_list")
 async def _capability_pack_list(ctx: CommandContext) -> None:
-    manager = ctx.session_attr("capability_packs")
+    # The open project's packs, approved or not, so Settings can show what
+    # each would run before the user decides.
+    try:
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+    except Exception as exc:
+        logger.warning("capability_pack_list failed", exc_info=True)
+        await ctx.send_error(f"Couldn't list capability packs: {exc}")
+        return
+    await ctx.send(payload)
+
+
+async def _set_capability_pack_approval(ctx: CommandContext, *, approve: bool) -> None:
+    from ..engine.capability_packs import CapabilityPackError
+
+    msg = ctx.msg
+    try:
+        payload = await _in_executor(
+            lambda: ctx.state.set_capability_pack_approval(
+                str(msg.get("pack_id") or ""),
+                str(msg.get("path") or ""),
+                digest=str(msg.get("digest") or ""),
+                approve=approve,
+            )
+        )
+    except CapabilityPackError as exc:
+        # Redraw what is on disk now (a changed pack has a new digest to
+        # review) and say why nothing was approved.
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+        payload["error"] = str(exc)
+        await ctx.send(payload)
+        return
+    await ctx.send(payload)
     await ctx.send({
-        "event": "capability.pack_list",
-        "packs": [item.to_dict() for item in manager.discover()] if manager else [],
-        "catalog": manager.context_catalog() if manager else {},
+        "event": "ui_notice",
+        "message": (
+            "Capability pack approved. Its hooks, skills, agents and MCP servers are active."
+            if approve else
+            "Capability pack approval revoked. Its hooks and MCP servers are off."
+        ),
     })
+
+
+@command("capability_pack_approve")
+async def _capability_pack_approve(ctx: CommandContext) -> None:
+    await _set_capability_pack_approval(ctx, approve=True)
+
+
+@command("capability_pack_revoke")
+async def _capability_pack_revoke(ctx: CommandContext) -> None:
+    await _set_capability_pack_approval(ctx, approve=False)
 
 
 @command("context_catalog")
@@ -2837,9 +2881,25 @@ async def _cmd_list_dirs(ctx: CommandContext) -> None:
 
 @command("approve")
 async def _cmd_approve(ctx: CommandContext) -> None:
-    # Only an explicit `true` approves; a missing or malformed answer denies.
-    ctx.state.permission_result[0] = ctx.msg.get("approved") is True
-    ctx.state.permission_response.set()
+    """Answer the tool-permission prompt that is waiting, and only that one.
+
+    The answer must name the prompt's request id; anything else (a late
+    click, a stale tab) is ignored rather than applied to a later prompt.
+    Only a JSON ``true`` approves. The first accepted answer is final.
+    """
+    state = ctx.state
+    request_id = str(ctx.msg.get("request_id") or "")
+    lock = getattr(state, "_permission_lock", None)
+    if lock is None:
+        return
+    with lock:
+        pending = str(getattr(state, "permission_request_id", "") or "")
+        if not pending or request_id != pending:
+            logger.info("Ignored a permission answer for a prompt that is no longer waiting")
+            return
+        state.permission_request_id = ""
+        state.permission_result[0] = ctx.msg.get("approved") is True
+        state.permission_response.set()
 
 
 

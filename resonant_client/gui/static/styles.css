@@ -4233,6 +4233,9 @@ body {
 }
 
 .dialog-btn:hover { opacity: 0.9; }
+.dialog-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* Focus moves to the permission dialog itself; its buttons show the ring. */
+#permission-dialog:focus { outline: none; }
 
 /* ── Diff Review Dialog ──────────────────────────────── */
 
@@ -11073,6 +11076,21 @@ body {
     margin-top: 4px;
     color: var(--muted);
 }
+.runtime-banner-packs {
+    margin-top: 4px;
+}
+.runtime-banner-action {
+    margin-left: 8px;
+    padding: 2px 8px;
+    border: 1px solid rgba(240, 173, 78, .55);
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text);
+    font: inherit;
+    cursor: pointer;
+}
+.runtime-banner-action:hover { background: rgba(240, 173, 78, .18); }
+.runtime-banner-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .runtime-banner-close {
     position: absolute;
     top: 6px;
@@ -11713,6 +11731,24 @@ body.is-window-dragging * {
     color: var(--muted);
 }
 
+/* A page without this launch's access token (static/local_access.js). */
+.access-required {
+    width: 100%;
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 12px 14px;
+    border: 1px solid rgba(240, 173, 78, .38);
+    border-radius: 8px;
+    background: rgba(240, 173, 78, .10);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: left;
+}
+.access-required[hidden] { display: none; }
+.access-required p { margin: 0; }
+.access-required .access-required-title { margin-bottom: 4px; font-weight: 600; }
+
 .project-path-input,
 .ollama-wizard,
 .backend-card,
@@ -11907,6 +11943,11 @@ body.is-window-dragging * {
 
 .menubar-action:hover {
     background: #262626;
+}
+
+/* `display: flex` above would otherwise override the hidden attribute. */
+.menubar-action[hidden] {
+    display: none;
 }
 
 .menubar-shortcut {
@@ -13219,8 +13260,28 @@ body.is-window-dragging * {
 .editor-actions button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 25%, transparent); }
 .editor-actions button:disabled { opacity: .45; cursor: default; }
 .editor-card :is(button, summary, input, a):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
-.editor-error { color: var(--danger); overflow-wrap: anywhere; font-size: 12px; }
+.editor-error { color: var(--err); overflow-wrap: anywhere; font-size: 12px; }
 .editor-check-output { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; font-size: 11px; }
+
+/* Capability packs: what a pack would run, reviewed before approval. */
+.pack-list { display: flex; flex-direction: column; gap: 12px; }
+.pack-card { padding: 16px; border: 1px solid var(--border); border-radius: 12px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.pack-card.status-needs_approval, .pack-card.status-changed { border-color: rgba(240, 173, 78, .45); }
+.pack-card.status-unverifiable { border-color: color-mix(in srgb, var(--err) 45%, transparent); }
+.pack-card p, .pack-card h3, .pack-card h4, .pack-card ul { margin: 0; }
+.pack-card-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px; }
+.pack-card h3 { font-size: 15px; }
+.pack-card h3 small { color: var(--dim); font-weight: normal; font-size: 12px; }
+.pack-card h4 { font-size: 12px; margin-top: 8px; }
+.pack-card summary { cursor: pointer; font-size: 12px; }
+.pack-card ul { padding-left: 18px; font-size: 12px; line-height: 1.5; }
+.pack-card code { overflow-wrap: anywhere; }
+.pack-status { font-size: 12px; color: var(--muted); }
+.pack-card.status-approved .pack-status { color: var(--ok); }
+.pack-meta { font-size: 12px; color: var(--dim); overflow-wrap: anywhere; }
+.pack-command { white-space: pre-wrap; overflow-wrap: anywhere; margin: 4px 0 6px; font-size: 11px; }
+.pack-card .editor-actions button[data-pack-action="approve"] { background: color-mix(in srgb, var(--accent) 18%, transparent); border-color: color-mix(in srgb, var(--accent) 35%, transparent); }
+.pack-card :is(button, summary):focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 .sonn-account-balances { display: flex; flex-wrap: wrap; gap: 20px; margin: 14px 0; }
 .sonn-account-balances small, .sonn-account-balances strong { display: block; }

@@ -583,7 +583,6 @@ class Session:
             self.max_model_requests = int(max_model_requests)
             if self.max_model_requests < 1 or float(max_model_requests) != self.max_model_requests:
                 raise ValueError("Model request limit must be zero or a positive integer")
-        self.auto_approve = auto_approve
         self.auto_plan = auto_plan
         self.conversation_history: list = []
         self.todos: list[dict] = []
@@ -608,8 +607,12 @@ class Session:
         self._steering_lock = threading.Lock()
         self.project_path: Optional[str] = None  # Set externally for path resolution
         self.browser_session_name: str = ""
-        # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed)
+        # Three-tier autonomy: suggest (read-only) | auto-edit (files ok) | full-auto (sandboxed).
+        # The tier alone decides which calls need approval; auto_approve is a view of it.
         self.autonomy_tier: str = "full-auto" if auto_approve else "suggest"
+        # The approval prompt of the turn in progress, lent to delegated workers.
+        self._permission_prompt: Optional[Callable] = None
+        self._permission_prompt_lock = threading.Lock()
         self.sandbox = None  # PathSandbox, set externally
         self.event_logger = None  # EventLogger, set externally for JSONL logging
         self.agent_registry: Optional[AgentRegistry] = None
@@ -643,6 +646,19 @@ class Session:
     def is_subagent(self) -> bool:
         """True if this session was spawned by a parent session."""
         return self.parent_session is not None
+
+    @property
+    def auto_approve(self) -> bool:
+        """Legacy view of the autonomy tier: True only when nothing needs approval."""
+        return self.autonomy_tier == "full-auto"
+
+    @auto_approve.setter
+    def auto_approve(self, value: bool) -> None:
+        # Embedders still toggle approval with this flag (the TUI's /approve).
+        # It used to be a separate fallback that approved any call the tier
+        # wanted to ask about whenever no prompt was wired, so the two could
+        # disagree; now it simply selects a tier.
+        self.autonomy_tier = "full-auto" if value else "suggest"
 
     def context_snapshot(self) -> dict:
         """Return a compact, serializable view of the active context budget."""
@@ -1080,26 +1096,128 @@ class Session:
             except Exception:
                 pass
 
+    # Auto-edit runs these without asking in addition to read-only and file
+    # tools. They act only through other tools, which are gated themselves:
+    # delegated workers inherit this tier and the parent's approval prompt.
+    _AUTO_EDIT_COORDINATION_TOOLS = frozenset({"await_user", "task", "task_batch"})
+
     def _should_auto_approve(self, tool_name: str) -> bool:
         """
         Determine if a tool should be auto-approved based on the autonomy tier.
 
         Three-tier model (inspired by Codex CLI):
         - suggest: only read-only tools (file_read, glob, grep) are auto-approved
-        - auto-edit: file tools auto-approved, bash/exec tools prompt user
+        - auto-edit: read-only and file-editing tools are auto-approved; shell,
+          MCP, browser, desktop, REPL, process and git actions ask
         - full-auto: everything auto-approved (sandbox enforces safety)
+
+        Auto-edit is an allowlist so that a newly added tool asks by default.
+        An unrecognized tier fails closed to suggest.
         """
         from .sandbox import PathSandbox
 
         if tool_name == "search_tools":
             return True
-        if self.autonomy_tier == "suggest":
-            return PathSandbox.is_read_only_tool(tool_name)
-        elif self.autonomy_tier == "auto-edit":
-            # File tools are OK, exec tools need approval
-            return not (PathSandbox.is_exec_tool(tool_name) or tool_name.startswith("mcp_"))
-        else:  # full-auto
+        if self.autonomy_tier == "full-auto":
             return True
+        if self.autonomy_tier == "auto-edit":
+            return (
+                PathSandbox.is_read_only_tool(tool_name)
+                or PathSandbox.is_file_write_tool(tool_name)
+                or tool_name in self._AUTO_EDIT_COORDINATION_TOOLS
+            )
+        return PathSandbox.is_read_only_tool(tool_name)
+
+    def _resolve_tool_permission(
+        self,
+        tool_name: str,
+        tool_args: dict,
+        call_id: str,
+        on_permission: Optional[Callable],
+        *,
+        policy_prompt: bool = False,
+    ) -> tuple[bool, str, dict]:
+        """Decide whether one tool call may run: ``(approved, denial, args)``.
+
+        Calls the tier allows (and the policy does not mark ``prompt``) run
+        without asking. Otherwise the user decides through ``on_permission``
+        and that answer is final: a hook can neither run a call the user
+        denied nor block one they allowed (PRE_TOOL_USE hooks gate every call
+        earlier). Only an explicit ``True`` counts as consent.
+
+        With no prompt available (background runs, delegated work without a
+        parent prompt) the outcome is undecided. Only an explicit allow or deny
+        from a matching PERMISSION_REQUEST hook settles it; no answer, "ask",
+        or no matching hook fails closed.
+        """
+        if not policy_prompt and self._should_auto_approve(tool_name):
+            return True, "", tool_args
+        if on_permission is not None:
+            if on_permission(tool_name, tool_args) is True:
+                return True, "", tool_args
+            return False, "Tool execution denied by user.", tool_args
+        return self._permission_hook_decision(tool_name, tool_args, call_id)
+
+    def _permission_hook_decision(
+        self, tool_name: str, tool_args: dict, call_id: str,
+    ) -> tuple[bool, str, dict]:
+        """Settle an approval nobody can be asked for; see _resolve_tool_permission."""
+        unanswered = (
+            f"Tool execution requires approval, but no approval prompt is available "
+            f"for this run, so {tool_name} was not executed. Continue without it, or "
+            f"ask the user to switch to a permission mode that allows it."
+        )
+        emit = getattr(self.hook_runner, "emit", None) if self.hook_runner else None
+        if not callable(emit):
+            return False, unanswered, tool_args
+        result = emit(
+            HookType.PERMISSION_REQUEST,
+            {
+                "tool_name": tool_name,
+                "tool_args": tool_args,
+                "project_path": self.project_path or "",
+                "agent_id": self.agent_id,
+                "call_id": call_id,
+            },
+            tool_name=tool_name,
+        )
+        decision = str(getattr(result, "decision", "") or "")
+        reason = str(getattr(result, "reason", "") or getattr(result, "error", "") or "").strip()
+        if decision == "deny":
+            return False, f"Tool execution denied by permission hook: {reason or 'denied'}", tool_args
+        if decision != "allow":
+            return False, unanswered, tool_args
+        modified = getattr(result, "modified_args", None)
+        if not isinstance(modified, dict) or modified == tool_args:
+            return True, "", tool_args
+        # The hook rewrote the call after the policy saw it; the rewritten call
+        # must pass the same deny rules or the hook becomes a way around them.
+        if self.execution_policy:
+            from .policies import PolicyAction
+
+            if self.execution_policy.evaluate(tool_name, modified) == PolicyAction.DENY:
+                policy_reason = self.execution_policy.get_reason(tool_name, modified)
+                return False, f"Blocked by policy: {policy_reason or 'denied'}", modified
+        return True, "", modified
+
+    def _delegated_permission_prompt(self) -> Optional[Callable]:
+        """The approval prompt a delegated worker uses: this turn's, one at a time.
+
+        Workers inherit this session's tier and policy, so without the prompt
+        every call they need approval for would fail closed. task_batch runs
+        workers on threads while the GUI answers one prompt at a time, so
+        their questions are serialized.
+        """
+        prompt = self._permission_prompt
+        if prompt is None:
+            return None
+        lock = self._permission_prompt_lock
+
+        def ask(tool_name, tool_args):
+            with lock:
+                return prompt(tool_name, tool_args)
+
+        return ask
 
     def _prepare_workspace_tool_args(self, tool_name: str, tool_args: dict) -> dict:
         """Normalize and validate path-bearing tool arguments.
@@ -1373,8 +1491,10 @@ class Session:
 
         Args:
             user_msg: The user's input message
-            on_permission: Callback(tool_name, tool_args) -> bool for tool approval
-                          If None, uses self.auto_approve
+            on_permission: Callback(tool_name, tool_args) -> bool for tool approval.
+                          Its answer is final; only ``True`` approves. If None,
+                          a call that needs approval is denied unless a matching
+                          PERMISSION_REQUEST hook explicitly allows it.
             on_choice: Callback(options) -> str for choice selection
                       If None, selects first option
             on_user_input: Callback(question, options) -> str for the
@@ -1383,6 +1503,8 @@ class Session:
                           If None, await_user returns "(no user available)".
             images: Optional list of (image_bytes, media_type) for multimodal input
         """
+        # Delegated workers ask through this turn's prompt (see _execute_task).
+        self._permission_prompt = on_permission
         turn_text_blocks: list[str] = []
         turn_tool_names: list[str] = []
         turn_successful_tools: list[str] = []
@@ -2288,9 +2410,11 @@ class Session:
                         })
 
                 # Execution policy check (declarative rules, evaluated first)
+                policy_prompt = False
                 if self.execution_policy:
                     from .policies import PolicyAction
                     policy_action = self.execution_policy.evaluate(fn_name, fn_args)
+                    policy_prompt = policy_action == PolicyAction.PROMPT
                     if policy_action == PolicyAction.DENY:
                         turn_failed_tools.append(fn_name)
                         reason = self.execution_policy.get_reason(fn_name, fn_args)
@@ -2310,37 +2434,18 @@ class Session:
                         })
                         continue
 
-                # Permission check (three-tier autonomy model)
-                approved = self._should_auto_approve(fn_name)
+                # Permission check: autonomy tier, policy prompts, then the
+                # user's answer, which is final. See _resolve_tool_permission.
+                approved, denial, permitted_args = self._resolve_tool_permission(
+                    fn_name, fn_args, call_id, on_permission, policy_prompt=policy_prompt,
+                )
+                if permitted_args is not fn_args:
+                    fn_args = permitted_args
+                    fn_args_str = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
+
                 if not approved:
                     turn_failed_tools.append(fn_name)
-                    # Policy says PROMPT — defer to permission callback
-                    if on_permission:
-                        approved = on_permission(fn_name, fn_args)
-                    else:
-                        approved = self.auto_approve  # Fallback to legacy flag
-
-                if not approved and self.hook_runner:
-                    permission_hook = self.hook_runner.emit(
-                        HookType.PERMISSION_REQUEST,
-                        {
-                            "tool_name": fn_name,
-                            "tool_args": fn_args,
-                            "project_path": self.project_path or "",
-                            "agent_id": self.agent_id,
-                            "call_id": call_id,
-                        },
-                    )
-                    if permission_hook.decision in {"allow", "approve"}:
-                        approved = True
-                    elif permission_hook.decision in {"deny", "block"}:
-                        approved = False
-                    if permission_hook.modified_args is not None:
-                        fn_args = permission_hook.modified_args
-                        fn_args_str = json.dumps(fn_args, ensure_ascii=False, sort_keys=True)
-
-                if not approved:
-                    result_output = "Tool execution denied by user."
+                    result_output = denial
                     yield make_event(EngineEvent.TOOL_RESULT,
                                     name=fn_name, call_id=call_id,
                                     output=result_output, is_error=False,
@@ -3159,7 +3264,9 @@ class Session:
             **final_payload,
         )
 
-    def restart_agent(self, agent_id: str) -> Iterator[dict]:
+    def restart_agent(
+        self, agent_id: str, *, on_permission: Optional[Callable] = None,
+    ) -> Iterator[dict]:
         """Re-dispatch an interrupted worker from its persisted assignment.
 
         A worker thread cannot survive a process restart, so `AgentRegistry`
@@ -3179,7 +3286,11 @@ class Session:
         own retry; `metadata.resumed_from` links them.
 
         Yields the worker's events, exactly as a delegated task would.
+        ``on_permission`` is the approval prompt for this dispatch; without it
+        the worker's calls that need approval fail closed. A prompt left over
+        from an earlier turn is never reused: its UI channel may be gone.
         """
+        self._permission_prompt = on_permission
         if not self.agent_registry:
             raise RuntimeError("This session has no agent registry to restart from.")
 
@@ -3494,7 +3605,9 @@ class Session:
             backend=child_backend,
             max_steps=worker_max_steps,
             max_tokens=self.max_tokens,
-            auto_approve=True,  # Sub-agents auto-approve (no interactive prompts)
+            # Replaced by the parent's tier just below; workers ask through
+            # the parent's approval prompt (see _delegated_permission_prompt).
+            auto_approve=True,
             parent_session=self,
             allowed_tools=allowed_tools,
             role_instructions=worker_instructions,
@@ -3537,7 +3650,7 @@ class Session:
 
         for event in child.run(
             user_msg=prompt,
-            on_permission=None,
+            on_permission=self._delegated_permission_prompt(),
             on_choice=None,
             images=worker_images or None,
         ):

@@ -112,8 +112,10 @@ jobs:
           $logPath = Join-Path $env:USERPROFILE ".resonant\logs\resonant-startup.log"
           if (Test-Path $logPath) { Remove-Item $logPath -Force }
 
+          # Browser mode prints the one-time launch link (it opens no browser);
+          # the frozen no-console build sends that output to the startup log.
           $proc = Start-Process -FilePath "dist/resonant/resonant.exe" `
-              -ArgumentList "gui","--port","8975" `
+              -ArgumentList "gui","--browser","--port","8975" `
               -PassThru -WindowStyle Hidden
 
           try {
@@ -132,24 +134,49 @@ jobs:
               if ($http.Content.Length -lt 10000) { throw "HTTP / returned only $($http.Content.Length) bytes — looks like an error page, not real index.html" }
               Write-Host "✓ HTTP /  $($http.StatusCode)  $($http.Content.Length) bytes"
 
-              # WebSocket /ws upgrade probe — must return 101 Switching Protocols.
-              # Uses curl since Invoke-WebRequest doesn't support raw WS handshakes.
-              $wsCode = & curl --silent --output NUL --write-out "%{http_code}" `
-                  --http1.1 `
-                  -H "Connection: Upgrade" `
-                  -H "Upgrade: websocket" `
-                  -H "Sec-WebSocket-Version: 13" `
-                  -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" `
-                  -H "Origin: http://127.0.0.1:8975" `
-                  --max-time 5 `
-                  "http://127.0.0.1:8975/ws"
+              # The socket requires this launch's access token (gui/local_access.py).
+              # Redeem the printed one-time code the way the page does. Never
+              # print the token itself.
+              $code = $null
+              for ($i = 0; $i -lt 15 -and -not $code; $i++) {
+                  if (Test-Path $logPath) {
+                      $match = Select-String -Path $logPath -Pattern '#sonn-launch=([A-Za-z0-9_\-]+)' | Select-Object -Last 1
+                      if ($match) { $code = $match.Matches[0].Groups[1].Value }
+                  }
+                  if (-not $code) { Start-Sleep -Seconds 1 }
+              }
+              if (-not $code) { throw "No one-time launch link in $logPath" }
+              $redeemed = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8975/api/access" `
+                  -Headers @{ Origin = "http://127.0.0.1:8975" } -ContentType "application/json" `
+                  -Body (@{ code = $code } | ConvertTo-Json) -TimeoutSec 10
+              $token = $redeemed.token
+              if (-not $token) { throw "The launch code was not redeemed for an access token" }
+              Write-Host "✓ Launch code redeemed"
+
+              # WebSocket /ws upgrade probes. Uses curl since Invoke-WebRequest
+              # doesn't support raw WS handshakes.
+              function Get-WsStatus([string[]]$ExtraHeaders) {
+                  $curlArgs = @("--silent", "--output", "NUL", "--write-out", "%{http_code}", "--http1.1",
+                      "-H", "Connection: Upgrade", "-H", "Upgrade: websocket",
+                      "-H", "Sec-WebSocket-Version: 13", "-H", "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+                      "-H", "Origin: http://127.0.0.1:8975", "--max-time", "5")
+                  foreach ($header in $ExtraHeaders) { $curlArgs += @("-H", $header) }
+                  $status = & curl @curlArgs "http://127.0.0.1:8975/ws"
+                  # curl deliberately reaches --max-time after a successful 101
+                  # because the upgraded WebSocket remains open. PowerShell keeps
+                  # that native exit code (28) and otherwise fails the whole step
+                  # after every assertion has passed. The HTTP code is the
+                  # authoritative handshake result, so clear the expected timeout.
+                  $global:LASTEXITCODE = 0
+                  return $status
+              }
+
+              $refused = Get-WsStatus @()
+              if ($refused -ne "403") { throw "WS /ws without the access token returned $refused, expected 403" }
+              Write-Host "✓ WS /ws without the access token  403"
+
+              $wsCode = Get-WsStatus @("Sec-WebSocket-Protocol: sonn.v1, sonn.access.$token")
               if ($wsCode -ne "101") { throw "WS /ws returned $wsCode, expected 101 Switching Protocols" }
-              # curl deliberately reaches --max-time after a successful 101
-              # because the upgraded WebSocket remains open. PowerShell keeps
-              # that native exit code (28) and otherwise fails the whole step
-              # after every assertion has passed. The HTTP code above is the
-              # authoritative handshake result, so clear the expected timeout.
-              $global:LASTEXITCODE = 0
               Write-Host "✓ WS /ws  $wsCode Switching Protocols"
 
               # Log inspection — even with HTTP 200, a real bug can produce

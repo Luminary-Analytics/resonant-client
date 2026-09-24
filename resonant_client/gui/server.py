@@ -16,6 +16,16 @@ import time
 logger = logging.getLogger(__name__)
 
 
+def _client_host(host: str) -> str:
+    """Address a local client uses to reach a server bound to ``host``.
+
+    A wildcard bind is not a destination: browsers cannot open 0.0.0.0, and
+    the server accepts only Host headers that name the address it was reached
+    on (see gui/local_access.py).
+    """
+    return {"": "127.0.0.1", "0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+
+
 def _find_free_port() -> int:
     """Find a free TCP port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -55,11 +65,14 @@ def launch_gui(
     except ImportError:
         print("Error: uvicorn not installed. Run: pip install uvicorn")
         sys.exit(1)
+    # After the check above: Starlette comes with the same optional extra.
+    from .local_access import access as local_access
 
     if port == 0:
         port = _find_free_port()
 
-    url = f"http://{host}:{port}"
+    client_host = _client_host(host)
+    url = f"http://{f'[{client_host}]' if ':' in client_host else client_host}:{port}"
 
     # Start uvicorn in a background thread
     config = uvicorn.Config(
@@ -75,14 +88,18 @@ def launch_gui(
     server_thread.start()
 
     # Wait for server to be ready
-    if not _wait_for_server(host, port):
+    if not _wait_for_server(client_host, port):
         print(f"Error: Server failed to start on {url}")
         sys.exit(1)
 
     print(f"  SONN Client GUI running at {url}")
 
     def _run_in_browser():
-        print(f"  Open in browser: {url}")
+        # The page is useless without this launch's access token, which it gets
+        # by redeeming the code in the link's fragment. Browsers never send
+        # fragments to the server, and the code works once, so a copy left in
+        # the terminal or a log opens nothing after the page has loaded.
+        print(f"  Open in browser (one-time link): {local_access.launch_url(url)}")
         print("  Press Ctrl+C to stop.")
         try:
             server_thread.join()
@@ -159,6 +176,19 @@ def launch_gui(
                         logger.debug("Could not move pywebview window", exc_info=True)
                         return False
 
+                def open_in_browser(self):
+                    """Open this app in the default browser with a fresh one-time link.
+
+                    Only the desktop window has this bridge, so browser pages and
+                    other local clients cannot mint launch codes.
+                    """
+                    import webbrowser
+                    try:
+                        return bool(webbrowser.open(local_access.launch_url(url)))
+                    except Exception:
+                        logger.debug("Could not open the default browser", exc_info=True)
+                        return False
+
             win_ref = [None]
             api = _WindowAPI(win_ref)
 
@@ -168,7 +198,7 @@ def launch_gui(
 
             wv_kwargs = dict(
                 title="SONN Client",
-                url=url,
+                url=local_access.launch_url(url),
                 width=1200,
                 height=800,
                 min_size=(800, 600),

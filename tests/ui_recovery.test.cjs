@@ -348,3 +348,141 @@ test('opening another project during a run preserves view and sends no navigatio
     assert.equal(app.currentSessionId, 'active');
     assert.match(notices[0], /Finish or stop/);
 });
+
+// ── Launch access (static/local_access.js) ─────────────────────────────
+const accessSource = fs.readFileSync(path.join(__dirname, '../resonant_client/gui/static/local_access.js'), 'utf8');
+
+function loadAccess({hash = '', stored = null, fetch = async () => { throw new Error('unexpected fetch'); }} = {}) {
+    const storage = new Map(stored ? [['sonn-client:access', stored]] : []);
+    const replaced = [];
+    const listeners = {};
+    const reloads = [];
+    const location = {hash, pathname: '/', search: '', reload: () => reloads.push(location.hash)};
+    const context = vm.createContext({
+        URLSearchParams, console, fetch, location,
+        history: {state: null, replaceState: (state, title, url) => replaced.push(url)},
+        localStorage: {getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, String(value))},
+        addEventListener: (type, listener) => { listeners[type] = listener; },
+    });
+    context.window = context;
+    vm.runInContext(accessSource, context);
+    return {access: context.SonnLocalAccess, storage, replaced, listeners, location, reloads};
+}
+
+test('a launch link pasted into an open tab reloads so its code is redeemed', () => {
+    const page = loadAccess({stored: 'stale'});
+    page.location.hash = '#view=settings';
+    page.listeners.hashchange();
+    assert.deepEqual(page.reloads, []);
+    page.location.hash = '#sonn-launch=fresh';
+    page.listeners.hashchange();
+    assert.deepEqual(page.reloads, ['#sonn-launch=fresh']);
+});
+
+test('a launch code leaves the address bar and is redeemed once for a stored token', async () => {
+    const requests = [];
+    const {access, storage, replaced} = loadAccess({hash: '#sonn-launch=abc', fetch: async (url, options) => {
+        requests.push([url, options]);
+        return {ok: true, json: async () => ({token: 'T1'})};
+    }});
+    assert.deepEqual(replaced, ['/']);
+    assert.equal(await access.ready, 'T1');
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0][0], '/api/access');
+    assert.equal(requests[0][1].method, 'POST');
+    assert.deepEqual(JSON.parse(requests[0][1].body), {code: 'abc'});
+    assert.equal(storage.get('sonn-client:access'), 'T1');
+    assert.deepEqual({...access.headers({'Content-Type': 'application/json'})},
+        {'Content-Type': 'application/json', 'X-SONN-Access': 'T1'});
+    assert.deepEqual([...access.protocols()], ['sonn.v1', 'sonn.access.T1']);
+});
+
+test('a reopened launch link falls back to the token stored when it was first used', async () => {
+    const {access} = loadAccess({hash: '#sonn-launch=spent', stored: 'T0', fetch: async () => ({ok: false, status: 403})});
+    assert.equal(await access.ready, 'T0');
+    const offline = loadAccess({hash: '#sonn-launch=abc', stored: 'T0', fetch: async () => { throw new TypeError('Failed to fetch'); }});
+    assert.equal(await offline.access.ready, 'T0');
+});
+
+test('pages without a launch link keep other fragments and use the stored token', async () => {
+    const plain = loadAccess({hash: '#view=settings', stored: 'T0'});
+    assert.deepEqual(plain.replaced, []);
+    assert.equal(await plain.access.ready, 'T0');
+    const mixed = loadAccess({hash: '#sonn-launch=abc&view=settings', fetch: async () => ({ok: true, json: async () => ({token: 'T2'})})});
+    assert.deepEqual(mixed.replaced, ['/#view=settings']);
+    const none = loadAccess();
+    assert.equal(await none.access.ready, '');
+    assert.deepEqual([...none.access.protocols()], ['sonn.v1']);
+});
+
+test('the access check tells a refused token from an unreachable server', async () => {
+    let respond;
+    const {access} = loadAccess({stored: 'T0', fetch: (url, options) => respond(url, options)});
+    respond = async (url, options) => {
+        assert.equal(url, '/api/access');
+        assert.equal(options.headers['X-SONN-Access'], 'T0');
+        return {status: 204};
+    };
+    assert.equal(await access.check(), true);
+    respond = async () => ({status: 403});
+    assert.equal(await access.check(), false);
+    respond = async () => { throw new TypeError('Failed to fetch'); };
+    assert.equal(await access.check(), null);
+});
+
+test('private requests wait for the launch token and carry it', async () => {
+    let release;
+    const calls = [];
+    const SonnLocalAccess = {
+        ready: new Promise(resolve => { release = resolve; }),
+        headers: extra => ({...(extra || {}), 'X-SONN-Access': 'T1'}),
+    };
+    const app = setup((url, options) => { calls.push([url, options]); return Promise.resolve({ok: true}); }, {SonnLocalAccess});
+    const pending = app._localFetch('/api/ui-state', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+    await tick();
+    assert.equal(calls.length, 0);
+    release('T1');
+    await pending;
+    assert.equal(calls[0][1].method, 'POST');
+    assert.deepEqual(calls[0][1].headers, {'Content-Type': 'application/json', 'X-SONN-Access': 'T1'});
+});
+
+test('a refused socket explains how to reconnect instead of retrying forever', async () => {
+    const app = setup(() => {});
+    const calls = [];
+    app._showAccessRequired = () => calls.push('access');
+    app.scheduleReconnect = () => calls.push('retry');
+    await app._reconnectUnlessRefused({check: async () => false});
+    await app._reconnectUnlessRefused({check: async () => null});
+    await app._reconnectUnlessRefused({check: async () => true});
+    await app._reconnectUnlessRefused(undefined);
+    assert.deepEqual(calls, ['access', 'retry', 'retry', 'retry']);
+});
+
+test('capability pack review escapes repository text and approves only what it showed', () => {
+    const app = accountView();
+    const sent = [];
+    app.send = message => sent.push(message.command);
+    app._loadSettingsPage('capability_packs');
+    assert.deepEqual(sent, ['capability_pack_list']);
+    app.capabilityPacks = {packs: [
+        {id: 'quality', name: 'Quality" onmouseover="alert(1)', version: '1.0', status: 'needs_approval',
+         description: '<img src=x onerror=alert(1)>', path: "D:/repo/.resonant/packs/it's", scope: 'project',
+         digest: 'a'.repeat(64), agents: [], skills: ['skill.md'], pinned_files: ['scripts/check.py'],
+         hooks: [{hook_type: 'pre_tool_use', matcher: 'bash', command: 'python check.py "</pre><script>"'}],
+         mcp_servers: {docs: {command: 'node', args: ['server.js', '--port=1']}}},
+        {id: 'moved', name: 'Moved', version: '2', status: 'unverifiable', scope: 'project', digest: '',
+         path: 'D:/repo/.resonant/packs/moved', problem: 'The pack cannot be verified because it contains a link: x.'},
+    ]};
+    const html = app._renderCapabilityPacks();
+    for (const unsafe of ['onmouseover="', '<img', '<script>', "packs/it's"]) {
+        assert.ok(!html.includes(unsafe), unsafe);
+    }
+    assert.match(html, /data-pack-digest="a{64}"/);
+    assert.match(html, /python check\.py &quot;&lt;\/pre&gt;&lt;script&gt;&quot;/);
+    assert.match(html, /node server\.js --port=1/);
+    assert.match(html, /scripts\/check\.py/);
+    // One approvable pack; an unverifiable pack offers nothing to approve.
+    assert.equal(html.match(/data-pack-action="approve"/g).length, 1);
+    assert.match(html, /contains a link/);
+});

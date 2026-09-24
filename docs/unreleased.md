@@ -8,6 +8,149 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 24 local GUI access control — source only, not released
+
+**Security fix.** The GUI server bound to 127.0.0.1 accepted any WebSocket
+without a credential. Any local process, another account on the machine, or a
+web page could open the socket; WebSockets are exempt from CORS, and DNS
+rebinding defeated the only Origin check. Such a client could then run
+`shell_exec`, rewrite settings including hooks and MCP servers, switch the
+permission mode and answer approval prompts.
+
+- Each launch creates an access token that the server never prints or logs.
+  Pages redeem a one-time code from the launch link's URL fragment at
+  `/api/access`. They keep the token in origin storage, which is port-isolated
+  unlike cookies, and send it as a WebSocket subprotocol or `X-SONN-Access` header.
+- `/ws` and `/api/ui-state` also require an exact `Host` (`127.0.0.1:<port>`,
+  `localhost:<port>`, or a literal non-loopback bind address) and this server's
+  `Origin`. A refused handshake is closed before `accept()`, and the client
+  receives HTTP 403. A Host guard covers every route; the page refuses framing.
+- Launch links: the desktop window opens with one; `--browser` prints one;
+  **File > Open in Browser** mints one through the desktop bridge only. A page
+  without access shows how to get a link instead of retrying. Pasting a new link
+  into an open tab reloads it and redeems the code. Diagnostics ZIPs redact
+  launch links.
+- `update_settings` accepts only the fields Settings edits. Hooks, LSP servers,
+  plugins, the gateway, stdio MCP servers and whole-section writes are refused.
+  HTTP MCP entries are rebuilt without `command`/`args`/`env`. The Ollama setup
+  wizard's `values` payload was previously ignored, so its typed URL was never
+  saved; it is now validated and saved.
+- `set_permission_mode` requires an explicit known mode; the backends had
+  treated a missing or unknown mode as Full-auto. `approve` requires an explicit
+  `true`. Wildcard `--host` binds print and probe a loopback URL.
+
+Compatibility: bookmarks and scripts that open the page or socket without a
+launch link are refused. After a restart, a tab needs the new link.
+
+Validation on September 24, 2026: 3,416 passed / 3 skipped (baseline before the
+change 3,357 / 3), 29 UI recovery checks, ruff and `git diff --check`. Live
+checks used an isolated home and a scripted Ollama-compatible model, not a live
+model. In the browser pane, with real keyboard events, they covered:
+
+- the locked page at desktop and phone widths, and link redemption;
+- sending a message, F5 reload with draft restore, and a dropped socket with
+  automatic reconnect;
+- a run that continued across a mid-run reload;
+- a stale tab after a restart, recovered by pasting the new link, and a reused
+  link falling back to the stored token.
+
+Raw HTTP against the live server returned 403 for missing, wrong, cross-origin,
+dev-server-origin and rebinding handshakes, and 101 with `sonn.v1` otherwise.
+
+The desktop window (pywebview 6.1, WebView2) redeemed its code and connected.
+**Open in Browser** was triggered through its click handler from the fixture's
+own `evaluate_js`; operating-system input was not used. The minted link,
+recorded by a stub `webbrowser.open`, connected a browser pane that sent a
+message.
+
+Not exercised: a packaged build, the real default-browser handoff, macOS/Linux
+webviews and live models.
+
+## September 24 security fixes: capability-pack trust and tool approvals
+
+Source-only; not bundled or released. These are separate from the AI Employee pause.
+
+**Repository capability packs could approve themselves.** The client
+discovered `<project>/.resonant/packs` automatically, and a pack's own manifest
+could set `trust`, `enabled` and `sha256`. Opening a cloned repository could
+then connect the pack's MCP servers and register its shell hooks. The digest
+covered only the manifest.
+
+- Trust and enablement now come only from user settings. Manifest `trust`,
+  `enabled` and `sha256` are ignored.
+- Approval is location-bound. A repository pack can only be trusted by a user
+  approval of that pack directory, so an approval never follows a copied pack
+  into another repository. Pinned trust by pack id still works for packs
+  outside the project.
+- Every approval pins one digest covering every file in the pack (except
+  `.git`) plus the repository files that its hook and MCP commands name. Any
+  change turns the pack off until it is approved again. Packs with links, more
+  than 4,000 files, or more than 64 MB cannot be verified.
+- Pack hooks re-verify the digest before each run. Skills, agents and MCP
+  servers stop contributing once the pack changes.
+- Pack hooks now live on per-session runners. Opening another project
+  disconnects the previous project's pack MCP servers; previously only a
+  settings reload removed them.
+- **Settings > Capability packs** shows what each pack would run and offers
+  Approve or Revoke. If the pack changed after the list was drawn, approval is
+  refused with an explanation. A banner above the composer names packs that
+  are waiting for review.
+- A project's `resonant-policy.json` could weaken built-in denies: an earlier
+  `allow` beat, for example, Auto-edit's recursive-delete deny. Built-in denies
+  are now checked first. Repository rules can still tighten the policy, and a
+  policy `prompt` rule now requires approval.
+
+**A user's Deny could run the tool.** After a Deny, the engine emitted
+PERMISSION_REQUEST and read `HookResult`'s default decision, "allow", as
+approval. The GUI always attaches a hook runner, so in Ask mode a denied tool
+ran anyway.
+
+- The user's answer is final, and only an explicit `true` approves.
+- A missing or unknown hook decision is no decision. When no prompt can be
+  shown, only an explicit allow or deny from a matching PERMISSION_REQUEST hook
+  decides; otherwise the call fails closed. Arguments rewritten by a hook are
+  checked against the policy again.
+- Auto-edit used to run shell and MCP actions without asking. The GUI attached
+  a prompt only in Ask mode, and the engine fell back to a legacy
+  `auto_approve` flag. Auto-edit now asks before shell, MCP, browser, desktop,
+  REPL, process and git actions, and before any new tool. `auto_approve` now
+  follows the autonomy tier. Background work without a prompt, such as sprint
+  roles in Auto-edit, now skips calls that need approval.
+- Changing the permission mode now updates the live session's tier and policy.
+  Before, switching Full-auto to Ask mid-session kept auto-approving.
+- Delegated workers ask through the parent's prompt, one at a time, instead of
+  auto-approving; restarted workers use their own run's prompt.
+- Every prompt has a request id. Late or stale answers are ignored instead of
+  approving the next request, and a missing or non-boolean `approved` no longer
+  counts as approval.
+- The approval dialog now takes focus when it opens: Tab reaches Deny and
+  Allow, Escape denies, and focus returns to the composer. Denied shell cards
+  read "not run" instead of "running…".
+
+Validation: `ruff`, 23 Node UI tests (one new), `git diff --check`, and the
+full suite: 3,405 passed, 2 skipped. The new tests are in `test_permission_decisions.py`,
+`test_gui_permission_modes.py` and `test_capability_pack_trust.py`. Of these,
+45 were written before the fix: 41 failed against the unfixed code, and 4
+contract tests passed. Two more cover the restarted-worker prompt and dropping
+servers of a pack edited after approval; they were written with their fixes
+and mutation-checked. Real browser events drove the actual app, WebSocket,
+engine, hook runner and approve handler. The model was scripted, no provider
+was called, and the home and project were temporary. Checked there:
+
+- Opening a repository with a self-trusting pack ran neither its hook nor its
+  MCP server.
+- In Auto-edit, a shell command prompted. Deny left no file; Allow ran it.
+- After switching to Ask mid-session, a keyboard Deny (Tab, then Enter) and an
+  Escape each left no file.
+- Approving a pack edited after review was refused. Approving the current
+  content started its MCP server and ran its hook on the next turn.
+- Editing the approved pack stopped the hook, showed "Changed since approval",
+  and brought the banner back. Revoking worked.
+- The Settings page and dialog fit a 375 px viewport without horizontal
+  overflow.
+
+No live model run, packaged build or CLI-provider path was exercised.
+
 ## September 15 AI Employee source integration — paused
 
 The user paused implementation; see the [resume handoff](ai-employees-handoff.md).

@@ -27,6 +27,15 @@ continues to start a session there directly. A new conversation appears beneath
 its chosen project after the first message; no empty session is saved by opening
 or cancelling the chooser.
 
+**Browser pages (Unreleased):** the app server accepts only pages opened from
+a one-time launch link. In the desktop window, **File > Open in Browser** (also
+in the command palette) opens the running app in your default browser.
+`resonant-gui --browser` prints a one-time link instead. A used link cannot open
+another browser, but the tab it opened keeps working through reloads and
+reconnects, as do new tabs of that browser at the same address, until SONN
+Client exits. After a restart, paste the new link into an existing tab. A page
+opened without a link explains how to get one. See [Unreleased](unreleased.md).
+
 **Find projects or sessions** matches project names, paths, and session titles.
 The scope selector offers **All sessions** and **Pinned**. Expanded projects
 initially show six matching sessions, plus the active conversation if needed.
@@ -98,6 +107,30 @@ from no matches. At narrow phone widths, categories become a horizontal strip.
 Text fields save when focus leaves them; switches and selects save when changed.
 Background responses defer rebuilding an actively edited field. Account, editor,
 usage, and diagnostic requests load on the relevant page rather than all at once.
+
+## Permission modes and approvals
+
+The composer's mode menu applies immediately to the current conversation,
+including a run in progress, for native providers. **Ask** runs read-only tools
+and asks before other actions; file edits and shell commands stay blocked.
+**Auto-edit** also accepts file edits and asks before shell, MCP, browser,
+desktop and git actions. **Plan** uses Auto-edit approvals for native providers.
+**Full-auto** runs everything inside the project sandbox. A project's
+`resonant-policy.json` can require more approval but cannot lift a built-in
+block.
+
+**Deny** is final: nothing, including a hook, runs the call afterward. The
+approval dialog takes focus when it opens, so typing in the composer cannot
+answer it. **Tab** reaches **Deny** and **Allow**, and **Escape** denies. Work
+that runs without an approval dialog, such as background sprint roles, skips
+calls that need approval instead of running them.
+
+**Settings > Capability packs** lists packs from the project's `.resonant/packs`
+and `~/.resonant/packs`, with the hooks and MCP servers each would run. Nothing
+in a pack runs until you approve it there; a pack's own manifest cannot approve
+it. Editing an approved pack turns it off until you review it again. When the
+open project has packs waiting for review, the banner above the composer links
+to that page.
 Settings supports dark and light palettes while retaining the SONN accent.
 
 ## ChatGPT/Codex and OpenRouter

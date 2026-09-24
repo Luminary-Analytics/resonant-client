@@ -293,7 +293,7 @@ def test_unified_sidebar_puts_add_before_conversations():
 
 
 def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
-    from starlette.testclient import TestClient
+    from tests.gui_access import LocalClient
 
     from resonant_client.gui import app as gui_app
 
@@ -326,7 +326,7 @@ def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
         },
     )
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({
                 "command": "set_project",
@@ -348,7 +348,7 @@ def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
 
 
 def test_duplicate_new_session_request_is_idempotent(monkeypatch, tmp_path):
-    from starlette.testclient import TestClient
+    from tests.gui_access import LocalClient
 
     from resonant_client.gui import app as gui_app
 
@@ -379,7 +379,7 @@ def test_duplicate_new_session_request_is_idempotent(monkeypatch, tmp_path):
     monkeypatch.setattr(gui_app.state, "build_session", lambda **kwargs: SimpleNamespace())
     monkeypatch.setattr(gui_app.state.costs, "reset_session", lambda: None)
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             request = {
                 "command": "clear",

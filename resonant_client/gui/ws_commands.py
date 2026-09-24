@@ -73,6 +73,8 @@ STATUS_UPDATE_STEER = (
     "or repeat completed steps."
 )
 
+PERMISSION_MODES = frozenset({"ask", "auto-edit", "plan", "bypass"})
+
 
 def _is_connection_closed(exc: BaseException) -> bool:
     """Whether this exception means "the client is gone", not "we have a bug".
@@ -439,12 +441,56 @@ async def _artifact_list(ctx: CommandContext) -> None:
 
 @command("capability_pack_list")
 async def _capability_pack_list(ctx: CommandContext) -> None:
-    manager = ctx.session_attr("capability_packs")
+    # The open project's packs, approved or not, so Settings can show what
+    # each would run before the user decides.
+    try:
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+    except Exception as exc:
+        logger.warning("capability_pack_list failed", exc_info=True)
+        await ctx.send_error(f"Couldn't list capability packs: {exc}")
+        return
+    await ctx.send(payload)
+
+
+async def _set_capability_pack_approval(ctx: CommandContext, *, approve: bool) -> None:
+    from ..engine.capability_packs import CapabilityPackError
+
+    msg = ctx.msg
+    try:
+        payload = await _in_executor(
+            lambda: ctx.state.set_capability_pack_approval(
+                str(msg.get("pack_id") or ""),
+                str(msg.get("path") or ""),
+                digest=str(msg.get("digest") or ""),
+                approve=approve,
+            )
+        )
+    except CapabilityPackError as exc:
+        # Redraw what is on disk now (a changed pack has a new digest to
+        # review) and say why nothing was approved.
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+        payload["error"] = str(exc)
+        await ctx.send(payload)
+        return
+    await ctx.send(payload)
     await ctx.send({
-        "event": "capability.pack_list",
-        "packs": [item.to_dict() for item in manager.discover()] if manager else [],
-        "catalog": manager.context_catalog() if manager else {},
+        "event": "ui_notice",
+        "message": (
+            "Capability pack approved. Its hooks, skills, agents and MCP servers are active."
+            if approve else
+            "Capability pack approval revoked. Its hooks and MCP servers are off."
+        ),
     })
+
+
+@command("capability_pack_approve")
+async def _capability_pack_approve(ctx: CommandContext) -> None:
+    await _set_capability_pack_approval(ctx, approve=True)
+
+
+@command("capability_pack_revoke")
+async def _capability_pack_revoke(ctx: CommandContext) -> None:
+    await _set_capability_pack_approval(ctx, approve=False)
 
 
 @command("context_catalog")
@@ -541,7 +587,13 @@ async def _get_costs(ctx: CommandContext) -> None:
 
 @command("set_permission_mode")
 async def _set_permission_mode(ctx: CommandContext) -> None:
-    ctx.state.apply_permission_mode(ctx.msg.get("mode", "bypass"))
+    # No default: the backends treat an unrecognised mode as Full-auto, so a
+    # missing or misspelled mode must not reach apply_permission_mode.
+    mode = ctx.msg.get("mode")
+    if not isinstance(mode, str) or mode not in PERMISSION_MODES:
+        await ctx.send_error("Choose a permission mode: ask, auto-edit, plan or bypass.")
+        return
+    ctx.state.apply_permission_mode(mode)
 
 
 @command("get_harness_state")
@@ -2829,8 +2881,25 @@ async def _cmd_list_dirs(ctx: CommandContext) -> None:
 
 @command("approve")
 async def _cmd_approve(ctx: CommandContext) -> None:
-    ctx.state.permission_result[0] = ctx.msg.get("approved", True)
-    ctx.state.permission_response.set()
+    """Answer the tool-permission prompt that is waiting, and only that one.
+
+    The answer must name the prompt's request id; anything else (a late
+    click, a stale tab) is ignored rather than applied to a later prompt.
+    Only a JSON ``true`` approves. The first accepted answer is final.
+    """
+    state = ctx.state
+    request_id = str(ctx.msg.get("request_id") or "")
+    lock = getattr(state, "_permission_lock", None)
+    if lock is None:
+        return
+    with lock:
+        pending = str(getattr(state, "permission_request_id", "") or "")
+        if not pending or request_id != pending:
+            logger.info("Ignored a permission answer for a prompt that is no longer waiting")
+            return
+        state.permission_request_id = ""
+        state.permission_result[0] = ctx.msg.get("approved") is True
+        state.permission_response.set()
 
 
 
@@ -2859,19 +2928,103 @@ async def _cmd_user_input(ctx: CommandContext) -> None:
 
 
 
+# What Settings may change over the socket, by section and key. Hooks, LSP
+# servers, plugins, the chat gateway and stdio MCP servers start processes or
+# grant remote control; Settings shows them read-only and they are edited in
+# ~/.resonant/settings.json. HTTP MCP servers are checked separately below.
+_SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
+    "general": frozenset({
+        "display_name", "show_companion", "default_backend", "default_model",
+        "default_permission_mode", "auto_lint_after_edits", "auto_test_after_edits",
+        "auto_test_command", "max_model_requests", "big_context_profile",
+        "harness_enabled",
+    }),
+    "appearance": frozenset({"theme", "density", "font_size"}),
+    "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
+    "network": frozenset({"ollama_url", "exo_url", "sonn_url"}),
+    "api_keys": frozenset({"sonn", "openrouter", "kimi"}),
+    "engram": frozenset({"enabled", "server_url"}),
+    "cost_tracking": frozenset({"enabled", "budget_alert_usd"}),
+    "model_favorites": frozenset({"models"}),
+}
+
+
+def _socket_mcp_server(value: Any) -> dict[str, Any]:
+    """Normalise an MCP server entry from Settings, which adds HTTP servers only."""
+    from urllib.parse import urlsplit
+
+    if not isinstance(value, dict):
+        raise ValueError("MCP server settings must be an object.")
+    transport = str(value.get("transport", "")).strip().lower()
+    if transport not in {"http", "streamable_http", "streamable-http"}:
+        raise ValueError(
+            "Settings adds HTTP MCP servers only. Add command-based servers "
+            "in ~/.resonant/settings.json."
+        )
+    url = str(value.get("url", "")).strip()
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        raise ValueError("Enter an http:// or https:// MCP server URL.")
+    # Rebuilt rather than stored as sent, so command/args/env from an older
+    # entry cannot ride along with a URL edit.
+    entry: dict[str, Any] = {
+        "transport": "http",
+        "url": url,
+        "enabled": value.get("enabled", True) is not False,
+    }
+    headers = value.get("headers")
+    if isinstance(headers, dict):
+        entry["headers"] = {str(k): str(v) for k, v in headers.items()}
+    return entry
+
+
+def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
+    """Return the value to store for one Settings write, or raise ValueError."""
+    if section == "mcp_servers":
+        if not isinstance(key, str) or not key.strip() or len(key) > 128:
+            raise ValueError("Enter an MCP server name.")
+        return _socket_mcp_server(value)
+    allowed = _SOCKET_SETTING_KEYS.get(section, ()) if isinstance(section, str) else ()
+    if not isinstance(key, str) or key not in allowed:
+        raise ValueError(
+            f"{section}.{key} can't be changed from the app. "
+            "Edit ~/.resonant/settings.json instead."
+        )
+    if (section, key) == ("general", "default_permission_mode") and (
+        not isinstance(value, str) or value not in PERMISSION_MODES
+    ):
+        raise ValueError("Choose a permission mode: ask, auto-edit, plan or bypass.")
+    return value
+
+
 @command("update_settings")
 async def _cmd_update_settings(ctx: CommandContext) -> None:
     section = ctx.msg.get("section", "")
     key = ctx.msg.get("key")
-    value = ctx.msg.get("value")
     clear_secret = bool(ctx.msg.get("clear_secret", False))
-    if ctx.runs.busy and ((section == "api_keys" and key in {None, "sonn"})
-                         or (section == "network" and key in {None, "sonn_url"})):
+    # The Ollama setup wizard sends its keys together as `values`.
+    values = ctx.msg.get("values")
+    if key is None and isinstance(values, dict):
+        writes = list(values.items())
+    else:
+        writes = [(key, ctx.msg.get("value"))]
+    try:
+        if not writes:
+            raise ValueError("No setting was given.")
+        writes = [(k, _socket_setting_value(section, k, v)) for k, v in writes]
+    except ValueError as exc:
+        await ctx.send_error(str(exc))
+        return
+    sonn_change = any(
+        (section == "api_keys" and k == "sonn") or (section == "network" and k == "sonn_url")
+        for k, _ in writes
+    )
+    if ctx.runs.busy and sonn_change:
         await ctx.send({"event": "error", "message": "Finish or stop the current run before changing SONN settings."})
         return
-    data = await asyncio.to_thread(ctx.state.update_setting_value, section, key, value, clear_secret=clear_secret)
-    if ((section == "api_keys" and key in {None, "sonn"})
-            or (section == "network" and key in {None, "sonn_url"})):
+    for k, v in writes:
+        data = await asyncio.to_thread(ctx.state.update_setting_value, section, k, v, clear_secret=clear_secret)
+    if sonn_change:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})
     await ctx.send({"event": "settings", "data": data})

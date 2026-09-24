@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-12
+Last updated: 2026-09-24 (capability-pack trust and tool approvals)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -27,7 +27,7 @@ by `gui/app.py::_wire_session` and inherited by child sessions:
 | Context broker | `engine/context_broker.py` | Provenance-aware explicit `@provider:selector` attachments |
 | Model roles | `engine/model_roles.py` | Explicit plan/explore/implement/test/review/vision boundaries and configured routing |
 | Director Mode | `engine/director.py` | Opt-in frontier supervision, durable dependency graph, adaptive worker pools, evidence gates, and outcome benchmarks |
-| Capability packs | `engine/capability_packs.py` | One trusted package for agents, skills, hooks, MCP, commands, recipes, and UI metadata |
+| Capability packs | `engine/capability_packs.py` | One user-approved, digest-pinned package for agents, skills, hooks, MCP, commands, recipes, and UI metadata |
 | Code intelligence | `engine/code_intelligence.py` | Python AST and optional Tree-sitter symbols, imports, and calls |
 | Lifecycle hooks | `engine/hooks.py` | Structured JSON decisions around models, tools, batches, permissions, workers, compaction, checkpoints, and validation |
 
@@ -111,6 +111,38 @@ compaction, checkpoint, validation, user-input, worktree, and error boundaries.
 Hooks can deny before side effects, repair arguments, inject deterministic
 context, or reject an unsupported completion claim.
 
+A missing or unknown `decision` is no decision; it is never read as consent.
+When several hooks answer, `deny` outranks `ask`, which outranks `allow`, and a
+gate hook that exits non-zero is a `deny`.
+
+## Tool approvals
+
+Each tool call passes, in order: PRE_TOOL_USE hooks, the execution policy, then
+the autonomy tier. Built-in policy denies are checked before a project's
+`resonant-policy.json`, so a repository can tighten the policy but cannot
+weaken a built-in deny. A policy `prompt` rule requires approval even in
+Full-auto.
+
+When approval is required, the user's answer is final and only an explicit
+`true` approves. A PERMISSION_REQUEST hook can neither run a call the user
+denied nor block one they allowed. Only when no prompt is available (background
+runs, or delegated work without a parent prompt) does an explicit allow or deny
+from a matching PERMISSION_REQUEST hook settle the call. No answer fails
+closed. Arguments that such a hook rewrites are checked against the policy
+again. Delegated workers ask through the parent's prompt, one question at a
+time. The GUI binds every prompt to a request id and ignores answers for a
+prompt that is no longer waiting.
+
+| Mode | Tier | Runs without asking |
+|---|---|---|
+| Ask | `suggest` | Read-only tools; built-in policy denies file writes and shell |
+| Auto-edit, Plan | `auto-edit` | Read-only and file-editing tools, `await_user`, `task`, `task_batch` |
+| Full-auto | `full-auto` | Everything the policy allows |
+
+Auto-edit asks before shell, MCP, browser, desktop, REPL, process and git
+actions, and before any newly added tool. Changing the mode updates the live
+session's tier and policy, including a run in progress.
+
 ## Flight recorder and evaluation
 
 Every GUI run receives a manifest containing backend/model role, prompt/system
@@ -163,10 +195,35 @@ may declare agents, skills, lifecycle hooks, MCP servers, commands, recipes,
 and UI panels. Repository packs live under `.resonant/packs`; global packs live
 under `~/.resonant/packs`.
 
-Execution requires both `enabled: true` and explicit trust (`local`, `trusted`,
-or `signed`). An optional SHA-256 pin binds trust to the manifest. Only active,
-trusted packs can register hooks, connect MCP servers, contribute skills, or
-create agent types. The Packs UI always shows enabled and trust state.
+A manifest describes a pack; it never approves it. `trust`, `enabled` and
+`sha256` written in a manifest are ignored, because a cloned repository
+controls its own files. Trust comes only from user settings (`plugins`):
+
+- **Approval by location.** **Settings > Capability packs** shows every
+  discovered pack, what its hooks and MCP servers would run, and its content
+  digest. **Approve and enable** records
+  `plugins.<id>.approvals.<pack directory> = {sha256, enabled}`. The server
+  refuses the approval if the pack changed after the list was drawn. This is
+  the only way to trust a pack inside the open project, so an approval never
+  follows a copied pack into another repository.
+- **Pinned trust by id**, for packs outside the project only:
+  `plugins.<id> = {trust: local|trusted|signed, enabled: true, sha256}`.
+
+Both pin one digest covering every file in the pack directory (except `.git`)
+and the repository files that its hook and MCP commands name, such as
+`python scripts/check.py`. A pack that contains a link, exceeds 4,000 files or
+64 MB, or names a file linked outside the project cannot be verified or
+approved. Changing any covered file withdraws trust until the pack is approved
+again: hooks re-verify the digest before each run, and skills, agents and MCP
+servers stop contributing. Files that a named script runs in turn are not
+followed, so review what the commands do before approving.
+
+Only approved, enabled, unchanged packs register hooks, connect MCP servers,
+contribute skills, or create agent types. Pack hooks ride on per-session
+runners rather than the shared settings runner. Opening another project
+disconnects the previous project's pack MCP servers, and its sessions' pack
+hooks go with those sessions. When the open project has packs waiting for a
+decision, the banner above the composer links to the review page.
 
 ## Multimodal artifact bus
 

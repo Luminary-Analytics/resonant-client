@@ -39,6 +39,14 @@ class TestRedactPrefixedTokens:
         assert "AbC123dEf456GhI789" not in result
         assert "[REDACTED]" in result
 
+    def test_redacts_gui_launch_links(self):
+        # A packaged --browser launch prints its link into the startup log.
+        from resonant_client.gui.local_access import LocalAccess
+
+        line = f"  Open in browser (one-time link): {LocalAccess().launch_url('http://127.0.0.1:5000')}"
+        result = redact(line)
+        assert result == "  Open in browser (one-time link): http://127.0.0.1:5000/#sonn-launch=[REDACTED]"
+
     def test_does_not_clobber_normal_text(self):
         # Pattern is anchored on the prefix — random text shouldn't trip.
         line = "this is a normal log line with no secrets"

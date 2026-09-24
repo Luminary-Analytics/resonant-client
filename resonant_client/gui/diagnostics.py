@@ -53,6 +53,10 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     (re.compile(r"(?i)((?:OPENAI|ANTHROPIC|GROQ|GEMINI|CEREBRAS|TOGETHER|MISTRAL)_API_KEY\s*=\s*)\S+"),
      r"\1[REDACTED]"),
     (re.compile(r"(?i)(GITHUB_TOKEN\s*=\s*)\S+"), r"\1[REDACTED]"),
+    # One-time GUI launch links. A packaged app started with --browser prints
+    # its link to stdout, which is the startup log; an unused code stays valid
+    # until the app exits.
+    (re.compile(r"(#sonn-launch=)[A-Za-z0-9_\-]+"), r"\1[REDACTED]"),
 )
 
 

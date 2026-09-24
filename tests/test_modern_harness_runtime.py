@@ -7,7 +7,7 @@ from pathlib import Path
 
 from resonant_client.engine.agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
 from resonant_client.engine.artifacts import ArtifactKind, ArtifactStore
-from resonant_client.engine.capability_packs import CapabilityPackManager
+from resonant_client.engine.capability_packs import CapabilityPackManager, approve_pack
 from resonant_client.engine.checkpoint_timeline import SessionCheckpointStore
 from resonant_client.engine.code_intelligence import parse_code
 from resonant_client.engine.context_broker import ContextBroker
@@ -287,13 +287,21 @@ def test_capability_pack_unifies_agents_skills_hooks_and_mcp(tmp_path: Path):
     (pack / "skill.md").write_text("Validate behavior and cite evidence.", encoding="utf-8")
     manifest = {
         "id": "quality", "name": "Quality Pack", "version": "1.0.0",
-        "enabled": True, "trust": "local", "agents": ["reviewer.md"],
+        "agents": ["reviewer.md"],
         "skills": ["skill.md"],
         "hooks": [{"hook_type": "session_start", "command": "echo ready"}],
         "mcp_servers": {"docs": {"command": "docs-server", "enabled": True}},
     }
     (pack / "resonant-pack.json").write_text(json.dumps(manifest), encoding="utf-8")
-    manager = CapabilityPackManager(tmp_path, roots=[tmp_path / "packs"])
+    # Trust comes from the user's settings, pinned to the reviewed content;
+    # tests/test_capability_pack_trust.py covers the trust rules themselves.
+    [reviewed] = CapabilityPackManager(tmp_path, roots=[tmp_path / "packs"]).discover()
+    assert not reviewed.trusted
+    manager = CapabilityPackManager(
+        tmp_path,
+        configured=approve_pack({}, reviewed, reviewed_digest=reviewed.digest),
+        roots=[tmp_path / "packs"],
+    )
     discovered = manager.discover()
     agent = manager.get_agent_type("pack-reviewer")
     assert discovered[0].trusted and discovered[0].enabled

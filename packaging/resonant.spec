@@ -87,6 +87,8 @@ datas = [
      "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "employee_tasks.js"),
      "resonant_client/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "local_access.js"),
+     "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "fonts.css"),
      "resonant_client/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "styles.css"),

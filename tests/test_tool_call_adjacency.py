@@ -17,7 +17,7 @@ replayed, the session then failed identically forever.
 
 import pytest
 
-from resonant_client.backends import KimiBackend
+from lumi.backends import KimiBackend
 
 
 def _call(call_id, name="browser_navigate"):

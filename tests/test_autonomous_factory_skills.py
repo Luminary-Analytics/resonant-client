@@ -25,7 +25,7 @@ from unittest.mock import patch
 
 import pytest
 
-from resonant_client.gui.autonomous_factory import (
+from lumi.gui.autonomous_factory import (
     DispatchTracker,
     build_autonomous_mission_hooks,
 )
@@ -139,7 +139,7 @@ class TestExtractHookSpawnsThread:
             time.sleep(0.1)
 
         with patch(
-            "resonant_client.orchestration.skill_mission_extraction.extract_skill_from_iter",
+            "lumi.orchestration.skill_mission_extraction.extract_skill_from_iter",
             slow_extractor,
         ):
             t0 = time.time()
@@ -190,7 +190,7 @@ class TestCuratorHookSpawnsThread:
             time.sleep(0.1)
 
         with patch(
-            "resonant_client.orchestration.skill_curator.run_curation",
+            "lumi.orchestration.skill_curator.run_curation",
             slow_curator,
         ):
             t0 = time.time()
@@ -216,10 +216,10 @@ class TestCuratorHookSpawnsThread:
 
         # Patch the rate-limit check to return False (just ran recently).
         with patch(
-            "resonant_client.orchestration.skill_curator.should_run_curation",
+            "lumi.orchestration.skill_curator.should_run_curation",
             return_value=False,
         ), patch(
-            "resonant_client.orchestration.skill_curator.run_curation",
+            "lumi.orchestration.skill_curator.run_curation",
             fake_run,
         ):
             hooks.queue_curation_hook(str(project_dir))
@@ -235,7 +235,7 @@ class TestCuratorHookSpawnsThread:
         # If should_run_curation raises (corrupt state file etc.),
         # the hook logs + skips rather than crashing the daemon.
         with patch(
-            "resonant_client.orchestration.skill_curator.should_run_curation",
+            "lumi.orchestration.skill_curator.should_run_curation",
             side_effect=RuntimeError("corrupt state"),
         ):
             # Should NOT raise.

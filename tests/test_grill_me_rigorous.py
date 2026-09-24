@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.gui.roadmap import AcceptanceCriterion
-from resonant_client.orchestration.grill_me import (
+from lumi.gui.roadmap import AcceptanceCriterion
+from lumi.orchestration.grill_me import (
     ExtractedSpec,
     extract_acceptance_criteria,
     extract_spec,
@@ -646,7 +646,7 @@ class TestExtractSpecTruncationDetection:
         # should refuse a truncated spec with a clear ValueError. This
         # is the error the user would have seen if they'd clicked the
         # Build button on the un-gated dispatch card.
-        from resonant_client.gui.autonomous_session import build_roadmap_from_spec
+        from lumi.gui.autonomous_session import build_roadmap_from_spec
         with pytest.raises(ValueError, match="no typed acceptance criteria"):
             build_roadmap_from_spec(
                 feature="x", intent_id="i",
@@ -657,7 +657,7 @@ class TestExtractSpecTruncationDetection:
     def test_build_roadmap_from_spec_refuses_no_final_spec_block(self, tmp_path):
         # Sister case: no `## Final spec` block at all. Different
         # error message but same outcome (refusal).
-        from resonant_client.gui.autonomous_session import build_roadmap_from_spec
+        from lumi.gui.autonomous_session import build_roadmap_from_spec
         with pytest.raises(ValueError, match="Final spec"):
             build_roadmap_from_spec(
                 feature="x", intent_id="i",

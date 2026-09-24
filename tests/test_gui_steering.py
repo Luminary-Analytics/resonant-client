@@ -3,8 +3,8 @@ import threading
 
 from tests.gui_access import LocalClient
 
-from resonant_client.gui import app as gui_app
-from resonant_client.engine.session import Session
+from lumi.gui import app as gui_app
+from lumi.engine.session import Session
 
 
 class _CancellableSession:

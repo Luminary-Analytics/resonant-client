@@ -6,16 +6,16 @@ import json
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
-from resonant_client.backends import (
+from lumi.backends import (
     EVENT_TEXT_DELTA,
     EVENT_TOOL_CALL,
     OllamaBackend,
     _ControlTokenFilter,
     _detect_json_tool_calls,
 )
-from resonant_client.engine.sandbox import PathSandbox
-from resonant_client.engine.session import Session
-from resonant_client.protocol import parse_dsml_tool_calls
+from lumi.engine.sandbox import PathSandbox
+from lumi.engine.session import Session
+from lumi.protocol import parse_dsml_tool_calls
 from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
 
 

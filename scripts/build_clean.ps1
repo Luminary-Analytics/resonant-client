@@ -10,7 +10,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $bundle = [IO.Path]::GetFullPath((Join-Path $repo $BundleRoot))
 $build = [IO.Path]::GetFullPath((Join-Path $repo "build"))
 $dist = [IO.Path]::GetFullPath((Join-Path $repo "dist"))
-$eggInfo = [IO.Path]::GetFullPath((Join-Path $repo "resonant_client.egg-info"))
+$eggInfo = [IO.Path]::GetFullPath((Join-Path $repo "lumi.egg-info"))
 $tempRoot = [IO.Path]::GetFullPath((Join-Path ([IO.Path]::GetTempPath()) "resonant-clean-build-$PID"))
 $pushed = $false
 

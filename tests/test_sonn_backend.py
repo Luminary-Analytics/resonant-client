@@ -8,12 +8,12 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from resonant_client.backends import EVENT_DONE, EVENT_ERROR, EVENT_TEXT_DELTA, EVENT_TOOL_CALL, create_backend
-from resonant_client.gui.app import AppState
-from resonant_client.gui.settings import SettingsManager
-from resonant_client.gui.ws_commands import CommandContext, _cmd_provider_connection, _cmd_update_settings
-from resonant_client.network_defaults import resolve_sonn_url
-from resonant_client.sonn import SonnBackend
+from lumi.backends import EVENT_DONE, EVENT_ERROR, EVENT_TEXT_DELTA, EVENT_TOOL_CALL, create_backend
+from lumi.gui.app import AppState
+from lumi.gui.settings import SettingsManager
+from lumi.gui.ws_commands import CommandContext, _cmd_provider_connection, _cmd_update_settings
+from lumi.network_defaults import resolve_sonn_url
+from lumi.sonn import SonnBackend
 
 
 BASE = "https://sonn.example/v1/workspace/projects/project-test/openai/v1"
@@ -140,7 +140,7 @@ def test_standard_stream_and_tool_history_exclude_other_provider_extensions():
 
 @pytest.mark.parametrize("status", [401, 403, 404, 402, 500])
 def test_request_errors_do_not_echo_secrets(status, monkeypatch):
-    import resonant_client.backends as module
+    import lumi.backends as module
     monkeypatch.setattr(module, "_wait_with_cancel", lambda *args: False)
     backend = SonnBackend("secret-key", base_url=BASE, transport=httpx.MockTransport(
         lambda _: httpx.Response(status, json={"error": {"message": "secret-key", "type": "secret-key"}})))
@@ -206,7 +206,7 @@ def test_sonn_timeout_does_not_depend_on_exo_attributes():
 
 
 def test_learning_queue_wait_replays_exact_input_then_generates_once(monkeypatch):
-    import resonant_client.backends as module
+    import lumi.backends as module
     calls, waits = [], []
     monkeypatch.setattr(module, "_wait_with_cancel", lambda delay, cancel: waits.append(delay) or False)
     def handle(request):
@@ -227,7 +227,7 @@ def test_learning_queue_wait_replays_exact_input_then_generates_once(monkeypatch
 
 @pytest.mark.parametrize("cancel", [False, True])
 def test_learning_queue_wait_is_bounded_and_cancellable(monkeypatch, cancel):
-    import resonant_client.backends as module
+    import lumi.backends as module
     calls, waits = [], []
     stop = threading.Event()
     def wait(delay, event):
@@ -327,7 +327,7 @@ def test_cancellation_closes_blocked_stream_without_remote_cancel_endpoint():
 
 
 def test_real_engine_creates_file_and_continues_with_tool_result(tmp_path):
-    from resonant_client.engine.session import Session
+    from lumi.engine.session import Session
     target = tmp_path / "hello.py"
     requests = []
     def handle(request):

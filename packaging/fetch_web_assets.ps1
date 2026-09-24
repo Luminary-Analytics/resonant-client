@@ -28,7 +28,7 @@ param(
     # Fetched straight into the directory the GUI already serves, so a source
     # checkout and the packaged bundle resolve these the same way and there is
     # no copy step to forget. Gitignored.
-    [string]$Destination = (Join-Path $PSScriptRoot "..\resonant_client\gui\static\vendor")
+    [string]$Destination = (Join-Path $PSScriptRoot "..\lumi\gui\static\vendor")
 )
 
 $ErrorActionPreference = "Stop"

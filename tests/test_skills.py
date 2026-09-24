@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     NodeSpecialization,
     PlanGraph,
     PlanNode,
@@ -252,5 +252,5 @@ def test_extract_skill_includes_intent_tokens(state_home):
 
 def skill_path_for(skill_id: str):
     """Convenience: resolve the global-scope skill dir."""
-    from resonant_client.orchestration.skills import skill_dir
+    from lumi.orchestration.skills import skill_dir
     return skill_dir(skill_id)

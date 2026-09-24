@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 
-from resonant_client.engine.event_log import (
+from lumi.engine.event_log import (
     EventLogger,
     cleanup_old_logs,
     replay,

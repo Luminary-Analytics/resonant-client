@@ -11,7 +11,7 @@ overrides the explicit `max_tokens`.
 
 from __future__ import annotations
 
-from resonant_client.engine.compression import (
+from lumi.engine.compression import (
     DEFAULT_MAX_CONTEXT_TOKENS,
     evict_old_tool_outputs,
     model_context_budget,

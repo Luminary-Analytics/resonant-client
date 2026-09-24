@@ -23,7 +23,7 @@ from __future__ import annotations
 from typing import Iterator
 
 
-from resonant_client.engine.session import Session
+from lumi.engine.session import Session
 
 
 class _StubBackend:

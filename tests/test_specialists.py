@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     NodeSpecialization,
     SPECIALISTS,
     assemble_system_prompt,

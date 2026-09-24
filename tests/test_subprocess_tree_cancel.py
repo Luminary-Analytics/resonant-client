@@ -6,7 +6,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from resonant_client.engine.tools import (
+from lumi.engine.tools import (
     _exec_bash,
     _normalize_managed_bash_command,
     _run_subprocess_with_cancel,

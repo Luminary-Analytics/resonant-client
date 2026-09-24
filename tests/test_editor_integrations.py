@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from resonant_client.backends import CodexCliBackend, ClaudeCodeCliBackend, _build_codex_prompt
-from resonant_client.engine.editor_integrations import build_config, catalog, cli_arguments, workflow_instructions
-from resonant_client.engine.mcp import MCPConnection, MCPManager, MCPServerConfig, normalize_tool_result
-from resonant_client.gui.settings import SettingsManager
-from resonant_client.gui.ws_commands import CommandContext, HANDLERS
+from lumi.backends import CodexCliBackend, ClaudeCodeCliBackend, _build_codex_prompt
+from lumi.engine.editor_integrations import build_config, catalog, cli_arguments, workflow_instructions
+from lumi.engine.mcp import MCPConnection, MCPManager, MCPServerConfig, normalize_tool_result
+from lumi.gui.settings import SettingsManager
+from lumi.gui.ws_commands import CommandContext, HANDLERS
 
 
 @pytest.fixture
@@ -107,7 +107,7 @@ def test_setup_connect_probe_and_disable(settings, monkeypatch):
             result = {"content": [{"type": "text", "text": '{"scene":"Fixture","objects":[]}'}]}
         return httpx.Response(200, json={"jsonrpc": "2.0", "id": payload["id"], "result": result})
     original = MCPConnection
-    monkeypatch.setattr("resonant_client.engine.mcp.MCPConnection",
+    monkeypatch.setattr("lumi.engine.mcp.MCPConnection",
                         lambda cfg: original(cfg, http_transport=httpx.MockTransport(transport)))
     state = SimpleNamespace(settings=settings, mcp_manager=MCPManager(settings),
                             session=SimpleNamespace(mcp_tools=[]))
@@ -234,7 +234,7 @@ def test_resource_read_adapts_editor_state_for_native_models():
 
 
 def test_auto_edit_does_not_auto_approve_editor_code():
-    from resonant_client.engine.session import Session
+    from lumi.engine.session import Session
     session = Session.__new__(Session)
     session.autonomy_tier = "auto-edit"
     assert not session._should_auto_approve("mcp_resonant_blender_execute_blender_code")

@@ -7,7 +7,7 @@ append/read, teacher-escalation logging — were untested. The harness
 is opt-in (default off post v0.4.0 refocus), but anyone who DOES
 opt in needs the lifecycle to work correctly.
 
-Coverage delta target on resonant_client/harness/state.py: 61% → ~95%.
+Coverage delta target on lumi/harness/state.py: 61% → ~95%.
 
 Mirrors the fixtures from test_harness_state.py for consistency.
 """
@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from resonant_client.harness.state import (
+from lumi.harness.state import (
     EvaluatorReport,
     HarnessWorkspace,
     ProductSpec,

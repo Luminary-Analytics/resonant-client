@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     KIND_DECISION,
     KIND_FLOOR,
     KIND_PLAN_CHANGE,

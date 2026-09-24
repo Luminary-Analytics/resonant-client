@@ -21,7 +21,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 
-from resonant_client.backends import (
+from lumi.backends import (
     _OLLAMA_BASE_BACKOFF,
     _OLLAMA_MAX_RETRIES,
     _OLLAMA_RETRYABLE_STATUS,
@@ -134,7 +134,7 @@ def _patch_httpx_client(responses):
     # Each call to httpx.Client(...) returns a new fake client that
     # all share the same queue.
     fake_client_factory = MagicMock(side_effect=lambda *a, **kw: _FakeClient(queue))
-    return patch("resonant_client.backends.httpx.Client", fake_client_factory), queue
+    return patch("lumi.backends.httpx.Client", fake_client_factory), queue
 
 
 def _drive_stream(backend: OllamaBackend) -> list:
@@ -168,7 +168,7 @@ class TestOllamaRetrySemantics:
             _FakeResponse(200),
         ]
         ctx, queue = _patch_httpx_client(responses)
-        with patch("resonant_client.backends._wait_with_cancel",
+        with patch("lumi.backends._wait_with_cancel",
                    return_value=False) as wait_mock, ctx:
             backend = self._make_backend()
             events = _drive_stream(backend)
@@ -188,7 +188,7 @@ class TestOllamaRetrySemantics:
             _FakeResponse(200),
         ]
         ctx, queue = _patch_httpx_client(responses)
-        with patch("resonant_client.backends._wait_with_cancel",
+        with patch("lumi.backends._wait_with_cancel",
                    return_value=False) as wait_mock, ctx:
             backend = self._make_backend()
             events = _drive_stream(backend)
@@ -206,7 +206,7 @@ class TestOllamaRetrySemantics:
             for _ in range(_OLLAMA_MAX_RETRIES + 1)
         ]
         ctx, queue = _patch_httpx_client(responses)
-        with patch("resonant_client.backends._wait_with_cancel",
+        with patch("lumi.backends._wait_with_cancel",
                    return_value=False) as wait_mock, ctx:
             backend = self._make_backend()
             events = _drive_stream(backend)
@@ -225,7 +225,7 @@ class TestOllamaRetrySemantics:
         fast on the first attempt."""
         responses = [_FakeResponse(400, b'{"error":"bad json"}')]
         ctx, queue = _patch_httpx_client(responses)
-        with patch("resonant_client.backends._wait_with_cancel",
+        with patch("lumi.backends._wait_with_cancel",
                    return_value=False) as wait_mock, ctx:
             backend = self._make_backend()
             events = _drive_stream(backend)
@@ -254,7 +254,7 @@ class TestOllamaRetrySemantics:
             ev.set()
             return True
 
-        with patch("resonant_client.backends._wait_with_cancel",
+        with patch("lumi.backends._wait_with_cancel",
                    side_effect=fake_wait), ctx:
             backend = self._make_backend()
             # Pass a real cancel_event so the helper can observe it.

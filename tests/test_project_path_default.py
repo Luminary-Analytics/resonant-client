@@ -20,8 +20,8 @@ import os
 
 import pytest
 
-from resonant_client.gui import sessions as sessions_mod
-from resonant_client.gui.sessions import (
+from lumi.gui import sessions as sessions_mod
+from lumi.gui.sessions import (
     ProjectManager,
     _is_unsafe_cwd,
     _playground_project_path,

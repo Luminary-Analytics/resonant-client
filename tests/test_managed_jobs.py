@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from resonant_client.engine.jobs import JobManager
+from lumi.engine.jobs import JobManager
 
 
 @pytest.fixture
@@ -83,8 +83,8 @@ def test_failure_and_client_exit_stop_owned_tree(manager, tmp_path):
 
 
 def test_cancelled_submission_and_tool_permissions(manager, tmp_path):
-    from resonant_client.engine.sandbox import EXEC_TOOLS, READ_ONLY_TOOLS
-    from resonant_client.engine.tools import AGENT_TOOLS
+    from lumi.engine.sandbox import EXEC_TOOLS, READ_ONLY_TOOLS
+    from lumi.engine.tools import AGENT_TOOLS
     event = threading.Event()
     event.set()
     with pytest.raises(ValueError, match='cancelled'):
@@ -99,8 +99,8 @@ def test_cancelled_submission_and_tool_permissions(manager, tmp_path):
 
 
 def test_actual_tool_dispatch(manager, tmp_path, monkeypatch):
-    from resonant_client.engine import jobs
-    from resonant_client.engine.tools import execute_tool
+    from lumi.engine import jobs
+    from lumi.engine.tools import execute_tool
     monkeypatch.setattr(jobs, 'jobs', manager)
     result = execute_tool('job_start', {'command': [sys.executable, '-c', 'print("ok")']}, project_path=str(tmp_path))
     assert not result.is_error, result.output

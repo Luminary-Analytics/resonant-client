@@ -15,11 +15,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from resonant_client.engine import browser
-from resonant_client.engine.tools import AGENT_TOOLS, execute_tool
+from lumi.engine import browser
+from lumi.engine.tools import AGENT_TOOLS, execute_tool
 
 REPO = Path(__file__).parents[1]
-EXTENSION = REPO / "resonant_client" / "browser_extension"
+EXTENSION = REPO / "lumi" / "browser_extension"
 
 BROWSER_TOOLS = [
     "browser_navigate", "browser_click", "browser_type", "browser_read",
@@ -85,7 +85,7 @@ def test_profile_is_not_the_users_real_chrome_directory(monkeypatch):
 def test_extension_ships_with_the_package():
     """The extension must be inside the package, not beside it.
 
-    Anything outside `resonant_client/` needs its own spec entry to reach a
+    Anything outside `lumi/` needs its own spec entry to reach a
     packaged install, and a missing one is invisible until a user's tabs
     silently stop grouping.
     """
@@ -101,7 +101,7 @@ def test_bundle_policy_requires_the_extension():
     policy = json.loads((REPO / "packaging" / "bundle-policy.json").read_text(encoding="utf-8"))
     required = set(policy["required_globs"])
     for name in ("manifest.json", "background.js"):
-        path = f"_internal/resonant_client/browser_extension/{name}"
+        path = f"_internal/lumi/browser_extension/{name}"
         assert path in required, f"bundle-policy.json must require {path}"
 
 
@@ -113,7 +113,7 @@ def test_pip_install_includes_the_extension():
     files are not picked up automatically — and grouping fails with no error.
     """
     pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"resonant_client" = ["browser_extension/*"]' in pyproject
+    assert '"lumi" = ["browser_extension/*"]' in pyproject
 
 
 def test_spec_bundles_the_extension():
@@ -129,7 +129,7 @@ def test_extension_is_installed_over_cdp_not_just_the_launch_flag():
     Chrome and grouping fails with no error anywhere — which is exactly how
     this was first written. `Extensions.loadUnpacked` is the supported path.
     """
-    source = (REPO / "resonant_client" / "engine" / "browser.py").read_text(encoding="utf-8")
+    source = (REPO / "lumi" / "engine" / "browser.py").read_text(encoding="utf-8")
     assert "Extensions.loadUnpacked" in source
     assert "_load_extension" in source
 
@@ -201,7 +201,7 @@ def test_existing_dedicated_chrome_reloads_the_staged_group_extension(
 def test_browser_activity_glow_is_rearmed_even_when_group_context_is_current(
     monkeypatch,
 ):
-    from resonant_client.engine import screen_overlay
+    from lumi.engine import screen_overlay
 
     cdp_calls = []
     activity = []
@@ -262,7 +262,7 @@ def test_group_sync_retries_until_a_fresh_extension_worker_is_ready(monkeypatch)
 
 def test_extension_can_refresh_the_native_group_for_the_active_session():
     source = (EXTENSION / "background.js").read_text(encoding="utf-8")
-    browser_source = (REPO / "resonant_client" / "engine" / "browser.py").read_text(
+    browser_source = (REPO / "lumi" / "engine" / "browser.py").read_text(
         encoding="utf-8"
     )
 

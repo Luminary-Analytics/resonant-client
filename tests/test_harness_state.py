@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from resonant_client.harness.state import (
+from lumi.harness.state import (
     LEGACY_HARNESS_DIRNAME,
     HarnessWorkspace,
     ProgressState,

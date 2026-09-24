@@ -14,7 +14,7 @@ from typing import Iterator
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     IntentService,
     NodeStatus,
     list_skills,

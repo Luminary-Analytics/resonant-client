@@ -14,8 +14,8 @@ import time
 
 import pytest
 
-from resonant_client.gui.app import _skill_list_payload, _skill_view_payload
-from resonant_client.orchestration.skills import (
+from lumi.gui.app import _skill_list_payload, _skill_view_payload
+from lumi.orchestration.skills import (
     Skill,
     save_skill,
 )

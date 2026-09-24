@@ -1,4 +1,4 @@
-from resonant_client.engine.policies import (
+from lumi.engine.policies import (
     ExecutionPolicy,
     PolicyAction,
     PolicyRule,

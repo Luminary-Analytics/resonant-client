@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.gui.diagnostics import (
+from lumi.gui.diagnostics import (
     build_diagnostics_zip,
     default_output_dir,
     redact,
@@ -41,7 +41,7 @@ class TestRedactPrefixedTokens:
 
     def test_redacts_gui_launch_links(self):
         # A packaged --browser launch prints its link into the startup log.
-        from resonant_client.gui.local_access import LocalAccess
+        from lumi.gui.local_access import LocalAccess
 
         line = f"  Open in browser (one-time link): {LocalAccess().launch_url('http://127.0.0.1:5000')}"
         result = redact(line)
@@ -404,7 +404,7 @@ class TestDiagnosticsEnrichments:
     def test_iter_metadata_capped(self, tmp_path):
         # Pile of iter files; only LATEST_N_ITERS_PER_INTENT should
         # be bundled.
-        from resonant_client.gui.diagnostics import LATEST_N_ITERS_PER_INTENT
+        from lumi.gui.diagnostics import LATEST_N_ITERS_PER_INTENT
         rd = tmp_path / ".resonant"
         intent_dir = rd / "projects" / "p1" / "intents" / "i1"
         intent_dir.mkdir(parents=True)

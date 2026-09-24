@@ -6,13 +6,13 @@ from unittest.mock import patch
 
 import pytest
 
-from resonant_client.engine.agents import get_agent_type
-from resonant_client.engine.model_prompts import (
+from lumi.engine.agents import get_agent_type
+from lumi.engine.model_prompts import (
     build_model_prompt,
     detect_model_family,
     get_model_prompt_profile,
 )
-from resonant_client.engine.session import (
+from lumi.engine.session import (
     Session,
     get_system_instruction_layers,
     get_system_instructions,

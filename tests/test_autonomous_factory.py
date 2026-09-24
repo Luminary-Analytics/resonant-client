@@ -18,18 +18,18 @@ import threading
 import time
 
 
-from resonant_client.gui.autonomous_factory import (
+from lumi.gui.autonomous_factory import (
     DispatchTracker,
     build_reflect_goal,
     make_check_context_factory,
     parse_reflect_verdict,
     _last_balanced_json_block,
 )
-from resonant_client.gui.roadmap import (
+from lumi.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
 )
-from resonant_client.orchestration.reflect import ReflectPassResult
+from lumi.orchestration.reflect import ReflectPassResult
 
 
 # ── DispatchTracker ─────────────────────────────────────────────────────
@@ -430,7 +430,7 @@ class TestCheckContextFactory:
         # Defaults apply — track DEFAULT_VISION_MODEL so a future
         # bump (qwen3-vl → qwen4-vl, whenever that lands) doesn't
         # require touching this test.
-        from resonant_client.orchestration.acceptance_check import (
+        from lumi.orchestration.acceptance_check import (
             DEFAULT_VISION_MODEL,
         )
         assert ctx.vision_runner.model == DEFAULT_VISION_MODEL

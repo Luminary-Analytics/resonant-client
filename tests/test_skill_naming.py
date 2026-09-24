@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.orchestration.skill_extraction import (
+from lumi.orchestration.skill_extraction import (
     _NOISE_PREFIXES,
     _strip_noise_prefix,
     slugify,
@@ -201,8 +201,8 @@ def test_derive_skill_id_uses_new_slugify():
     """`extract_skill::_derive_skill_id` calls `slugify(graph.intent)`
     with the default. After v0.6.2a2 the default produces a 30-char
     cap, so a graph with a long intent must yield a short slug."""
-    from resonant_client.orchestration.plan_graph import PlanGraph
-    from resonant_client.orchestration.skill_extraction import _derive_skill_id
+    from lumi.orchestration.plan_graph import PlanGraph
+    from lumi.orchestration.skill_extraction import _derive_skill_id
 
     g = PlanGraph.new("Build a Python CLI utility wordcount.py at the project root")
     sid = _derive_skill_id(g)

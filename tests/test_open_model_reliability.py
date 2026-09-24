@@ -6,16 +6,16 @@ from unittest.mock import patch
 import httpx
 import pytest
 
-from resonant_client.backends import (
+from lumi.backends import (
     EVENT_TOOL_CALL, ExoBackend, OllamaBackend, _recover_tool_calls,
 )
-from resonant_client.engine.artifacts import ArtifactStore
-from resonant_client.engine.compression import (
+from lumi.engine.artifacts import ArtifactStore
+from lumi.engine.compression import (
     compress, estimate_tokens, evict_old_tool_outputs, model_context_budget,
     request_overhead_tokens, should_compress,
 )
-from resonant_client.engine.session import Session
-from resonant_client.gui.runtime import BackendSpec
+from lumi.engine.session import Session
+from lumi.gui.runtime import BackendSpec
 from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
 from tests.test_model_wire_contract import _collect_stream_events, _content_chunk
 
@@ -134,7 +134,7 @@ def test_command_evidence_archives_and_is_retrieved_without_execution(tmp_path):
     session = Session(backend, max_steps=2)
     session.project_path = str(tmp_path)
     session.artifact_store = store
-    with patch("resonant_client.engine.session.execute_tool") as execute:
+    with patch("lumi.engine.session.execute_tool") as execute:
         events = list(session.run("Read the archived evidence"))
     execute.assert_not_called()
     assert any(event.get("output") == original for event in events)
@@ -217,7 +217,7 @@ def test_summary_cannot_drop_user_constraint_or_failure():
 @pytest.mark.parametrize("mode,expected", [("default", None), ("off", False), ("high", "high")])
 def test_ui_command_rebuilds_with_selected_thinking_setting(mode, expected):
     import asyncio
-    from resonant_client.gui.ws_commands import _cmd_set_thinking_mode
+    from lumi.gui.ws_commands import _cmd_set_thinking_mode
     messages = []
     built = []
     async def send(message):
@@ -235,7 +235,7 @@ def test_ui_command_rebuilds_with_selected_thinking_setting(mode, expected):
 
 def test_ui_invalid_reasoning_setting_is_not_saved():
     import asyncio
-    from resonant_client.gui.ws_commands import _cmd_set_thinking_mode
+    from lumi.gui.ws_commands import _cmd_set_thinking_mode
     messages = []
     async def send(message):
         messages.append(message)

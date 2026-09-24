@@ -1,5 +1,5 @@
 """
-Tests for resonant_client/engine/git_tools.py
+Tests for lumi/engine/git_tools.py
 
 Each test uses a tmp_path git repo so the suite is fully isolated from the
 host repo. Skipped on machines without a `git` executable on PATH.
@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.engine import git_tools
+from lumi.engine import git_tools
 
 
 # ── Fixtures ────────────────────────────────────────────────────────────
@@ -273,21 +273,21 @@ class TestExecWrappers:
 
 class TestToolRegistration:
     def test_all_git_tools_registered(self):
-        from resonant_client.engine import tools as tools_mod
+        from lumi.engine import tools as tools_mod
         names = {t["function"]["name"] for t in tools_mod.AGENT_TOOLS}
         for n in ["git_status", "git_diff", "git_commit", "git_branch_create", "git_log"]:
             assert n in names, f"git tool '{n}' not registered in AGENT_TOOLS"
 
     def test_dispatch_routes_git_tools(self, repo):
         # execute_tool should dispatch git_status without error
-        from resonant_client.engine.tools import execute_tool
+        from lumi.engine.tools import execute_tool
         _commit(repo, "a.txt", "x\n", "init")
         result = execute_tool("git_status", {"cwd": str(repo)})
         assert result.is_error is False
         assert "main" in result.output
 
     def test_read_only_classification(self):
-        from resonant_client.engine.sandbox import READ_ONLY_TOOLS
+        from lumi.engine.sandbox import READ_ONLY_TOOLS
         assert "git_status" in READ_ONLY_TOOLS
         assert "git_diff" in READ_ONLY_TOOLS
         assert "git_log" in READ_ONLY_TOOLS
@@ -296,6 +296,6 @@ class TestToolRegistration:
         assert "git_branch_create" not in READ_ONLY_TOOLS
 
     def test_icons_exist(self):
-        from resonant_client.engine.tools import TOOL_ICONS
+        from lumi.engine.tools import TOOL_ICONS
         for n in ["git_status", "git_diff", "git_commit", "git_branch_create", "git_log"]:
             assert n in TOOL_ICONS, f"icon missing for {n}"

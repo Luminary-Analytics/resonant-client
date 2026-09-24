@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import os
 
-from resonant_client.backends import OllamaBackend
-from resonant_client.gui.runtime import BackendSpec
-from resonant_client.gui.sessions import SessionRecord
+from lumi.backends import OllamaBackend
+from lumi.gui.runtime import BackendSpec
+from lumi.gui.sessions import SessionRecord
 
 
 # ── Thinking-mode option plumbing ───────────────────────────────────────
@@ -113,7 +113,7 @@ class TestBigContextPreset:
         monkeypatch.delenv("RESONANT_OLLAMA_NUM_BATCH", raising=False)
 
         # Use the AppState method directly without instantiating a full AppState
-        from resonant_client.gui import app as app_module
+        from lumi.gui import app as app_module
         AppState = app_module.AppState
         instance = AppState.__new__(AppState)
         instance.settings = _SettingsStub({"general": {"big_context_profile": False}})
@@ -125,7 +125,7 @@ class TestBigContextPreset:
         monkeypatch.delenv("RESONANT_OLLAMA_NUM_CTX", raising=False)
         monkeypatch.delenv("RESONANT_OLLAMA_NUM_BATCH", raising=False)
 
-        from resonant_client.gui import app as app_module
+        from lumi.gui import app as app_module
         AppState = app_module.AppState
         instance = AppState.__new__(AppState)
         instance.settings = _SettingsStub({"general": {"big_context_profile": True}})
@@ -137,7 +137,7 @@ class TestBigContextPreset:
         monkeypatch.setenv("RESONANT_OLLAMA_NUM_CTX", "64000")
         monkeypatch.delenv("RESONANT_OLLAMA_NUM_BATCH", raising=False)
 
-        from resonant_client.gui import app as app_module
+        from lumi.gui import app as app_module
         AppState = app_module.AppState
         instance = AppState.__new__(AppState)
         instance.settings = _SettingsStub({"general": {"big_context_profile": True}})

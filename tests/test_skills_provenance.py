@@ -23,12 +23,12 @@ import time
 
 import pytest
 
-from resonant_client.orchestration.bundled_skills import (
+from lumi.orchestration.bundled_skills import (
     _parse_frontmatter,
     bundled_skill_ids,
     install_bundled_skills,
 )
-from resonant_client.orchestration.skills import (
+from lumi.orchestration.skills import (
     Skill,
     archive_skill,
     list_skills_filtered,
@@ -171,7 +171,7 @@ class TestArchiveSkill:
         dest = archive_skill(s, reason="curator misbehaved")
         assert dest is None
         # Source still exists — refusal is silent + safe.
-        from resonant_client.orchestration.skills import skill_dir
+        from lumi.orchestration.skills import skill_dir
         assert skill_dir("bundled-x").exists()
 
     def test_refuses_to_archive_user_skill(self, state_home):
@@ -352,7 +352,7 @@ class TestInstallBundledSkills:
 
     def test_installed_skill_has_procedure_md(self, state_home):
         install_bundled_skills()
-        from resonant_client.orchestration.skills import skill_dir
+        from lumi.orchestration.skills import skill_dir
         target = skill_dir("rigorous-grill-spec-refinement")
         procedure = target / "procedure.md"
         assert procedure.exists()

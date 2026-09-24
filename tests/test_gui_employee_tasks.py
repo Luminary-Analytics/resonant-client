@@ -5,9 +5,9 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from resonant_client.sonn import SonnBackend
-from resonant_client.sonn_tasks import SonnTaskError
-from resonant_client.gui import employee_tasks, ws_commands
+from lumi.sonn import SonnBackend
+from lumi.sonn_tasks import SonnTaskError
+from lumi.gui import employee_tasks, ws_commands
 from tests.test_ws_command_registry import _ctx, _run
 
 
@@ -103,7 +103,7 @@ def test_missing_accounting_does_not_mean_zero_and_root_recovery_includes_worker
 
 def test_actual_app_websocket_dispatches_task_controls_through_chat_queue(gui_task, monkeypatch):
     from tests.gui_access import LocalClient
-    from resonant_client.gui import app as gui_app
+    from lumi.gui import app as gui_app
     state, _, requests, _ = gui_task
     state.available_backends = {'sonn': {}}
     state.codebase_index = object()

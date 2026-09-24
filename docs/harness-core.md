@@ -1,8 +1,8 @@
 # Harness core boundary
 
 Current ownership is local to this package. Resonant's normal model/tool loop
-lives in `resonant_client/engine/`; the optional planner/generator/evaluator
-workflow lives in `resonant_client/harness/`. The former remote `resonant`
+lives in `lumi/engine/`; the optional planner/generator/evaluator
+workflow lives in `lumi/harness/`. The former remote `resonant`
 backend and engine-hosted role names in early migration plans do not describe
 the current provider/runtime contract. See [ARCHITECTURE.md](../ARCHITECTURE.md).
 
@@ -20,7 +20,7 @@ checkout.
 
 ## Module ownership
 
-Paths below are relative to `resonant_client/`.
+Paths below are relative to `lumi/`.
 
 | Module | Responsibility |
 | --- | --- |

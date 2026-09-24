@@ -5,8 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from resonant_client.engine.mcp import MCPManager
-from resonant_client.gui.runtime import BackendSpec
+from lumi.engine.mcp import MCPManager
+from lumi.gui.runtime import BackendSpec
 
 
 class _SettingsStub:
@@ -32,7 +32,7 @@ class _DummyBackend:
 def _load_app_module(monkeypatch, cwd: Path):
     monkeypatch.setattr(Path, "home", lambda: cwd)
     monkeypatch.chdir(cwd)
-    import resonant_client.gui.app as app_module
+    import lumi.gui.app as app_module
 
     return importlib.reload(app_module)
 
@@ -101,7 +101,7 @@ def test_backend_spec_recreates_expected_backend(monkeypatch, spec, settings_dat
         calls.append((args, kwargs))
         return SimpleNamespace(args=args, kwargs=kwargs)
 
-    monkeypatch.setattr("resonant_client.gui.runtime.create_backend", fake_create_backend)
+    monkeypatch.setattr("lumi.gui.runtime.create_backend", fake_create_backend)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
 
@@ -228,7 +228,7 @@ def test_saved_http_session_reuses_compatible_provider_client(monkeypatch, tmp_p
 
 def test_worker_errors_are_not_promoted_to_duplicate_turn_failures():
     repo_root = Path(__file__).parent.parent
-    source = (repo_root / "resonant_client/gui/static/app.js").read_text(encoding="utf-8")
+    source = (repo_root / "lumi/gui/static/app.js").read_text(encoding="utf-8")
 
     assert "if (event._subagent) this.handleSubagentError(event);" in source
     assert "if (!this._activeTask)" in source
@@ -239,7 +239,7 @@ def test_worker_errors_are_not_promoted_to_duplicate_turn_failures():
 def test_websocket_disconnect_detaches_viewer_without_cancelling_run():
     import inspect
 
-    from resonant_client.gui import app as gui_app
+    from lumi.gui import app as gui_app
 
     endpoint_source = inspect.getsource(gui_app.websocket_endpoint)
     stream_source = inspect.getsource(gui_app._run_session_streaming)
@@ -257,7 +257,7 @@ def test_streaming_persists_to_the_record_that_started_the_run():
     """Changing the selected sidebar session must not redirect a live ledger."""
     import inspect
 
-    from resonant_client.gui import app as gui_app
+    from lumi.gui import app as gui_app
 
     source = inspect.getsource(gui_app._run_session_streaming)
 
@@ -269,7 +269,7 @@ def test_streaming_persists_to_the_record_that_started_the_run():
 
 def test_project_switch_does_not_reprobe_global_providers():
     repo_root = Path(__file__).parent.parent
-    from resonant_client.gui import ws_commands
+    from lumi.gui import ws_commands
     import inspect
 
     source = inspect.getsource(ws_commands.HANDLERS["set_project"])
@@ -280,7 +280,7 @@ def test_project_switch_does_not_reprobe_global_providers():
 
 def test_unified_sidebar_puts_add_before_conversations():
     repo_root = Path(__file__).parent.parent
-    template = (repo_root / "resonant_client/gui/templates/index.html").read_text(
+    template = (repo_root / "lumi/gui/templates/index.html").read_text(
         encoding="utf-8",
     )
 
@@ -295,7 +295,7 @@ def test_unified_sidebar_puts_add_before_conversations():
 def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
     from tests.gui_access import LocalClient
 
-    from resonant_client.gui import app as gui_app
+    from lumi.gui import app as gui_app
 
     target = tmp_path / "target"
     target.mkdir()
@@ -350,7 +350,7 @@ def test_set_project_echoes_client_switch_id(monkeypatch, tmp_path):
 def test_duplicate_new_session_request_is_idempotent(monkeypatch, tmp_path):
     from tests.gui_access import LocalClient
 
-    from resonant_client.gui import app as gui_app
+    from lumi.gui import app as gui_app
 
     class ProjectStub:
         project_path = str(tmp_path)
@@ -403,7 +403,7 @@ def test_backend_selection_does_not_persist_an_empty_session():
     # assertion survives the command changing files.
     import inspect
 
-    from resonant_client.gui import ws_commands
+    from lumi.gui import ws_commands
 
     body = inspect.getsource(ws_commands.HANDLERS["select_backend"])
 

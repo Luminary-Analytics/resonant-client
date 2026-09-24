@@ -88,7 +88,7 @@ that removed product surfaces or old bundle-size observations still apply.
 
 **Cause:** browser mode has no `pywebview` available, so the `folder_dialog` WebSocket command silently fails
 
-**Fix shipped:** server emits `folder_picker_unavailable` event when no native picker is available; frontend redirects to the welcome screen with a status message. Lives in `resonant_client/gui/app.py` and `resonant_client/gui/static/app.js`.
+**Fix shipped:** server emits `folder_picker_unavailable` event when no native picker is available; frontend redirects to the welcome screen with a status message. Lives in `lumi/gui/app.py` and `lumi/gui/static/app.js`.
 
 ---
 
@@ -105,7 +105,7 @@ that removed product surfaces or old bundle-size observations still apply.
 - Cold-start banner above the input fades once the first text.delta arrives
 - Elapsed-time hint after 5s on the thinking indicator: `...thinking (12s)` so the user can tell it isn't dead
 
-Lives in `resonant_client/gui/app.py` (background warmup thread + `model_warmup_started`/`model_warmup_complete` events), `resonant_client/gui/static/app.js` (banner + elapsed-time UI), and `resonant_client/gui/static/styles.css`.
+Lives in `lumi/gui/app.py` (background warmup thread + `model_warmup_started`/`model_warmup_complete` events), `lumi/gui/static/app.js` (banner + elapsed-time UI), and `lumi/gui/static/styles.css`.
 
 ---
 
@@ -117,7 +117,7 @@ Lives in `resonant_client/gui/app.py` (background warmup thread + `model_warmup_
 
 **Cause:** the system prompt didn't specify the shell environment / OS. The model defaults to Unix idioms.
 
-**Fix shipped (partial):** added a platform/shell hint to the system prompt in `resonant_client/engine/session.py`:
+**Fix shipped (partial):** added a platform/shell hint to the system prompt in `lumi/engine/session.py`:
 
 > Use `python` not `python3`... Unix tools like `tail`, `head`, `sed`, `awk`, `grep`, `wc`, `find` are NOT available — use `file_read` for inspection, the `grep` agent tool for content search, and `glob` for path listing instead of shelling out.
 
@@ -159,7 +159,7 @@ Lives in `resonant_client/gui/app.py` (background warmup thread + `model_warmup_
 
 ```powershell
 Stop-Process -Name resonant -Force
-python -m resonant_client gui --port 8909
+python -m lumi gui --port 8909
 ```
 
 **Hypothesis:** Windows-specific socket eviction during long-idle periods. May be related to TIME_WAIT accumulation or a Starlette/uvicorn idle disconnect.
@@ -169,7 +169,7 @@ python -m resonant_client gui --port 8909
 - If ping fails, log warning and rebind
 - If rebind fails, exit cleanly so the parent can restart
 
-Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at startup.
+Where to add: `lumi/gui/app.py` — likely a periodic task spawned at startup.
 
 ---
 
@@ -181,7 +181,7 @@ Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at
 
 **Surfaced in:** dogfood marathon (multiple passes).
 
-**Fix proposal:** `resonant_client/gui/static/app.js` should call the git-status refresh handler immediately on `project.changed` event, not wait for a session creation.
+**Fix proposal:** `lumi/gui/static/app.js` should call the git-status refresh handler immediately on `project.changed` event, not wait for a session creation.
 
 ---
 
@@ -191,7 +191,7 @@ Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at
 
 **Repro:** switch projects mid-conversation. The session list updates correctly but the chat view continues showing the previous project's last conversation until you click on a different session.
 
-**Fix proposal:** render an empty state ("Pick a session or start a new one") when the active project changes. Likely lives in `resonant_client/gui/static/app.js` near the project-change event handler.
+**Fix proposal:** render an empty state ("Pick a session or start a new one") when the active project changes. Likely lives in `lumi/gui/static/app.js` near the project-change event handler.
 
 **Note:** #7 and #8 are likely a single fix — both stem from "project change doesn't trigger a UI refresh."
 
@@ -221,9 +221,9 @@ Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at
 **Test pinned:** `tests/test_backend_swap.py` (6 tests, all pass) — verifies default-preserve, opt-in clear, round-trip preservation (the bug #10 case), and signature stability against future regressions.
 
 **Files changed:**
-- `resonant_client/engine/session.py` — `set_backend` signature
-- `resonant_client/gui/app.py` — `swap_backend()` method + `switch_model` handler
-- `resonant_client/tui.py` — 5 call sites updated to `reset_history=True` (preserves their explicit "conversation cleared" UX)
+- `lumi/engine/session.py` — `set_backend` signature
+- `lumi/gui/app.py` — `swap_backend()` method + `switch_model` handler
+- `lumi/tui.py` — 5 call sites updated to `reset_history=True` (preserves their explicit "conversation cleared" UX)
 - `tests/test_backend_swap.py` — new file, 6 regression tests
 
 ---
@@ -266,7 +266,7 @@ Agent ships deliverable #1 (the easy new file) but silently skips #2 (modify a 4
 3. The verifier specialist checks `git diff --name-only` against the deliverable list
 4. Run-summary card shows ✓/⚠ per deliverable (not just file count)
 
-Lives in `resonant_client/orchestration/` (planner + verifier specialists).
+Lives in `lumi/orchestration/` (planner + verifier specialists).
 
 ---
 
@@ -286,7 +286,7 @@ Lives in `resonant_client/orchestration/` (planner + verifier specialists).
 on:
   pull_request:
     paths:
-      - 'resonant_client/**'
+      - 'lumi/**'
       - 'packaging/resonant.spec'
       - 'pyproject.toml'
 

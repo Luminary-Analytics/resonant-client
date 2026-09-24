@@ -4,7 +4,7 @@
     {
       "name": "resonant-gui",
       "runtimeExecutable": "python",
-      "runtimeArgs": ["-m", "resonant_client", "gui", "--browser", "--port", "8909"],
+      "runtimeArgs": ["-m", "lumi", "gui", "--browser", "--port", "8909"],
       "port": 8909
     }
   ]

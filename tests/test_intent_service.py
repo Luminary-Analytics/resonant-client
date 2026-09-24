@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     IntentService,
     NodeSpecialization,
     NodeStatus,
@@ -85,7 +85,7 @@ def test_start_intent_returns_immediately_with_id(state_home, project_dir):
         ),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("ship a small feature")
@@ -105,7 +105,7 @@ def test_start_intent_persists_graph_to_disk(state_home, project_dir):
         NodeSpecialization.PLAN: SpecialistResult(status=NodeStatus.DONE, confidence=0.9),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("test intent")
@@ -138,7 +138,7 @@ def test_walker_events_forwarded_through_on_event(state_home, project_dir):
         NodeSpecialization.IMPLEMENT: SpecialistResult(status=NodeStatus.DONE, confidence=0.95),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("test")
@@ -166,7 +166,7 @@ def test_cancel_terminates_walker_promptly(state_home, project_dir):
         return SpecialistResult(status=NodeStatus.DONE, confidence=0.9)
 
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: slow_runner,
     ):
         intent_id = service.start_intent("test")
@@ -195,7 +195,7 @@ def test_pause_then_resume(state_home, project_dir):
         NodeSpecialization.PLAN: SpecialistResult(status=NodeStatus.DONE, confidence=0.9),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("test")
@@ -222,7 +222,7 @@ def test_audit_log_captures_intent_lifecycle(state_home, project_dir):
         ),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("audit me")
@@ -260,7 +260,7 @@ def test_skill_auto_extracted_on_successful_completion(state_home, project_dir):
         ),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("a successful three-step task")
@@ -284,7 +284,7 @@ def test_no_skill_extracted_on_failed_completion(state_home, project_dir):
         ),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("a failure")
@@ -307,7 +307,7 @@ def test_list_snapshots_returns_history(state_home, project_dir):
         NodeSpecialization.IMPLEMENT: SpecialistResult(status=NodeStatus.DONE, confidence=0.9),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("x")
@@ -328,7 +328,7 @@ def test_get_graph_returns_active_then_falls_back_to_disk(state_home, project_di
         NodeSpecialization.PLAN: SpecialistResult(status=NodeStatus.DONE, confidence=0.9),
     }
     with patch(
-        "resonant_client.orchestration.intent_service.LocalSpecialistRunner",
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("x")

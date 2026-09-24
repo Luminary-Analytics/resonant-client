@@ -2,7 +2,7 @@
 
 import pytest
 
-from resonant_client.engine.session import parse_markdown_todos
+from lumi.engine.session import parse_markdown_todos
 
 
 class TestParseMarkdownTodos:

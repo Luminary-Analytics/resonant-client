@@ -30,25 +30,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from resonant_client.gui import roadmap as roadmap_module
-from resonant_client.gui.autonomous_loop import (
+from lumi.gui import roadmap as roadmap_module
+from lumi.gui.autonomous_loop import (
     AutonomousMissionConfig,
     AutonomousMissionDaemon,
     DaemonHooks,
     DispatchOutcome,
     FullReflectOutcome,
 )
-from resonant_client.gui.roadmap import (
+from lumi.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
     RoadmapItem,
 )
-from resonant_client.orchestration.acceptance_check import (
+from lumi.orchestration.acceptance_check import (
     BashRunner,
     CheckContext,
     VisionRunner,
 )
-from resonant_client.orchestration.reflect import ReflectPassResult
+from lumi.orchestration.reflect import ReflectPassResult
 
 
 # ── Test helpers ────────────────────────────────────────────────────────
@@ -1368,7 +1368,7 @@ class TestAtomicTerminalStateTransition:
         # Earlier in-loop saves still work (otherwise the daemon
         # can't function), so we only fail when called from
         # `_update_roadmap_status_safely` — detect by call site.
-        from resonant_client.gui import autonomous_loop as al
+        from lumi.gui import autonomous_loop as al
 
         original_save = roadmap_module.save
         save_calls = {"count": 0, "last_failed": False}

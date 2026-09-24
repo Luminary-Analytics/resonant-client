@@ -123,7 +123,7 @@ target-version = "py311"
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-# `resonant_client/**` is held to the full default rule set and is clean â€” the
+# `lumi/**` is held to the full default rule set and is clean â€” the
 # CI gate depends on that staying true. Test/support code gets a narrow set of
 # stylistic exemptions so the gate still catches real problems (undefined
 # names, unused imports, redefinitions) everywhere.
@@ -138,11 +138,11 @@ select = ["E4", "E7", "E9", "F"]
 "packaging/**" = ["F841"]
 
 [tool.coverage.run]
-source = ["resonant_client"]
+source = ["lumi"]
 omit = [
-    "resonant_client/gui/*",
-    "resonant_client/tui.py",
-    "resonant_client/__main__.py",
+    "lumi/gui/*",
+    "lumi/tui.py",
+    "lumi/__main__.py",
 ]
 
 [tool.coverage.report]
@@ -156,22 +156,22 @@ exclude_lines = [
 ]
 
 [project.scripts]
-resonant = "resonant_client.__main__:main"
-resonant-tui = "resonant_client.__main__:main"
-resonant-gui = "resonant_client.gui.server:main"
-resonant-smoke = "resonant_client.smoke.cli:main"
-resonant-skill = "resonant_client.orchestration.skill_cli:main"
+resonant = "lumi.__main__:main"
+resonant-tui = "lumi.__main__:main"
+resonant-gui = "lumi.gui.server:main"
+resonant-smoke = "lumi.smoke.cli:main"
+resonant-skill = "lumi.orchestration.skill_cli:main"
 
 [tool.setuptools.packages.find]
-include = ["resonant_client*"]
+include = ["lumi*"]
 
 [tool.setuptools.package-data]
 # v0.6.0a1 â€” bundled skills ship inside the package so importlib.resources
 # can find them in pip / wheel / pyinstaller installs, not just source
 # checkouts.
-"resonant_client.orchestration.bundled_skills" = ["*.md"]
+"lumi.orchestration.bundled_skills" = ["*.md"]
 # The unpacked Chrome extension behind the browser tools' tab grouping. Listed
 # here as well as in packaging/resonant.spec: the spec only covers the frozen
 # .exe, and without this a `pip install` silently omits the extension and tabs
 # stop being grouped with no error anywhere.
-"resonant_client" = ["browser_extension/*"]
+"lumi" = ["browser_extension/*"]

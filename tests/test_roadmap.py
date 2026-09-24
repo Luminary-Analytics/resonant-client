@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from resonant_client.gui.roadmap import (
+from lumi.gui.roadmap import (
     AcceptanceCriterion,
     CRITERION_TYPES,
     Roadmap,

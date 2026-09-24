@@ -24,7 +24,7 @@ NOT covered here (intentionally — they need real tool execution):
 from __future__ import annotations
 
 
-from resonant_client.engine.session import Session
+from lumi.engine.session import Session
 from tests.streaming_stub import (
     StreamingBackend,
     done,
@@ -35,7 +35,7 @@ from tests.streaming_stub import (
 
 
 def test_browser_mcp_tool_uses_the_visual_activity_indicator(monkeypatch):
-    from resonant_client.engine import screen_overlay
+    from lumi.engine import screen_overlay
 
     backend = StreamingBackend(scripts=[
         [
@@ -168,7 +168,7 @@ class _DenyingPolicy:
     """Stub ExecutionPolicy. Returns PolicyAction.DENY for every tool."""
 
     def evaluate(self, tool_name, args):
-        from resonant_client.engine.policies import PolicyAction
+        from lumi.engine.policies import PolicyAction
         return PolicyAction.DENY
 
     def get_reason(self, tool_name, args):

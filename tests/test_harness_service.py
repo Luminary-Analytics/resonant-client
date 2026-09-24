@@ -10,7 +10,7 @@ The static methods are pure functions and trivially testable. The
 build_* methods compose static helpers + workspace state. None of
 this needed to wait — the gap was simply absence of test investment.
 
-Coverage delta target on resonant_client/harness/service.py: 15% → ~85%.
+Coverage delta target on lumi/harness/service.py: 15% → ~85%.
 """
 from __future__ import annotations
 
@@ -18,8 +18,8 @@ import json
 
 import pytest
 
-from resonant_client.harness.service import HarnessService
-from resonant_client.harness.state import (
+from lumi.harness.service import HarnessService
+from lumi.harness.state import (
     HarnessWorkspace,
     SprintContract,
 )

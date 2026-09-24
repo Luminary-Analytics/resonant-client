@@ -5,8 +5,8 @@ from unittest.mock import Mock
 
 import pytest
 
-from resonant_client.gui.ws_commands import CommandContext, HANDLERS
-from resonant_client.gui.sessions import ProjectManager
+from lumi.gui.ws_commands import CommandContext, HANDLERS
+from lumi.gui.sessions import ProjectManager
 
 
 @pytest.mark.parametrize("command", ["set_project", "switch_session", "fork_session", "clear"])

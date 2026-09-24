@@ -9,7 +9,7 @@ See [pipeline architecture](docs/release-pipeline.md) for component ownership.
 1. Inspect the working tree and intended changes. Keep unrelated local changes
    out of the release. Verify the GitHub account has write access to
    `Luminary-Analytics/resonant-client` before pushing.
-2. Update both `resonant_client/__init__.py` and `pyproject.toml` to the chosen
+2. Update both `lumi/__init__.py` and `pyproject.toml` to the chosen
    version. Add `docs/vX.Y.Z-release-notes.md`, update the docs index, and move
    shipped entries out of `docs/unreleased.md`. Do not relabel unshipped work as
    part of an existing release.
@@ -21,8 +21,8 @@ See [pipeline architecture](docs/release-pipeline.md) for component ownership.
 python -m pip install -e ".[all,dev]"
 python -m ruff check .
 python -m pytest -q
-node --check resonant_client/gui/static/app.js
-node --check resonant_client/gui/static/settings_view.js
+node --check lumi/gui/static/app.js
+node --check lumi/gui/static/settings_view.js
 node --test tests/ui_recovery.test.cjs
 git diff --check
 ```
@@ -106,7 +106,7 @@ secret, and Pages configured for `gh-pages` at the root. If the repository is
 private, Pages must still publish publicly; that needs a paid GitHub plan such as
 Team. On the free plan, making the repository private unpublishes the site and
 stops every installed app from updating. The public verification
-key is embedded in `resonant_client/updater.py`; the private key stays outside
+key is embedded in `lumi/updater.py`; the private key stays outside
 source control. WinSparkle tools are under `packaging/winsparkle/`.
 
 EdDSA validates the installer bytes against the update feed. It is separate

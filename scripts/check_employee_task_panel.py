@@ -20,8 +20,8 @@ from playwright.sync_api import sync_playwright, expect
 def run(output):
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
-    from resonant_client.sonn import SonnBackend
-    from resonant_client.gui import employee_tasks
+    from lumi.sonn import SonnBackend
+    from lumi.gui import employee_tasks
     import pytest
     patch = pytest.MonkeyPatch()
     requests, errors = [], []
@@ -72,8 +72,8 @@ def run(output):
             page.route('**/*', lambda route: route.fulfill(status=200, content_type='text/html', body='<html><body><button id="employee-task-button">Employee task</button></body></html>'))
             def load():
                 page.goto('http://127.0.0.1/component')
-                page.add_style_tag(path=str(root / 'resonant_client/gui/static/styles.css'))
-                page.add_script_tag(path=str(root / 'resonant_client/gui/static/employee_tasks.js'))
+                page.add_style_tag(path=str(root / 'lumi/gui/static/styles.css'))
+                page.add_script_tag(path=str(root / 'lumi/gui/static/employee_tasks.js'))
                 page.evaluate('''project => {
                     window.messages = [];
                     window.app = new window.ResonantEmployeeTasks();

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 
-from resonant_client.backends import (
+from lumi.backends import (
     EVENT_BACKEND_STATUS,
     EVENT_DONE,
     EVENT_ERROR,
@@ -17,8 +17,8 @@ from resonant_client.backends import (
     ExoBackend,
     create_backend,
 )
-from resonant_client.gui.app import AppState
-from resonant_client.gui.runtime import BackendSpec
+from lumi.gui.app import AppState
+from lumi.gui.runtime import BackendSpec
 
 
 def _sse_response(events: list[dict]) -> str:
@@ -501,7 +501,7 @@ def test_exo_replays_uncommitted_step_after_runner_shutdown(monkeypatch):
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
 
     monkeypatch.setattr(
-        "resonant_client.backends._wait_with_cancel",
+        "lumi.backends._wait_with_cancel",
         lambda _seconds, _cancel_event: False,
     )
     backend = ExoBackend(
@@ -558,7 +558,7 @@ def test_exo_runner_recovery_is_bounded_and_discards_last_partial(monkeypatch):
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
 
     monkeypatch.setattr(
-        "resonant_client.backends._wait_with_cancel",
+        "lumi.backends._wait_with_cancel",
         lambda _seconds, _cancel_event: False,
     )
     backend = ExoBackend(

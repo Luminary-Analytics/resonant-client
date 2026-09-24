@@ -37,7 +37,7 @@ these services; it is not required for ordinary chat-based coding.
 | Context and evidence | `engine/context_broker.py`, `engine/artifacts.py`, `engine/checkpoint_timeline.py`, `engine/flight_recorder.py` | Context attachments, artifacts, rewind, traces |
 | Optional orchestration | `orchestration/`, `gui/autonomous_*.py` | Specialists, plan graphs, autonomous iteration, skills |
 
-Paths in the table are relative to `resonant_client/`.
+Paths in the table are relative to `lumi/`.
 
 ## GUI and saved-work flow
 

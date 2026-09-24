@@ -18,14 +18,14 @@ from __future__ import annotations
 import os
 from unittest.mock import MagicMock, patch
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     NodeSpecialization,
     NodeStatus,
     PlanGraph,
     PlanNode,
     new_node_id,
 )
-from resonant_client.orchestration.runner import (
+from lumi.orchestration.runner import (
     LocalSpecialistRunner,
     _extract_working_subdir,
 )
@@ -175,7 +175,7 @@ class TestRunnerInheritance:
         g.add_node(child)
 
         runner, fake_run, captured = _make_runner_with_session("ok")
-        with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+        with patch("lumi.orchestration.runner.Session.run", fake_run):
             runner._run_node(child, g)
 
         assert child.working_subdir == "web"
@@ -205,7 +205,7 @@ class TestRunnerInheritance:
         g.add_node(child)
 
         runner, fake_run, captured = _make_runner_with_session("ok")
-        with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+        with patch("lumi.orchestration.runner.Session.run", fake_run):
             runner._run_node(child, g)
 
         assert child.working_subdir == "apps/api"
@@ -222,7 +222,7 @@ class TestRunnerInheritance:
         g.add_node(node)
 
         runner, fake_run, captured = _make_runner_with_session("ok")
-        with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+        with patch("lumi.orchestration.runner.Session.run", fake_run):
             runner._run_node(node, g)
 
         assert node.working_subdir is None
@@ -250,7 +250,7 @@ class TestRunnerRecordsDeclaration:
             "Working subdir: web\n"
         )
         runner, fake_run, _ = _make_runner_with_session(summary_text)
-        with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+        with patch("lumi.orchestration.runner.Session.run", fake_run):
             runner._run_node(node, g)
 
         assert node.working_subdir == "web"
@@ -277,7 +277,7 @@ class TestRunnerRecordsDeclaration:
 
         # Child declares a refinement.
         runner, fake_run, _ = _make_runner_with_session("ok\nWorking subdir: web/api\n")
-        with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+        with patch("lumi.orchestration.runner.Session.run", fake_run):
             runner._run_node(child, g)
 
         assert child.working_subdir == "web/api"
@@ -303,7 +303,7 @@ class TestRunnerRecordsDeclaration:
         g.add_node(child)
 
         runner, fake_run, _ = _make_runner_with_session("ok\nWorking subdir: web\n")
-        with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+        with patch("lumi.orchestration.runner.Session.run", fake_run):
             runner._run_node(child, g)
 
         # Should preserve the inherited (more-specific) `web/api`.

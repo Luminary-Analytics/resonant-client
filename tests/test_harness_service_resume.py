@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.harness.service import HarnessService
-from resonant_client.harness.state import (
+from lumi.harness.service import HarnessService
+from lumi.harness.state import (
     EvaluatorReport,
     HarnessWorkspace,
     ProductSpec,
@@ -74,7 +74,7 @@ def populated_workspace(state_home, project_dir):
         objective="Codify the 5-beat grill exemplar",
         deliverables=["update prompt block"],
         acceptance_checks=["check 1", "check 2", "check 3", "check 4", "check 5", "check 6"],
-        target_files=["resonant_client/orchestration/grill_me.py"],
+        target_files=["lumi/orchestration/grill_me.py"],
         target_line_hints=["EXEMPLAR section near top"],
         validation_commands=["pytest -q tests/test_rigorous_grill.py"],
         edit_strategy="surgical",

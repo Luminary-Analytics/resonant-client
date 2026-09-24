@@ -18,15 +18,15 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.engine.hooks import HookRunner
-from resonant_client.engine.policies import (
+from lumi.engine.hooks import HookRunner
+from lumi.engine.policies import (
     ExecutionPolicy,
     PolicyAction,
     PolicyRule,
     policy_for_tier,
 )
-from resonant_client.engine.sandbox import PathSandbox
-from resonant_client.engine.session import Session
+from lumi.engine.sandbox import PathSandbox
+from lumi.engine.session import Session
 from tests.streaming_stub import (
     StreamingBackend,
     done,
@@ -370,7 +370,7 @@ def test_parallel_workers_ask_one_question_at_a_time(tmp_path):
 
 
 def test_restarted_worker_asks_through_the_prompt_of_its_own_run(tmp_path):
-    from resonant_client.engine.agent_runtime import AgentRegistry, AgentStatus
+    from lumi.engine.agent_runtime import AgentRegistry, AgentStatus
 
     registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
     record = registry.create(agent_type="build", prompt="write the file")

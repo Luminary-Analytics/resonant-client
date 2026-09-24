@@ -1,4 +1,4 @@
-from resonant_client.engine.repair_progress import RepairProgress
+from lumi.engine.repair_progress import RepairProgress
 
 
 def edit(progress, before, after, path="tests.js", error=False):

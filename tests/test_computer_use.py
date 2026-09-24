@@ -35,7 +35,7 @@ def _no_indicator():
 
 # ── ScreenScale Tests ─────────────────────────────────────────────────
 
-from resonant_client.engine.computer_use import ScreenScale
+from lumi.engine.computer_use import ScreenScale
 
 
 class TestScreenScale:
@@ -92,14 +92,14 @@ class TestScreenScale:
 # ── Tool Execution Tests (Mocked) ────────────────────────────────────
 
 class TestComputerDrag:
-    @patch("resonant_client.engine.computer_use.time")
+    @patch("lumi.engine.computer_use.time")
     def test_basic_drag(self, mock_time):
         mock_time.time.return_value = 1.0
         mock_time.sleep = MagicMock()
 
         with patch("pyautogui.moveTo") as mock_move, \
              patch("pyautogui.drag") as mock_drag:
-            from resonant_client.engine.computer_use import exec_computer_drag
+            from lumi.engine.computer_use import exec_computer_drag
             result = exec_computer_drag(
                 {"start_x": 100, "start_y": 100, "end_x": 200, "end_y": 200},
                 start=0.5,
@@ -113,7 +113,7 @@ class TestComputerDrag:
         with patch.dict("sys.modules", {"pyautogui": None}):
             # Force reimport
             import importlib
-            from resonant_client.engine import computer_use
+            from lumi.engine import computer_use
             importlib.reload(computer_use)
             result = computer_use.exec_computer_drag(
                 {"start_x": 0, "start_y": 0, "end_x": 1, "end_y": 1},
@@ -125,7 +125,7 @@ class TestComputerDrag:
 class TestComputerHover:
     def test_basic_hover(self):
         with patch("pyautogui.moveTo") as mock_move:
-            from resonant_client.engine.computer_use import exec_computer_hover
+            from lumi.engine.computer_use import exec_computer_hover
             result = exec_computer_hover({"x": 500, "y": 300}, start=time.time())
             assert not result.is_error
             assert "500" in result.output
@@ -135,8 +135,8 @@ class TestComputerHover:
 class TestWindowList:
     @patch("sys.platform", "win32")
     def test_windows_empty(self):
-        from resonant_client.engine.computer_use import exec_window_list
-        with patch("resonant_client.engine.computer_use._list_windows_win32", return_value=[]):
+        from lumi.engine.computer_use import exec_window_list
+        with patch("lumi.engine.computer_use._list_windows_win32", return_value=[]):
             result = exec_window_list({}, start=time.time())
             assert "No visible windows" in result.output or "0" in result.output
 
@@ -145,8 +145,8 @@ class TestWindowList:
             {"title": "Chrome", "x": 0, "y": 0, "width": 1920, "height": 1080},
             {"title": "VS Code", "x": 100, "y": 100, "width": 1200, "height": 800},
         ]
-        from resonant_client.engine.computer_use import exec_window_list
-        with patch("resonant_client.engine.computer_use.list_windows", return_value=mock_windows):
+        from lumi.engine.computer_use import exec_window_list
+        with patch("lumi.engine.computer_use.list_windows", return_value=mock_windows):
             result = exec_window_list({}, start=time.time())
             assert "Chrome" in result.output
             assert "VS Code" in result.output
@@ -155,14 +155,14 @@ class TestWindowList:
 
 class TestWindowFocus:
     def test_focus_requires_title(self):
-        from resonant_client.engine.computer_use import exec_window_focus
+        from lumi.engine.computer_use import exec_window_focus
         result = exec_window_focus({}, start=time.time())
         assert result.is_error
         assert "title" in result.output.lower()
 
     def test_focus_calls_platform(self):
-        from resonant_client.engine.computer_use import exec_window_focus
-        with patch("resonant_client.engine.computer_use.focus_window", return_value="Focused window: Chrome"):
+        from lumi.engine.computer_use import exec_window_focus
+        with patch("lumi.engine.computer_use.focus_window", return_value="Focused window: Chrome"):
             result = exec_window_focus({"title": "Chrome"}, start=time.time())
             assert not result.is_error
             assert "Chrome" in result.output
@@ -170,7 +170,7 @@ class TestWindowFocus:
 
 class TestComputerWait:
     def test_duration_mode(self):
-        from resonant_client.engine.computer_use import exec_computer_wait
+        from lumi.engine.computer_use import exec_computer_wait
         with patch("time.sleep"):
             result = exec_computer_wait({"mode": "duration", "seconds": 0.1}, start=time.time())
             assert not result.is_error
@@ -178,15 +178,15 @@ class TestComputerWait:
 
     def test_change_mode_no_screenshot(self):
         """Change mode should handle screenshot failure gracefully."""
-        from resonant_client.engine.computer_use import exec_computer_wait
-        with patch("resonant_client.engine.computer_use.take_screenshot_scaled", side_effect=ImportError("no mss")):
+        from lumi.engine.computer_use import exec_computer_wait
+        with patch("lumi.engine.computer_use.take_screenshot_scaled", side_effect=ImportError("no mss")):
             with patch("time.sleep"):
                 result = exec_computer_wait({"mode": "change"}, start=time.time())
                 assert not result.is_error
                 assert "unavailable" in result.output.lower() or "waited" in result.output.lower()
 
     def test_unknown_mode(self):
-        from resonant_client.engine.computer_use import exec_computer_wait
+        from lumi.engine.computer_use import exec_computer_wait
         result = exec_computer_wait({"mode": "magic"}, start=time.time())
         assert result.is_error
 
@@ -194,7 +194,7 @@ class TestComputerWait:
 class TestScreenOCR:
     def test_ocr_no_deps(self):
         """OCR should fail gracefully when dependencies missing."""
-        from resonant_client.engine.computer_use import exec_screen_ocr
+        from lumi.engine.computer_use import exec_screen_ocr
         with patch.dict("sys.modules", {"mss": None}):
             # Should handle ImportError
             result = exec_screen_ocr({}, start=time.time())
@@ -205,7 +205,7 @@ class TestScreenOCR:
 class TestOpenApplication:
     @patch("sys.platform", "win32")
     def test_open_app_windows(self):
-        from resonant_client.engine.computer_use import exec_open_application
+        from lumi.engine.computer_use import exec_open_application
         with patch("subprocess.Popen"):
             with patch("time.sleep"):
                 result = exec_open_application({"name": "notepad"}, start=time.time())
@@ -213,7 +213,7 @@ class TestOpenApplication:
                 assert "notepad" in result.output
 
     def test_open_app_no_name(self):
-        from resonant_client.engine.computer_use import exec_open_application
+        from lumi.engine.computer_use import exec_open_application
         result = exec_open_application({}, start=time.time())
         assert result.is_error
 
@@ -225,10 +225,10 @@ class TestAutoScreenshot:
         """computer_click should attach a screenshot to its result."""
         fake_png = b"\x89PNG\r\n\x1a\nfake"
         with patch("pyautogui.click"), \
-             patch("resonant_client.engine.computer._take_screenshot",
+             patch("lumi.engine.computer._take_screenshot",
                    return_value=(fake_png, 1568, 882)), \
              patch("time.sleep"):
-            from resonant_client.engine.computer import exec_computer_click
+            from lumi.engine.computer import exec_computer_click
             result = exec_computer_click({"x": 100, "y": 200}, start=time.time())
             assert not result.is_error
             assert "screenshot_b64" in result.metadata
@@ -237,7 +237,7 @@ class TestAutoScreenshot:
     def test_click_no_screenshot_when_disabled(self):
         """screenshot=false should skip auto-screenshot."""
         with patch("pyautogui.click"):
-            from resonant_client.engine.computer import exec_computer_click
+            from lumi.engine.computer import exec_computer_click
             result = exec_computer_click(
                 {"x": 100, "y": 200, "screenshot": False},
                 start=time.time(),
@@ -248,10 +248,10 @@ class TestAutoScreenshot:
     def test_type_attaches_screenshot(self):
         fake_png = b"\x89PNG\r\n\x1a\nfake"
         with patch("pyautogui.typewrite"), \
-             patch("resonant_client.engine.computer._take_screenshot",
+             patch("lumi.engine.computer._take_screenshot",
                    return_value=(fake_png, 1568, 882)), \
              patch("time.sleep"):
-            from resonant_client.engine.computer import exec_computer_type
+            from lumi.engine.computer import exec_computer_type
             result = exec_computer_type({"text": "hello"}, start=time.time())
             assert not result.is_error
             assert "screenshot_b64" in result.metadata
@@ -259,10 +259,10 @@ class TestAutoScreenshot:
     def test_scroll_attaches_screenshot(self):
         fake_png = b"\x89PNG\r\n\x1a\nfake"
         with patch("pyautogui.scroll"), \
-             patch("resonant_client.engine.computer._take_screenshot",
+             patch("lumi.engine.computer._take_screenshot",
                    return_value=(fake_png, 1568, 882)), \
              patch("time.sleep"):
-            from resonant_client.engine.computer import exec_computer_scroll
+            from lumi.engine.computer import exec_computer_scroll
             result = exec_computer_scroll({"direction": "down"}, start=time.time())
             assert not result.is_error
             assert "screenshot_b64" in result.metadata
@@ -270,10 +270,10 @@ class TestAutoScreenshot:
     def test_screenshot_failure_is_nonfatal(self):
         """If auto-screenshot fails, the click itself should still succeed."""
         with patch("pyautogui.click"), \
-             patch("resonant_client.engine.computer._take_screenshot",
+             patch("lumi.engine.computer._take_screenshot",
                    side_effect=Exception("display error")), \
              patch("time.sleep"):
-            from resonant_client.engine.computer import exec_computer_click
+            from lumi.engine.computer import exec_computer_click
             result = exec_computer_click({"x": 100, "y": 200}, start=time.time())
             assert not result.is_error  # Click still succeeded
             assert "screenshot_b64" not in result.metadata  # But no screenshot
@@ -437,7 +437,7 @@ class TestComputerUseToolDefs:
     """Verify all computer use tools are properly defined and routable."""
 
     def test_all_tools_defined(self):
-        from resonant_client.engine.tools import AGENT_TOOLS
+        from lumi.engine.tools import AGENT_TOOLS
         tool_names = {t["function"]["name"] for t in AGENT_TOOLS}
 
         expected = {
@@ -449,7 +449,7 @@ class TestComputerUseToolDefs:
             assert name in tool_names, f"Missing tool definition: {name}"
 
     def test_all_tools_have_icons(self):
-        from resonant_client.engine.tools import TOOL_ICONS
+        from lumi.engine.tools import TOOL_ICONS
         expected = [
             "computer_screenshot", "computer_click", "computer_type", "computer_scroll",
             "computer_drag", "computer_hover", "computer_wait",
@@ -467,7 +467,7 @@ class TestComputerUseToolDefs:
         top-left corner (drag/hover), and could steal focus from a live
         window (window_focus) on every suite run.
         """
-        from resonant_client.engine.tools import execute_tool
+        from lumi.engine.tools import execute_tool
 
         # These should all be routable (may fail on deps but shouldn't be "Unknown tool")
         tools_to_test = [
@@ -479,7 +479,7 @@ class TestComputerUseToolDefs:
             ("open_application", {"name": "test"}),
         ]
         with patch("pyautogui.moveTo"), patch("pyautogui.drag"), \
-             patch("resonant_client.engine.computer_use.focus_window",
+             patch("lumi.engine.computer_use.focus_window",
                    return_value="Focused window: test"), \
              patch("subprocess.Popen"), patch("os.startfile", create=True), \
              patch("time.sleep"):
@@ -498,10 +498,10 @@ class TestVisionLoop:
         fake_png = b"\x89PNG\r\n\x1a\n_test_data_"
 
         with patch("pyautogui.click"), \
-             patch("resonant_client.engine.computer._take_screenshot",
+             patch("lumi.engine.computer._take_screenshot",
                    return_value=(fake_png, 1568, 882)), \
              patch("time.sleep"):
-            from resonant_client.engine.computer import exec_computer_click
+            from lumi.engine.computer import exec_computer_click
             result = exec_computer_click({"x": 500, "y": 300}, start=time.time())
 
             # Verify the result has everything needed for the vision loop
@@ -540,7 +540,7 @@ class TestOverlayWin32Signatures:
     def test_handle_returning_calls_declare_pointer_sized_types(self):
         import ctypes
 
-        from resonant_client.engine import screen_overlay
+        from lumi.engine import screen_overlay
 
         if not screen_overlay.IS_WINDOWS:
             import pytest
@@ -571,7 +571,7 @@ class TestOverlayWin32Signatures:
         with every other one for it to succeed, which no amount of inspecting
         individual signatures can establish.
         """
-        from resonant_client.engine import screen_overlay
+        from lumi.engine import screen_overlay
 
         if not screen_overlay.IS_WINDOWS:
             import pytest
@@ -588,7 +588,7 @@ class TestOverlayWin32Signatures:
 
     def test_declaring_signatures_is_idempotent(self):
         """It runs on every window creation; repeating it must be harmless."""
-        from resonant_client.engine import screen_overlay
+        from lumi.engine import screen_overlay
 
         if not screen_overlay.IS_WINDOWS:
             import pytest

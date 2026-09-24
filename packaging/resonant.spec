@@ -63,7 +63,7 @@ block_cipher = None
 
 # The .spec runs from the repo root when invoked as `pyinstaller packaging/resonant.spec`.
 PROJECT_ROOT = Path.cwd()
-PKG_ROOT = PROJECT_ROOT / "resonant_client"
+PKG_ROOT = PROJECT_ROOT / "lumi"
 
 # ---- Data files to bundle ----------------------------------------------------
 # PyInstaller doesn't auto-detect Jinja templates or static assets; list them
@@ -72,41 +72,41 @@ PKG_ROOT = PROJECT_ROOT / "resonant_client"
 datas = [
     # Jinja templates served by the GUI
     (str(PKG_ROOT / "gui" / "templates" / "index.html"),
-     "resonant_client/gui/templates"),
+     "lumi/gui/templates"),
 
     # Static frontend assets (JS, CSS, icons)
     (str(PKG_ROOT / "gui" / "static" / "app.js"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "plan_graph_view.js"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "autonomous_view.js"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "settings_view.js"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "run_cards.js"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "employee_tasks.js"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "local_access.js"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "fonts.css"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "styles.css"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "favicon.svg"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "resonant.ico"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "resonant.png"),
-     "resonant_client/gui/static"),
+     "lumi/gui/static"),
 
     # Unpacked Chrome extension backing the browser tools' tab grouping.
     # Chrome 137+ ignores --load-extension, so it is installed at runtime via
     # the Extensions CDP domain; either way the files have to be in the bundle.
     (str(PKG_ROOT / "browser_extension" / "manifest.json"),
-     "resonant_client/browser_extension"),
+     "lumi/browser_extension"),
     (str(PKG_ROOT / "browser_extension" / "background.js"),
-     "resonant_client/browser_extension"),
+     "lumi/browser_extension"),
 ]
 
 # Include data files for libraries that ship their own (jinja2 has none, but
@@ -116,7 +116,7 @@ datas += collect_data_files("starlette")
 # Skill instructions are package data, not Python modules. Include them
 # explicitly so installed clients can discover the same skills as source runs.
 for skill in sorted((PKG_ROOT / "orchestration" / "bundled_skills").glob("*.md")):
-    datas.append((str(skill), "resonant_client/orchestration/bundled_skills"))
+    datas.append((str(skill), "lumi/orchestration/bundled_skills"))
 
 # Frontend libraries and fonts that index.html used to load from CDNs. Fetched
 # and SHA-256 verified by packaging/fetch_web_assets.ps1, which build_clean.ps1
@@ -125,7 +125,7 @@ for skill in sorted((PKG_ROOT / "orchestration" / "bundled_skills").glob("*.md")
 VENDOR_DIR = PKG_ROOT / "gui" / "static" / "vendor"
 for vendored in sorted(VENDOR_DIR.glob("*")) if VENDOR_DIR.is_dir() else []:
     if vendored.is_file():
-        datas.append((str(vendored), "resonant_client/gui/static/vendor"))
+        datas.append((str(vendored), "lumi/gui/static/vendor"))
 
 # ---- Hidden imports ----------------------------------------------------------
 # Modules dynamically imported (string-based) that PyInstaller's static
@@ -133,9 +133,9 @@ for vendored in sorted(VENDOR_DIR.glob("*")) if VENDOR_DIR.is_dir() else []:
 
 hiddenimports = [
     # Dispatched by __main__.py via string lookups
-    "resonant_client.tui",
-    "resonant_client.gui.server",
-    "resonant_client.gui.app",
+    "lumi.tui",
+    "lumi.gui.server",
+    "lumi.gui.app",
 
     # uvicorn picks workers/protocols at runtime via importlib
     "uvicorn.logging",
@@ -186,10 +186,10 @@ hiddenimports = [
     "pythonnet",
 ]
 
-# Pull in all submodules of resonant_client itself so dynamic imports inside
-# the engine (e.g. `importlib.import_module(f"resonant_client.engine.{tool}")`)
+# Pull in all submodules of lumi itself so dynamic imports inside
+# the engine (e.g. `importlib.import_module(f"lumi.engine.{tool}")`)
 # resolve at runtime.
-hiddenimports += collect_submodules("resonant_client")
+hiddenimports += collect_submodules("lumi")
 
 # ---- Excludes ----------------------------------------------------------------
 # Trim deadweight modules PyInstaller pulls in by default but we don't need.
@@ -209,7 +209,7 @@ excludes = [
 
 # ---- Native binaries ---------------------------------------------------------
 # WinSparkle.dll for auto-update. Bundled next to resonant.exe so the ctypes
-# loader in resonant_client/updater.py can find it via sys._MEIPASS.
+# loader in lumi/updater.py can find it via sys._MEIPASS.
 
 WINSPARKLE_DLL = PROJECT_ROOT / "packaging" / "winsparkle" / "WinSparkle-0.9.2" / "x64" / "Release" / "WinSparkle.dll"
 

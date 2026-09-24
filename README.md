@@ -298,8 +298,8 @@ imports that guide; `RESONANT.md` remains a legacy pointer to it.
 ```bash
 python -m pytest -q
 python -m ruff check .
-node --check resonant_client/gui/static/app.js
-node --check resonant_client/gui/static/settings_view.js
+node --check lumi/gui/static/app.js
+node --check lumi/gui/static/settings_view.js
 node --test tests/ui_recovery.test.cjs
 git diff --check
 ```

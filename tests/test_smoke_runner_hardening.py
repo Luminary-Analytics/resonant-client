@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.smoke.runner import (
+from lumi.smoke.runner import (
     _accumulate_event,
     _new_summary,
     _validate_seed_path,

@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     Skill,
     SkillManifest,
     SkillRequirement,

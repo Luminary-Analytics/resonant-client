@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from resonant_client.sonn_account import read_account, workspace_url
+from lumi.sonn_account import read_account, workspace_url
 
 BASE = 'https://sonn.example/v1/workspace/projects/project-fixture/openai/v1'
 KEY = 'fixture-private-invitation'
@@ -72,8 +72,8 @@ def test_malformed_or_secret_identity_is_rejected(body):
 
 
 def test_stale_account_result_is_discarded_after_credentials_change(monkeypatch):
-    from resonant_client.gui.ws_commands import CommandContext, _cmd_sonn_account
-    import resonant_client.sonn_account as account_module
+    from lumi.gui.ws_commands import CommandContext, _cmd_sonn_account
+    import lumi.sonn_account as account_module
     state = SimpleNamespace(sonn_account_revision=0,
         _api_key_details=lambda *_: (KEY, None, None, None),
         settings=SimpleNamespace(get_all=lambda: {'network': {'sonn_url': BASE}}))

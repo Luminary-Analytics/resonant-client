@@ -32,7 +32,7 @@ Every skill has a `created_by` field that gates how the curator treats it:
 
 | `created_by` | Source | Curator-touchable? |
 |---|---|---|
-| `bundled` | Shipped with the package (in `resonant_client/orchestration/bundled_skills/`) | **No** — never archived or modified |
+| `bundled` | Shipped with the package (in `lumi/orchestration/bundled_skills/`) | **No** — never archived or modified |
 | `agent` | Auto-extracted from a successful plan-graph or autonomous mission iter | **Yes** if not pinned |
 | `user` | Manually authored via CLI / GUI | **No** — user owns it |
 
@@ -50,7 +50,7 @@ When the autonomous mission daemon's REFLECT marks a roadmap item `verdict=satis
 
 The extractor is best-effort: any failure (backend error, parse error, exception) is logged and swallowed; the daemon continues unaffected.
 
-[Source: `resonant_client/orchestration/skill_mission_extraction.py`](../resonant_client/orchestration/skill_mission_extraction.py)
+[Source: `lumi/orchestration/skill_mission_extraction.py`](../lumi/orchestration/skill_mission_extraction.py)
 
 ### 2. Discovery (at next mission's PLAN_DEEP)
 
@@ -64,7 +64,7 @@ When the next mission's planner runs:
 
 The block is injected into the planner's user message (NOT system prompt — keeps prompt-cache hits) so the model can reference relevant prior patterns BEFORE generating the plan-graph.
 
-[Source: `resonant_client/orchestration/skill_loader.py`](../resonant_client/orchestration/skill_loader.py)
+[Source: `lumi/orchestration/skill_loader.py`](../lumi/orchestration/skill_loader.py)
 
 ### 3. Curation (post-mission)
 
@@ -78,7 +78,7 @@ When the autonomous mission daemon hits a satisfied terminal state (`_emit_stop(
 
 The deterministic curator only handles stale archival in v0.6.0. Model-driven umbrella consolidation (where a forked agent merges narrow sibling skills into broader patterns) ships in v0.6.1+.
 
-[Source: `resonant_client/orchestration/skill_curator.py`](../resonant_client/orchestration/skill_curator.py)
+[Source: `lumi/orchestration/skill_curator.py`](../lumi/orchestration/skill_curator.py)
 
 ## SKILL.md format
 

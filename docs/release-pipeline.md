@@ -26,7 +26,7 @@ the release workflow's executable smoke test alone does not perform them.
 
 WinSparkle's signing tool uses the repository `EDDSA_PRIVATE_KEY` secret to
 produce an EdDSA signature of the installer. The matching public key lives in
-`resonant_client/updater.py`. The private key must never enter source control,
+`lumi/updater.py`. The private key must never enter source control,
 logs, documentation, or fixtures.
 
 The workflow publishes the installer as a GitHub Release asset. For stable
@@ -73,7 +73,7 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
 | `packaging/installer.iss` | Windows installer |
 | `packaging/update_appcast.py` | Versioned update-feed entries |
-| `resonant_client/updater.py` | WinSparkle client and verification key |
+| `lumi/updater.py` | WinSparkle client and verification key |
 
 Paths are relative to the repository root. See the
 [documentation index](README.md) for release records and current guides.

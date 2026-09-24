@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     PlanGraph,
     PlanNode,
     NodeStatus,
@@ -19,7 +19,7 @@ from resonant_client.orchestration import (
     purge_old_snapshots,
     plans_dir,
 )
-from resonant_client.orchestration.plan_graph import new_node_id
+from lumi.orchestration.plan_graph import new_node_id
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────

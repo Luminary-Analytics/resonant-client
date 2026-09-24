@@ -16,8 +16,8 @@ from typing import Any, Optional
 
 import pytest
 
-from resonant_client.gui import roadmap as roadmap_module
-from resonant_client.gui.autonomous_session import (
+from lumi.gui import roadmap as roadmap_module
+from lumi.gui.autonomous_session import (
     _seed_item_from_intent,
     _smart_title,
     build_roadmap_from_spec,
@@ -884,7 +884,7 @@ class TestBuildRoadmapInspectorPayload:
         rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
         # Inject a manual criterion. The summary should NOT count it
         # against `total_blocking` and is_converged should ignore it.
-        from resonant_client.gui.roadmap import AcceptanceCriterion
+        from lumi.gui.roadmap import AcceptanceCriterion
         rm.acceptance_criteria.append(
             AcceptanceCriterion(type="manual", text="Reviewer approval")
         )
@@ -1015,7 +1015,7 @@ class TestBuildRoadmapInspectorPayload:
         rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
         # Hand-set start + a synthetic log entry with a known offset.
         rm.started_iso = "2026-05-03T10:00:00Z"
-        from resonant_client.gui.roadmap import IterationLogEntry
+        from lumi.gui.roadmap import IterationLogEntry
         rm.iteration_log = [IterationLogEntry(
             iter_num=1,
             timestamp_iso="2026-05-03T10:03:30Z",
@@ -1032,7 +1032,7 @@ class TestBuildRoadmapInspectorPayload:
     def test_elapsed_seconds_none_for_unparseable_timestamps(self, tmp_path):
         rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
         rm.started_iso = "not a real timestamp"
-        from resonant_client.gui.roadmap import IterationLogEntry
+        from lumi.gui.roadmap import IterationLogEntry
         rm.iteration_log = [IterationLogEntry(
             iter_num=1,
             timestamp_iso="2026-05-03T10:03:30Z",
@@ -1053,7 +1053,7 @@ class TestBuildRoadmapInspectorPayload:
         # than negative.
         rm, path = self._fresh_roadmap_with_one_item_and_criteria(tmp_path)
         rm.started_iso = "2026-05-03T10:00:00Z"
-        from resonant_client.gui.roadmap import IterationLogEntry
+        from lumi.gui.roadmap import IterationLogEntry
         rm.iteration_log = [IterationLogEntry(
             iter_num=1,
             timestamp_iso="2026-05-03T09:00:00Z",  # before start

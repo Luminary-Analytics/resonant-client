@@ -70,7 +70,7 @@ PrivilegesRequired=admin
 ; only sensible mode now. Users who really want per-user can build from source.
 OutputDir=..\dist\installer
 OutputBaseFilename=resonant-setup-{#AppVersion}
-SetupIconFile=..\resonant_client\gui\static\resonant.ico
+SetupIconFile=..\lumi\gui\static\resonant.ico
 UninstallDisplayIcon={app}\{#AppExeName}
 Compression=lzma2/ultra64
 SolidCompression=yes

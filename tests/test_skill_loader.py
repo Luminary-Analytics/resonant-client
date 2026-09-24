@@ -12,14 +12,14 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.orchestration.skill_loader import (
+from lumi.orchestration.skill_loader import (
     DEFAULT_MAX_SKILLS,
     LoadedSkill,
     format_skills_for_prompt,
     loaded_skill_ids,
     match_skills_for_query,
 )
-from resonant_client.orchestration.skills import Skill, save_skill
+from lumi.orchestration.skills import Skill, save_skill
 
 
 @pytest.fixture

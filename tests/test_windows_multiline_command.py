@@ -4,7 +4,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from resonant_client.engine import tools
+from lumi.engine import tools
 
 
 @pytest.mark.parametrize("command", ['node -e "\nconsole.log(12345)\n"', 'echo first\r\necho second'])

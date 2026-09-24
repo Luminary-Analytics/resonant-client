@@ -164,8 +164,8 @@ keyboard interaction and relevant compact layouts.
 ```sh
 python -m ruff check .
 python -m pytest -q
-node --check resonant_client/gui/static/app.js
-node --check resonant_client/gui/static/settings_view.js
+node --check lumi/gui/static/app.js
+node --check lumi/gui/static/settings_view.js
 node --test tests/ui_recovery.test.cjs
 git diff --check
 ```
@@ -193,7 +193,7 @@ configuration, streaming/tool semantics, and capability behavior. Do not infer
 a new service's protocol from an old provider name or archived engine plan.
 
 Commit/push/deploy when requested. Release version changes belong in both
-`pyproject.toml` and `resonant_client/__init__.py`; publish a matching tag and
+`pyproject.toml` and `lumi/__init__.py`; publish a matching tag and
 verify the release workflow and public appcast before reporting deployment.
 
 Start with [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), and the

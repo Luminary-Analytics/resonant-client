@@ -3,12 +3,12 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.gui.costs import CostTracker
+from lumi.gui.costs import CostTracker
 
 
 ROOT = Path(__file__).parents[1]
-APP_JS = ROOT / "resonant_client" / "gui" / "static" / "app.js"
-APP_PY = ROOT / "resonant_client" / "gui" / "app.py"
+APP_JS = ROOT / "lumi" / "gui" / "static" / "app.js"
+APP_PY = ROOT / "lumi" / "gui" / "app.py"
 STYLES_CSS = APP_JS.with_name("styles.css")
 
 
@@ -66,7 +66,7 @@ def test_session_history_is_replayed_before_runtime_rebuild():
     # inside whatever function actually serves it.
     import inspect
 
-    from resonant_client.gui import ws_commands
+    from lumi.gui import ws_commands
 
     body = inspect.getsource(ws_commands.HANDLERS["switch_session"])
 

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.gui.sessions import ProjectManager
+from lumi.gui.sessions import ProjectManager
 
 
 def _recents_file(home: Path) -> Path:
@@ -30,7 +30,7 @@ def manager(tmp_path, monkeypatch):
     tests would silently exercise nothing. The isolated home above is what
     keeps the real file safe.
     """
-    import resonant_client.gui.sessions as sessions_module
+    import lumi.gui.sessions as sessions_module
 
     monkeypatch.setattr(sessions_module, "_is_pytest_temp_path", lambda _p: False)
 

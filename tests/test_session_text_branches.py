@@ -20,7 +20,7 @@ what the streaming-stub harness lets us drive deterministically.
 """
 from __future__ import annotations
 
-from resonant_client.engine.session import Session
+from lumi.engine.session import Session
 from tests.streaming_stub import (
     StreamingBackend,
     backend_status,

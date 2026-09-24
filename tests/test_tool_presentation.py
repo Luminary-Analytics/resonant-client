@@ -1,4 +1,4 @@
-from resonant_client.engine.tool_presentation import tool_presentation
+from lumi.engine.tool_presentation import tool_presentation
 
 
 def test_core_file_tools_expose_diff_intent_and_locations():

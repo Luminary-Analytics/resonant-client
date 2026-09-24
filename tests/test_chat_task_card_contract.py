@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-APP_JS = Path(__file__).parents[1] / "resonant_client" / "gui" / "static" / "app.js"
+APP_JS = Path(__file__).parents[1] / "lumi" / "gui" / "static" / "app.js"
 STYLES_CSS = APP_JS.with_name("styles.css")
 
 

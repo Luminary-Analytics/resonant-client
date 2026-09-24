@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 
-from resonant_client.orchestration.checkpoints import IterationCheckpointStore
+from lumi.orchestration.checkpoints import IterationCheckpointStore
 
 
 def _git(repo, *args):

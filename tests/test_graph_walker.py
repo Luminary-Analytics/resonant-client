@@ -5,7 +5,7 @@ from __future__ import annotations
 import threading
 
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     GraphWalker,
     NodeSpecialization,
     NodeStatus,

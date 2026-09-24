@@ -19,9 +19,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
-from resonant_client.backends import OllamaBackend
-from resonant_client.gui.app import AppState
-from resonant_client.orchestration import (
+from lumi.backends import OllamaBackend
+from lumi.gui.app import AppState
+from lumi.orchestration import (
     LocalSpecialistRunner,
     NodeSpecialization,
     PlanGraph,
@@ -149,10 +149,10 @@ class TestRunnerSessionUsesResolvedBackend:
         g.add_node(node)
 
         with patch(
-            "resonant_client.orchestration.runner.Session.__init__",
+            "lumi.orchestration.runner.Session.__init__",
             capture_session_init,
         ), patch(
-            "resonant_client.orchestration.runner.Session.run", fake_run,
+            "lumi.orchestration.runner.Session.run", fake_run,
         ):
             runner(node, g)
 
@@ -193,10 +193,10 @@ class TestRunnerSessionUsesResolvedBackend:
         g.add_node(node)
 
         with patch(
-            "resonant_client.orchestration.runner.Session.__init__",
+            "lumi.orchestration.runner.Session.__init__",
             capture_session_init,
         ), patch(
-            "resonant_client.orchestration.runner.Session.run", fake_run,
+            "lumi.orchestration.runner.Session.run", fake_run,
         ):
             runner(node, g)
 
@@ -461,7 +461,7 @@ class TestBuildSpecialistBackend:
 
 class TestIntentServiceWiresResolver:
     def test_resolver_threaded_through_to_runner(self):
-        from resonant_client.orchestration.intent_service import IntentService
+        from lumi.orchestration.intent_service import IntentService
 
         resolver = MagicMock(return_value=None)
         svc = IntentService(
@@ -473,7 +473,7 @@ class TestIntentServiceWiresResolver:
         assert svc.specialist_backend_resolver is resolver
 
     def test_resolver_default_is_none(self):
-        from resonant_client.orchestration.intent_service import IntentService
+        from lumi.orchestration.intent_service import IntentService
 
         svc = IntentService(
             project_path="/tmp/proj",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.network_defaults import (
+from lumi.network_defaults import (
     default_thinking_for_model,
     get_default_model,
     resolve_exo_url,

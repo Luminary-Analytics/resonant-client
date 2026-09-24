@@ -1,5 +1,5 @@
 """
-Tests for resonant_client/engine/rag.py
+Tests for lumi/engine/rag.py
 
 Covers: CodebaseIndex lifecycle, keyword/symbol/path/import search,
 context generation, caching, language detection, symbol/import extraction,
@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from resonant_client.engine.rag import (
+from lumi.engine.rag import (
     CodebaseIndex,
     IndexEntry,
     MAX_FILE_SIZE,

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from resonant_client.engine.session import Session
-from resonant_client.engine.tools import AGENT_TOOLS, execute_tool
-from resonant_client.orchestration.skills import Skill, save_skill
+from lumi.engine.session import Session
+from lumi.engine.tools import AGENT_TOOLS, execute_tool
+from lumi.orchestration.skills import Skill, save_skill
 from tests.streaming_stub import StreamingBackend, done, text_delta
 
 

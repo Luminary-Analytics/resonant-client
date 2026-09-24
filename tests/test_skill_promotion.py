@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.orchestration.skill_cli import main as cli_main
-from resonant_client.orchestration.skills import (
+from lumi.orchestration.skill_cli import main as cli_main
+from lumi.orchestration.skills import (
     Skill,
     demote_skill,
     load_skill,
@@ -253,7 +253,7 @@ class TestAutoInstallBundled:
         cli_main(["list"])
         cli_main(["list"])
         # Each bundled skill exists exactly once on disk.
-        from resonant_client.orchestration.bundled_skills import bundled_skill_ids
+        from lumi.orchestration.bundled_skills import bundled_skill_ids
         for sid in bundled_skill_ids():
             target = skill_dir(sid, scope="global")
             assert target.exists()

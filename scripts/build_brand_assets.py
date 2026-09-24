@@ -8,7 +8,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-DEST = Path(__file__).resolve().parents[1] / "resonant_client/gui/static"
+DEST = Path(__file__).resolve().parents[1] / "lumi/gui/static"
 CURVES = [
     ((32, 32), (24, 16), (8, 18), (8, 32)),
     ((8, 32), (8, 46), (24, 48), (32, 32)),

@@ -6,7 +6,7 @@ import threading
 import os
 from unittest.mock import MagicMock, patch
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     LocalSpecialistRunner,
     NodeSpecialization,
     NodeStatus,
@@ -70,7 +70,7 @@ def test_clean_run_yields_confidence_one():
     g = PlanGraph.new("intent")
     node = _node(g, goal="read README", spec=NodeSpecialization.EXPLORE)
     runner, fake_run = _make_runner()
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.status == NodeStatus.DONE
     assert result.confidence == 1.0
@@ -87,7 +87,7 @@ def test_step_limit_with_output_lowers_confidence_softly():
         {"event": "session.end", "reason": "max_steps"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.confidence == 0.7, "produced output → softer penalty"
     assert result.data.get("hit_step_limit") is True
@@ -102,7 +102,7 @@ def test_step_limit_with_no_output_penalised_harder():
         {"event": "session.end", "reason": "max_steps"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.confidence == 0.3
     assert result.data.get("hit_step_limit") is True
@@ -121,7 +121,7 @@ def test_tool_errors_lower_confidence():
         {"event": "session.end"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert 0.5 <= result.confidence <= 0.7  # 2 errors → 0.7 per the table
 
@@ -143,7 +143,7 @@ def test_step_limit_via_error_event_treated_as_done_not_blocked():
         {"event": "error", "message": "Reached 8 step limit \u2014 use /clear to reset"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.status == NodeStatus.DONE, "step limit should not BLOCK the node"
     # The fake events include a tool.call → produced_output=True → soft 0.7 penalty
@@ -170,7 +170,7 @@ def test_allowlist_denials_dont_inflate_error_count():
         {"event": "session.end"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.confidence == 1.0, "denials shouldn't tank confidence"
     assert result.subgoals  # parsed cleanly
@@ -192,7 +192,7 @@ def test_planner_repairs_malformed_envelope_with_constrained_output():
         }],
     }
 
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
 
     assert result.subgoals[0]["goal"] == "implement it"
@@ -209,7 +209,7 @@ def test_real_error_still_marks_blocked():
         {"event": "error", "message": "Backend API returned 500"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.status == NodeStatus.BLOCKED
 
@@ -222,7 +222,7 @@ def test_session_crash_marks_blocked():
         {"event": "error", "message": "exploded"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.status == NodeStatus.BLOCKED
     assert result.confidence == 0.0
@@ -237,7 +237,7 @@ def test_runner_exception_translates_to_blocked():
         raise RuntimeError("simulated crash")
         yield  # so it's still a generator
 
-    with patch("resonant_client.orchestration.runner.Session.run", crashing_run):
+    with patch("lumi.orchestration.runner.Session.run", crashing_run):
         result = runner(node, g)
     assert result.status == NodeStatus.BLOCKED
     assert "simulated" in result.summary.lower() or "exception" in result.summary.lower()
@@ -249,7 +249,7 @@ def test_cancel_before_run_returns_abandoned():
     cancel = threading.Event()
     cancel.set()
     runner, fake_run = _make_runner(cancel_event=cancel)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.status == NodeStatus.ABANDONED
     assert result.confidence == 0.0
@@ -280,7 +280,7 @@ def test_plan_specialist_parses_subgoals():
         {"event": "session.end"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert len(result.subgoals) == 3
     goals = [sg["goal"] for sg in result.subgoals]
@@ -297,7 +297,7 @@ def test_plan_specialist_parse_failure_tempers_confidence():
         {"event": "session.end"},
     ]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.subgoals == []
     assert result.confidence <= 0.5  # soft ceiling — work happened, just couldn't parse
@@ -317,7 +317,7 @@ But for our case:
 ```'''
     events = [{"event": "text.done", "text": text}, {"event": "session.end"}]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert len(result.subgoals) == 1
     assert result.subgoals[0]["goal"] == "real one"
@@ -335,7 +335,7 @@ def test_verify_specialist_parses_pass_verdict():
 ```'''
     events = [{"event": "text.done", "text": text}, {"event": "session.end"}]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.verdict == "pass"
     assert result.findings == []
@@ -350,7 +350,7 @@ def test_verify_specialist_parses_revise_with_findings():
 ```'''
     events = [{"event": "text.done", "text": text}, {"event": "session.end"}]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.verdict == "revise"
     assert result.findings == ["bug A", "bug B"]
@@ -362,7 +362,7 @@ def test_verify_specialist_falls_back_to_prose_for_pass():
     text = "I ran the tests. Verdict: pass — nothing else to do."
     events = [{"event": "text.done", "text": text}, {"event": "session.end"}]
     runner, fake_run = _make_runner(events)
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         result = runner(node, g)
     assert result.verdict == "pass"
 
@@ -393,8 +393,8 @@ def test_runner_passes_filtered_tools_to_session():
         yield {"event": "session.end"}
 
     runner, _ = _make_runner()
-    with patch("resonant_client.orchestration.runner.Session.__init__", fake_init), \
-         patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.__init__", fake_init), \
+         patch("lumi.orchestration.runner.Session.run", fake_run):
         runner(node, g)
 
     allowed = captured["allowed_tools"]
@@ -420,7 +420,7 @@ def test_runner_attaches_workspace_sandbox_to_specialist_session():
         yield {"event": "session.end"}
 
     runner, _ = _make_runner()
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         runner(node, g)
 
     assert captured["sandbox"].enabled is True
@@ -452,8 +452,8 @@ def test_dep_summaries_passed_as_context():
         yield {"event": "session.end"}
 
     runner, _ = _make_runner()
-    with patch("resonant_client.orchestration.runner.Session.__init__", fake_init), \
-         patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.__init__", fake_init), \
+         patch("lumi.orchestration.runner.Session.run", fake_run):
         runner(child, g)
 
     sys_prompt = captured["role_instructions"]
@@ -479,7 +479,7 @@ def test_audit_logger_called_on_each_tool_call():
     runner, fake_run = _make_runner(events)
     runner.audit_logger = lambda **kw: captured.append(kw)
 
-    with patch("resonant_client.orchestration.runner.Session.run", fake_run):
+    with patch("lumi.orchestration.runner.Session.run", fake_run):
         runner(node, g)
 
     assert len(captured) == 2

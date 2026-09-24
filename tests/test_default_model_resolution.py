@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from resonant_client.gui.app import AppState
+from lumi.gui.app import AppState
 
 
 def _make_state_with_settings_get(get_returns):

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 const path = require('node:path');
-const source = fs.readFileSync(path.join(__dirname, '../resonant_client/gui/static/app.js'), 'utf8').split('function applyMixin(')[0];
+const source = fs.readFileSync(path.join(__dirname, '../lumi/gui/static/app.js'), 'utf8').split('function applyMixin(')[0];
 const tick = () => new Promise(resolve => setImmediate(resolve));
 
 function setup(fetch, globals = {}) {
@@ -216,7 +216,7 @@ test('completion suggestions preserve drafts and skip replay, errors, and queued
 // The application account must never inherit another provider's identity.
 function accountView(settings = {}, sonnAccount, document = {}) {
     const context = vm.createContext({window: {}, document});
-    const mixin = fs.readFileSync(path.join(__dirname, '../resonant_client/gui/static/settings_view.js'), 'utf8');
+    const mixin = fs.readFileSync(path.join(__dirname, '../lumi/gui/static/settings_view.js'), 'utf8');
     vm.runInContext(mixin + '\nthis.View = ResonantSettingsView;', context);
     const app = Object.create(context.View.prototype);
     app.settings = settings;
@@ -350,7 +350,7 @@ test('opening another project during a run preserves view and sends no navigatio
 });
 
 // ── Launch access (static/local_access.js) ─────────────────────────────
-const accessSource = fs.readFileSync(path.join(__dirname, '../resonant_client/gui/static/local_access.js'), 'utf8');
+const accessSource = fs.readFileSync(path.join(__dirname, '../lumi/gui/static/local_access.js'), 'utf8');
 
 function loadAccess({hash = '', stored = null, fetch = async () => { throw new Error('unexpected fetch'); }} = {}) {
     const storage = new Map(stored ? [['sonn-client:access', stored]] : []);

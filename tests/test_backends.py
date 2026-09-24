@@ -1,5 +1,5 @@
 """
-Comprehensive tests for resonant_client/backends.py
+Comprehensive tests for lumi/backends.py
 
 Tests cover:
   - _convert_tools_for_ollama
@@ -14,7 +14,7 @@ import httpx
 import pytest
 from unittest.mock import patch, MagicMock
 
-from resonant_client.backends import (
+from lumi.backends import (
     EVENT_BACKEND_STATUS,
     _OLLAMA_RATELIMIT_STATUS,
     _OLLAMA_RETRYABLE_STATUS,
@@ -956,7 +956,7 @@ class TestOpenChatStreamWithRetryNotify:
         """200 OK on first try → notify_retry is never called."""
         notify_calls = []
         with self._patch_client_factory([(200, '{"ok":true}')]), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             with backend._open_chat_stream_with_retry(
                 payload={}, stream_timeout=None, cancel_event=None,
                 notify_retry=notify_calls.append,
@@ -972,7 +972,7 @@ class TestOpenChatStreamWithRetryNotify:
         with self._patch_client_factory([
             (503, '{"error":"Server overloaded"}'),
             (200, '{"ok":true}'),
-        ]), patch("resonant_client.backends._wait_with_cancel", return_value=False):
+        ]), patch("lumi.backends._wait_with_cancel", return_value=False):
             with backend._open_chat_stream_with_retry(
                 payload={}, stream_timeout=None, cancel_event=None,
                 notify_retry=notify_calls.append,
@@ -997,7 +997,7 @@ class TestOpenChatStreamWithRetryNotify:
             (503, "overloaded"),
             (502, "bad gateway"),
             (200, '{"ok":true}'),
-        ]), patch("resonant_client.backends._wait_with_cancel", return_value=False):
+        ]), patch("lumi.backends._wait_with_cancel", return_value=False):
             with backend._open_chat_stream_with_retry(
                 payload={}, stream_timeout=None, cancel_event=None,
                 notify_retry=notify_calls.append,
@@ -1021,7 +1021,7 @@ class TestOpenChatStreamWithRetryNotify:
         with self._patch_client_factory([
             (503, "overloaded"),
             (200, '{"ok":true}'),
-        ]), patch("resonant_client.backends._wait_with_cancel", return_value=False):
+        ]), patch("lumi.backends._wait_with_cancel", return_value=False):
             with backend._open_chat_stream_with_retry(
                 payload={}, stream_timeout=None, cancel_event=None,
                 notify_retry=bad_notify,
@@ -1035,7 +1035,7 @@ class TestOpenChatStreamWithRetryNotify:
         with self._patch_client_factory([
             (503, "overloaded"),
             (200, '{"ok":true}'),
-        ]), patch("resonant_client.backends._wait_with_cancel", return_value=False):
+        ]), patch("lumi.backends._wait_with_cancel", return_value=False):
             with backend._open_chat_stream_with_retry(
                 payload={}, stream_timeout=None, cancel_event=None,
             ) as (client, resp):
@@ -1069,7 +1069,7 @@ class TestOpenChatStreamWithRetryNotify:
         with kind=ollama_timeout, then the 200 is yielded."""
         notify_calls = []
         with self._factory_raising_then_ok(1), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             with backend._open_chat_stream_with_retry(
                 payload={}, stream_timeout=None, cancel_event=None,
                 notify_retry=notify_calls.append,
@@ -1087,7 +1087,7 @@ class TestOpenChatStreamWithRetryNotify:
         """Every attempt times out → after the 4-attempt budget the
         helper re-raises the httpx.TimeoutException."""
         with self._factory_raising_then_ok(99), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             with pytest.raises(httpx.TimeoutException):
                 with backend._open_chat_stream_with_retry(
                     payload={}, stream_timeout=None, cancel_event=None,
@@ -1102,7 +1102,7 @@ class TestOpenChatStreamWithRetryNotify:
         stream would be silently restarted."""
         notify_calls = []
         with self._patch_client_factory([(200, '{"ok":true}')]), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             with pytest.raises(httpx.ReadTimeout):
                 with backend._open_chat_stream_with_retry(
                     payload={}, stream_timeout=None, cancel_event=None,
@@ -1128,7 +1128,7 @@ class TestBackendStatusEventConstant:
 
     @pytest.mark.unit
     def test_engine_event_alias_matches(self):
-        from resonant_client.events import EngineEvent
+        from lumi.events import EngineEvent
         assert EngineEvent.BACKEND_STATUS.value == "backend.status"
 
 
@@ -1180,7 +1180,7 @@ class TestOllamaExhaustedStatus:
         is safe."""
         events = []
         with self._all_503_client_factory(), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             for ev in backend.stream(
                 user_msg="hi", conversation_history=[],
                 instructions="", tools=[],
@@ -1249,7 +1249,7 @@ class TestOllamaExhaustedStatus:
 
         events = []
         with patch("httpx.Client", side_effect=_factory), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             for ev in backend.stream(
                 user_msg="hi", conversation_history=[],
                 instructions="", tools=[],
@@ -1273,7 +1273,7 @@ class TestOllamaExhaustedStatus:
 
         events = []
         with patch("httpx.Client", side_effect=_factory), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             for ev in backend.stream(
                 user_msg="hi", conversation_history=[],
                 instructions="", tools=[],
@@ -1304,7 +1304,7 @@ class TestOllamaExhaustedStatus:
 
         events = []
         with patch("httpx.Client", side_effect=_factory), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             for ev in backend.stream(
                 user_msg="hi", conversation_history=[],
                 instructions="", tools=[],
@@ -1419,15 +1419,15 @@ class TestCircuitBreaker:
 
     def _drain(self, backend):
         with self._all_503_factory(), \
-             patch("resonant_client.backends._wait_with_cancel", return_value=False):
+             patch("lumi.backends._wait_with_cancel", return_value=False):
             list(backend.stream(
                 user_msg="hi", conversation_history=[], instructions="", tools=[],
             ))
 
     @pytest.mark.unit
     def test_opens_after_threshold_consecutive_failures(self, backend, monkeypatch):
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 3)
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_COOLDOWN", 1000.0)
+        monkeypatch.setattr("lumi.backends._OLLAMA_CIRCUIT_THRESHOLD", 3)
+        monkeypatch.setattr("lumi.backends._OLLAMA_CIRCUIT_COOLDOWN", 1000.0)
         assert backend._circuit_record_failure() is False  # 1
         assert backend._circuit_record_failure() is False  # 2
         assert backend._circuit_open() is False
@@ -1436,7 +1436,7 @@ class TestCircuitBreaker:
 
     @pytest.mark.unit
     def test_success_closes_circuit(self, backend, monkeypatch):
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 2)
+        monkeypatch.setattr("lumi.backends._OLLAMA_CIRCUIT_THRESHOLD", 2)
         backend._circuit_record_failure()
         assert backend.base_url in OllamaBackend._circuit
         backend._circuit_record_success()
@@ -1444,7 +1444,7 @@ class TestCircuitBreaker:
 
     @pytest.mark.unit
     def test_threshold_zero_disables_breaker(self, backend, monkeypatch):
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 0)
+        monkeypatch.setattr("lumi.backends._OLLAMA_CIRCUIT_THRESHOLD", 0)
         for _ in range(10):
             assert backend._circuit_record_failure() is False
         assert backend._circuit_open() is False
@@ -1452,7 +1452,7 @@ class TestCircuitBreaker:
     @pytest.mark.unit
     def test_stream_exhaustion_records_failure(self, backend, monkeypatch):
         # A real all-503 stream() drain must feed the breaker.
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 5)
+        monkeypatch.setattr("lumi.backends._OLLAMA_CIRCUIT_THRESHOLD", 5)
         self._drain(backend)
         assert OllamaBackend._circuit.get(backend.base_url, {}).get("failures") == 1
 
@@ -1461,8 +1461,8 @@ class TestCircuitBreaker:
         # Threshold 1 → one failure opens it; the next stream() must fail
         # fast (emit ollama_circuit_open + error) WITHOUT touching the
         # network at all.
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_THRESHOLD", 1)
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_CIRCUIT_COOLDOWN", 1000.0)
+        monkeypatch.setattr("lumi.backends._OLLAMA_CIRCUIT_THRESHOLD", 1)
+        monkeypatch.setattr("lumi.backends._OLLAMA_CIRCUIT_COOLDOWN", 1000.0)
         assert backend._circuit_record_failure() is True
         with patch("httpx.Client", side_effect=AssertionError("no network when open")):
             events = list(backend.stream(
@@ -1544,7 +1544,7 @@ class TestRequestGovernor:
 
     @pytest.mark.unit
     def test_success_grows_after_streak(self, monkeypatch):
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_GOV_INCREASE_AFTER", 3)
+        monkeypatch.setattr("lumi.backends._OLLAMA_GOV_INCREASE_AFTER", 3)
         g = _RequestGovernor(start=2, max_limit=4)
         g.record_success()
         g.record_success()
@@ -1554,7 +1554,7 @@ class TestRequestGovernor:
 
     @pytest.mark.unit
     def test_success_caps_at_max(self, monkeypatch):
-        monkeypatch.setattr("resonant_client.backends._OLLAMA_GOV_INCREASE_AFTER", 1)
+        monkeypatch.setattr("lumi.backends._OLLAMA_GOV_INCREASE_AFTER", 1)
         g = _RequestGovernor(start=2, max_limit=3)
         for _ in range(20):
             g.record_success()

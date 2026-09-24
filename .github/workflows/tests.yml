@@ -55,7 +55,7 @@ jobs:
           pip install -e ".[all,dev]"
 
       - name: Lint
-        # `resonant_client/**` is held to ruff's full default rule set. Test and
+        # `lumi/**` is held to ruff's full default rule set. Test and
         # support code carries narrow per-file exemptions declared in
         # pyproject.toml rather than being excluded outright.
         run: python -m ruff check .

@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 
 
 from starlette.applications import Starlette
+from starlette.middleware import Middleware
 from starlette.routing import Route, WebSocketRoute, Mount
 from starlette.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
@@ -49,6 +50,7 @@ from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
 from . import ws_commands
 from .chat_loop import ChatRunLoop
+from .local_access import WS_REFUSED, LocalHostGuard, access as local_access, same_origin
 # Payload builders moved to ws_commands.py with the handlers that use them.
 # Re-exported because `skill_archive` still lives in the endpoint and because
 # these are the module's established public surface for tests. Safe from
@@ -2062,7 +2064,13 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
 
 async def websocket_endpoint(ws: WebSocket):
     """Main WebSocket handler — bidirectional communication with frontend."""
-    await ws.accept()
+    # Refuse before accept(): this socket runs shell commands, writes settings
+    # and answers permission prompts. See gui/local_access.py for the checks.
+    subprotocol = local_access.websocket_subprotocol(ws)
+    if subprotocol is None:
+        await ws.close(code=WS_REFUSED)
+        return
+    await ws.accept(subprotocol=subprotocol)
 
     # The run belongs to the application session, not to one browser socket.
     # Reuse it across reconnects so refreshing the UI merely swaps the viewer
@@ -3102,16 +3110,55 @@ async def homepage(request):
         request,
         "index.html",
         {"asset_version": _asset_version()},
+        headers={
+            # The page holds this launch's access token in origin storage.
+            # Never let another site frame it and steer clicks, and never tell
+            # external links which local port the app is running on.
+            "Content-Security-Policy": "frame-ancestors 'none'",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "no-referrer",
+        },
     )
+
+
+async def access_endpoint(request):
+    """Redeem a one-time launch code (POST) or check a token (GET).
+
+    The page reads the code from its URL fragment and posts it here; the
+    response carries the launch's access token. See gui/local_access.py.
+    """
+    from starlette.responses import JSONResponse, Response
+    no_store = {'Cache-Control': 'no-store'}
+    if request.method == 'GET':
+        # Lets the page tell a refused WebSocket handshake (which browsers
+        # report only as close code 1006) from a server that has stopped.
+        authorized = local_access.http_authorized(request, require_origin=False)
+        return Response(status_code=204 if authorized else 403, headers=no_store)
+    if not same_origin(request, require_origin=True):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403, headers=no_store)
+    if request.headers.get('content-type', '').split(';')[0] != 'application/json':
+        return JSONResponse({'error': 'JSON required'}, status_code=415, headers=no_store)
+    body = await request.body()
+    if len(body) > 1024:
+        return JSONResponse({'error': 'Request is too large'}, status_code=413, headers=no_store)
+    try:
+        code = json.loads(body).get('code')
+    except (ValueError, AttributeError):
+        code = None
+    token = local_access.redeem(code)
+    if token is None:
+        return JSONResponse({'error': 'This launch link was already used or is not valid.'},
+                            status_code=403, headers=no_store)
+    return JSONResponse({'token': token}, headers=no_store)
 
 
 async def ui_state_endpoint(request):
     from starlette.responses import JSONResponse
     from .ui_state import ui_state
-    # Draft writes require JSON from this app's origin, never cross-site forms.
-    origin = request.headers.get('origin')
-    if origin and origin.rstrip('/') != str(request.base_url).rstrip('/'):
-        return JSONResponse({'error': 'Origin not allowed'}, status_code=403)
+    # Drafts and layout belong to this launch's pages. Writes must come from
+    # this server's own origin; browsers omit Origin on same-origin reads.
+    if not local_access.http_authorized(request, require_origin=request.method == 'POST'):
+        return JSONResponse({'error': 'Forbidden'}, status_code=403)
     try:
         write = request.method == 'POST'
         if write:
@@ -3148,8 +3195,10 @@ app = Starlette(
     lifespan=_app_lifespan,
     routes=[
         Route("/", homepage),
+        Route("/api/access", access_endpoint, methods=['GET', 'POST']),
         Route("/api/ui-state", ui_state_endpoint, methods=['GET', 'POST']),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],
+    middleware=[Middleware(LocalHostGuard)],
 )

@@ -85,6 +85,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   dialogs from the requesting page's native bridge capability, not merely a
   server-side window. Keep typed-path selection, cancellation and new-session
   intent working without a native picker.
+- Every GUI endpoint that reads or changes state goes through
+  `gui/local_access.py` (exact Host, own Origin, per-launch token), checked
+  before a WebSocket is accepted. Launch codes travel only in URL fragments and
+  come from the launcher or the desktop bridge. Never put the token in a cookie,
+  URL, log or printed output. The socket's `update_settings` edits only
+  the fields Settings shows; hooks, stdio MCP servers, LSP servers, plugins and
+  the gateway stay file-edited.
 - Live working status follows the active turn output; preserve manual scroll
   position when the user reads older messages. Next-prompt suggestions are
   transient, scoped to the conversation, and never replace typed drafts. Tab

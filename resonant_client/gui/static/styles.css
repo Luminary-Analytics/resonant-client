@@ -11713,6 +11713,24 @@ body.is-window-dragging * {
     color: var(--muted);
 }
 
+/* A page without this launch's access token (static/local_access.js). */
+.access-required {
+    width: 100%;
+    max-width: 520px;
+    margin: 0 auto;
+    padding: 12px 14px;
+    border: 1px solid rgba(240, 173, 78, .38);
+    border-radius: 8px;
+    background: rgba(240, 173, 78, .10);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+    text-align: left;
+}
+.access-required[hidden] { display: none; }
+.access-required p { margin: 0; }
+.access-required .access-required-title { margin-bottom: 4px; font-weight: 600; }
+
 .project-path-input,
 .ollama-wizard,
 .backend-card,
@@ -11907,6 +11925,11 @@ body.is-window-dragging * {
 
 .menubar-action:hover {
     background: #262626;
+}
+
+/* `display: flex` above would otherwise override the hidden attribute. */
+.menubar-action[hidden] {
+    display: none;
 }
 
 .menubar-shortcut {

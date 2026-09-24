@@ -286,6 +286,10 @@ resonant --backend ollama --model your-model
 resonant --ollama-url http://192.168.1.20:11434 --model your-model
 ```
 
+`resonant-gui --browser` prints a one-time link to open the app in a browser.
+From the desktop window, use **File > Open in Browser**. The local server refuses
+pages that were not opened from such a link.
+
 ## Develop
 
 Read [AGENTS.md](AGENTS.md) for shared contributor instructions. `CLAUDE.md`

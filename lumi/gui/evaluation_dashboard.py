@@ -159,7 +159,7 @@ class EvaluationManager:
         thread = threading.Thread(
             target=self._run,
             args=(run_id, Path(project_path), timeout_minutes),
-            name=f"resonant-eval-{run_id}",
+            name=f"lumi-eval-{run_id}",
             daemon=True,
         )
         thread.start()

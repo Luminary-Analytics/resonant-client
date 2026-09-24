@@ -15,7 +15,7 @@ This is the [Hermes Agent](https://github.com/NousResearch/hermes-agent)-inspire
 
 A skill is a markdown file capturing a **reusable pattern** — a framework quirk, a multi-step workflow with non-obvious ordering, a failure-mode → resolution mapping. NOT a one-off bug fix and NOT trivial scaffolding work; the extractor explicitly skips both.
 
-**Storage:** `~/.resonant/skills/<scope>/<id>/`
+**Storage:** `~/.lumi/skills/<scope>/<id>/`
 - `skill.json` — metadata (Skill dataclass shape)
 - `procedure.md` — the human-readable body
 - `verification.md` — optional success criteria
@@ -72,9 +72,9 @@ When the autonomous mission daemon hits a satisfied terminal state (`_emit_stop(
 
 1. Lists curator-touchable skills (`created_by="agent"` AND not pinned, in this project's scope).
 2. For each, calls `Skill.is_deprecated()` with default thresholds (90 days unused OR ≥50% fail rate on ≥10 uses).
-3. Archives matches via `archive_skill` — moves to `~/.resonant/skills/_archive/<scope>/<ts>__<id>/` with a `_archive_reason.txt` next to it. **Never deletes.**
-4. Writes `run.json` + `REPORT.md` to `~/.resonant/projects/<hash>/curator/<ts>/`.
-5. Updates `~/.resonant/projects/<hash>/curator/.state.json` (rate-limited to once per 24h per project).
+3. Archives matches via `archive_skill` — moves to `~/.lumi/skills/_archive/<scope>/<ts>__<id>/` with a `_archive_reason.txt` next to it. **Never deletes.**
+4. Writes `run.json` + `REPORT.md` to `~/.lumi/projects/<hash>/curator/<ts>/`.
+5. Updates `~/.lumi/projects/<hash>/curator/.state.json` (rate-limited to once per 24h per project).
 
 The deterministic curator only handles stale archival in v0.6.0. Model-driven umbrella consolidation (where a forked agent merges narrow sibling skills into broader patterns) ships in v0.6.1+.
 
@@ -120,14 +120,14 @@ Two adjacent concepts; clean line:
 - **Skills** are PATTERNS — procedural, "when you encounter shape X, do Y." Stored as files. Discovered via token matching at mission dispatch.
 - **Memory** (Engram, opt-in) is FACTS — declarative, "Mac Studio at 10.0.0.133", "user prefers Pydantic v1." Stored via the memory provider. Retrieved via similarity search every turn.
 
-Both live in `~/.resonant/`; both are project-aware; the `MEMORY_GUIDANCE` block in REFLECT's system prompt draws the line for the agent: "if it's a stable fact about the project, edit AGENTS.md; if it's a pattern that applies to a particular shape of task, write a skill."
+Both live in `~/.lumi/`; both are project-aware; the `MEMORY_GUIDANCE` block in REFLECT's system prompt draws the line for the agent: "if it's a stable fact about the project, edit AGENTS.md; if it's a pattern that applies to a particular shape of task, write a skill."
 
 ## Open questions / v0.6.1+ candidates
 
 - **Model-driven curator** (umbrella consolidation): forked agent reviews narrow sibling skills and merges them. Currently deferred; the deterministic stale-archival keeps the library from rotting in the meantime.
 - **Embedding-based matching**: keyword/Jaccard works at the v0.6.0 scale (dozens of skills). Embeddings unlock cross-language / synonym matching at the cost of an embedding-model dep.
-- **User-global elevation** via `resonant skill promote --global`: when a skill is general enough, lift from project to global scope.
-- **CLI commands**: `resonant skill list / view / pin / archive / promote`. Stubbed for v0.6.0; full surface lands in v0.6.1.
+- **User-global elevation** via `lumi-skill promote --global`: when a skill is general enough, lift from project to global scope.
+- **CLI commands**: `lumi-skill list / view / pin / archive / promote`. Stubbed for v0.6.0; full surface lands in v0.6.1.
 
 ## Related
 

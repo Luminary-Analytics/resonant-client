@@ -65,7 +65,7 @@ class CodexAccount:
             finally:
                 responses.put({"error": {"message": "Codex connection closed. Refresh to reconnect."}})
 
-        threading.Thread(target=read, daemon=True, name="resonant-codex-account").start()
+        threading.Thread(target=read, daemon=True, name="lumi-codex-account").start()
         try:
             self._rpc("initialize", {"clientInfo": {"name": "lumi", "title": "Lumi", "version": "1"}})
             self._send({"method": "initialized", "params": {}})

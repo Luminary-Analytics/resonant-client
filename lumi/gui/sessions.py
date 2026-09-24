@@ -94,7 +94,7 @@ def _is_pytest_temp_path(path: str) -> bool:
 
 # v0.3.3 — directories where the bundled exe must never treat the
 # current working directory as a "project." When the Start Menu
-# shortcut launches resonant.exe, Windows sets cwd to the install
+# shortcut launches lumi.exe, Windows sets cwd to the install
 # location; ProjectManager() used to take that as the project path,
 # producing permission-denied storms when the agent tried to write to
 # `C:\Program Files\Lumi`. We detect the install/system

@@ -32,7 +32,7 @@ by `gui/app.py::_wire_session` and inherited by child sessions:
 | Lifecycle hooks | `engine/hooks.py` | Structured JSON decisions around models, tools, batches, permissions, workers, compaction, checkpoints, and validation |
 
 Project runtime data is stored outside the repository under
-`~/.resonant/projects/<project-hash>/`. User files and the user's Git index are
+`~/.lumi/projects/<project-hash>/`. User files and the user's Git index are
 never silently stashed or reset.
 
 ## Durable workers and parallel writers
@@ -119,7 +119,7 @@ gate hook that exits non-zero is a `deny`.
 
 Each tool call passes, in order: PRE_TOOL_USE hooks, the execution policy, then
 the autonomy tier. Built-in policy denies are checked before a project's
-`resonant-policy.json`, so a repository can tighten the policy but cannot
+`lumi-policy.json`, so a repository can tighten the policy but cannot
 weaken a built-in deny. A policy `prompt` rule requires approval even in
 Full-auto.
 
@@ -190,10 +190,12 @@ falls back to the active backend if that route cannot be built.
 
 ## Capability packs
 
-A pack directory contains `resonant-pack.json` plus referenced resources. It
+A pack directory contains `lumi-pack.json` (a legacy `resonant-pack.json` is
+still read) plus referenced resources. It
 may declare agents, skills, lifecycle hooks, MCP servers, commands, recipes,
-and UI panels. Repository packs live under `.resonant/packs`; global packs live
-under `~/.resonant/packs`.
+and UI panels. Repository packs live under `.lumi/packs` (legacy
+`.resonant/packs` is also scanned); global packs live
+under `~/.lumi/packs`.
 
 A manifest describes a pack; it never approves it. `trust`, `enabled` and
 `sha256` written in a manifest are ignored, because a cloned repository

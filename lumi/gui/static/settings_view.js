@@ -190,7 +190,7 @@ class LumiSettingsView {
             + (data.error ? `<p class="editor-error" role="alert">${esc(data.error)}</p>` : '');
         const packs = Array.isArray(data.packs) ? data.packs : [];
         if (!packs.length) {
-            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .resonant/packs or in ~/.lumi/packs.</span></div>`;
+            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .lumi/packs or in ~/.lumi/packs.</span></div>`;
         }
         const statusText = {
             approved: 'Approved · active',

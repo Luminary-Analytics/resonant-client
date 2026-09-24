@@ -18,6 +18,7 @@ class EngramIntegration:
         self._settings = settings
         self._enabled = False
         self._server_url = ""
+        # Pre-rebrand namespace, kept so stored memories stay visible.
         self._namespace = "resonant"
         self._mcp_manager = None  # Set externally if using MCP transport
 

@@ -99,7 +99,7 @@ def install_bundled_skills(*, force: bool = False) -> list[Skill]:
     installed (NOT the list that already existed).
 
     Called from the resonant-client startup path (e.g. once during
-    `AppState.__init__` or first `resonant-gui` launch). Cheap enough
+    `AppState.__init__` or first `lumi-gui` launch). Cheap enough
     to run unconditionally — the existence check is just an os.stat
     per bundled skill.
     """
@@ -146,5 +146,5 @@ def install_bundled_skills(*, force: bool = False) -> list[Skill]:
 
 def bundled_skill_ids() -> list[str]:
     """Return the slugs of all bundled skills available in the package.
-    Useful for `resonant skill list --bundled`."""
+    Useful for `lumi-skill list --bundled`."""
     return sorted(skill_id for skill_id, _ in _iter_bundled_files())

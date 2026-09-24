@@ -55,7 +55,7 @@ DEFAULTS = {
     "api_keys": {"kimi": "", "openrouter": "", "sonn": "", "telegram_bot": ""},
     "project_models": {},
     "model_favorites": {"models": []},
-    # Chat-channel gateway (`resonant gateway`): drive the agent from
+    # Chat-channel gateway (`lumi gateway`): drive the agent from
     # Telegram. Only allowlisted chat IDs are served.
     "gateway": {
         "backend": "",

@@ -3449,6 +3449,8 @@ class HarnessPrompts:
         if not text:
             return text, None, None
 
+        # The fence name predates the Lumi rebrand. Prompts and saved harness
+        # transcripts use it, so it is a protocol token, not product copy.
         matches = list(
             re.finditer(r"```resonant-harness\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
         )

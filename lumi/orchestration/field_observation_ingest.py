@@ -20,7 +20,7 @@ extraction. The user-authored doc IS the skill body.
 Idempotent by default: re-ingesting a doc whose skill already exists
 is a no-op unless `force=True`.
 
-Wired into the resonant-skill CLI as the `ingest-field-obs` subcommand.
+Wired into the lumi-skill CLI as the `ingest-field-obs` subcommand.
 """
 from __future__ import annotations
 

@@ -4070,7 +4070,7 @@ class Session:
             thread = threading.Thread(
                 target=run_worker,
                 args=(index, spec),
-                name=f"resonant-agent-{index + 1}",
+                name=f"lumi-agent-{index + 1}",
                 daemon=True,
             )
             threads.append(thread)

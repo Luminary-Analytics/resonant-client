@@ -1,4 +1,4 @@
-# SONN Client architecture
+# Lumi architecture
 
 Current baseline: [v0.19.1](docs/v0.19.1-release-notes.md), including the compact
 toolbar, sidebar, new-session project chooser, and SONN connection. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
@@ -6,9 +6,9 @@ product priorities live in the [harness north star](docs/agentic-harness-north-s
 
 ## Runtime boundaries
 
-SONN Client is a Python agent runtime with a Starlette/WebSocket GUI, a Rich TUI,
+Lumi is a Python agent runtime with a Starlette/WebSocket GUI, a Rich TUI,
 and a pywebview desktop shell. Ollama, EXO, Kimi, OpenRouter, and SONN supply models to
-SONN Client's engine loop. Codex and Claude Code adapters instead run installed
+Lumi's engine loop. Codex and Claude Code adapters instead run installed
 CLIs, whose native tool execution remains inside those CLIs.
 
 The GUI owns interaction and rendering. Runtime construction owns provider,
@@ -118,7 +118,7 @@ fallback or role routing.
 Codex receives project instructions, relevant notes, recent text history, and
 retained summaries. This is a text handoff, not native thread continuation;
 image attachments are not transferred. CLI tool displays must not be treated
-as evidence that SONN Client's own tool handlers executed.
+as evidence that Lumi's own tool handlers executed.
 
 ## Instructions, notes, and skills
 
@@ -133,7 +133,8 @@ is generated at invocation from current settings and is never serialized in a
 permission boundaries, setup versions, and live versus fixture evidence.
 
 `gui/project_instructions.py` prefers `AGENTS.md`, then `.agents/AGENTS.md`,
-`RESONANT.md`, `.resonant/RESONANT.md`, and `CLAUDE.md` at a given scope. Global
+`LUMI.md`, `.lumi/LUMI.md`, the legacy `RESONANT.md` and
+`.resonant/RESONANT.md`, and `CLAUDE.md` at a given scope. Global
 and working-directory hierarchy handling live in that module. This repository
 uses `AGENTS.md` as its shared source; `CLAUDE.md` imports it.
 
@@ -145,8 +146,8 @@ and [self-improvement loop](docs/self-improvement-loop.md).
 
 ## Storage, safety, and packaging
 
-Settings normally live in `~/.resonant/settings.json`; project state lives under
-`~/.resonant/projects/<project-hash>/`. Skills use `~/.resonant/skills/`.
+Settings normally live in `~/.lumi/settings.json`; project state lives under
+`~/.lumi/projects/<project-hash>/`. Skills use `~/.lumi/skills/`.
 Explicit project-local configuration files are separate from generated runtime
 state. Avoid writing fixtures, secrets, or session data into the repository.
 
@@ -157,7 +158,7 @@ resources, not persistent deployments. Named acceptance results describe their
 actual commands and inputs, not universal proof of correctness.
 
 Windows builds use `scripts/build_clean.ps1`, pinned asset fetches,
-`packaging/resonant.spec`, and `packaging/bundle-policy.json`. New UI resources
+`packaging/lumi.spec`, and `packaging/bundle-policy.json`. New UI resources
 must be bundled and cache-busted. Source tests do not prove frozen startup or
 WebSocket dependencies work; verify the packaged app before releasing.
 

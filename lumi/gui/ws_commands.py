@@ -3516,7 +3516,7 @@ def _skill_view_payload(skill_id: str, *, project_path: str = "") -> dict:
     it without a second round-trip.
 
     Resolves across scopes (project → global → stack) the same way the
-    `resonant-skill` CLI does, so the GUI can view a project-scoped
+    `lumi-skill` CLI does, so the GUI can view a project-scoped
     skill without the caller having to pre-figure-out which scope it
     lives in.
     """

@@ -1,4 +1,4 @@
-# Releasing SONN Client
+# Releasing Lumi
 
 The release is complete when the tagged source, published Windows installer,
 and public signed update feed agree. A successful push alone is not deployment.
@@ -32,7 +32,7 @@ fetches verified ripgrep/web assets, runs PyInstaller, and enforces the bundle
 policy. Do not build from an arbitrary environment with accumulated packages.
 
 For UI/provider changes, test the source UI's affected flows and the packaged
-`dist/resonant/resonant.exe`. Use an isolated profile and fixture project; do
+`dist/lumi/lumi.exe`. Use an isolated profile and fixture project; do
 not kill a user's running app or delete their startup logs. Launch any test
 process hidden, keep its PID, and stop only that owned process afterward.
 Verify:
@@ -50,7 +50,7 @@ version change. Create an annotated `vX.Y.Z` tag at that commit and push the
 branch and tag together where supported:
 
 ```sh
-git tag -a vX.Y.Z -m "Resonant X.Y.Z"
+git tag -a vX.Y.Z -m "Lumi X.Y.Z"
 git push --atomic origin main vX.Y.Z
 ```
 
@@ -84,12 +84,12 @@ use a file to preserve literal text and newlines.
 ## Verify deployment
 
 - The release workflow and relevant checks succeeded for the tagged commit.
-- The published, non-draft release includes `resonant-setup-X.Y.Z.exe` in
+- The published, non-draft release includes `lumi-setup-X.Y.Z.exe` in
   uploaded state with a nonzero size.
 - The Pages deployment succeeded, and the live feed at
   [appcast.xml](https://luminary-analytics.github.io/resonant-client/appcast.xml)
   has the intended version as its first item.
-- Its enclosure points to `downloads/vX.Y.Z/resonant-setup-X.Y.Z.exe` on the
+- Its enclosure points to `downloads/vX.Y.Z/lumi-setup-X.Y.Z.exe` on the
   Pages site. Download it without signing in and confirm the byte length and a
   nonempty EdDSA signature. A local `gh-pages` commit alone is insufficient.
 - The [download page](https://luminary-analytics.github.io/resonant-client/)
@@ -139,13 +139,22 @@ signature as a SmartScreen-trusted publisher certificate.
 
 Current release evidence is recorded in [0.19.1 notes](docs/v0.19.1-release-notes.md).
 
-## SONN Client branding compatibility
+## Lumi rebrand and upgrades
 
-The product display name is SONN Client; `resonant.exe`, `resonant-client`,
-installer filenames, `~/.resonant`, the existing installer AppId, install
-folder/program group, WinSparkle registry path, and appcast URL stay unchanged.
-The installer removes only the old Resonant shortcut files when installing
-SONN Client shortcuts. Verify an upgrade before release; do not publish a new
-feed or rename release assets as an incidental branding change. Regenerate
-Windows icons with `python scripts/build_brand_assets.py`; the source favicon
-is SONN's shared continuity SVG from its product brand assets.
+The product is Lumi: `lumi.exe`, `lumi-setup-X.Y.Z.exe`, `Program Files\Lumi`
+and the `lumi` distribution. The installer has its own AppId and silently runs
+the pre-rebrand SONN Client/Resonant uninstaller first (per-machine and
+per-user), so Apps & Features keeps one entry. WinSparkle preferences move to
+`Software\Luminary Analytics\Lumi\WinSparkle` and start fresh.
+
+The appcast URL deliberately stays at the current Pages address: installed
+SONN Client builds poll it, so the first Lumi releases are published there.
+Moving the feed to a Lumi domain needs a bridge release whose binary points
+at the new URL. Rename the repository only after that; GitHub does not
+redirect Pages project sites after a rename.
+
+Before publishing the first Lumi release, upgrade an installed SONN Client
+from the new installer and check that the old Apps & Features entry is gone,
+Lumi launches from the Start menu, and `~/.resonant` moved to `~/.lumi` with
+sessions and settings intact. Regenerate icons with
+`python scripts/build_brand_assets.py` (see [brand/README.md](brand/README.md)).

@@ -1181,7 +1181,7 @@ class _Overlay:
             self._ready.clear()
             # Daemon: the indicator must never hold the process open at exit.
             self._thread = threading.Thread(
-                target=self._worker, name="resonant-halo", daemon=True
+                target=self._worker, name="lumi-halo", daemon=True
             )
             self._thread.start()
         self._ready.wait(timeout=5)

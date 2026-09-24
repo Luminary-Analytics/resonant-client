@@ -146,7 +146,7 @@ def should_run_curation(
 
     Also returns False if the state says the curator is paused
     (`paused=True` in `.state.json`). The pause flag is settable via
-    the (eventual) `resonant skill curator pause/resume` CLI; for v0.6
+    the (eventual) `lumi-skill curator pause/resume` CLI; for v0.6
     just respect it if present.
     """
     state = read_state(project_path)

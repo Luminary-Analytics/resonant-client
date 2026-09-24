@@ -4,7 +4,7 @@ Three things ship in this alpha:
 1. promote_skill: project → global elevation.
 2. demote_skill: global → project (the inverse).
 3. CLI now auto-installs bundled skills on every invocation
-   (idempotent, cheap), so `resonant-skill list --created-by bundled`
+   (idempotent, cheap), so `lumi-skill list --created-by bundled`
    works out of the box without a manual install step.
 """
 from __future__ import annotations

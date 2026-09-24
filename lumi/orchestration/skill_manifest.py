@@ -110,7 +110,7 @@ def write_manifest(project_path: str | Path, manifest: SkillManifest) -> Path:
 
     lines: list[str] = [
         "# Skills this project depends on. Implementations live in ~/.lumi/skills/.",
-        "# Run `resonant skills install` (or load the project) to materialize them.",
+        "# Open the project in Lumi to materialize them.",
         "",
     ]
     if manifest.required:

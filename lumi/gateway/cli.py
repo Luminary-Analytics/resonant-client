@@ -1,10 +1,10 @@
 """
-CLI entry for the chat gateway:  resonant gateway [options]
+CLI entry for the chat gateway:  lumi gateway [options]
 
 Examples:
-    resonant gateway                          # settings-driven (token + allowlist)
-    resonant gateway --backend ollama --model llama3.1:8b
-    resonant gateway --token 123:ABC --allow 987654321
+    lumi gateway                          # settings-driven (token + allowlist)
+    lumi gateway --backend ollama --model llama3.1:8b
+    lumi gateway --token 123:ABC --allow 987654321
 """
 
 from __future__ import annotations
@@ -55,7 +55,7 @@ def _build_backend(settings: SettingsManager, backend_type: str, model: str):
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="resonant gateway",
+        prog="lumi gateway",
         description="Chat with the Lumi agent from Telegram.",
     )
     parser.add_argument("--backend", default="", help="Backend type (ollama, kimi, exo, codex, claude-code)")

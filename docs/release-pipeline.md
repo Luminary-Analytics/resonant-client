@@ -13,12 +13,12 @@ dependencies, runs Ruff and pytest, then invokes `scripts/build_clean.ps1`.
 
 The clean build creates a temporary virtual environment and installs the local
 package with GUI/desktop dependencies and PyInstaller. Fetch scripts verify
-pinned ripgrep and frontend assets. `resonant.spec` selects code/data, and
+pinned ripgrep and frontend assets. `lumi.spec` selects code/data, and
 `check_bundle.py` enforces `bundle-policy.json`, producing a manifest.
 The v0.17.0 local bundle was 55.5 MiB across 256 files.
 
 CI smoke-checks the executable's version, then Inno Setup wraps the bundle into
-`resonant-setup-X.Y.Z.exe`. The published v0.17.0 installer was 26,113,856 bytes.
+`lumi-setup-X.Y.Z.exe`. The published v0.17.0 installer was 26,113,856 bytes.
 Interactive HTTP/WebSocket/UI checks remain part of the local release runbook;
 the release workflow's executable smoke test alone does not perform them.
 
@@ -39,7 +39,7 @@ the appcast file itself keeps the version history. The Pages copy exists because
 the source repository may be private, which puts Release assets behind sign-in.
 The live feed URL is:
 
-[Resonant update feed](https://luminary-analytics.github.io/resonant-client/appcast.xml).
+[Lumi update feed](https://luminary-analytics.github.io/resonant-client/appcast.xml).
 
 The WinSparkle client checks that feed and verifies downloaded installer bytes.
 EdDSA update signing is separate from Authenticode publisher signing. Rebuilding
@@ -69,7 +69,7 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `.github/workflows/build-check.yml` | Packaging checks without publication |
 | `scripts/build_clean.ps1` | Isolated Windows build and cleanup |
 | `packaging/fetch_ripgrep.ps1`, `packaging/fetch_web_assets.ps1` | Verified build assets |
-| `packaging/resonant.spec` | PyInstaller code/data selection |
+| `packaging/lumi.spec` | PyInstaller code/data selection |
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
 | `packaging/installer.iss` | Windows installer |
 | `packaging/update_appcast.py` | Versioned update-feed entries |

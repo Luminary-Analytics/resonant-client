@@ -1,22 +1,22 @@
 """v0.6.1a2 — CLI for the skill library.
 
-Wired as the `resonant-skill` console script in pyproject.toml.
+Wired as the `lumi-skill` console script in pyproject.toml.
 Subcommands cover the day-to-day skill management surface:
 
-    resonant-skill list                      # list all skills
-    resonant-skill list --created-by agent   # filter by provenance
-    resonant-skill list --pinned             # only pinned
-    resonant-skill list --scope project      # only project-scoped
-    resonant-skill list --json               # machine-readable output
+    lumi-skill list                      # list all skills
+    lumi-skill list --created-by agent   # filter by provenance
+    lumi-skill list --pinned             # only pinned
+    lumi-skill list --scope project      # only project-scoped
+    lumi-skill list --json               # machine-readable output
 
-    resonant-skill view <id>                 # print skill body
-    resonant-skill view <id> --json          # full skill.json
+    lumi-skill view <id>                 # print skill body
+    lumi-skill view <id> --json          # full skill.json
 
-    resonant-skill pin <id>                  # mark pinned
-    resonant-skill unpin <id>                # mark unpinned
+    lumi-skill pin <id>                  # mark pinned
+    lumi-skill unpin <id>                # mark unpinned
 
-    resonant-skill archive <id> [--reason X] # curator-style archival
-    resonant-skill curate [--dry-run]        # run a curator pass now
+    lumi-skill archive <id> [--reason X] # curator-style archival
+    lumi-skill curate [--dry-run]        # run a curator pass now
 
 The `promote` and `demote` subcommands (user-global elevation) ship
 in v0.6.1a3.
@@ -192,7 +192,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
         if not entries:
             print(
                 f"No archive found for `{args.skill_id}`. "
-                f"Use `resonant-skill list --archived` to see candidates.",
+                f"Use `lumi-skill list --archived` to see candidates.",
                 file=sys.stderr,
             )
             return 1
@@ -436,9 +436,9 @@ def cmd_curate(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="resonant-skill",
+        prog="lumi-skill",
         description=(
-            "Manage the resonant-client skill library. Skills are reusable "
+            "Manage the Lumi skill library. Skills are reusable "
             "patterns extracted from successful autonomous-mission iters. "
             "See docs/skills.md for the full lifecycle."
         ),
@@ -645,7 +645,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return 130
     except Exception as exc:
         print(f"Error: {exc}", file=sys.stderr)
-        logger.exception("resonant-skill subcommand crashed")
+        logger.exception("lumi-skill subcommand crashed")
         return 1
 
     parser.print_help()

@@ -1,4 +1,4 @@
-"""Tests for v0.6.1a2 — resonant-skill CLI.
+"""Tests for v0.6.1a2 — lumi-skill CLI.
 
 The CLI is a thin wrapper around the existing skills.py +
 skill_curator.py public API. Tests verify the argparse parser

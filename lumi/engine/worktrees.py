@@ -88,7 +88,7 @@ class WorktreeManager:
         self._git_at(worktree, "add", "-A", "--", ".")
         env = os.environ.copy()
         env.setdefault("GIT_AUTHOR_NAME", "Lumi Agent")
-        env.setdefault("GIT_AUTHOR_EMAIL", "agent@resonant.local")
+        env.setdefault("GIT_AUTHOR_EMAIL", "agent@lumi.local")
         env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
         env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
         commit_message = message or f"Lumi agent {lease.agent_id} handoff"

@@ -51,7 +51,7 @@ class PolicyRule:
                 return False
 
         # Friendlier command policies can use shell-like globs instead of
-        # embedding regular expressions in resonant-policy.json.  All listed
+        # embedding regular expressions in lumi-policy.json.  All listed
         # argument constraints must match; a list means any glob may match.
         for arg_key, patterns in self.arg_globs.items():
             arg_value = str(tool_args.get(arg_key, "")).lower()
@@ -108,7 +108,7 @@ class ExecutionPolicy:
 
     @classmethod
     def from_file(cls, path: str | Path) -> Optional["ExecutionPolicy"]:
-        """Load policy from a resonant-policy.json file."""
+        """Load policy from a lumi-policy.json (or legacy resonant-policy.json) file."""
         p = Path(path)
         if not p.exists():
             return None
@@ -121,7 +121,7 @@ class ExecutionPolicy:
             return None
 
     def merge(self, other: "ExecutionPolicy") -> "ExecutionPolicy":
-        """Layer another policy, such as a repository's resonant-policy.json, over this one.
+        """Layer another policy, such as a repository's lumi-policy.json, over this one.
 
         The other policy's rules are checked before this policy's allow and
         prompt rules, so a repository can tighten or refine them. This policy's

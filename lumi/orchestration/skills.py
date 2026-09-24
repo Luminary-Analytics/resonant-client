@@ -469,7 +469,7 @@ def list_skills_filtered(
 
     Wraps `list_skills` with filters on the new `created_by` and
     `pinned` fields. Used by the curator (`created_by="agent"`,
-    pinned=False) and by CLI listings (e.g. `resonant skill list
+    pinned=False) and by CLI listings (e.g. `lumi-skill list
     --pinned`).
     """
     skills = list_skills(

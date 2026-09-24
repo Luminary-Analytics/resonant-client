@@ -8,6 +8,94 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 24 rebrand to Lumi — source only, not released
+
+SONN Client (originally Resonant) is now **Lumi**. SONN keeps its name as the
+model service Lumi can connect to. The new identity is the Lantern mark, an L
+holding a gold light on night; see [brand/README.md](../brand/README.md).
+
+- **Name everywhere a user or admin looks:** window and page titles, menus,
+  prompts, notifications, the browser extension, the diagnostics bundle, the
+  Windows taskbar id, the model's system prompt, `lumi.exe`, the `lumi`,
+  `lumi-gui`, `lumi-tui`, `lumi-smoke` and `lumi-skill` commands, and the
+  `lumi` package and distribution.
+- **Logo and icons:** new favicon, sidebar mark and wordmark, welcome and
+  empty-chat icons, `lumi.ico` (16–256 px; 16 and 32 px pixel-aligned),
+  notification PNG, a macOS `lumi.icns` on Apple's icon grid, and the Dock
+  name and icon when run from source on macOS. `scripts/build_brand_assets.py`
+  draws the rasters from the SVG masters in `brand/`.
+- **Palette:** gold on night replaces SONN teal. The light theme uses bronze on
+  paper. Warnings are orange so they are not confused with the accent. The
+  titlebar and sidebar now follow the theme; the light theme previously drew a
+  dark sidebar with dark text.
+- **Installer:** "Lumi", `lumi-setup-X.Y.Z.exe`, `Program Files\Lumi`, a new
+  AppId. It silently removes the pre-rebrand SONN Client/Resonant install
+  first, so Apps & Features keeps one entry. The macOS `Lumi.app` bundle step
+  is in `packaging/lumi.spec`, but no macOS build has been made or tested.
+
+Compatibility:
+
+- `~/.resonant` moves to `~/.lumi` on first launch. The move happens before the
+  startup log opens. If it is blocked, for example by an older build that is
+  still running, the old folder stays in use and the move is retried next
+  launch.
+- `RESONANT_*` environment variables are read as their `LUMI_*` names.
+- Hooks receive both the `LUMI_*` and `RESONANT_*` variables.
+- The `resonant*` commands remain as aliases.
+- Projects keep an existing `.resonant/` folder, and new projects get `.lumi/`.
+- `resonant-pack.json`, `resonant-policy.json` and `RESONANT.md` are still read,
+  alongside `lumi-pack.json`, `lumi-policy.json` and `LUMI.md`.
+- An existing `~/Documents/Resonant Projects` stays the default projects folder.
+- Agent handoff and checkpoint commits are now authored `@lumi.local`.
+
+Deliberately unchanged:
+
+- The update feed stays at the current GitHub Pages address, because every
+  installed SONN Client polls it.
+- Moving the feed to a Lumi domain needs a bridge release. Rename the
+  repository only after that, because GitHub does not redirect Pages project
+  sites after a rename.
+- The SONN conversation-id prefix, the Engram memory namespace, the editor
+  MCP entry names (`resonant_blender`…), model-facing tool names, the
+  harness output fence, the `refs/resonant/checkpoints` git refs and the
+  checkpoint archive marker are unchanged, because saved data uses them.
+
+Validation on September 24, 2026:
+
+- `ruff` and `git diff --check`: clean.
+- UI recovery checks: 30.
+- Full `pytest` on the final source: 3,472 passed, 2 skipped.
+- New `tests/test_rebrand_compat.py` covers the state move, a blocked move,
+  overrides, legacy project folders, and legacy environment and hook variables.
+
+The browser pane checked a source run with an isolated home:
+
+- the launch link and socket;
+- the sidebar mark and wordmark;
+- the gold send button;
+- Settings;
+- the light theme;
+- a 375 px width without horizontal overflow;
+- no remaining "SONN Client" or "Resonant" text.
+
+A local PyInstaller build of `lumi.exe` passed the bundle policy (146.6 MiB,
+316 files). Run against an isolated home holding a legacy `~/.resonant`:
+
+- `--version` printed `lumi 0.19.2.dev11` and moved the folder to `~/.lumi`;
+- the page was titled Lumi and served the new icons;
+- the launch code was redeemed;
+- the socket returned 403 without the token and 101 with it;
+- the startup log was clean;
+- the executable carries the Lantern icon, and Windows `LoadImageW` (used for
+  the window icon) loads `lumi.ico` at 16–256 px.
+
+WinSparkle was disabled for that local run so it would not write the real
+registry; CI checks its bundling. That build predates the final text-only
+command-help changes.
+
+Not exercised: compiling the installer (no Inno Setup locally) or upgrading
+an installed SONN Client, a macOS build, and live models.
+
 ## September 24 local GUI access control — source only, not released
 
 **Security fix.** The GUI server bound to 127.0.0.1 accepted any WebSocket

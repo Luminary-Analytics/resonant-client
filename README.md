@@ -1,12 +1,14 @@
-# SONN Client
+# Lumi
 
-Formerly Resonant. The desktop coding client for SONN, with optional direct
-connections to other model providers. The 0.19.0 rebrand preserves existing
-`resonant` commands, installation paths, saved data, and the updater feed.
+The coding agent by Luminary Analytics, formerly SONN Client and originally
+Resonant. It runs on the model endpoints you choose, including SONN. The
+rebrand keeps working setups working: `resonant` commands remain aliases,
+`RESONANT_*` environment variables are still read, and `~/.resonant` moves to
+`~/.lumi` on first launch. See [Unreleased](docs/unreleased.md).
 
 **A provider-adaptive multimodal coding agent for local and hosted models.**
 
-SONN Client gives different model providers the same durable coding harness:
+Lumi gives different model providers the same durable coding harness:
 repository-aware system prompts, native tools, focused clarification, long-task
 state, verification, and a desktop workflow with projects and sessions in one sidebar. Product
 behavior is capability-driven; named models are not silently promoted or given
@@ -39,7 +41,7 @@ sidebar with focused pages for preferences, connections, and integrations.
 - **Claude Code:** an installed CLI adapter for existing Claude Code users.
 
 Provider adapters may translate wire formats, reasoning tokens, and message
-roles. SONN Client's engine contract stays model-neutral. Installed CLI adapters
+roles. Lumi's engine contract stays model-neutral. Installed CLI adapters
 use their own native tool loops; see the [architecture guide](ARCHITECTURE.md)
 for their context-handoff and verification boundaries.
 
@@ -96,14 +98,14 @@ for their context-handoff and verification boundaries.
 The sprint and autonomous workflows remain optional and off by default. They
 provide planner, generator, evaluator, specialist, and recovery flows for users
 who need structured long-running execution. Specialist model overrides are
-explicit user configuration; SONN Client does not silently switch models by role.
+explicit user configuration; Lumi does not silently switch models by role.
 
 ## Install
 
 ### Windows installer
 
-Download the latest `resonant-setup-X.Y.Z.exe` from the
-[SONN Client download page](https://luminary-analytics.github.io/resonant-client/).
+Download the latest `lumi-setup-X.Y.Z.exe` from the
+[Lumi download page](https://luminary-analytics.github.io/resonant-client/).
 
 - Installs without an administrator prompt
 - Adds a Start Menu shortcut
@@ -136,18 +138,18 @@ ollama serve
 ollama pull your-model
 ```
 
-SONN Client probes `http://127.0.0.1:11434` by default. Set `OLLAMA_HOST` or use
+Lumi probes `http://127.0.0.1:11434` by default. Set `OLLAMA_HOST` or use
 **Settings > Network** for a remote endpoint.
 
 ### EXO
 
-SONN Client connects directly to EXO's OpenAI-compatible API. The bundled default
+Lumi connects directly to EXO's OpenAI-compatible API. The bundled default
 is `http://127.0.0.1:52415/v1`; change **Settings > Network > EXO OpenAI API
 URL** or set `EXO_API_URL` for another cluster.
 
 The model picker orders running models first, downloaded models second, and the
 remaining EXO catalog after them. When a downloaded model is selected but not
-running, SONN Client requests the first valid EXO placement and waits for the
+running, Lumi requests the first valid EXO placement and waits for the
 instance to become ready before starting the turn. Tool calls, streaming usage,
 and OpenAI-format image content use the same agent runtime as other providers.
 
@@ -160,7 +162,7 @@ under **Settings > API keys** or set `MOONSHOT_API_KEY`.
 
 Install the Codex CLI, then open **Settings > Connections > Sign in with ChatGPT**.
 Follow the browser link and select **Refresh account & models** after signing in.
-SONN Client displays the connected account, its available models, and remaining
+Lumi displays the connected account, its available models, and remaining
 subscription usage when Codex reports it. Existing Codex API-key authentication
 is labeled separately because it is billed separately from a ChatGPT subscription.
 Credentials remain managed by Codex. This uses the official
@@ -182,10 +184,10 @@ boundaries](docs/sonn.md).
 
 Add an OpenRouter key under **Settings > API keys**, or set `OPENROUTER_API_KEY`.
 Use **Settings > Connections > Check connection & refresh models** to verify it.
-SONN Client discovers models that support text output and tools from the
+Lumi discovers models that support text output and tools from the
 [OpenRouter catalog](https://openrouter.ai/docs/quickstart), excluding batch variants.
 Streaming, native tool calls, reasoning continuation data, and provider-reported
-costs use OpenRouter's API. API keys are stored locally in `~/.resonant/settings.json`
+costs use OpenRouter's API. API keys are stored locally in `~/.lumi/settings.json`
 and are masked in the settings UI and session configuration.
 
 Search **Astra** in **Models** to select `openai/gpt-6-astra` through OpenRouter.
@@ -194,7 +196,7 @@ Its API usage is billed separately from ChatGPT/Codex subscription usage.
 ### Claude Code
 
 Install and authenticate Claude Code, then select its discovered CLI models in
-the model picker. SONN Client uses the installed CLI's native execution path.
+the model picker. Lumi uses the installed CLI's native execution path.
 ChatGPT connection controls apply to Codex, not Claude Code.
 
 ### Choosing providers per session
@@ -223,7 +225,7 @@ the Chrome DevTools Protocol — navigate, click, type, read, screenshot, run
 JavaScript, and manage tabs. Nothing to install or configure: Chrome starts on
 first use.
 
-Chrome runs under a dedicated SONN Client profile (`~/.resonant/browser-profile`)
+Chrome runs under a dedicated Lumi profile (`~/.lumi/browser-profile`)
 rather than your everyday one, because Chrome locks a profile directory while
 it is in use — sharing yours would mean you and the agent could not browse at
 the same time. Log into sites once in that window and the session persists.
@@ -240,9 +242,9 @@ this adds nothing to the installer.
 |---|---|---|
 | `LUMI_BROWSER_CDP_PORT` | `9222` | DevTools port |
 | `LUMI_BROWSER_CHROME_PATH` | auto-detected | Chrome executable |
-| `LUMI_BROWSER_USER_DATA_DIR` | `~/.resonant/browser-profile` | Profile directory |
+| `LUMI_BROWSER_USER_DATA_DIR` | `~/.lumi/browser-profile` | Profile directory |
 | `LUMI_BROWSER_HEADLESS` | `0` | Run without a visible window |
-| `LUMI_BROWSER_GROUP_TITLE` | `SONN Client` | Tab group label |
+| `LUMI_BROWSER_GROUP_TITLE` | `Lumi` | Tab group label |
 
 [BrowserOS](https://github.com/browseros-ai/BrowserOS) and other browser MCP
 servers still work if you prefer them. Enable **Settings > MCP Servers >
@@ -275,18 +277,18 @@ now that browsing works out of the box.
 | `LUMI_OLLAMA_HTTP_TIMEOUT_SEC` | `360` | Ollama request timeout |
 | `LUMI_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `300` | Ollama stream read timeout |
 
-Persistent configuration lives in `~/.resonant/settings.json` and is managed
+Persistent configuration lives in `~/.lumi/settings.json` and is managed
 through the desktop Settings view.
 
 ## Run
 
 ```bash
-resonant-gui
-resonant --backend ollama --model your-model
-resonant --ollama-url http://192.168.1.20:11434 --model your-model
+lumi-gui
+lumi --backend ollama --model your-model
+lumi --ollama-url http://192.168.1.20:11434 --model your-model
 ```
 
-`resonant-gui --browser` prints a one-time link to open the app in a browser.
+`lumi-gui --browser` prints a one-time link to open the app in a browser.
 From the desktop window, use **File > Open in Browser**. The local server refuses
 pages that were not opened from such a link.
 
@@ -311,8 +313,8 @@ Use [RELEASING.md](RELEASING.md) for clean Windows builds and publishing checks.
 The smoke harness accepts either a legacy shorthand or any Ollama model ID:
 
 ```bash
-resonant-smoke run --spec wordcount --model your-model
-resonant-smoke variance --spec wordcount --model your-model --n 3
+lumi-smoke run --spec wordcount --model your-model
+lumi-smoke variance --spec wordcount --model your-model --n 3
 ```
 
 ## License

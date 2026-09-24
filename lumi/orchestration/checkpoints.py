@@ -20,6 +20,7 @@ class CheckpointError(RuntimeError):
 class IterationCheckpointStore:
     """Snapshot all tracked and untracked files without moving HEAD."""
 
+    # Pre-rebrand ref name, kept so existing checkpoints stay reachable.
     REF_ROOT = "refs/resonant/checkpoints"
 
     def __init__(self, project_path: str | Path) -> None:
@@ -125,13 +126,13 @@ class IterationCheckpointStore:
         }
 
     def _snapshot_commit(self, message: str) -> str:
-        fd, index_name = tempfile.mkstemp(prefix="resonant-index-", dir=self.git_dir)
+        fd, index_name = tempfile.mkstemp(prefix="lumi-index-", dir=self.git_dir)
         os.close(fd)
         Path(index_name).unlink(missing_ok=True)
         env = os.environ.copy()
         env["GIT_INDEX_FILE"] = index_name
         env.setdefault("GIT_AUTHOR_NAME", "Lumi")
-        env.setdefault("GIT_AUTHOR_EMAIL", "checkpoint@resonant.local")
+        env.setdefault("GIT_AUTHOR_EMAIL", "checkpoint@lumi.local")
         env.setdefault("GIT_COMMITTER_NAME", env["GIT_AUTHOR_NAME"])
         env.setdefault("GIT_COMMITTER_EMAIL", env["GIT_AUTHOR_EMAIL"])
         try:

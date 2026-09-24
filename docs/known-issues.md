@@ -73,7 +73,7 @@ that removed product surfaces or old bundle-size observations still apply.
 | 18 | Per-user install invisible to Windows Search | High (UX-blocking on Win11) | ✅ Shipped fix (v0.2.3) | v0.2.2 install |
 | 19 | console=False crashes uvicorn ColourizedFormatter at startup | **Critical** (app won't launch) | ✅ Shipped fix (v0.2.4) | v0.2.3 install |
 | 20 | Frozen `Path(__file__).parent` breaks Jinja2 template lookup | **Critical** (500 on every page) | ✅ Shipped fix (v0.2.5) | v0.2.4 install |
-| 21 | Stderr redirect to /dev/null hid all runtime errors | High (debugging blind) | ✅ Shipped fix (v0.2.5) — now logs to ~/.resonant/logs/resonant-startup.log | v0.2.4 install |
+| 21 | Stderr redirect to /dev/null hid all runtime errors | High (debugging blind) | ✅ Shipped fix (v0.2.5) — now logs to ~/.lumi/logs/lumi-startup.log | v0.2.4 install |
 | 22 | Pre-tag smoke test only used dev Python, not bundled exe | High (process gap, not code) | Open — fix in build-check.yml workflow + RELEASING.md update | This session |
 | 23 | Starlette 0.29+ TemplateResponse signature change | **Critical** (homepage 500) | ✅ Shipped fix (v0.2.6) | v0.2.5 install |
 | 24 | websockets not bundled — every WS upgrade fails | **Critical** (UI hangs at "Reconnecting...") | ✅ Shipped fix (v0.2.7) | v0.2.6 install |
@@ -158,7 +158,7 @@ Lives in `lumi/gui/app.py` (background warmup thread + `model_warmup_started`/`m
 **Recovery (manual):**
 
 ```powershell
-Stop-Process -Name resonant -Force
+Stop-Process -Name lumi -Force
 python -m lumi gui --port 8909
 ```
 
@@ -276,7 +276,7 @@ Lives in `lumi/orchestration/` (planner + verifier specialists).
 
 **Surfaced in:** Phase 3 v0.2.0 release.
 
-**What happened:** the v0.2.0 release CI failed on its first run because `plan_graph_view.js` was referenced by `packaging/resonant.spec` but had never been git-committed (only existed locally). Local builds worked because the file was on disk; CI's clean checkout didn't have it.
+**What happened:** the v0.2.0 release CI failed on its first run because `plan_graph_view.js` was referenced by `packaging/lumi.spec` but had never been git-committed (only existed locally). Local builds worked because the file was on disk; CI's clean checkout didn't have it.
 
 **Root cause:** there's no validation that runs the full PyInstaller spec on a clean checkout before tag push.
 
@@ -287,7 +287,7 @@ on:
   pull_request:
     paths:
       - 'lumi/**'
-      - 'packaging/resonant.spec'
+      - 'packaging/lumi.spec'
       - 'pyproject.toml'
 
 jobs:
@@ -298,8 +298,8 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.13' }
       - run: pip install -e ".[gui,desktop]" pyinstaller
-      - run: pyinstaller packaging/resonant.spec --clean --noconfirm
-      - run: ./dist/resonant/resonant.exe --version
+      - run: pyinstaller packaging/lumi.spec --clean --noconfirm
+      - run: ./dist/lumi/lumi.exe --version
 ```
 
 Doesn't sign or publish — just confirms the bundle builds. Would have caught the missing-file issue in seconds instead of after a tag push.
@@ -342,7 +342,7 @@ Add a `--strict` flag to preserve the old refuse-behavior for paranoid releases 
 
 **Severity:** Low (cosmetic, doesn't block users)
 
-**What:** local dev machine produces a ~64 MB installer; CI's `windows-latest` runner produces a ~26 MB installer from the same `packaging/resonant.spec`.
+**What:** local dev machine produces a ~64 MB installer; CI's `windows-latest` runner produces a ~26 MB installer from the same `packaging/lumi.spec`.
 
 **Hypothesis:** local Python env has `numpy`, `PyQt5`, `cv2`, etc. system-installed; PyInstaller pulls them transitively despite `excludes=` directives. CI's clean env doesn't have those packages, so the bundle stays slim.
 
@@ -359,7 +359,7 @@ Add a `--strict` flag to preserve the old refuse-behavior for paranoid releases 
 **Surfaced in:** v0.2.1 release.
 
 **What happened:**
-1. CI run #1 built + signed `resonant-setup-0.2.1.exe` → published to GitHub Release → my appcast got that signature.
+1. CI run #1 built + signed `lumi-setup-0.2.1.exe` → published to GitHub Release → my appcast got that signature.
 2. The CI run failed at the very last step (gh-pages push, due to bug "user.email missing" in the workflow), so I **re-ran the failed jobs** (`gh run rerun --failed`).
 3. The re-run rebuilt the installer from scratch — PyInstaller embeds build timestamps in the PE header, plus ZIP file timestamps inside the bundle, so the resulting bytes differed from run #1.
 4. The re-run uploaded the new bytes to the SAME release tag, **silently overwriting** run #1's installer.
@@ -368,8 +368,8 @@ Add a `--strict` flag to preserve the old refuse-behavior for paranoid releases 
 **Diagnostic:** `md5sum` the previously-downloaded installer and a fresh re-download. If they differ, this bug fired.
 
 ```bash
-md5sum resonant-setup-0.2.1.exe                                                        # what I signed
-curl -sL -o fresh.exe https://github.com/.../releases/download/v0.2.1/resonant-setup-0.2.1.exe
+md5sum lumi-setup-0.2.1.exe                                                        # what I signed
+curl -sL -o fresh.exe https://github.com/.../releases/download/v0.2.1/lumi-setup-0.2.1.exe
 md5sum fresh.exe                                                                        # what users actually get
 # If hashes differ, the asset was rebuilt and re-uploaded
 ```
@@ -391,10 +391,10 @@ For v0.2.x: add a CI step `Verify signature is consistent with uploaded asset` t
 
 **Surfaced in:** v0.2.1 install (visible to user as a black-on-yellow PowerShell console showing the URL).
 
-**Cause:** `packaging/resonant.spec` has `console=True`. Was kept on for v0.x debugging — first-install Ollama-connection / port-bind issues are easier to triage when stderr is visible.
+**Cause:** `packaging/lumi.spec` has `console=True`. Was kept on for v0.x debugging — first-install Ollama-connection / port-bind issues are easier to triage when stderr is visible.
 
 **Fix proposal:**
-1. **Add proper logging-to-file.** Currently errors go to stderr (which the console swallows when `console=False`). Need a `~/.resonant/logs/resonant-YYYYMMDD.log` rotation.
+1. **Add proper logging-to-file.** Currently errors go to stderr (which the console swallows when `console=False`). Need a `~/.lumi/logs/resonant-YYYYMMDD.log` rotation.
 2. **Flip `console=False`** in the spec for v0.2.2+.
 3. Optionally add `--debug` flag that re-enables console for power users.
 

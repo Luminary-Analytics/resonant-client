@@ -1345,7 +1345,7 @@ class AppState:
         session.sandbox = PathSandbox(effective_root, enabled=True)
 
         # Autonomy tier and execution policy (tier built-ins plus the project's
-        # resonant-policy.json) follow the permission mode; an explicit
+        # lumi-policy.json) follow the permission mode; an explicit
         # auto_approve selects Full-auto or Ask instead.
         if auto_approve is None:
             self._apply_session_permissions(session, self.permission_mode)

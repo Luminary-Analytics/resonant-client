@@ -117,8 +117,8 @@ checks with SONN's actual gateway and a scripted provider. This is native source
 engine evidence, not packaged desktop, paid-model, or learned-routing qualification.
 Advice and specialist orchestration are still under development.
 
-Available in SONN Client v0.18.0. SONN supplies a project-scoped Chat Completions
-endpoint; SONN Client runs the coding tools and retains project instructions,
+Available in Lumi v0.18.0. SONN supplies a project-scoped Chat Completions
+endpoint; Lumi runs the coding tools and retains project instructions,
 permissions, notes, history, and verification through its existing engine.
 
 ## Set up in the desktop app
@@ -127,7 +127,7 @@ permissions, notes, history, and verification through its existing engine.
    `https://getsonn.com/v1/workspace/projects/<project-id>/openai/v1`.
 2. Under **API keys**, enter your private invitation in **SONN API key**, then
    leave the field to save. The field becomes empty and shows **Stored**. Keys
-   are stored locally in `~/.resonant/settings.json`, not returned to the UI.
+   are stored locally in `~/.lumi/settings.json`, not returned to the UI.
 3. Under **Connections**, select **Check SONN connection & refresh models**.
    This performs authenticated model discovery without generating tokens.
 4. Return to your session, open **Models**, and select `sonn-auto` under SONN.

@@ -54,7 +54,7 @@ types or isolated tests does not establish that a desktop workflow is available.
 Project state lives under:
 
 ```text
-~/.resonant/projects/<project-hash>/director/
+~/.lumi/projects/<project-hash>/director/
   <director-run-id>.json
   <director-run-id>.jsonl
   worker-performance.json

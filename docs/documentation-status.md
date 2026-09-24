@@ -22,7 +22,8 @@ This catalog distinguishes guidance from historical evidence; classification
 alone is not a claim that every old result has been rerun or every API is live.
 SONN transport validation is recorded in [0.18.0 notes](v0.18.0-release-notes.md);
 the current [account contract](sonn.md) and [0.19.0 notes](v0.19.0-release-notes.md) record the
-new authenticated account read. Historical Resonant names remain historical.
+new authenticated account read. The product was renamed Lumi on September 24,
+2026; historical Resonant and SONN Client names in dated records remain.
 Future changes are recorded in [Unreleased](unreleased.md).
 
 Start with [AGENTS.md](../AGENTS.md), [architecture](../ARCHITECTURE.md), and the

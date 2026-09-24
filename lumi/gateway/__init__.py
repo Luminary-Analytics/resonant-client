@@ -7,7 +7,7 @@ engine's Session loop:
     Telegram message -> ChannelAdapter -> GatewayService -> Session.run()
     engine text events -> GatewayService -> ChannelAdapter -> chat reply
 
-Start it with:  resonant gateway --backend ollama
+Start it with:  lumi gateway --backend ollama
 """
 
 from .base import ChannelAdapter, InboundMessage

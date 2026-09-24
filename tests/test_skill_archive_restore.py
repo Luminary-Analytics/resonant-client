@@ -1,7 +1,7 @@
 """Tests for v0.6.2a4 — archive list + restore.
 
-The user-facing surface is `resonant-skill list --archived` +
-`resonant-skill restore <id>`. These tests cover both the underlying
+The user-facing surface is `lumi-skill list --archived` +
+`lumi-skill restore <id>`. These tests cover both the underlying
 public API (`list_archived_skills`, `restore_skill`) and the CLI
 wiring on top of it.
 """

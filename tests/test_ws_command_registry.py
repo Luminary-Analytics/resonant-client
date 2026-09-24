@@ -322,10 +322,13 @@ def test_ollama_wizard_url_is_saved():
 
 
 def test_approval_requires_an_explicit_true():
+    # The answer must also name the waiting prompt (see test_permission_decisions);
+    # this checks the value rule for an answer that does.
     for msg, expected in (({}, False), ({"approved": "yes"}, False), ({"approved": 1}, False),
                           ({"approved": False}, False), ({"approved": True}, True)):
-        state = SimpleNamespace(permission_result=[None], permission_response=threading.Event())
-        _run(ws_commands.HANDLERS["approve"], _ctx(state=state, msg=msg))
+        state = SimpleNamespace(permission_result=[None], permission_response=threading.Event(),
+                                permission_request_id="req-1", _permission_lock=threading.Lock())
+        _run(ws_commands.HANDLERS["approve"], _ctx(state=state, msg={**msg, "request_id": "req-1"}))
         assert state.permission_result[0] is expected, msg
         assert state.permission_response.is_set()
 

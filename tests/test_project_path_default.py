@@ -291,7 +291,7 @@ class TestRecentProjectsWriteHygiene:
             "C:\\Users\\x\\AppData\\Local\\Temp\\pytest-of-x\\pytest-9\\proj"
         )
 
-        recents_file = isolated_home / ".resonant" / "recent_projects.json"
+        recents_file = isolated_home / ".lumi" / "recent_projects.json"
         saved = json.loads(recents_file.read_text(encoding="utf-8"))
         assert saved == []
 

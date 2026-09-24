@@ -190,7 +190,7 @@ class ResonantSettingsView {
             + (data.error ? `<p class="editor-error" role="alert">${esc(data.error)}</p>` : '');
         const packs = Array.isArray(data.packs) ? data.packs : [];
         if (!packs.length) {
-            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .resonant/packs or in ~/.resonant/packs.</span></div>`;
+            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .resonant/packs or in ~/.lumi/packs.</span></div>`;
         }
         const statusText = {
             approved: 'Approved · active',
@@ -897,7 +897,7 @@ class ResonantSettingsView {
                     { key: 'big_context_profile', label: 'Large-context profile', type: 'toggle',
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
-                      hint: 'Off by default. Enable to use SONN Client\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.resonant/, not in your repo.' },
+                      hint: 'Off by default. Enable to use SONN Client\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.lumi/, not in your repo.' },
                 ]
             },
             {
@@ -955,11 +955,11 @@ class ResonantSettingsView {
                 id: 'api_keys', title: 'API keys', open: false,
                 fields: [
                     { key: 'sonn', label: 'SONN API key', type: 'password',
-                      hint: 'Enter your private invitation key. Stored locally in ~/.resonant/settings.json and hidden after saving. SONN_API_KEY is also supported.' },
+                      hint: 'Enter your private invitation key. Stored locally in ~/.lumi/settings.json and hidden after saving. SONN_API_KEY is also supported.' },
                     { key: 'openrouter', label: 'OpenRouter API key', type: 'password',
-                      hint: 'Stored locally in ~/.resonant/settings.json. OPENROUTER_API_KEY is also supported. API calls use your OpenRouter credits.' },
+                      hint: 'Stored locally in ~/.lumi/settings.json. OPENROUTER_API_KEY is also supported. API calls use your OpenRouter credits.' },
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
-                      hint: 'Stored locally in ~/.resonant/settings.json. MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
+                      hint: 'Stored locally in ~/.lumi/settings.json. MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
                 ]
             },
             {
@@ -1129,7 +1129,7 @@ class ResonantSettingsView {
                         <label>Runs<select class="settings-select evaluation-n"><option value="1">1 quick</option><option value="3">3 variance</option><option value="5">5 release</option></select></label>
                         <button class="btn-sm evaluation-start" ${active ? 'disabled' : ''}>${active ? 'Evaluation running…' : 'Run evaluation'}</button>
                     </div>
-                    <div class="settings-row-hint evaluation-hint">Runs use fresh temporary projects and the live Ollama models. Results persist under ~/.resonant/evaluations.</div>
+                    <div class="settings-row-hint evaluation-hint">Runs use fresh temporary projects and the live Ollama models. Results persist under ~/.lumi/evaluations.</div>
                     <div class="settings-row-hint evaluation-hint"><strong>Interactive provider health</strong> — redacted outcomes, retries, and latency; prompts and responses are never stored.</div>
                     <div class="evaluation-records">${telemetryHtml || '<div class="settings-row"><span class="settings-row-label">No interactive telemetry yet.</span></div>'}</div>
                     <div class="evaluation-records">${recordHtml || '<div class="settings-row"><span class="settings-row-label">No evaluations yet.</span></div>'}</div>
@@ -1162,7 +1162,7 @@ class ResonantSettingsView {
                         </div>
                     `).join('');
                 }
-                bodyHtml += `<div class="settings-row" style="margin-top:8px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Edit hooks in ~/.resonant/settings.json</span></div>`;
+                bodyHtml += `<div class="settings-row" style="margin-top:8px"><span class="settings-row-label" style="color:var(--dim);font-size:11px">Edit hooks in ~/.lumi/settings.json</span></div>`;
             } else if (section.id === 'mcp_servers') {
                 const servers = typeof data === 'object' && !Array.isArray(data)
                     ? Object.entries(data).filter(([name, cfg]) => !(cfg?.editor_integration && name === `resonant_${cfg.editor_integration}`)) : [];

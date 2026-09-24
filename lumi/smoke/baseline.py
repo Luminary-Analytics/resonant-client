@@ -18,7 +18,7 @@ Workflow:
    The markdown report adds a "Diff vs baseline" section:
    convergence-rate delta, timing-median delta, regressions called out.
 
-Baselines live under `<project>/.resonant/smoke-baselines/<spec>-<model>.json`
+Baselines live under `<project>/.lumi/smoke-baselines/<spec>-<model>.json`
 by default. Per-project so different projects can have their own
 acceptable convergence profile (some users may want flash on simple
 specs and pro on complex ones; baselines respect that).
@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Optional
 
 from .variance import VarianceReport
+from ..paths import project_dir
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ def baseline_dir(project_path: str | Path) -> Path:
     """Where this project's baselines live. Per-project so different
     repos / specs can have different "acceptable" convergence profiles
     without trampling each other."""
-    return Path(project_path) / ".resonant" / "smoke-baselines"
+    return project_dir(project_path) / "smoke-baselines"
 
 
 def baseline_path(project_path: str | Path, spec: str, model: str) -> Path:

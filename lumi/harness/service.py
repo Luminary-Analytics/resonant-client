@@ -240,7 +240,7 @@ class HarnessService:
             return ""
 
         # Slim role descriptions — no file paths, no "read these 5 files first."
-        # Sprint state lives at ~/.resonant/projects/<hash>/harness/ (out of the
+        # Sprint state lives at ~/.lumi/projects/<hash>/harness/ (out of the
         # user's repo) and the agent can query it on demand via tools when
         # specific details matter. Project conventions (architecture, style,
         # don't-do-X) live in AGENTS.md and are loaded separately.

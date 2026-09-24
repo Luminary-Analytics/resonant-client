@@ -137,7 +137,7 @@ class TelegramChannel(ChannelAdapter):
             f"This chat is not authorized to use the agent.\n\n"
             f"Your chat ID is: {chat_id}\n\n"
             f"To authorize it, add this ID to gateway.allowed_chat_ids in "
-            f"Resonant settings (~/.resonant/settings.json) or pass "
+            f"Lumi settings (~/.lumi/settings.json) or pass "
             f"--allow {chat_id} when starting the gateway, then restart it.",
         )
 

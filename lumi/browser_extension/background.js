@@ -15,11 +15,11 @@ let GROUP_TITLE = 'Resonant';
 let GROUP_COLOR = 'purple';
 try {
     importScripts('config.js');
-    if (typeof RESONANT_GROUP_TITLE === 'string' && RESONANT_GROUP_TITLE) {
-        GROUP_TITLE = RESONANT_GROUP_TITLE;
+    if (typeof LUMI_GROUP_TITLE === 'string' && LUMI_GROUP_TITLE) {
+        GROUP_TITLE = LUMI_GROUP_TITLE;
     }
-    if (typeof RESONANT_GROUP_COLOR === 'string' && RESONANT_GROUP_COLOR) {
-        GROUP_COLOR = RESONANT_GROUP_COLOR;
+    if (typeof LUMI_GROUP_COLOR === 'string' && LUMI_GROUP_COLOR) {
+        GROUP_COLOR = LUMI_GROUP_COLOR;
     }
 } catch (e) {
     // config.js is optional.
@@ -31,7 +31,7 @@ try {
 // instead of one group.
 let chain = Promise.resolve();
 function serialize(fn) {
-    chain = chain.then(fn).catch(err => console.warn('[resonant] group failed', err));
+    chain = chain.then(fn).catch(err => console.warn('[lumi] group failed', err));
     return chain;
 }
 
@@ -66,7 +66,7 @@ async function groupTab(tabId) {
 // the active client session changes. Grouping is browser chrome, so unlike a
 // page-injected outline it remains visible without contaminating screenshots
 // or changing the page being tested.
-globalThis.configureResonantGroup = async function configureResonantGroup(config = {}) {
+globalThis.configureLumiGroup = async function configureLumiGroup(config = {}) {
     if (typeof config.title === 'string' && config.title.trim()) {
         GROUP_TITLE = config.title.trim();
     }

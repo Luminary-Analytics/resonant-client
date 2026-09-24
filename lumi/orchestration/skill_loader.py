@@ -40,6 +40,7 @@ from .skills import (
     find_matching_skills,
     list_skills_filtered,
 )
+from ..paths import project_dir
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +106,7 @@ def match_skills_for_query(
     policy = {}
     if project_path:
         try:
-            policy = json.loads((Path(project_path) / '.resonant' / 'skill-policy.json').read_text(encoding='utf-8'))
+            policy = json.loads((project_dir(project_path) / 'skill-policy.json').read_text(encoding='utf-8'))
             if not isinstance(policy, dict):
                 policy = {}
         except (OSError, ValueError):
@@ -120,7 +121,7 @@ def match_skills_for_query(
     pinned_global = list_skills_filtered(
         scope="global", pinned=True, include_deprecated=False,
     )
-    if os.environ.get("RESONANT_EVALUATION_MODE") == "1":
+    if os.environ.get("LUMI_EVALUATION_MODE") == "1":
         pinned_global = [s for s in pinned_global if s.created_by == "bundled"]
     if policy.get('include_global_pins') is False:
         pinned_global = []
@@ -181,7 +182,7 @@ def match_skills_for_query(
             continue
         if match.score < min_score:
             continue
-        if os.environ.get("RESONANT_EVALUATION_MODE") == "1" and match.skill.scope == "global" and match.skill.created_by != "bundled":
+        if os.environ.get("LUMI_EVALUATION_MODE") == "1" and match.skill.scope == "global" and match.skill.created_by != "bundled":
             continue
         fingerprint = re.sub(r"\W+", " ", match.skill.description.casefold()).strip()
         if fingerprint and fingerprint in seen_content:

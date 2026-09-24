@@ -190,8 +190,8 @@ class HookRunner:
         For others: exit code is informational.
 
         Legacy hooks receive environment variables:
-          RESONANT_HOOK_TYPE, RESONANT_TOOL_NAME, RESONANT_TOOL_ARGS,
-          RESONANT_PROJECT_PATH
+          LUMI_HOOK_TYPE, LUMI_TOOL_NAME, LUMI_TOOL_ARGS,
+          LUMI_PROJECT_PATH (also set under their pre-rebrand RESONANT_* names)
         """
         context = context or {}
         matching = [h for h in self.hooks if h.matches(hook_type, tool_name)]
@@ -215,10 +215,13 @@ class HookRunner:
                     )
                     continue
             env = os.environ.copy()
-            env["RESONANT_HOOK_TYPE"] = hook_type.value
-            env["RESONANT_TOOL_NAME"] = tool_name or ""
-            env["RESONANT_TOOL_ARGS"] = str(context.get("tool_args", ""))
-            env["RESONANT_PROJECT_PATH"] = context.get("project_path", os.getcwd())
+            env["LUMI_HOOK_TYPE"] = hook_type.value
+            env["LUMI_TOOL_NAME"] = tool_name or ""
+            env["LUMI_TOOL_ARGS"] = str(context.get("tool_args", ""))
+            env["LUMI_PROJECT_PATH"] = context.get("project_path", os.getcwd())
+            # Hook scripts written before the rebrand read the RESONANT_* names.
+            for name in ("HOOK_TYPE", "TOOL_NAME", "TOOL_ARGS", "PROJECT_PATH"):
+                env["RESONANT_" + name] = env["LUMI_" + name]
             payload = {
                 "hook_event_name": hook_type.value,
                 "tool_name": tool_name or "",

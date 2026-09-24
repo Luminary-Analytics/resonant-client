@@ -159,7 +159,7 @@ def test_memory_tool_and_missing_source(tmp_path):
 def test_skill_retrieval_budget_dedup_negative_query_and_suppression(tmp_path, monkeypatch):
     from lumi.orchestration.skills import Skill, save_skill
     from lumi.orchestration.skill_loader import match_skills_for_query, format_skills_for_prompt
-    monkeypatch.setenv('RESONANT_STATE_HOME', str(tmp_path/'state'))
+    monkeypatch.setenv('LUMI_STATE_HOME', str(tmp_path/'state'))
     for identifier in ('sqlite-rollback', 'duplicate-rollback'):
         save_skill(Skill(id=identifier, name='SQLite rollback', description='SQLite rollback transactions', tokens=['sqlite', 'rollback', 'transactions'], scope='project'), project_path=tmp_path)
     matches = match_skills_for_query('sqlite rollback transactions', project_path=tmp_path)
@@ -194,9 +194,9 @@ def test_evaluation_mode_excludes_personal_skills_and_engram(tmp_path, monkeypat
     from lumi.orchestration.skills import Skill, save_skill
     from lumi.orchestration.skill_loader import match_skills_for_query
     from lumi.engine.memory import EngramIntegration
-    monkeypatch.setenv('RESONANT_STATE_HOME', str(tmp_path/'state'))
+    monkeypatch.setenv('LUMI_STATE_HOME', str(tmp_path/'state'))
     save_skill(Skill(id='personal', name='Personal', description='My private procedure', pinned=True))
-    monkeypatch.setenv('RESONANT_EVALUATION_MODE', '1')
+    monkeypatch.setenv('LUMI_EVALUATION_MODE', '1')
     assert match_skills_for_query('procedure') == []
     memory = EngramIntegration(); memory._enabled=True; memory._server_url='http://unused'
     assert not memory.enabled

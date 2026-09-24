@@ -1,7 +1,7 @@
 """
 Out-of-repo harness artifacts for long-running agentic development.
 
-State lives at `~/.resonant/projects/<sha1(project_path)[:12]>/harness/` so the
+State lives at `~/.lumi/projects/<sha1(project_path)[:12]>/harness/` so the
 user's source repo stays clean. Mirrors Claude Code's `~/.claude/projects/`
 layout. Until 2026-04 the harness wrote into `.resonant-harness/` inside the
 user's project; legacy folders are migrated transparently on first load (see
@@ -13,16 +13,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import shutil
 import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any
+from ..paths import state_home
 
 
 # Retained as a constant for the legacy-migration helper below. New writes go
-# to `~/.resonant/projects/<hash>/harness/` (see HarnessWorkspace.__init__).
+# to `~/.lumi/projects/<hash>/harness/` (see HarnessWorkspace.__init__).
 LEGACY_HARNESS_DIRNAME = ".resonant-harness"
 HARNESS_DIRNAME = LEGACY_HARNESS_DIRNAME  # kept as alias for any external readers
 
@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 def _project_state_root(project_path: Path) -> Path:
-    """Return `~/.resonant/projects/<sha1[:12]>/` for the given project path."""
+    """Return `~/.lumi/projects/<sha1[:12]>/` for the given project path."""
     digest = hashlib.sha1(str(project_path).encode("utf-8", errors="replace")).hexdigest()[:12]
-    base = Path(os.environ.get("RESONANT_STATE_HOME") or (Path.home() / ".resonant"))
+    base = state_home()
     return base / "projects" / digest
 
 
@@ -112,7 +112,7 @@ class HarnessWorkspace:
     """Structured artifact directory for one project's harness state.
 
     Storage layout:
-        ~/.resonant/projects/<sha1(project_path)[:12]>/harness/
+        ~/.lumi/projects/<sha1(project_path)[:12]>/harness/
             spec.json
             progress_state.json
             sprint_contract.json
@@ -122,7 +122,7 @@ class HarnessWorkspace:
             teacher_escalations.jsonl
 
     The `project_path` field stays for back-references and to feed the legacy
-    migration helper. Override the parent dir with `RESONANT_STATE_HOME` (used
+    migration helper. Override the parent dir with `LUMI_STATE_HOME` (used
     by tests).
     """
 

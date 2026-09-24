@@ -20,7 +20,7 @@ class ModelPromptProfile:
     guidance: str
 
 
-RESONANT_CLARIFICATION_CONTRACT = """\
+LUMI_CLARIFICATION_CONTRACT = """\
 Clarification:
 - Investigate first and resolve implementation details from repository evidence.
 - Use `await_user` only for one consequential requirement or external fact that
@@ -123,7 +123,7 @@ def build_model_prompt(model_name: str | None, *, role: str = "primary") -> str:
     role_guidance = _ROLE_GUIDANCE.get(role, _ROLE_GUIDANCE["primary"])
     return "\n\n".join((
         _COMMON_AGENT_CONTRACT,
-        RESONANT_CLARIFICATION_CONTRACT,
+        LUMI_CLARIFICATION_CONTRACT,
         profile.guidance,
         role_guidance,
     ))

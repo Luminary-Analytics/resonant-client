@@ -189,7 +189,8 @@ class SessionCheckpointStore:
                     continue
                 relative = path.relative_to(self.project_path)
                 if relative.parts and relative.parts[0] in {
-                    ".git", ".resonant", ".resonant-worktrees", "node_modules", "dist", "build",
+                    ".git", ".lumi", ".resonant", ".lumi-worktrees", ".resonant-worktrees",
+                    "node_modules", "dist", "build",
                 }:
                     continue
                 manifest.append(relative.as_posix())
@@ -221,6 +222,6 @@ class SessionCheckpointStore:
                 if not path.is_file() or path.is_symlink():
                     continue
                 relative = path.relative_to(self.project_path)
-                if relative.parts and relative.parts[0] in {".git", ".resonant-worktrees"}:
+                if relative.parts and relative.parts[0] in {".git", ".lumi-worktrees", ".resonant-worktrees"}:
                     continue
                 archive.write(path, relative.as_posix())

@@ -14,6 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Iterator
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ class EventLogger:
     ):
         self.enabled = enabled
         self.session_id = session_id
-        self._log_dir = Path(log_dir) if log_dir else Path.home() / ".resonant" / "logs"
+        self._log_dir = Path(log_dir) if log_dir else state_home() / "logs"
         self._file = None
         self._lock = threading.Lock()
         self._event_count = 0
@@ -106,7 +107,7 @@ def cleanup_old_logs(log_dir: str | Path | None = None, retention_days: int = 7)
     Delete log directories older than retention_days.
     Returns number of directories removed.
     """
-    base = Path(log_dir) if log_dir else Path.home() / ".resonant" / "logs"
+    base = Path(log_dir) if log_dir else state_home() / "logs"
     if not base.exists():
         return 0
 

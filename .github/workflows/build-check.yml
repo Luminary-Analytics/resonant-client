@@ -140,7 +140,7 @@ jobs:
               $code = $null
               for ($i = 0; $i -lt 15 -and -not $code; $i++) {
                   if (Test-Path $logPath) {
-                      $match = Select-String -Path $logPath -Pattern '#sonn-launch=([A-Za-z0-9_\-]+)' | Select-Object -Last 1
+                      $match = Select-String -Path $logPath -Pattern '#lumi-launch=([A-Za-z0-9_\-]+)' | Select-Object -Last 1
                       if ($match) { $code = $match.Matches[0].Groups[1].Value }
                   }
                   if (-not $code) { Start-Sleep -Seconds 1 }
@@ -175,7 +175,7 @@ jobs:
               if ($refused -ne "403") { throw "WS /ws without the access token returned $refused, expected 403" }
               Write-Host "✓ WS /ws without the access token  403"
 
-              $wsCode = Get-WsStatus @("Sec-WebSocket-Protocol: sonn.v1, sonn.access.$token")
+              $wsCode = Get-WsStatus @("Sec-WebSocket-Protocol: lumi.v1, lumi.access.$token")
               if ($wsCode -ne "101") { throw "WS /ws returned $wsCode, expected 101 Switching Protocols" }
               Write-Host "✓ WS /ws  $wsCode Switching Protocols"
 

@@ -11,14 +11,14 @@
  * new tabs on this origin keep working while the app runs.
  *
  * Classic script, loaded in <head>: it starts the exchange before app.js
- * constructs the app, and exposes window.SonnLocalAccess.
+ * constructs the app, and exposes window.LumiLocalAccess.
  */
 (function () {
     'use strict';
 
-    const STORAGE_KEY = 'sonn-client:access';
-    const FRAGMENT_KEY = 'sonn-launch';
-    const HEADER = 'X-SONN-Access';
+    const STORAGE_KEY = 'lumi:access';
+    const FRAGMENT_KEY = 'lumi-launch';
+    const HEADER = 'X-Lumi-Access';
     let memoryToken = '';
 
     function storedToken() {
@@ -79,7 +79,7 @@
             return token || storedToken();
         });
 
-    window.SonnLocalAccess = {
+    window.LumiLocalAccess = {
         /** Resolves with the token ('' when this page has none) once any launch code is redeemed. */
         ready,
 
@@ -94,7 +94,7 @@
         /** WebSocket subprotocols: a browser WebSocket cannot send other headers. */
         protocols() {
             const token = storedToken();
-            return token ? ['sonn.v1', `sonn.access.${token}`] : ['sonn.v1'];
+            return token ? ['lumi.v1', `lumi.access.${token}`] : ['lumi.v1'];
         },
 
         /**

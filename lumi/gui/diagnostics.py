@@ -1,7 +1,7 @@
 """
 v0.3.4 — diagnostics bundle (Help → Save diagnostics).
 
-Walks the user's `~/.resonant/` data dir, redacts API keys / auth
+Walks the user's `~/.lumi/` data dir, redacts API keys / auth
 headers / common secret patterns, and zips everything into a single
 file the user can attach to a GitHub issue. Triggered from the WS
 command `save_diagnostics` (see `app.py`) and surfaced in the UI.
@@ -56,7 +56,7 @@ _SECRET_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
     # One-time GUI launch links. A packaged app started with --browser prints
     # its link to stdout, which is the startup log; an unused code stays valid
     # until the app exits.
-    (re.compile(r"(#sonn-launch=)[A-Za-z0-9_\-]+"), r"\1[REDACTED]"),
+    (re.compile(r"(#lumi-launch=)[A-Za-z0-9_\-]+"), r"\1[REDACTED]"),
 )
 
 
@@ -153,7 +153,7 @@ def _meta_text(version: str, resonant_dir: Path) -> str:
 
 
 def _collect_recent_session_logs(logs_dir: Path) -> list[Path]:
-    """Walk `~/.resonant/logs/` and return up to `LATEST_N_SESSIONS`
+    """Walk `~/.lumi/logs/` and return up to `LATEST_N_SESSIONS`
     most-recent .jsonl session logs across all date subdirs.
     """
     if not logs_dir.is_dir():

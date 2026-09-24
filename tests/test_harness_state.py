@@ -18,7 +18,7 @@ def state_home(tmp_path, monkeypatch):
     """Redirect ~/.resonant/ to a tmp dir so tests don't pollute the real home."""
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 

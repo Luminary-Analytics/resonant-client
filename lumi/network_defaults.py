@@ -6,14 +6,14 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Mapping
+from .paths import state_home
 
-_SETTINGS_PATH = Path.home() / ".resonant" / "settings.json"
 _DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 _DEFAULT_EXO_URL = "http://127.0.0.1:52415/v1"
 
 
 def _load_settings(path: Path | None = None) -> dict[str, Any]:
-    target = path or _SETTINGS_PATH
+    target = path or state_home() / "settings.json"
     try:
         if target.exists():
             return json.loads(target.read_text(encoding="utf-8"))
@@ -41,7 +41,7 @@ def get_default_backend(*, settings_data: Mapping[str, Any] | None = None) -> st
     # Ollama is the zero-credential local default; settings can select another
     # installed provider.
     return (
-        str(os.environ.get("RESONANT_DEFAULT_BACKEND", "") or "").strip()
+        str(os.environ.get("LUMI_DEFAULT_BACKEND", "") or "").strip()
         or _get_setting("general", "default_backend", "ollama", settings_data=settings_data).strip()
         or "ollama"
     )
@@ -50,7 +50,7 @@ def get_default_backend(*, settings_data: Mapping[str, Any] | None = None) -> st
 def get_default_model(*, settings_data: Mapping[str, Any] | None = None) -> str:
     """Return an explicitly configured model, or empty for auto-discovery."""
     return (
-        str(os.environ.get("RESONANT_DEFAULT_MODEL", "") or "").strip()
+        str(os.environ.get("LUMI_DEFAULT_MODEL", "") or "").strip()
         or _get_setting("general", "default_model", "", settings_data=settings_data).strip()
     )
 

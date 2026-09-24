@@ -302,8 +302,8 @@ def test_exo_warmup_uses_short_native_tool_call():
 
 
 def test_exo_has_no_default_progress_or_read_timeout(monkeypatch):
-    monkeypatch.delenv("RESONANT_EXO_READ_TIMEOUT_SEC", raising=False)
-    monkeypatch.delenv("RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("LUMI_EXO_READ_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("LUMI_EXO_STREAM_IDLE_TIMEOUT_SEC", raising=False)
 
     backend = ExoBackend("local/model")
 
@@ -313,7 +313,7 @@ def test_exo_has_no_default_progress_or_read_timeout(monkeypatch):
 
 
 def test_exo_allows_an_explicit_operator_idle_timeout(monkeypatch):
-    monkeypatch.setenv("RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC", "600")
+    monkeypatch.setenv("LUMI_EXO_STREAM_IDLE_TIMEOUT_SEC", "600")
 
     backend = ExoBackend("local/model")
 

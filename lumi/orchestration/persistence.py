@@ -2,11 +2,11 @@
 Disk-persistence for plan-graphs.
 
 Layout:
-    ~/.resonant/projects/<sha1(project_path)[:12]>/plans/
+    ~/.lumi/projects/<sha1(project_path)[:12]>/plans/
         current/<intent-id>.json    # live plan-graph for an intent
         snapshots/<ts>__<intent-id>.json  # history (for rollback)
 
-Override the parent dir with `RESONANT_STATE_HOME` (used by tests).
+Override the parent dir with `LUMI_STATE_HOME` (used by tests).
 Snapshots auto-purge after `retention_days` (default 30).
 """
 
@@ -15,18 +15,18 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Optional
 
 from .plan_graph import PlanGraph
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
 
 def _state_home() -> Path:
-    return Path(os.environ.get("RESONANT_STATE_HOME") or (Path.home() / ".resonant"))
+    return state_home()
 
 
 def _project_hash(project_path: str | Path) -> str:

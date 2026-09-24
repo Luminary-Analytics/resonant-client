@@ -156,7 +156,7 @@ def test_floor_violation_surfaces_through_intent_service(monkeypatch, tmp_path, 
     """
     state_home = tmp_path / "state"
     state_home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(state_home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(state_home))
 
     from lumi.engine.tools import execute_tool as et
     result = et(

@@ -10,6 +10,7 @@ fallback so users coming from Claude Code get continuity for free.
 
 import logging
 from pathlib import Path
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 INSTRUCTION_FILES = [
     "AGENTS.md",
     ".agents/AGENTS.md",
+    "LUMI.md",
+    ".lumi/LUMI.md",
     "RESONANT.md",
     ".resonant/RESONANT.md",
     "CLAUDE.md",
@@ -87,7 +90,7 @@ def find_all_instruction_files(project_path: str, cwd: str | None = None) -> lis
     Find all RESONANT.md files in the hierarchy (Codex AGENTS.md pattern).
 
     Returns list of (scope_label, path) in resolution order:
-    1. Global: ~/.resonant/RESONANT.md
+    1. Global: ~/.lumi/AGENTS.md (or the legacy RESONANT.md)
     2. Project root: <project>/RESONANT.md
     3. Directory walk: from cwd up to project root
 
@@ -98,7 +101,7 @@ def find_all_instruction_files(project_path: str, cwd: str | None = None) -> lis
 
     # 1. Global instructions — AGENTS.md preferred, RESONANT.md kept for back-compat.
     for global_name in ("AGENTS.md", "RESONANT.md"):
-        global_path = Path.home() / ".resonant" / global_name
+        global_path = state_home() / global_name
         if global_path.is_file():
             found.append(("global", global_path))
             break

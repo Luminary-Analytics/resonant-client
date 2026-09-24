@@ -13,7 +13,7 @@ explicitly for sprint roles and harness cycles. Ordinary coding sessions still
 use the engine and its tools when this optional workflow is disabled.
 
 Harness state lives under `~/.resonant/projects/<project-hash>/harness/`.
-`RESONANT_STATE_HOME` overrides the state root for this subsystem.
+`LUMI_STATE_HOME` overrides the state root for this subsystem.
 `HarnessWorkspace.maybe_migrate_legacy_layout` migrates old project-local
 `.resonant-harness/` artifacts. Do not introduce new runtime state into a user's
 checkout.

@@ -19,6 +19,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from ..paths import state_home
 
 
 class ArtifactKind(str, Enum):
@@ -73,7 +74,7 @@ def project_state_dir(project_path: str | Path) -> Path:
     """Return the app-owned state directory for a project."""
     resolved = str(Path(project_path).expanduser().resolve())
     project_hash = hashlib.sha256(resolved.encode("utf-8")).hexdigest()[:16]
-    return Path.home() / ".resonant" / "projects" / project_hash
+    return state_home() / "projects" / project_hash
 
 
 class ArtifactStore:

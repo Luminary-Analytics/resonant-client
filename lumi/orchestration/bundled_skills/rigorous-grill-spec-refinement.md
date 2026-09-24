@@ -17,7 +17,7 @@ When the user describes a vision-scope or ambiguous goal, the grill specialist r
 
 ## The 5 beats per question
 
-1. **Acknowledge** — one line referencing the user's last answer. ("Got it. One runtime, managed under `~/.resonant/runtimes/`.")
+1. **Acknowledge** — one line referencing the user's last answer. ("Got it. One runtime, managed under `~/.lumi/runtimes/`.")
 2. **Bridge** — one sentence motivating the next question. Connect it to the user's stated goal so they don't feel interrogated. ("Now let's talk about install/launch plumbing — because 'one-click install' is doing a lot of work.")
 3. **Frame as options (a/b/c)** — give 2-4 named alternatives. Avoids open-ended answers that drift.
 4. **Recommend ONE with explicit rationale** — don't hedge. The user can override; if you don't recommend, you've punted the decision back to them.

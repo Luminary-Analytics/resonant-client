@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from ..engine.model_prompts import RESONANT_CLARIFICATION_CONTRACT
+from ..engine.model_prompts import LUMI_CLARIFICATION_CONTRACT
 from ..engine.sandbox import EXEC_TOOLS, FILE_WRITE_TOOLS, READ_ONLY_TOOLS
 from .plan_graph import NodeSpecialization
 
@@ -619,7 +619,7 @@ def assemble_system_prompt(
     parts.append(f"--- SPECIALIZATION: {profile.name.upper()} ---")
     parts.append(profile.system_block)
 
-    parts.append(RESONANT_CLARIFICATION_CONTRACT)
+    parts.append(LUMI_CLARIFICATION_CONTRACT)
 
     parts.append("--- ACTIVE NODE ---")
     parts.append(f"Intent: {intent}")

@@ -24,7 +24,7 @@ def test_skill_view_reads_project_skill_body(monkeypatch, tmp_path):
     state_home = tmp_path / "state"
     project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(state_home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(state_home))
     skill = Skill(
         id="parser-repair",
         name="Parser repair",

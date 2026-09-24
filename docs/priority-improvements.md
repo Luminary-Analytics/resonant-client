@@ -99,7 +99,7 @@ Storage is inspectable JSON at `.resonant/memory.json`, capped at 40 notes of
 
 Engram's fallback conversation excerpt is no longer silently persisted as
 knowledge. Recalled external memories are bounded and labeled unverified.
-`RESONANT_EVALUATION_MODE=1` disables Engram recall/storage and excludes personal
+`LUMI_EVALUATION_MODE=1` disables Engram recall/storage and excludes personal
 global skills, while allowing bundled references and the fixture's own project
 state. Use a fresh project and state/home directory for each independent run.
 

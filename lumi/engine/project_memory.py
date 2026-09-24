@@ -7,6 +7,7 @@ import re
 import threading
 import time
 import uuid
+from ..paths import project_dir
 
 _lock = threading.RLock()
 
@@ -14,7 +15,7 @@ _lock = threading.RLock()
 class ProjectMemory:
     def __init__(self, project):
         self.root = Path(project).resolve()
-        self.path = self.root / '.resonant' / 'memory.json'
+        self.path = project_dir(self.root) / 'memory.json'
         if self.root not in self.path.resolve().parents:
             raise ValueError('Project memory path escapes the project')
 

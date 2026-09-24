@@ -25,9 +25,11 @@ from typing import Optional
 from lumi.processes import background_process_kwargs
 
 from .tools import ToolResult
+from ..paths import state_home
 
 
-_RECORDINGS_DIR = Path.home() / ".resonant" / "recordings"
+def _recordings_dir() -> Path:
+    return state_home() / "recordings"
 
 
 class Recorder:
@@ -61,10 +63,11 @@ class Recorder:
             if self.is_active:
                 return self._output_path
 
-            _RECORDINGS_DIR.mkdir(parents=True, exist_ok=True)
+            recordings = _recordings_dir()
+            recordings.mkdir(parents=True, exist_ok=True)
             if output_path is None:
                 ts = datetime.now().strftime("%Y%m%d-%H%M%S")
-                output_path = _RECORDINGS_DIR / f"recording-{ts}.mp4"
+                output_path = recordings / f"recording-{ts}.mp4"
 
             self._output_path = output_path
             self._fps = max(1, min(int(fps or 10), 30))

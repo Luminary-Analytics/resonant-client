@@ -1090,7 +1090,7 @@ AGENT_TOOLS = [
         "type": "function",
         "function": {
             "name": "screen_record_start",
-            "description": "Start recording the screen to an MP4 file (~/.resonant/recordings/). Useful for debugging long-running automation. Use screen_record_stop when done.",
+            "description": "Start recording the screen to an MP4 file (~/.lumi/recordings/). Useful for debugging long-running automation. Use screen_record_stop when done.",
             "parameters": {
                 "type": "object",
                 "properties": {

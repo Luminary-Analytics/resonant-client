@@ -238,11 +238,11 @@ this adds nothing to the installer.
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `RESONANT_BROWSER_CDP_PORT` | `9222` | DevTools port |
-| `RESONANT_BROWSER_CHROME_PATH` | auto-detected | Chrome executable |
-| `RESONANT_BROWSER_USER_DATA_DIR` | `~/.resonant/browser-profile` | Profile directory |
-| `RESONANT_BROWSER_HEADLESS` | `0` | Run without a visible window |
-| `RESONANT_BROWSER_GROUP_TITLE` | `SONN Client` | Tab group label |
+| `LUMI_BROWSER_CDP_PORT` | `9222` | DevTools port |
+| `LUMI_BROWSER_CHROME_PATH` | auto-detected | Chrome executable |
+| `LUMI_BROWSER_USER_DATA_DIR` | `~/.resonant/browser-profile` | Profile directory |
+| `LUMI_BROWSER_HEADLESS` | `0` | Run without a visible window |
+| `LUMI_BROWSER_GROUP_TITLE` | `SONN Client` | Tab group label |
 
 [BrowserOS](https://github.com/browseros-ai/BrowserOS) and other browser MCP
 servers still work if you prefer them. Enable **Settings > MCP Servers >
@@ -256,24 +256,24 @@ now that browsing works out of the box.
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | Ollama base URL |
 | `EXO_API_URL` / `EXO_BASE_URL` | `http://127.0.0.1:52415/v1` | EXO OpenAI-compatible API URL |
 | `EXO_API_KEY` | none | Optional bearer token for an authenticated EXO proxy |
-| `RESONANT_EXO_CONTEXT_TOKENS` | conservative model inference | Effective EXO deployment context window; set this to the server's actual configured window |
-| `RESONANT_EXO_CONNECT_TIMEOUT_SEC` | `15` | EXO connection timeout |
-| `RESONANT_EXO_PROGRESS_WARNING_SEC` | `120` | Informational threshold for showing that a quiet EXO generation is still working; it never stops the run |
-| `RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC` | `0` (disabled) | Optional operator-defined hard limit for seconds without semantic EXO progress; long generations are unlimited by default and remain user-stoppable |
-| `RESONANT_EXO_READ_TIMEOUT_SEC` | `0` (disabled) | Legacy alias for the optional EXO stream idle timeout |
-| `RESONANT_DEFAULT_BACKEND` | `ollama` | Explicit default provider |
-| `RESONANT_DEFAULT_MODEL` | auto-discovered | Explicit default model |
+| `LUMI_EXO_CONTEXT_TOKENS` | conservative model inference | Effective EXO deployment context window; set this to the server's actual configured window |
+| `LUMI_EXO_CONNECT_TIMEOUT_SEC` | `15` | EXO connection timeout |
+| `LUMI_EXO_PROGRESS_WARNING_SEC` | `120` | Informational threshold for showing that a quiet EXO generation is still working; it never stops the run |
+| `LUMI_EXO_STREAM_IDLE_TIMEOUT_SEC` | `0` (disabled) | Optional operator-defined hard limit for seconds without semantic EXO progress; long generations are unlimited by default and remain user-stoppable |
+| `LUMI_EXO_READ_TIMEOUT_SEC` | `0` (disabled) | Legacy alias for the optional EXO stream idle timeout |
+| `LUMI_DEFAULT_BACKEND` | `ollama` | Explicit default provider |
+| `LUMI_DEFAULT_MODEL` | auto-discovered | Explicit default model |
 | `MOONSHOT_API_KEY` | none | Kimi API key |
 | `SONN_API_URL` | none | Complete SONN project API base URL ending in `/openai/v1` |
 | `SONN_API_KEY` | none | SONN private invitation key |
 | `OPENROUTER_API_KEY` | none | OpenRouter API key |
 | `MOONSHOT_BASE_URL` | `https://api.moonshot.ai/v1` | Kimi-compatible API URL |
-| `RESONANT_OLLAMA_NUM_CTX` | capability-derived | Ollama context override |
-| `RESONANT_OLLAMA_NUM_BATCH` | Ollama default | Optional batch override |
-| `RESONANT_OLLAMA_NUM_GPU` | Ollama default | Optional GPU layer override |
-| `RESONANT_OLLAMA_KEEP_ALIVE` | `120m` | Ollama keep-alive |
-| `RESONANT_OLLAMA_HTTP_TIMEOUT_SEC` | `360` | Ollama request timeout |
-| `RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `300` | Ollama stream read timeout |
+| `LUMI_OLLAMA_NUM_CTX` | capability-derived | Ollama context override |
+| `LUMI_OLLAMA_NUM_BATCH` | Ollama default | Optional batch override |
+| `LUMI_OLLAMA_NUM_GPU` | Ollama default | Optional GPU layer override |
+| `LUMI_OLLAMA_KEEP_ALIVE` | `120m` | Ollama keep-alive |
+| `LUMI_OLLAMA_HTTP_TIMEOUT_SEC` | `360` | Ollama request timeout |
+| `LUMI_OLLAMA_HTTP_READ_TIMEOUT_SEC` | `300` | Ollama stream read timeout |
 
 Persistent configuration lives in `~/.resonant/settings.json` and is managed
 through the desktop Settings view.

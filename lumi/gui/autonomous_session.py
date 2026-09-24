@@ -5,7 +5,7 @@ autonomous_session — glue between the WS handler in `app.py` and the
 Owns the mid-tier orchestration:
 - Parsing the rigorous-grill spec into a usable roadmap (a3 parser
   already produces typed criteria; we just construct the Roadmap +
-  save to `<project>/.resonant/`)
+  save to `<project>/.lumi/`)
 - Building the production hooks via `autonomous_factory`
 - Constructing + starting the daemon
 - Wiring the daemon's `on_event` into the WebSocket emitter
@@ -115,7 +115,7 @@ def build_roadmap_from_spec(
     decision_timeout_label: str = "",
 ) -> tuple[Roadmap, Path]:
     """Parse a rigorous-grill spec into a Roadmap + persist to
-    `<project>/.resonant/roadmap-<intent_id>.md`.
+    `<project>/.lumi/roadmap-<intent_id>.md`.
 
     Returns `(roadmap, path)`. Raises `ValueError` if the spec
     doesn't contain a parseable `## Final spec` block OR the

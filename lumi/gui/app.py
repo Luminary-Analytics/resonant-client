@@ -314,7 +314,7 @@ class AppState:
     def _apply_big_context_preset(self) -> None:
         """
         If `general.big_context_profile` is true and the user has NOT manually
-        set RESONANT_OLLAMA_NUM_CTX/NUM_BATCH via env, bump them to the
+        set LUMI_OLLAMA_NUM_CTX/NUM_BATCH via env, bump them to the
         large-repository profile (131072 ctx, 2048 batch).
 
         Env-var overrides win — we only set defaults if env is unset.
@@ -325,10 +325,10 @@ class AppState:
             enabled = False
         if not enabled:
             return
-        if "RESONANT_OLLAMA_NUM_CTX" not in os.environ:
-            os.environ["RESONANT_OLLAMA_NUM_CTX"] = "131072"
-        if "RESONANT_OLLAMA_NUM_BATCH" not in os.environ:
-            os.environ["RESONANT_OLLAMA_NUM_BATCH"] = "2048"
+        if "LUMI_OLLAMA_NUM_CTX" not in os.environ:
+            os.environ["LUMI_OLLAMA_NUM_CTX"] = "131072"
+        if "LUMI_OLLAMA_NUM_BATCH" not in os.environ:
+            os.environ["LUMI_OLLAMA_NUM_BATCH"] = "2048"
 
     @staticmethod
     def _normalize_path(project_path: str) -> str:
@@ -383,7 +383,7 @@ class AppState:
 
     @staticmethod
     def _execution_policy_for(tier: str, project_root: str):
-        """The tier's built-in policy with the project's resonant-policy.json layered on.
+        """The tier's built-in policy with the project's lumi-policy.json layered on.
 
         The project policy can tighten or refine the built-in rules; it cannot
         override built-in denies (see ExecutionPolicy.merge).
@@ -391,7 +391,13 @@ class AppState:
         from ..engine.policies import ExecutionPolicy, policy_for_tier
 
         policy = policy_for_tier(tier)
-        project_policy = ExecutionPolicy.from_file(os.path.join(project_root, "resonant-policy.json"))
+        # lumi-policy.json; repositories from before the rebrand keep resonant-policy.json.
+        project_policy = None
+        for name in ("lumi-policy.json", "resonant-policy.json"):
+            candidate = os.path.join(project_root, name)
+            if os.path.isfile(candidate):
+                project_policy = ExecutionPolicy.from_file(candidate)
+                break
         return policy.merge(project_policy) if project_policy else policy
 
     def _apply_session_permissions(self, session: Session, mode: str) -> None:
@@ -505,7 +511,7 @@ class AppState:
         self.engram = self.base_engram.clone(namespace=self._project_namespace(project_path))
         self.engram.set_mcp_manager(self.mcp_manager)
         self.harness = HarnessWorkspace(project_path)
-        # Migrate legacy .resonant-harness/ to ~/.resonant/projects/<hash>/harness/
+        # Migrate legacy .resonant-harness/ to ~/.lumi/projects/<hash>/harness/
         # whether or not sprint mode is on — keeps the user's repo clean either way.
         # The notice gets surfaced via the next init payload (see _last_migration_notice).
         self._last_migration_notice = ""
@@ -514,7 +520,7 @@ class AppState:
             if migrated:
                 self._last_migration_notice = (
                     f"Moved {migrated} harness file(s) from .resonant-harness/ to "
-                    f"~/.resonant/projects/. You can `git rm -r .resonant-harness/` "
+                    f"~/.lumi/projects/. You can `git rm -r .resonant-harness/` "
                     f"when you're ready."
                 )
                 logger.info(self._last_migration_notice)
@@ -1187,8 +1193,8 @@ class AppState:
 
         Resolution order:
           1. `general.specialist_model_overrides[<spec>]` from settings.json
-          2. `RESONANT_SPECIALIST_<NAME>_MODEL` env var (uppercase
-             specialization, e.g. RESONANT_SPECIALIST_REFLECT_MODEL)
+          2. `LUMI_SPECIALIST_<NAME>_MODEL` env var (uppercase
+             specialization, e.g. LUMI_SPECIALIST_REFLECT_MODEL)
 
         Settings wins over env-var so persistent UI configuration is
         authoritative. Both empty → "" → caller uses default.
@@ -1219,7 +1225,7 @@ class AppState:
             if isinstance(v, str) and v.strip():
                 return v.strip()
         # 2. Env var.
-        env_key = f"RESONANT_SPECIALIST_{spec_key.upper()}_MODEL"
+        env_key = f"LUMI_SPECIALIST_{spec_key.upper()}_MODEL"
         return str(os.environ.get(env_key, "") or "").strip()
 
     def _build_specialist_backend(self, specialization: str) -> Optional[Any]:
@@ -2479,7 +2485,7 @@ async def websocket_endpoint(ws: WebSocket):
                 # validates and raises ValueError on misconfiguration.
                 #
                 # Flow:
-                #   1. Build roadmap from spec, persist to <project>/.resonant/
+                #   1. Build roadmap from spec, persist to <project>/.lumi/
                 #   2. Spawn AutonomousMissionDaemon with production hooks
                 #   3. Advance mission phase to "autonomous_running"
                 #   4. Daemon emits autonomous_* events asynchronously;

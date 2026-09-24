@@ -2,7 +2,7 @@
 Resonant GUI — Session & Project Manager
 
 Manages persistent agentic-coding sessions organized by project folder.
-Sessions are stored as JSON files under ~/.resonant/projects/<hash>/sessions/.
+Sessions are stored as JSON files under ~/.lumi/projects/<hash>/sessions/.
 """
 
 import hashlib
@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from .session_ledger import SESSION_LEDGER_VERSION, SessionEventLedger
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -57,19 +58,19 @@ def is_valid_session_id(value: str) -> bool:
     """Whether a session id is safe to use as one storage filename stem."""
     return bool(_SESSION_ID_PATTERN.fullmatch(str(value or "")))
 
-def _resonant_dir() -> Path:
-    """Resolve ~/.resonant at call time, never at import time.
+def _state_dir() -> Path:
+    """Resolve the state directory at call time, never at import time.
 
     Tests monkeypatch Path.home() after this module is already
     imported; an import-time constant kept pointing at the real user
     home, so every test run that touched set_project() prepended
-    pytest tmp paths to the user's real ~/.resonant/recent_projects.json.
+    pytest tmp paths to the user's real recent_projects.json.
     """
-    return Path.home() / ".resonant"
+    return state_home()
 
 
 def _projects_dir() -> Path:
-    return _resonant_dir() / "projects"
+    return _state_dir() / "projects"
 
 
 def _is_pytest_temp_path(path: str) -> bool:
@@ -137,7 +138,7 @@ def _looks_like_resonant_source(path: str) -> bool:
 
 
 def _read_recent_project_entries() -> list[dict]:
-    recents_file = _resonant_dir() / "recent_projects.json"
+    recents_file = _state_dir() / "recent_projects.json"
     try:
         if recents_file.exists():
             with open(recents_file, "r", encoding="utf-8-sig") as f:
@@ -155,7 +156,7 @@ def _playground_project_path() -> str:
     recent projects; this preserves dogfooding setups like D:/Repos/Playground.
     Fall back to the existing safe Documents workspace for fresh installs.
     """
-    override = os.environ.get("RESONANT_PLAYGROUND_PROJECT", "").strip()
+    override = os.environ.get("LUMI_PLAYGROUND_PROJECT", "").strip()
     recent_entries = _read_recent_project_entries()
 
     source_paths: list[str] = []
@@ -197,7 +198,7 @@ def _playground_project_path() -> str:
     except OSError:
         pass
 
-    workspace = _resonant_dir() / "workspace"
+    workspace = _state_dir() / "workspace"
     try:
         workspace.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -210,10 +211,10 @@ def _safe_default_project_path() -> str:
     hasn't explicitly chosen one yet.
 
     Resolution order:
-      1. Most-recent project from `~/.resonant/recent_projects.json`
+      1. Most-recent project from `~/.lumi/recent_projects.json`
          (filtered to existing dirs).
       2. `~/Documents/Resonant Projects` — created if missing.
-      3. `~/.resonant/workspace` — last-resort fallback inside our own
+      3. `~/.lumi/workspace` — last-resort fallback inside our own
          data dir, always writable.
 
     NEVER returns `os.getcwd()` when cwd is an OS/install location —
@@ -240,7 +241,7 @@ def _safe_default_project_path() -> str:
             pass
 
     # Most-recent project (best signal for repeat users).
-    recents_file = _resonant_dir() / "recent_projects.json"
+    recents_file = _state_dir() / "recent_projects.json"
     try:
         if recents_file.exists():
             with open(recents_file, "r", encoding="utf-8-sig") as f:
@@ -277,7 +278,7 @@ def _safe_default_project_path() -> str:
         pass
 
     # Last resort — always writable since it's our own data dir.
-    workspace = _resonant_dir() / "workspace"
+    workspace = _state_dir() / "workspace"
     try:
         workspace.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -753,7 +754,7 @@ class ProjectManager:
         # v0.3.3 — never silently take os.getcwd() when cwd is an OS or
         # app-install location (Bug #25). _safe_default_project_path
         # falls back through recent-projects → ~/Documents/Resonant
-        # Projects → ~/.resonant/workspace.
+        # Projects → ~/.lumi/workspace.
         self.project_path = project_path or _safe_default_project_path()
         self.current_session: Optional[SessionRecord] = None
         self._ensure_storage()
@@ -837,7 +838,7 @@ class ProjectManager:
     def _read_recent_projects_raw(self) -> list:
         """Raw recents entries, unfiltered. Callers that display them should
         use `get_recent_projects`, which drops missing and pytest paths."""
-        recents_file = _resonant_dir() / "recent_projects.json"
+        recents_file = _state_dir() / "recent_projects.json"
         try:
             if recents_file.exists():
                 with open(recents_file, "r", encoding="utf-8-sig") as f:
@@ -849,9 +850,9 @@ class ProjectManager:
         return []
 
     def _write_recent_projects_raw(self, entries: list) -> None:
-        recents_file = _resonant_dir() / "recent_projects.json"
+        recents_file = _state_dir() / "recent_projects.json"
         try:
-            _resonant_dir().mkdir(parents=True, exist_ok=True)
+            _state_dir().mkdir(parents=True, exist_ok=True)
             with open(recents_file, "w", encoding="utf-8") as f:
                 json.dump(entries, f, indent=2)
         except Exception as e:
@@ -860,7 +861,7 @@ class ProjectManager:
     def _save_recent_project_path(self, project_path: str):
         """Track an arbitrary project path in the recent projects list."""
         normalized_project = os.path.normpath(project_path)
-        recents_file = _resonant_dir() / "recent_projects.json"
+        recents_file = _state_dir() / "recent_projects.json"
         recents = []
         try:
             if recents_file.exists():
@@ -905,7 +906,7 @@ class ProjectManager:
         recents = recents[:20]
 
         try:
-            _resonant_dir().mkdir(parents=True, exist_ok=True)
+            _state_dir().mkdir(parents=True, exist_ok=True)
             with open(recents_file, "w", encoding="utf-8") as f:
                 json.dump(recents, f, indent=2)
         except Exception as e:
@@ -921,7 +922,7 @@ class ProjectManager:
 
         Capped at `limit` entries.
         """
-        recents_file = _resonant_dir() / "recent_projects.json"
+        recents_file = _state_dir() / "recent_projects.json"
         raw: list = []
         try:
             if recents_file.exists():
@@ -967,7 +968,7 @@ class ProjectManager:
 
     def clear_recent_projects(self) -> None:
         """Wipe the recent-projects history (keeps the current project)."""
-        recents_file = _resonant_dir() / "recent_projects.json"
+        recents_file = _state_dir() / "recent_projects.json"
         try:
             recents_file.unlink(missing_ok=True)
         except Exception:

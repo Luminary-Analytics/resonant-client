@@ -64,8 +64,8 @@ and `/api/ui-state` therefore require an exact `Host`, this server's `Origin`,
 and the per-process access token. They check these before accepting a WebSocket.
 Pages redeem a one-time code from the launch
 link's URL fragment at `/api/access` and keep the token in origin storage, which
-is port-isolated unlike cookies; they send it as a `sonn.access.<token>`
-WebSocket subprotocol or an `X-SONN-Access` header. Codes come from the
+is port-isolated unlike cookies; they send it as a `lumi.access.<token>`
+WebSocket subprotocol or an `X-Lumi-Access` header. Codes come from the
 launcher (desktop window, `--browser` link) or the desktop bridge's
 `open_in_browser`, never from a web request. The server never logs or prints
 the token.

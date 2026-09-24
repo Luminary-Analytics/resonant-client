@@ -8,6 +8,7 @@ import logging
 import threading
 from datetime import date
 from pathlib import Path
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +55,7 @@ class CostTracker:
     """Tracks token usage and costs per session and daily."""
 
     def __init__(self, path: str | Path | None = None):
-        self._path = Path(path) if path else Path.home() / ".resonant" / "costs.json"
+        self._path = Path(path) if path else state_home() / "costs.json"
         self._lock = threading.Lock()
         self._daily: dict = {}  # { "2025-03-20": { "input_tokens": N, "output_tokens": N, "cost_usd": X } }
         self._session_input = 0

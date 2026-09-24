@@ -76,9 +76,9 @@ def test_profile_is_not_the_users_real_chrome_directory(monkeypatch):
     user cannot both browse, and the launch would fail whenever Chrome was
     already open.
     """
-    monkeypatch.delenv("RESONANT_BROWSER_USER_DATA_DIR", raising=False)
+    monkeypatch.delenv("LUMI_BROWSER_USER_DATA_DIR", raising=False)
     profile = browser._profile_dir().replace("\\", "/").lower()
-    assert "/.resonant/" in profile
+    assert "/.lumi/" in profile
     assert "google/chrome/user data" not in profile
 
 
@@ -181,7 +181,7 @@ def test_connected_browser_still_refreshes_the_session_indicator(monkeypatch):
 def test_existing_dedicated_chrome_reloads_the_staged_group_extension(
     tmp_path, monkeypatch
 ):
-    staged = tmp_path / "resonant-extension"
+    staged = tmp_path / "lumi-extension"
     staged.mkdir()
     (staged / "manifest.json").write_text("{}", encoding="utf-8")
     manager = browser.BrowserManager()
@@ -266,7 +266,7 @@ def test_extension_can_refresh_the_native_group_for_the_active_session():
         encoding="utf-8"
     )
 
-    assert "globalThis.configureResonantGroup" in source
+    assert "globalThis.configureLumiGroup" in source
     assert "title: GROUP_TITLE" in source
     assert "color: GROUP_COLOR" in source
     assert "collapsed: false" in source

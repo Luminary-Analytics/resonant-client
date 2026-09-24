@@ -26,7 +26,7 @@ class EngramIntegration:
 
     @property
     def enabled(self) -> bool:
-        return os.environ.get('RESONANT_EVALUATION_MODE') != '1' and self._enabled and bool(self._server_url or self._mcp_manager)
+        return os.environ.get('LUMI_EVALUATION_MODE') != '1' and self._enabled and bool(self._server_url or self._mcp_manager)
 
     def set_mcp_manager(self, mcp_manager):
         """Set MCP manager for MCP-based transport to engram."""

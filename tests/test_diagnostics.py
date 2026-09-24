@@ -45,7 +45,7 @@ class TestRedactPrefixedTokens:
 
         line = f"  Open in browser (one-time link): {LocalAccess().launch_url('http://127.0.0.1:5000')}"
         result = redact(line)
-        assert result == "  Open in browser (one-time link): http://127.0.0.1:5000/#sonn-launch=[REDACTED]"
+        assert result == "  Open in browser (one-time link): http://127.0.0.1:5000/#lumi-launch=[REDACTED]"
 
     def test_does_not_clobber_normal_text(self):
         # Pattern is anchored on the prefix — random text shouldn't trip.

@@ -4,7 +4,7 @@ These are reference skills with `created_by="bundled"` provenance. The
 curator NEVER touches them. They get installed on first run via
 `install_bundled_skills(force=False)` which:
 
-- Creates a Skill record in `~/.resonant/skills/global/<id>/skill.json`
+- Creates a Skill record in `~/.lumi/skills/global/<id>/skill.json`
 - Copies the procedure.md + verification.md sidecar files
 - Skips if the skill already exists (unless force=True)
 
@@ -92,7 +92,7 @@ def _iter_bundled_files() -> Iterator[tuple[str, str]]:
 
 
 def install_bundled_skills(*, force: bool = False) -> list[Skill]:
-    """Materialize bundled skills into `~/.resonant/skills/global/`.
+    """Materialize bundled skills into `~/.lumi/skills/global/`.
 
     Idempotent: skips skills that already exist on disk unless
     `force=True`. Returns the list of skills that were freshly

@@ -14,12 +14,12 @@ a privileged request must show three things:
 * ``Origin`` is this server's own origin. Browsers always send it on WebSocket
   handshakes and POSTs, where it is required; they omit it on same-origin GETs,
   where only a foreign value is refused.
-* The launch's access token, attached explicitly: an ``X-SONN-Access`` header
-  on HTTP requests or a ``sonn.access.<token>`` WebSocket subprotocol.
+* The launch's access token, attached explicitly: an ``X-Lumi-Access`` header
+  on HTTP requests or a ``lumi.access.<token>`` WebSocket subprotocol.
 
 The token is created per process. The server never prints, logs or stores it.
 A page obtains it by redeeming a one-time launch code carried in the URL
-fragment (``#sonn-launch=<code>``). Browsers do not send fragments to servers,
+fragment (``#lumi-launch=<code>``). Browsers do not send fragments to servers,
 so the code cannot reach access logs or ``Referer`` headers, and a printed or
 remembered link is useless after its first use.
 
@@ -46,10 +46,10 @@ from starlette.responses import PlainTextResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 from starlette.websockets import WebSocketClose
 
-ACCESS_HEADER = "x-sonn-access"
-LAUNCH_FRAGMENT = "sonn-launch"
-WS_PROTOCOL = "sonn.v1"
-WS_ACCESS_PREFIX = "sonn.access."
+ACCESS_HEADER = "x-lumi-access"
+LAUNCH_FRAGMENT = "lumi-launch"
+WS_PROTOCOL = "lumi.v1"
+WS_ACCESS_PREFIX = "lumi.access."
 # WebSocket close code for a refused handshake: RFC 6455 "policy violation".
 # Closing before accept() makes the ASGI server answer the upgrade with 403.
 WS_REFUSED = 1008
@@ -159,8 +159,8 @@ class LocalAccess:
     def websocket_subprotocol(self, conn: HTTPConnection) -> Optional[str]:
         """The subprotocol to accept a WebSocket handshake with, or None to refuse.
 
-        The page offers ``sonn.v1`` plus ``sonn.access.<token>``. The server
-        selects ``sonn.v1``, so the token is never echoed back.
+        The page offers ``lumi.v1`` plus ``lumi.access.<token>``. The server
+        selects ``lumi.v1``, so the token is never echoed back.
         """
         offered = [str(p) for p in conn.scope.get("subprotocols") or ()]
         if WS_PROTOCOL not in offered:

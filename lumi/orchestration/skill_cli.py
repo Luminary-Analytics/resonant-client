@@ -595,11 +595,13 @@ def _ensure_utf8_stdout() -> None:
 
 def main(argv: Optional[list[str]] = None) -> int:
     _ensure_utf8_stdout()
+    from ..paths import migrate_legacy_home
+    migrate_legacy_home()
     # v0.6.1a3 — auto-install bundled skills on every CLI invocation.
     # Idempotent: skips skills that already exist on disk. Cheap
     # enough to run unconditionally (just a stat per bundled skill).
     # First run materializes the package's reference skills into
-    # ~/.resonant/skills/global/ so `resonant-skill list` shows
+    # ~/.lumi/skills/global/ so `lumi-skill list` shows
     # them out of the box without an explicit install step.
     try:
         install_bundled_skills()

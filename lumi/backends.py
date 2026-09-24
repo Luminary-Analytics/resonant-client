@@ -335,8 +335,8 @@ def _message_text(content) -> str:
 # loop hang for minutes per call.
 # v0.6.5 — env-configurable so a flaky multi-day cloud run can widen the
 # budget (and a local-Ollama setup can fail fast). Read once at import.
-_OLLAMA_MAX_RETRIES = int(os.environ.get("RESONANT_OLLAMA_MAX_RETRIES", "3") or "3")
-_OLLAMA_BASE_BACKOFF = float(os.environ.get("RESONANT_OLLAMA_RETRY_BASE_BACKOFF", "1.5") or "1.5")
+_OLLAMA_MAX_RETRIES = int(os.environ.get("LUMI_OLLAMA_MAX_RETRIES", "3") or "3")
+_OLLAMA_BASE_BACKOFF = float(os.environ.get("LUMI_OLLAMA_RETRY_BASE_BACKOFF", "1.5") or "1.5")
 # v0.6.5 — 403/429 are the cloud rate-limiting our concurrency. Treat them
 # as RETRYABLE (with backoff) rather than terminal, and tag them as
 # rate-limit signals so the governor can shrink its cap. A persistent 403
@@ -351,8 +351,8 @@ _OLLAMA_RETRYABLE_STATUS = frozenset({502, 503, 504, 522, 524}) | _OLLAMA_RATELI
 # window, and the backend emits a distinct `ollama_circuit_open` status so
 # the daemon/GUI can tell "the endpoint is down" apart from "this one task
 # failed". A single success closes it. Set the threshold to 0 to disable.
-_OLLAMA_CIRCUIT_THRESHOLD = int(os.environ.get("RESONANT_OLLAMA_CIRCUIT_THRESHOLD", "5") or "5")
-_OLLAMA_CIRCUIT_COOLDOWN = float(os.environ.get("RESONANT_OLLAMA_CIRCUIT_COOLDOWN_SEC", "60") or "60")
+_OLLAMA_CIRCUIT_THRESHOLD = int(os.environ.get("LUMI_OLLAMA_CIRCUIT_THRESHOLD", "5") or "5")
+_OLLAMA_CIRCUIT_COOLDOWN = float(os.environ.get("LUMI_OLLAMA_CIRCUIT_COOLDOWN_SEC", "60") or "60")
 
 # v0.6.5 — outbound concurrency governor. Nothing else caps how many
 # requests we fire at Ollama at once; under heavy autonomous/parallel load
@@ -363,9 +363,9 @@ _OLLAMA_CIRCUIT_COOLDOWN = float(os.environ.get("RESONANT_OLLAMA_CIRCUIT_COOLDOW
 # multiplicatively shrinks the limit; a streak of successes additively
 # grows it back toward the ceiling, so it self-finds the max safe
 # throughput instead of relying on a hand-picked number. Tune the start /
-# ceiling via RESONANT_OLLAMA_CONCURRENCY / RESONANT_OLLAMA_MAX_CONCURRENCY.
-_OLLAMA_CONCURRENCY = int(os.environ.get("RESONANT_OLLAMA_CONCURRENCY", "4") or "4")
-_OLLAMA_MAX_CONCURRENCY = int(os.environ.get("RESONANT_OLLAMA_MAX_CONCURRENCY", "8") or "8")
+# ceiling via LUMI_OLLAMA_CONCURRENCY / LUMI_OLLAMA_MAX_CONCURRENCY.
+_OLLAMA_CONCURRENCY = int(os.environ.get("LUMI_OLLAMA_CONCURRENCY", "4") or "4")
+_OLLAMA_MAX_CONCURRENCY = int(os.environ.get("LUMI_OLLAMA_MAX_CONCURRENCY", "8") or "8")
 _OLLAMA_GOV_INCREASE_AFTER = 8     # consecutive successes before +1 slot
 _OLLAMA_GOV_DECREASE_FACTOR = 0.5  # multiplicative shrink on a rate-limit
 
@@ -496,15 +496,15 @@ class OllamaBackend:
         # Keep options stable across requests. Context is capability-derived;
         # machine-specific GPU and batch tuning is opt-in through environment
         # variables so downloaded builds inherit Ollama's platform defaults.
-        configured_num_ctx = os.environ.get("RESONANT_OLLAMA_NUM_CTX", "").strip()
+        configured_num_ctx = os.environ.get("LUMI_OLLAMA_NUM_CTX", "").strip()
         try:
             num_ctx = int(configured_num_ctx) if configured_num_ctx else self._default_num_ctx(model)
         except ValueError:
             num_ctx = self._default_num_ctx(model)
         self._ollama_options = {"num_ctx": max(4_096, num_ctx)}
         for env_name, option_name in (
-            ("RESONANT_OLLAMA_NUM_GPU", "num_gpu"),
-            ("RESONANT_OLLAMA_NUM_BATCH", "num_batch"),
+            ("LUMI_OLLAMA_NUM_GPU", "num_gpu"),
+            ("LUMI_OLLAMA_NUM_BATCH", "num_batch"),
         ):
             raw_option = os.environ.get(env_name, "").strip()
             if raw_option:
@@ -533,11 +533,11 @@ class OllamaBackend:
         else:
             # Unknown value — drop silently rather than poisoning the dict
             self.thinking_mode = None
-        self._ollama_keep_alive = (os.environ.get("RESONANT_OLLAMA_KEEP_ALIVE", "120m").strip() or "120m")
+        self._ollama_keep_alive = (os.environ.get("LUMI_OLLAMA_KEEP_ALIVE", "120m").strip() or "120m")
         # Long reasoning and cold model loads can legitimately take minutes.
-        self._ollama_http_timeout = float(os.environ.get("RESONANT_OLLAMA_HTTP_TIMEOUT_SEC", "360"))
+        self._ollama_http_timeout = float(os.environ.get("LUMI_OLLAMA_HTTP_TIMEOUT_SEC", "360"))
         self._ollama_http_read_timeout = float(
-            os.environ.get("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
+            os.environ.get("LUMI_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
         )
 
     @property
@@ -1735,11 +1735,11 @@ def codex_cli_models(config: dict | None = None) -> list[str]:
     """Return bootstrap models until the account catalog is refreshed.
 
     Keep a small default list, prepend the user's configured Codex model if
-    present, and allow explicit overrides via RESONANT_CODEX_MODELS. The GUI
+    present, and allow explicit overrides via LUMI_CODEX_MODELS. The GUI
     replaces this list with models discovered through the Codex app server.
     """
     configured = _codex_configured_model(config)
-    env_models = _split_model_list(os.environ.get("RESONANT_CODEX_MODELS", ""))
+    env_models = _split_model_list(os.environ.get("LUMI_CODEX_MODELS", ""))
     candidates = env_models or list(_CODEX_DEFAULT_MODELS)
     if configured and configured not in candidates:
         candidates.insert(0, configured)
@@ -1768,7 +1768,7 @@ def resolve_codex_cli_path() -> str:
     """Resolve the best Codex CLI executable for subscription-backed runs."""
     config = _load_codex_config()
     candidates = [
-        os.environ.get("RESONANT_CODEX_CLI", "").strip(),
+        os.environ.get("LUMI_CODEX_CLI", "").strip(),
         os.environ.get("CODEX_CLI_PATH", "").strip(),
         _codex_configured_cli_path(config),
         shutil.which("codex") or "",
@@ -1826,11 +1826,11 @@ def _shorten_for_codex_prompt(value, limit: int) -> str:
 
 def _format_codex_history(history: list) -> str:
     try:
-        max_turns = int(os.environ.get("RESONANT_CODEX_HISTORY_TURNS", "20") or "20")
+        max_turns = int(os.environ.get("LUMI_CODEX_HISTORY_TURNS", "20") or "20")
     except ValueError:
         max_turns = 20
     try:
-        per_item_limit = int(os.environ.get("RESONANT_CODEX_HISTORY_ITEM_CHARS", "4000") or "4000")
+        per_item_limit = int(os.environ.get("LUMI_CODEX_HISTORY_ITEM_CHARS", "4000") or "4000")
     except ValueError:
         per_item_limit = 4000
     items = list(history or [])
@@ -1965,8 +1965,8 @@ class KimiBackend:
             source="provider",
         )
         self._timeout = httpx.Timeout(
-            connect=float(os.environ.get("RESONANT_KIMI_CONNECT_TIMEOUT_SEC", "15")),
-            read=float(os.environ.get("RESONANT_KIMI_READ_TIMEOUT_SEC", "600")),
+            connect=float(os.environ.get("LUMI_KIMI_CONNECT_TIMEOUT_SEC", "15")),
+            read=float(os.environ.get("LUMI_KIMI_READ_TIMEOUT_SEC", "600")),
             write=60.0,
             pool=60.0,
         )
@@ -2843,8 +2843,8 @@ class ExoBackend(KimiBackend):
             0.0,
             float(
                 os.environ.get(
-                    "RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC",
-                    os.environ.get("RESONANT_EXO_READ_TIMEOUT_SEC", "0"),
+                    "LUMI_EXO_STREAM_IDLE_TIMEOUT_SEC",
+                    os.environ.get("LUMI_EXO_READ_TIMEOUT_SEC", "0"),
                 )
             ),
         )
@@ -2852,14 +2852,14 @@ class ExoBackend(KimiBackend):
             0.0,
             float(
                 os.environ.get(
-                    "RESONANT_EXO_PROGRESS_WARNING_SEC",
+                    "LUMI_EXO_PROGRESS_WARNING_SEC",
                     "120",
                 )
             ),
         )
         self._stream_idle_timeout = idle_timeout
         self._timeout = httpx.Timeout(
-            connect=float(os.environ.get("RESONANT_EXO_CONNECT_TIMEOUT_SEC", "15")),
+            connect=float(os.environ.get("LUMI_EXO_CONNECT_TIMEOUT_SEC", "15")),
             # Long EXO generations are unlimited by default. Operators can
             # still opt into a hard semantic-idle/read deadline through the
             # legacy environment variables above; user Stop is handled by the
@@ -2871,12 +2871,12 @@ class ExoBackend(KimiBackend):
 
     @property
     def effective_context_tokens(self) -> int:
-        configured = os.environ.get("RESONANT_EXO_CONTEXT_TOKENS", "").strip()
+        configured = os.environ.get("LUMI_EXO_CONTEXT_TOKENS", "").strip()
         if configured:
             try:
                 return max(4096, int(configured))
             except ValueError:
-                logger.warning("Ignoring invalid RESONANT_EXO_CONTEXT_TOKENS")
+                logger.warning("Ignoring invalid LUMI_EXO_CONTEXT_TOKENS")
         return self._capabilities.context_window
 
     @staticmethod
@@ -3380,7 +3380,7 @@ class CodexCliBackend:
         if not self.cli_path:
             raise ValueError(
                 "Codex CLI was not found. Install/sign in to Codex, or set "
-                "RESONANT_CODEX_CLI to the codex executable."
+                "LUMI_CODEX_CLI to the codex executable."
             )
         self._sandbox_override = (sandbox or "").strip()
         if self._sandbox_override not in {"read-only", "workspace-write", "danger-full-access"}:
@@ -3628,9 +3628,9 @@ def claude_code_cli_models() -> list[str]:
     """Return the Claude Code model list Resonant should expose.
 
     Claude Code accepts model aliases (opus/sonnet/haiku) as well as full
-    model names. RESONANT_CLAUDE_MODELS overrides for early rollouts.
+    model names. LUMI_CLAUDE_MODELS overrides for early rollouts.
     """
-    env_models = _split_model_list(os.environ.get("RESONANT_CLAUDE_MODELS", ""))
+    env_models = _split_model_list(os.environ.get("LUMI_CLAUDE_MODELS", ""))
     return env_models or list(_CLAUDE_CODE_DEFAULT_MODELS)
 
 
@@ -3644,7 +3644,7 @@ def claude_code_model_labels() -> dict[str, str]:
 def resolve_claude_cli_path() -> str:
     """Resolve the Claude Code CLI executable for subscription-backed runs."""
     candidates = [
-        os.environ.get("RESONANT_CLAUDE_CLI", "").strip(),
+        os.environ.get("LUMI_CLAUDE_CLI", "").strip(),
         os.environ.get("CLAUDE_CLI_PATH", "").strip(),
         shutil.which("claude") or "",
         str(Path.home() / ".claude" / "local" / "claude"),
@@ -3700,7 +3700,7 @@ class ClaudeCodeCliBackend:
         if not self.cli_path:
             raise ValueError(
                 "Claude Code CLI was not found. Install/sign in to Claude Code, "
-                "or set RESONANT_CLAUDE_CLI to the claude executable."
+                "or set LUMI_CLAUDE_CLI to the claude executable."
             )
         self.permission_mode = "bypass"
         self.cli_permission_mode = _CLAUDE_CODE_PERMISSION_PROFILES["bypass"]
@@ -3933,7 +3933,7 @@ def create_backend(
         return CodexCliBackend(
             model or codex_cli_models()[0],
             cwd=cwd,
-            sandbox=os.environ.get("RESONANT_CODEX_SANDBOX") or None,
+            sandbox=os.environ.get("LUMI_CODEX_SANDBOX") or None,
             permission_mode=permission_mode,
         )
     if backend_type in ("claude-code", "claude_code"):

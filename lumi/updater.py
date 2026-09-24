@@ -7,7 +7,7 @@ Architecture
   one-folder layout (or under sys._MEIPASS in one-file mode).
 - We call WinSparkle's C API via ctypes — no external Python dep.
 - EdDSA public key is hard-coded in this module. The matching private
-  key lives at `~/.resonant/keys/eddsa_priv.key` on the developer's
+  key lives at `~/.lumi/keys/eddsa_priv.key` on the developer's
   machine and never enters the repo.
 - Appcast URL points at the GitHub Pages site, which also hosts the
   installers. The source repository itself may be private.
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # ---- Constants ---------------------------------------------------------------
 
 # Generated 2026-04-28 with WinSparkle 0.9.2 winsparkle-tool generate-key.
-# The matching private key lives at ~/.resonant/keys/eddsa_priv.key on the
+# The matching private key lives at ~/.lumi/keys/eddsa_priv.key on the
 # developer's machine and is used by the release CI to sign every installer.
 # Rotating this key requires a coordinated push: new pubkey here + new privkey
 # in CI secret + signed first-update at the new key.

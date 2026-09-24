@@ -15,7 +15,7 @@ enablement come only from user settings (the ``plugins`` section):
   It covers the pack at that directory only, so an approval never follows a
   copied pack into another repository. This is the only way to trust a pack
   inside the open project.
-* *Pinned trust by id*, for packs outside the project (``~/.resonant/packs``
+* *Pinned trust by id*, for packs outside the project (``~/.lumi/packs``
   or a configured ``path``)::
 
       plugins[<id>] = {"trust": "local", "enabled": true, "sha256": ...}
@@ -44,17 +44,20 @@ from typing import Any, Iterable
 
 from .agents import AgentType
 from .hooks import HookDefinition
+from ..paths import project_dirs, state_home
 
 
 logger = logging.getLogger(__name__)
 
-PACK_MANIFEST = "resonant-pack.json"
+PACK_MANIFEST = "lumi-pack.json"
+# Packs written before the Lumi rebrand keep their original manifest name.
+LEGACY_PACK_MANIFEST = "resonant-pack.json"
 TRUST_LEVELS = frozenset({"local", "trusted", "signed"})
 # Bounds on what one pack may ask us to hash on every verification. A pack
 # beyond them cannot be verified and therefore cannot be trusted.
 MAX_PACK_FILES = 4000
 MAX_PACK_BYTES = 64 * 1024 * 1024
-_DIGEST_VERSION = b"resonant-pack-digest-v1\n"
+_DIGEST_VERSION = b"lumi-pack-digest-v1\n"
 # Version-control metadata is not executed by packs, and tools rewrite it on
 # ordinary reads (`git status` refreshes the index), which would otherwise
 # withdraw approval for no change to the pack's content.
@@ -99,6 +102,15 @@ class CapabilityPack:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _manifest_path(directory: Path) -> Path | None:
+    """The pack manifest in `directory`, under its current or pre-rebrand name."""
+    for name in (PACK_MANIFEST, LEGACY_PACK_MANIFEST):
+        candidate = directory / name
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def pack_location_key(path: str | Path) -> str:
@@ -270,8 +282,8 @@ class CapabilityPackManager:
         self.project_path = Path(project_path).expanduser().resolve()
         self.configured = configured if isinstance(configured, dict) else {}
         default_roots = [
-            self.project_path / ".resonant" / "packs",
-            Path.home() / ".resonant" / "packs",
+            *(folder / "packs" for folder in project_dirs(self.project_path)),
+            state_home() / "packs",
         ]
         self.roots = [Path(root).expanduser() for root in (*default_roots, *roots)]
         for value in self.configured.values():
@@ -286,12 +298,12 @@ class CapabilityPackManager:
         manifests: dict[str, dict[str, Any]] = {}
         candidates: list[Path] = []
         for root in self.roots:
-            if (root / PACK_MANIFEST).is_file():
+            if _manifest_path(root) is not None:
                 candidates.append(root)
             elif root.is_dir():
                 candidates.extend(
                     child for child in sorted(root.iterdir())
-                    if child.is_dir() and (child / PACK_MANIFEST).is_file()
+                    if child.is_dir() and _manifest_path(child) is not None
                 )
         for directory in candidates:
             try:
@@ -445,7 +457,7 @@ class CapabilityPackManager:
 
     def _load(self, directory: Path) -> tuple[CapabilityPack, dict[str, Any]]:
         directory = directory.resolve()
-        manifest_path = directory / PACK_MANIFEST
+        manifest_path = _manifest_path(directory) or directory / PACK_MANIFEST
         try:
             data = json.loads(manifest_path.read_bytes().decode("utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError) as exc:

@@ -26,7 +26,7 @@ from lumi.orchestration import (
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -73,10 +73,10 @@ def test_read_manifest_round_trip(project_dir):
     assert loaded.warn_on_missing is True
 
 
-def test_manifest_path_uses_dotresonant_subdir(project_dir):
+def test_manifest_path_uses_dotlumi_subdir(project_dir):
     path = manifest_path(project_dir)
     assert path.name == "skills.toml"
-    assert path.parent.name == ".resonant"
+    assert path.parent.name == ".lumi"
 
 
 # ── Status check ────────────────────────────────────────────────────────

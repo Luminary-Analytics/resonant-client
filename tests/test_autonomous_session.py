@@ -165,25 +165,25 @@ root containing exactly `hello world` followed by a newline.
         assert "exactly `hello world` followed by a newline" in description
         assert "\n" not in description
 
-    def test_default_path_under_dot_resonant(self, tmp_path):
+    def test_default_path_under_dot_lumi(self, tmp_path):
         _, path = build_roadmap_from_spec(
             feature="x",
             intent_id="abc-123",
             spec_markdown=_SPEC_MD,
             project_path=str(tmp_path),
         )
-        assert ".resonant" in str(path)
+        assert ".lumi" in str(path)
         assert "abc-123" in str(path)
 
-    def test_creates_dot_resonant_dir(self, tmp_path):
-        # Project doesn't have .resonant yet — function must create it.
+    def test_creates_dot_lumi_dir(self, tmp_path):
+        # Project doesn't have .lumi yet — function must create it.
         _, path = build_roadmap_from_spec(
             feature="x",
             intent_id="i",
             spec_markdown=_SPEC_MD,
             project_path=str(tmp_path),
         )
-        assert (tmp_path / ".resonant").is_dir()
+        assert (tmp_path / ".lumi").is_dir()
 
     def test_empty_spec_raises(self, tmp_path):
         with pytest.raises(ValueError, match="Final spec"):

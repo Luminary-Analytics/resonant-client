@@ -1,6 +1,6 @@
 """
 Persistent settings manager for Resonant.
-Reads/writes ~/.resonant/settings.json with section-based access.
+Reads/writes ~/.lumi/settings.json with section-based access.
 """
 
 import json
@@ -8,6 +8,7 @@ import logging
 import threading
 from pathlib import Path
 from typing import Any
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +99,7 @@ class SettingsManager:
     """Thread-safe settings manager with JSON persistence."""
 
     def __init__(self, path: str | Path | None = None):
-        self._path = Path(path) if path else Path.home() / ".resonant" / "settings.json"
+        self._path = Path(path) if path else state_home() / "settings.json"
         self._lock = threading.Lock()
         self._data: dict = {}
         self._load()

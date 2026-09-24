@@ -1,8 +1,8 @@
 """
-Per-project skill manifest at `.resonant/skills.toml`.
+Per-project skill manifest at `.lumi/skills.toml`.
 
 Like `requirements.txt` for skills: the project declares which skills it depends
-on; implementations stay per-machine in `~/.resonant/skills/`. On project load,
+on; implementations stay per-machine in `~/.lumi/skills/`. On project load,
 the GUI scans the manifest, checks installed status, and surfaces gaps so the
 user can install missing skills (or the agent can attempt to auto-install if a
 registry is wired in the future).
@@ -23,11 +23,12 @@ except ImportError:  # pragma: no cover - runs on 3.10 only
     _toml = None  # type: ignore
 
 from .skills import Skill, load_skill
+from ..paths import project_dir
 
 logger = logging.getLogger(__name__)
 
 
-MANIFEST_RELPATH = Path(".resonant") / "skills.toml"
+MANIFEST_NAME = "skills.toml"
 
 
 # ── Manifest data model ─────────────────────────────────────────────────
@@ -61,7 +62,7 @@ class SkillManifest:
 
 
 def manifest_path(project_path: str | Path) -> Path:
-    return Path(project_path) / MANIFEST_RELPATH
+    return project_dir(project_path) / MANIFEST_NAME
 
 
 def read_manifest(project_path: str | Path) -> Optional[SkillManifest]:
@@ -100,7 +101,7 @@ def read_manifest(project_path: str | Path) -> Optional[SkillManifest]:
 
 
 def write_manifest(project_path: str | Path, manifest: SkillManifest) -> Path:
-    """Serialize a manifest to `.resonant/skills.toml`. Returns the path."""
+    """Serialize a manifest to `.lumi/skills.toml`. Returns the path."""
     path = manifest_path(project_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -108,7 +109,7 @@ def write_manifest(project_path: str | Path, manifest: SkillManifest) -> Path:
         return f"{req.skill_id}@{req.version_spec}" if req.version_spec else req.skill_id
 
     lines: list[str] = [
-        "# Skills this project depends on. Implementations live in ~/.resonant/skills/.",
+        "# Skills this project depends on. Implementations live in ~/.lumi/skills/.",
         "# Run `resonant skills install` (or load the project) to materialize them.",
         "",
     ]

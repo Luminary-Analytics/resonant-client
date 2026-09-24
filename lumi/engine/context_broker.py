@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from lumi.processes import background_process_kwargs
+from ..paths import project_dirs
 
 
 @dataclass(slots=True)
@@ -216,8 +217,8 @@ class ContextBroker:
 
     def _terminal(self, selector: str) -> ContextItem | None:
         candidates = sorted(
-            (self.project_path / ".resonant").glob("terminal*.log")
-            if (self.project_path / ".resonant").exists() else [],
+            (path for folder in project_dirs(self.project_path) if folder.is_dir()
+             for path in folder.glob("terminal*.log")),
             key=lambda path: path.stat().st_mtime,
             reverse=True,
         )

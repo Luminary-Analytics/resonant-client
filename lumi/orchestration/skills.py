@@ -7,7 +7,7 @@ from-scratch decomposition and load the skill's pre-built subtree instead.
 
 Storage layout (out of repo, mirrors Claude Code's projects/ pattern):
 
-    ~/.resonant/skills/
+    ~/.lumi/skills/
         global/<skill-id>/
             skill.json          # metadata
             procedure.md        # human-readable steps
@@ -16,7 +16,7 @@ Storage layout (out of repo, mirrors Claude Code's projects/ pattern):
         project/<project-hash>/<skill-id>/   # project-local
         stack/<stack-sig>/<skill-id>/        # stack-keyed
 
-Override the parent dir with `RESONANT_STATE_HOME` (used by tests).
+Override the parent dir with `LUMI_STATE_HOME` (used by tests).
 
 Similarity matching uses token overlap (no external embedding deps required).
 A future upgrade can plug in real embeddings without changing the API.
@@ -27,12 +27,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Optional
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,7 @@ class Skill:
 
 
 def _state_home() -> Path:
-    return Path(os.environ.get("RESONANT_STATE_HOME") or (Path.home() / ".resonant"))
+    return state_home()
 
 
 def _skills_root() -> Path:

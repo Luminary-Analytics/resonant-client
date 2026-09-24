@@ -187,7 +187,7 @@ class HarnessPrompts:
         return text[: max(0, max_chars - 1)].rstrip() + "…"
 
     def get_harness_evaluator_mode(self) -> str:
-        raw = str(os.environ.get("RESONANT_HARNESS_EVALUATOR_MODE", "hybrid") or "").strip().lower()
+        raw = str(os.environ.get("LUMI_HARNESS_EVALUATOR_MODE", "hybrid") or "").strip().lower()
         if raw in {"full", "artifacts", "structured", "hybrid"}:
             return raw
         return "hybrid"
@@ -199,7 +199,7 @@ class HarnessPrompts:
         return None
 
     def get_harness_generator_mode(self) -> str:
-        raw = str(os.environ.get("RESONANT_HARNESS_GENERATOR_MODE", "hybrid") or "").strip().lower()
+        raw = str(os.environ.get("LUMI_HARNESS_GENERATOR_MODE", "hybrid") or "").strip().lower()
         if raw in {"full", "artifacts", "patch", "structured", "hybrid"}:
             return raw
         return "hybrid"
@@ -3001,8 +3001,8 @@ class HarnessPrompts:
         reason: str = "",
     ) -> tuple[str, str]:
         """Resolve recovery through configured providers, never named models."""
-        forced_backend = str(os.environ.get("RESONANT_HARNESS_TEACHER_BACKEND", "") or "").strip()
-        forced_model = str(os.environ.get("RESONANT_HARNESS_TEACHER_MODEL", "") or "").strip()
+        forced_backend = str(os.environ.get("LUMI_HARNESS_TEACHER_BACKEND", "") or "").strip()
+        forced_model = str(os.environ.get("LUMI_HARNESS_TEACHER_MODEL", "") or "").strip()
         if forced_backend:
             spec = self._app.build_backend_spec(forced_backend, model=forced_model or None)
             return spec.backend_type, spec.model
@@ -4033,8 +4033,8 @@ class HarnessPrompts:
             self._app.detect_backends()
         project_path = os.path.normpath(project_path or self._app.project.project_path)
         role_env = session_role.upper()
-        forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_BACKEND", "") or "").strip()
-        forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_MODEL", "") or "").strip()
+        forced_backend = str(os.environ.get(f"LUMI_HARNESS_{role_env}_BACKEND", "") or "").strip()
+        forced_model = str(os.environ.get(f"LUMI_HARNESS_{role_env}_MODEL", "") or "").strip()
         if forced_backend or forced_model:
             retry_backend = forced_backend
             if not retry_backend and self._app.backend_spec:
@@ -4126,8 +4126,8 @@ class HarnessPrompts:
             self._app.detect_backends()
         project_path = os.path.normpath(project_path or self._app.project.project_path)
         role_env = session_role.upper()
-        forced_backend = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_BACKEND", "") or "").strip()
-        forced_model = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_MODEL", "") or "").strip()
+        forced_backend = str(os.environ.get(f"LUMI_HARNESS_{role_env}_RETRY_BACKEND", "") or "").strip()
+        forced_model = str(os.environ.get(f"LUMI_HARNESS_{role_env}_RETRY_MODEL", "") or "").strip()
         if forced_backend.lower() in {"disabled", "none", "off", "false", "no"}:
             return "", ""
 
@@ -4142,7 +4142,7 @@ class HarnessPrompts:
 
     def get_harness_role_timeout_seconds(self, session_role: str) -> float | None:
         role_env = session_role.upper()
-        raw = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_TIMEOUT_SECONDS", "") or "").strip()
+        raw = str(os.environ.get(f"LUMI_HARNESS_{role_env}_TIMEOUT_SECONDS", "") or "").strip()
         if not raw:
             return None
         try:
@@ -4153,7 +4153,7 @@ class HarnessPrompts:
 
     def get_harness_role_retry_timeout_seconds(self, session_role: str) -> float | None:
         role_env = session_role.upper()
-        raw = str(os.environ.get(f"RESONANT_HARNESS_{role_env}_RETRY_TIMEOUT_SECONDS", "") or "").strip()
+        raw = str(os.environ.get(f"LUMI_HARNESS_{role_env}_RETRY_TIMEOUT_SECONDS", "") or "").strip()
         if not raw:
             return self.get_harness_role_timeout_seconds(session_role)
         try:

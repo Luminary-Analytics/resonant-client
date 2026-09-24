@@ -20,6 +20,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from ..paths import project_dir
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ SKIP_DIRS = {
     ".tox", ".nox", ".venv", "venv", "env",
     "dist", "build", "target", "out", "bin", "obj",
     ".next", ".nuxt", ".output",
-    ".resonant-worktrees",
+    ".resonant-worktrees", ".lumi-worktrees",
     "vendor", "third_party",
     ".idea", ".vscode",
     "coverage", "htmlcov",
@@ -116,7 +117,7 @@ class CodebaseIndex:
         self._lock = threading.Lock()
         self._indexing = False
         self._last_full_index: float = 0.0
-        self._index_file = self.project_path / ".resonant" / "index.json"
+        self._index_file = project_dir(self.project_path) / "index.json"
         self._repo_map_cache: dict[int, str] = {}
         self._repo_map_generation = 0
 

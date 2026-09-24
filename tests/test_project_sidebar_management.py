@@ -17,7 +17,7 @@ from lumi.gui.sessions import ProjectManager
 
 
 def _recents_file(home: Path) -> Path:
-    return home / ".resonant" / "recent_projects.json"
+    return home / ".lumi" / "recent_projects.json"
 
 
 @pytest.fixture

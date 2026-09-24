@@ -64,6 +64,7 @@ from .turn_outcomes import (
     response_promises_future_action,
     unique_strings,
 )
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -767,7 +768,7 @@ class Session:
             try:
                 from .event_log import EventLogger
 
-                log_dir = getattr(pl, "_log_dir", None) or (Path.home() / ".resonant" / "logs")
+                log_dir = getattr(pl, "_log_dir", None) or (state_home() / "logs")
                 self.event_logger = EventLogger(
                     log_dir=log_dir,
                     session_id=_uuid.uuid4().hex[:12],

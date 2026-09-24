@@ -9,7 +9,7 @@ def handles_event(source: str, name: str) -> bool:
     """Whether the frontend dispatches `name`, by either mechanism.
 
     handleEvent resolves single-delegation events through
-    RESONANT_EVENT_DELEGATES and everything else through its switch. Asserting
+    LUMI_EVENT_DELEGATES and everything else through its switch. Asserting
     on `case 'x':` alone would fail whenever an event moves between the two,
     which says nothing about whether the event is still handled.
     """

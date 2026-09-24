@@ -20,7 +20,7 @@ permission mode and answer approval prompts.
 - Each launch creates an access token that the server never prints or logs.
   Pages redeem a one-time code from the launch link's URL fragment at
   `/api/access`. They keep the token in origin storage, which is port-isolated
-  unlike cookies, and send it as a WebSocket subprotocol or `X-SONN-Access` header.
+  unlike cookies, and send it as a WebSocket subprotocol or `X-Lumi-Access` header.
 - `/ws` and `/api/ui-state` also require an exact `Host` (`127.0.0.1:<port>`,
   `localhost:<port>`, or a literal non-loopback bind address) and this server's
   `Origin`. A refused handshake is closed before `accept()`, and the client
@@ -55,7 +55,7 @@ model. In the browser pane, with real keyboard events, they covered:
   link falling back to the stored token.
 
 Raw HTTP against the live server returned 403 for missing, wrong, cross-origin,
-dev-server-origin and rebinding handshakes, and 101 with `sonn.v1` otherwise.
+dev-server-origin and rebinding handshakes, and 101 with `lumi.v1` otherwise.
 
 The desktop window (pywebview 6.1, WebView2) redeemed its code and connected.
 **Open in Browser** was triggered through its click handler from the fixture's

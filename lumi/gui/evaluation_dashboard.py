@@ -14,6 +14,7 @@ from ..smoke.baseline import diff_against_baseline, load_baseline
 from ..smoke.runner import MODELS
 from ..smoke.specs import list_spec_names
 from ..smoke.variance import run_variance
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ class EvaluationManager:
         runner: Callable[..., Any] = run_variance,
         on_event: Optional[Callable[[dict], None]] = None,
     ) -> None:
-        self.storage_dir = Path(storage_dir or Path.home() / ".resonant" / "evaluations")
+        self.storage_dir = Path(storage_dir or state_home() / "evaluations")
         self._runner = runner
         self._on_event = on_event
         self._lock = threading.RLock()

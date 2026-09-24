@@ -353,7 +353,7 @@ test('opening another project during a run preserves view and sends no navigatio
 const accessSource = fs.readFileSync(path.join(__dirname, '../lumi/gui/static/local_access.js'), 'utf8');
 
 function loadAccess({hash = '', stored = null, fetch = async () => { throw new Error('unexpected fetch'); }} = {}) {
-    const storage = new Map(stored ? [['sonn-client:access', stored]] : []);
+    const storage = new Map(stored ? [['lumi:access', stored]] : []);
     const replaced = [];
     const listeners = {};
     const reloads = [];
@@ -366,7 +366,7 @@ function loadAccess({hash = '', stored = null, fetch = async () => { throw new E
     });
     context.window = context;
     vm.runInContext(accessSource, context);
-    return {access: context.SonnLocalAccess, storage, replaced, listeners, location, reloads};
+    return {access: context.LumiLocalAccess, storage, replaced, listeners, location, reloads};
 }
 
 test('a launch link pasted into an open tab reloads so its code is redeemed', () => {
@@ -374,14 +374,14 @@ test('a launch link pasted into an open tab reloads so its code is redeemed', ()
     page.location.hash = '#view=settings';
     page.listeners.hashchange();
     assert.deepEqual(page.reloads, []);
-    page.location.hash = '#sonn-launch=fresh';
+    page.location.hash = '#lumi-launch=fresh';
     page.listeners.hashchange();
-    assert.deepEqual(page.reloads, ['#sonn-launch=fresh']);
+    assert.deepEqual(page.reloads, ['#lumi-launch=fresh']);
 });
 
 test('a launch code leaves the address bar and is redeemed once for a stored token', async () => {
     const requests = [];
-    const {access, storage, replaced} = loadAccess({hash: '#sonn-launch=abc', fetch: async (url, options) => {
+    const {access, storage, replaced} = loadAccess({hash: '#lumi-launch=abc', fetch: async (url, options) => {
         requests.push([url, options]);
         return {ok: true, json: async () => ({token: 'T1'})};
     }});
@@ -391,16 +391,16 @@ test('a launch code leaves the address bar and is redeemed once for a stored tok
     assert.equal(requests[0][0], '/api/access');
     assert.equal(requests[0][1].method, 'POST');
     assert.deepEqual(JSON.parse(requests[0][1].body), {code: 'abc'});
-    assert.equal(storage.get('sonn-client:access'), 'T1');
+    assert.equal(storage.get('lumi:access'), 'T1');
     assert.deepEqual({...access.headers({'Content-Type': 'application/json'})},
-        {'Content-Type': 'application/json', 'X-SONN-Access': 'T1'});
-    assert.deepEqual([...access.protocols()], ['sonn.v1', 'sonn.access.T1']);
+        {'Content-Type': 'application/json', 'X-Lumi-Access': 'T1'});
+    assert.deepEqual([...access.protocols()], ['lumi.v1', 'lumi.access.T1']);
 });
 
 test('a reopened launch link falls back to the token stored when it was first used', async () => {
-    const {access} = loadAccess({hash: '#sonn-launch=spent', stored: 'T0', fetch: async () => ({ok: false, status: 403})});
+    const {access} = loadAccess({hash: '#lumi-launch=spent', stored: 'T0', fetch: async () => ({ok: false, status: 403})});
     assert.equal(await access.ready, 'T0');
-    const offline = loadAccess({hash: '#sonn-launch=abc', stored: 'T0', fetch: async () => { throw new TypeError('Failed to fetch'); }});
+    const offline = loadAccess({hash: '#lumi-launch=abc', stored: 'T0', fetch: async () => { throw new TypeError('Failed to fetch'); }});
     assert.equal(await offline.access.ready, 'T0');
 });
 
@@ -408,11 +408,11 @@ test('pages without a launch link keep other fragments and use the stored token'
     const plain = loadAccess({hash: '#view=settings', stored: 'T0'});
     assert.deepEqual(plain.replaced, []);
     assert.equal(await plain.access.ready, 'T0');
-    const mixed = loadAccess({hash: '#sonn-launch=abc&view=settings', fetch: async () => ({ok: true, json: async () => ({token: 'T2'})})});
+    const mixed = loadAccess({hash: '#lumi-launch=abc&view=settings', fetch: async () => ({ok: true, json: async () => ({token: 'T2'})})});
     assert.deepEqual(mixed.replaced, ['/#view=settings']);
     const none = loadAccess();
     assert.equal(await none.access.ready, '');
-    assert.deepEqual([...none.access.protocols()], ['sonn.v1']);
+    assert.deepEqual([...none.access.protocols()], ['lumi.v1']);
 });
 
 test('the access check tells a refused token from an unreachable server', async () => {
@@ -420,7 +420,7 @@ test('the access check tells a refused token from an unreachable server', async 
     const {access} = loadAccess({stored: 'T0', fetch: (url, options) => respond(url, options)});
     respond = async (url, options) => {
         assert.equal(url, '/api/access');
-        assert.equal(options.headers['X-SONN-Access'], 'T0');
+        assert.equal(options.headers['X-Lumi-Access'], 'T0');
         return {status: 204};
     };
     assert.equal(await access.check(), true);
@@ -433,18 +433,18 @@ test('the access check tells a refused token from an unreachable server', async 
 test('private requests wait for the launch token and carry it', async () => {
     let release;
     const calls = [];
-    const SonnLocalAccess = {
+    const LumiLocalAccess = {
         ready: new Promise(resolve => { release = resolve; }),
-        headers: extra => ({...(extra || {}), 'X-SONN-Access': 'T1'}),
+        headers: extra => ({...(extra || {}), 'X-Lumi-Access': 'T1'}),
     };
-    const app = setup((url, options) => { calls.push([url, options]); return Promise.resolve({ok: true}); }, {SonnLocalAccess});
+    const app = setup((url, options) => { calls.push([url, options]); return Promise.resolve({ok: true}); }, {LumiLocalAccess});
     const pending = app._localFetch('/api/ui-state', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
     await tick();
     assert.equal(calls.length, 0);
     release('T1');
     await pending;
     assert.equal(calls[0][1].method, 'POST');
-    assert.deepEqual(calls[0][1].headers, {'Content-Type': 'application/json', 'X-SONN-Access': 'T1'});
+    assert.deepEqual(calls[0][1].headers, {'Content-Type': 'application/json', 'X-Lumi-Access': 'T1'});
 });
 
 test('a refused socket explains how to reconnect instead of retrying forever', async () => {

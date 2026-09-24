@@ -276,9 +276,11 @@ def launch_gui(
 
 
 def main():
-    """CLI entry point for resonant-gui."""
+    """CLI entry point for lumi-gui."""
+    from ..paths import migrate_legacy_home
+    migrate_legacy_home()
     parser = argparse.ArgumentParser(
-        description="SONN Client Code Agent — Desktop GUI",
+        description="Lumi coding agent — desktop GUI",
     )
     parser.add_argument("--host", type=str, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)

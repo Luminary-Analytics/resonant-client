@@ -38,16 +38,17 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .tools import ToolResult
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
 # All knobs are env-overridable so a user with an unusual Chrome install or a
 # port conflict can adjust without a rebuild.
-_CDP_PORT = int(os.environ.get("RESONANT_BROWSER_CDP_PORT", "9222") or "9222")
-_HEADLESS = (os.environ.get("RESONANT_BROWSER_HEADLESS", "") or "").strip().lower() in {"1", "true", "yes"}
-_GROUP_TITLE = os.environ.get("RESONANT_BROWSER_GROUP_TITLE", "Resonant") or "Resonant"
-_GROUP_COLOR = os.environ.get("RESONANT_BROWSER_GROUP_COLOR", "purple") or "purple"
-_LAUNCH_TIMEOUT = float(os.environ.get("RESONANT_BROWSER_LAUNCH_TIMEOUT", "30") or "30")
+_CDP_PORT = int(os.environ.get("LUMI_BROWSER_CDP_PORT", "9222") or "9222")
+_HEADLESS = (os.environ.get("LUMI_BROWSER_HEADLESS", "") or "").strip().lower() in {"1", "true", "yes"}
+_GROUP_TITLE = os.environ.get("LUMI_BROWSER_GROUP_TITLE", "Resonant") or "Resonant"
+_GROUP_COLOR = os.environ.get("LUMI_BROWSER_GROUP_COLOR", "purple") or "purple"
+_LAUNCH_TIMEOUT = float(os.environ.get("LUMI_BROWSER_LAUNCH_TIMEOUT", "30") or "30")
 
 _NAV_TIMEOUT = 30.0
 _CDP_TIMEOUT = 30.0
@@ -87,7 +88,7 @@ def set_browser_session_name(
 
 def _find_chrome() -> Optional[str]:
     """Locate the installed Chrome executable, or None."""
-    override = os.environ.get("RESONANT_BROWSER_CHROME_PATH")
+    override = os.environ.get("LUMI_BROWSER_CHROME_PATH")
     if override and os.path.isfile(override):
         return override
     if sys.platform.startswith("win"):
@@ -117,16 +118,16 @@ def _find_chrome() -> Optional[str]:
 
 
 def _profile_dir() -> str:
-    """Directory for Resonant's dedicated Chrome profile.
+    """Directory for Lumi's dedicated Chrome profile.
 
     Deliberately outside the user's Chrome User Data tree: Chrome locks a
     profile directory while it is running, so sharing one would mean the agent
     and the user cannot browse at the same time.
     """
-    override = os.environ.get("RESONANT_BROWSER_USER_DATA_DIR")
+    override = os.environ.get("LUMI_BROWSER_USER_DATA_DIR")
     if override:
         return override
-    return str(Path.home() / ".resonant" / "browser-profile")
+    return str(state_home() / "browser-profile")
 
 
 def _extension_source_dir() -> Optional[Path]:
@@ -159,15 +160,15 @@ def _prepare_extension(profile_dir: str, group_title: str, group_color: str) -> 
     if source is None:
         logger.warning("Browser extension not found; tabs will not be grouped")
         return None
-    target = Path(profile_dir) / "resonant-extension"
+    target = Path(profile_dir) / "lumi-extension"
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             shutil.rmtree(target, ignore_errors=True)
         shutil.copytree(source, target)
         (target / "config.js").write_text(
-            f"const RESONANT_GROUP_TITLE = {json.dumps(group_title)};\n"
-            f"const RESONANT_GROUP_COLOR = {json.dumps(group_color)};\n",
+            f"const LUMI_GROUP_TITLE = {json.dumps(group_title)};\n"
+            f"const LUMI_GROUP_COLOR = {json.dumps(group_color)};\n",
             encoding="utf-8",
         )
         return str(target)
@@ -309,7 +310,7 @@ class BrowserManager:
                 # running. Reuse its staged extension and load/discover it over
                 # CDP; otherwise tab grouping silently disappears until Chrome
                 # itself is closed and relaunched.
-                staged = Path(_profile_dir()) / "resonant-extension"
+                staged = Path(_profile_dir()) / "lumi-extension"
                 if (staged / "manifest.json").is_file():
                     self._extension_path = str(staged)
                 else:
@@ -408,7 +409,7 @@ class BrowserManager:
 
             # Extensions.loadUnpacked returns before a fresh MV3 service
             # worker has necessarily evaluated background.js. The target can
-            # already be visible while configureResonantGroup is still
+            # already be visible while configureLumiGroup is still
             # undefined, which made first-use grouping randomly disappear.
             # Retry only on a new tab/session signature; steady-state calls
             # take the fast path above.
@@ -423,8 +424,8 @@ class BrowserManager:
                 try:
                     connection = CDPConnection(worker["webSocketDebuggerUrl"])
                     result = connection.evaluate(
-                        "typeof configureResonantGroup === 'function' "
-                        f"? configureResonantGroup({json.dumps({'title': self._session_name, 'color': _GROUP_COLOR})}) "
+                        "typeof configureLumiGroup === 'function' "
+                        f"? configureLumiGroup({json.dumps({'title': self._session_name, 'color': _GROUP_COLOR})}) "
                         ": null",
                         await_promise=True,
                     )
@@ -485,7 +486,7 @@ class BrowserManager:
         if not chrome:
             return (
                 "Error: Chrome could not be found. Install Google Chrome, or set "
-                "RESONANT_BROWSER_CHROME_PATH to its executable."
+                "LUMI_BROWSER_CHROME_PATH to its executable."
             )
 
         profile = _profile_dir()

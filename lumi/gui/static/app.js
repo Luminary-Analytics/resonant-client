@@ -129,7 +129,7 @@ function inferActionLabel(toolCounts) {
 //
 // Cases with inline logic deliberately stay in the switch below — hoisting
 // those mechanically would produce a hundred badly-named methods.
-const RESONANT_EVENT_DELEGATES = {
+const LUMI_EVENT_DELEGATES = {
     'autonomous_heartbeat': 'handleAutonomousHeartbeat',
     'autonomous_human_decision_received': 'handleAutonomousHumanDecisionReceived',
     'autonomous_human_decision_required': 'handleAutonomousHumanDecisionRequired',
@@ -444,7 +444,7 @@ class ResonantApp {
         // The server refuses the socket without this launch's access token
         // (static/local_access.js), which is ready once any one-time launch
         // code in the URL has been redeemed.
-        const access = globalThis.SonnLocalAccess;
+        const access = globalThis.LumiLocalAccess;
         Promise.resolve(access?.ready).then(() => this._openSocket(access));
     }
 
@@ -452,7 +452,7 @@ class ResonantApp {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         try {
             this.ws = new WebSocket(`${protocol}//${location.host}/ws`,
-                access ? access.protocols() : ['sonn.v1']);
+                access ? access.protocols() : ['lumi.v1']);
         } catch (err) {
             // A stored token that is not a valid subprotocol token.
             console.error('WebSocket error:', err);
@@ -522,7 +522,7 @@ class ResonantApp {
 
     /** fetch() for the server's private HTTP endpoints, with the launch access token. */
     async _localFetch(url, options) {
-        const access = globalThis.SonnLocalAccess;
+        const access = globalThis.LumiLocalAccess;
         if (!access) return fetch(url, options);
         await access.ready;
         return fetch(url, {...(options || {}), headers: access.headers(options?.headers)});
@@ -3307,11 +3307,11 @@ class ResonantApp {
             };
         }
 
-        // Single-delegation events resolve here; see RESONANT_EVENT_DELEGATES.
+        // Single-delegation events resolve here; see LUMI_EVENT_DELEGATES.
         // Checked before the switch so the table is the first place to look,
         // and so a mistyped handler name fails loudly instead of falling
         // through to the default arm and being swallowed.
-        const delegate = RESONANT_EVENT_DELEGATES[type];
+        const delegate = LUMI_EVENT_DELEGATES[type];
         if (delegate) {
             if (typeof this[delegate] !== 'function') {
                 console.error(`No handler ${delegate} for event "${type}"`);
@@ -4085,7 +4085,7 @@ class ResonantApp {
         this.harnessEnabled = harness_enabled === true;
         document.body.dataset.harnessEnabled = this.harnessEnabled ? '1' : '0';
         // Surface the one-time migration notice when legacy .resonant-harness/
-        // gets copied to ~/.resonant/projects/<hash>/harness/.
+        // gets copied to ~/.lumi/projects/<hash>/harness/.
         const migrationNotice = (event.harness_migration_notice || '').trim();
         if (migrationNotice && migrationNotice !== this._lastShownMigrationNotice) {
             this._lastShownMigrationNotice = migrationNotice;

@@ -2,7 +2,7 @@
 Background planner/generator/evaluator cycle runner for Resonant harnesses.
 
 This orchestrator is intentionally conservative: it chooses the next role from
-the current harness state (read from `~/.resonant/projects/<hash>/harness/`),
+the current harness state (read from `~/.lumi/projects/<hash>/harness/`),
 runs a single role session, then re-checks the harness before deciding whether
 to continue.
 """

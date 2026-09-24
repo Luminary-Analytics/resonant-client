@@ -7,7 +7,7 @@ user can replay any past run forensically. Stored as JSONL so tail/append is
 cheap and the file is readable in any text editor.
 
 Layout:
-    ~/.resonant/projects/<sha1[:12]>/intents/<intent-id>/audit.jsonl
+    ~/.lumi/projects/<sha1[:12]>/intents/<intent-id>/audit.jsonl
 """
 
 from __future__ import annotations
@@ -15,10 +15,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import time
 from pathlib import Path
 from typing import Iterator, Optional
+from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ KIND_OTHER = "other"
 
 
 def _state_home() -> Path:
-    return Path(os.environ.get("RESONANT_STATE_HOME") or (Path.home() / ".resonant"))
+    return state_home()
 
 
 def _project_hash(project_path: str | Path) -> str:

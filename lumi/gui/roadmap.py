@@ -46,6 +46,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
+from ..paths import project_dir
 
 
 # ── Type tags for acceptance criteria ──────────────────────────────────
@@ -845,7 +846,8 @@ def clear_inflight(roadmap_path: Path | str) -> None:
 
 
 def default_path(project_path: Path | str, intent_id: str) -> Path:
-    """`<project>/.resonant/roadmap-<intent_id>.md` per the design
-    doc §6.1. Caller is responsible for creating the `.resonant/`
-    dir before saving (save() does this anyway via mkdir(parents=True))."""
-    return Path(project_path) / ".resonant" / f"roadmap-{intent_id}.md"
+    """`<project>/.lumi/roadmap-<intent_id>.md` per the design doc §6.1
+    (an existing `.resonant/` folder keeps being used). Caller is responsible
+    for creating the folder before saving (save() does this anyway via
+    mkdir(parents=True))."""
+    return project_dir(project_path) / f"roadmap-{intent_id}.md"

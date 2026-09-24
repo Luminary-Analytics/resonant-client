@@ -9,8 +9,8 @@ Five primitives, AI-native (not borrowed from human Agile cycles):
 4. Reflection  - continuous confidence signals + auto-spawned verify/repair
 5. Skill       - reusable verified procedures auto-extracted from successful runs
 
-State lives at `~/.resonant/projects/<sha1[:12]>/plans/`, never in the user's
-repo. Skills live in `~/.resonant/skills/`. Plan-graph snapshots support
+State lives at `~/.lumi/projects/<sha1[:12]>/plans/`, never in the user's
+repo. Skills live in `~/.lumi/skills/`. Plan-graph snapshots support
 rollback if a silently-pruned branch turns out to be needed later.
 """
 

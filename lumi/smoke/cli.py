@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Optional
 
 from .baseline import (
+    baseline_dir,
     baseline_path,
     diff_against_baseline,
     list_baselines,
@@ -310,9 +311,9 @@ def _cmd_baseline_list(args: argparse.Namespace) -> int:
     project_root = Path.cwd()
     baselines = list_baselines(project_root)
     if not baselines:
-        print(f"No baselines under {project_root / '.resonant' / 'smoke-baselines'}")
+        print(f"No baselines under {baseline_dir(project_root)}")
         return 0
-    print(f"Baselines (under {project_root / '.resonant' / 'smoke-baselines'}):")
+    print(f"Baselines (under {baseline_dir(project_root)}):")
     print()
     print(f"  {'spec':<14} {'model':<8} {'n':>3}  {'rate':>5}  {'median':<10}  path")
     print(f"  {'-' * 14} {'-' * 8} {'-' * 3}  {'-' * 5}  {'-' * 10}  ----")
@@ -335,7 +336,7 @@ def _cmd_baseline_show(args: argparse.Namespace) -> int:
     if data is None:
         print(
             f"No baseline for ({args.spec}, {args.model}) under "
-            f"{project_root / '.resonant' / 'smoke-baselines'}"
+            f"{baseline_dir(project_root)}"
         )
         return 1
     # Print the headline + timing rollup, NOT the full per-run array
@@ -580,6 +581,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
+    from ..paths import migrate_legacy_home
+    migrate_legacy_home()
     parser = build_parser()
     args = parser.parse_args(argv)
     return args.func(args)

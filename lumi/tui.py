@@ -1115,7 +1115,7 @@ def run_remote(ws_url: str):
             _render_status(event)
             console.print()
 
-            history = FileHistory(str(Path.home() / ".resonant_agent_history"))
+            history = FileHistory(str(_history_path()))
 
             while True:
                 try:
@@ -1219,6 +1219,21 @@ def _handle_plan_approval(session: Session) -> Optional[str]:
 # ══════════════════════════════════════════════════════════════════════
 #  Main entry point
 # ══════════════════════════════════════════════════════════════════════
+
+def _history_path() -> Path:
+    """Prompt history, kept in the state folder; the pre-rebrand file moves there once."""
+    from .paths import state_home
+    target = state_home() / "tui_history"
+    legacy = Path.home() / ".resonant_agent_history"
+    if legacy.is_file() and not target.exists():
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            legacy.rename(target)
+        except OSError:
+            return legacy
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1407,7 +1422,7 @@ Examples:
         auto_plan=args.auto_plan,
     )
 
-    history = FileHistory(str(Path.home() / ".resonant_agent_history"))
+    history = FileHistory(str(_history_path()))
     plan_mode = False
     pending_images = []  # List of (image_bytes, media_type) for multimodal
 

@@ -181,10 +181,10 @@ def test_level_only_model_rejects_unsupported_controls(mode):
 
 
 def test_exo_uses_deployment_context_override(monkeypatch):
-    monkeypatch.delenv("RESONANT_EXO_CONTEXT_TOKENS", raising=False)
+    monkeypatch.delenv("LUMI_EXO_CONTEXT_TOKENS", raising=False)
     backend = ExoBackend("local/model")
     assert backend.effective_context_tokens == 32768
-    monkeypatch.setenv("RESONANT_EXO_CONTEXT_TOKENS", "65536")
+    monkeypatch.setenv("LUMI_EXO_CONTEXT_TOKENS", "65536")
     assert backend.effective_context_tokens == 65536
 
 

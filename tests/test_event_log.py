@@ -52,13 +52,13 @@ class TestEventLoggerInit:
         finally:
             log.close()
 
-    def test_default_log_dir_is_home_resonant_logs(self, tmp_path, monkeypatch):
-        # Override $HOME so we don't pollute the real ~/.resonant.
+    def test_default_log_dir_is_home_lumi_logs(self, tmp_path, monkeypatch):
+        # Override $HOME so we don't pollute the real ~/.lumi.
         monkeypatch.setenv("HOME", str(tmp_path))
         monkeypatch.setenv("USERPROFILE", str(tmp_path))  # Windows
         log = EventLogger(session_id="default-test", enabled=True)
         try:
-            assert log._log_dir == Path.home() / ".resonant" / "logs"
+            assert log._log_dir == Path.home() / ".lumi" / "logs"
         finally:
             log.close()
 

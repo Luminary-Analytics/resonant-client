@@ -744,11 +744,11 @@ class TestOllamaBackendInit:
 
     @pytest.mark.unit
     def test_ollama_options_from_env(self, monkeypatch):
-        monkeypatch.setenv("RESONANT_OLLAMA_NUM_CTX", "131072")
-        monkeypatch.setenv("RESONANT_OLLAMA_NUM_BATCH", "1024")
-        monkeypatch.setenv("RESONANT_OLLAMA_NUM_GPU", "1")
-        monkeypatch.setenv("RESONANT_OLLAMA_KEEP_ALIVE", "24h")
-        monkeypatch.setenv("RESONANT_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
+        monkeypatch.setenv("LUMI_OLLAMA_NUM_CTX", "131072")
+        monkeypatch.setenv("LUMI_OLLAMA_NUM_BATCH", "1024")
+        monkeypatch.setenv("LUMI_OLLAMA_NUM_GPU", "1")
+        monkeypatch.setenv("LUMI_OLLAMA_KEEP_ALIVE", "24h")
+        monkeypatch.setenv("LUMI_OLLAMA_HTTP_READ_TIMEOUT_SEC", "300")
         b = OllamaBackend("http://127.0.0.1:11434", "qwen2.5-coder")
         assert b._ollama_options["num_ctx"] == 131072
         assert b._ollama_options["num_batch"] == 1024
@@ -758,7 +758,7 @@ class TestOllamaBackendInit:
 
     @pytest.mark.unit
     def test_flagship_models_get_large_context_without_env_override(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_OLLAMA_NUM_CTX", raising=False)
+        monkeypatch.delenv("LUMI_OLLAMA_NUM_CTX", raising=False)
 
         glm = OllamaBackend("http://127.0.0.1:11434", "glm-5.2:cloud")
         pro = OllamaBackend("http://127.0.0.1:11434", "deepseek-v4-pro:cloud")
@@ -770,7 +770,7 @@ class TestOllamaBackendInit:
 
     @pytest.mark.unit
     def test_reported_context_length_can_clamp_but_not_expand_request(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_OLLAMA_NUM_CTX", raising=False)
+        monkeypatch.delenv("LUMI_OLLAMA_NUM_CTX", raising=False)
         backend = OllamaBackend("http://127.0.0.1:11434", "glm-5.2:cloud")
 
         backend._apply_reported_context_length({"glm.context_length": 65_536})

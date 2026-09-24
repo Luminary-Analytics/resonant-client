@@ -15,7 +15,7 @@ from lumi.backends import (
 
 
 def test_codex_models_include_configured_model(monkeypatch):
-    monkeypatch.delenv("RESONANT_CODEX_MODELS", raising=False)
+    monkeypatch.delenv("LUMI_CODEX_MODELS", raising=False)
 
     models = codex_cli_models({"model": "gpt-6-preview"})
 
@@ -25,7 +25,7 @@ def test_codex_models_include_configured_model(monkeypatch):
 
 
 def test_codex_astra_is_available_without_changing_the_default(monkeypatch):
-    monkeypatch.delenv("RESONANT_CODEX_MODELS", raising=False)
+    monkeypatch.delenv("LUMI_CODEX_MODELS", raising=False)
     monkeypatch.setattr("lumi.backends._load_codex_config", lambda: {})
 
     assert codex_cli_models()[0] == "gpt-5.5"
@@ -34,7 +34,7 @@ def test_codex_astra_is_available_without_changing_the_default(monkeypatch):
 
 
 def test_codex_models_can_be_overridden_by_env(monkeypatch):
-    monkeypatch.setenv("RESONANT_CODEX_MODELS", "alpha,beta")
+    monkeypatch.setenv("LUMI_CODEX_MODELS", "alpha,beta")
 
     assert codex_cli_models({"model": "alpha"}) == ["alpha", "beta"]
 
@@ -44,7 +44,7 @@ def test_resolve_codex_cli_path_prefers_configured_bundled_cli(monkeypatch, tmp_
     configured.write_text("", encoding="utf-8")
     path_cli = tmp_path / "path-codex.exe"
     path_cli.write_text("", encoding="utf-8")
-    monkeypatch.delenv("RESONANT_CODEX_CLI", raising=False)
+    monkeypatch.delenv("LUMI_CODEX_CLI", raising=False)
     monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
     monkeypatch.setattr(
         "lumi.backends._load_codex_config",

@@ -2727,14 +2727,14 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
     # leaves the machine without an explicit user action.
     try:
         from . import diagnostics
-        from pathlib import Path as _P
         from .. import __version__ as _ver
-        resonant_dir = _P.home() / ".resonant"
+        from ..paths import state_home
+        state_dir = state_home()
         output_dir = diagnostics.default_output_dir()
         zip_path = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: diagnostics.build_diagnostics_zip(
-                resonant_dir, output_dir, version=_ver
+                state_dir, output_dir, version=_ver
             ),
         )
         size_bytes = zip_path.stat().st_size if zip_path.exists() else 0
@@ -2931,7 +2931,7 @@ async def _cmd_user_input(ctx: CommandContext) -> None:
 # What Settings may change over the socket, by section and key. Hooks, LSP
 # servers, plugins, the chat gateway and stdio MCP servers start processes or
 # grant remote control; Settings shows them read-only and they are edited in
-# ~/.resonant/settings.json. HTTP MCP servers are checked separately below.
+# ~/.lumi/settings.json. HTTP MCP servers are checked separately below.
 _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "general": frozenset({
         "display_name", "show_companion", "default_backend", "default_model",
@@ -2959,7 +2959,7 @@ def _socket_mcp_server(value: Any) -> dict[str, Any]:
     if transport not in {"http", "streamable_http", "streamable-http"}:
         raise ValueError(
             "Settings adds HTTP MCP servers only. Add command-based servers "
-            "in ~/.resonant/settings.json."
+            "in ~/.lumi/settings.json."
         )
     url = str(value.get("url", "")).strip()
     parts = urlsplit(url)
@@ -2988,7 +2988,7 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
     if not isinstance(key, str) or key not in allowed:
         raise ValueError(
             f"{section}.{key} can't be changed from the app. "
-            "Edit ~/.resonant/settings.json instead."
+            "Edit ~/.lumi/settings.json instead."
         )
     if (section, key) == ("general", "default_permission_mode") and (
         not isinstance(value, str) or value not in PERMISSION_MODES

@@ -18,7 +18,7 @@ keeps the library from rotting; consolidation is a longer-horizon
 quality improvement.
 
 State + reports live at:
-    ~/.resonant/projects/<sha1(project_path)[:12]>/curator/
+    ~/.lumi/projects/<sha1(project_path)[:12]>/curator/
         .state.json                       # last_run_at, run_count, paused
         20260506-103000/
             run.json                      # machine-readable

@@ -6,7 +6,9 @@ models (``provider:model``). Every task runs once per model as an unattended
 ``lumi run`` (lumi/headless.py) in its own detached git worktree of the
 project's committed ``HEAD``, so runs don't see each other's changes or your
 uncommitted work. Then the task's check runs in that worktree: exit code 0
-passes. The worktree is removed afterwards; its diff is kept with the result.
+passes. The worktree is removed afterwards. Its diff from the commit the run
+started from (``start_commit``), including anything the run committed, is kept
+with the result.
 
 Runs are ``lumi run`` processes, so the organization policy, budgets, the
 audit log, file exclusions, the sandboxes and your Settings hooks apply,
@@ -323,9 +325,18 @@ class Runner:
         provider, _, model_name = model.partition(":")
         result: dict[str, Any] = {"task": task_index, "model": model, "status": "", "passed": False,
                                   "exit_code": None, "cost_usd": None, "requests": 0, "elapsed": None,
-                                  "changed_files": 0, "check_output": "", "error": "", "diff": ""}
+                                  "changed_files": 0, "check_output": "", "error": "", "diff": "",
+                                  "start_commit": ""}
         worktree = work / f"{task_index + 1}-{re.sub(r'[^A-Za-z0-9._-]+', '-', model)}"
-        added = _git(comparison.project, "worktree", "add", "--detach", str(worktree), "HEAD", timeout=120)
+        # The commit the run starts from, which its diff is taken against: the
+        # worktree's HEAD moves if the run commits.
+        head = _git(comparison.project, "rev-parse", "--verify", "HEAD^{commit}")
+        if head.returncode != 0:
+            result.update(status="failed", error=f"git rev-parse HEAD failed: {head.stderr.strip()[:500]}")
+            return result
+        result["start_commit"] = head.stdout.strip()
+        added = _git(comparison.project, "worktree", "add", "--detach", str(worktree), result["start_commit"],
+                     timeout=120)
         if added.returncode != 0:
             result.update(status="failed", error=f"git worktree add failed: {added.stderr.strip()[:500]}")
             return result
@@ -350,7 +361,7 @@ class Runner:
                 return result
             passed, output = _check(task["check"], str(worktree))
             result.update(passed=passed, check_output=output)
-            result.update(_keep_diff(comparison, worktree))
+            result.update(_keep_diff(comparison, worktree, result["start_commit"]))
             return result
         finally:
             removed = _git(comparison.project, "worktree", "remove", "--force", str(worktree), timeout=120)
@@ -417,12 +428,15 @@ def _check(command: str, worktree: str) -> tuple[bool, str]:
     return done.returncode == 0, f"exit {done.returncode}\n{output[-2000:]}".strip()
 
 
-def _keep_diff(comparison: Comparison, worktree: Path) -> dict:
-    """The run's changes: how many files, and the diff saved next to the comparison."""
+def _keep_diff(comparison: Comparison, worktree: Path, start: str) -> dict:
+    """The run's changes since ``start``, the commit it started from, whether
+    it committed them or not: how many files, and the diff saved next to the
+    comparison."""
     _git(str(worktree), "add", "-A")
-    names = _git(str(worktree), "diff", "--cached", "--name-only").stdout.split("\n")
+    # "--" because git refuses a revision that is also a file's name.
+    names = _git(str(worktree), "diff", "--cached", "--name-only", start, "--").stdout.split("\n")
     changed = [name for name in names if name.strip()]
-    diff = _git(str(worktree), "diff", "--cached").stdout
+    diff = _git(str(worktree), "diff", "--cached", start, "--").stdout
     folder = _folder() / comparison.id
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{worktree.name}.diff"

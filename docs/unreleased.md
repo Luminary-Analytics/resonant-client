@@ -81,8 +81,9 @@ approved.
   shell sandbox, audit log, usage and organization policy guides mention the
   terminal.
 
-This settles the "Not exercised" note of the section below: the terminal's
-own sessions now have hooks and an execution policy.
+This settles the "Not exercised" note of "the terminal says why a tool call
+was refused" below: the terminal's own sessions now have hooks and an
+execution policy.
 
 Validation on September 25, 2026:
 
@@ -132,6 +133,178 @@ reachable (10.0.0.131 timed out, and nothing listens locally), so the
 terminal's Ollama detection, warm-up and model listing ran against stubs.
 The docs site wasn't built locally (MkDocs isn't installed here);
 `tests/test_docs_links.py` passes.
+
+## September 25 refused tool calls say why — source only, not released
+
+**A refused call's row said only "denied".** When a hook, a policy rule, a
+tool boundary, a second approver or an approval nobody could answer stops a
+tool call, the model gets the reason as the call's result. The app added a
+line reading "✗ denied" (and "not run" on a command's row) and dropped the
+reason. A guard hook that timed out looked the same as the user's own Deny.
+
+- **The reason shows under the call's row** (`lumi/gui/static/app.js`,
+  `_settleDeniedToolRow`), always set as text, since it can come from a hook,
+  a policy, a repository or the model.
+  - A command, edit or write row reads "✗ … not run" with the reason above its
+    expandable detail. Expanded, a command that never ran shows "(not run)"
+    rather than "(no output)".
+  - Other rows read "✗ not run", with the reason on the line below.
+  - A refusal whose call has no row gets a line of its own. The separate
+    "✗ denied" line is gone.
+  - The user's own Deny still reads just "denied".
+  - Refusals are amber and errors red: a refused call didn't run, so it
+    didn't fail.
+- **A refused Evidence call no longer reads ✓.** Reads, searches and check
+  commands in the collapsed Evidence group showed ✓ when the refusal wasn't
+  also marked as an error (a hook, an approval). They show ✗ with the reason
+  open. The group's header counts "N not run", and the group stays open
+  without the error styling.
+- **A worker's refused calls** get the same, in the worker's own rows.
+  **Codex and Claude Code** rows are unchanged: those CLIs run their own tools
+  and approvals, and Lumi forwards their observations with `denied` false, so
+  there is no refusal to show.
+- **Fixed along the way:**
+  - An inline result went to the last row of its tool, so a tool called twice
+    in a step could put its status or reason on the other call's row. A result
+    now finds the row with its own call id, among its own lane's rows only, so
+    a worker that reuses one of the parent's call ids doesn't reach the
+    parent's row.
+  - An Evidence call's output, once opened, sat beside its row and squeezed
+    the pattern or path to nothing. It takes a line of its own, like a reason.
+
+Validation on September 25, 2026:
+
+- Four tests in `tests/ui_recovery.test.cjs` drive the real `handleEvent`,
+  `renderToolCall` and `renderToolResult`, and the Evidence group from
+  `run_cards.js`, in a small DOM that parses the rows' markup and keeps every
+  `innerHTML` write:
+  - command rows refused by a timed-out hook and by a policy, and one the user
+    denied;
+  - inline rows whose tool name, call id and reason are hostile markup: the
+    reason stays text, no markup write carries it, and each result reaches its
+    own row;
+  - a refusal whose call has no row;
+  - a refused Evidence call next to a passing one and a denied one;
+  - a worker's refused write and `task` in its lane, while the parent's `task`
+    with the same call id succeeds.
+- On the previous `app.js` and `run_cards.js`, all four failed: six rows for
+  three calls (the extra "✗ denied" lines), ✓ for the refused Evidence call,
+  and no reason in the worker's row.
+- After rebasing on main (with gate hooks failing closed, second approvals
+  and worker transcripts): full `pytest` 4,294 passed, 5 skipped.
+  `ruff check .` clean, `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (65 tests),
+  `git diff --check` clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub, in
+  Ask mode, with two `pre_tool_use` hooks in `settings.json` (one exits 1 with
+  a message on stderr, one sleeps past `timeout_seconds: 2`) and the built-in
+  recursive-delete deny:
+  - A `grep` the hook refused read ✗ "not run" with the hook's message open,
+    under a `grep` that found "2 matches ✓". The group read "Evidence ·
+    Searching codebase · 1 not run".
+  - `git push` refused by the hook, `rm -rf build` refused by the policy
+    ("Blocked by policy: Recursive delete blocked — use a safer alternative")
+    and a `task` refused by the hook each read "not run" with their reason.
+  - `npm publish`, denied in the approval dialog with Escape and, in a second
+    run, with **Deny**, read just "denied". Focus went back to the message box.
+  - The hook that never answered: `make release` read "not run" with "Blocked
+    by hook: pre_tool_use hook \`slow-guard\` timed out after 2 s; gate hooks
+    block when they give no answer. Raise its timeout_seconds if it needs
+    longer."
+  - The model's closing message listed the same reasons it had been given.
+    After a reload, the replayed session showed the same rows, and so did a
+    last run on the branch rebased over worker transcripts.
+  - At 375 px there was no horizontal scroll, including for reasons with 120
+    to 160 character unbroken tokens, which wrapped inside their rows.
+  - On a refused Evidence call, Enter closed the reason and Space opened it
+    again. `aria-expanded` followed and focus stayed on the item.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+    credential was stored. `~/.codex` changed during the run while the user's
+    own Codex was running; the fixture never started Codex, so those writes
+    are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code, the
+"no approval prompt is available" refusal in the app (a Node test covers its
+text) and a second approver's refusal (it takes the same path, with the
+approval's message as the reason). The terminal UI shows the reason too; see
+the next section.
+
+## September 25 a mistyped organization policy no longer counts as no policy — source only, not released
+
+**A typo in an administrator's policy could switch the whole policy off.** A
+section of the wrong type made the first `lumi.policy.load()` raise instead of
+reporting an invalid policy. Examples are `"permissions": "ask only"`,
+`"models": [...]`, `"mcp": 5` and `"trusted_keys": [...]`. A policy file that
+isn't UTF-8 text did the same, such as the UTF-16 that Windows PowerShell
+5.1's `Out-File` writes, and so did JSON nested too deeply. In the app, the
+first caller was the updater, which logged the error as its own and carried
+on. Every later call then saw no policy and no error: nothing was enforced,
+model requests weren't refused, and a command the organization's shell rules
+deny ran. Some values also loosened what they control when written as text:
+`"allow_stdio": "no"` allowed command-based MCP servers,
+`"require_signed": "true"` stopped requiring signed capability packs, and
+`"registry_only": "true"` let packs outside the organization's registry run.
+
+- **`load()` never raises** (`lumi/policy.py`). A policy that exists but
+  can't be read or used is an error state on the first call and every later
+  one. Model requests are refused until IT fixes it (`blocked_reason`).
+  Failures `parse()` doesn't anticipate fail closed too.
+- **`parse()` checks each section's type.** `settings`, `permissions`,
+  `models`, `mcp`, `extensions`, `files`, `pricing`, `shell`, `approvals` and
+  `cloud` must be objects. `trusted_keys` must map key ids to text.
+  `grace_days` must be a whole number; text such as `"3"` still works. A
+  missing or `null` section counts as empty.
+- **True-or-false values must be `true` or `false`:** `mcp.allow_stdio`,
+  `extensions.require_signed` and `extensions.registry_only`.
+- **A policy file may start with a UTF-8 byte order mark.** Windows PowerShell
+  5.1 writes one for `-Encoding utf8`, and it used to make the policy
+  invalid. This covers the machine policy file, `LUMI_POLICY_FILE`, Group
+  Policy's `PolicyFile` and `policy-keys.json`.
+- **Lumi Cloud:** a downloaded policy with such a mistake isn't applied. It
+  fails with "The organization's policy wasn't applied: permissions must be
+  an object" instead of an `AttributeError` in the check-in. A stored policy
+  Lumi can't use is reported in Settings, whatever the failure. The machine
+  policy applies instead, or none for an organization joined in the app, as
+  for other unusable downloads.
+- **Not changed:** a budget rule's `block_unpriced` still counts only a
+  literal `true` (`lumi/budgets.py`, which Settings' budgets share).
+
+Validation on September 25, 2026:
+
+- Full `pytest` after merging main (the pack registry and checkpoint
+  Timeline): 4,380 passed, 5 skipped. `ruff check .` clean, the 66 Node tests
+  in AGENTS.md pass, `git diff --check` clean.
+- New tests in `test_policy.py` and `test_cloud.py`:
+  - each mistyped section and value, and null sections still parsing;
+  - a machine policy with a mistyped section, a UTF-16 file, `trusted_keys`
+    as a list, `grace_days` as a list, or JSON nested 100,000 deep. The
+    first and a later `load()` both return the error, and model requests are
+    refused;
+  - a failure `parse()` doesn't anticipate, or one reading the policy text,
+    fails closed. One in a Lumi Cloud policy leaves the machine policy in
+    force;
+  - a file with a UTF-8 byte order mark applies;
+  - a downloaded Lumi Cloud policy with a mistyped section isn't applied,
+    and a stored one is reported, not raised.
+- Against main before this change, 27 of the 29 new cases fail. The other two
+  pass there too: `parse()` already refused a list for `trusted_keys` (it was
+  `load()` that crashed first), and null sections already parsed.
+- In the browser pane, from an isolated home with the scripted Ollama stub.
+  The `LUMI_POLICY_FILE` policy had `"permissions": "ask only"` and a shell
+  rule denying one command:
+  - on main before this change, the updater logged the `AttributeError` at
+    startup and no error showed. In Full-auto, the denied command ran and
+    wrote its file;
+  - with this change, the same message failed with "The organization policy
+    at … is invalid: permissions must be an object. Ask your administrator to
+    fix it." The model received no request, and no file was written.
+    Settings > Privacy & security > Organization policy showed the same
+    error;
+  - the real `~/.resonant` was unchanged, and no `~/.lumi` or Lumi credential
+    entries appeared.
+
+Not exercised: a real Group Policy registry value or macOS configuration
+profile, a packaged build, macOS and Linux.
 
 ## September 25 the terminal says why a tool call was refused — source only, not released
 
@@ -764,9 +937,9 @@ blocks. Set its `timeout_seconds` (default 30) above the time its work takes,
 in the hook's entry in `settings.json` (`hooks`) or in its pack's manifest
 ([capability packs](packs.md#gate-hooks-fail-closed)). On Linux an `env` hook
 can't start for a call whose arguments exceed 128 KiB, so a gate hook blocks
-that call; `"input_format": "json"` avoids it. The app still shows a refused
-call only as "denied": the reason reaches the model and the turn's events, not
-the tool row.
+that call; `"input_format": "json"` avoids it. The tool row showed a refused
+call only as "denied" until "refused tool calls say why" (above) put the
+reason under it.
 
 Validation on September 25, 2026:
 

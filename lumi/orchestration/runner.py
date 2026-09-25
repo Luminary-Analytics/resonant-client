@@ -578,7 +578,10 @@ class LocalSpecialistRunner:
         The repository's ``allow`` rules count only while the user trusts the
         project and the file is the version ``trust`` read
         (gui/workspace_trust.py). Nobody can answer a specialist's approval
-        prompt, so a ``prompt`` rule refuses the call.
+        prompt, so a ``prompt`` rule refuses the call unless the person's
+        ``permission_request`` hook allows it (_hook_runner). An organization
+        ``prompt`` rule is refused without asking the hook
+        (Session._permission_hook_decision).
         """
         return project_execution_policy(
             "full-auto", project_root, honor_allows=trust.honor_policy_allows, policy_digest=trust.policy_digest,

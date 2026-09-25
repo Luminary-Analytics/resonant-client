@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from lumi import policy as lumi_policy
 from lumi.engine.hooks import HookDefinition, HookRunner
 from lumi.engine.tools import AGENT_TOOLS
 from lumi.gui import ws_commands
@@ -93,6 +94,12 @@ def person_settings(*hooks: dict) -> SettingsManager:
     return settings
 
 
+def approving_hook(tmp_path: Path, seen: Path) -> dict:
+    """A Settings permission_request hook that allows whatever it's asked about, noting each question."""
+    body = recording(seen, "settings") + "import json, sys\nsys.stdin.read()\nprint(json.dumps({'decision': 'allow'}))\n"
+    return {"hook_type": "permission_request", "input_format": "json", "command": hook_command(tmp_path, "approve", body)}
+
+
 def app_runner(*hooks: dict) -> HookRunner:
     """A shared runner like the app's, holding these Settings hooks."""
     runner = HookRunner()
@@ -120,10 +127,20 @@ def implement_node(goal: str = "write notes.txt", **fields) -> tuple[PlanGraph, 
     return graph, node
 
 
-def run_specialist(project: Path, **runner_kwargs) -> tuple[dict, StreamingBackend]:
-    """One implement specialist whose model writes notes.txt; returns the tool result and the model."""
+def commanding_backend(command: str) -> StreamingBackend:
+    """A model that runs ``command`` with bash, then reports."""
+    return StreamingBackend(scripts=[
+        [tool_call("bash", {"command": command}, call_id="c1"), done()],
+        [text_delta("Finished."), done()],
+    ])
+
+
+def run_specialist(project: Path, backend: StreamingBackend | None = None,
+                   **runner_kwargs) -> tuple[dict, StreamingBackend]:
+    """One implement specialist whose model writes notes.txt (or does what ``backend`` scripts);
+    returns the tool result and the model."""
     events: list[dict] = []
-    backend = writing_backend()
+    backend = backend or writing_backend()
     graph, node = implement_node(working_subdir=runner_kwargs.pop("working_subdir", None))
     runner = LocalSpecialistRunner(backend=backend, project_path=str(project), all_tools=list(AGENT_TOOLS),
                                    on_session_event=events.append, **runner_kwargs)
@@ -184,6 +201,47 @@ class TestTheRunner:
         assert "pack discovery failed" in result.summary
         assert backend.stream_count == 0
         assert not (project / "notes.txt").exists()
+
+
+class TestPromptRules:
+    """Specialists get the project's and the organization's rules (PR #83), and nobody can answer
+    their approval prompts. The person's permission_request hook answers for them, as it does in the
+    app's background work and in `lumi run`, but never for the organization
+    (Session._permission_hook_decision)."""
+
+    PROJECT_PROMPT = {"rules": [{"tool_pattern": "bash", "action": "prompt", "reason": "Ask first"}]}
+
+    @pytest.mark.parametrize("with_hook", [True, False], ids=["with the hook", "without it"])
+    def test_the_persons_permission_hook_answers_a_project_prompt_rule(self, tmp_path, project, seen, with_hook):
+        (project / "lumi-policy.json").write_text(json.dumps(self.PROJECT_PROMPT), encoding="utf-8")
+        settings = person_settings(*([approving_hook(tmp_path, seen)] if with_hook else []))
+
+        result, _ = run_specialist(project, backend=commanding_backend("echo made > ran.txt"), settings=settings)
+
+        assert (project / "ran.txt").exists() is with_hook, result["output"]
+        if with_hook:
+            assert result["denied"] is False
+            assert ran(seen) == ["settings permission_request bash"]
+        else:
+            assert result["denied"] is True
+            assert "no approval prompt is available" in result["output"]
+
+    def test_an_organization_prompt_rule_is_refused_without_asking_the_hook(self, tmp_path, project, seen):
+        lumi_policy.set_for_tests(lumi_policy.parse({
+            "schema": "lumi.policy/v1", "organization": "Acme",
+            "shell": {"rules": [{"tool_pattern": "bash", "action": "prompt", "arg_globs": {"command": "echo made*"},
+                                 "reason": "Acme: a person approves this"}]},
+        }, source="test"))
+        settings = person_settings(approving_hook(tmp_path, seen))
+
+        result, _ = run_specialist(project, backend=commanding_backend("echo made > ran.txt"), settings=settings)
+
+        assert result["denied"] is True
+        assert result["output"] == (
+            "The organization's policy requires a person to approve this call (Acme: a person approves this), "
+            "but no approval prompt is available for this run, so bash was not executed. Continue without it.")
+        assert not (project / "ran.txt").exists()
+        assert ran(seen) == []
 
 
 class TestTheReflectPass:

@@ -57,18 +57,23 @@ What this means:
   tool call's result is "Blocked by hook: …", which the model reads. A block
   that ends the step with an error, such as `before_model`, blocks that step's
   node.
-- `permission_request` hooks aren't asked yet: a specialist's Full-auto policy
-  here has no `prompt` rules. Once specialists get the project's and the
-  organization's rules (the change PR #69 waits for), a project `prompt` rule
-  goes to that hook, as approvals in the app's background work do, and an
-  organization `prompt` rule is refused without asking it (see "your own hooks
-  run in `lumi run`, schedules, comparisons and chats").
+- **A project `prompt` rule now goes to your `permission_request` hook.** This
+  changes one point of "specialists follow the organization's and the
+  project's rules", which refused every `prompt` rule in a specialist since
+  nobody can answer one. Your `permission_request` hook answers for you where
+  nobody can be asked, as in the app's background work and `lumi run`, so a
+  project `prompt` rule runs the call when that hook allows it. Without such a
+  hook, or without an allow, it is still refused. An organization `prompt`
+  rule is still refused, without asking the hook (see "your own hooks run in
+  `lumi run`, schedules, comparisons and chats").
 - Not covered: Codex and Claude Code run their own tool loops, so tool hooks
   don't reach their tools, as in a chat. The request that repairs a planner's
   or verifier's malformed JSON (Ollama's `generate_structured`) is made outside
   the Session, so `before_model` hooks don't see it.
-- Guides: packs (where Settings and pack hooks run), autonomous sessions, the
-  runtime contract and AGENTS.md.
+- Guides: packs (where Settings and pack hooks run), autonomous sessions,
+  organization policy (`shell.rules` prompts in a plan's steps), the runtime
+  contract (lifecycle hooks, tool approvals, orchestration specialists) and
+  AGENTS.md.
 
 Validation on September 25, 2026:
 

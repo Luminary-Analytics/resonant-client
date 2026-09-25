@@ -181,7 +181,8 @@ the project's policy can't be built (`with_organization_rules`). The runner
 each specialist Full-auto with the project's `lumi-policy.json`, read from the
 project root even when the specialist works in a subfolder, and builds it as
 the specialist starts. Nobody can answer a specialist's approval prompt, so a
-`prompt` rule refuses the call.
+`prompt` rule refuses the call unless the person's PERMISSION_REQUEST hook
+allows it. An organization `prompt` rule is refused without asking the hook.
 
 A trusted project's `allow` rules answer Auto-edit's prompt (Plan uses the
 same tier). A call the tier would ask about runs without asking when the policy
@@ -250,7 +251,11 @@ each specialist starts, so a change applies from the next one:
 - project trust (`gui/workspace_trust.py`): the repository's instructions,
   notes, codebase index summary and language servers reach a specialist only
   in a trusted project, like its policy's `allow` rules;
-- Settings' computer use switch, which a policy can lock.
+- Settings' computer use switch, which a policy can lock;
+- the person's hooks (see [Lifecycle hooks](#lifecycle-hooks)): the app's
+  shared runner scoped with the project's approved capability-pack hooks
+  (`AppState.specialist_hook_runner`), whatever the trust. A lookup that
+  fails blocks the specialist.
 
 Specialists run in Full-auto, since nobody can answer their approval prompts.
 Where the organization's `permissions.allowed_modes` leaves out `bypass`,
@@ -366,14 +371,11 @@ followed, so review what the commands do before approving.
 
 Only approved, enabled, unchanged packs register hooks, connect MCP servers,
 contribute skills, or create agent types. Pack hooks ride on per-session
-runners rather than the shared settings runner. An orchestration specialist
-(a step of `/plan`, a Mission or an autonomous session) gets the same kind of
-runner from `AppState.specialist_hook_runner`, looked up from the project
-root as each specialist starts (`LocalSpecialistRunner._hook_runner`); a
-lookup that fails blocks the specialist instead of running it unguarded.
-Opening another project
-disconnects the previous project's pack MCP servers, and its sessions' pack
-hooks go with those sessions. When the open project has packs waiting for a
+runners rather than the shared settings runner, and an orchestration
+specialist gets one too (see
+[Orchestration specialists](#orchestration-specialists)). Opening another
+project disconnects the previous project's pack MCP servers, and its
+sessions' pack hooks go with those sessions. When the open project has packs waiting for a
 decision, the banner above the composer links to the review page.
 
 ## Multimodal artifact bus

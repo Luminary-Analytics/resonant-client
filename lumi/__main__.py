@@ -77,6 +77,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "run":
         from lumi.headless import main as run_main
         raise SystemExit(run_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "schedule":
+        from lumi.schedules import main as schedule_main
+        raise SystemExit(schedule_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "updates":
         from lumi.update_channels import main as updates_main
         raise SystemExit(updates_main(sys.argv[2:]))

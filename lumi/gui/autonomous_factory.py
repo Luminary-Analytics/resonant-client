@@ -554,6 +554,7 @@ def make_reflect_runner(
     on_session_event: Optional[Callable[[dict], None]] = None,
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
     mcp_manager: Any = None,
+    hook_runner_for: Optional[Callable[[str], Any]] = None,
 ) -> Callable[..., FullReflectOutcome]:
     """Build a callable suitable for `DaemonHooks.run_full_reflect`.
 
@@ -581,6 +582,7 @@ def make_reflect_runner(
         on_session_event=on_session_event,
         specialist_backend_resolver=specialist_backend_resolver,
         mcp_manager=mcp_manager,
+        hook_runner_for=hook_runner_for,
     )
 
     def _run_reflect(
@@ -727,6 +729,7 @@ def build_autonomous_mission_hooks(
     planner_specialization: Optional[str] = None,
     specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
     mcp_manager: Any = None,
+    hook_runner_for: Optional[Callable[[str], Any]] = None,
     enable_skill_extraction: bool = True,
     enable_skill_curator: bool = True,
     enable_skill_loader: bool = True,
@@ -931,6 +934,7 @@ def build_autonomous_mission_hooks(
             on_session_event=on_session_event,
             specialist_backend_resolver=specialist_backend_resolver,
             mcp_manager=mcp_manager,
+            hook_runner_for=hook_runner_for,
         ),
         check_context_factory=make_check_context_factory(
             project_path=project_path,

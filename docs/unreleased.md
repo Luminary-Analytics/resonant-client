@@ -8,6 +8,120 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 your hooks run in a plan's steps too — source only, not released
+
+**A plan's specialists ran no hooks.** `LocalSpecialistRunner`
+(`orchestration/runner.py`) builds a Session for each step of a `/plan`, a
+Mission's **Build this roadmap** and an autonomous session (its iterations and
+its reflect pass). It never set `session.hook_runner`. So neither your
+Settings hooks (`hooks` in settings.json) nor the project's approved
+capability-pack hooks ran there, although the pack's MCP tools did reach
+those steps. It was confirmed with a scripted model and a Settings
+`pre_tool_use` hook that exits 1:
+
+- an implementer's `file_write` went through ("File written: …"), and no hook
+  ran, not even `session_start`;
+- the same happened through the app's own path (`AppState.get_intent_service`,
+  as `/plan` uses it), with the Settings guard or an approved pack's guard.
+
+What was decided:
+
+- **Specialists run your Settings hooks.** They are your own configuration,
+  not repository content, so project trust doesn't decide them. A guard that
+  refuses a call in a chat, failing closed, must not be skipped by typing
+  `/plan`. Specialists work unattended in Full-auto, where a guard matters
+  most.
+- **They get what a chat session in the project gets:** the app's shared
+  runner, scoped with the project's approved pack hooks
+  (`AppState.specialist_hook_runner`, like `_attach_capability_packs`). Pack
+  hooks stay on the specialist's own runner, never the shared one. The shared
+  runner is the one Settings changes reload. Hooks in settings.json are edited
+  in the file and read at startup, so in practice this keeps one source of
+  hooks rather than following live edits.
+- **Looked up as each specialist starts, from the project root.** A pack
+  approved or withdrawn during a plan counts from its next step. A step
+  working in a subfolder still gets the root's packs, and its hooks run in
+  that subfolder.
+- **A lookup that fails blocks the step** before its first model request, with
+  "runner exception: …", rather than running it without its guards.
+- **A runner built outside the app** (a test, the smoke harness, a script)
+  loads `HookRunner(settings)` when it has settings, as `lumi run` does, and
+  has no hooks without them. `IntentService`, `make_reflect_runner` and
+  `build_autonomous_mission_hooks` take the same `hook_runner_for`.
+
+What this means:
+
+- Each step fires the hook points a chat turn does: `session_start` and
+  `session_end`, `before_model` and `after_model`, `pre_tool_use` and
+  `post_tool_use`, `task_completed` and the rest its tools reach. A refused
+  tool call's result is "Blocked by hook: …", which the model reads. A block
+  that ends the step with an error, such as `before_model`, blocks that step's
+  node.
+- `permission_request` hooks aren't asked yet: a specialist's Full-auto policy
+  here has no `prompt` rules. Once specialists get the project's and the
+  organization's rules (the change PR #69 waits for), a project `prompt` rule
+  goes to that hook, as approvals in the app's background work do, and an
+  organization `prompt` rule is refused without asking it (see "your own hooks
+  run in `lumi run`, schedules, comparisons and chats").
+- Not covered: Codex and Claude Code run their own tool loops, so tool hooks
+  don't reach their tools, as in a chat. The request that repairs a planner's
+  or verifier's malformed JSON (Ollama's `generate_structured`) is made outside
+  the Session, so `before_model` hooks don't see it.
+- Guides: packs (where Settings and pack hooks run), autonomous sessions, the
+  runtime contract and AGENTS.md.
+
+Validation on September 25, 2026:
+
+- New tests in `tests/test_specialist_hooks.py` (8), with the streaming stub,
+  the real Session and real hook scripts:
+  - the runner alone: a Settings guard refuses a specialist's write, and
+    `session_start` and `session_end` hooks run; without settings nothing is
+    attached;
+  - the app's runner is used alone (the runner's settings aren't loaded again
+    beside it), and asked for with the project root by a step working in
+    `web/`;
+  - a lookup that raises blocks the step with no model request;
+  - the reflect pass refuses a guarded `bash` call, and a Mission hands it
+    `AppState.specialist_hook_runner`;
+  - through a real `AppState` and its intent service, as `/plan` runs a step:
+    the Settings hook runs once, the approved pack's guard refuses the write,
+    an unapproved pack's hook doesn't run, and the shared runner holds no pack
+    hooks;
+  - a pack approved between two plans of the same intent service guards the
+    second.
+- Each piece was undone in turn, and each variant failed 1 to 6 of these tests:
+  no hook runner, no Settings fallback, the lookup asked with the subfolder, a
+  failed lookup falling back to Settings hooks, Settings hooks loaded beside
+  the app's runner, the resolver dropped by `IntentService`, `AppState`, the
+  reflect runner or the Mission, and pack hooks left out. The files were
+  restored after each.
+- On main before this change (b9d6e38), 7 of the 8 fail: the Settings-guard
+  test and both app tests with "File written", the rest because
+  `hook_runner_for` doesn't exist there. The eighth checks that nothing is
+  attached without settings.
+- The real app in the browser pane, before and after, from a throwaway home
+  with the credential store off. A scripted Ollama-compatible model answered.
+  settings.json had a `pre_tool_use` guard on `file_write` (exit 1) and a
+  `session_start` recorder. The steps: a Mission (autonomous sessions on,
+  **Run autonomously** off), its spec, then **Build this roadmap**. `/plan`
+  itself sends nothing on this base; PR #69 fixes that.
+  - Main (b9d6e38): only the drafting chat's `session_start` ran. The plan
+    card's Implementer step showed "✓ notes.txt", and notes.txt was written.
+  - This branch: `session_start` ran for the chat, the planner and the
+    implementer, then the guard, all in the project folder. The model was told
+    "Blocked by hook: Settings guard: no file writes here". The Implementer
+    step showed "✗ notes.txt · not run" with that reason, and nothing was
+    written.
+  - The same held on 8474e10 (PR #74's head, before the plan card), where
+    the step's rows show as a chat turn.
+  - Afterwards the real `~/.resonant` files had the same hashes, no `~/.lumi`
+    existed and no credential entry was added.
+- Full `pytest`: 4,447 passed, 5 skipped. `ruff check .`, `git diff --check`,
+  `node --check` of `app.js` and `settings_view.js`, and the Node UI tests
+  (81) pass.
+- Not exercised: a live model, a packaged build, `/plan` from the message box
+  (see PR #69), and Codex or Claude Code as a step's model.
+
 ## September 25 specialists get a chat's exclusions, project trust and allowed modes — source only, not released
 
 **Missions and autonomous sessions skipped part of a chat's setup.** Their

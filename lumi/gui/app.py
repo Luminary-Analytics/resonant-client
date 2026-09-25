@@ -530,6 +530,7 @@ class AppState:
                 # resolver. None override → default backend.
                 specialist_backend_resolver=self._build_specialist_backend,
                 mcp_manager=self.mcp_manager,
+                hook_runner_for=self.specialist_hook_runner,
             )
             self._intent_service_signature = signature
         elif on_event is not None:
@@ -869,6 +870,16 @@ class AppState:
 
         session._skill_context_provider = _combined_skill_context
         session.mcp_tools = self._safe_mcp_tools()
+
+    def specialist_hook_runner(self, project_path: str) -> HookRunner:
+        """The hooks of a /plan or Mission specialist working in ``project_path``.
+
+        What a chat session there gets (_attach_capability_packs): the shared
+        runner's Settings hooks, which apply_settings reloads, and the
+        project's approved capability-pack hooks. The orchestration runner
+        asks for it as each specialist starts (LocalSpecialistRunner._hook_runner).
+        """
+        return self.hook_runner.scoped(self._capability_packs_for(project_path).hook_definitions())
 
     def capability_pack_payload(self) -> dict:
         """Every discovered pack with what it would run, for review in Settings."""

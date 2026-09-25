@@ -76,6 +76,16 @@ The roadmap records the limit and the spending so far. A session resumed
 after Lumi restarts counts on from there. Your organization's budgets apply
 to every request either way.
 
+## Your hooks
+
+Each step of an iteration, and each reflect pass, runs your hooks as a chat in
+the project does: the `hooks` in your settings.json and those of the
+project's approved [capability packs](packs.md#hooks). A `pre_tool_use` guard
+that refuses a call refuses it here too, and the model is told why. Nobody is
+there to answer a hook that asks for input, so write hooks that decide on
+their own. A gate hook that runs past its `timeout_seconds` blocks what it
+guards.
+
 ## Pausing, stopping and resuming
 
 **Pause** and **Stop** are on the session's badge. A session that was

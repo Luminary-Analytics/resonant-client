@@ -792,6 +792,10 @@ def _spawn_autonomous_daemon(
         planner_specialization=planner_spec,
         specialist_backend_resolver=specialist_resolver,
         mcp_manager=getattr(state, "mcp_manager", None),
+        # The reflect pass's specialist runs the person's hooks like the
+        # others (AppState.specialist_hook_runner); a stub state without it
+        # gets the Settings hooks (LocalSpecialistRunner._hook_runner).
+        hook_runner_for=getattr(state, "specialist_hook_runner", None),
     )
 
     config = AutonomousMissionConfig(

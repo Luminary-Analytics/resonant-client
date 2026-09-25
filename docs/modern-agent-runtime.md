@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-25 (orchestration specialists get the app's session setup)
+Last updated: 2026-09-25 (orchestration specialists get the app's session setup and the person's hooks)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -139,6 +139,15 @@ context, or reject an unsupported completion claim.
 
 A missing or unknown `decision` is no decision; it is never read as consent.
 When several hooks answer, `deny` outranks `ask`, which outranks `allow`.
+
+The person's Settings hooks (`hooks` in settings.json) run in the app's chat
+sessions and the workers they delegate to (`copy_execution_context_from`), in
+orchestration specialists (`orchestration/runner.py`), and in every session
+`headless.build_session` builds. They are the person's configuration, not
+repository content, so project trust doesn't decide them. A new place that
+builds a Session for the person must attach them too. Approved
+capability-pack hooks join them only in the app (see
+[Capability packs](#capability-packs)).
 
 Gate hooks fail closed (`GATE_HOOK_TYPES` in `engine/hooks.py`: pre-tool,
 pre-tool-batch, before-model, permission, task-completed, sub-agent-stop and
@@ -357,7 +366,12 @@ followed, so review what the commands do before approving.
 
 Only approved, enabled, unchanged packs register hooks, connect MCP servers,
 contribute skills, or create agent types. Pack hooks ride on per-session
-runners rather than the shared settings runner. Opening another project
+runners rather than the shared settings runner. An orchestration specialist
+(a step of `/plan`, a Mission or an autonomous session) gets the same kind of
+runner from `AppState.specialist_hook_runner`, looked up from the project
+root as each specialist starts (`LocalSpecialistRunner._hook_runner`); a
+lookup that fails blocks the specialist instead of running it unguarded.
+Opening another project
 disconnects the previous project's pack MCP servers, and its sessions' pack
 hooks go with those sessions. When the open project has packs waiting for a
 decision, the banner above the composer links to the review page.

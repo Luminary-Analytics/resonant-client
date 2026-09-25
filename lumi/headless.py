@@ -144,6 +144,9 @@ def _configure(settings: Any) -> None:
     pricing.configure(settings)
     usage.configure(settings)
     budgets.configure(settings)
+    from .engine import github_tools
+
+    github_tools.configure(settings)
 
 
 def _read_prompt(args: argparse.Namespace, stdin: TextIO) -> str:

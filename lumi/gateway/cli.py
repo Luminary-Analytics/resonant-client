@@ -86,6 +86,9 @@ def main(argv: list[str] | None = None) -> None:
     pricing.configure(settings)
     usage.configure(settings)
     budgets.configure(settings)
+    from ..engine import github_tools
+
+    github_tools.configure(settings)
     token = args.token or str(settings.get("api_keys", "telegram_bot", "") or "")
     allowed = args.allow or list(settings.get("gateway", "allowed_chat_ids", []) or [])
 

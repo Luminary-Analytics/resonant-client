@@ -1286,6 +1286,8 @@ class LumiSettingsView {
                       hint: 'OPENROUTER_API_KEY is also supported. API calls use your OpenRouter credits.' },
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
                       hint: 'MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
+                    { key: 'github', label: 'GitHub token', type: 'password',
+                      hint: 'Lets the agent read pull request reviews and checks, and open, update and comment on pull requests. GITHUB_TOKEN or GH_TOKEN also work.' },
                     { key: 'otlp', label: 'OpenTelemetry collector token', type: 'password',
                       hint: 'Sent in the header set under Privacy & security when audit records are exported.' },
                 ]

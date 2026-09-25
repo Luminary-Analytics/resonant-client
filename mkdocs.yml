@@ -82,6 +82,7 @@ nav:
       - Audit log: audit-log.md
       - Running without a UI: headless.md
       - Scheduled tasks: scheduled-tasks.md
+      - Chat gateway (Telegram, Slack): chat-gateway.md
       - Pull requests (GitHub, GitLab, Bitbucket, Azure DevOps): github.md
   - Extending Lumi:
       - Writing a capability pack: packs.md

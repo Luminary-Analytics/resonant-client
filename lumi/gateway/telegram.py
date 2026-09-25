@@ -3,12 +3,13 @@ Telegram channel adapter.
 
 Uses the Bot API over plain HTTPS long-polling (getUpdates), so it needs no
 third-party SDK — httpx is already a core dependency. Create a bot with
-@BotFather, put the token in settings (api_keys.telegram_bot) or pass
---token, and start the gateway.
+@BotFather, put the token in settings.json (api_keys.telegram_bot), set
+TELEGRAM_BOT_TOKEN or pass --token, and start the gateway.
 
 Security: only chats in the allowlist are served. When a new chat writes to
 the bot, the adapter replies with the numeric chat ID and instructions to add
-it — it never runs the agent for unknown chats.
+it — it never runs the agent for unknown chats. Approval buttons pressed in a
+chat that isn't allowed are ignored the same way.
 """
 
 from __future__ import annotations
@@ -34,16 +35,22 @@ class TelegramChannel(ChannelAdapter):
         self,
         bot_token: str,
         allowed_chat_ids: Optional[list[str]] = None,
+        *,
+        api_url: str = "",
+        client=None,
     ):
         if not bot_token:
             raise ValueError(
-                "Telegram bot token required. Create a bot with @BotFather, "
-                "then set api_keys.telegram_bot in settings or pass --token."
+                "Telegram bot token required. Create a bot with @BotFather, then put its token in "
+                "api_keys.telegram_bot in ~/.lumi/settings.json, set TELEGRAM_BOT_TOKEN or pass --token."
             )
         self._token = bot_token
         self._allowed = {str(c).strip() for c in (allowed_chat_ids or []) if str(c).strip()}
         self._stop = threading.Event()
         self._offset = 0
+        self._client = client  # an httpx.Client; tests pass one with a mock transport
+        # A self-hosted Bot API server (github.com/tdlib/telegram-bot-api), if any.
+        self._api = (api_url or _API_BASE).rstrip("/")
 
     # ── Transport helpers ────────────────────────────────────────────
 
@@ -52,8 +59,10 @@ class TelegramChannel(ChannelAdapter):
         a `timeout` key in params is Telegram's long-poll duration."""
         import httpx
 
-        url = f"{_API_BASE}/bot{self._token}/{method}"
-        response = httpx.post(url, json=params, timeout=_http_timeout)
+        if self._client is None:
+            self._client = httpx.Client()
+        url = f"{self._api}/bot{self._token}/{method}"
+        response = self._client.post(url, json=params, timeout=_http_timeout)
         response.raise_for_status()
         payload = response.json()
         if not payload.get("ok"):
@@ -73,7 +82,7 @@ class TelegramChannel(ChannelAdapter):
                     _http_timeout=_POLL_TIMEOUT_S + 10,
                     offset=self._offset,
                     timeout=_POLL_TIMEOUT_S,
-                    allowed_updates=["message"],
+                    allowed_updates=["message", "callback_query"],
                 )
                 backoff = 1.0
             except Exception as exc:
@@ -86,6 +95,9 @@ class TelegramChannel(ChannelAdapter):
 
             for update in updates or []:
                 self._offset = max(self._offset, int(update.get("update_id", 0)) + 1)
+                if update.get("callback_query"):
+                    self._button(update["callback_query"], on_message)
+                    continue
                 message = update.get("message") or update.get("edited_message")
                 if not message:
                     continue
@@ -93,17 +105,29 @@ class TelegramChannel(ChannelAdapter):
                 if not text:
                     continue
                 chat_id = str((message.get("chat") or {}).get("id", ""))
-                sender = str(
-                    (message.get("from") or {}).get("username")
-                    or (message.get("from") or {}).get("first_name")
-                    or "unknown"
-                )
+                sender = _sender(message.get("from"))
                 if not self._is_allowed(chat_id):
                     self._reject_unknown_chat(chat_id, sender)
                     continue
                 on_message(InboundMessage(
                     chat_id=chat_id, sender=sender, text=text, channel=self.name,
                 ))
+
+    def _button(self, query: dict, on_message: Callable[[InboundMessage], None]) -> None:
+        """An Approve or Deny button: answered as ``/approve <id>`` or ``/deny <id>``."""
+        chat_id = str(((query.get("message") or {}).get("chat") or {}).get("id", ""))
+        action, _, approval_id = str(query.get("data") or "").partition(":")
+        allowed = self._is_allowed(chat_id) and action in ("approve", "deny") and approval_id
+        try:
+            self._call("answerCallbackQuery", callback_query_id=query.get("id"),
+                       text=("Approved" if action == "approve" else "Denied") if allowed else "Not allowed")
+        except Exception:
+            logger.debug("Could not acknowledge a Telegram button", exc_info=True)
+        if not allowed:
+            logger.warning("Ignored an approval button from Telegram chat %s", chat_id)
+            return
+        on_message(InboundMessage(chat_id=chat_id, sender=_sender(query.get("from")),
+                                  text=f"/{action} {approval_id}", channel=self.name))
 
     def send(self, chat_id: str, text: str) -> None:
         for chunk in _chunk(text, _MAX_MESSAGE_CHARS):
@@ -112,6 +136,16 @@ class TelegramChannel(ChannelAdapter):
             except Exception:
                 logger.exception("Failed to send Telegram reply to chat %s", chat_id)
                 return
+
+    def ask(self, chat_id: str, text: str, approval_id: str) -> None:
+        buttons = [[{"text": "Approve", "callback_data": f"approve:{approval_id}"},
+                    {"text": "Deny", "callback_data": f"deny:{approval_id}"}]]
+        try:
+            self._call("sendMessage", chat_id=chat_id, text=text[:_MAX_MESSAGE_CHARS],
+                       reply_markup={"inline_keyboard": buttons})
+        except Exception:
+            logger.exception("Failed to send a Telegram approval request to chat %s", chat_id)
+            super().ask(chat_id, text, approval_id)
 
     def notify_busy(self, chat_id: str) -> None:
         try:
@@ -140,6 +174,11 @@ class TelegramChannel(ChannelAdapter):
             f"Lumi settings (~/.lumi/settings.json) or pass "
             f"--allow {chat_id} when starting the gateway, then restart it.",
         )
+
+
+def _sender(user: Optional[dict]) -> str:
+    user = user or {}
+    return str(user.get("username") or user.get("first_name") or "unknown")
 
 
 def _chunk(text: str, limit: int) -> list[str]:

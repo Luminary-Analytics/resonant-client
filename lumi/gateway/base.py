@@ -32,11 +32,17 @@ class ChannelAdapter(ABC):
 
         on_message must return quickly (the service enqueues work); the
         adapter should keep receiving while replies are being generated.
+        A button press that answers an approval arrives as the message
+        ``/approve <id>`` or ``/deny <id>``.
         """
 
     @abstractmethod
     def send(self, chat_id: str, text: str) -> None:
         """Deliver a reply to the given conversation."""
+
+    def ask(self, chat_id: str, text: str, approval_id: str) -> None:
+        """Ask the person to approve an action. Adapters with buttons show them."""
+        self.send(chat_id, f"{text}\nReply approve or deny.")
 
     def notify_busy(self, chat_id: str) -> None:
         """Optional 'agent is working' indicator (e.g. typing status)."""

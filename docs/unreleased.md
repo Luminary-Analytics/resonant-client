@@ -8,6 +8,52 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 fallback models, roles and capability overrides — source only, not released
+
+- **Fallback models** ([guide](models.md)): **Settings > General > If the
+  model fails, continue with** (`general.fallback_models`, up to five
+  `provider:model` lines).
+  - A request that fails before any answer (provider error, overload, a
+    connection failure) retries the same step with the next usable model.
+  - The conversation shows a notice, and the audit log records
+    `model.fallback`.
+  - Fallbacks the policy blocks, that an organization budget can't price, or
+    that can't be built are skipped. The next turn tries the chosen model
+    again.
+  - `lumi run --fallback provider:model` adds to the list.
+- **Models for roles:** **Settings > General > Models for roles**
+  (`role provider:model` lines) feed the existing role router. A `summarize`
+  model now names sessions and compacts long conversations. Titles no longer
+  need the chat model to be a native one, so a session using Codex or Claude
+  Code can be named by a local model. Title requests are recorded with their
+  conversation.
+- **Capability overrides:** policy `models.capabilities` states a model
+  pattern's context window, vision, tools, reasoning levels, computer use or
+  concurrency. The override wins over name inference and runtime reports.
+- **Settings fields for lists:** multi-line fields, with typed text kept after
+  a refused save. A successful save clears the error alert at once.
+
+Validation on September 25, 2026:
+
+- 13 new tests in `test_model_fallback.py`:
+  - a fallback after a provider error and after a crashed stream;
+  - skipped fallbacks (policy, a budget, a factory that fails);
+  - no fallback after partial output;
+  - `lumi run --fallback`;
+  - list parsing, and the socket's normalization;
+  - the summarize model naming a CLI-backed session;
+  - capability overrides, and invalid ones refusing the policy.
+
+  The title tests' stand-ins take the new usage context.
+- Full `pytest`: 3,754 passed, 2 skipped.
+- In the browser pane, with an isolated home, the chosen model on a
+  connection to a closed port, and `ollama:stub:latest` as the fallback:
+  - the turn showed "conn-broken:claude-sonnet-5 failed (Broken gateway
+    connection failed: ConnectError); continuing with ollama:stub:latest."
+    and finished with changed files and no error;
+  - in Settings > General, invalid lines were refused with an alert and kept
+    for fixing; corrected lines saved and cleared the alert.
+
 ## September 25 GitHub pull requests — source only, not released
 
 - **GitHub tools** (`lumi/engine/github_tools.py`, [guide](github.md)), loaded

@@ -1034,7 +1034,7 @@ class LumiSettingsView {
 
     _settingsPages() {
         return [
-            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled'], keywords:'permissions approval workflow'},
+            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','fallback_models','role_models','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled'], keywords:'permissions approval workflow fallback failover roles summarize'},
             {id:'profile', title:'Profile', group:'Personal', icon:'person', description:'Personalize your local workspace identity.', sections:['general'], fields:['display_name']},
             {id:'appearance', title:'Appearance', group:'Personal', icon:'sun', description:'Make the workspace feel right for you.', sections:['appearance']},
             {id:'pets', title:'Pets', group:'Personal', icon:'pet', description:'A little company while you build.', sections:['general'], fields:['show_companion'], keywords:'Echo companion'},
@@ -1202,6 +1202,12 @@ class LumiSettingsView {
                       hint: 'Default: "pytest -x". For JS/TS: "npx jest" or "npx vitest run".' },
                     { key: 'max_model_requests', label: 'Model requests per turn', type: 'number',
                       hint: '0 means unlimited. Native coding runs pause at this limit and retain work; send Continue to resume. Includes recovery attempts, excludes auxiliary summaries and delegated workers. This is not a dollar limit or a CLI-provider limit.' },
+                    { key: 'fallback_models', label: 'If the model fails, continue with', type: 'lines',
+                      placeholder: 'anthropic:claude-sonnet-5\nollama:qwen3:32b',
+                      hint: 'One provider:model per line, tried in order when a request fails before answering. The next turn tries your chosen model first again.' },
+                    { key: 'role_models', label: 'Models for roles', type: 'lines',
+                      placeholder: 'summarize ollama:qwen3:8b\nreview anthropic:claude-opus-5-5',
+                      hint: 'One "role provider:model" per line. summarize names sessions and compacts long conversations; plan, explore, implement, test, review and vision are used for delegated work.' },
                     { key: 'big_context_profile', label: 'Large-context profile', type: 'toggle',
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
@@ -1389,7 +1395,7 @@ class LumiSettingsView {
             ...section, fields: section.fields?.filter(field => !page.fields || page.fields.includes(field.key)),
         })).flatMap(section => page.id === 'general' ? [
             {heading:'Permissions', keys:['default_permission_mode']},
-            {heading:'Models', keys:['default_backend','default_model','big_context_profile']},
+            {heading:'Models', keys:['default_backend','default_model','fallback_models','role_models','big_context_profile']},
             {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled']},
         ].map(group => ({...section, heading:group.heading, fields:section.fields.filter(field => group.keys.includes(field.key))})) : [section]) : [];
         this.settingsBody.innerHTML = '';
@@ -1620,6 +1626,12 @@ class LumiSettingsView {
                                 ${hasSecret && !lockedBy ? `<button class="btn-sm settings-clear-secret" data-section="${store}" data-key="${field.key}" aria-label="Clear ${this.escapeHtml(field.label)}" style="font-size:11px">Clear</button>` : ''}
                             </div>
                         `;
+                    } else if (field.type === 'lines') {
+                        // Typed lines stay until a save succeeds, so a refused save can be fixed.
+                        const draft = this._linesDrafts?.[`${store}.${field.key}`];
+                        const text = draft ?? (Array.isArray(val) ? val.join('\n') : String(val || ''));
+                        const ph = field.placeholder ? ` placeholder="${this.escapeHtml(field.placeholder)}"` : '';
+                        input = `<textarea class="settings-input settings-textarea settings-lines" rows="3" spellcheck="false" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph}${lock}>${this.escapeHtml(text)}</textarea>`;
                     } else if (field.type === 'number') {
                         input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None" style="width:80px"${lock} />`;
                     } else {
@@ -1669,6 +1681,15 @@ class LumiSettingsView {
                 btn.disabled = true;
                 btn.textContent = 'Connecting…';
                 this.send({command: 'provider_connection', provider: btn.dataset.provider, action: btn.dataset.providerAction});
+            });
+        });
+        this.settingsBody.querySelectorAll('textarea.settings-lines').forEach(area => {
+            area.addEventListener('input', () => {
+                this._linesDrafts = {...(this._linesDrafts || {}), [`${area.dataset.section}.${area.dataset.key}`]: area.value};
+            });
+            area.addEventListener('blur', () => {
+                const lines = area.value.split('\n').map(line => line.trim()).filter(Boolean);
+                this.send({ command: 'update_settings', section: area.dataset.section, key: area.dataset.key, value: lines });
             });
         });
         // Bind change events for settings inputs

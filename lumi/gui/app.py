@@ -732,7 +732,7 @@ class AppState:
 
         record = self.project.current_session
         role_router = ModelRoleRouter(
-            self.settings.get("model_roles") or {},
+            self._role_config(),
             workers=[],
             backend_factory=_role_backend_factory,
         )
@@ -756,6 +756,7 @@ class AppState:
         session.flight_recorder = flight_recorder
         session.context_broker = context_broker
         session.model_role_router = role_router
+        session.fallback_provider = lambda path=target_path: self._fallback_chain(path)
         # Director Mode was retired in favor of the standard agent loop. Clear
         # legacy session flags as records are opened so an old task graph can
         # never be restored or injected into the model prompt.
@@ -2054,6 +2055,37 @@ class AppState:
         # The audit log has its own, longer retention.
         removed["audit_days"] = audit.audit_log().purge()
         return removed
+
+    def _role_config(self) -> dict:
+        """Role models: settings.json's model_roles, then Settings' role lines."""
+        from ..engine.model_roles import parse_role_models
+
+        config = dict(self.settings.get("model_roles") or {})
+        try:
+            lines = parse_role_models(self.settings.get("general", "role_models", []) or [])
+        except ValueError:
+            lines = {}
+        for role, entry in lines.items():
+            config[role] = {**(config.get(role) or {}), **entry}
+        return config
+
+    def _fallback_chain(self, project_path: str) -> list:
+        """The fallback models, each with a factory built only when needed."""
+        from ..engine.model_roles import parse_model_ref
+
+        chain = []
+        for ref in self.settings.get("general", "fallback_models", []) or []:
+            try:
+                provider, model = parse_model_ref(ref)
+            except ValueError:
+                continue
+
+            def factory(provider=provider, model=model):
+                spec = self.build_backend_spec(provider, model, project_path=project_path)
+                return spec.create_backend(self.settings)
+
+            chain.append((f"{provider}:{model}", factory))
+        return chain
 
     def _count_usage(self, record: dict) -> None:
         self.costs.add(record.get("input_tokens", 0), record.get("output_tokens", 0),

@@ -9707,6 +9707,17 @@ body {
     color: var(--accent);
 }
 
+/* A model request failed and the turn went on with a fallback model. */
+.backend-status-fallback {
+    background: color-mix(in srgb, var(--accent) 8%, var(--bg-secondary, transparent));
+    border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+    color: var(--text);
+}
+
+.backend-status-fallback .backend-status-icon {
+    color: var(--accent);
+}
+
 /* A spending alert (lumi/budgets.py). */
 .backend-status-budget {
     background: color-mix(in srgb, var(--warn) 10%, var(--bg-secondary, transparent));
@@ -13398,6 +13409,7 @@ body.is-window-dragging * {
 #settings-body .settings-row-label { font-size: 12px; color: var(--text); font-weight: 500; flex-shrink: 1; }
 #settings-body .settings-row-hint { max-width: none; text-align: left; font-style: normal; line-height: 1.5; margin-top: 5px; }
 #settings-body .settings-row-value { flex: 0 1 260px; min-width: 0; max-width: 44%; }
+#settings-body .settings-row-value .settings-lines { width: 100%; min-height: 64px; font-family: var(--mono, monospace); font-size: 11.5px; }
 #settings-body .settings-input, #settings-body .settings-select { max-width: 100%; min-width: 0; border: 1px solid var(--border); border-radius: 7px; padding: 7px 9px; background: var(--bg-panel); color: var(--text); }
 #settings-body .settings-input:focus-visible, #settings-body .settings-select:focus-visible { outline: 1px solid var(--brand); }
 #settings-body .settings-toggle { display: inline-flex; align-items: center; cursor: pointer; position: relative; }

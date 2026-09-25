@@ -51,6 +51,54 @@ DEFAULT_ROLE_PROFILES = {
 }
 
 
+MODEL_PROVIDERS = ("anthropic", "openai", "openrouter", "sonn", "kimi", "exo", "ollama", "codex",
+                   "claude-code")
+
+
+def parse_model_ref(text: str) -> tuple[str, str]:
+    """``provider:model`` (the model may contain colons, as Ollama tags do)."""
+    provider, _, model = str(text or "").strip().partition(":")
+    provider = provider.strip().lower()
+    if not model.strip() or not (provider in MODEL_PROVIDERS or provider.startswith("conn-")):
+        raise ValueError(f"{text!r} isn't provider:model, for example anthropic:claude-sonnet-5 "
+                         f"or ollama:qwen3:32b.")
+    return provider, model.strip()
+
+
+def parse_fallback_models(value: Any) -> list[str]:
+    """Fallback models from Settings: ``provider:model`` lines, at most five."""
+    lines = value.splitlines() if isinstance(value, str) else list(value or [])
+    models: list[str] = []
+    for line in lines:
+        text = str(line).split("#", 1)[0].strip()
+        if not text:
+            continue
+        provider, model = parse_model_ref(text)
+        if f"{provider}:{model}" not in models:
+            models.append(f"{provider}:{model}")
+    if len(models) > 5:
+        raise ValueError("List at most five fallback models.")
+    return models
+
+
+def parse_role_models(value: Any) -> dict[str, dict[str, str]]:
+    """Role models from Settings: ``role provider:model`` lines."""
+    lines = value.splitlines() if isinstance(value, str) else list(value or [])
+    roles = {role.value for role in ModelRole}
+    parsed: dict[str, dict[str, str]] = {}
+    for line in lines:
+        text = str(line).split("#", 1)[0].strip()
+        if not text:
+            continue
+        role, _, ref = text.partition(" ")
+        role = role.strip().lower()
+        if role not in roles:
+            raise ValueError(f"Unknown role {role!r}; use {', '.join(sorted(roles))}.")
+        provider, model = parse_model_ref(ref.strip())
+        parsed[role] = {"backend_type": provider, "model": model}
+    return parsed
+
+
 class ModelRoleRouter:
     """Resolve explicit phase roles without opaque mid-turn model switching.
 

@@ -96,6 +96,8 @@ class Policy:
     prices: tuple = ()
     # Spending rules (lumi/budgets.py), owned by the organization.
     budgets: tuple = ()
+    # Model capabilities an administrator states (lumi/capabilities.py).
+    capability_overrides: tuple = ()
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -154,6 +156,7 @@ class Policy:
             "packs_allowed": list(self.packs_allowed) if self.packs_allowed is not None else None,
             "prices": [pattern for pattern, _ in self.prices],
             "budgets": len(self.budgets),
+            "capability_overrides": [pattern for pattern, _ in self.capability_overrides],
         }
 
 
@@ -248,6 +251,12 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         budgets = parse_rules(document.get("budgets"), owner=organization)
     except ValueError as exc:
         raise PolicyError(f"budgets: {exc}") from exc
+    from .capabilities import parse_capability_overrides
+
+    try:
+        capability_overrides = parse_capability_overrides(models.get("capabilities"))
+    except ValueError as exc:
+        raise PolicyError(f"models.capabilities: {exc}") from exc
     raw_keys = document.get("trusted_keys") or {}
     if not isinstance(raw_keys, dict):
         raise PolicyError("trusted_keys must map key ids to base64 Ed25519 public keys.")
@@ -274,6 +283,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         trusted_keys={str(k): str(v) for k, v in raw_keys.items()},
         prices=prices,
         budgets=budgets,
+        capability_overrides=capability_overrides,
         raw=document,
     )
 

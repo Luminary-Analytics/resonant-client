@@ -47,14 +47,15 @@ def fallback_session_title(prompt: str) -> str:
     return _compact_title(meaningful) or "New task"
 
 
-def generate_session_title(backend, prompt: str, cancel: threading.Event) -> str:
+def generate_session_title(backend, prompt: str, cancel: threading.Event, *,
+                           usage_context: dict | None = None) -> str:
     """Summarize once using a native transport; never invoke a CLI tool loop."""
     if getattr(backend, "handles_tools", True) or cancel.is_set():
         return ""
     parts = []
     stream = None
     try:
-        stream = auxiliary_stream(backend, "title",
+        stream = auxiliary_stream(backend, "title", usage_context=usage_context,
             user_msg=prompt[:12000], conversation_history=[], instructions=TITLE_INSTRUCTIONS,
             tools=[], max_tokens=32, cancel_event=cancel,
         )

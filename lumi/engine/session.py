@@ -636,6 +636,10 @@ class Session:
         self.flight_recorder = None
         self.context_broker = None
         self.model_role_router = None
+        # Models to continue with when a request fails (set by the app):
+        # a callable returning [("provider:model", backend factory), ...],
+        # read when needed so a Settings change applies at once.
+        self.fallback_provider: Optional[Callable[[], list]] = None
         self.director_run = None
         self.benchmark_store = None
         self.model_role: str = prompt_role or "primary"
@@ -777,6 +781,7 @@ class Session:
         self.flight_recorder = parent.flight_recorder
         self.context_broker = parent.context_broker
         self.model_role_router = parent.model_role_router
+        self.fallback_provider = parent.fallback_provider
         self.worktree_manager = parent.worktree_manager
         self.capability_packs = parent.capability_packs
         pl = parent.event_logger
@@ -1559,6 +1564,9 @@ class Session:
         started = time.time()
         # Budgets count this turn's priced spend and key per-turn approvals.
         self._turn_token = _uuid.uuid4().hex
+        # A fallback lasts for this turn; the next one tries the chosen model again.
+        self._primary_backend = self.backend
+        self._fallbacks_used = 0
         self._turn_spend = 0.0
         common = self._audit_fields()
         audit.record(
@@ -1592,9 +1600,51 @@ class Session:
         finally:
             # Close the loop now, so its cleanup runs before this returns.
             turn.close()
+            if self._primary_backend is not None and self.backend is not self._primary_backend:
+                self.backend = self._primary_backend
             if self.cancel_requested:
                 outcome = "cancelled"
             audit.record("turn.end", **common, outcome=outcome, elapsed=round(time.time() - started, 3))
+
+    def _next_fallback(self, error: str) -> Iterator[dict]:
+        """Switch to the next usable fallback model; returns whether it did.
+
+        A fallback the organization's policy doesn't allow, or one a budget
+        can't price, is skipped, as is one whose backend can't be built.
+        """
+        from .. import audit, budgets
+        from ..policy import current as current_policy
+
+        try:
+            chain = list(self.fallback_provider() if callable(self.fallback_provider) else ())
+        except Exception:
+            logger.debug("Fallback models unavailable", exc_info=True)
+            return False
+        used = getattr(self, "_fallbacks_used", 0)
+        current = f"{getattr(self.backend, 'name', '')}:{getattr(self.backend, 'model', '')}"
+        while used < len(chain):
+            label, factory = chain[used]
+            used += 1
+            self._fallbacks_used = used
+            provider, _, model = str(label).partition(":")
+            policy = current_policy()
+            if label == current or (policy and not policy.model_allowed(provider, model)):
+                continue
+            if budgets.unpriced_refusal(self.project_path or "", provider, model):
+                continue
+            try:
+                backend = factory()
+            except Exception as exc:
+                logger.info("Fallback %s unavailable: %s", label, exc)
+                continue
+            self.backend = backend
+            short = str(error or "").strip().splitlines()[0][:160] if str(error or "").strip() else "an error"
+            audit.record("model.fallback", **self._audit_fields(), from_model=current, to_model=str(label),
+                         reason=audit.content(error))
+            yield make_event(EngineEvent.BACKEND_STATUS, kind="model_fallback", model=str(label),
+                             message=f"{current} failed ({short}); continuing with {label}.")
+            return True
+        return False
 
     def _budget_refusal(self, provider: str, model: str) -> str:
         """Why a turn can't start under the budgets in effect (lumi/budgets.py), or ''."""
@@ -2193,6 +2243,8 @@ class Session:
                     old_tokens = estimate_tokens(self.conversation_history)
                     compressed, summary = compress(
                         self,
+                        backend=(self.model_role_router.backend_for("summarize", self.backend)
+                                 if self.model_role_router else None),
                         model_name=backend_model,
                         context_window=context_window,
                         overhead_tokens=overhead_tokens,
@@ -2285,6 +2337,7 @@ class Session:
             done_stats = None
             done_model = None
 
+            fallback_retry = False
             try:
                 model_requests += 1
                 for event_type, data in self.backend.stream(
@@ -2387,6 +2440,12 @@ class Session:
 
                     elif event_type == EVENT_ERROR:
                         terminal_error = data.get("message", "Unknown")
+                        if not collected_text and not tool_calls and not self.cancel_requested:
+                            fallback_retry = yield from self._next_fallback(terminal_error)
+                            if fallback_retry:
+                                # The fallback carries on; this failure isn't the turn's.
+                                terminal_error = ""
+                                break
                         yield make_event(
                             EngineEvent.ERROR,
                             message=terminal_error,
@@ -2425,13 +2484,22 @@ class Session:
                 return
             except Exception as e:
                 terminal_error = f"Stream error: {e}"
-                yield make_event(EngineEvent.ERROR, message=terminal_error)
-                elapsed = time.time() - total_start
-                yield make_event(EngineEvent.SESSION_END,
-                                total_elapsed=elapsed,
-                                total_steps=exec_step,
-                                **completion_payload(elapsed, exec_step))
-                return
+                if not collected_text and not tool_calls and not self.cancel_requested:
+                    fallback_retry = yield from self._next_fallback(terminal_error)
+                if fallback_retry:
+                    terminal_error = ""
+                else:
+                    yield make_event(EngineEvent.ERROR, message=terminal_error)
+                    elapsed = time.time() - total_start
+                    yield make_event(EngineEvent.SESSION_END,
+                                    total_elapsed=elapsed,
+                                    total_steps=exec_step,
+                                    **completion_payload(elapsed, exec_step))
+                    return
+
+            if fallback_retry:
+                # The same step again, now with the fallback model.
+                continue
 
             step_elapsed = time.time() - step_start
 

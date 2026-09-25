@@ -35,6 +35,7 @@ these services; it is not required for ordinary chat-based coding.
 | Client security | `engine/exclusions.py`, `gui/workspace_trust.py`, `gui/retention.py` | File exclusion rules, trust for repository content, transcript retention |
 | Organization policy | `policy.py`, `packaging/policy/` | Machine policy sources, signatures, locked settings and allowlists |
 | Audit log | `audit.py`, `file_lock.py` | Hash-chained local records of every turn's events (recorded by `Session.run`), capture levels, OTLP export |
+| Model routing | `engine/model_roles.py`, `capabilities.py` | Role models, fallback chains (`Session._next_fallback`), capability inference with policy overrides |
 | GitHub | `engine/github_tools.py` | Pull request tools over the REST API: read reviews, checks and job logs; open, comment, update. Token from Settings or `GITHUB_TOKEN` |
 | Headless runs | `headless.py`, `packaging/docker/` | `lumi run`: a session built as the desktop app builds it (`engine/policies.project_execution_policy`, exclusions, trust), no prompts, JSON result and exit codes |
 | Usage and prices | `usage.py`, `pricing.py`, `budgets.py`, `gui/costs.py`, `engine/request_purpose.py` | One record per model call (turns in `Session.run`, auxiliary requests in `auxiliary_stream`), price resolution, budgets checked before each model request, daily totals, `lumi usage` |

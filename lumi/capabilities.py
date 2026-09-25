@@ -8,7 +8,8 @@ growing model-name conditionals throughout the harness.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
-from typing import Iterable
+from fnmatch import fnmatchcase
+from typing import Any, Iterable
 
 
 _TEXT_MODALITY = ("text",)
@@ -115,7 +116,17 @@ class ModelCapabilities:
             ),
             reasoning_levels=reasoning,
             source="reported" if reported_set or context_window else self.source,
-        )
+        ).with_overrides()
+
+    def with_overrides(self) -> "ModelCapabilities":
+        """Apply an organization's capability overrides for this model (lumi/policy.py)."""
+        from .policy import current as current_policy
+
+        policy = current_policy()
+        for pattern, fields in (policy.capability_overrides if policy else ()):
+            if fnmatchcase(str(self.model or "").lower(), pattern):
+                return apply_capability_override(self, fields)
+        return self
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -245,7 +256,67 @@ def infer_model_capabilities(model: str) -> ModelCapabilities:
         prompt_caching=prompt_caching,
         max_safe_concurrency=concurrency,
         computer_use=computer_use,
-    )
+    ).with_overrides()
+
+
+OVERRIDE_FIELDS = ("context_window", "vision", "tools", "parallel_tools", "reasoning",
+                   "computer_use", "max_safe_concurrency")
+
+
+def parse_capability_overrides(data: Any) -> tuple[tuple[str, dict], ...]:
+    """``{"model-glob": {"context_window": 64000, "vision": false, ...}}``, validated.
+
+    Raises ``ValueError`` naming what to fix.
+    """
+    if data in (None, {}):
+        return ()
+    if not isinstance(data, dict):
+        raise ValueError("Capability overrides must map a model pattern to its capabilities.")
+    parsed = []
+    for pattern, fields in data.items():
+        if not isinstance(pattern, str) or not pattern.strip() or not isinstance(fields, dict):
+            raise ValueError(f"The overrides for {pattern!r} must be an object.")
+        unknown = sorted(set(fields) - set(OVERRIDE_FIELDS))
+        if unknown:
+            raise ValueError(f"{pattern}: unknown capability {unknown[0]!r}; use {', '.join(OVERRIDE_FIELDS)}.")
+        for key in ("context_window", "max_safe_concurrency"):
+            if key in fields and (isinstance(fields[key], bool) or not isinstance(fields[key], int)
+                                  or fields[key] < 1):
+                raise ValueError(f"{pattern}: {key} must be a positive whole number.")
+        for key in ("vision", "tools", "parallel_tools", "computer_use"):
+            if key in fields and not isinstance(fields[key], bool):
+                raise ValueError(f"{pattern}: {key} must be true or false.")
+        if "reasoning" in fields and not (fields["reasoning"] is False or (
+                isinstance(fields["reasoning"], list) and all(isinstance(v, str) for v in fields["reasoning"]))):
+            raise ValueError(f"{pattern}: reasoning must be a list of levels, or false.")
+        parsed.append((pattern.strip().lower(), dict(fields)))
+    return tuple(parsed)
+
+
+def apply_capability_override(capabilities: ModelCapabilities, fields: dict) -> ModelCapabilities:
+    changes: dict[str, Any] = {"source": "organization"}
+    if "context_window" in fields:
+        changes["context_window"] = int(fields["context_window"])
+    if "vision" in fields:
+        modalities = set(capabilities.modalities) | {"text"}
+        if fields["vision"]:
+            modalities.add("image")
+        else:
+            modalities.discard("image")
+        changes["modalities"] = tuple(sorted(modalities, key=("text", "image", "audio", "video", "document").index))
+    if "tools" in fields:
+        changes["native_tools"] = bool(fields["tools"])
+    if "parallel_tools" in fields:
+        changes["parallel_tools"] = bool(fields["parallel_tools"])
+    if "reasoning" in fields:
+        changes["reasoning_levels"] = tuple(fields["reasoning"] or ())
+    if "max_safe_concurrency" in fields:
+        changes["max_safe_concurrency"] = int(fields["max_safe_concurrency"])
+    updated = replace(capabilities, **changes)
+    # Desktop control follows vision and tools unless the override names it.
+    computer_use = fields["computer_use"] if "computer_use" in fields else bool(
+        "image" in updated.modalities and updated.native_tools)
+    return replace(updated, computer_use=computer_use)
 
 
 def extract_reported_context_length(model_info: dict) -> int | None:

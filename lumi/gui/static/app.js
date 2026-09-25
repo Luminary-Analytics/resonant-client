@@ -3837,6 +3837,10 @@ class LumiApp {
             case 'settings':
                 this.settings = event.data || {};
                 this.settingsError = '';
+                this._linesDrafts = {};
+                // A save succeeded: an earlier refusal no longer applies, even
+                // while the re-render waits for the field being edited.
+                document.querySelector('.settings-error-banner')?.remove();
                 if (this._pricePending) {
                     this._pricePending = false;
                     this._priceDraft = null;
@@ -9143,6 +9147,8 @@ class LumiApp {
             this._renderSecretsRedactedNotice(event);
         } else if (event.kind === 'budget_warning') {
             this._renderBudgetNotice(event);
+        } else if (event.kind === 'model_fallback') {
+            this._renderModelFallbackNotice(event);
         }
         // Future kinds get their own renderers; swallow unknown kinds
         // silently rather than confuse the user with unfamiliar text.
@@ -9153,6 +9159,20 @@ class LumiApp {
      * machine (lumi/secret_scan.py). The note stays in the transcript so
      * the user can tell why the model saw [REDACTED …] text.
      */
+    /** A request failed and the turn continued with a fallback model (engine/session.py). */
+    _renderModelFallbackNotice(event) {
+        if (!this.chatMessages) return;
+        const notice = document.createElement('div');
+        notice.className = 'backend-status-banner backend-status-fallback';
+        notice.setAttribute('role', 'status');
+        notice.innerHTML = `
+            <svg class="backend-status-icon" width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M3 5h8l-2-2M13 11H5l2 2" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span class="backend-status-text">${this.escapeHtml(event.message || 'Continued with a fallback model.')}</span>
+        `;
+        this.chatMessages.appendChild(notice);
+        this.scrollToBottom();
+    }
+
     /** A spending alert from lumi/budgets.py; the turn continues. */
     _renderBudgetNotice(event) {
         if (!this.chatMessages) return;

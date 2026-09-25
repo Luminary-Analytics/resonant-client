@@ -27,17 +27,23 @@ import os
 import re
 import threading
 import time
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
-from ..engine.policies import policy_for_tier
+from ..engine.exclusions import ExclusionRules
+from ..engine.policies import ExecutionPolicy, project_execution_policy
 from ..engine.sandbox import PathSandbox
 from ..engine.session import Session
+from ..policy import current as current_policy
+from ..policy import full_auto_refusal
 from .plan_graph import NodeSpecialization, NodeStatus, PlanGraph, PlanNode
 from .specialists import (
     assemble_system_prompt,
     filter_tools_for_specialist,
 )
 from .walker import SpecialistResult
+
+if TYPE_CHECKING:
+    from ..gui.workspace_trust import TrustStatus
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +282,14 @@ class LocalSpecialistRunner:
         return override
 
     def _run_node(self, node: PlanNode, graph: PlanGraph) -> SpecialistResult:
+        # Specialists run in Full-auto, which an organization can leave out
+        # of its allowed modes (lumi/policy.py). Checked as each one starts,
+        # so a policy that arrives mid-mission stops the rest: no model
+        # request, no tool call.
+        refusal = full_auto_refusal()
+        if refusal:
+            return SpecialistResult(status=NodeStatus.BLOCKED, confidence=0.0, summary=refusal)
+
         # v0.3.5 — inherit `working_subdir` from completed deps. If a
         # parent implementer scaffolded into `<root>/web/`, this child
         # specialist runs there too instead of starting back at the
@@ -326,18 +340,35 @@ class LocalSpecialistRunner:
         # override block a specialist from running.
         backend_for_call = self._resolve_backend_for(node.specialization)
 
+        from ..gui.workspace_trust import WorkspaceTrust
+
+        # The rest of the session is set up as the app sets up a chat
+        # session in this project (gui/app.py _wire_session), from the
+        # project root rather than the node's working subdir, as each
+        # specialist starts: a change of trust, policy or Settings applies
+        # from the next one. What the repository brings (its instructions,
+        # notes, codebase index summary, language servers and policy allow
+        # rules) counts only while the user trusts it (gui/workspace_trust.py).
+        project_root = workspace_sandbox.project_path
+        trust = WorkspaceTrust().status(project_root)
         session = Session(
             backend=backend_for_call,
             auto_approve=True,
             allowed_tools=allowed,
-            project_instructions=self.project_instructions,
+            project_instructions=self.project_instructions if trust.trusted else None,
             role_instructions=role_prompt,
             prompt_role="specialist",
             cancel_event=self.cancel_event,
         )
         session.project_path = effective_path
         session.sandbox = workspace_sandbox
-        session.execution_policy = policy_for_tier("full-auto")
+        session.execution_policy = self._execution_policy(project_root, trust)
+        session.exclusions = self._exclusions(project_root)
+        session.project_content_trusted = trust.trusted
+        # Settings > Privacy & security, which an organization can lock.
+        session.computer_use_enabled = (
+            self.settings is None or self.settings.get("security", "computer_use", True) is not False
+        )
         # Hand the settings through so autonomy.check_floor can pick up custom
         # protected branches / budget cap / external paths during tool dispatch.
         session._settings_ref = self.settings
@@ -512,6 +543,45 @@ class LocalSpecialistRunner:
         return result
 
     # ── Helpers ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _execution_policy(project_root: str, trust: TrustStatus) -> ExecutionPolicy:
+        """Full-auto with the project's lumi-policy.json and the organization's shell rules.
+
+        Built as the app builds a chat session's (engine/policies.py), when
+        each specialist starts, so trust and policy changes apply from the
+        next one. It comes from the project root, not the node's working
+        subdir: a specialist working in ``web/`` keeps the project's rules.
+        The repository's ``allow`` rules count only while the user trusts the
+        project and the file is the version ``trust`` read
+        (gui/workspace_trust.py). Nobody can answer a specialist's approval
+        prompt, so a ``prompt`` rule refuses the call.
+        """
+        return project_execution_policy(
+            "full-auto", project_root, honor_allows=trust.honor_policy_allows, policy_digest=trust.policy_digest,
+        )
+
+    def _exclusions(self, project_root: str) -> ExclusionRules:
+        """Files a specialist may never read, list or send (engine/exclusions.py).
+
+        The app's rules for the project (AppState.exclusions_for): Settings'
+        ``privacy.excluded_paths``, the project's .lumiignore and the
+        organization's ``files.exclude``. Patterns are relative to the project
+        root, also for a specialist working in a subdir. The sources are read
+        again on every check, so a change reaches a specialist already running.
+        """
+        settings = self.settings
+
+        def settings_patterns() -> list[str]:
+            if settings is None:
+                return []
+            return settings.get("privacy", "excluded_paths", []) or []
+
+        return ExclusionRules.for_project(
+            project_root,
+            settings_patterns=settings_patterns,
+            policy_patterns=lambda: current_policy().exclude if current_policy() else (),
+        )
 
     @staticmethod
     def _repair_structured_output(backend: Any, text: str, schema: dict) -> Optional[dict]:

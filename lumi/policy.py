@@ -807,6 +807,22 @@ def blocked_reason() -> str:
     return ""
 
 
+def full_auto_refusal() -> str:
+    """Why missions and autonomous sessions can't run under policy, or an empty string.
+
+    Their specialists run in Full-auto (``bypass``), since nobody is there to
+    answer an approval, and an autonomous session's loop runs its ``[bash]``
+    acceptance checks itself. Without ``bypass`` in ``permissions.allowed_modes``
+    they don't start, and a specialist that would start after such a policy
+    arrives doesn't run (orchestration/runner.py).
+    """
+    policy = current()
+    if policy and not policy.mode_allowed("bypass"):
+        return (f"{policy.organization}'s policy doesn't allow Full-auto, which missions and "
+                "autonomous sessions run in.")
+    return ""
+
+
 def set_for_tests(policy: Policy | None, error: str = "") -> None:
     """Install a policy directly (tests and fixtures only)."""
     global _state, _loaded

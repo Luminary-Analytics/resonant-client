@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-25 (worker transcripts and controls in the conversation)
+Last updated: 2026-09-25 (orchestration specialists get the app's session setup)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -165,9 +165,14 @@ repository can tighten the policy but cannot weaken a built-in deny. A policy
 `prompt` rule requires approval even in Full-auto. Rules are checked when they
 load (`PolicyRule.from_dict`). A `lumi-policy.json` with a mistake keeps only
 its valid `deny` and `prompt` rules and logs a warning (`repository_rules`).
-The policy the app and `lumi run` give a session includes the organization's
-shell rules, and so does the app's fallback when the project's policy can't be
-built (`with_organization_rules`).
+The policies that the app, `lumi run` and the orchestration runner build
+include the organization's shell rules, and so does the app's fallback when
+the project's policy can't be built (`with_organization_rules`). The runner
+(`orchestration/runner.py`, which missions and autonomous sessions use) gives
+each specialist Full-auto with the project's `lumi-policy.json`, read from the
+project root even when the specialist works in a subfolder, and builds it as
+the specialist starts. Nobody can answer a specialist's approval prompt, so a
+`prompt` rule refuses the call.
 
 A trusted project's `allow` rules answer Auto-edit's prompt (Plan uses the
 same tier). A call the tier would ask about runs without asking when the policy
@@ -186,15 +191,20 @@ such a call as an `approval` by `project_policy`.
 When approval is required, the user's answer is final and only an explicit
 `true` approves. A PERMISSION_REQUEST hook can neither run a call the user
 denied nor block one they allowed. Only when no prompt is available (background
-runs, or delegated work without a parent prompt) does an explicit allow or deny
-from a matching PERMISSION_REQUEST hook settle the call. No answer fails
-closed. Arguments that such a hook rewrites are checked against the policy
-again. Delegated workers ask through the parent's prompt, one question at a
-time. The GUI binds every prompt to a request id and ignores answers for a
-prompt that is no longer waiting. A refused call's result is the reason it
-didn't run (a hook, a policy rule, a tool boundary, a second approver, an
-approval nobody could answer). The GUI shows that reason under the call's
-row, as text. The user's own Deny reads just "denied".
+runs, delegated work without a parent prompt, or `lumi run`, whose sessions
+carry the person's Settings hooks) does an explicit allow or deny from a
+matching PERMISSION_REQUEST hook settle the call. No answer fails closed. The
+hook answers for the person, so it is not asked in the read-only `suggest`
+tier (or an unknown tier) or about a call an organization `prompt` rule
+(`PolicyRule.source` `organization`) asks a person about: those calls are
+refused (`Session._permission_hook_decision`). Arguments that such a hook
+rewrites are checked against the policy again, and refused if they reach a
+deny or an organization prompt. Delegated workers ask through the parent's
+prompt, one question at a time. The GUI binds every prompt to a request id and
+ignores answers for a prompt that is no longer waiting. A refused call's
+result is the reason it didn't run (a hook, a policy rule, a tool boundary, a
+second approver, an approval nobody could answer). The GUI shows that reason
+under the call's row, as text. The user's own Deny reads just "denied".
 
 | Mode | Tier | Runs without asking |
 |---|---|---|
@@ -214,6 +224,39 @@ Auto-edit asks before shell, MCP, browser, desktop, REPL, process and git
 actions, and before any newly added tool, unless a trusted project's `allow`
 rule matches (above). Changing the mode updates the live session's tier and
 policy, including a run in progress.
+
+## Orchestration specialists
+
+A Mission's **Build this roadmap** and autonomous sessions do their work as
+specialists: one Session per plan node, built by `LocalSpecialistRunner`
+(`orchestration/runner.py`). The runner sets each one up as the app sets up a
+chat session in the project (`AppState._wire_session`). It reads everything
+from the project root, also for a specialist working in a subfolder, when
+each specialist starts, so a change applies from the next one:
+
+- the execution policy (see [Tool approvals](#tool-approvals));
+- file exclusions (`engine/exclusions.py`): Settings' `privacy.excluded_paths`,
+  the project's `.lumiignore` and the organization's `files.exclude`. The
+  Settings and policy patterns are read again on every check;
+- project trust (`gui/workspace_trust.py`): the repository's instructions,
+  notes, codebase index summary and language servers reach a specialist only
+  in a trusted project, like its policy's `allow` rules;
+- Settings' computer use switch, which a policy can lock.
+
+Specialists run in Full-auto, since nobody can answer their approval prompts.
+Where the organization's `permissions.allowed_modes` leaves out `bypass`,
+missions and autonomous sessions don't run (`policy.full_auto_refusal`):
+**Build this roadmap** and starting or resuming an autonomous session are
+refused with the reason, before anything is saved. The refusal is an `error`
+event with `source: "mission_dispatch"`, so the page puts back the Build
+button or card it marked as dispatched when clicked. A policy like that which
+arrives mid-run stops the rest:
+
+- each later specialist is refused before its first model request, and its
+  plan node is blocked with the reason;
+- an autonomous session stops, paused with `mode_not_allowed`, before its next
+  iteration and before its reflect pass. The loop runs that pass's `[bash]`
+  acceptance checks itself.
 
 ## Flight recorder and evaluation
 

@@ -1193,19 +1193,67 @@ class LumiApp {
             });
         }
 
+        // The skip button goes to where the work is: the message box, or the Settings page.
+        document.getElementById('skip-to-main')?.addEventListener('click', () => {
+            const target = this.currentView === 'settings' ? this.settingsBody : document.getElementById('user-input');
+            if (!target) return;
+            if (target === this.settingsBody) target.setAttribute('tabindex', '-1');
+            target.focus();
+        });
+
         // Permission dropdown
         this.permissionMode = 'bypass'; // default: bypass permissions
         const permToggle = document.getElementById('permission-toggle');
         const permMenu = document.getElementById('permission-menu');
 
+        // A menu of radio items (WAI-ARIA menu button): Enter, Space or the
+        // arrow keys open it on the current mode, arrows move, Escape returns.
+        const options = () => [...permMenu.querySelectorAll('.perm-option')].filter(option => !option.hidden);
+        const setOpen = (open, {focus = null} = {}) => {
+            permMenu.classList.toggle('open', open);
+            permToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (open && focus) {
+                const items = options();
+                const target = focus === 'last' ? items[items.length - 1]
+                    : items.find(item => item.dataset.mode === this.permissionMode) || items[0];
+                target?.focus();
+            } else if (!open && focus === 'toggle') {
+                permToggle.focus();
+            }
+        };
         permToggle.addEventListener('click', (e) => {
             e.stopPropagation();
-            permMenu.classList.toggle('open');
+            // detail is 0 for a click made with Enter or Space: move into the menu then.
+            setOpen(!permMenu.classList.contains('open'), {focus: e.detail === 0 ? 'current' : null});
+        });
+        permToggle.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                setOpen(true, {focus: e.key === 'ArrowUp' ? 'last' : 'current'});
+            }
+        });
+        permMenu.addEventListener('keydown', (e) => {
+            const items = options();
+            const index = items.indexOf(document.activeElement);
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                const step = e.key === 'ArrowDown' ? 1 : -1;
+                items[(index + step + items.length) % items.length]?.focus();
+            } else if (e.key === 'Home' || e.key === 'End') {
+                e.preventDefault();
+                (e.key === 'Home' ? items[0] : items[items.length - 1])?.focus();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setOpen(false, {focus: 'toggle'});
+            } else if (e.key === 'Tab') {
+                setOpen(false);
+            }
         });
 
         document.addEventListener('click', (e) => {
-            if (!permMenu.contains(e.target) && e.target !== permToggle) {
-                permMenu.classList.remove('open');
+            if (!permMenu.contains(e.target) && !permToggle.contains(e.target)) {
+                setOpen(false);
             }
         });
 
@@ -1214,7 +1262,7 @@ class LumiApp {
             if (!option) return;
             const mode = option.dataset.mode;
             this.setPermissionMode(mode);
-            permMenu.classList.remove('open');
+            setOpen(false, {focus: e.detail === 0 ? 'toggle' : null});
         });
     }
 
@@ -4788,6 +4836,7 @@ class LumiApp {
         document.querySelectorAll('.perm-option').forEach(opt => {
             const isActive = opt.dataset.mode === mode;
             opt.classList.toggle('active', isActive);
+            opt.setAttribute('aria-checked', isActive ? 'true' : 'false');
             // Remove existing checkmarks
             const existingCheck = opt.querySelector('.perm-check');
             if (existingCheck) existingCheck.remove();
@@ -4795,6 +4844,7 @@ class LumiApp {
             if (isActive) {
                 const check = document.createElement('span');
                 check.className = 'perm-check';
+                check.setAttribute('aria-hidden', 'true');  // aria-checked says it
                 check.textContent = '✓';
                 opt.appendChild(check);
             }
@@ -6622,6 +6672,10 @@ class LumiApp {
         if (viewName === 'settings' && this.currentView !== 'settings') this._settingsLoadedPage = null;
         this.currentView = viewName;
         document.body.classList.toggle('settings-open', viewName === 'settings');
+        // The window title names the screen, for window switchers and screen readers (WCAG 2.4.2).
+        document.title = viewName === 'settings' ? 'Settings · Lumi' : 'Lumi';
+        const skip = document.getElementById('skip-to-main');
+        if (skip) skip.textContent = viewName === 'settings' ? 'Skip to the Settings page' : 'Skip to the message box';
 
         // Hide all views
         this.welcomeScreen.style.display = 'none';
@@ -6702,7 +6756,7 @@ class LumiApp {
             <div class="settings-row">
                 <span class="settings-row-label">Daily budget alert ($)</span>
                 <div class="settings-row-value">
-                    <input class="settings-input" type="number" min="0" step="0.01" value="${budget || ''}" data-section="cost_tracking" data-key="budget_alert_usd" placeholder="None" />
+                    <input class="settings-input" type="number" min="0" step="0.01" value="${budget || ''}" data-section="cost_tracking" data-key="budget_alert_usd" placeholder="None" aria-label="Daily budget alert, in dollars" />
                     <div class="settings-row-hint">Shows an alert after tracked daily spend crosses this amount.</div>
                 </div>
             </div>

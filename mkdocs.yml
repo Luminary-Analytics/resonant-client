@@ -92,6 +92,7 @@ nav:
   - Extending Lumi:
       - Writing a capability pack: packs.md
       - "Extensions: add a model provider": extensions.md
+      - Accessibility conformance report: accessibility.md
       - Skills: skills.md
       - Creative editors: creative-editors.md
   - Project records:

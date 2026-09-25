@@ -70,6 +70,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Updates: channels, pins and turning them off](updates.md)
 - [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
 - [Lumi on macOS: building, signing and notarizing the app](macos.md)
+- [Deploying on macOS: the PKG, Jamf Pro, Intune and configuration profiles](deploy-macos.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

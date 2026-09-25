@@ -306,12 +306,9 @@ class LumiApp {
         this.agentActivities = new Map();
         // Runtime bookkeeping still powers compact in-chat task summaries.
         // It is intentionally not exposed as a separate agent hierarchy.
-        this.runtimeView = 'agents';
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimePacks = [];
         this.agentActivityOrder = [];
-        this.agentActivityStack = [];
         this.contextState = null;
         this.contextProviders = [];
 
@@ -1467,9 +1464,6 @@ class LumiApp {
         document.getElementById('context-cockpit-refresh')?.addEventListener('click', () => {
             this.send({ command: 'get_context_state' });
             this.send({ command: 'context_catalog' });
-        });
-        document.querySelectorAll('.runtime-view-tab').forEach((button) => {
-            button.addEventListener('click', () => this.switchRuntimeView(button.dataset.runtimeView));
         });
 
         this._bindPlanGraphToolbar();
@@ -4223,13 +4217,11 @@ class LumiApp {
             case 'agent.steered':
             case 'agent.control_ack':
                 if (event.agent) this.upsertRuntimeAgent(event.agent);
-                this.renderRuntimeView();
                 this._syncWorkerViews();
                 break;
             case 'agent.runtime_list':
                 this.runtimeAgents = event.agents || [];
                 this.syncRuntimeAgents();
-                this.renderRuntimeView();
                 this._syncWorkerViews();
                 break;
             case 'agent.runtime_detail':
@@ -4366,7 +4358,6 @@ class LumiApp {
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
             case 'capability.pack_list': {
-                this.runtimePacks = event.packs || [];
                 this.capabilityPacks = event;
                 // An install finished: keep what was typed only if it failed,
                 // and show the result even while the form keeps focus.
@@ -4375,7 +4366,6 @@ class LumiApp {
                     this._packInstalling = false;
                     if (!event.error) this._packInstallDraft = {};
                 }
-                this.renderRuntimeView();
                 if (this.currentView === 'settings') this.renderSettingsView(installed ? {force: true} : undefined);
                 if (Array.isArray(event.pending) && this._runtimeBannerState) {
                     this._applyRuntimeError({...this._runtimeBannerState, capability_packs_pending: event.pending});
@@ -6791,15 +6781,6 @@ class LumiApp {
         if (tab) tab.classList.remove('has-unread');
     }
 
-    _markAgentTabUnread() {
-        if (this._currentPreviewPane === 'agents') return;
-        document.querySelector('.preview-tab[data-pane="agents"]')?.classList.add('has-unread');
-    }
-
-    _clearAgentTabUnread() {
-        document.querySelector('.preview-tab[data-pane="agents"]')?.classList.remove('has-unread');
-    }
-
     /**
      * Convenience: open the preview panel + switch to the Plan pane.
      * `focus=true` ensures the user actually sees it (used for checkpoints);
@@ -6938,12 +6919,9 @@ class LumiApp {
         this._previewTitle = '';
         this.agentActivities.clear();
         this.agentActivityOrder = [];
-        this.agentActivityStack = [];
         this.contextState = null;
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimePacks = [];
-        this.renderAgentActivityTree();
         this.renderContextCockpit();
 
         // Reset viewport
@@ -8508,24 +8486,6 @@ class LumiApp {
         return line.length > 160 ? `${line.slice(0, 159)}…` : line;
     }
 
-    switchRuntimeView(view) {
-        this.runtimeView = view || 'agents';
-        document.querySelectorAll('.runtime-view-tab').forEach((button) => {
-            button.classList.toggle('active', button.dataset.runtimeView === this.runtimeView);
-        });
-        this.refreshRuntimeView();
-    }
-
-    refreshRuntimeView() {
-        const commands = {
-            agents: 'agent_runtime_list',
-            timeline: 'session_timeline_list',
-            packs: 'capability_pack_list',
-        };
-        this.send({ command: commands[this.runtimeView] || commands.agents });
-        this.renderRuntimeView();
-    }
-
     upsertRuntimeAgent(agent) {
         const index = this.runtimeAgents.findIndex((item) => item.id === agent.id);
         if (index >= 0) this.runtimeAgents[index] = agent;
@@ -8552,107 +8512,6 @@ class LumiApp {
                 handoff: agent.handoff ? JSON.stringify(agent.handoff, null, 2) : agent.error || '',
                 runtime: agent,
             });
-        });
-    }
-
-    renderRuntimeView() {
-        const tree = document.getElementById('agent-activity-tree');
-        const count = document.getElementById('agent-activity-count');
-        if (!tree) return;
-        if (this.runtimeView === 'agents') {
-            this.renderAgentActivityTree();
-            return;
-        }
-        const collections = {
-            timeline: this.runtimeTimeline,
-            packs: this.runtimePacks,
-        };
-        const items = collections[this.runtimeView] || [];
-        if (count) count.textContent = `${items.length} ${this.runtimeView}`;
-        if (!items.length) {
-            tree.innerHTML = `<div class="agent-activity-empty">No ${this.escapeHtml(this.runtimeView)} recorded yet.</div>`;
-            return;
-        }
-        tree.innerHTML = items.map((item) => `
-            <article class="runtime-card">
-                <div><strong>${this.escapeHtml(item.name || item.id)}</strong><small>v${this.escapeHtml(item.version || '0.0.0')}</small></div>
-                <span>${this.escapeHtml(item.description || '')}</span>
-                <div class="runtime-badges"><b class="${item.enabled ? 'is-on' : ''}">${item.enabled ? 'enabled' : 'disabled'}</b><b class="${item.trusted ? 'is-on' : ''}">${item.trusted ? 'trusted' : 'untrusted'}</b><b>${(item.agents || []).length} agents</b><b>${(item.skills || []).length} skills</b></div>
-            </article>`).join('');
-    }
-
-    renderAgentActivityTree() {
-        if (this.runtimeView !== 'agents') {
-            this.renderRuntimeView();
-            return;
-        }
-        const tree = document.getElementById('agent-activity-tree');
-        const count = document.getElementById('agent-activity-count');
-        const badge = document.getElementById('agents-tab-badge');
-        if (!tree) return;
-        const activities = this.agentActivityOrder
-            .map(id => this.agentActivities.get(id))
-            .filter(Boolean);
-        if (count) count.textContent = `${activities.length} worker${activities.length === 1 ? '' : 's'}`;
-        if (badge) {
-            badge.textContent = String(activities.filter(item => item.status === 'running').length || activities.length);
-            badge.style.display = activities.length ? '' : 'none';
-        }
-        if (!activities.length) {
-            tree.innerHTML = '<div class="agent-activity-empty">Sub-agents and specialists will appear here.</div>';
-            const detail = document.getElementById('agent-handoff-detail');
-            if (detail) detail.style.display = 'none';
-            return;
-        }
-        tree.innerHTML = activities.map(item => {
-            const depth = item.parentId ? 1 : 0;
-            const elapsed = item.finishedAt && item.startedAt
-                ? `${((item.finishedAt - item.startedAt) / 1000).toFixed(1)}s`
-                : item.status === 'running' ? 'live' : '';
-            return `
-                <button class="agent-activity-node status-${this.escapeHtml(item.status || 'queued')}" data-activity-id="${this.escapeHtml(item.id)}" data-depth="${depth}">
-                    <span class="agent-activity-state"></span>
-                    <span class="agent-activity-main">
-                        <strong>${this.escapeHtml(item.label || item.kind || 'worker')}</strong>
-                        <small>${this.escapeHtml((item.prompt || '').slice(0, 90) || item.kind || '')}</small>
-                    </span>
-                    <span class="agent-activity-elapsed">${this.escapeHtml(elapsed)}</span>
-                </button>
-            `;
-        }).join('');
-        tree.querySelectorAll('.agent-activity-node').forEach(node => {
-            // Through element.style: the page's CSP refuses style="" attributes.
-            node.style.setProperty('--agent-depth', node.dataset.depth);
-            node.addEventListener('click', () => {
-                const item = this.agentActivities.get(node.dataset.activityId);
-                if (item?.runtime) this.send({ command: 'agent_runtime_detail', agent_id: item.runtime.id });
-                else this.showAgentHandoff(node.dataset.activityId);
-            });
-        });
-    }
-
-    showAgentHandoff(id) {
-        const item = this.agentActivities.get(id);
-        const detail = document.getElementById('agent-handoff-detail');
-        if (!item || !detail) return;
-        const metadata = [
-            item.status,
-            item.steps != null ? `${item.steps} steps` : '',
-            item.confidence != null ? `${Math.round(item.confidence * 100)}% confidence` : '',
-            item.verdict || '',
-        ].filter(Boolean).join(' · ');
-        detail.innerHTML = `
-            <div class="agent-handoff-header">
-                <strong>${this.escapeHtml(item.label || 'Worker')}</strong>
-                <button class="agent-handoff-close" type="button" aria-label="Close handoff">×</button>
-            </div>
-            <div class="agent-handoff-meta">${this.escapeHtml(metadata)}</div>
-            ${item.prompt ? `<div class="agent-handoff-section"><span>Assignment</span><pre>${this.escapeHtml(item.prompt)}</pre></div>` : ''}
-            <div class="agent-handoff-section"><span>Handoff</span><pre>${this.escapeHtml(item.handoff || 'No handoff was returned.')}</pre></div>
-        `;
-        detail.style.display = 'block';
-        detail.querySelector('.agent-handoff-close')?.addEventListener('click', () => {
-            detail.style.display = 'none';
         });
     }
 
@@ -8691,8 +8550,6 @@ class LumiApp {
             startedAt: Date.now(),
         });
         this.agentActivityOrder.push(activityId);
-        this.renderAgentActivityTree();
-        this._markAgentTabUnread();
         const display = prompt.length > 100 ? prompt.slice(0, 97) + '...' : prompt;
 
         const el = document.createElement('div');
@@ -8759,8 +8616,6 @@ class LumiApp {
                 ? JSON.stringify(event.handoff, null, 2)
                 : event.result || event.result_preview || '';
             this.agentActivities.set(activityId, activity);
-            this.renderAgentActivityTree();
-            this._markAgentTabUnread();
         }
 
         // Find this worker's own block even when sibling events interleave.
@@ -9733,7 +9588,6 @@ class LumiApp {
             activity.finishedAt = Date.now();
             this.agentActivities.set(activityId, activity);
             this._updateLiveSubtask(activityId, { status: 'failed' });
-            this.renderAgentActivityTree();
         }
     }
 

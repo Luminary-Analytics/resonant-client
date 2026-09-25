@@ -5908,74 +5908,12 @@ body {
     cursor: pointer;
 }
 
-.agent-activity-pane {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-height: 0;
-    background: var(--bg);
-}
-
-.runtime-view-tabs {
-    display: flex;
-    gap: 3px;
-    min-width: 0;
-    overflow-x: auto;
-}
-
-.runtime-view-tab {
-    border: 0;
-    border-radius: 7px;
-    background: transparent;
-    color: var(--muted);
-    padding: 5px 7px;
-    font: inherit;
-    font-size: 10px;
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-.runtime-view-tab:hover,
-.runtime-view-tab.active {
-    color: var(--text);
-    background: color-mix(in srgb, var(--accent) 14%, transparent);
-}
-
-.runtime-card {
-    display: grid;
-    gap: 8px;
-    margin: 7px 8px;
-    padding: 11px;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: color-mix(in srgb, var(--panel-bg, var(--bg)) 94%, var(--accent) 6%);
-}
-
-.runtime-card > div:first-child {
-    display: flex;
-    justify-content: space-between;
-    gap: 8px;
-}
-
-.runtime-card small,
-.runtime-card > span {
-    color: var(--muted);
-    font-size: 10px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
-.runtime-actions,
-.runtime-badges,
-.runtime-control-bar,
 .context-provider-list {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
 }
 
-.runtime-actions button,
-.runtime-control-bar button,
 .context-provider-chip {
     border: 1px solid var(--border);
     border-radius: 7px;
@@ -5987,114 +5925,19 @@ body {
     cursor: pointer;
 }
 
-.runtime-actions button:hover,
-.runtime-control-bar button:hover,
 .context-provider-chip:hover {
     border-color: var(--accent);
     background: color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
-.runtime-control-bar {
-    margin-top: 10px;
-}
-
-.runtime-control-bar input {
-    flex: 1 1 150px;
-    min-width: 0;
-    border: 1px solid var(--border);
-    border-radius: 7px;
-    background: var(--input-bg, var(--bg));
-    color: var(--text);
-    padding: 6px 8px;
-}
-
-.runtime-control-bar .is-danger { color: var(--danger, var(--err)); }
-.runtime-badges b { padding: 2px 6px; border-radius: 999px; background: var(--hover); color: var(--muted); font-size: 9px; }
-.runtime-badges b.is-on { color: var(--accent); }
 .context-provider-help { color: var(--muted); font-size: 10px; line-height: 1.4; }
-.agent-activity-toolbar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    min-height: 32px;
-    padding: 0 10px;
-    border-bottom: 1px solid var(--border);
-    color: var(--text-secondary);
-    font-size: 12px;
-}
-.agent-activity-count { color: var(--muted); font-size: 11px; }
-.agent-activity-tree { flex: 1; overflow: auto; padding: 8px; }
+/* The Context pane's empty state. The name is left from the Agents pane. */
 .agent-activity-empty {
     display: grid;
     place-items: center;
     min-height: 140px;
     color: var(--dim);
     font-size: 12px;
-}
-.agent-activity-node {
-    width: calc(100% - var(--agent-depth, 0) * 18px);
-    margin: 0 0 6px calc(var(--agent-depth, 0) * 18px);
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 8px 9px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--bg-elem);
-    color: var(--text);
-    text-align: left;
-    cursor: pointer;
-}
-.agent-activity-node:hover { border-color: var(--border-strong); background: var(--bg-hover); }
-.agent-activity-state {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: var(--muted);
-    flex: 0 0 auto;
-}
-.agent-activity-node.status-running .agent-activity-state {
-    background: var(--brand);
-    box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 18%, transparent);
-}
-.agent-activity-node.status-done .agent-activity-state,
-.agent-activity-node.status-completed .agent-activity-state { background: var(--ok); }
-.agent-activity-node.status-blocked .agent-activity-state,
-.agent-activity-node.status-failed .agent-activity-state { background: var(--danger); }
-.agent-activity-main { min-width: 0; display: grid; gap: 2px; flex: 1; }
-.agent-activity-main strong { font-size: 12px; font-weight: 600; }
-.agent-activity-main small {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    color: var(--muted);
-    font-size: 10.5px;
-}
-.agent-activity-elapsed { color: var(--dim); font-size: 10.5px; }
-.agent-handoff-detail {
-    max-height: 50%;
-    overflow: auto;
-    border-top: 1px solid var(--border);
-    background: var(--bg-sidebar);
-    padding: 10px;
-}
-.agent-handoff-header { display: flex; justify-content: space-between; align-items: center; }
-.agent-handoff-close { border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 18px; }
-.agent-handoff-meta { margin: 4px 0 10px; color: var(--muted); font-size: 10.5px; }
-.agent-handoff-section > span {
-    display: block;
-    margin: 8px 0 4px;
-    color: var(--dim);
-    font-size: 10px;
-    text-transform: uppercase;
-    letter-spacing: .06em;
-}
-.agent-handoff-section pre {
-    margin: 0;
-    white-space: pre-wrap;
-    word-break: break-word;
-    color: var(--text-secondary);
-    font: 11px/1.5 var(--font-mono);
 }
 
 .context-cockpit-pane {

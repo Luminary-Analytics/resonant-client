@@ -1429,6 +1429,83 @@ Validation on September 25, 2026:
 Not exercised: a macOS or Linux (WebKit) window, where the bridge replacement
 matters most, and a packaged build.
 
+## September 25 the Agents pane's leftover code — source only, not released
+
+- **The Agents pane's rendering is gone from `lumi/gui/static/app.js`.**
+  v0.14.0 took the pane off the page. Each of its views now has a place of
+  its own:
+  - worker handoffs, transcripts and controls in the conversation;
+  - the checkpoint Timeline in the chat header;
+  - a run's trace and saved files in its card;
+  - capability packs in Settings.
+
+  Its code still ran on worker and pack events and whenever a conversation
+  opened, drawing into elements that no longer exist.
+  - Removed: `switchRuntimeView`, `refreshRuntimeView`, `renderRuntimeView`,
+    `renderAgentActivityTree`, `showAgentHandoff`, the Agents tab's unread
+    marker (`_markAgentTabUnread`, `_clearAgentTabUnread`) and the
+    `.runtime-view-tab` bindings.
+  - Their calls are gone from the `agent.*` and `capability.pack_list`
+    handlers, the worker start, end and error handlers, and
+    `clearPreviewPanel`.
+  - Also removed, because only the pane read them:
+    - `runtimeView`;
+    - `runtimePacks` (Settings reads `capabilityPacks`);
+    - `agentActivityStack`, unread since v0.14.1.
+  - Kept, for the worker blocks, the Sub-tasks list and the Timeline:
+    `agentActivities`, `agentActivityOrder`, `runtimeAgents` with
+    `upsertRuntimeAgent` and `syncRuntimeAgents`, `_syncWorkerViews`, and
+    `runtimeTimeline`.
+- **Styles** (`styles.css`). The pane's rules are gone:
+  - `.agent-activity-pane`, `-toolbar`, `-count`, `-tree`, `-node`, `-state`,
+    `-main` and `-elapsed`;
+  - `.runtime-view-tabs` and `.runtime-view-tab`;
+  - `.runtime-card` and `.runtime-badges`;
+  - `.agent-handoff-*`;
+  - `.runtime-actions` and `.runtime-control-bar`, left from the pane's
+    traces and worker-detail views.
+
+  `.agent-activity-empty` stays: the Context pane's placeholder uses it.
+- **The control-plane test reads every script the page loads**, not `app.js`
+  alone (`tests/test_modern_harness_runtime.py`). Settings
+  (`settings_view.js`) asks for the pack list; in `app.js` only the removed
+  code did.
+- [Known issues](known-issues.md) no longer lists the leftover code.
+
+Validation on September 25, 2026, on top of PRs #75 and #76:
+
+- Full `pytest` 4,428 passed, 5 skipped. `ruff check .` clean, `node --check`
+  passes for `app.js` and `settings_view.js`, the four Node UI test files pass
+  (86 tests), `git diff --check` clean.
+- The plan card's tests from PR #75 pass. `plan.event` still calls
+  `trackPlanAgentEvent`, which since that PR draws a plan's specialists under
+  its card; with the call taken out, 5 of them fail.
+- In the browser pane, from an isolated home with a scripted Ollama stub,
+  running a scratch copy of the changed code:
+  - A turn wrote a file. Its card's Trace listed its rows.
+  - A turn delegated to a build worker. While it ran, the Sub-tasks list
+    offered Pause, Stop and Steer, and Pause and Resume went through
+    (`agent.control_ack`, `agent.runtime_list`, `agent.updated`).
+  - The worker's block showed its result line ("✓ build · 2 steps · 30.5s ·
+    1 file changed") and opened its Transcript. The turn's Trace included
+    the worker's rows.
+  - The Timeline listed both checkpoints, one "by a worker".
+  - After a reload, the worker's block kept its Transcript button, and
+    Settings > Capability packs loaded its list.
+  - Also run on the base before PRs #75 and #76: a Steer note
+    (`agent.steered`); a Files restore, after which the Timeline's list
+    refreshed; New session and reopening the conversation; the Context
+    pane's chips and placeholder, which kept their styles.
+  - No console errors in either run; a deliberate error showed the console
+    was captured. The real `~/.resonant` was unchanged, no `~/.lumi` was
+    created, and no Lumi credential was stored.
+- Seen along the way, not changed here: in a project without Git, a Files
+  restore leaves files created after the checkpoint in place
+  (`checkpoint_timeline._restore_archive` only extracts the snapshot).
+
+Not exercised: a packaged build, and compact layouts (no visible element's
+style changed).
+
 ## September 25 a plan's specialists report under its card — source only, not released
 
 **A plan's specialists showed up as turns of the conversation.** A plan

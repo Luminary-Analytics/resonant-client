@@ -144,6 +144,14 @@ DEFAULTS = {
         "enabled": False,
         "server_url": "",
     },
+    # Settings > Updates (lumi/update_channels.py): automatic, manual or off;
+    # the stable or beta channel; and a release line ("0.20") to stay on.
+    # Read at startup, so a change applies after a restart.
+    "updates": {
+        "mode": "automatic",
+        "channel": "stable",
+        "pin": "",
+    },
 }
 
 

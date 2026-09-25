@@ -94,6 +94,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   a model without a known price is unpriced (`None`), never $0. Budgets
   (`budgets.py`) are checked before every model request of a turn; a new
   loop that calls a model repeatedly must check them too.
+- Updates: `update_channels.py` picks the feed from `updates.mode`, `channel` and
+  `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
+  because every earlier install polls it. Running from source never loads
+  WinSparkle. Publishing a release or feed needs the user's go-ahead.
 - `lumi run` (`headless.py`) builds its session from the same pieces as the
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run

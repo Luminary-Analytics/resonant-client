@@ -149,10 +149,13 @@ certificate or a signing service is an account decision for the owner.
   signature or rerun an already successful release casually.
 - **Version/source correction:** prefer a new version for changed source. Rerun
   failed jobs at the existing SHA only when the source and version are correct.
-- **Pre-releases:** the tag glob accepts more than stable semver. A hyphenated
-  tag is marked prerelease and is not published to Pages or the appcast.
-  `publish_pages.py` also rejects anything other than `X.Y.Z`, so a Python
-  `a1`-style tag fails the Pages step instead of reaching installed apps.
+- **Betas:** tag `vX.Y.Z-beta.N` (or `-alpha.N`, `-rc.N`) with the same string
+  in both version files. The GitHub release is marked prerelease; the installer
+  goes to the Pages site and only into `appcast-beta.xml`, so installs on the
+  stable channel never see it. The download page is left alone. Other
+  hyphenated or Python `a1`-style tags fail the Pages step, which accepts only
+  `X.Y.Z` and those three forms, instead of reaching installed apps. See
+  [Updates](docs/updates.md#how-the-feeds-work).
 
 Current release evidence is recorded in [0.19.1 notes](docs/v0.19.1-release-notes.md).
 

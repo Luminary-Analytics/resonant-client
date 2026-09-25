@@ -211,10 +211,12 @@ def test_an_organization_allow_leaves_the_prompt_to_the_repository(tmp_path, rep
 # ── Only Auto-edit, attended or not ────────────────────────────────────
 
 
-@pytest.mark.parametrize(("tier", "asked_for"), [("auto-edit", []), ("suggest", ["check_run"])])
+@pytest.mark.parametrize(("tier", "asked_for"), [
+    ("auto-edit", []), ("ask", ["check_run"]), ("suggest", ["check_run"]),
+])
 def test_only_auto_edit_lets_the_repository_answer(tmp_path, tier, asked_for):
-    # The read-only tier asks about check_run instead of refusing it, so
-    # only the tier decides here whether the repository's allow answers.
+    # Ask and the read-only tier ask about check_run instead of refusing it,
+    # so only the tier decides here whether the repository's allow answers.
     project = _project(tmp_path, [ALLOW_EVERYTHING])
 
     asked, _ = _run(_session(project, "check_run", {"command": "mkdir made", "requirement": "it runs"}, tier=tier))

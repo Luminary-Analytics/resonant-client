@@ -3,6 +3,7 @@ exit code a CI job can act on."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import threading
@@ -114,12 +115,17 @@ class TestRuns:
             code, out, _ = run(monkeypatch, tmp_path, backend, "Make the folder", "--mode", "auto-edit", *args)
             return code, json.loads(out)
 
-        # Nobody can answer a prompt, so an untrusted repository's command is refused.
-        code, result = attempt()
-        assert (code, result["denied_calls"]) == (3, 1) and not (tmp_path / "made").exists()
-        code, result = attempt("--trust-project")
-        assert (code, result["status"], result["denied_calls"]) == (0, "completed", 0)
-        assert (tmp_path / "made").is_dir()
+        # Nobody can answer a prompt, so an untrusted repository's command is
+        # refused, and so is a trusted run's when the policy isn't the version named.
+        for args in ((), ("--trust-project", "--policy-digest", "0" * 64)):
+            code, result = attempt(*args)
+            assert (code, result["denied_calls"]) == (3, 1) and not (tmp_path / "made").exists()
+        digest = hashlib.sha256((tmp_path / "lumi-policy.json").read_bytes()).hexdigest()
+        for args in (("--trust-project", "--policy-digest", digest), ("--trust-project",)):
+            code, result = attempt(*args)
+            assert (code, result["status"], result["denied_calls"]) == (0, "completed", 0)
+            assert (tmp_path / "made").is_dir()
+            (tmp_path / "made").rmdir()
 
     def test_a_provider_error_fails_the_run(self, monkeypatch, tmp_path, ledger):
         code, out, _ = run(monkeypatch, tmp_path, scripted([error("upstream exploded")]), "Go")

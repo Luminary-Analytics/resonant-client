@@ -146,7 +146,9 @@ refuses the commands Auto-edit refuses (a recursive `rm`, `chmod` on a system
 path, a download piped into a shell) without asking, and a project's
 `lumi-policy.json` can't turn its approvals off.
 **Auto-edit** also accepts file edits and asks before shell, MCP, browser,
-desktop and git actions. **Plan** uses Auto-edit approvals for native providers.
+desktop and git actions, except the ones a trusted project's
+`lumi-policy.json` allows ([project trust](#project-trust-and-lumi-policyjson)).
+**Plan** uses Auto-edit approvals for native providers.
 **Full-auto** runs everything inside the project sandbox. A project's
 `lumi-policy.json` can require more approval but cannot lift a built-in
 block. Codex and Claude Code can't pass an approval request to Lumi, so under

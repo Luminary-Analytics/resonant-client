@@ -136,10 +136,10 @@ def test_a_trusted_repositorys_allow_rule_answers_auto_edits_prompt(gui_state, m
 
     socket = _turn(gui_state, "bash", {"command": "mkdir made"}, {"approved": False})
 
-    assert (project / "made").exists() is runs
+    # Ask still asks, and the user's Deny holds.
+    assert [prompt["name"] for prompt in socket.events("tool_permission")] == ([] if runs else ["bash"])
     assert socket.events("tool.result")[0]["denied"] is (not runs)
-    if runs:
-        assert socket.events("tool_permission") == []
+    assert (project / "made").exists() is runs
 
 
 def test_allow_rules_wait_for_trust_and_for_review_after_a_change(gui_state):

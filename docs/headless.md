@@ -26,6 +26,7 @@ lumi run "Fix the failing test in tests/test_api.py" --provider anthropic --mode
 | `--provider`, `--model` | `anthropic`, `openai`, `openrouter`, `sonn`, `kimi`, `exo`, `ollama`, `codex`, `claude-code` or a connection (`conn-<id>`). `LUMI_PROVIDER` and `LUMI_MODEL` work too; otherwise the desktop defaults apply |
 | `--mode` | What the agent may do without asking: `ask` (read only), `auto-edit` (the default: edit files; other actions refused unless a trusted repository's `lumi-policy.json` allows them) or `bypass` (everything) |
 | `--trust-project` | Apply the repository's instructions (`AGENTS.md` and others), notes and `lumi-policy.json` allow rules for this run. In `auto-edit`, the allow rules run the commands they match ([project trust](desktop-workflow.md#project-trust-and-lumi-policyjson)) |
+| `--policy-digest SHA256` | With `--trust-project`, apply the allow rules only if `lumi-policy.json` has this SHA-256 (model comparisons pass the version trusted in the app) |
 | `--max-requests N` | Stop after N model requests |
 | `--timeout SECONDS` | Stop after this long |
 | `--output` | `json` (the default), `text` (the answer as it streams; a summary on stderr) or `jsonl` (every engine event, then the result) |

@@ -33,6 +33,11 @@ April, so Auto-edit still asked. Now they skip Auto-edit's prompt:
 - **Unattended runs:** in `lumi run --trust-project --mode auto-edit`, and in a
   scheduled task set to **Edit files** on a trusted project, commands an allow
   rule matches now run instead of being refused.
+- **Model comparisons** (`lumi/model_evals.py`) run the last commit with
+  `--trust-project` when the project is trusted. They now also pass the new
+  `lumi run --policy-digest`: the commit's allow rules apply only if its
+  `lumi-policy.json` is the version the user trusted, and not at all while a
+  change awaits review.
 - **Trust binds to the file it read.** `TrustStatus.policy_digest` is the
   SHA-256 the trust check read. `project_execution_policy(policy_digest=…)`
   honors the allow rules only if the bytes it parses match that digest, so an
@@ -49,30 +54,39 @@ April, so Auto-edit still asked. Now they skip Auto-edit's prompt:
 - Docs: [desktop workflow](desktop-workflow.md#project-trust-and-lumi-policyjson)
   (new section), [agent runtime](modern-agent-runtime.md#tool-approvals),
   [`lumi run`](headless.md), [scheduled tasks](scheduled-tasks.md),
+  [model comparisons](model-comparisons.md),
   [organization policy](enterprise-policy.md) and [audit log](audit-log.md).
 
 Validation on September 25, 2026:
 
-- `tests/test_repository_allow_rules.py` (29 tests): each runs `Session.run`
+- `tests/test_repository_allow_rules.py` (30 tests): each runs `Session.run`
   with a scripted model and an approval callback, and checks the folder the
   command creates. It covers the skip, what still asks (no match, chaining,
   untrusted), the repository's own rule order, guardrails and built-in denies,
-  organization deny, ask and allow rules, Auto-edit versus suggest, unattended
-  runs, delegated workers, the digest check and the audit record.
+  organization deny, ask and allow rules, Auto-edit versus Ask and suggest,
+  unattended runs, delegated workers, the digest check and the audit record.
 - GUI (`tests/test_gui_permission_modes.py`, through the real
   `_run_session_streaming` loop and `approve` handler): Auto-edit and Plan run
-  a trusted rule's command without a prompt; Ask doesn't run it. Before trust
-  and after a policy edit, it asks.
+  a trusted rule's command without a prompt. Ask asks, and the Deny holds.
+  Before trust and after a policy edit, Auto-edit asks.
 - `tests/test_headless.py`: `lumi run` refuses the command without
-  `--trust-project` and runs it with the flag. `tests/test_exclusions_and_trust.py`
-  covers the one review after upgrade and the reported digest.
-- Seven mutants, each switching off one part (the skip, the chaining check,
-  the tier check, per-layer matching twice, the digest, the upgrade review),
-  each fail at least one of these tests.
-- Full suite: 4031 passed, 5 skipped. Ruff, `node --check` and the node UI
-  tests (34) pass.
+  `--trust-project` or with a `--policy-digest` that doesn't match, and runs
+  it with a matching digest or the flag alone.
+- `tests/test_model_evals.py`: comparison runs pass no trust for an untrusted
+  project, the trusted digest once it's trusted, and an empty digest after an
+  unreviewed policy edit. `tests/test_exclusions_and_trust.py` covers the one
+  review after upgrade and the reported digest.
+- Nine mutants each switch off one part: the skip, the chaining check, the
+  tier check, per-layer matching (twice), the digest, the upgrade review, and
+  the digest in `lumi run` and in comparisons. Each fails at least one of
+  these tests. The tier-check mutant also fails the GUI Ask case and
+  `test_a_trusted_repositorys_allow_rules_do_not_skip_asks_approval` from the
+  Ask change below.
+- Full suite after merging main: 4092 passed, 5 skipped. Ruff, `node --check`
+  and the node UI tests (36) pass.
 - Browser, isolated fixture (temporary home and state, `LUMI_KEYCHAIN=off`, a
-  scripted Ollama-compatible model, CLI adapters off):
+  scripted Ollama-compatible model, CLI adapters off). This ran before main
+  (with the Ask change below) was merged into this branch:
   - The banner listed "lumi-policy.json with 2 rules that skip approval in
     Auto-edit".
   - Untrusted, `mkdir made` showed Command Review; after **Trust this
@@ -88,10 +102,6 @@ Validation on September 25, 2026:
   - Settings' text for a policy that isn't the trusted version was changed
     afterwards, and was checked by rendering `settings_view.js` in Node, not in
     the browser.
-- Not exercised: Ask with a tier that asks about shell commands. Ask uses the
-  read-only `suggest` tier here, which refuses `bash` before any prompt. So in
-  the GUI test, Ask shows only that the command doesn't run, and the
-  tier check itself is covered by the engine test with `check_run`.
 
 ## September 25 Ask asks before changes — source only, not released
 

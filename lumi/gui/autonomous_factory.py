@@ -101,7 +101,9 @@ class DispatchTracker:
         1. `watch(intent_id)` BEFORE the corresponding sub-mission is
            dispatched (avoid losing events to a race).
         2. `wait(intent_id)` from the daemon thread.
-        3. Connect `feed_event` into IntentService's `on_event` chain.
+        3. Add `feed_event` as a listener of the IntentService
+           (`add_listener`), not as its `on_event`, which the app
+           rebinds to each connection's emitter.
     """
 
     def __init__(self) -> None:
@@ -742,9 +744,10 @@ def build_autonomous_mission_hooks(
     implementation.
 
     The caller is responsible for:
-    1. Connecting `dispatch_tracker.feed_event` into the IntentService's
-       `on_event` chain (so terminal sub-mission events reach the
-       tracker; other events still flow to the GUI).
+    1. Adding `dispatch_tracker.feed_event` as a listener of
+       `intent_service` before the daemon starts (so terminal
+       sub-mission events reach the tracker) and removing it when the
+       daemon ends (`DaemonHooks.exit_hook`).
     2. Calling `daemon.stop()` will also need to set `daemon_stop_event`
        — the daemon's own `_stop_event` is the real signal; this
        parameter is the same Event passed in so the dispatch wait

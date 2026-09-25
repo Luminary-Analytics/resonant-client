@@ -11,8 +11,12 @@ Two parts under test:
 """
 from __future__ import annotations
 
+import asyncio
+import threading
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Optional
+from unittest.mock import patch
 
 import pytest
 
@@ -231,33 +235,44 @@ class _StubProject:
 
 class _StubIntentService:
     """Minimal IntentService stand-in. Records start_intent calls
-    and emits intent.complete via on_event so the dispatch tracker
-    unblocks. Does NOT actually run a sub-mission."""
+    and emits intent.complete to on_event and its listeners so the
+    dispatch tracker unblocks. Does NOT actually run a sub-mission."""
 
     def __init__(self):
         self.on_event: Any = None
+        self.listeners: list = []
         self.starts: list[str] = []
         self._next_id = 0
+
+    def add_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def remove_listener(self, listener) -> None:
+        if listener in self.listeners:
+            self.listeners.remove(listener)
+
+    def _emit(self, event: dict) -> None:
+        for handler in [self.on_event, *self.listeners]:
+            if handler:
+                handler(event)
 
     def start_intent(self, text: str) -> str:
         self._next_id += 1
         intent_id = f"sub-intent-{self._next_id}"
         self.starts.append(text)
         # Immediately emit terminal event so wait_for_dispatch unblocks.
-        if self.on_event:
-            self.on_event({
-                "event": "intent.complete",
-                "intent_id": intent_id,
-                "extracted_skill_id": None,
-            })
+        self._emit({
+            "event": "intent.complete",
+            "intent_id": intent_id,
+            "extracted_skill_id": None,
+        })
         return intent_id
 
     def cancel(self, intent_id: str) -> bool:
-        if self.on_event:
-            self.on_event({
-                "event": "intent.cancelled",
-                "intent_id": intent_id,
-            })
+        self._emit({
+            "event": "intent.cancelled",
+            "intent_id": intent_id,
+        })
         return True
 
 
@@ -480,6 +495,120 @@ class TestStartStopAutonomousMission:
                 spec_markdown=_SPEC_MD_NO_CRITERIA,
                 on_event=lambda ev: None,
             )
+
+
+# ── The page's intent commands during a mission ────────────────────────
+
+
+# One `[chrome]` criterion: it gates convergence, so the roadmap is valid,
+# and the deterministic pass runs nothing for it.
+_TOGGLE_SPEC_MD = """\
+## Final spec
+
+**Refined intent:** Add a dark mode toggle.
+
+**Time budget:** 1h
+
+**Acceptance criteria:**
+- `[chrome]` The toggle switches the page to dark mode
+"""
+
+
+class _PageSocket:
+    """The page's WebSocket: keeps what the app sends it."""
+
+    def __init__(self):
+        self.sent: list[dict] = []
+        self.plan_ended = threading.Event()
+
+    async def send_json(self, payload: dict) -> None:
+        self.sent.append(payload)
+        if payload.get("event") == "intent.complete":
+            self.plan_ended.set()
+
+
+class TestIntentCommandsDuringAMission:
+    def test_the_mission_still_hears_its_sub_mission_end(self, tmp_path, monkeypatch):
+        """A mission waits for each sub-mission's terminal event from the
+        app's one IntentService. An intent command from the page (the Plan
+        tab's Pause or History, /plan) binds that service's emitter to its
+        own connection, and used to take the mission's tracker with it: the
+        sub-mission finished and the mission went on waiting."""
+        from lumi.gui import app as gui_app
+        from lumi.gui import ws_commands
+        from lumi.orchestration import NodeSpecialization, NodeStatus, SpecialistResult
+
+        monkeypatch.setenv("LUMI_STATE_HOME", str(tmp_path / "state"))
+        project = tmp_path / "project"
+        project.mkdir()
+        state = SimpleNamespace(
+            backend=object(),
+            project=_StubProject(str(project)),
+            mcp_manager=SimpleNamespace(get_all_tools=list),
+            _project_instructions="",
+            settings=None,
+            _build_specialist_backend=lambda _specialization: None,
+        )
+        # The app's own service construction and emitter rebinding.
+        state.get_intent_service = gui_app.AppState.get_intent_service.__get__(state)
+
+        implementing = threading.Event()
+        release = threading.Event()
+
+        def specialist(node, _graph):
+            if node.specialization == NodeSpecialization.PLAN_DEEP:
+                return SpecialistResult(status=NodeStatus.DONE, confidence=0.9, subgoals=[
+                    {"goal": "add the toggle", "specialization": "implement"},
+                ])
+            implementing.set()
+            release.wait(timeout=10)
+            return SpecialistResult(status=NodeStatus.DONE, confidence=0.95, summary="done")
+
+        mission_events: list[dict] = []
+        iteration_over = threading.Event()
+
+        def on_mission_event(event: dict) -> None:
+            mission_events.append(event)
+            if event.get("event") in ("autonomous_iteration_complete", "autonomous_iteration_failed"):
+                iteration_over.set()
+
+        page = _PageSocket()
+        ctx = ws_commands.CommandContext(
+            ws=page, state=state, msg={"command": "intent_list_snapshots", "intent_id": "another-plan"},
+        )
+
+        async def history_while_the_sub_mission_runs() -> bool:
+            await ws_commands.HANDLERS["intent_list_snapshots"](ctx)
+            release.set()
+            # In a thread, so this loop stays free to deliver what the
+            # service sends the page.
+            return await asyncio.to_thread(lambda: iteration_over.wait(10) and page.plan_ended.wait(10))
+
+        with patch("lumi.orchestration.intent_service.LocalSpecialistRunner",
+                   side_effect=lambda **_kwargs: specialist):
+            daemon = start_autonomous_mission(
+                state=state,
+                intent_id="auto-1",
+                feature="dark mode toggle",
+                spec_markdown=_TOGGLE_SPEC_MD,
+                on_event=on_mission_event,
+            )
+            try:
+                assert implementing.wait(timeout=10)
+                finished = asyncio.run(history_while_the_sub_mission_runs())
+            finally:
+                release.set()
+                daemon.stop()
+                daemon.join(timeout=10)
+
+        assert not daemon.is_running()
+        kinds = [event["event"] for event in mission_events]
+        assert finished, kinds
+        assert "autonomous_iteration_complete" in kinds
+        # The page hears the sub-mission too, on the connection that asked.
+        assert any(event.get("event") == "intent.complete" for event in page.sent)
+        # A finished mission stops listening.
+        assert state._intent_service._listeners == ()
 
 
 # ── v0.5.3a1: resume + orphan detection ────────────────────────────────

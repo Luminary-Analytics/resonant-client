@@ -964,6 +964,48 @@ organization-prompt limit; both were tested only at the engine and function
 level. Also not exercised: Codex or Claude Code (their tools never reach tool
 hooks), real Telegram, Slack or Lumi Cloud, and hooks on macOS or Linux.
 
+## September 25 an autonomous session no longer waits on a finished iteration — source only, not released
+
+- **Fixed: an autonomous session could keep waiting on an iteration that
+  had already finished.** Each iteration runs as a plan (a sub-mission) on
+  the app's one plan service, `IntentService`, and the session waits for
+  that plan's end. Its dispatch tracker took the service's `on_event`, which
+  every intent command from the page rebinds to its own connection. Those
+  commands are the Plan tab's Pause and History, a node's Restore, `/plan`
+  and a Mission's **Build this roadmap**. After any of them, the session's
+  plans reported their end only to the page. The session then waited for
+  its stall ceiling (15 minutes to 4 hours), and the ceiling's cancel went
+  the same way, so it really waited until **Stop**.
+  - `IntentService.add_listener` and `remove_listener`: a listener gets
+    every event as well as `on_event`, which stays the page's emitter and is
+    still rebound for each connection. The page gets each event first.
+  - A mission adds its tracker as a listener just before its daemon starts.
+    `DaemonHooks.exit_hook` removes it when the daemon's thread ends, however
+    it ends, so a finished mission stops collecting other plans' outcomes.
+
+Validation on September 25, 2026:
+
+- `tests/test_autonomous_session.py`: a real daemon, with its hooks and
+  tracker, runs on the app's own `get_intent_service` and a stub
+  specialist. While a sub-mission's step runs, the page asks for a plan's
+  history through the socket handler, and the step then ends.
+  - Before the fix, the page got `intent.complete` and the mission didn't:
+    its iteration ended only when the test stopped it, as
+    `autonomous_iteration_failed`.
+  - Now the iteration completes, the page's connection still gets
+    `intent.complete`, and the finished mission stops listening.
+- `tests/test_intent_service.py` (2 tests): a listener keeps every event
+  when `on_event` is rebound; a failing or removed listener costs the others
+  nothing. `tests/test_autonomous_loop.py` (2 tests): `exit_hook` runs once,
+  after the last event, when a stop rule ends the thread and when it crashes.
+- The new tests passed eight runs in a row with `RuntimeWarning` as an
+  error. The full `pytest` run: 4,433 passed, 5 skipped; `ruff` is clean.
+- Merged in a scratch copy with draft PR #73 (the Plan tab's Stop, which
+  includes #69), the intent, autonomous and socket test modules passed (295
+  tests), #73's Stop tests among them. With #73, `intent.cancelling` reaches
+  the tracker the same way.
+- Only tests were run: no autonomous session ran in the app.
+
 ## September 25 a plan's specialists report under its card — source only, not released
 
 **A plan's specialists showed up as turns of the conversation.** A plan

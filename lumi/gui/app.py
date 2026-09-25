@@ -515,7 +515,9 @@ class AppState:
         Resume keep reaching a plan started before a model switch.
 
         `on_event` is rebound on every call — the WebSocket-scoped emitter
-        changes per connection.
+        changes per connection. Anything else that needs the events, such as
+        an autonomous mission's dispatch tracker, uses
+        `IntentService.add_listener`, which this rebinding leaves alone.
         """
         from ..engine.tools import AGENT_TOOLS
         signature = (id(self.backend), self.project.project_path)

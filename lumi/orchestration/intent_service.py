@@ -4,7 +4,9 @@ IntentService — owns active intents, drives `GraphWalker` in worker threads.
 One service instance per AppState. Each `start_intent(text)` returns immediately
 with an intent_id; the actual work happens on a background thread. Events are
 forwarded through an `on_event` callback (the GUI wires this to a WebSocket
-emitter). Every state change persists to disk so the user can reload mid-run.
+emitter, and rebinds it for each connection) and to every listener added with
+`add_listener`. Every state change persists to disk so the user can reload
+mid-run.
 
 Cancellation: each active intent owns a `threading.Event`. `cancel()` sets it
 and emits `intent.cancelling`. The running specialist's Session shares the
@@ -128,6 +130,8 @@ class IntentService:
         self.project_instructions = project_instructions or ""
         self.settings = settings
         self.on_event = on_event or (lambda ev: None)
+        # Replaced, never changed in place, so `_emit` reads it without the lock.
+        self._listeners: tuple[Callable[[dict], None], ...] = ()
         # v0.5.8a1 — per-specialist backend routing. See
         # LocalSpecialistRunner.__init__ for the resolver contract.
         self.specialist_backend_resolver = specialist_backend_resolver
@@ -136,6 +140,24 @@ class IntentService:
         self.hook_runner_for = hook_runner_for
         self._active: dict[str, _ActiveIntent] = {}
         self._lock = threading.Lock()
+
+    # ── Listeners ──────────────────────────────────────────────────
+
+    def add_listener(self, listener: Callable[[dict], None]) -> None:
+        """Send `listener` every event too, until `remove_listener`.
+
+        `on_event` belongs to the page: the app rebinds it to the connection
+        of each intent command. Anything else that needs the events listens
+        here, or the next command cuts it off; an autonomous mission's
+        dispatch tracker would then wait for sub-missions that have ended.
+        """
+        with self._lock:
+            if listener not in self._listeners:
+                self._listeners = (*self._listeners, listener)
+
+    def remove_listener(self, listener: Callable[[dict], None]) -> None:
+        with self._lock:
+            self._listeners = tuple(known for known in self._listeners if known != listener)
 
     # ── Lifecycle ──────────────────────────────────────────────────
 
@@ -424,10 +446,13 @@ class IntentService:
         # that took the plan over through the new service still gets them.
         active = self._get(str(payload.get("intent_id") or ""))
         send = active.viewer if active is not None and active.viewer is not None else self.on_event
-        try:
-            send(payload)
-        except Exception:
-            logger.exception("on_event handler raised; swallowing to keep worker alive")
+        # The page first: it hears that a plan ended before a listener, such
+        # as a mission's tracker, acts on it.
+        for handler in (send, *self._listeners):
+            try:
+                handler(payload)
+            except Exception:
+                logger.exception("Intent event handler raised; swallowing to keep worker alive")
 
     def _forward_session_event(self, intent_id: str, event: dict) -> None:
         """Wrap an engine-session event with the intent_id and ship to the GUI."""

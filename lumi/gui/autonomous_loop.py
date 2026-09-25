@@ -202,6 +202,10 @@ class DaemonHooks:
     # What the mission's model requests have cost so far, in USD (priced
     # requests only), for `spend_limit_usd`. None: spending isn't tracked.
     spent_usd: Optional[Callable[[], float]] = None
+    # Called once when the daemon's thread ends, however it ends, after its
+    # last event. Production stops the dispatch tracker listening to the
+    # IntentService.
+    exit_hook: Optional[Callable[[], None]] = None
 
 
 # ── Waiting policy ──────────────────────────────────────────────────────
@@ -856,6 +860,12 @@ class AutonomousMissionDaemon:
                 "elapsed_seconds": time.time() - self._started_at,
                 "new_phase": "autonomous_failed",
             })
+        finally:
+            if self.hooks.exit_hook is not None:
+                try:
+                    self.hooks.exit_hook()
+                except Exception:
+                    logger.debug("exit_hook raised; ignoring", exc_info=True)
 
     # ── Stop-rule evaluation ──────────────────────────────────────
 

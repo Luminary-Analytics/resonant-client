@@ -212,6 +212,67 @@ def test_specialist_session_events_are_tagged_and_fall_within_their_node(state_h
     assert sorted(seen.values()) == [3, 3]
 
 
+def test_listeners_keep_the_events_when_on_event_is_rebound(state_home, project_dir):
+    # The app rebinds on_event to each intent command's connection. A
+    # listener, such as an autonomous mission's tracker, keeps every event.
+    first_page: list = []
+    second_page: list = []
+    listened: list = []
+    service = _make_service(project_dir, on_event=first_page.append)
+    service.add_listener(listened.append)
+    release = threading.Event()
+
+    def runner(node, graph):
+        release.wait(timeout=5)
+        return SpecialistResult(status=NodeStatus.DONE, confidence=1.0, summary="ok")
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: runner,
+    ):
+        intent_id = service.start_intent("ship a small feature")
+        service.on_event = second_page.append
+        release.set()
+        _wait_for_completion(service, intent_id)
+
+    kinds = [e["event"] for e in listened]
+    assert {"plan.snapshot", "intent.started", "plan.event"} <= set(kinds)
+    assert kinds[-1] == "intent.complete"
+    first_kinds = [e["event"] for e in first_page]
+    assert {"plan.snapshot", "intent.started"} <= set(first_kinds)
+    assert "intent.complete" not in first_kinds
+    assert [e["event"] for e in second_page][-1] == "intent.complete"
+
+
+def test_a_failing_or_removed_listener_does_not_cost_the_others(state_home, project_dir):
+    page: list = []
+    kept: list = []
+    removed: list = []
+    service = _make_service(project_dir, on_event=page.append)
+
+    def broken(_event):
+        raise RuntimeError("listener bug")
+
+    service.add_listener(broken)
+    service.add_listener(kept.append)
+    service.add_listener(kept.append)  # already listening: no second copy
+    service.add_listener(removed.append)
+    service.remove_listener(removed.append)
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: _scripted_runner({}),
+    ):
+        intent_id = service.start_intent("ship a small feature")
+        _wait_for_completion(service, intent_id)
+
+    # The same events, one copy each; two threads emit, so the order of
+    # the two lists can differ.
+    assert sorted(map(id, kept)) == sorted(map(id, page))
+    assert kept[-1]["event"] == "intent.complete"
+    assert removed == []
+
+
 # ── Cancellation ───────────────────────────────────────────────────────
 
 

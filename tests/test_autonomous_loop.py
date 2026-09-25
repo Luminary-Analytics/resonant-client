@@ -477,6 +477,38 @@ class TestDaemonLifecycle:
         assert snap["iter_count"] == 0
         assert snap["is_running"] is False
 
+    def test_exit_hook_runs_once_after_the_last_event(self, tmp_path):
+        # Production stops the dispatch tracker listening to the
+        # IntentService here.
+        path = _build_roadmap_on_disk(
+            tmp_path, items=[(1, "T1", "do thing")], criteria=[("bash", "x")],
+        )
+        hooks = _make_hooks(_StubCallTracker())
+        daemon, events = _make_daemon(path, hooks, max_iterations=1)
+        exits = []
+        hooks.exit_hook = lambda: exits.append(events[-1]["event"])
+
+        _run_daemon_to_completion(daemon)
+
+        assert exits == ["autonomous_mission_paused"]
+
+    def test_exit_hook_runs_when_the_loop_crashes(self, tmp_path, monkeypatch):
+        path = _build_roadmap_on_disk(
+            tmp_path, items=[(1, "T1", "do thing")], criteria=[("bash", "x")],
+        )
+        hooks = _make_hooks(_StubCallTracker())
+        daemon, events = _make_daemon(path, hooks)
+        exits = []
+        hooks.exit_hook = lambda: exits.append(events[-1]["event"])
+
+        def boom_load():
+            raise RuntimeError("simulated unrecoverable load failure")
+
+        monkeypatch.setattr(daemon, "_load_roadmap", boom_load)
+        _run_daemon_to_completion(daemon)
+
+        assert exits == ["autonomous_mission_failed"]
+
 
 # ── The human half of the wait policy ───────────────────────────────────
 

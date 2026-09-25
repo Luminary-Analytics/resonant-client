@@ -100,6 +100,49 @@ Validation on September 25, 2026:
 
 Not exercised: macOS, a packaged build, Codex or Claude Code, a live model.
 
+## September 25 sharing a conversation — source only, not released
+
+- **Share…** in a conversation's menu (`lumi/share.py`,
+  [guide](lumi-cloud.md#sharing-a-conversation)) puts a read-only copy in the
+  signed-in person's Lumi Cloud organization and shows its link, with **Copy
+  link** and **Stop sharing**. Lumi Cloud shows it to the organization's
+  members or, when an owner or admin allows it, to anyone with the link
+  (Luminary-Analytics/lumi-cloud#19).
+- The copy holds people's messages, Lumi's replies and a line for each
+  action, marked when it failed. It never holds tool results. Saved keys and
+  secret patterns are removed (`secret_scan.redact_text`), and the project
+  appears by its folder's name. `CloudClient.account_call` reaches Lumi
+  Cloud's API as the signed-in person. The links are remembered in
+  `shares.json` in Lumi's state folder.
+- The conversation menu is now buttons with menu roles: it opens with its
+  first item focused, arrow keys move through it, Escape or Tab closes it and
+  focus returns to the conversation. Enter or Space on a conversation's ⋯
+  button opens the menu instead of the conversation.
+
+Validation on September 25, 2026: `test_share.py` covers what the copy holds
+(no tool output, failed and denied actions marked, a saved key and a GitHub
+token removed, the folder's name only) and the dialog's commands with a fake
+Lumi Cloud: status, sharing a conversation saved in another recent project,
+stopping, a refusal and a conversation that isn't saved. Replay's lookup,
+now shared with sharing, is checked on the same saved conversation.
+
+A cross-check ran the real Lumi Cloud of that branch and these commands in
+one process: a link share was refused until the owner allowed it; the
+organization's link opened for its member with `no-store`, `no-referrer` and
+`noindex` headers, sent a signed-out visitor to sign in, and showed "Nothing
+is shared here" to someone outside the organization; tool output never
+reached the page; stopping closed the link.
+
+In the browser pane, with Lumi Cloud and an isolated app running together,
+the conversation's menu was opened with the mouse and from the keyboard (Tab
+to ⋯, Enter, arrows, Enter). The dialog refused a link share with the
+organization's message, created the organization's link with Enter, showed it
+again on reopening, fell back to selecting the link when the clipboard was
+refused, closed with Escape with focus back on the ⋯ button, and stopped
+sharing. The portal's page showed the conversation (failed action in red) in
+dark and light, at phone width without sideways scrolling, and "Nothing is
+shared here" after stopping. The dialog fit a 420-pixel window.
+
 ## September 25 worker handoffs report only what happened — source only, not released
 
 **A worker's handoff listed files it never changed.** The handoff a delegated
@@ -260,6 +303,138 @@ Validation on September 25, 2026:
     afterwards, and was checked by rendering `settings_view.js` in Node, not in
     the browser.
 
+## September 25 code editors: VS Code and JetBrains IDEs — source only, not released
+
+- **VS Code** ([guide](code-editors.md), `lumi/code_editors/vscode/`): Send
+  Selection to Lumi, Ask Lumi About Selection, Send File to Lumi and Send
+  Open Files to Lumi add them to the message in Lumi's composer as `@file:`
+  attachments, and you send it from Lumi. Review Lumi's Changes opens each
+  file the open session's latest change-making turn changed beside its
+  version from before that turn. Also for Cursor, Windsurf and VSCodium. The
+  extension is plain JavaScript without dependencies, so Lumi packs the .vsix
+  itself (`lumi editor vscode`) and installs it with the editor's own command
+  line from **Settings > Code editors**.
+- **JetBrains IDEs**: External Tools that send the file or selection, ask
+  about the selection and print Lumi's changes, added to each IDE found from
+  Settings > Code editors or `lumi editor jetbrains --install`. `lumi editor
+  status|send|changes|diff` work from a terminal too.
+- **The editor bridge** (`lumi/gui/editor_bridge.py`): while Lumi runs, a
+  token for that launch in `editor-bridge.json` in the state folder, readable
+  only by you. It opens only `/api/editor/...`, refuses requests from web
+  pages, takes only files inside the open project that aren't excluded, and
+  can't send a message or start a turn. `security.editor_bridge` (**Settings
+  > Privacy & security > Code editors**, lockable by policy) closes it.
+- `@file:path#L10-24` attaches only those lines.
+- **Fixed:** a tool call repeated with the same arguments in a later
+  response or turn got no checkpoint, because call ids are unique only within
+  one response. A hand edit between two identical writes could not be
+  restored. Each response now starts afresh.
+
+Validation on September 25, 2026, after merging main: full `pytest` 4,114 passed, 4 skipped;
+`node --test` 54 passed, including `vscode_extension.test.cjs` (8 tests), which
+runs the extension against a simulated VS Code API and a stand-in bridge.
+`test_editor_bridge.py` (11) covers the token and file checks, line ranges,
+and changes against git snapshots, snapshot archives and the last commit,
+including line endings a checkout converted. `test_code_editors.py` (9)
+covers the .vsix, the JetBrains tools and the command line against a local
+server with a proxy set. The checkpoint fix has a test that fails without it.
+
+In the browser pane, with an isolated fixture (a stub model, a fake `code`
+command and a fake PyCharm settings folder, and no real editor on PATH):
+
+- A turn changed `src/app.py`. `lumi editor changes --diff` against the
+  running app printed the diff from the turn's snapshot.
+- `lumi editor send src/app.py --lines 1-2 --text ...` put the question and
+  `@file:src/app.py#L1-2` in the focused composer, with a toast. An excluded
+  `.env` and a file outside the project were refused. Sending the message put
+  exactly those two lines (46 characters) and `notes.txt` into the model's
+  context.
+- Settings > Code editors (found by searching "pycharm") ran the fake `code`
+  with `--install-extension <temporary .vsix> --force`. It wrote
+  `tools/Lumi.xml` into the fake PyCharm folder; that button was pressed from
+  the keyboard.
+- Turning Code editors off removed the bridge file, and the command line then
+  refused. Turning it on brought the file back.
+- The extension's own code ran against the running app with only the VS Code
+  API simulated: its status message, Ask About Selection (the composer showed
+  the question and `@file:src/app.py#L2-2`) and Review Lumi's Changes, with
+  the earlier version fetched from the app.
+- With a hand edit between two identical writes: before the fix the second
+  turn had no checkpoint, and the review compared with the last commit. After
+  it, there were two checkpoints, and the review's earlier version was the
+  hand edit.
+
+The packed .vsix installed with VS Code 1.125's `code --install-extension`
+into a temporary extensions folder and user-data folder, where it was listed
+as `luminary-analytics.lumi-vscode` 0.1.0. The extension was not run inside
+VS Code, and no JetBrains IDE was run.
+
+## September 25 tasks from Slack and Teams — source only, not released
+
+- **Settings > Lumi account > Tasks from Slack and Teams**
+  (`lumi/remote_tasks.py`, [guide](lumi-cloud.md#tasks-from-slack-and-teams)):
+  on a computer enrolled with its person's own account, Lumi picks up the
+  requests that person sends to Lumi in their organization's Slack or
+  Microsoft Teams. Lumi Cloud relays these (Luminary-Analytics/lumi-cloud#18).
+- Lumi checks every 20 seconds while it's open and runs requests one at a
+  time in the chosen project and mode, with the default model, in a session
+  built like `lumi run`'s. It asks in the chat, with Approve and Deny
+  buttons, before actions the mode doesn't allow; no answer within 10 minutes
+  or **stop** refuses them. The reply goes back to the chat.
+- It is off until turned on, never runs on a managed computer, and an
+  organization can lock `cloud.remote_tasks`. `CloudClient.device_call`
+  reaches Lumi Cloud's device API with the device's token.
+
+Validation on September 25, 2026: `test_remote_tasks.py` (6 tests) runs
+against the fake Lumi Cloud of `test_cloud.py` extended with the task
+endpoints:
+
+- a real engine session in Ask mode writes a file only after the approval;
+- denials, an unanswered approval and a stop from the chat;
+- failures that still reach the chat;
+- what keeps it from running;
+- the Settings command, including an organization's lock.
+
+A cross-check ran the real Lumi Cloud of that branch and this app together in
+one process, with Slack faked at the HTTP layer. The app signed in through
+the consent page and enrolled. A Slack message was queued, claimed ("Working
+on it on <computer>."), asked about with buttons, approved and done. The file
+was written and the reply posted. No real Slack or Teams was used.
+
+In the browser pane, with an isolated fixture enrolled in a Lumi Cloud that
+doesn't answer, Settings > Lumi account showed the section (found by
+searching "slack"), with the open project filled in. The switch, pressed from
+the keyboard, saved it on ("On. Checks for your requests every 20 seconds
+while Lumi is open."). A folder that doesn't exist was refused with the
+message, and the typed folder stayed in the field.
+
+## September 25 issue trackers: Jira, Linear, GitHub and GitLab — source only, not released
+
+- **Start from an issue** ([guide](issue-trackers.md),
+  `lumi/engine/issue_trackers.py`): `@issue:ENG-12` attaches an issue to a
+  message, and the `issue_view` tool reads one. The agent gets the title,
+  state, assignee, labels, description and latest comments, presented as the
+  issue's content rather than instructions.
+- **Link back**: `issue_comment` comments on it (Ask and Auto-edit ask first).
+- Issues are named by link, by `jira:`, `linear:`, `github:` or `gitlab:`
+  and a key, by `#34` for this repository, or by a bare key when only Jira or
+  only Linear is set up.
+- **Settings > Issue trackers**: Jira Cloud (site, email, API token, REST v3
+  with Atlassian documents), Jira Server or Data Center (a personal access
+  token, REST v2), and Linear (an API key, GraphQL). GitHub and GitLab issues
+  use the pull request tools' tokens. `JIRA_URL`, `JIRA_EMAIL`,
+  `JIRA_API_TOKEN` and `LINEAR_API_KEY` work too.
+
+Validation on September 25, 2026: `test_issue_trackers.py` (6 tests) runs
+against mocked APIs. It covers naming by link, prefix, `#34` for GitHub and
+GitLab origins, and bare keys with one, both or neither tracker set up. It
+covers Atlassian documents both ways, and Jira Cloud and Server, including
+their authentication headers and comment bodies. It covers Linear's query and
+mutation, GitHub and GitLab issues and comments (without GitLab's system
+notes), `@issue:` attachments, including a failure, and `issue_view` being
+read-only. Full `pytest`: 4,142 passed, 4 skipped. In the browser pane, Settings >
+Issue trackers saved a Jira site typed there. No real tracker was called.
+
 ## September 25 changed files count only edits that happened — source only, not released
 
 - A task's **Changed files** and the "Review these changes" next-prompt
@@ -302,6 +477,53 @@ Validation on September 25, 2026:
     suggested no review. Accept changed the file, listed `notes.txt` and
     suggested reviewing it. After a reload, only the accepted turn listed a
     file.
+
+## September 25 chat gateway: approvals in the chat, and Slack — source only, not released
+
+- **Approvals in the chat** (`lumi gateway`, [guide](chat-gateway.md)): the
+  gateway used to run every chat's requests with nothing asked. It now takes
+  `--mode ask` (the default), `auto-edit` or `bypass`. In Ask and Auto-edit
+  modes an action the mode doesn't allow is sent to the chat with **Approve**
+  and **Deny** buttons, and it runs only if approved. Nobody answering within
+  `--approval-minutes` (10) refuses it. **stop** stops the running request,
+  and **status** shows the project, mode, model and what's running. Both
+  work while a request runs, and so do approve and deny. Commands work with
+  or without the slash, since Slack keeps the slash for its own.
+- **Sessions built like `lumi run`'s** (`lumi/headless.py`): a project
+  (`--project`, `gateway.project`, or the current folder), its trust, file
+  exclusions, the guardrails and shell sandbox, and the organization's modes
+  and models. Before, gateway sessions had none of these. The gateway never
+  trusts a project itself. Any provider `lumi run` supports works
+  (`--backend`, `--model`).
+- **Slack** over Socket Mode (`lumi/gateway/slack.py`), so no public address
+  is needed. Direct messages go to the agent, and in channels the messages
+  that mention the app. `gateway.slack_allowed` takes channel IDs (everyone
+  in the channel) or user IDs (that person anywhere). The buttons are checked
+  against the same list. Tokens go in settings.json's `api_keys`
+  (`slack_bot`, `slack_app`; `telegram_bot` as before) or in
+  `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and, new, `TELEGRAM_BOT_TOKEN`. Like
+  the rest of the gateway's settings, they stay out of the Settings page.
+- Saved key values are removed from approval requests before they're sent.
+  `gateway.telegram_api_url` can point at a self-hosted Bot API server.
+- Microsoft Teams needs a public HTTPS address, so it is left to Lumi Cloud.
+
+Validation on September 25, 2026: full `pytest` 4,136 passed, 4 skipped;
+`test_chat_gateway.py` (11 tests) covers
+approve, deny, stop, status and queued requests on the gateway's two threads,
+and unanswered approvals. It covers the Telegram adapter's buttons and
+allowlist, and the Slack adapter's events, mentions, bot and edited messages,
+buttons, acknowledgements and reconnecting, all against mock transports. It
+checks a real engine session in Ask mode writing a file only after approval,
+and the organization's allowed modes. The real `lumi gateway` process, run with
+an isolated home against a stand-in Telegram Bot API and a stub model:
+
+- asked "Lumi wants to write notes.txt (14 characters)." with Approve and Deny
+  buttons;
+- wrote nothing until Approve was pressed, then wrote the file and replied;
+- answered status with the project, mode, model and "Idle.";
+- refused a chat that wasn't allowed.
+
+No real Telegram or Slack account was used.
 
 ## September 25 untrusted text in the Git panel, tool rows and plan graph — source only, not released
 

@@ -327,6 +327,27 @@ class LumiSettingsView {
         } else if (s.managed_organization) {
             parts.push(row('This computer', 'Your organization’s policy enrolls this computer in Lumi Cloud automatically.'));
         }
+        const remote = s.remote_tasks;
+        if (device && device.how !== 'managed' && remote) {
+            const draft = this._remoteTasksDraft || {project: remote.project || this.currentCwd || '', mode: remote.mode || 'ask'};
+            const modes = {ask: 'Ask before changes', 'auto-edit': 'Edit files, ask about the rest', bypass: 'Ask about nothing'};
+            const state = !remote.enabled ? 'Off.'
+                : remote.blocked ? esc(remote.blocked)
+                : remote.running ? 'On. Running a request now.'
+                : 'On. Checks for your requests every 20 seconds while Lumi is open.';
+            const last = remote.last && remote.last.status
+                ? ` Last request: ${esc(remote.last.status)}, ${esc(new Date(remote.last.at * 1000).toLocaleString())}.` : '';
+            const options = Object.entries(modes).map(([value, label]) =>
+                `<option value="${value}"${draft.mode === value ? ' selected' : ''}>${label}</option>`).join('');
+            parts.push(`<div class="settings-row" data-remote-tasks><div class="settings-row-copy"><span class="settings-row-label" id="remote-tasks-label">Tasks from Slack and Teams</span>
+                <div class="settings-row-hint">Requests you send to Lumi in your organization’s Slack or Microsoft Teams run here, one at a time, in this project with your default model. Lumi asks you in the chat before any action the mode doesn’t allow.</div>
+                <div class="settings-row-hint" role="status">${state}${last}</div></div>
+                <div class="settings-row-value"><label class="settings-toggle"><input type="checkbox" id="remote-tasks-enabled" aria-labelledby="remote-tasks-label"${remote.enabled ? ' checked' : ''}><span class="settings-toggle-track" aria-hidden="true"></span></label></div></div>
+                <div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="remote-tasks-project">Project folder</label></div>
+                <div class="settings-row-value"><input id="remote-tasks-project" class="settings-input" value="${esc(draft.project)}" spellcheck="false"></div></div>
+                <div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="remote-tasks-mode">Permission mode</label></div>
+                <div class="settings-row-value"><select id="remote-tasks-mode" class="settings-select">${options}</select> ${button('remote_tasks', 'Save')}</div></div>`);
+        }
         parts.push('<p class="editor-help">An enrolled computer checks in hourly with its Lumi version, the policy in force and usage totals per model (requests, tokens and cost). Prompts, code and file names never go to Lumi Cloud.</p>');
         return parts.join('');
     }
@@ -338,6 +359,16 @@ class LumiSettingsView {
         section.querySelector('#cloud-url')?.addEventListener('keydown', event => {
             if (event.key === 'Enter') section.querySelector('[data-cloud-action="sign_in"]')?.click();
         });
+        const remoteDraft = () => {
+            this._remoteTasksDraft = {project: section.querySelector('#remote-tasks-project')?.value || '',
+                                      mode: section.querySelector('#remote-tasks-mode')?.value || 'ask'};
+        };
+        section.querySelector('#remote-tasks-project')?.addEventListener('input', remoteDraft);
+        section.querySelector('#remote-tasks-mode')?.addEventListener('change', remoteDraft);
+        // The switch saves at once, with the folder and mode as they stand.
+        section.querySelector('#remote-tasks-enabled')?.addEventListener('change', () => {
+            section.querySelector('[data-cloud-action="remote_tasks"]')?.click();
+        });
         section.querySelectorAll('[data-cloud-action]').forEach(control => control.addEventListener('click', () => {
             const action = control.dataset.cloudAction;
             const organization = this.cloudStatus?.device?.organization_name || 'the organization';
@@ -346,6 +377,13 @@ class LumiSettingsView {
             const message = {command: `cloud_${action}`};
             if (action === 'sign_in') message.url = (section.querySelector('#cloud-url')?.value || '').trim();
             if (action === 'enroll') message.organization_id = control.dataset.org;
+            if (action === 'remote_tasks') {
+                message.enabled = Boolean(section.querySelector('#remote-tasks-enabled')?.checked);
+                message.project = (section.querySelector('#remote-tasks-project')?.value || '').trim();
+                message.mode = section.querySelector('#remote-tasks-mode')?.value || 'ask';
+                // Kept, so a refused folder stays in the field beside the error.
+                this._remoteTasksDraft = {project: message.project, mode: message.mode};
+            }
             this.send(message);
         }));
     }
@@ -359,6 +397,8 @@ class LumiSettingsView {
         const s = this.cloudStatus || {};
         const addressStays = !s.signing_in && !(s.signed_in && s.account?.email);
         if (addressStays && document.activeElement?.id === 'cloud-url') return true;
+        // Nor the task folder or mode while they're being edited (the draft is kept either way).
+        if (['remote-tasks-project', 'remote-tasks-mode'].includes(document.activeElement?.id)) return true;
         body.innerHTML = this._renderLumiAccount();
         this._bindLumiAccount();
         return true;
@@ -660,6 +700,38 @@ class LumiSettingsView {
                 name: draft.name, prompt: draft.prompt, project: draft.project, time: draft.time, days: draft.days,
                 mode: draft.mode, provider, model: model.join('|'), max_minutes: Number(draft.max_minutes)}});
         });
+    }
+
+    _renderCodeEditors() {
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const data = this.codeEditors;
+        if (!data) return '<p class="editor-help">Loading…</p>';
+        const result = data.result
+            ? `<p class="${data.result.ok ? 'editor-help' : 'settings-error-banner'}" role="status">${esc(data.result.message)}</p>` : '';
+        const off = data.enabled ? '' : '<div class="settings-error-banner">Code editors are turned off in Privacy &amp; security, so editors can’t reach Lumi.</div>';
+        const vscode = (data.vscode || []).map(item =>
+            `<button type="button" class="btn-sm" data-code-editor-install="vscode" data-editor="${esc(item.command)}">Install in ${esc(item.name)}</button>`).join('');
+        const jetbrains = data.jetbrains || [];
+        return `<p class="editor-help">Send the selection or files from your editor into your message here, and open what Lumi changed beside your files. Editors reach Lumi only on this computer while Lumi is open, and only files in the project Lumi has open. You send the message from Lumi.</p>
+            ${off}${result}
+            <h4 class="settings-subheading">VS Code</h4>
+            <p class="editor-help">Adds Send Selection to Lumi, Ask Lumi About Selection, Send File to Lumi and Review Lumi’s Changes to the editor’s menus and Command Palette. Works in Cursor, Windsurf and VSCodium too.</p>
+            ${vscode ? `<div class="editor-actions">${vscode}</div>` : '<p class="editor-help">No <code>code</code> command was found on PATH. In VS Code, run “Shell Command: Install ‘code’ command in PATH” (macOS), or reinstall with “Add to PATH” (Windows), then reopen this page.</p>'}
+            <p class="editor-help">Or in a terminal: <code>${esc(data.commands?.vscode)}</code></p>
+            <h4 class="settings-subheading">JetBrains IDEs</h4>
+            <p class="editor-help">Adds External Tools that send the file or selection, ask about the selection, and show Lumi’s changes: Tools &gt; External Tools &gt; Lumi, and the editor’s right-click menu. ${jetbrains.length ? `Found: ${jetbrains.map(esc).join(', ')}. Restart an IDE that is open.` : 'No JetBrains IDE settings were found on this computer.'}</p>
+            ${jetbrains.length ? '<div class="editor-actions"><button type="button" class="btn-sm" data-code-editor-install="jetbrains">Add to JetBrains IDEs</button></div>' : ''}
+            <p class="editor-help">Or in a terminal: <code>${esc(data.commands?.jetbrains)}</code></p>`;
+    }
+
+    _bindCodeEditors() {
+        this.settingsBody?.querySelectorAll('[data-code-editor-install]').forEach(button => button.addEventListener('click', () => {
+            // aria-disabled rather than disabled, so keyboard focus stays put.
+            if (button.getAttribute('aria-disabled') === 'true') return;
+            button.setAttribute('aria-disabled', 'true');
+            button.textContent = 'Installing…';
+            this.send({command: 'code_editor_install', target: button.dataset.codeEditorInstall, editor: button.dataset.editor || ''});
+        }));
     }
 
     _renderFileExclusions() {
@@ -1471,7 +1543,9 @@ class LumiSettingsView {
             {id:'pets', title:'Pets', group:'Personal', icon:'pet', description:'A little company while you build.', sections:['general'], fields:['show_companion'], keywords:'Echo companion'},
             {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
             {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
+            {id:'issue_trackers', title:'Issue trackers', group:'Integrations', icon:'book', description:'Read Jira and Linear issues, and comment on them, from a conversation.', sections:['issue_trackers', 'issue_tracker_keys'], keywords:'jira linear atlassian issue ticket story bug github gitlab'},
             {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
+            {id:'code_editors', title:'Code editors', group:'Integrations', icon:'plug', description:'Use Lumi from VS Code and JetBrains IDEs: send the selection, see Lumi’s changes.', sections:['code_editors'], keywords:'vs code vscode cursor windsurf vscodium jetbrains intellij pycharm webstorm rider goland ide extension plugin selection diff'},
             {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
             {id:'mcp_servers', title:'MCP servers', group:'Integrations', icon:'plug', description:'Connect tools supplied by external servers.', sections:['mcp_servers']},
             {id:'engram', title:'Memory', group:'Coding', icon:'book', description:'Configure the optional Engram memory service.', sections:['engram']},
@@ -1484,7 +1558,7 @@ class LumiSettingsView {
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
-            {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat'},
+            {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
             {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status'], keywords:'update upgrade version release beta channel pin stable automatic manual off'},
         ];
@@ -1581,6 +1655,7 @@ class LumiSettingsView {
             this.send({command: 'audit_status'});
         }
         if (page === 'scheduled_tasks') this.send({command: 'schedules_list'});
+        if (page === 'code_editors') this.send({command: 'code_editors_list'});
         if (page === 'model_evaluations') this.send({command: 'model_evals_list'});
         const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status'}[page];
         if (command) this.send({command});
@@ -1591,6 +1666,7 @@ class LumiSettingsView {
             { id: "sonn_account", title: "SONN account & credits", open: true, custom: true },
             { id: 'lumi_account', title: 'Lumi account', open: true, custom: true },
             { id: "provider_connections", title: "Connections", open: true, custom: true },
+            { id: 'code_editors', title: 'Code editors', open: true, custom: true },
             { id: 'creative_editors', title: 'Creative editors', open: true, custom: true },
             {
                 id: 'cost_tracking', title: 'Usage & Cost', open: true,
@@ -1774,6 +1850,27 @@ class LumiSettingsView {
                       hint: 'Lets `lumi gateway` answer messages from Telegram. Off makes it refuse to start.' },
                     { key: 'scheduled_tasks', label: 'Scheduled tasks', type: 'toggle', default: true,
                       hint: 'Saved tasks that run unattended at set times (Settings > Scheduled tasks). Off stops them running and stops new ones being added.' },
+                    { key: 'editor_bridge', label: 'Code editors', type: 'toggle', default: true,
+                      hint: 'Lets the VS Code extension and JetBrains tools on this computer add files to your message and show what Lumi changed (Settings > Code editors).' },
+                ]
+            },
+            {
+                id: 'issue_trackers', title: 'Jira and Linear',
+                note: 'Start from an issue by attaching it, such as @issue:ENG-12, or by asking the agent to read it; it can comment on the issue when you ask. GitHub and GitLab issues use the tokens under Connections.',
+                fields: [
+                    { key: 'jira_url', label: 'Jira site', type: 'text', placeholder: 'https://your-team.atlassian.net',
+                      hint: 'JIRA_URL also works.' },
+                    { key: 'jira_email', label: 'Jira email', type: 'text', placeholder: 'you@example.com',
+                      hint: 'For Jira Cloud, the account the API token belongs to. Leave it empty for Jira Server or Data Center.' },
+                ]
+            },
+            {
+                id: 'issue_tracker_keys', title: 'Issue tracker keys', store: 'api_keys',
+                fields: [
+                    { key: 'jira', label: 'Jira token', type: 'password',
+                      hint: 'An API token (Jira Cloud) or a personal access token (Server or Data Center). JIRA_API_TOKEN also works.' },
+                    { key: 'linear', label: 'Linear API key', type: 'password',
+                      hint: 'A personal API key from Linear’s settings. LINEAR_API_KEY also works.' },
                 ]
             },
             {
@@ -1924,6 +2021,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderProjectTrust();
             } else if (section.id === 'scheduled_tasks') {
                 bodyHtml = this._renderScheduledTasks();
+            } else if (section.id === 'code_editors') {
+                bodyHtml = this._renderCodeEditors();
             } else if (section.id === 'model_comparisons') {
                 bodyHtml = this._renderModelComparisons();
             } else if (section.id === 'capability_packs') {
@@ -2161,6 +2260,7 @@ class LumiSettingsView {
         this._bindUpdateCheck();
         this._bindLumiAccount();
         this._bindScheduledTasks();
+        this._bindCodeEditors();
         this._bindModelComparisons();
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {

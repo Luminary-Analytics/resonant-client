@@ -1361,6 +1361,7 @@ class Session:
             "bash",
             "git_status", "git_diff", "git_commit", "git_branch_create", "git_log",
             "github_pr_view", "github_check_log", "github_pr_create", "github_pr_comment", "github_pr_update",
+            "issue_view", "issue_comment",
             "repl_python_start", "repl_node_start",
         }
 
@@ -2414,6 +2415,10 @@ class Session:
             done_model = None
 
             fallback_retry = False
+            # Call ids are unique only within one response (backends._new_call_id
+            # hashes the name and arguments), so the same write in a later
+            # response or turn must still get its own checkpoint.
+            self._last_checkpoint_tool_call = ""
             try:
                 model_requests += 1
                 for event_type, data in self.backend.stream(

@@ -201,6 +201,7 @@ Explicit attachments are inserted in chat with:
 
 ```text
 @file:path/to/file.py
+@file:path/to/file.py#L10-24
 @symbol:ClassName
 @diff:working
 @checkpoint:cp_00001_abcd1234
@@ -209,10 +210,13 @@ Explicit attachments are inserted in chat with:
 @test-failure:last
 @terminal:last
 @plan:current
+@issue:ENG-12
 ```
 
-Every resolved item carries a provider, label, provenance, freshness metadata,
-and estimated size. The Context cockpit lists available providers. Repository
+`#L10-24` (or `#L10`) attaches only those lines; the [code editor
+extensions](code-editors.md) send selections this way. Quote a path with
+spaces: `@file:"docs/my notes.md#L3-8"`. Every resolved item carries a
+provider, label, provenance, freshness metadata, and estimated size. The Context cockpit lists available providers. Repository
 maps use Python ASTs and optional `tree-sitter-language-pack` grammars before
 falling back to conservative regex extraction.
 

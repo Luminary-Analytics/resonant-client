@@ -533,6 +533,61 @@ async def _audit_status(ctx: CommandContext) -> None:
     await ctx.send(await _in_executor(ctx.state.audit_status))
 
 
+def _code_editors_payload(settings: Any = None, **extra: Any) -> dict:
+    """Settings > Code editors: the bridge, and the editors found on this computer."""
+    from ..code_editors import jetbrains_config_dirs, lumi_command, vscode_editors
+    from .editor_bridge import bridge, enabled
+
+    program, prefix = lumi_command()
+    start = " ".join(part for part in (f'"{program}"' if " " in program else program, prefix) if part)
+    return {"event": "code_editors", "data": {
+        "enabled": enabled(settings),
+        "running": bridge.published,
+        "vscode": [{"command": item["command"], "name": item["name"]} for item in vscode_editors()],
+        "jetbrains": [path.name for path in jetbrains_config_dirs()],
+        "commands": {"vscode": f"{start} editor vscode --install", "jetbrains": f"{start} editor jetbrains --install"},
+        **extra,
+    }}
+
+
+@command("code_editors_list")
+async def _code_editors_list(ctx: CommandContext) -> None:
+    settings = getattr(ctx.state, "settings", None)
+    await ctx.send(await _in_executor(lambda: _code_editors_payload(settings)))
+
+
+@command("code_editor_install")
+async def _code_editor_install(ctx: CommandContext) -> None:
+    """Install the VS Code extension, or JetBrains External Tools, from Settings > Code editors."""
+    from ..code_editors import VSCODE_FAMILY, install_jetbrains, install_vscode
+    from .editor_bridge import enabled
+
+    settings = getattr(ctx.state, "settings", None)
+    target = str(ctx.msg.get("target") or "")
+    editor = str(ctx.msg.get("editor") or "code")
+
+    def install() -> dict:
+        if not enabled(settings):
+            return {"ok": False, "message": "Turn on Code editors in Settings > Privacy & security first."}
+        if target == "vscode":
+            install_vscode(editor)
+            return {"ok": True, "message": f"Installed in {VSCODE_FAMILY[editor]}. If it is open, run "
+                                           "\"Developer: Reload Window\" there to start the extension."}
+        if target == "jetbrains":
+            written = install_jetbrains()
+            if not written:
+                return {"ok": False, "message": "No JetBrains IDE settings were found on this computer."}
+            names = ", ".join(path.parent.parent.name for path in written)
+            return {"ok": True, "message": f"Added to {names}. Restart an IDE that is open to see the tools."}
+        return {"ok": False, "message": "Choose VS Code or JetBrains."}
+
+    try:
+        result = await _in_executor(install)
+    except (RuntimeError, ValueError, OSError) as exc:
+        result = {"ok": False, "message": str(exc)}
+    await ctx.send(await _in_executor(lambda: _code_editors_payload(settings, result=result)))
+
+
 def _schedules_payload(settings: Any = None, **extra: Any) -> dict:
     from .. import schedules
 
@@ -1123,21 +1178,13 @@ async def _skill_pin_toggle(ctx: CommandContext) -> None:
 # ---------------------------------------------------------------------------
 
 
-@command("get_session_replay_events")
-async def _get_session_replay_events(ctx: CommandContext) -> None:
-    """Fetch a session's display events without switching the active one."""
-    from .sessions import _sessions_dir, is_valid_session_id
+def _saved_session(ctx: CommandContext, target_id: str, project_path: str):
+    """A saved conversation by id, from ``project_path`` or any recent project; None when there's none."""
+    from .sessions import SessionRecord, _sessions_dir, is_valid_session_id
 
-    target_id = ctx.msg.get("session_id", "")
-    project_path = ctx.msg.get("project_path") or ctx.project_path
     if not is_valid_session_id(target_id):
-        await ctx.send({
-            "event": "session_replay_events", "session_id": target_id,
-            "error": "not found", "events": [],
-        })
-        return
+        return None
     record_project_path = project_path
-
     path = _sessions_dir(project_path) / f"{target_id}.json"
     if not path.exists():
         # The session may belong to a different recent project.
@@ -1150,25 +1197,32 @@ async def _get_session_replay_events(ctx: CommandContext) -> None:
                 path = candidate
                 record_project_path = candidate_root
                 break
-
     if not path.exists():
-        await ctx.send({
-            "event": "session_replay_events", "session_id": target_id,
-            "error": "not found", "events": [],
-        })
-        return
-    try:
-        from .sessions import SessionRecord
+        return None
+    record = SessionRecord.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    record.project_path = record_project_path
+    if record.ledger.path.exists():
+        record.load_ledger()
+    return record
 
-        data = json.loads(path.read_text(encoding="utf-8"))
-        record = SessionRecord.from_dict(data)
-        record.project_path = record_project_path
-        if record.ledger.path.exists():
-            record.load_ledger()
+
+@command("get_session_replay_events")
+async def _get_session_replay_events(ctx: CommandContext) -> None:
+    """Fetch a session's display events without switching the active one."""
+    target_id = ctx.msg.get("session_id", "")
+    project_path = ctx.msg.get("project_path") or ctx.project_path
+    try:
+        record = _saved_session(ctx, target_id, project_path)
+        if record is None:
+            await ctx.send({
+                "event": "session_replay_events", "session_id": target_id,
+                "error": "not found", "events": [],
+            })
+            return
         await ctx.send({
             "event": "session_replay_events",
             "session_id": target_id,
-            "title": data.get("title") or "",
+            "title": record.title or "",
             "events": record.display_events,
         })
     except Exception as exc:
@@ -1176,6 +1230,67 @@ async def _get_session_replay_events(ctx: CommandContext) -> None:
             "event": "session_replay_events", "session_id": target_id,
             "error": str(exc), "events": [],
         })
+
+
+async def _share_state(ctx: CommandContext, session_id: str, **extra: Any) -> None:
+    """The Share dialog: this conversation's link, and where it can be shared."""
+    from .. import share
+
+    status = await asyncio.to_thread(ctx.state.cloud.status)
+    account = status.get("account") or {}
+    await ctx.send({"event": "session_share", "session_id": session_id,
+                    "share": share.remembered().get(session_id), "signed_in": bool(status.get("signed_in")),
+                    "organizations": [{"id": org.get("id"), "name": org.get("name")}
+                                      for org in account.get("organizations") or []], **extra})
+
+
+@command("session_share_status")
+async def _session_share_status(ctx: CommandContext) -> None:
+    await _share_state(ctx, str(ctx.msg.get("session_id") or ""))
+
+
+@command("session_share")
+async def _session_share(ctx: CommandContext) -> None:
+    """Share a read-only copy of a saved conversation in Lumi Cloud (lumi/share.py)."""
+    from .. import share
+    from ..cloud import CloudError
+
+    session_id = str(ctx.msg.get("session_id") or "")
+    project_path = str(ctx.msg.get("project_path") or ctx.project_path or "")
+
+    def work() -> None:
+        record = _saved_session(ctx, session_id, project_path)
+        if record is None:
+            raise CloudError("That conversation isn't saved yet.")
+        copy = share.export(record.display_events, title=record.title, project_path=record.project_path,
+                            model=str(record.model or ""))
+        if not copy["entries"]:
+            raise CloudError("There's nothing in this conversation to share yet.")
+        answer = share.share(ctx.state.cloud, copy, organization_id=str(ctx.msg.get("organization_id") or ""),
+                             visibility=str(ctx.msg.get("visibility") or "organization"))
+        share.remember(session_id, answer)
+
+    try:
+        await asyncio.to_thread(work)
+        await _share_state(ctx, session_id)
+    except CloudError as exc:
+        await _share_state(ctx, session_id, error=str(exc))
+
+
+@command("session_share_stop")
+async def _session_share_stop(ctx: CommandContext) -> None:
+    from .. import share
+    from ..cloud import CloudError
+
+    session_id = str(ctx.msg.get("session_id") or "")
+    shared = share.remembered().get(session_id) or {}
+    try:
+        if shared.get("id"):
+            await asyncio.to_thread(share.stop, ctx.state.cloud, str(shared["id"]))
+        share.remember(session_id, None)
+        await _share_state(ctx, session_id)
+    except CloudError as exc:
+        await _share_state(ctx, session_id, error=str(exc))
 
 
 @command("get_session_history_page")
@@ -2997,6 +3112,33 @@ async def _cmd_cloud_check_in(ctx: CommandContext) -> None:
     await _cloud_run(ctx, lambda client: client.check_in())
 
 
+@command("cloud_remote_tasks")
+async def _cmd_cloud_remote_tasks(ctx: CommandContext) -> None:
+    """Settings > Lumi account: tasks from Slack and Teams on or off, and where and how they run."""
+    from ..cloud import CloudError
+    from ..policy import current as current_policy
+    from ..remote_tasks import MODES
+
+    enabled = ctx.msg.get("enabled") is True
+    project = os.path.abspath(os.path.expanduser(str(ctx.msg.get("project") or "").strip())) \
+        if str(ctx.msg.get("project") or "").strip() else ""
+    mode = str(ctx.msg.get("mode") or "ask")
+
+    def save(client) -> None:
+        policy = current_policy()
+        if policy and policy.locked("cloud", "remote_tasks"):
+            raise CloudError(f"{policy.organization} manages tasks from Slack and Teams on this computer.")
+        if mode not in MODES:
+            raise CloudError("Choose Ask, Auto-edit or Bypass.")
+        if enabled and not os.path.isdir(project):
+            raise CloudError("Choose the folder requests run in: it must exist on this computer.")
+        client.last_error = ""
+        ctx.state.settings.update_section("cloud", {"remote_tasks": enabled, "remote_tasks_project": project,
+                                                    "remote_tasks_mode": mode})
+
+    await _cloud_run(ctx, save)
+
+
 @command("about_info")
 async def _cmd_about_info(ctx: CommandContext) -> None:
     """Settings > About Lumi: version, license and who manages this copy."""
@@ -3282,7 +3424,8 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
     "network": frozenset({"ollama_url", "exo_url", "sonn_url", "proxy_url", "no_proxy", "system_certificates"}),
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp", "github", "gitlab", "bitbucket",
-                           "azure_devops"}),
+                           "azure_devops", "jira", "linear"}),
+    "issue_trackers": frozenset({"jira_url", "jira_email"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd", "daily_limit_usd", "turn_limit_usd",
                                 "price_overrides"}),
@@ -3291,7 +3434,8 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "audit_log", "audit_capture", "audit_retention_days",
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
-    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks"}),
+    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks",
+                           "editor_bridge"}),
     "updates": frozenset({"mode", "channel", "pin"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),

@@ -234,6 +234,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `security.editor_bridge` turns it off. The VS Code extension
   (`code_editors/vscode/`) stays plain JavaScript without dependencies, so
   Lumi packs its .vsix; tests never start or install into a real editor.
+- Tasks from Slack and Teams (`remote_tasks.py`) are off until the person
+  turns them on, never run on a managed computer, and build their sessions
+  with `headless.build_session`. Their approvals go through Lumi Cloud to the
+  chat, and no answer refuses the action. Tests use the fake Lumi Cloud in
+  `tests/test_cloud.py`, never a real one.
 - Model comparisons (`model_evals.py`) run each task as a `lumi run`
   subprocess in a detached git worktree of `HEAD` under the project's state
   folder, never in the user's checkout; the user's check command passes the

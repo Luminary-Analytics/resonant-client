@@ -12,9 +12,11 @@ window.LumiEmployeeTasks = class LumiEmployeeTasks {
         overlay.setAttribute('role', 'dialog');
         overlay.setAttribute('aria-modal', 'true');
         overlay.setAttribute('aria-label', 'Employee task');
-        overlay.innerHTML = `<div class="dialog" style="width:min(560px,94vw);max-height:90vh;overflow:auto">
+        overlay.innerHTML = `<div class="dialog">
             <div class="dialog-header"><h2>Employee task</h2><button type="button" class="dialog-btn deny" data-close aria-label="Close employee task">×</button></div>
             <div class="dialog-body" data-task-content></div></div>`;
+        // Styles go through element.style: the page's CSP refuses style="".
+        Object.assign(overlay.querySelector('.dialog').style, {width: 'min(560px,94vw)', maxHeight: '90vh', overflow: 'auto'});
         const close = () => {
             overlay.remove();
             this._employeeTaskRequest = null;
@@ -120,10 +122,11 @@ window.LumiEmployeeTasks = class LumiEmployeeTasks {
             this.employeeTaskButton(content, 'Cancel task', () => this.requestEmployeeTask('cancel'));
             const form = document.createElement('form');
             form.innerHTML = `<label>Consultation purpose<select class="settings-select" name="purpose"><option value="advise">Execution advice</option><option value="coordinate">Employee coordination</option></select></label>
-                <label>Question for the frontier advisor<textarea class="settings-input" name="question" rows="4" maxlength="8192" required style="display:block;width:100%;box-sizing:border-box"></textarea></label>
+                <label>Question for the frontier advisor<textarea class="settings-input" name="question" rows="4" maxlength="8192" required></textarea></label>
                 <p>Requires your saved frontier-advice consent. One consultation uses the task's allowance. Its answer is unverified advice for the next execution.</p>
                 <button type="submit" class="dialog-btn allow">Consult frontier advisor</button>`;
-            form.querySelector('select').style.cssText = 'display:block;width:100%;margin:8px 0 16px';
+            Object.assign(form.querySelector('select').style, {display: 'block', width: '100%', margin: '8px 0 16px'});
+            Object.assign(form.elements.question.style, {display: 'block', width: '100%', boxSizing: 'border-box'});
             const canConsult = !event.pending && event.advice_status !== 'awaiting' && event.advice_status !== 'following' && (quota.claimed_advisory || 0) < task.advisory_limit;
             form.querySelector('button').disabled = !canConsult;
             form.addEventListener('submit', submit => { submit.preventDefault(); this.requestEmployeeTask('advice', {

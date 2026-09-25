@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en" data-theme-setting="{{ appearance.theme }}"{% if appearance.theme == 'light' %} data-theme="light"{% endif %}{% if appearance.density == 'compact' %} data-density="compact"{% endif %}{% if appearance.font_size %} style="--text-base: {{ appearance.font_size }}px"{% endif %}>
+<html lang="en" data-theme-setting="{{ appearance.theme }}"{% if appearance.theme == 'light' %} data-theme="light"{% endif %}{% if appearance.density == 'compact' %} data-density="compact"{% endif %}{% if appearance.font_size %} data-font-size="{{ appearance.font_size }}"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -288,14 +288,14 @@
                                     <button id="welcome-folder-browse" title="Browse for folder">&#128193;</button>
                                     <button id="welcome-folder-open">Open</button>
                                 </div>
-                                <div id="welcome-dir-browser" class="dir-browser" style="display:none"></div>
+                                <div id="welcome-dir-browser" class="dir-browser" data-start-hidden></div>
                                 <div id="welcome-recent-projects" class="recent-projects-list"></div>
                             </div>
 
                             <!-- Step 2: Backend Selection (shown after folder picked) -->
-                            <div id="backend-step" class="setup-step" style="display:none;">
+                            <div id="backend-step" class="setup-step" data-start-hidden>
                                 <div class="setup-project-badge" id="setup-project-badge"></div>
-                                <div class="chat-welcome-footer" style="margin-bottom:12px;">
+                                <div class="chat-welcome-footer setup-role-footer">
                                     <select id="setup-session-role" class="chat-welcome-model-select" title="Agent role">
                                         <option value="generator">Build</option>
                                         <option value="planner">Plan</option>
@@ -311,7 +311,7 @@
                     </div>
 
                     <!-- ═══ Chat Area ═══ -->
-                    <div class="agent-panel" id="agent-panel" style="display:none;">
+                    <div class="agent-panel" id="agent-panel" data-start-hidden>
                         <!-- Chat header — slim bar above the messages. Hosts the
                              Mission toggle (off-state) or Mission badge (on-state).
                              See docs/long-running-agents.md (Phase 1 UI). -->
@@ -352,7 +352,7 @@
                     </div>
 
                     <!-- ═══ Terminal Status Bar ═══ -->
-                    <div id="terminal-bar" class="terminal-bar" style="display:none;">
+                    <div id="terminal-bar" class="terminal-bar" data-start-hidden>
                         <div class="terminal-bar-header" id="terminal-bar-header">
                             <div class="terminal-bar-left">
                                 <span class="terminal-bar-spinner"></span>
@@ -382,7 +382,7 @@
                     </div>
 
                     <!-- ═══ Bottom Input Bar ═══ -->
-                    <div id="input-bar" class="input-bar" style="display:none;">
+                    <div id="input-bar" class="input-bar" data-start-hidden>
                         <section id="live-run-surface" class="live-run-surface" hidden aria-live="polite"></section>
                         <!-- Persistent "the runtime is not usable" notice. The
                              reason used to be a toast that vanished before the
@@ -405,7 +405,7 @@
                                         <path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
                                     </svg>
                                 </button>
-                                <button id="stop-btn" class="stop-btn" title="Stop the agent" style="display:none;">
+                                <button id="stop-btn" class="stop-btn" title="Stop the agent" data-start-hidden>
                                     <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                                         <rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/>
                                     </svg>
@@ -471,7 +471,7 @@
                                 </div>
                                 <div class="input-footer-right">
                                     <span class="token-info" id="token-info" title="Approximate context tokens used by this turn"></span>
-                                    <select id="thinking-mode-selector" class="reasoning-selector" title="Reasoning depth for thinking models" aria-label="Reasoning depth" style="display:none;">
+                                    <select id="thinking-mode-selector" class="reasoning-selector" title="Reasoning depth for thinking models" aria-label="Reasoning depth" data-start-hidden>
                                         <option value="default">Provider default</option>
                                         <option value="off">Off</option>
                                         <option value="low">Low</option>
@@ -489,7 +489,7 @@
                     </div>
 
                     <!-- ═══ Settings / Customize View ═══ -->
-                    <div id="settings-view" class="feature-view" style="display:none">
+                    <div id="settings-view" class="feature-view" data-start-hidden>
                         <aside class="settings-sidebar" aria-label="Settings navigation">
                             <button id="settings-back" class="feature-view-back" type="button" title="Back to session" aria-label="Back to session">
                                 <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m7 3-5 5 5 5M2 8h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -506,7 +506,7 @@
                     </div>
 
                     <!-- ═══ Keyboard Shortcuts Overlay ═══ -->
-                    <div id="shortcuts-overlay" class="shortcuts-overlay" style="display:none">
+                    <div id="shortcuts-overlay" class="shortcuts-overlay" data-start-hidden>
                         <div class="shortcuts-panel">
                             <div class="shortcuts-header">
                                 <h3>Keyboard Shortcuts</h3>
@@ -534,7 +534,7 @@
                         <div class="preview-tab" id="plan-tab" data-pane="plan" title="Live plan-graph for the active intent">
                             <span class="preview-tab-dot"></span>
                             <span class="preview-tab-name">Plan</span>
-                            <span class="preview-tab-badge" id="plan-tab-badge" style="display:none">0</span>
+                            <span class="preview-tab-badge" id="plan-tab-badge" data-start-hidden>0</span>
                         </div>
                         <div class="preview-tab" id="context-tab" data-pane="context" title="Live context composition and budget">
                             <span class="preview-tab-dot"></span>
@@ -576,7 +576,7 @@
                         </div>
                     </div>
                     <!-- Plan-graph viewport (toggle via the Plan tab) -->
-                    <div id="plan-graph-pane" class="plan-graph-pane" style="display:none">
+                    <div id="plan-graph-pane" class="plan-graph-pane" data-start-hidden>
                         <div class="plan-graph-toolbar">
                             <span class="plan-graph-intent" id="plan-graph-intent">No active intent</span>
                             <span class="plan-graph-spacer"></span>
@@ -584,13 +584,13 @@
                             <button class="plan-graph-btn" id="plan-graph-history" title="Plan snapshots / restore">History</button>
                             <button class="plan-graph-btn" id="plan-graph-branch" title="Fork plan-graph from selected node">Branch</button>
                         </div>
-                        <div id="plan-graph-checkpoint" class="plan-graph-checkpoint" style="display:none"></div>
+                        <div id="plan-graph-checkpoint" class="plan-graph-checkpoint" data-start-hidden></div>
                         <div id="plan-graph-canvas" class="plan-graph-canvas">
                             <div class="plan-graph-empty">Plan-graph idle &mdash; start an intent to see it populate.</div>
                         </div>
-                        <div id="plan-graph-detail" class="plan-graph-detail" style="display:none"></div>
+                        <div id="plan-graph-detail" class="plan-graph-detail" data-start-hidden></div>
                     </div>
-                    <div id="context-cockpit-pane" class="context-cockpit-pane" style="display:none">
+                    <div id="context-cockpit-pane" class="context-cockpit-pane" data-start-hidden>
                         <div class="context-cockpit-toolbar">
                             <span>Context cockpit</span>
                             <button id="context-cockpit-refresh" class="plan-graph-btn" type="button">Refresh</button>
@@ -620,7 +620,7 @@
     </div>
 
     <!-- ═══ Permission Dialog ═══ -->
-    <div id="permission-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Tool permission" tabindex="-1">
+    <div id="permission-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Tool permission" tabindex="-1">
         <div class="dialog diff-review-dialog">
             <div class="dialog-header">
                 <span id="permission-title">Tool Approval</span>
@@ -628,8 +628,8 @@
             </div>
             <div class="dialog-body">
                 <p id="permission-text"></p>
-                <div id="permission-warnings" class="review-warnings" style="display:none;"></div>
-                <div id="permission-diff" class="review-diff" style="display:none;"></div>
+                <div id="permission-warnings" class="review-warnings" data-start-hidden></div>
+                <div id="permission-diff" class="review-diff" data-start-hidden></div>
                 <pre id="permission-details" class="permission-details"></pre>
             </div>
             <div class="dialog-actions">
@@ -640,7 +640,7 @@
     </div>
 
     <!-- ═══ Skill Detail Dialog (v0.6.2a3) ═══ -->
-    <div id="team-prompts-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="team-prompts-title">
+    <div id="team-prompts-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="team-prompts-title">
         <div class="dialog team-prompts-dialog">
             <div class="dialog-header">
                 <span id="team-prompts-title">Team prompts</span>
@@ -655,7 +655,7 @@
         </div>
     </div>
 
-    <div id="handoff-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoff-dialog-title">
+    <div id="handoff-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="handoff-dialog-title">
         <div class="dialog handoff-dialog">
             <div class="dialog-header">
                 <span id="handoff-dialog-title">Hand off this conversation</span>
@@ -665,7 +665,7 @@
         </div>
     </div>
 
-    <div id="handoffs-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoffs-dialog-title">
+    <div id="handoffs-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="handoffs-dialog-title">
         <div class="dialog handoffs-dialog">
             <div class="dialog-header">
                 <span id="handoffs-dialog-title">Hand-offs for you</span>
@@ -675,7 +675,7 @@
         </div>
     </div>
 
-    <div id="share-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
+    <div id="share-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
         <div class="dialog share-dialog">
             <div class="dialog-header">
                 <span id="share-dialog-title">Share this conversation</span>
@@ -685,7 +685,7 @@
         </div>
     </div>
 
-    <div id="timeline-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="timeline-dialog-title">
+    <div id="timeline-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="timeline-dialog-title">
         <div class="dialog timeline-dialog">
             <div class="dialog-header">
                 <span id="timeline-dialog-title">Timeline</span>
@@ -695,7 +695,7 @@
         </div>
     </div>
 
-    <div id="worker-transcript-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="worker-transcript-title">
+    <div id="worker-transcript-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="worker-transcript-title">
         <div class="dialog worker-transcript-dialog">
             <div class="dialog-header">
                 <span id="worker-transcript-title">Worker transcript</span>
@@ -705,7 +705,7 @@
         </div>
     </div>
 
-    <div id="worker-steer-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="worker-steer-title">
+    <div id="worker-steer-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="worker-steer-title">
         <div class="dialog worker-steer-dialog">
             <div class="dialog-header">
                 <span id="worker-steer-title">Steer the worker</span>
@@ -722,7 +722,7 @@
         </div>
     </div>
 
-    <div id="skill-detail-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Skill detail">
+    <div id="skill-detail-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Skill detail">
         <div class="dialog skill-detail-dialog">
             <div class="dialog-header">
                 <span id="skill-detail-name">Skill</span>
@@ -741,7 +741,7 @@
     </div>
 
     <!-- ═══ Command Palette ═══ -->
-    <div id="command-palette" class="cmd-palette-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Command palette">
+    <div id="command-palette" class="cmd-palette-overlay" data-start-hidden role="dialog" aria-modal="true" aria-label="Command palette">
         <div class="cmd-palette">
             <div class="cmd-palette-input-row">
                 <svg class="cmd-palette-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M10 10l4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>

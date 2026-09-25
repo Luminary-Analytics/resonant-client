@@ -114,7 +114,7 @@ class LumiRunCards {
         let desc = '';
         if (name === 'file_read') {
             const p = args.path || '';
-            desc = `<span style="color:var(--file)">${this.escapeHtml(this.shortenPath(p))}</span>`;
+            desc = `<span class="tone-file">${this.escapeHtml(this.shortenPath(p))}</span>`;
         } else if (name === 'glob') {
             desc = this.escapeHtml(args.pattern || '');
         } else if (name === 'grep') {
@@ -131,11 +131,14 @@ class LumiRunCards {
         line.setAttribute('role', 'button');
         line.setAttribute('tabindex', '0');
         line.innerHTML = `
-            <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
+            <span class="tool-icon tone-${info.color}">${info.icon}</span>
             <span class="tool-desc">${desc}</span>
             <span class="tool-meta"></span>
-            <span class="tool-status" style="color:var(--muted)">…</span>
+            <span class="tool-status">…</span>
         `;
+        // Muted until its result recolors it, both through element.style: the
+        // page's CSP refuses style="" attributes.
+        line.querySelector('.tool-status').style.color = 'var(--muted)';
         const toggleOutput = () => {
             if (!line.classList.contains('has-output')) return;
             line.classList.toggle('show-output');
@@ -265,7 +268,7 @@ class LumiRunCards {
         const item = document.createElement('div');
         item.className = 'tool-activity-item';
         item.innerHTML = `
-            <span class="ta-icon" style="color:var(--${info.color})">${info.icon}</span>
+            <span class="ta-icon tone-${info.color}">${info.icon}</span>
             <span class="ta-name">${this.escapeHtml(info.label)}</span>
             <span class="ta-detail">${this.escapeHtml(detail)}</span>
         `;

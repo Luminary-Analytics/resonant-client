@@ -201,8 +201,7 @@
             const conf = (typeof node.confidence === 'number' ? node.confidence : 1.0).toFixed(2);
             const icon = SPECIALIZATION_ICON[node.specialization] || '\u25CB';
             nodesHtml += `
-                <div class="${cls.join(' ')}" data-id="${_escape(node.id)}"
-                     style="left:${pos.x}px;top:${pos.y}px;width:${NODE_W}px;height:${NODE_H}px">
+                <div class="${cls.join(' ')}" data-id="${_escape(node.id)}">
                     <div class="pgn-header">
                         <span class="pgn-icon">${icon}</span>
                         <span class="pgn-spec">${_escape(node.specialization || 'implement')}</span>
@@ -219,8 +218,11 @@
         canvas.style.minWidth = `${totalW}px`;
         canvas.style.minHeight = `${totalH}px`;
 
-        // Wire node clicks
+        // Place and wire the cards. Positions go through element.style: the
+        // page's Content-Security-Policy refuses style="" attributes.
         canvas.querySelectorAll('.pgn').forEach((card) => {
+            const pos = positions.nodes[card.dataset.id];
+            Object.assign(card.style, {left: `${pos.x}px`, top: `${pos.y}px`, width: `${NODE_W}px`, height: `${NODE_H}px`});
             card.addEventListener('click', () => _selectNode(card.dataset.id));
         });
 

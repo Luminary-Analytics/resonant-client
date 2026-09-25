@@ -81,6 +81,99 @@ Validation on September 25, 2026:
 - The real home's `.resonant` settings and recent projects kept their hashes;
   no `~/.lumi` or Lumi credential appeared.
 
+## September 25 the terminal's own lines and prompts print names as written — source only, not released
+
+**Outside a turn's display, `lumi/tui.py` still read names as markup.** The
+section "the terminal prints tool and model text as written" escaped a turn's
+lines and left `main()`'s own lines and the prompt_toolkit prompts as they
+were:
+
+- The banner, the model picker and the slash commands put the working folder,
+  the Ollama server's address and model names, errors and what the person
+  typed into Rich markup unescaped. `/cd [/]` and the unknown command `/[/]`
+  raised `MarkupError` out of `main()`, which ended the TUI. So did startup,
+  `/status` and `/model` when the server listed a model named like
+  `local[/]:a:`. A working folder `D:/work/[old]/app` printed as
+  `D:/work//app`, `/cd ..` into `[old]` on Windows dropped the backslash
+  before it, and `Checked: http://[fd00::131]:11434` printed
+  `Checked: http://:11434`.
+- prompt_toolkit's `HTML` is XML. A working folder named `R&D` raised
+  `ExpatError` at the first prompt, and an MCP tool whose name held `&` or `<`
+  raised it at the approval prompt.
+
+Changes:
+
+- **Each piece of outside text is escaped with `_esc` where it goes into the
+  markup, and its line prints with `_print`.** That covers the banner's
+  folder, backend and model; the model picker's names and the answer;
+  `Checked:`, `Model '…' not found`, `Backend '…' not available`,
+  `Falling back to`, `Warming up`, `Switched to`, `Keeping` and
+  `Already using`; `/cd`'s folder and errors, `/status` errors, `/help`'s
+  backend line and `Unknown:`. The banner's backend line prints in one piece
+  instead of four. The TUI's colors are unchanged; as on a turn's lines,
+  Rich's automatic highlighting no longer bolds digits or underlines a URL
+  on these lines.
+- **`/status` fills its table with `Text` cells**, which aren't read as markup
+  or emoji codes.
+- **`_html_esc` puts a name into a prompt**: the working folder in `main()`'s
+  and `run_remote`'s prompts, and the tool in "Allow …? [Y/n]". It is
+  `html.escape`, after replacing with U+FFFD what XML can't hold even
+  escaped: characters below space other than tab and line breaks, U+FFFE and
+  U+FFFF, and lone surrogates (Python's stand-ins for a POSIX file name's
+  bytes that aren't UTF-8). prompt_toolkit's own `HTML(...).format(value)`
+  escapes only `&`, `<`, `>` and `"`; with it, those characters still raised
+  `ExpatError` or `UnicodeEncodeError`.
+
+Validation on September 25, 2026:
+
+- `tests/test_tui.py` (64 tests, 13 new), the console captured as plain text:
+  - `main()` driven through prompt_toolkit, the keys typed into a pipe, with a
+    stand-in for the Ollama server listing `local[/]:a:` and `qwen3:[bold]`.
+    In a folder `[old]/R&D`, with `--model missing[/]`: the model picker,
+    `/cd [/]`, `/cd ..`, `/cd R&D`, `/cd`, `/[/]`, `/status`, `/model` twice (a
+    typed name, then a number), `/help`, `/backend` and `/quit` printed as
+    written, and the prompt read `R&D ❯` and `[old] ❯`;
+  - an unreachable server at `http://[fd00::131]:11434`, a backend named
+    `[/]local` (the banner, `/help`, `/backend`), and the fallback line;
+  - a real session (the streaming stub) through `run_embedded`, approvals on,
+    whose model calls `mcp__r&d__search<beta>`: "Allow
+    mcp__r&d__search<beta>? [Y/n]", answered "n" through prompt_toolkit's pipe
+    input, then "✗ denied";
+  - `_html_esc` inside an `HTML` prompt: `&`, `<`, quotes, braces and a tab
+    read back exactly; a control character, lone surrogates and U+FFFE show as
+    U+FFFD;
+  - `run_remote`'s prompt in an `R&D` folder, over a stand-in socket.
+- On the previous `tui.py`, the 13 new tests failed and the 51 others passed.
+  Run one at a time there, `/cd [/]`, `/[/]`, `/status` and `/model` each
+  raised `MarkupError` out of `main()`; the banner printed a folder
+  `…/[old]/app` as `…//app`, and `/cd ..` printed `…\[old]` as `…[old]`.
+- An ordinary session (nothing markup-like: the picker, `/cd`, an unknown
+  command, `/status`, `/model` twice, `/help`, `/backend`) rendered in true
+  color through the previous `tui.py` and this one, from an isolated home:
+  the plain text of its 73 lines is identical, and no escape code appears
+  only in the new rendering. 19 lines differ, all from Rich's highlighter: 16
+  lose bold digits, and 3 only split one color into more segments.
+- With Rich 15.0.0, the release lock's version, `tests/test_tui.py` passed
+  (64); 14.0.0 is installed here. prompt_toolkit 3.0.51 is installed; the
+  lock's 3.0.53 wasn't tested.
+- Full `pytest` from a temporary home, on main at 1c42562 with the changes of
+  "the terminal prints tool and model text as written": 4,415 passed, 5
+  skipped. `ruff check .` is clean, `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (66 tests), and
+  `git diff --check` is clean.
+- Rebased on main at 18b5b10 (Linux packages), over "the terminal prints tool
+  and model text as written": full `pytest` 4,468 passed, 5 skipped.
+  `ruff check .`, both `node --check` runs, the four Node UI test files (81
+  tests) and `git diff --check` passed again.
+
+Not exercised: the TUI in a terminal window with a live Ollama server;
+`main()` ran under pytest with its console captured. `run_remote` has had no
+command since v0.4.4, and prompt_toolkit's blocking `prompt()` raises
+`RuntimeError` inside its `asyncio.run` loop, so only the prompt it builds was
+checked. Not changed: the TUI's own markup, such as the hint
+`pip install resonant-client[claude]`, whose `[claude]` doesn't print;
+`--backend` accepts only `ollama` and `auto`, so those hints can't show.
+
 ## September 25 specialists get a chat's exclusions, project trust and allowed modes — source only, not released
 
 **Missions and autonomous sessions skipped part of a chat's setup.** Their

@@ -104,4 +104,5 @@ Linux computers, or accept that. See [organization policy](enterprise-policy.md)
   can't run, the bubblewrap arguments and the Seatbelt profile. Its live test
   writes in the project and temporary folder, and fails to write in the home
   folder and `.git`. It runs in CI on Ubuntu (bubblewrap) and macOS
-  (Seatbelt) in `.github/workflows/sandbox.yml`, and is skipped on Windows.
+  (Seatbelt) in `.github/workflows/sandbox.yml`, where it passed on
+  September 25, 2026, and is skipped on Windows.

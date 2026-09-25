@@ -50,7 +50,12 @@ Validation on September 25, 2026:
 - `test_os_sandbox.py`: the setting and its values, Settings never waiting
   for the check, refusing commands, checks, jobs and previews when the
   sandbox can't run, the bubblewrap arguments and the Seatbelt profile, and
-  a live test (see below).
+  a live test.
+- The live test passed in CI (`sandbox.yml`) on macOS with Seatbelt and on
+  Ubuntu with bubblewrap. Writing in the project and the temporary folder
+  worked; writing in the home folder and in `.git` failed; listing the home
+  folder worked. The first CI run failed because the test wrote to the
+  suite's isolated home, which is under the temporary folder.
 - `test_headless.py`: a headless session refuses a file write outside the
   project. `test_policy.py`: a policy with another sandbox value is invalid.
 - In the browser pane, from an isolated home with the scripted Ollama stub:

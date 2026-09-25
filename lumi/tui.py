@@ -20,9 +20,11 @@ from pathlib import Path
 from typing import Optional
 
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.table import Table
+from rich.text import Text
 from rich.live import Live
 from rich.spinner import Spinner
 from prompt_toolkit import prompt as pt_prompt
@@ -123,6 +125,11 @@ BLOCK_TOOLS = {"bash", "file_write", "file_edit", "browser_js"}
 # Max lines of tool output to show before truncation (Claude Code default: 3)
 MAX_TOOL_OUTPUT_LINES = 5
 
+# The result the engine gives the model when the person answers Deny
+# (Session._resolve_tool_permission). A refused call prints why it didn't
+# run, except for this one: "denied" already says it.
+USER_DENIAL_OUTPUT = "Tool execution denied by user."
+
 
 # ══════════════════════════════════════════════════════════════════════
 #  Language detection for syntax highlighting
@@ -174,6 +181,41 @@ def _block_tool_line(text: str, color: str = C_DIM):
 def _block_tool_end():
     """End a block tool display with a subtle bottom line."""
     pass  # Clean exit, no explicit closer needed
+
+
+def _tool_denial_reason(event: dict) -> str:
+    """
+    Why a refused call didn't run, as the model was told: a hook's message,
+    a policy rule, a tool boundary, an approval nobody could answer. Empty
+    for the person's own Deny, which needs no explanation.
+    """
+    reason = str(event.get("output") or "").strip()
+    return "" if reason == USER_DENIAL_OUTPUT else reason
+
+
+def _denial_status(reason: str) -> str:
+    """A refused call's status: "not run" above its reason, else "denied"."""
+    return f"[{C_WARN}]{G_CROSS} {'not run' if reason else 'denied'}[/{C_WARN}]"
+
+
+def _print_denial_reason(reason: str, lead: int, pad: int):
+    """
+    Print a refusal's reason under its status, dimmed, inside the tool
+    gutter: `lead` spaces, the bar, then `pad` spaces on every line.
+
+    It is wrapped here, to the console width, so wrapped lines keep the
+    gutter. The reason can come from a hook, a policy, a repository or the
+    model, so each line is escaped rather than read as markup, and printed
+    without emoji codes or highlighting: it reads as the model got it.
+    """
+    if not reason:
+        return
+    prefix = f"{' ' * lead}[{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]{' ' * pad}"
+    width = max(console.width - (lead + 1 + pad), 20)
+    for line in Text(reason).wrap(console, width):
+        # Escaped after wrapping: a break must not split an escape apart.
+        console.print(f"{prefix}[{C_DIM}]{escape(line.plain.rstrip())}[/{C_DIM}]",
+                      emoji=False, highlight=False)
 
 
 def _render_tool_call(event: dict):
@@ -364,7 +406,10 @@ def _render_tool_result(event: dict):
     metadata = event.get("metadata", {})
 
     if denied:
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_WARN}]✗ denied[/{C_WARN}]")
+        # A refused call never ran, so its output is the reason why.
+        reason = _tool_denial_reason(event)
+        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   {_denial_status(reason)}")
+        _print_denial_reason(reason, lead=2, pad=5)
         return
 
     if name == "bash":
@@ -687,6 +732,9 @@ def _flush_collapsed_group(group: list):
             metadata = result.get("metadata", {})
             is_error = result.get("is_error", False)
             icon, label, color = _tool_info(name)
+            # A refused call found nothing: it says it didn't run, and why.
+            reason = _tool_denial_reason(result) if result.get("denied") else ""
+            refusal = _denial_status(reason) if result.get("denied") else ""
 
             if name == "file_read":
                 fpath = args.get("path", "")
@@ -697,20 +745,27 @@ def _flush_collapsed_group(group: list):
                 lines_count = metadata.get("lines", 0)
                 meta = f"{lines_count} lines" if lines_count else ""
                 status = f"[{C_ERR}]{G_CROSS}[/{C_ERR}]" if is_error else ""
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_FILE}]{short}[/{C_FILE}]  [{C_DIM}]{meta}[/{C_DIM}] {status}")
+                detail = refusal or f"[{C_DIM}]{meta}[/{C_DIM}] {status}"
+                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_FILE}]{short}[/{C_FILE}]  {detail}")
 
             elif name == "glob":
                 pattern = args.get("pattern", "")
                 count = metadata.get("count", 0)
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{pattern}[/{C_TEXT}]  [{C_DIM}]{count} files[/{C_DIM}]")
+                detail = refusal or f"[{C_DIM}]{count} files[/{C_DIM}]"
+                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{pattern}[/{C_TEXT}]  {detail}")
 
             elif name == "grep":
                 pattern = args.get("pattern", "")
                 count = metadata.get("count", 0)
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]'{pattern}'[/{C_TEXT}]  [{C_DIM}]{count} matches[/{C_DIM}]")
+                detail = refusal or f"[{C_DIM}]{count} matches[/{C_DIM}]"
+                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]'{pattern}'[/{C_TEXT}]  {detail}")
 
             else:
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{name}[/{C_TEXT}]")
+                detail = f"  {refusal}" if refusal else ""
+                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{name}[/{C_TEXT}]{detail}")
+
+            # Under the path or pattern, past the tool's icon.
+            _print_denial_reason(reason, lead=4, pad=3)
 
     # Footer with timing
     model = group[-1].get("model")

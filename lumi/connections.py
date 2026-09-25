@@ -10,6 +10,7 @@ adding one never requires code for that provider.
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import urllib.parse
 from typing import Any
@@ -28,7 +29,7 @@ CONNECTION_TYPES: dict[str, str] = {
     "anthropic-bedrock": "Claude on Amazon Bedrock",
     "anthropic-vertex": "Claude on Google Vertex AI",
 }
-AUTH_METHODS = ("bearer", "header", "none", "aws", "google")
+AUTH_METHODS = ("bearer", "header", "none", "aws", "google", "entra", "oauth")
 BACKEND_PREFIX = "conn-"
 SECRET_PREFIX = "conn_"
 _ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
@@ -118,6 +119,10 @@ def normalize_connection(raw: Any, existing_ids: set[str] | None = None) -> dict
         raise ValueError("AWS sign-in only applies to Bedrock connections.")
     if auth == "google" and kind != "anthropic-vertex":
         raise ValueError("Google sign-in only applies to Vertex AI connections.")
+    if auth == "entra" and kind != "azure-openai":
+        raise ValueError("Microsoft Entra ID sign-in only applies to Azure OpenAI connections.")
+    if auth == "oauth" and kind in {"anthropic-bedrock", "anthropic-vertex"}:
+        raise ValueError("OAuth sign-in applies to HTTP gateways, not Bedrock or Vertex AI.")
     connection["auth"] = auth
     default_header = {"azure-openai": "api-key", "anthropic": "x-api-key"}.get(kind, "Authorization")
     header = str(raw.get("auth_header") or default_header).strip()
@@ -150,6 +155,30 @@ def normalize_connection(raw: Any, existing_ids: set[str] | None = None) -> dict
         if value and not re.fullmatch(r"[A-Za-z0-9._@:/-]+", value):
             raise ValueError(f"The {key.replace('_', ' ')} contains unexpected characters.")
         connection[key] = value
+    # Sign-in details (lumi/auth_tokens.py). None of these is a secret: the
+    # client secret is the connection's key, kept in the credential store.
+    for key in ("tenant_id", "client_id", "scope", "audience"):
+        value = " ".join(str(raw.get(key) or "").split())[:300]
+        allowed = r"[A-Za-z0-9][A-Za-z0-9.-]*" if key == "tenant_id" else r"[A-Za-z0-9._@:/ +%=-]+"
+        if value and not re.fullmatch(allowed, value):
+            raise ValueError(f"The {key.replace('_', ' ')} contains unexpected characters.")
+        connection[key] = value
+    token_url = str(raw.get("token_url") or "").strip()
+    if auth == "oauth" and not token_url:
+        raise ValueError("OAuth sign-in needs the token URL.")
+    connection["token_url"] = _base_url(token_url, required=False)
+    if auth == "oauth" and not connection["client_id"]:
+        raise ValueError("OAuth sign-in needs the client id.")
+    if auth == "entra" and connection["client_id"] and not connection["tenant_id"]:
+        raise ValueError("Entra ID sign-in with a client id needs the tenant id.")
+    # A client certificate for gateways that require mutual TLS.
+    cert, cert_key = (str(raw.get(name) or "").strip() for name in ("client_cert", "client_key"))
+    if cert_key and not cert:
+        raise ValueError("A client key needs its certificate.")
+    for path in (cert, cert_key):
+        if path and not os.path.isfile(path):
+            raise ValueError(f"{path} doesn't exist or isn't a file.")
+    connection["client_cert"], connection["client_key"] = cert, cert_key
     if kind in {"anthropic-bedrock", "anthropic-vertex"} and not connection["region"]:
         raise ValueError("Set the region for this connection.")
     if kind == "anthropic-vertex" and not connection["project"]:
@@ -214,8 +243,10 @@ class OpenAICompatibleBackend(KimiBackend):
     dynamic_tool_catalog_via_history = False
 
     def __init__(self, connection: dict[str, Any], model: str, api_key: str = "", *,
-                 thinking: str | None = None, transport=None):
+                 thinking: str | None = None, transport=None, token_provider=None, tls=None):
         self.connection = connection
+        self._token_provider = token_provider
+        self._tls = tls
         self.model = str(model or "").strip()
         if not self.model:
             raise ValueError(f"Choose a model for {connection['name']}.")
@@ -248,7 +279,12 @@ class OpenAICompatibleBackend(KimiBackend):
             headers["Authorization"] = f"Bearer {self.api_key}"
         elif auth == "header" and self.api_key:
             headers[self.connection["auth_header"]] = self.api_key
+        elif self._token_provider is not None:
+            headers["Authorization"] = f"Bearer {self._token_provider()}"
         return headers
+
+    def _tls_options(self) -> dict:
+        return {"verify": self._tls} if self._tls is not None else {}
 
     def _messages(self, conversation_history, instructions, user_msg, **kwargs):
         messages = super()._messages(conversation_history, instructions, user_msg, **kwargs)
@@ -287,25 +323,33 @@ def discover_models(connection: dict[str, Any], api_key: str = "", *, timeout: f
     kind = connection["type"]
     if kind in {"anthropic-bedrock", "anthropic-vertex", "azure-openai"}:
         return []
+    try:
+        token_provider, tls = sign_in(connection, api_key, transport=transport)
+        # With sign-in, the saved secret goes only to the token endpoint.
+        token = token_provider() if token_provider is not None else ""
+    except Exception:
+        return []
     if kind == "anthropic":
         from .anthropic_api import AnthropicBackend
 
         return AnthropicBackend.list_available_models(
-            api_key, base_url=connection.get("base_url") or "https://api.anthropic.com",
-            timeout=timeout, transport=transport)
+            "" if token else api_key, base_url=connection.get("base_url") or "https://api.anthropic.com",
+            timeout=timeout, transport=transport, token=token, verify=tls)
     if kind == "openai":
         from .openai_api import OpenAIResponsesBackend
 
         return OpenAIResponsesBackend.list_available_models(
-            api_key, base_url=connection.get("base_url") or "https://api.openai.com/v1",
-            timeout=timeout, transport=transport)
+            token or api_key, base_url=connection.get("base_url") or "https://api.openai.com/v1",
+            timeout=timeout, transport=transport, verify=tls)
     headers = {**connection.get("headers", {})}
-    if connection["auth"] == "bearer" and api_key:
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    elif connection["auth"] == "bearer" and api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     elif connection["auth"] == "header" and api_key:
         headers[connection["auth_header"]] = api_key
     try:
-        with httpx.Client(**net.client_options(timeout=timeout, transport=transport)) as client:
+        with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=tls)) as client:
             response = client.get(f"{connection['base_url']}/models", headers=headers)
             response.raise_for_status()
             rows = response.json().get("data") or []
@@ -314,14 +358,35 @@ def discover_models(connection: dict[str, Any], api_key: str = "", *, timeout: f
     return [str(row.get("id")) for row in rows if isinstance(row, dict) and row.get("id")][:200]
 
 
+def sign_in(connection: dict[str, Any], api_key: str = "", *, transport=None):
+    """(token provider or None, TLS context or None) for a connection."""
+    from .auth_tokens import client_credentials_token, entra_token, ssl_context
+
+    auth = connection.get("auth")
+    provider = None
+    if auth == "oauth":
+        def provider():
+            return client_credentials_token(connection["token_url"], connection["client_id"], api_key,
+                                            scope=connection.get("scope", ""),
+                                            audience=connection.get("audience", ""), transport=transport)
+    elif auth == "entra":
+        def provider():
+            return entra_token(connection.get("tenant_id", ""), client_id=connection.get("client_id", ""),
+                               client_secret=api_key, scope=connection.get("scope", ""), transport=transport)
+    tls = ssl_context(connection["client_cert"], connection.get("client_key", "")) if connection.get("client_cert") else None
+    return provider, tls
+
+
 def create_connection_backend(connection: dict[str, Any], model: str, api_key: str = "", *,
                               thinking: str | None = None, transport=None):
     """The backend for one connection and model."""
     kind = connection["type"]
     overrides = capability_overrides(connection)
     common_headers = connection.get("headers") or {}
+    token_provider, tls = sign_in(connection, api_key, transport=transport)
     if kind == "openai-compatible":
-        return OpenAICompatibleBackend(connection, model, api_key, thinking=thinking, transport=transport)
+        return OpenAICompatibleBackend(connection, model, api_key, thinking=thinking, transport=transport,
+                                       token_provider=token_provider, tls=tls)
     if kind in {"openai", "azure-openai"}:
         from .openai_api import OpenAIResponsesBackend
 
@@ -332,7 +397,7 @@ def create_connection_backend(connection: dict[str, Any], model: str, api_key: s
             api_key, model, base_url=connection.get("base_url") or "", azure=kind == "azure-openai",
             api_version=connection.get("api_version") or "", name=backend_key(connection["id"]),
             label=connection["name"], headers=common_headers, auth_header=header, thinking=thinking,
-            capability_overrides=overrides, transport=transport,
+            capability_overrides=overrides, transport=transport, token_provider=token_provider, tls=tls,
         )
     from .anthropic_api import AnthropicBackend
 
@@ -345,5 +410,5 @@ def create_connection_backend(connection: dict[str, Any], model: str, api_key: s
         region=connection.get("region") or "", project=connection.get("project") or "",
         aws_profile=connection.get("aws_profile") or "", name=backend_key(connection["id"]),
         label=connection["name"], headers=common_headers, auth_header=header, thinking=thinking,
-        capability_overrides=overrides, transport=transport,
+        capability_overrides=overrides, transport=transport, token_provider=token_provider, tls=tls,
     )

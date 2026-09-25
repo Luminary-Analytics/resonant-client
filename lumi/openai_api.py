@@ -166,14 +166,20 @@ class OpenAIResponsesBackend(KimiBackend):
         thinking: str | None = None,
         capability_overrides: dict[str, Any] | None = None,
         transport=None,
+        token_provider=None,
+        tls=None,
     ):
         self.azure = bool(azure)
+        # Entra ID or OAuth sign-in (lumi/auth_tokens.py): a fresh bearer
+        # token per request instead of a key.
+        self._token_provider = token_provider
+        self._tls = tls
         self.model = str(model or "").strip()
         if not self.model:
             raise ValueError("Choose a model first." if not self.azure else "Choose an Azure deployment first.")
         self.api_key = str(api_key or "").strip()
         self.auth_header = auth_header or ("api-key" if self.azure else "authorization")
-        if not self.api_key and self.auth_header != "none":
+        if not self.api_key and self.auth_header != "none" and token_provider is None:
             raise ValueError(
                 "Add the Azure OpenAI key for this connection." if self.azure else
                 "Add your OpenAI API key in Settings → API keys, or set OPENAI_API_KEY."
@@ -220,12 +226,13 @@ class OpenAIResponsesBackend(KimiBackend):
         base_url: str = DEFAULT_BASE_URL,
         timeout: float = 5.0,
         transport=None,
+        verify=None,
     ) -> list[str]:
-        """Chat-capable models this key can use, or the documented defaults."""
+        """Chat-capable models this key (or sign-in token) can use, or the documented defaults."""
         if not str(api_key or "").strip():
             return []
         try:
-            with httpx.Client(**net.client_options(timeout=timeout, transport=transport)) as client:
+            with httpx.Client(**net.client_options(timeout=timeout, transport=transport, verify=verify)) as client:
                 response = client.get(f"{str(base_url or DEFAULT_BASE_URL).rstrip('/')}/models",
                                       headers={"Authorization": f"Bearer {api_key}"})
                 response.raise_for_status()
@@ -240,7 +247,7 @@ class OpenAIResponsesBackend(KimiBackend):
             return list(DEFAULT_MODELS)
 
     def health(self) -> dict:
-        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport)) as client:
+        with httpx.Client(**net.client_options(timeout=10.0, transport=self._transport, verify=self._tls)) as client:
             response = client.get(self._url("models"), headers=self._request_headers())
         if response.status_code >= 400:
             error_type, message = self._error_details(response)
@@ -257,7 +264,9 @@ class OpenAIResponsesBackend(KimiBackend):
 
     def _request_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json", "Accept": "text/event-stream", **self.extra_headers}
-        if self.api_key and self.auth_header != "none":
+        if self._token_provider is not None:
+            headers["Authorization"] = f"Bearer {self._token_provider()}"
+        elif self.api_key and self.auth_header != "none":
             if self.auth_header.lower() == "authorization":
                 headers["Authorization"] = f"Bearer {self.api_key}"
             else:
@@ -361,7 +370,8 @@ class OpenAIResponsesBackend(KimiBackend):
         emitted_text = False
         last_status = 0.0
         try:
-            with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport)) as client:
+            with httpx.Client(**net.client_options(timeout=self._timeout, transport=self._transport,
+                                                   verify=self._tls)) as client:
                 attempt = 0
                 while True:
                     if cancel_event is not None and cancel_event.is_set():

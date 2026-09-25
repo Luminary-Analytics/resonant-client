@@ -31,16 +31,20 @@ _lock = threading.Lock()
 _state: dict[str, Any] = {"trust_injected": False, "saved_env": None}
 
 
-def client_options(*, timeout: Any, transport: Any = None) -> dict[str, Any]:
+def client_options(*, timeout: Any, transport: Any = None, verify: Any = None) -> dict[str, Any]:
     """Keyword arguments for an ``httpx.Client`` that talks to a model provider.
 
     ``transport`` is for tests (an ``httpx.MockTransport``); production
     callers leave it unset. Proxy and certificate settings apply through the
     environment and the injected trust store, so they need no argument here.
+    ``verify`` is an ``ssl.SSLContext`` presenting a client certificate
+    (lumi/auth_tokens.py), for connections that require mTLS.
     """
     options: dict[str, Any] = {"timeout": timeout}
     if transport is not None:
         options["transport"] = transport
+    if verify is not None:
+        options["verify"] = verify
     return options
 
 

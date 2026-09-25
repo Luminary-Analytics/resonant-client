@@ -2290,6 +2290,10 @@ class KimiBackend:
             payload["max_completion_tokens"] = min(max(1, int(max_tokens)), 1_048_576)
         return payload
 
+    def _tls_options(self) -> dict:
+        """Extra TLS options for the HTTP client (a client certificate, for connections)."""
+        return {}
+
     def _request_headers(self) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
@@ -2446,7 +2450,7 @@ class KimiBackend:
             ).start()
 
         try:
-            with httpx.Client(timeout=self._timeout, transport=self._transport) as client:
+            with httpx.Client(timeout=self._timeout, transport=self._transport, **self._tls_options()) as client:
                 for attempt in range(3):
                     restart_stream = False
                     if cancel_event is not None and cancel_event.is_set():

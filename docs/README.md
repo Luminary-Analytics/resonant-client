@@ -44,6 +44,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 - [Running Lumi without a UI (`lumi run`, CI, containers)](headless.md)
 - [GitHub pull requests (reviews, checks, opening and commenting)](github.md)
 - [Fallback models, roles and capability overrides](models.md)
+- [Signing in to enterprise model endpoints (OAuth, Entra ID, client certificates)](connection-sign-in.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

@@ -45,8 +45,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Keep behavior capability-driven. Anthropic, OpenAI, Ollama, EXO, Kimi, OpenRouter,
   SONN and custom-connection adapters translate provider protocols into the engine
   contract. Connections are validated data (`lumi/connections.py`), not code per
-  provider; their keys live in `api_keys` as `conn_<id>`. Codex and Claude Code
-  run their own CLI tool loops; do not claim identical native tool behavior.
+  provider; their keys live in `api_keys` as `conn_<id>`. A connection that
+  signs in (`auth_tokens.py`) sends its client secret only to the token
+  endpoint, and an app registration never falls back to the computer's
+  sign-in. Codex and Claude Code run their own CLI tool loops; do not claim
+  identical native tool behavior.
 - Preserve explicit model choices. Account discovery may update available
   models, but adding a model must not silently change a user's default.
 - SONN uses a user-configured project URL, `sonn-auto`, and standard Chat

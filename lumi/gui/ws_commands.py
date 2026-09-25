@@ -3378,7 +3378,7 @@ async def _cmd_connection_delete(ctx: CommandContext) -> None:
 async def _cmd_connection_test(ctx: CommandContext) -> None:
     """Check a draft or saved connection: credentials resolve and models are listed."""
     from ..connections import (
-        create_connection_backend, discover_models, normalize_connection, secret_setting,
+        create_connection_backend, discover_models, normalize_connection, secret_setting, sign_in,
     )
 
     try:
@@ -3390,6 +3390,11 @@ async def _cmd_connection_test(ctx: CommandContext) -> None:
                 "api_keys", secret_setting(str(ctx.msg.get("original_id") or connection["id"])), "") or "")
 
         def _check() -> dict:
+            # Sign in first, so a refused sign-in or an unreadable client
+            # certificate says why instead of "no models".
+            token_provider, _tls = sign_in(connection, api_key)
+            if token_provider is not None:
+                token_provider()
             models = discover_models(connection, api_key, timeout=8.0)
             if connection["type"] in {"openai-compatible"} and not models:
                 raise ValueError(f"{connection['name']} answered, but listed no models. "

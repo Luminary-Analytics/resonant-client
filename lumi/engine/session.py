@@ -2880,7 +2880,11 @@ class Session:
                     )
                     if not hook_result.allowed:
                         turn_failed_tools.append(fn_name)
-                        result_output = f"Blocked by hook: {hook_result.error or 'denied'}"
+                        # The reason names the hook and why: its own answer, its
+                        # error output, or that it timed out or couldn't run.
+                        # Older embedders' runners report only ``error``.
+                        reason = str(getattr(hook_result, "reason", "") or hook_result.error or "").strip()
+                        result_output = f"Blocked by hook: {reason or 'denied'}"
                         yield make_event(EngineEvent.TOOL_RESULT,
                                         name=fn_name, call_id=call_id,
                                         output=result_output, is_error=False,
@@ -3671,6 +3675,18 @@ class Session:
                             "failed_tools": unique_strings(turn_failed_tools),
                         },
                     )
+                    if getattr(completion_gate, "failed", False):
+                        # The gate gave no answer: it timed out or couldn't run.
+                        # The model can't fix that, and a rejection doesn't use
+                        # up a step, so asking it to try again would repeat
+                        # model requests until a limit. Stop without accepting
+                        # the result.
+                        terminal_error = (
+                            "Completion was not accepted: "
+                            f"{completion_gate.reason or completion_gate.error}"
+                        )
+                        yield make_event(EngineEvent.ERROR, message=terminal_error)
+                        break
                     if not completion_gate.allowed or completion_gate.retry:
                         iteration -= 1
                         current_msg = (
@@ -4480,8 +4496,9 @@ class Session:
         """Fan out independent workers and serialize their handoffs."""
         limit = self.director_run.config.max_parallel_workers if self.director_run else 4
         tasks = [item for item in (fn_args.get("tasks") or []) if isinstance(item, dict)][:limit]
-        if len(tasks) < 2:
-            output = f"task_batch requires between two and {limit} task specifications."
+
+        def refuse(output: str) -> Iterator[dict]:
+            # The model reads why the batch didn't run, as for any tool call.
             yield make_event(
                 EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
                 output=output, is_error=True, denied=True, elapsed=0.0,
@@ -4491,6 +4508,9 @@ class Session:
                  "call_id": call_id, "content": "Called task_batch"},
                 {"role": "tool_result", "call_id": call_id, "content": output},
             ])
+
+        if len(tasks) < 2:
+            yield from refuse(f"task_batch requires between two and {limit} task specifications.")
             return
 
         if self.hook_runner:
@@ -4504,11 +4524,7 @@ class Session:
                 },
             )
             if not gate.allowed:
-                output = f"Task batch blocked by hook: {gate.reason or gate.error or 'denied'}"
-                yield make_event(
-                    EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
-                    output=output, is_error=True, denied=True, elapsed=0.0,
-                )
+                yield from refuse(f"Task batch blocked by hook: {gate.reason or gate.error or 'denied'}")
                 return
 
         if self.director_run is not None:
@@ -4541,11 +4557,7 @@ class Session:
                             f"of {configured.max_parallel}"
                         )
             except Exception as exc:
-                output = f"Director batch rejected: {exc}"
-                yield make_event(
-                    EngineEvent.TOOL_RESULT, name="task_batch", call_id=call_id,
-                    output=output, is_error=True, denied=True, elapsed=0.0,
-                )
+                yield from refuse(f"Director batch rejected: {exc}")
                 return
 
         channel: queue.Queue[tuple[int, dict | None]] = queue.Queue()

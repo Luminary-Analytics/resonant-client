@@ -10,6 +10,7 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -197,3 +198,35 @@ def policy_for_tier(tier: str) -> ExecutionPolicy:
     }
     factory = policies.get(tier, default_auto_edit_policy)
     return factory()
+
+
+def project_execution_policy(tier: str, project_root: str, *, honor_allows: bool = True) -> ExecutionPolicy:
+    """The tier's built-in policy with the project's lumi-policy.json layered on.
+
+    The project policy can tighten or refine the built-in rules; it cannot
+    override built-in denies (see ExecutionPolicy.merge). Its ``allow`` rules
+    skip approval prompts, so they apply only while the user trusts the
+    project and its policy hasn't changed since (gui/workspace_trust.py).
+    Organization shell rules (lumi/policy.py) come before everything: neither
+    a repository nor a tier can loosen them.
+    """
+    policy = policy_for_tier(tier)
+    # lumi-policy.json; repositories from before the rebrand keep resonant-policy.json.
+    project_policy = None
+    for name in ("lumi-policy.json", "resonant-policy.json"):
+        candidate = os.path.join(project_root, name)
+        if os.path.isfile(candidate):
+            project_policy = ExecutionPolicy.from_file(candidate)
+            break
+    if project_policy and not honor_allows:
+        project_policy = ExecutionPolicy(
+            [rule for rule in project_policy.rules if rule.action != PolicyAction.ALLOW.value]
+        )
+    merged = policy.merge(project_policy) if project_policy else policy
+    from ..policy import current as current_policy
+
+    org_policy = current_policy()
+    if org_policy and org_policy.shell_rules:
+        org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
+        merged = ExecutionPolicy(org_rules + merged.rules)
+    return merged

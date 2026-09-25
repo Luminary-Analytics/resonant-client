@@ -69,10 +69,14 @@ def main():
         print(f"APPCAST_URL={APPCAST_URL}")
         return
 
-    # Reading the usage records needs neither the updater nor a UI.
+    # Reading the usage records and unattended runs need neither the
+    # updater nor a UI.
     if len(sys.argv) > 1 and sys.argv[1] == "usage":
         from lumi.usage import main as usage_main
         raise SystemExit(usage_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "run":
+        from lumi.headless import main as run_main
+        raise SystemExit(run_main(sys.argv[2:]))
 
     # Kick off the WinSparkle background updater. No-op on non-Windows or
     # when the DLL isn't bundled (dev runs from source). Fire-and-forget;

@@ -8,6 +8,65 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 headless runs — source only, not released
+
+- **`lumi run`** (`lumi/headless.py`, [guide](headless.md)) runs one task
+  without a UI, for servers, containers and CI. Options:
+  - the prompt from an argument, stdin (`-`) or `--prompt-file`;
+  - `--provider`/`--model` (or `LUMI_PROVIDER`/`LUMI_MODEL`, or the desktop
+    defaults);
+  - `--mode ask|auto-edit|bypass` (default `auto-edit`);
+  - `--trust-project`;
+  - `--max-requests`, `--timeout`;
+  - `--output json|text|jsonl`.
+
+  Nothing asks a person: a disallowed tool call is refused, and a budget that
+  needs approval stops the run. The run builds its session like the app does:
+  - policy modes and models;
+  - execution rules;
+  - exclusions;
+  - repository instructions only when the project is trusted or
+    `--trust-project` is given.
+
+  Budgets, usage records, the audit log and the secret scan apply.
+- **The result** is JSON: status, the engine's outcome, text, errors, changed
+  files, checks, tool calls, refused calls, model requests, usage and cost.
+  Exit codes:
+  - 0: completed;
+  - 1: failed;
+  - 2: the command or setup is wrong;
+  - 3: stopped for a person (needs input, incomplete, refused an action, a
+    budget, the request limit or the timeout).
+- **Container:** `packaging/docker/Dockerfile` builds a `lumi` image with git
+  and ripgrep, a non-root user and `LUMI_KEYCHAIN=off`. A new **Container
+  build** workflow builds it and checks `lumi run` inside it. Nothing is pushed
+  to a registry.
+- The execution-rule layering (tier, the project's `lumi-policy.json`,
+  organization shell rules first) moved from the GUI to
+  `engine/policies.project_execution_policy`, so the app and `lumi run` share it.
+
+Validation on September 25, 2026:
+
+- 10 new tests in `test_headless.py`:
+  - key sources, and refused setups;
+  - a completed run with a changed file and its cost;
+  - a refused edit reported as `needs_attention`;
+  - a provider failure;
+  - a budget stop, and a timeout;
+  - the `jsonl` and `text` outputs, and stdin;
+  - policy refusals (exit 2);
+  - repository instructions only with trust.
+- Full `pytest`: 3,729 passed, 2 skipped.
+- `python -m lumi run` as a separate process against the scripted Ollama stub,
+  in a throwaway home:
+  - `--mode bypass` edited `app.py` and exited 0 with `completed`;
+  - `--mode ask` exited 3 with `needs_attention` and one refused call;
+  - both runs wrote audit and usage records;
+  - missing provider and key setups exited 2 with a message.
+
+Not exercised: a real model, and the container build locally. The Container
+build workflow checks the image in CI.
+
 ## September 25 budgets — source only, not released
 
 - **Budgets** (`lumi/budgets.py`, [guide](usage-and-costs.md#budgets)) act on

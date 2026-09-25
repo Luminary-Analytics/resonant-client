@@ -37,9 +37,37 @@ provider and model.
 | Role | Used for |
 |---|---|
 | `summarize` | Naming sessions and compacting long conversations. This also lets sessions be named while the chat model is Codex or Claude Code, without starting their tool loop |
-| `plan`, `explore`, `implement`, `test`, `review`, `vision` | Delegated work (`task`) of that kind |
+| `vision` | Describing images for a chat model that can't see them (below), and delegated vision work |
+| `plan`, `explore`, `implement`, `test`, `review` | Delegated work (`task`) of that kind |
 
 A role without a line uses the chat model.
+
+## Images for models that can't see them
+
+Some chat models only read text. If yours is one of them and **Models for
+roles** has a `vision` line (for example `vision anthropic:claude-sonnet-5`),
+Lumi asks that model to describe each image before the chat model's request:
+
+- pictures you attach;
+- screenshots from tools such as the browser or computer use.
+
+The description transcribes visible text exactly, then describes the layout,
+controls, charts and anything unusual. The chat model receives it as
+`[Image: …, described by anthropic:claude-sonnet-5]` followed by the text. The
+image itself stays in the conversation for models that can see it.
+
+- Each image is described once. The description is saved with the
+  conversation, so later turns don't ask again.
+- The conversation shows "… described 1 image for …".
+- These requests are recorded in the usage records with the purpose
+  `image_description`, and priced like other requests.
+- An image that fails to be described twice keeps the usual notice ("image
+  attached, no textual representation"); Lumi doesn't guess.
+- Without a `vision` model, nothing changes: a text-only model gets the notice.
+
+A custom connection's **Models accept images** setting decides whether its
+models get images. When it's off, they get the descriptions, or the notice,
+instead of the image.
 
 ## Capability overrides for administrators
 

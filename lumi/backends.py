@@ -112,6 +112,13 @@ _CONTROL_TOKEN_MAX_LEN = 24
 _PARTIAL_CONTROL_TOKEN_RE = re.compile(r"<(?:\|[A-Za-z_]*\|?)?$")
 
 
+def _described(image: object) -> dict:
+    """An image's description and who wrote it, for ``text_fallback``."""
+    if not isinstance(image, dict):
+        return {}
+    return {key: str(image[key]) for key in ("description", "described_by") if image.get(key)}
+
+
 class _ControlTokenFilter:
     """Streaming-safe stripper for chat-template control tokens.
 
@@ -1296,6 +1303,7 @@ class OllamaBackend:
                             "media_type": (image_payload or {}).get("media_type", "image/png")
                             if isinstance(image_payload, dict) else "image/png",
                             "name": f"{turn.get('name', 'tool')} screenshot",
+                            **_described(image_payload),
                         }) if image_payload else ""
                         messages.append({
                             "role": "tool",
@@ -1318,6 +1326,7 @@ class OllamaBackend:
                             "media_type": (image_payload or {}).get("media_type", "image/png")
                             if isinstance(image_payload, dict) else "image/png",
                             "name": f"{tool_name} screenshot",
+                            **_described(image_payload),
                         }) if image_payload else ""
                         messages.append({
                             "role": "user",
@@ -2007,6 +2016,14 @@ class KimiBackend:
         except Exception:
             return list(cls.MODELS)
 
+    def _accepts_images(self) -> bool:
+        """Whether this model reads images (its capabilities; True if unknown)."""
+        profile = getattr(self, "capability_profile", None)
+        try:
+            return True if profile is None else bool(profile.supports("vision"))
+        except Exception:
+            return True
+
     @staticmethod
     def _api_content(content) -> str | list[dict]:
         parts: list[dict] = []
@@ -2130,7 +2147,7 @@ class KimiBackend:
                 })
                 image = turn.get("image")
                 image_data = _safe_image_b64(image)
-                if image_data:
+                if image_data and self._accepts_images():
                     media_type = str((image or {}).get("media_type") or "image/png")
                     messages.append({
                         "role": "user",
@@ -2139,6 +2156,14 @@ class KimiBackend:
                             "image_url": {"url": f"data:{media_type};base64,{image_data}"},
                         }],
                     })
+                elif isinstance(image, dict) and image:
+                    # A model without vision gets the screenshot's description
+                    # (or an honest notice), never the image it can't read.
+                    notice = text_fallback({
+                        "type": "image", "media_type": str(image.get("media_type") or "image/png"),
+                        "name": f"{turn.get('name', 'tool')} screenshot", **_described(image),
+                    })
+                    messages[-1]["content"] = f"{messages[-1]['content']}\n\n{notice}".strip()
 
         history_has_current_user = any(
             turn.get("role") == "user"

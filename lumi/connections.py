@@ -286,6 +286,21 @@ class OpenAICompatibleBackend(KimiBackend):
     def _tls_options(self) -> dict:
         return {"verify": self._tls} if self._tls is not None else {}
 
+    def _accepts_images(self) -> bool:
+        """The connection's "Models accept images"; images go through when it isn't set."""
+        explicit = self.connection.get("vision")
+        return True if explicit is None else bool(explicit)
+
+    def _api_content(self, content) -> str | list[dict]:
+        """Images only for models that accept them ("Models accept images")."""
+        from .content import normalize_content, text_fallback
+
+        if self._accepts_images():
+            return KimiBackend._api_content(content)
+        rendered = [str(part.get("text") or "") if part.get("type") == "text" else text_fallback(part)
+                    for part in normalize_content(content)]
+        return "\n\n".join(text for text in rendered if text)
+
     def _messages(self, conversation_history, instructions, user_msg, **kwargs):
         messages = super()._messages(conversation_history, instructions, user_msg, **kwargs)
         # Only Kimi understands in-history tool catalogues; strip them here.

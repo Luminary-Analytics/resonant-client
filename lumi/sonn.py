@@ -14,6 +14,7 @@ import httpx
 
 from .backends import EVENT_ERROR, ExoBackend, KimiBackend, _convert_tools_for_ollama
 from .capabilities import ModelCapabilities
+from .content import text_fallback
 from .network_defaults import resolve_sonn_url
 
 
@@ -144,12 +145,22 @@ class SonnBackend(KimiBackend):
                 # user image messages, bypassing _api_content. SONN's gateway
                 # accepts text only. Preserve the image locally and retain this
                 # as a tool observation, never an extra human learning input.
+                image = turn["image"] if isinstance(turn["image"], dict) else {}
                 turn = {key: value for key, value in turn.items() if key != "image"}
-                turn["content"] = str(turn.get("content") or "") + (
-                    "\nImage artifact retained locally. This SONN connection accepts text only; "
-                    "inspect browser DOM, accessibility or evaluation results for page behavior. "
-                    "This notice is not evidence of visual appearance."
-                )
+                if image.get("description"):
+                    # Described by the vision model from Models for roles; the
+                    # label says so, so it isn't mistaken for SONN's own view.
+                    turn["content"] = str(turn.get("content") or "") + "\n" + text_fallback({
+                        "type": "image", "media_type": str(image.get("media_type") or "image/png"),
+                        "name": f"{turn.get('name', 'tool')} screenshot",
+                        "description": image["description"], "described_by": image.get("described_by", ""),
+                    })
+                else:
+                    turn["content"] = str(turn.get("content") or "") + (
+                        "\nImage artifact retained locally. This SONN connection accepts text only; "
+                        "inspect browser DOM, accessibility or evaluation results for page behavior. "
+                        "This notice is not evidence of visual appearance."
+                    )
             history.append(turn)
         messages = super()._messages(history, instructions, user_msg, **kwargs)
         retained = [{"role": "system", "content": str(turn.get("content") or "")}

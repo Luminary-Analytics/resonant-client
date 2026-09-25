@@ -1,12 +1,12 @@
-"""Interactive-session wiring for Resonant's learned skill library."""
+"""Interactive-session wiring for Lumi's learned skill library."""
 
 from __future__ import annotations
 
 from types import SimpleNamespace
 
-from resonant_client.engine.session import Session
-from resonant_client.engine.tools import AGENT_TOOLS, execute_tool
-from resonant_client.orchestration.skills import Skill, save_skill
+from lumi.engine.session import Session
+from lumi.engine.tools import AGENT_TOOLS, execute_tool
+from lumi.orchestration.skills import Skill, save_skill
 from tests.streaming_stub import StreamingBackend, done, text_delta
 
 
@@ -24,7 +24,7 @@ def test_skill_view_reads_project_skill_body(monkeypatch, tmp_path):
     state_home = tmp_path / "state"
     project = tmp_path / "project"
     project.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(state_home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(state_home))
     skill = Skill(
         id="parser-repair",
         name="Parser repair",

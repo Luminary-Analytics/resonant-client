@@ -16,14 +16,14 @@ from __future__ import annotations
 
 
 
-from resonant_client.orchestration.plan_graph import (
+from lumi.orchestration.plan_graph import (
     NodeSpecialization,
     NodeStatus,
     PlanGraph,
     PlanNode,
     new_node_id,
 )
-from resonant_client.orchestration.walker import (
+from lumi.orchestration.walker import (
     GraphWalker,
     SpecialistResult,
     WalkerEvent,

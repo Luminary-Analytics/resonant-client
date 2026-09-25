@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 
-from resonant_client.gui.chat_loop import ChatRunLoop
+from lumi.gui.chat_loop import ChatRunLoop
 
 
 class _StubWS:

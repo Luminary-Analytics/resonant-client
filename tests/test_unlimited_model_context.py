@@ -2,11 +2,11 @@
 
 from pathlib import Path
 
-from resonant_client.engine.compression import model_context_budget
-from resonant_client.gui.app import AppState
+from lumi.engine.compression import model_context_budget
+from lumi.gui.app import AppState
 
 
-BACKENDS_SOURCE = Path(__file__).parents[1] / "resonant_client" / "backends.py"
+BACKENDS_SOURCE = Path(__file__).parents[1] / "lumi" / "backends.py"
 
 
 def test_model_requests_never_set_num_predict():

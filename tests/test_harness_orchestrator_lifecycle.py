@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 import pytest
 
-from resonant_client.harness.orchestrator import (
+from lumi.harness.orchestrator import (
     HarnessCycleRun,
     HarnessCycleStatus,
     HarnessOrchestrator,

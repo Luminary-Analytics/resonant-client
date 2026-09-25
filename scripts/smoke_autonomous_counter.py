@@ -29,13 +29,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from resonant_client.backends import create_backend  # noqa: E402
-from resonant_client.engine.tools import AGENT_TOOLS  # noqa: E402
-from resonant_client.gui.autonomous_session import (  # noqa: E402
+from lumi.backends import create_backend  # noqa: E402
+from lumi.engine.tools import AGENT_TOOLS  # noqa: E402
+from lumi.gui.autonomous_session import (  # noqa: E402
     start_autonomous_mission,
 )
-from resonant_client.network_defaults import resolve_ollama_url  # noqa: E402
-from resonant_client.orchestration.intent_service import IntentService  # noqa: E402
+from lumi.network_defaults import resolve_ollama_url  # noqa: E402
+from lumi.orchestration.intent_service import IntentService  # noqa: E402
 
 
 # ── The wordcount spec ──────────────────────────────────────────────────

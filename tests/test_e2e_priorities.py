@@ -8,13 +8,13 @@ import urllib.request
 import httpx
 import pytest
 
-from resonant_client.backends import KimiBackend, EVENT_BACKEND_STATUS
-from resonant_client.engine.previews import PreviewManager
-from resonant_client.engine.project_memory import ProjectMemory
-from resonant_client.engine.session import Session
-from resonant_client.engine.tools import execute_tool
-from resonant_client.engine.turn_outcomes import current_checks
-from resonant_client.gui.runtime import BackendSpec
+from lumi.backends import KimiBackend, EVENT_BACKEND_STATUS
+from lumi.engine.previews import PreviewManager
+from lumi.engine.project_memory import ProjectMemory
+from lumi.engine.session import Session
+from lumi.engine.tools import execute_tool
+from lumi.engine.turn_outcomes import current_checks
+from lumi.gui.runtime import BackendSpec
 from tests.streaming_stub import StreamingBackend, tool_call, text_delta, done
 
 
@@ -157,9 +157,9 @@ def test_memory_tool_and_missing_source(tmp_path):
 
 
 def test_skill_retrieval_budget_dedup_negative_query_and_suppression(tmp_path, monkeypatch):
-    from resonant_client.orchestration.skills import Skill, save_skill
-    from resonant_client.orchestration.skill_loader import match_skills_for_query, format_skills_for_prompt
-    monkeypatch.setenv('RESONANT_STATE_HOME', str(tmp_path/'state'))
+    from lumi.orchestration.skills import Skill, save_skill
+    from lumi.orchestration.skill_loader import match_skills_for_query, format_skills_for_prompt
+    monkeypatch.setenv('LUMI_STATE_HOME', str(tmp_path/'state'))
     for identifier in ('sqlite-rollback', 'duplicate-rollback'):
         save_skill(Skill(id=identifier, name='SQLite rollback', description='SQLite rollback transactions', tokens=['sqlite', 'rollback', 'transactions'], scope='project'), project_path=tmp_path)
     matches = match_skills_for_query('sqlite rollback transactions', project_path=tmp_path)
@@ -173,11 +173,12 @@ def test_skill_retrieval_budget_dedup_negative_query_and_suppression(tmp_path, m
 
 
 def test_pack_catalog_is_bounded_and_loads_body_lazily(tmp_path):
-    from resonant_client.engine.capability_packs import CapabilityPackManager
+    from lumi.engine.capability_packs import CapabilityPackManager, approve_pack
     root = tmp_path/'.resonant'/'packs'/'quality'; root.mkdir(parents=True)
-    (root/'resonant-pack.json').write_text(json.dumps({'id':'quality','enabled':True,'trust':'local','skills':['sqlite.md']}))
+    (root/'resonant-pack.json').write_text(json.dumps({'id':'quality','skills':['sqlite.md']}))
     (root/'sqlite.md').write_text('description: SQLite transaction rollback\n' + 'full procedure body\n'*2000)
-    manager = CapabilityPackManager(tmp_path)
+    [pack] = CapabilityPackManager(tmp_path).discover()
+    manager = CapabilityPackManager(tmp_path, configured=approve_pack({}, pack, reviewed_digest=pack.digest))
     catalog = manager.skill_context('sqlite rollback', max_tokens=150)
     assert len(catalog) <= 600
     assert 'full procedure body' not in catalog
@@ -190,19 +191,19 @@ def test_pack_catalog_is_bounded_and_loads_body_lazily(tmp_path):
 
 
 def test_evaluation_mode_excludes_personal_skills_and_engram(tmp_path, monkeypatch):
-    from resonant_client.orchestration.skills import Skill, save_skill
-    from resonant_client.orchestration.skill_loader import match_skills_for_query
-    from resonant_client.engine.memory import EngramIntegration
-    monkeypatch.setenv('RESONANT_STATE_HOME', str(tmp_path/'state'))
+    from lumi.orchestration.skills import Skill, save_skill
+    from lumi.orchestration.skill_loader import match_skills_for_query
+    from lumi.engine.memory import EngramIntegration
+    monkeypatch.setenv('LUMI_STATE_HOME', str(tmp_path/'state'))
     save_skill(Skill(id='personal', name='Personal', description='My private procedure', pinned=True))
-    monkeypatch.setenv('RESONANT_EVALUATION_MODE', '1')
+    monkeypatch.setenv('LUMI_EVALUATION_MODE', '1')
     assert match_skills_for_query('procedure') == []
     memory = EngramIntegration(); memory._enabled=True; memory._server_url='http://unused'
     assert not memory.enabled
 
 
 def test_restoring_kimi_session_uses_saved_effort():
-    from resonant_client.gui.app import AppState
+    from lumi.gui.app import AppState
     state = AppState.__new__(AppState)
     state.backend = object()
     state.backend_spec = BackendSpec(backend_type='kimi', model='kimi-k3', thinking_mode='max')

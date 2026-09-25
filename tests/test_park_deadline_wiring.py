@@ -17,12 +17,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from resonant_client.gui import roadmap as roadmap_module
-from resonant_client.gui.autonomous_session import (
+from lumi.gui import roadmap as roadmap_module
+from lumi.gui.autonomous_session import (
     build_roadmap_from_spec,
     parse_time_budget,
 )
-from resonant_client.gui.roadmap import Roadmap
+from lumi.gui.roadmap import Roadmap
 
 # Mirrors the rigorous-grill output format the real parser expects; see
 # tests/test_autonomous_session.py, which pins the same shape.
@@ -153,7 +153,7 @@ def test_the_wait_for_me_preset_means_no_deadline():
 
 def _config_for(roadmap: Roadmap, path: Path):
     """Rebuild the config the way _spawn_autonomous_daemon does."""
-    from resonant_client.gui.autonomous_loop import AutonomousMissionConfig
+    from lumi.gui.autonomous_loop import AutonomousMissionConfig
 
     return AutonomousMissionConfig(
         intent_id=roadmap.intent_id,

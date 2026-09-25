@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from resonant_client.gui.autonomous_loop import (
+from lumi.gui.autonomous_loop import (
     AutonomousMissionConfig,
     WaitPolicy,
 )

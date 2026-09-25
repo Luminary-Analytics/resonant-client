@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 from typing import Iterator
 
-from resonant_client.engine.compression import (
+from lumi.engine.compression import (
     KEEP_RECENT_TURNS,
     _build_summary_prompt,
     _extract_text,

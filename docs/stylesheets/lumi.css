@@ -1,0 +1,13 @@
+/* Lumi's palette (lumi/gui/static/styles.css): gold on night. */
+:root {
+  --md-primary-fg-color: #13152e;
+  --md-primary-fg-color--light: #1b1e40;
+  --md-primary-fg-color--dark: #0b0c1c;
+  --md-accent-fg-color: #c98a00;
+}
+[data-md-color-scheme="slate"] {
+  --md-default-bg-color: #0b0c1c;
+  --md-default-fg-color--light: #c9c9d6;
+  --md-accent-fg-color: #ffc24b;
+  --md-typeset-a-color: #ffc24b;
+}

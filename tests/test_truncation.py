@@ -1,5 +1,5 @@
 """
-Tests for resonant_client.engine.truncation.
+Tests for lumi.engine.truncation.
 
 Behavior under test:
   - truncate_head — file-style: keep the start, line-aligned.
@@ -12,7 +12,7 @@ slices into raw UTF-8 buffers.
 """
 from __future__ import annotations
 
-from resonant_client.engine.truncation import (
+from lumi.engine.truncation import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
     format_size,

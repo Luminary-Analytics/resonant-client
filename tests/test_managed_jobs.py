@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from resonant_client.engine.jobs import JobManager
+from lumi.engine.jobs import JobManager
 
 
 @pytest.fixture
@@ -26,14 +26,25 @@ def until(check, timeout=8):
     pytest.fail('Worker condition timed out')
 
 
+def _read(path):
+    """One read of the worker's counter ('' before the worker writes it)."""
+    try:
+        return path.read_text().strip()
+    except FileNotFoundError:
+        return ''
+
+
 def test_progress_survives_tool_return_and_resume_preserves_checkpoint(manager, tmp_path):
     worker = tmp_path / 'worker.py'
+    # The counter is rewritten in place at a fixed width, so a reader (or a
+    # cancel) never meets the empty file a truncating write leaves behind.
     worker.write_text("""import pathlib,time
 p=pathlib.Path('progress.json')
 n=int(p.read_text()) if p.exists() else 0
+if not p.exists(): p.write_text('00')
 while n<12:
  n+=1
- p.write_text(str(n))
+ with open(p,'r+') as f: f.write(f'{n:02d}')
  print('frame',n,flush=True)
  time.sleep(.1)
 """, encoding='utf-8')
@@ -42,7 +53,7 @@ while n<12:
     first = manager.start(tmp_path, argv)
     assert time.monotonic() - t0 < 2
     progress = tmp_path / 'progress.json'
-    until(lambda: progress.exists() and progress.read_text().strip().isdigit() and int(progress.read_text()) >= 2)
+    until(lambda: (count := _read(progress)).isdigit() and int(count) >= 2)
     assert manager.start(tmp_path, argv)['id'] == first['id']
     with pytest.raises(ValueError, match='already has'):
         manager.start(tmp_path, [sys.executable, '-c', 'print(1)'])
@@ -52,7 +63,7 @@ while n<12:
     assert progress.read_text() == saved
     second = manager.start(tmp_path, argv)
     until(lambda: manager.status(tmp_path, second['id'])['state'] == 'completed')
-    assert progress.read_text() == '12'
+    assert _read(progress) == '12'
     assert int(saved) >= 2
     assert first['id'] != second['id']
 
@@ -83,8 +94,8 @@ def test_failure_and_client_exit_stop_owned_tree(manager, tmp_path):
 
 
 def test_cancelled_submission_and_tool_permissions(manager, tmp_path):
-    from resonant_client.engine.sandbox import EXEC_TOOLS, READ_ONLY_TOOLS
-    from resonant_client.engine.tools import AGENT_TOOLS
+    from lumi.engine.sandbox import EXEC_TOOLS, READ_ONLY_TOOLS
+    from lumi.engine.tools import AGENT_TOOLS
     event = threading.Event()
     event.set()
     with pytest.raises(ValueError, match='cancelled'):
@@ -99,8 +110,8 @@ def test_cancelled_submission_and_tool_permissions(manager, tmp_path):
 
 
 def test_actual_tool_dispatch(manager, tmp_path, monkeypatch):
-    from resonant_client.engine import jobs
-    from resonant_client.engine.tools import execute_tool
+    from lumi.engine import jobs
+    from lumi.engine.tools import execute_tool
     monkeypatch.setattr(jobs, 'jobs', manager)
     result = execute_tool('job_start', {'command': [sys.executable, '-c', 'print("ok")']}, project_path=str(tmp_path))
     assert not result.is_error, result.output

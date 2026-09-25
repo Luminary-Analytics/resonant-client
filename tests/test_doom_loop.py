@@ -1,7 +1,7 @@
 """Regression tests for non-blocking repetition guidance.
 
 Long-running work must never fail because it performed many repository reads or
-revisited a tool signature. Resonant may steer a model once, but only explicit
+revisited a tool signature. Lumi may steer a model once, but only explicit
 budgets and user cancellation terminate the agent loop.
 """
 
@@ -9,8 +9,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from resonant_client.backends import EVENT_DONE, EVENT_TOOL_CALL
-from resonant_client.engine.session import (
+from lumi.backends import EVENT_DONE, EVENT_TOOL_CALL
+from lumi.engine.session import (
     CYCLE_WINDOW,
     CYCLE_WINDOW_REPEAT,
     DOOM_LOOP_NUDGE_AT,
@@ -18,7 +18,7 @@ from resonant_client.engine.session import (
     _count_trailing_identical_tool_calls,
     _windowed_cycle_repeat,
 )
-from resonant_client.engine.tools import ToolResult
+from lumi.engine.tools import ToolResult
 
 
 def _user(text="x"):
@@ -92,7 +92,7 @@ class _ReadBackend:
 def _run_reads(*, repeated: bool, max_steps: int = 24):
     backend = _ReadBackend(repeated=repeated)
     session = Session(backend, max_steps=max_steps, auto_approve=True)
-    with patch("resonant_client.engine.session.execute_tool") as execute:
+    with patch("lumi.engine.session.execute_tool") as execute:
         execute.return_value = ToolResult("evidence", elapsed=0.0)
         events = list(session.run("Inspect the repository thoroughly"))
     return backend, session, events
@@ -126,7 +126,7 @@ class TestLongRunningFreedom:
     def test_repetition_nudge_resets_for_each_user_turn(self):
         backend = _ReadBackend(repeated=True)
         session = Session(backend, max_steps=4, auto_approve=True)
-        with patch("resonant_client.engine.session.execute_tool") as execute:
+        with patch("lumi.engine.session.execute_tool") as execute:
             execute.return_value = ToolResult("evidence", elapsed=0.0)
             list(session.run("first"))
             list(session.run("second"))
@@ -154,7 +154,7 @@ class _AlternatingBackend(_ReadBackend):
 def test_windowed_guidance_fires_once_without_stopping():
     backend = _AlternatingBackend()
     session = Session(backend, max_steps=14, auto_approve=True)
-    with patch("resonant_client.engine.session.execute_tool") as execute:
+    with patch("lumi.engine.session.execute_tool") as execute:
         execute.return_value = ToolResult("evidence", elapsed=0.0)
         events = list(session.run("Explore"))
 

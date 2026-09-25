@@ -18,10 +18,10 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).parents[1]
-TEMPLATE = REPO / "resonant_client" / "gui" / "templates" / "index.html"
-APP_JS = REPO / "resonant_client" / "gui" / "static" / "app.js"
+TEMPLATE = REPO / "lumi" / "gui" / "templates" / "index.html"
+APP_JS = REPO / "lumi" / "gui" / "static" / "app.js"
 POLICY = REPO / "packaging" / "bundle-policy.json"
-STATIC = REPO / "resonant_client" / "gui" / "static"
+STATIC = REPO / "lumi" / "gui" / "static"
 
 
 def test_template_loads_nothing_from_the_network():
@@ -58,7 +58,7 @@ def test_bundle_policy_requires_every_vendored_asset():
         "purify.min.js",
         "github-dark-dimmed.min.css",
     ):
-        path = f"_internal/resonant_client/gui/static/vendor/{name}"
+        path = f"_internal/lumi/gui/static/vendor/{name}"
         assert path in required, f"bundle-policy.json must require {path}"
 
 
@@ -103,7 +103,7 @@ def test_asset_version_busts_cache_when_a_vendored_library_changes():
     bump that touched no top-level asset would leave every existing client
     on the old library indefinitely.
     """
-    from resonant_client.gui.app import _asset_version
+    from lumi.gui.app import _asset_version
 
     vendor = STATIC / "vendor"
     created_dir = not vendor.exists()

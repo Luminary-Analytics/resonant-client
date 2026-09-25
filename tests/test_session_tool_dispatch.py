@@ -24,7 +24,7 @@ NOT covered here (intentionally — they need real tool execution):
 from __future__ import annotations
 
 
-from resonant_client.engine.session import Session
+from lumi.engine.session import Session
 from tests.streaming_stub import (
     StreamingBackend,
     done,
@@ -35,7 +35,7 @@ from tests.streaming_stub import (
 
 
 def test_browser_mcp_tool_uses_the_visual_activity_indicator(monkeypatch):
-    from resonant_client.engine import screen_overlay
+    from lumi.engine import screen_overlay
 
     backend = StreamingBackend(scripts=[
         [
@@ -168,7 +168,7 @@ class _DenyingPolicy:
     """Stub ExecutionPolicy. Returns PolicyAction.DENY for every tool."""
 
     def evaluate(self, tool_name, args):
-        from resonant_client.engine.policies import PolicyAction
+        from lumi.engine.policies import PolicyAction
         return PolicyAction.DENY
 
     def get_reason(self, tool_name, args):
@@ -204,16 +204,16 @@ class TestExecutionPolicyDenial:
 
 
 class TestPermissionDenial:
-    """Lines 950-974: when _should_auto_approve returns False AND the
-    on_permission callback also returns False (or auto_approve is
-    False without a callback), the tool is denied with output
-    'Tool execution denied by user.'"""
+    """When _should_auto_approve returns False, the on_permission callback
+    decides and 'Tool execution denied by user.' reports its denial. With
+    no callback the call fails closed. tests/test_permission_decisions.py
+    covers the same paths with a real HookRunner attached."""
 
     def test_suggest_tier_denies_non_read_only_tool_without_callback(self):
         # auto_approve=False maps to autonomy_tier="suggest" which
         # only auto-approves read-only tools. await_user is not read-
-        # only. Without an on_permission callback, falls back to the
-        # auto_approve=False flag → denied.
+        # only. Without an on_permission callback nobody can approve
+        # it, so the call fails closed.
         backend = StreamingBackend(scripts=[
             [
                 tool_call("await_user", {"question": "?"}, call_id="c1"),
@@ -227,7 +227,7 @@ class TestPermissionDenial:
         tr = first_of_kind(events, "tool.result")
         assert tr is not None
         assert tr["denied"] is True
-        assert "denied by user" in tr["output"]
+        assert "requires approval" in tr["output"]
 
     def test_on_permission_callback_can_approve(self):
         # When the suggest-tier check fails, the on_permission callback

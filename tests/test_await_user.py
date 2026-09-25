@@ -23,9 +23,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from resonant_client.backends import EVENT_DONE, EVENT_TEXT_DELTA, EVENT_TOOL_CALL
-from resonant_client.engine.session import Session
-from resonant_client.engine.tools import AGENT_TOOLS, ToolResult
+from lumi.backends import EVENT_DONE, EVENT_TEXT_DELTA, EVENT_TOOL_CALL
+from lumi.engine.session import Session
+from lumi.engine.tools import AGENT_TOOLS, ToolResult
 
 
 # ── Tool registration ────────────────────────────────────────────────────
@@ -260,7 +260,7 @@ class TestAwaitUserDispatch:
             event for event in events
             if event.get("event") == "tool.result" and event.get("name") == "await_user"
         )
-        assert "question suppressed by Resonant policy" in result["output"]
+        assert "question suppressed by Lumi policy" in result["output"]
         assert result["metadata"]["suppressed"] is True
 
     def test_ordinary_question_after_implementation_is_suppressed(self, tmp_path):
@@ -288,7 +288,7 @@ class TestAwaitUserDispatch:
             "Which recovery strategy best preserves existing behavior?",
         )
         failed = ToolResult(output="write failed", is_error=True, elapsed=0.0)
-        with patch("resonant_client.engine.session.execute_tool", return_value=failed):
+        with patch("lumi.engine.session.execute_tool", return_value=failed):
             events = list(Session(backend, max_steps=5, auto_approve=True).run(
                 "Implement it", on_user_input=callback,
             ))
@@ -325,7 +325,7 @@ class TestAwaitUserDispatch:
         backend = _ReadOnlyShellThenAwaitBackend()
         successful = ToolResult(output="ok", is_error=False, elapsed=0.0)
 
-        with patch("resonant_client.engine.session.execute_tool", return_value=successful):
+        with patch("lumi.engine.session.execute_tool", return_value=successful):
             events = list(Session(backend, max_steps=6, auto_approve=True).run(
                 "Investigate the integration", on_user_input=callback,
             ))
@@ -504,7 +504,7 @@ class TestAwaitUserDispatch:
 
 class TestSpecialistAllowlists:
     def test_implement_allows_await_user(self):
-        from resonant_client.orchestration.specialists import (
+        from lumi.orchestration.specialists import (
             SPECIALISTS,
             NodeSpecialization,
         )
@@ -512,7 +512,7 @@ class TestSpecialistAllowlists:
         assert "await_user" in profile.tool_allowlist
 
     def test_explore_allows_await_user(self):
-        from resonant_client.orchestration.specialists import (
+        from lumi.orchestration.specialists import (
             SPECIALISTS,
             NodeSpecialization,
         )
@@ -520,7 +520,7 @@ class TestSpecialistAllowlists:
         assert "await_user" in profile.tool_allowlist
 
     def test_verify_allows_await_user(self):
-        from resonant_client.orchestration.specialists import (
+        from lumi.orchestration.specialists import (
             SPECIALISTS,
             NodeSpecialization,
         )
@@ -528,7 +528,7 @@ class TestSpecialistAllowlists:
         assert "await_user" in profile.tool_allowlist
 
     def test_research_allows_await_user(self):
-        from resonant_client.orchestration.specialists import (
+        from lumi.orchestration.specialists import (
             SPECIALISTS,
             NodeSpecialization,
         )
@@ -536,7 +536,7 @@ class TestSpecialistAllowlists:
         assert "await_user" in profile.tool_allowlist
 
     def test_plan_allows_await_user(self):
-        from resonant_client.orchestration.specialists import (
+        from lumi.orchestration.specialists import (
             SPECIALISTS,
             NodeSpecialization,
         )

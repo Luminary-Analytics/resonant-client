@@ -1,0 +1,46 @@
+name: Docs
+
+# Builds the documentation site (mkdocs.yml) with --strict on every change to
+# the docs, and keeps it as an artifact. Nothing is published from here.
+
+on:
+  pull_request:
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'packaging/docs-requirements.txt'
+      - '.github/workflows/docs.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'packaging/docs-requirements.txt'
+  workflow_dispatch:
+
+jobs:
+  docs-site:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install MkDocs
+        run: python -m pip install -r packaging/docs-requirements.txt
+      - name: Build the site
+        run: mkdocs build --strict
+      - name: Check the pages exist
+        run: |
+          test -f site/index.html || { echo "missing site/index.html"; exit 1; }
+          test -f site/stylesheets/lumi.css || { echo "missing site/stylesheets/lumi.css"; exit 1; }
+          for page in desktop-workflow packs enterprise-policy deploy-windows updates; do
+            test -f "site/$page/index.html" || { echo "missing site/$page/index.html"; exit 1; }
+          done
+          echo "Built $(find site -name index.html | wc -l) pages"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lumi-docs-site
+          path: site

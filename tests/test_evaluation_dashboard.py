@@ -4,9 +4,9 @@ import time
 
 import pytest
 
-from resonant_client.gui.evaluation_dashboard import EvaluationManager
-from resonant_client.smoke.runner import MODELS, SmokeResult
-from resonant_client.smoke.variance import VarianceReport
+from lumi.gui.evaluation_dashboard import EvaluationManager
+from lumi.smoke.runner import MODELS, SmokeResult
+from lumi.smoke.variance import VarianceReport
 
 
 def _report(spec_name: str, model_label: str, *, converged: bool = True):

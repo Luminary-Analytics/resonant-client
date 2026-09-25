@@ -18,8 +18,8 @@ from typing import Iterator
 
 import pytest
 
-from resonant_client.engine.agent_runtime import AgentRegistry, AgentStatus
-from resonant_client.engine.session import Session
+from lumi.engine.agent_runtime import AgentRegistry, AgentStatus
+from lumi.engine.session import Session
 
 
 class _StubBackend:
@@ -73,7 +73,7 @@ def test_restarting_an_unknown_agent_raises(tmp_path: Path):
 
 
 def test_restarting_a_completed_agent_is_refused(tmp_path: Path):
-    from resonant_client.engine.agent_runtime import AgentHandoff
+    from lumi.engine.agent_runtime import AgentHandoff
 
     session, registry = _session_with_registry(tmp_path)
     record = registry.create(agent_type="explore", prompt="Map it")
@@ -141,7 +141,10 @@ def test_restart_dispatches_through_execute_task(tmp_path: Path):
 
     events = list(session.restart_agent(record.id))
 
-    assert events == [{"event": "subagent.start", "agent_id": "new"}]
+    # The worker's events, inside a turn of their own.
+    assert [event["event"] for event in events] == ["session.start", "subagent.start", "session.end"]
+    assert events[1] == {"event": "subagent.start", "agent_id": "new"}
+    assert events[0]["restart_of"] == record.id
     assert seen["fn_args"]["agent_type"] == "explore"
     assert seen["fn_args"]["restart_of"] == record.id
     assert seen["fn_args"]["prompt"].startswith("Map the auth flow")
@@ -250,3 +253,78 @@ def test_the_retry_record_links_back_to_the_run_it_replaced(tmp_path: Path):
     # The interrupted run is preserved, not overwritten by its retry.
     assert reloaded.get(original.id).status == "stuck"
     assert retry.id != original.id
+
+
+# ── A restart is a turn of its own ──────────────────────────────────────
+#
+# A client shows the restart running between session.start and session.end,
+# and replays a turn without a session.end as interrupted. The end's outcome
+# comes from the worker's handoff, since the worker did the turn's work.
+
+
+def _restart_with(tmp_path: Path, *, handoff: dict | None = None, refusal: str = ""):
+    session, registry = _session_with_registry(tmp_path)
+    record = _interrupted_agent(registry, agent_type="build", prompt="Fix the notes")
+    session.agent_registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
+
+    def _fake_execute_task(fn_args, call_id, fn_args_str, **kwargs):
+        if refusal:
+            yield {"event": "tool.result", "name": "task", "call_id": call_id,
+                   "output": refusal, "is_error": True, "denied": True}
+            return
+        yield {"event": "subagent.end", "call_id": call_id, "steps": 3, "handoff": handoff}
+        yield {"event": "tool.result", "name": "task", "call_id": call_id,
+               "output": "handoff", "is_error": False}
+
+    session._execute_task = _fake_execute_task
+    return list(session.restart_agent(record.id))
+
+
+def test_a_restart_that_changed_files_ends_with_those_changes(tmp_path: Path):
+    events = _restart_with(tmp_path, handoff={
+        "outcome": "completed", "summary": "Fixed the notes.",
+        "changed_files": ["notes.txt"], "blockers": [],
+    })
+
+    end = events[-1]
+    assert end["event"] == "session.end"
+    assert end["outcome"] == "changed_unverified"
+    assert end["evidence"]["changed_files"] == ["notes.txt"]
+    assert end["evidence"]["visible_answer"] is True
+    # A worker's check results are not named checks.
+    assert end["evidence"]["checks"] == []
+    assert end["total_steps"] == 3
+
+
+def test_a_restart_whose_worker_failed_ends_failed(tmp_path: Path):
+    events = _restart_with(tmp_path, handoff={
+        "outcome": "failed", "summary": "(no output)",
+        "changed_files": [], "blockers": ["Interrupted"],
+    })
+
+    end = events[-1]
+    assert end["outcome"] == "failed"
+    assert end["evidence"]["visible_answer"] is False
+
+
+def test_a_refused_dispatch_ends_the_restart_failed(tmp_path: Path):
+    events = _restart_with(tmp_path, refusal="Sub-agent blocked by lifecycle hook: no")
+
+    assert [event["event"] for event in events] == ["session.start", "tool.result", "session.end"]
+    assert events[-1]["outcome"] == "failed"
+
+
+def test_a_refused_restart_starts_no_turn(tmp_path: Path):
+    session, registry = _session_with_registry(tmp_path)
+    record = _interrupted_agent(registry, metadata={"director_task_id": "task-from-an-old-run"})
+    session.agent_registry = AgentRegistry(tmp_path, root=tmp_path / "agents")
+
+    class _DirectorRun:
+        tasks = {"a-different-task": object()}
+
+    session.director_run = _DirectorRun()
+    events = session.restart_agent(record.id)
+
+    # The refusal comes before anything is yielded, so no turn is left open.
+    with pytest.raises(ValueError):
+        next(events)

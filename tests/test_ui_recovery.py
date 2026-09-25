@@ -1,10 +1,9 @@
 """Draft isolation, local endpoint protection, and concise memory recall."""
 from pathlib import Path
 
-from starlette.testclient import TestClient
-
-from resonant_client.engine.project_memory import ProjectMemory
-from resonant_client.gui.ui_state import ui_state
+from lumi.engine.project_memory import ProjectMemory
+from lumi.gui.ui_state import ui_state
+from tests.gui_access import LocalClient
 
 
 def test_drafts_survive_reopen_and_are_scoped(tmp_path, monkeypatch):
@@ -22,14 +21,15 @@ def test_drafts_survive_reopen_and_are_scoped(tmp_path, monkeypatch):
 
 
 def test_draft_http_survives_different_launch_origins(tmp_path, monkeypatch):
-    from resonant_client.gui.app import app
+    from lumi.gui.app import app
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     data = {'project': str(tmp_path / 'a'), 'session_id': 'one', 'text': 'keep me'}
-    with TestClient(app, base_url='http://localhost:9010') as client:
-        assert client.post('/api/ui-state', json=data, headers={'Origin': 'http://localhost:9010'}).status_code == 200
+    # Each launch picks a port; drafts are keyed by project and session, not origin.
+    with LocalClient(app, base_url='http://localhost:9010') as client:
+        assert client.post('/api/ui-state', json=data).status_code == 200
         assert client.post('/api/ui-state', json=data, headers={'Origin': 'https://unrelated.example'}).status_code == 403
         assert client.post('/api/ui-state', data=data).status_code == 415
-    with TestClient(app, base_url='http://localhost:9011') as client:
+    with LocalClient(app, base_url='http://localhost:9011') as client:
         response = client.get('/api/ui-state', params={k: v for k, v in data.items() if k != 'text'})
         assert response.json()['text'] == 'keep me'
         assert response.headers['cache-control'] == 'no-store'
@@ -51,8 +51,8 @@ def test_memory_selects_commands_and_limits_recall(tmp_path):
 
 def test_new_composer_does_not_create_empty_sessions(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from resonant_client.gui import app as gui
-    from resonant_client.gui import sessions
+    from lumi.gui import app as gui
+    from lumi.gui import sessions
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(sessions, '_is_pytest_temp_path', lambda _: False)
     project = tmp_path / 'project'
@@ -66,7 +66,7 @@ def test_new_composer_does_not_create_empty_sessions(tmp_path, monkeypatch):
     state.available_backends = {'test': {}}
     state.backend = SimpleNamespace(name='test', model='test')
     monkeypatch.setattr(state, 'build_session', lambda **kwargs: SimpleNamespace(conversation_history=[]))
-    with TestClient(gui.app) as client:
+    with LocalClient(gui.app) as client:
         with client.websocket_connect('/ws') as ws:
             for n in range(3):
                 request = {'command': 'clear', 'draft_only': True, 'request_id': str(n)}
@@ -91,8 +91,8 @@ def test_new_composer_does_not_create_empty_sessions(tmp_path, monkeypatch):
 
 
 def test_offline_new_composer_detaches_old_session(tmp_path, monkeypatch):
-    from resonant_client.gui import app as gui
-    from resonant_client.gui import sessions
+    from lumi.gui import app as gui
+    from lumi.gui import sessions
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(sessions, '_is_pytest_temp_path', lambda _: False)
     project = tmp_path / 'project'
@@ -102,7 +102,7 @@ def test_offline_new_composer_detaches_old_session(tmp_path, monkeypatch):
     saved = state.project.create_session()
     state.available_backends = {'test': {}}
     monkeypatch.setattr(gui, 'state', state)
-    with TestClient(gui.app) as client:
+    with LocalClient(gui.app) as client:
         with client.websocket_connect('/ws') as ws:
             ws.send_json({'command': 'clear', 'draft_only': True})
             response = ws.receive_json()

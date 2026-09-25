@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.gui import sessions as sessions_mod
-from resonant_client.gui.sessions import ProjectManager
+from lumi.gui import sessions as sessions_mod
+from lumi.gui.sessions import ProjectManager
 
 
 @pytest.fixture

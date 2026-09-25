@@ -1,38 +1,44 @@
 """
-Update appcast.xml after a new release is built.
+Add a release to the update feeds on the Pages site.
 
 Pipeline (called from .github/workflows/release.yml):
-    1. CI builds resonant-setup-X.Y.Z.exe
+    1. CI builds lumi-setup-X.Y.Z.exe
     2. CI signs it with winsparkle-tool using the EDDSA_PRIVATE_KEY secret
     3. CI uploads the .exe to the GitHub Release for tag vX.Y.Z
     4. CI checks out the gh-pages branch into ./gh-pages-checkout
-    5. CI runs THIS script with --version, --installer, --signature, --notes
-    6. THIS script rewrites gh-pages-checkout/appcast.xml with a new <item> on top
-    7. CI commits + pushes the gh-pages-checkout
+    5. publish_pages.py copies the installer to downloads/vX.Y.Z/
+    6. THIS script adds the release to the feeds (below)
+    7. CI publishes gh-pages-checkout as one fresh commit
 
 Standalone usage (for local testing):
     python packaging/update_appcast.py \\
-        --version 0.2.1 \\
-        --installer dist/installer/resonant-setup-0.2.1.exe \\
+        --site gh-pages-checkout \\
+        --version 0.21.0 \\
+        --installer dist/installer/lumi-setup-0.21.0.exe \\
         --signature "BASE64_EDDSA_SIG" \\
-        --notes "Initial public release." \\
-        --appcast gh-pages-checkout/appcast.xml \\
-        --download-base "https://github.com/Luminary-Analytics/resonant-client/releases/download"
+        --notes "<p>Lumi 0.21.0.</p>" \\
+        --download-base "https://luminary-analytics.github.io/resonant-client/downloads"
 
-Behavior:
-    - Reads the existing appcast.xml.
-    - Inserts the new <item> as the FIRST child of <channel>, so WinSparkle
-      always sees the latest release at the top (it sorts by version anyway,
-      but ordering helps humans diff the file).
-    - Preserves all existing <item> entries — the appcast is append-only.
-      Old releases stay queryable in case a user is still on a much older
-      version and needs to upgrade through intermediate steps.
-    - Uses pubDate = now in RFC 2822 format (the format WinSparkle expects).
+The feeds (lumi/update_channels.py picks one per install):
+    appcast.xml         stable releases. Installed copies before 0.21 poll only
+                        this one, so it keeps its address and history.
+    appcast-beta.xml    beta releases (tags like v0.21.0-beta.1) newer than the
+                        newest stable release, and every stable release.
+    appcast-X.Y.xml     stable releases of one release line, for installs pinned
+                        to it; written for the newest LINES lines.
+
+A stable release goes into appcast.xml and a pre-release into the beta feed;
+the beta and line feeds are then rebuilt from those two, so they can't drift.
+Items are ordered newest first (WinSparkle picks by version anyway). A
+version that is already listed is replaced, so a re-run of a release job is
+harmless. Nothing is published without a signature.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
+import re
 import sys
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
@@ -43,6 +49,31 @@ from pathlib import Path
 SPARKLE_NS = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 ET.register_namespace("sparkle", SPARKLE_NS)
 ET.register_namespace("dc", "http://purl.org/dc/elements/1.1/")
+
+STABLE_FEED = "appcast.xml"
+BETA_FEED = "appcast-beta.xml"
+LINES = 4
+VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?")
+_PRE_RANK = {"alpha": 0, "beta": 1, "rc": 2}
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    """Sort key: numbers first; a pre-release sorts before its release."""
+    match = VERSION.fullmatch(version)
+    if not match:
+        raise ValueError(f"{version!r} is not a release version (X.Y.Z or X.Y.Z-beta.N)")
+    major, minor, patch, pre, number = match.groups()
+    tail = (0, _PRE_RANK[pre], int(number)) if pre else (1, 0, 0)
+    return (int(major), int(minor), int(patch), *tail)
+
+
+def is_prerelease(version: str) -> bool:
+    return version_key(version)[3] == 0
+
+
+def release_line(version: str) -> str:
+    major, minor = version_key(version)[:2]
+    return f"{major}.{minor}"
 
 
 def build_item(
@@ -75,7 +106,7 @@ def build_item(
     # post-process. WinSparkle accepts either way.
     desc.text = notes_html
 
-    enclosure = ET.SubElement(item, "enclosure", attrib={
+    ET.SubElement(item, "enclosure", attrib={
         "url": download_url,
         f"{{{SPARKLE_NS}}}version": version,
         f"{{{SPARKLE_NS}}}shortVersionString": version,
@@ -86,113 +117,143 @@ def build_item(
     return item
 
 
-def update_appcast(
-    appcast_path: Path,
+def item_version(item: ET.Element) -> str:
+    node = item.find(f"{{{SPARKLE_NS}}}version")
+    return (node.text or "").strip() if node is not None else ""
+
+
+def _items(path: Path) -> list[ET.Element]:
+    if not path.exists():
+        return []
+    channel = ET.parse(path).getroot().find("channel")
+    return [] if channel is None else channel.findall("item")
+
+
+def _known(items: list[ET.Element]) -> list[ET.Element]:
+    """Items with a release version; anything else (hand edits) is left out of rebuilt feeds."""
+    kept = []
+    for item in items:
+        try:
+            version_key(item_version(item))
+        except ValueError:
+            continue
+        kept.append(item)
+    return kept
+
+
+def _with(items: list[ET.Element], new_item: ET.Element) -> list[ET.Element]:
+    version = item_version(new_item)
+    return [item for item in items if item_version(item) != version] + [new_item]
+
+
+def _newest_first(items: list[ET.Element]) -> list[ET.Element]:
+    return sorted(items, key=lambda item: version_key(item_version(item)), reverse=True)
+
+
+def _write(path: Path, template: ET.Element, title: str, description: str,
+           items: list[ET.Element]) -> Path:
+    """Write a feed with the stable feed's channel details, a title and these items."""
+    rss = ET.Element("rss", attrib={"version": "2.0"})
+    channel = ET.SubElement(rss, "channel")
+    for child in template:
+        if child.tag == "item":
+            continue
+        copied = copy.deepcopy(child)
+        if child.tag == "title":
+            copied.text = title
+        elif child.tag == "description":
+            copied.text = description
+        channel.append(copied)
+    for item in items:
+        channel.append(copy.deepcopy(item))
+    tree = ET.ElementTree(rss)
+    ET.indent(tree, space="    ")
+    tree.write(path, encoding="utf-8", xml_declaration=True)
+    return path
+
+
+def publish_feeds(
+    site: Path,
     version: str,
     installer_path: Path,
     signature: str,
     notes_html: str,
     download_base: str,
-) -> None:
-    """Insert a new <item> at the top of the appcast's <channel>."""
-    if not appcast_path.exists():
-        print(f"ERROR: appcast not found at {appcast_path}", file=sys.stderr)
-        sys.exit(1)
-
-    if not installer_path.exists():
-        print(f"ERROR: installer not found at {installer_path}", file=sys.stderr)
-        sys.exit(1)
-
+    *,
+    lines: int = LINES,
+) -> list[Path]:
+    """Add one release to the feeds in ``site`` and rebuild the derived feeds."""
     if not signature:
-        print(
-            "ERROR: empty signature — refuse to publish unsigned update",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        raise ValueError("empty signature — refusing to publish an unsigned update")
+    if not installer_path.exists():
+        raise FileNotFoundError(f"installer not found at {installer_path}")
+    version_key(version)  # a release version, or ValueError
+    stable_path = site / STABLE_FEED
+    if not stable_path.exists():
+        raise FileNotFoundError(f"appcast not found at {stable_path}")
+    template = ET.parse(stable_path).getroot().find("channel")
+    if template is None:
+        raise ValueError("<channel> element not found in appcast.xml")
 
-    download_url = f"{download_base}/v{version}/{installer_path.name}"
-
-    tree = ET.parse(appcast_path)
-    root = tree.getroot()
-    channel = root.find("channel")
-    if channel is None:
-        print("ERROR: <channel> element not found in appcast", file=sys.stderr)
-        sys.exit(1)
-
-    # If an entry for this version already exists (e.g. placeholder from earlier
-    # dev work, or an idempotent re-run of a CI job), REPLACE it. Bug #13 fix —
-    # was previously a hard refuse-and-exit, which broke the v0.2.0 CI run when
-    # the script was given a version that was already in the appcast (it was
-    # supposed to be the current version, just with empty enclosure metadata).
-    existing_idx = None
-    for idx, existing in enumerate(channel.findall("item")):
-        existing_version = existing.find(f"{{{SPARKLE_NS}}}version")
-        if existing_version is not None and existing_version.text == version:
-            existing_idx = idx
-            print(
-                f"NOTE: version {version} already in appcast — replacing existing entry",
-                file=sys.stderr,
-            )
-            break
-
-    new_item = build_item(
-        version=version,
-        installer_path=installer_path,
-        signature=signature,
-        notes_html=notes_html,
-        download_url=download_url,
-    )
-
-    if existing_idx is not None:
-        # Replace in place — preserves the position of the entry in the feed.
-        # Find the actual child index (since channel has non-item children too).
-        item_children = channel.findall("item")
-        target = item_children[existing_idx]
-        actual_idx = list(channel).index(target)
-        channel.remove(target)
-        channel.insert(actual_idx, new_item)
+    new_item = build_item(version, installer_path, signature, notes_html,
+                          f"{download_base.rstrip('/')}/v{version}/{installer_path.name}")
+    # appcast.xml keeps whatever it already holds; only its own release is added.
+    stable_items = _items(stable_path)
+    beta_items = [item for item in _known(_items(site / BETA_FEED)) if is_prerelease(item_version(item))]
+    if is_prerelease(version):
+        beta_items = _with(beta_items, new_item)
     else:
-        # Insert as first <item> after channel-level metadata (title/link/desc).
-        insert_at = len(channel)
-        for idx, child in enumerate(channel):
-            if child.tag == "item":
-                insert_at = idx
-                break
-        channel.insert(insert_at, new_item)
+        stable_items = _with(stable_items, new_item)
+    released = [item for item in _known(stable_items) if not is_prerelease(item_version(item))]
+    newest = max((version_key(item_version(item)) for item in released), default=None)
+    # A beta that a stable release has caught up with is no longer offered.
+    beta_items = [item for item in beta_items if newest is None or version_key(item_version(item)) > newest]
 
-    # Pretty-print: indent children for readable diffs.
-    ET.indent(tree, space="    ")
-    tree.write(appcast_path, encoding="utf-8", xml_declaration=True)
-
-    print(
-        f"Wrote {appcast_path}: added v{version} "
-        f"({installer_path.stat().st_size:,} bytes, sig={signature[:12]}...)"
-    )
+    title = "Lumi updates"
+    written = []
+    if not is_prerelease(version):
+        # A beta leaves the stable feed untouched. The stable feed keeps its
+        # own title and any hand-made entries.
+        known = _known(stable_items)
+        unknown = [item for item in stable_items if all(item is not other for other in known)]
+        written.append(_write(stable_path, template, template.findtext("title") or title,
+                              template.findtext("description") or "Stable releases of Lumi",
+                              _newest_first(known) + unknown))
+    written.append(_write(site / BETA_FEED, template, f"{title} (beta)",
+                          "Beta and stable releases of Lumi", _newest_first(beta_items + released)))
+    by_line: dict[str, list[ET.Element]] = {}
+    for item in released:
+        by_line.setdefault(release_line(item_version(item)), []).append(item)
+    newest_lines = sorted(by_line, key=lambda line: tuple(int(p) for p in line.split(".")), reverse=True)[:lines]
+    for line in newest_lines:
+        written.append(_write(site / f"appcast-{line}.xml", template, f"{title} ({line})",
+                              f"Stable releases of Lumi {line}", _newest_first(by_line[line])))
+    return written
 
 
 def main() -> None:
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--version", required=True, help="Semver string e.g. 0.2.1")
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[1])
+    p.add_argument("--site", required=True, type=Path, help="The gh-pages checkout holding appcast.xml")
+    p.add_argument("--version", required=True, help="X.Y.Z, or X.Y.Z-beta.N for a beta")
     p.add_argument("--installer", required=True, type=Path,
                    help="Path to the signed .exe installer")
     p.add_argument("--signature", required=True,
                    help="Base64 EdDSA signature from winsparkle-tool sign")
     p.add_argument("--notes", required=True,
                    help="Release notes (HTML — will be embedded in <description>)")
-    p.add_argument("--appcast", required=True, type=Path,
-                   help="Path to the existing appcast.xml to update")
     p.add_argument("--download-base", required=True,
-                   help="GitHub Releases download base URL")
+                   help="Base URL of the downloads/ folder on the Pages site")
+    p.add_argument("--lines", type=int, default=LINES, help="How many release lines get their own feed")
     args = p.parse_args()
 
-    update_appcast(
-        appcast_path=args.appcast,
-        version=args.version,
-        installer_path=args.installer,
-        signature=args.signature,
-        notes_html=args.notes,
-        download_base=args.download_base,
-    )
+    try:
+        written = publish_feeds(args.site, args.version, args.installer, args.signature, args.notes,
+                                args.download_base, lines=args.lines)
+    except (OSError, ValueError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+    for path in written:
+        print(f"Wrote {path}")
 
 
 if __name__ == "__main__":

@@ -1,11 +1,12 @@
 """
-Shared fixtures for Resonant Client test suite.
+Shared fixtures for Lumi test suite.
 
 Provides reusable test helpers, temp directories, mock backends,
 and tool definition factories used across all test modules.
 """
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -18,8 +19,52 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+# ── Credential store isolation (process-wide) ──────────────────────
+# Settings keep API keys in the OS credential store (lumi/secrets_store.py).
+# Tests must never read or write the developer's real Credential Manager or
+# Keychain, so the store is off for the whole run; keychain tests install an
+# in-memory keyring explicitly.
+os.environ["LUMI_KEYCHAIN"] = "off"
+
+# Nor may an organization policy installed on the machine (registry, managed
+# preferences, ProgramData) change what the tests see. Policy tests install
+# their own through lumi.policy.set_for_tests.
+os.environ.pop("LUMI_POLICY_FILE", None)
+import lumi.policy as _lumi_policy  # noqa: E402
+
+_lumi_policy.set_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_organization_policy():
+    # Process-wide configuration must not leak between tests: a test whose
+    # AppState turns the secret scan on (a policy can lock it) would otherwise
+    # mark every later test's history in the same worker. The audit log and
+    # usage records are recreated for each test, under its isolated home.
+    from lumi import audit, budgets, pricing, secret_scan, updater, usage
+    from lumi.engine import review_gate, second_approval
+
+    def reset():
+        _lumi_policy.set_for_tests(None)
+        updater.reset_for_tests()
+        secret_scan.reset()
+        audit.set_for_tests(None)
+        pricing.reset()
+        usage.set_for_tests(None)
+        usage.set_listener(None)
+        budgets.reset()
+        # Every execution policy asks the review gate; a test's settings must not reach the next test.
+        review_gate.configure(None)
+        review_gate.set_registrar(None)
+        second_approval.set_requester(None)
+
+    reset()
+    yield
+    reset()
+
+
 # ── Home isolation (process-wide) ──────────────────────────────────
-# Importing resonant_client.gui.app constructs the module-level
+# Importing lumi.gui.app constructs the module-level
 # `state = AppState()` singleton, which writes
 # ~/.resonant/recent_projects.json. Test modules import app at module
 # scope, so that write fires at COLLECTION time — before any fixture
@@ -37,7 +82,7 @@ Path.home = staticmethod(lambda: _SESSION_TEST_HOME)  # type: ignore[method-assi
 def _isolated_home(tmp_path_factory, monkeypatch):
     """Point Path.home() at a per-test tmp dir for EVERY test.
 
-    Code under resonant_client writes into ~/.resonant at runtime
+    Code under lumi writes into ~/.resonant at runtime
     (recent_projects.json, projects/<hash>/sessions/, settings.json…).
     Tests that forgot to isolate used to leave pytest tmp paths in the
     user's real ~/.resonant/recent_projects.json, so isolation is now
@@ -193,7 +238,7 @@ def sample_tools(make_tool):
 @pytest.fixture
 def mock_ollama_backend():
     """Create a mock OllamaBackend without network access."""
-    from resonant_client.backends import OllamaBackend
+    from lumi.backends import OllamaBackend
 
     # Clear the class-level cache
     OllamaBackend._tool_support_cache.clear()

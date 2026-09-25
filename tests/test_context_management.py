@@ -5,8 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from resonant_client.engine.sandbox import PathSandbox
-from resonant_client.engine.session import Session
+from lumi.engine.sandbox import PathSandbox
+from lumi.engine.session import Session
 from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
 
 
@@ -42,7 +42,7 @@ def test_retrieved_context_is_stable_across_tool_steps(tmp_path):
 
     assert len(backend.full_instructions) == 2
     assert all("PINNED MEMORY" in value for value in backend.full_instructions)
-    assert all("You are SONN Client, a thoughtful technical collaborator" in value for value in backend.full_instructions)
+    assert all("You are Lumi, a thoughtful technical collaborator" in value for value in backend.full_instructions)
     assert backend.full_instructions[0] == backend.full_instructions[1]
 
 
@@ -57,11 +57,11 @@ def test_context_compression_is_rechecked_mid_turn(tmp_path):
     compressed = [{"role": "assistant", "content": "summary"}]
     with (
         patch(
-            "resonant_client.engine.session.should_compress",
+            "lumi.engine.session.should_compress",
             side_effect=[False, False, True, False],
         ) as should,
         patch(
-            "resonant_client.engine.session.compress",
+            "lumi.engine.session.compress",
             return_value=(compressed, "summary"),
         ) as compress_history,
     ):

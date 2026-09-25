@@ -1,10 +1,10 @@
 import asyncio
 import threading
 
-from starlette.testclient import TestClient
+from tests.gui_access import LocalClient
 
-from resonant_client.gui import app as gui_app
-from resonant_client.engine.session import Session
+from lumi.gui import app as gui_app
+from lumi.engine.session import Session
 
 
 class _CancellableSession:
@@ -26,7 +26,7 @@ def test_await_user_choice_is_acknowledged_immediately():
     gui_app.state.user_input_response.clear()
     gui_app.state.user_input_result[0] = ""
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({"command": "user_input", "response": "Recommended choice"})
             received = None
@@ -63,7 +63,7 @@ def test_websocket_injects_steer_without_cancelling_active_turn(monkeypatch):
     monkeypatch.setattr(gui_app.state, "session", session)
     monkeypatch.setattr(gui_app.state, "codebase_index", object())
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({"command": "message", "text": "first"})
             assert first_started.wait(2), "first chat turn did not start"
@@ -110,7 +110,7 @@ def test_status_update_steers_active_run_without_cancelling_or_replacing_it(
     monkeypatch.setattr(gui_app.state, "session", session)
     monkeypatch.setattr(gui_app.state, "codebase_index", object())
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({"command": "message", "text": "first"})
             assert first_started.wait(2)
@@ -151,7 +151,7 @@ def test_status_update_never_starts_a_replacement_turn_when_run_is_idle(
     monkeypatch.setattr(gui_app.state, "session", session)
     monkeypatch.setattr(gui_app.state, "codebase_index", object())
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({
                 "command": "status_update",
@@ -187,7 +187,7 @@ def test_websocket_queues_followup_without_interrupting_active_turn(monkeypatch)
     monkeypatch.setattr(gui_app.state, "session", session)
     monkeypatch.setattr(gui_app.state, "codebase_index", object())
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({"command": "message", "text": "first"})
             assert first_started.wait(2)
@@ -234,7 +234,7 @@ def test_queued_followup_can_be_promoted_to_steer(monkeypatch):
     monkeypatch.setattr(gui_app.state, "session", session)
     monkeypatch.setattr(gui_app.state, "codebase_index", object())
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({"command": "message", "text": "first"})
             assert first_started.wait(2)
@@ -283,7 +283,7 @@ def test_queued_followup_can_be_removed_without_interrupting_active_turn(monkeyp
     monkeypatch.setattr(gui_app.state, "session", session)
     monkeypatch.setattr(gui_app.state, "codebase_index", object())
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({"command": "message", "text": "first"})
             assert first_started.wait(2)
@@ -334,7 +334,7 @@ def test_stop_clears_queued_followups(monkeypatch):
     monkeypatch.setattr(gui_app.state, "session", session)
     monkeypatch.setattr(gui_app.state, "codebase_index", object())
 
-    with TestClient(gui_app.app) as client:
+    with LocalClient(gui_app.app) as client:
         with client.websocket_connect("/ws") as websocket:
             websocket.send_json({"command": "message", "text": "first"})
             assert first_started.wait(2)

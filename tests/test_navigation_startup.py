@@ -3,7 +3,7 @@ import threading
 import time
 from pathlib import Path
 
-from starlette.testclient import TestClient
+from tests.gui_access import LocalClient
 
 
 def test_project_navigation_does_not_wait_for_model_discovery(tmp_path, monkeypatch):
@@ -14,8 +14,8 @@ def test_project_navigation_does_not_wait_for_model_discovery(tmp_path, monkeypa
     beta.mkdir()
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.chdir(alpha)
-    from resonant_client.gui import app as gui
-    from resonant_client.gui import sessions
+    from lumi.gui import app as gui
+    from lumi.gui import sessions
     monkeypatch.setattr(sessions, "_is_pytest_temp_path", lambda _: False)
     state = gui.AppState()
     state.project.register_project(str(beta))
@@ -28,7 +28,7 @@ def test_project_navigation_does_not_wait_for_model_discovery(tmp_path, monkeypa
         state.available_backends = {}
 
     monkeypatch.setattr(state, "detect_backends", delayed_discovery)
-    with TestClient(gui.app) as client:
+    with LocalClient(gui.app) as client:
         try:
             with client.websocket_connect("/ws") as ws:
                 navigation = ws.receive_json()
@@ -55,7 +55,7 @@ def test_project_navigation_does_not_wait_for_model_discovery(tmp_path, monkeypa
 
 
 def test_empty_provider_result_is_cached(monkeypatch):
-    from resonant_client.gui.app import AppState
+    from lumi.gui.app import AppState
     state = AppState.__new__(AppState)
     state.available_backends = {}
     state._last_backend_probe = time.time()
@@ -64,8 +64,8 @@ def test_empty_provider_result_is_cached(monkeypatch):
 
 
 def test_project_selection_is_visible_before_runtime_setup(tmp_path, monkeypatch):
-    from resonant_client.gui import app as gui
-    from resonant_client.gui import sessions
+    from lumi.gui import app as gui
+    from lumi.gui import sessions
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(sessions, '_is_pytest_temp_path', lambda _: False)
     state = gui.AppState()
@@ -83,7 +83,7 @@ def test_project_selection_is_visible_before_runtime_setup(tmp_path, monkeypatch
     monkeypatch.setattr(state, 'ensure_default_runtime_session', prepare)
     target = tmp_path / 'target'
     target.mkdir()
-    with TestClient(gui.app) as client:
+    with LocalClient(gui.app) as client:
         try:
             with client.websocket_connect('/ws') as ws:
                 ws.send_json({'command': 'set_project', 'path': str(target), 'project_switch_id': 'next'})
@@ -102,7 +102,7 @@ def test_project_selection_is_visible_before_runtime_setup(tmp_path, monkeypatch
 
 
 def test_navigation_catalog_tracks_new_renamed_and_deleted_sessions(tmp_path, monkeypatch):
-    from resonant_client.gui import sessions
+    from lumi.gui import sessions
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(sessions, "_is_pytest_temp_path", lambda _: False)
     project = tmp_path / "project"

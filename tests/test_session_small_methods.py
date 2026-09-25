@@ -45,7 +45,7 @@ from __future__ import annotations
 import threading
 
 
-from resonant_client.engine.session import (
+from lumi.engine.session import (
     Session,
     parse_choices,
     parse_markdown_todos,
@@ -185,7 +185,7 @@ class TestSessionIsSubagent:
 class TestSessionTools:
     def test_default_returns_agent_tools(self):
         s = Session(backend=_StubBackend())
-        from resonant_client.engine.tools import AGENT_TOOLS
+        from lumi.engine.tools import AGENT_TOOLS
         assert s.tools == AGENT_TOOLS
 
     def test_allowed_tools_overrides_default(self):
@@ -195,7 +195,7 @@ class TestSessionTools:
 
     def test_mcp_tools_appended_when_set(self):
         s = Session(backend=_StubBackend())
-        from resonant_client.engine.tools import AGENT_TOOLS
+        from lumi.engine.tools import AGENT_TOOLS
         s.mcp_tools = [{"function": {"name": "mcp_thing"}}]
         result = s.tools
         assert result[: len(AGENT_TOOLS)] == AGENT_TOOLS
@@ -303,6 +303,13 @@ class TestSessionShouldAutoApprove:
         assert s._should_auto_approve("file_write") is False
         # bash certainly needs approval at suggest tier.
         assert s._should_auto_approve("bash") is False
+
+    def test_ask_tier_asks_before_everything_but_reads(self):
+        s = Session(backend=_StubBackend())
+        s.autonomy_tier = "ask"
+        assert s._should_auto_approve("file_read") is True
+        for tool in ("file_write", "file_edit", "bash", "task", "check_run"):
+            assert s._should_auto_approve(tool) is False, tool
 
     def test_auto_edit_tier_files_ok_exec_not(self):
         s = Session(backend=_StubBackend())
@@ -434,7 +441,7 @@ class TestSessionCopyExecutionContext:
         # FRESH EventLogger (not the same instance) with its own
         # session_id, so child events don't pollute the parent's log
         # file.
-        from resonant_client.engine.event_log import EventLogger
+        from lumi.engine.event_log import EventLogger
         parent = Session(backend=_StubBackend())
         parent.event_logger = EventLogger(
             log_dir=tmp_path, session_id="parent", enabled=True,

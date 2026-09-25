@@ -1,5 +1,5 @@
 """
-Tests for resonant_client/engine/rag.py
+Tests for lumi/engine/rag.py
 
 Covers: CodebaseIndex lifecycle, keyword/symbol/path/import search,
 context generation, caching, language detection, symbol/import extraction,
@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from resonant_client.engine.rag import (
+from lumi.engine.rag import (
     CodebaseIndex,
     IndexEntry,
     MAX_FILE_SIZE,
@@ -1072,11 +1072,11 @@ class TestEdgeCases:
         assert not any("RANDOMFILE" in p for p in idx._entries)
 
     @pytest.mark.adversarial
-    def test_cache_missing_resonant_dir(self, tmp_path):
-        """Indexing creates .resonant dir if needed."""
+    def test_cache_missing_lumi_dir(self, tmp_path):
+        """Indexing creates the .lumi dir if needed."""
         proj = tmp_path / "no_resonant"
         proj.mkdir()
         (proj / "hello.py").write_text("print('hi')\n", encoding="utf-8")
         idx = CodebaseIndex(proj)
         idx.index()
-        assert (proj / ".resonant" / "index.json").exists()
+        assert (proj / ".lumi" / "index.json").exists()

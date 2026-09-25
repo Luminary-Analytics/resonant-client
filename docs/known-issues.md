@@ -4,6 +4,23 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
+## Desktop views without an entry point (2026-09-25, fixed in source)
+
+v0.14.0 ("conversation-first agent workflow", 8d6d023) removed the Agents pane
+from the page, and with it the desktop entry point to its views. Each has one
+again (Unreleased):
+
+- worker handoffs, transcripts and controls: in the conversation;
+- the checkpoint Timeline: in the chat header;
+- a run's trace, its OTLP export and the files it saved: in its card's work
+  details (`flight_recorder_detail`, `flight_recorder_export`, `artifact_view`);
+- capability packs: in Settings.
+
+`app.js` still has rendering for the pane's agents, timeline and packs views
+(`renderRuntimeView`, `renderAgentActivityTree`), drawing into elements that no
+longer exist. **Fix proposal:** remove it, keeping the state the conversation's
+worker blocks use.
+
 ## Current provider and validation limitations (2026-09-14)
 
 - Authenticated live SONN discovery and coding have been exercised through the
@@ -73,7 +90,7 @@ that removed product surfaces or old bundle-size observations still apply.
 | 18 | Per-user install invisible to Windows Search | High (UX-blocking on Win11) | ✅ Shipped fix (v0.2.3) | v0.2.2 install |
 | 19 | console=False crashes uvicorn ColourizedFormatter at startup | **Critical** (app won't launch) | ✅ Shipped fix (v0.2.4) | v0.2.3 install |
 | 20 | Frozen `Path(__file__).parent` breaks Jinja2 template lookup | **Critical** (500 on every page) | ✅ Shipped fix (v0.2.5) | v0.2.4 install |
-| 21 | Stderr redirect to /dev/null hid all runtime errors | High (debugging blind) | ✅ Shipped fix (v0.2.5) — now logs to ~/.resonant/logs/resonant-startup.log | v0.2.4 install |
+| 21 | Stderr redirect to /dev/null hid all runtime errors | High (debugging blind) | ✅ Shipped fix (v0.2.5) — now logs to ~/.lumi/logs/lumi-startup.log | v0.2.4 install |
 | 22 | Pre-tag smoke test only used dev Python, not bundled exe | High (process gap, not code) | Open — fix in build-check.yml workflow + RELEASING.md update | This session |
 | 23 | Starlette 0.29+ TemplateResponse signature change | **Critical** (homepage 500) | ✅ Shipped fix (v0.2.6) | v0.2.5 install |
 | 24 | websockets not bundled — every WS upgrade fails | **Critical** (UI hangs at "Reconnecting...") | ✅ Shipped fix (v0.2.7) | v0.2.6 install |
@@ -88,7 +105,7 @@ that removed product surfaces or old bundle-size observations still apply.
 
 **Cause:** browser mode has no `pywebview` available, so the `folder_dialog` WebSocket command silently fails
 
-**Fix shipped:** server emits `folder_picker_unavailable` event when no native picker is available; frontend redirects to the welcome screen with a status message. Lives in `resonant_client/gui/app.py` and `resonant_client/gui/static/app.js`.
+**Fix shipped:** server emits `folder_picker_unavailable` event when no native picker is available; frontend redirects to the welcome screen with a status message. Lives in `lumi/gui/app.py` and `lumi/gui/static/app.js`.
 
 ---
 
@@ -105,7 +122,7 @@ that removed product surfaces or old bundle-size observations still apply.
 - Cold-start banner above the input fades once the first text.delta arrives
 - Elapsed-time hint after 5s on the thinking indicator: `...thinking (12s)` so the user can tell it isn't dead
 
-Lives in `resonant_client/gui/app.py` (background warmup thread + `model_warmup_started`/`model_warmup_complete` events), `resonant_client/gui/static/app.js` (banner + elapsed-time UI), and `resonant_client/gui/static/styles.css`.
+Lives in `lumi/gui/app.py` (background warmup thread + `model_warmup_started`/`model_warmup_complete` events), `lumi/gui/static/app.js` (banner + elapsed-time UI), and `lumi/gui/static/styles.css`.
 
 ---
 
@@ -117,7 +134,7 @@ Lives in `resonant_client/gui/app.py` (background warmup thread + `model_warmup_
 
 **Cause:** the system prompt didn't specify the shell environment / OS. The model defaults to Unix idioms.
 
-**Fix shipped (partial):** added a platform/shell hint to the system prompt in `resonant_client/engine/session.py`:
+**Fix shipped (partial):** added a platform/shell hint to the system prompt in `lumi/engine/session.py`:
 
 > Use `python` not `python3`... Unix tools like `tail`, `head`, `sed`, `awk`, `grep`, `wc`, `find` are NOT available — use `file_read` for inspection, the `grep` agent tool for content search, and `glob` for path listing instead of shelling out.
 
@@ -158,8 +175,8 @@ Lives in `resonant_client/gui/app.py` (background warmup thread + `model_warmup_
 **Recovery (manual):**
 
 ```powershell
-Stop-Process -Name resonant -Force
-python -m resonant_client gui --port 8909
+Stop-Process -Name lumi -Force
+python -m lumi gui --port 8909
 ```
 
 **Hypothesis:** Windows-specific socket eviction during long-idle periods. May be related to TIME_WAIT accumulation or a Starlette/uvicorn idle disconnect.
@@ -169,7 +186,7 @@ python -m resonant_client gui --port 8909
 - If ping fails, log warning and rebind
 - If rebind fails, exit cleanly so the parent can restart
 
-Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at startup.
+Where to add: `lumi/gui/app.py` — likely a periodic task spawned at startup.
 
 ---
 
@@ -181,7 +198,7 @@ Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at
 
 **Surfaced in:** dogfood marathon (multiple passes).
 
-**Fix proposal:** `resonant_client/gui/static/app.js` should call the git-status refresh handler immediately on `project.changed` event, not wait for a session creation.
+**Fix proposal:** `lumi/gui/static/app.js` should call the git-status refresh handler immediately on `project.changed` event, not wait for a session creation.
 
 ---
 
@@ -191,7 +208,7 @@ Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at
 
 **Repro:** switch projects mid-conversation. The session list updates correctly but the chat view continues showing the previous project's last conversation until you click on a different session.
 
-**Fix proposal:** render an empty state ("Pick a session or start a new one") when the active project changes. Likely lives in `resonant_client/gui/static/app.js` near the project-change event handler.
+**Fix proposal:** render an empty state ("Pick a session or start a new one") when the active project changes. Likely lives in `lumi/gui/static/app.js` near the project-change event handler.
 
 **Note:** #7 and #8 are likely a single fix — both stem from "project change doesn't trigger a UI refresh."
 
@@ -221,9 +238,9 @@ Where to add: `resonant_client/gui/app.py` — likely a periodic task spawned at
 **Test pinned:** `tests/test_backend_swap.py` (6 tests, all pass) — verifies default-preserve, opt-in clear, round-trip preservation (the bug #10 case), and signature stability against future regressions.
 
 **Files changed:**
-- `resonant_client/engine/session.py` — `set_backend` signature
-- `resonant_client/gui/app.py` — `swap_backend()` method + `switch_model` handler
-- `resonant_client/tui.py` — 5 call sites updated to `reset_history=True` (preserves their explicit "conversation cleared" UX)
+- `lumi/engine/session.py` — `set_backend` signature
+- `lumi/gui/app.py` — `swap_backend()` method + `switch_model` handler
+- `lumi/tui.py` — 5 call sites updated to `reset_history=True` (preserves their explicit "conversation cleared" UX)
 - `tests/test_backend_swap.py` — new file, 6 regression tests
 
 ---
@@ -266,7 +283,7 @@ Agent ships deliverable #1 (the easy new file) but silently skips #2 (modify a 4
 3. The verifier specialist checks `git diff --name-only` against the deliverable list
 4. Run-summary card shows ✓/⚠ per deliverable (not just file count)
 
-Lives in `resonant_client/orchestration/` (planner + verifier specialists).
+Lives in `lumi/orchestration/` (planner + verifier specialists).
 
 ---
 
@@ -276,7 +293,7 @@ Lives in `resonant_client/orchestration/` (planner + verifier specialists).
 
 **Surfaced in:** Phase 3 v0.2.0 release.
 
-**What happened:** the v0.2.0 release CI failed on its first run because `plan_graph_view.js` was referenced by `packaging/resonant.spec` but had never been git-committed (only existed locally). Local builds worked because the file was on disk; CI's clean checkout didn't have it.
+**What happened:** the v0.2.0 release CI failed on its first run because `plan_graph_view.js` was referenced by `packaging/lumi.spec` but had never been git-committed (only existed locally). Local builds worked because the file was on disk; CI's clean checkout didn't have it.
 
 **Root cause:** there's no validation that runs the full PyInstaller spec on a clean checkout before tag push.
 
@@ -286,8 +303,8 @@ Lives in `resonant_client/orchestration/` (planner + verifier specialists).
 on:
   pull_request:
     paths:
-      - 'resonant_client/**'
-      - 'packaging/resonant.spec'
+      - 'lumi/**'
+      - 'packaging/lumi.spec'
       - 'pyproject.toml'
 
 jobs:
@@ -298,8 +315,8 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.13' }
       - run: pip install -e ".[gui,desktop]" pyinstaller
-      - run: pyinstaller packaging/resonant.spec --clean --noconfirm
-      - run: ./dist/resonant/resonant.exe --version
+      - run: pyinstaller packaging/lumi.spec --clean --noconfirm
+      - run: ./dist/lumi/lumi.exe --version
 ```
 
 Doesn't sign or publish — just confirms the bundle builds. Would have caught the missing-file issue in seconds instead of after a tag push.
@@ -342,7 +359,7 @@ Add a `--strict` flag to preserve the old refuse-behavior for paranoid releases 
 
 **Severity:** Low (cosmetic, doesn't block users)
 
-**What:** local dev machine produces a ~64 MB installer; CI's `windows-latest` runner produces a ~26 MB installer from the same `packaging/resonant.spec`.
+**What:** local dev machine produces a ~64 MB installer; CI's `windows-latest` runner produces a ~26 MB installer from the same `packaging/lumi.spec`.
 
 **Hypothesis:** local Python env has `numpy`, `PyQt5`, `cv2`, etc. system-installed; PyInstaller pulls them transitively despite `excludes=` directives. CI's clean env doesn't have those packages, so the bundle stays slim.
 
@@ -359,7 +376,7 @@ Add a `--strict` flag to preserve the old refuse-behavior for paranoid releases 
 **Surfaced in:** v0.2.1 release.
 
 **What happened:**
-1. CI run #1 built + signed `resonant-setup-0.2.1.exe` → published to GitHub Release → my appcast got that signature.
+1. CI run #1 built + signed `lumi-setup-0.2.1.exe` → published to GitHub Release → my appcast got that signature.
 2. The CI run failed at the very last step (gh-pages push, due to bug "user.email missing" in the workflow), so I **re-ran the failed jobs** (`gh run rerun --failed`).
 3. The re-run rebuilt the installer from scratch — PyInstaller embeds build timestamps in the PE header, plus ZIP file timestamps inside the bundle, so the resulting bytes differed from run #1.
 4. The re-run uploaded the new bytes to the SAME release tag, **silently overwriting** run #1's installer.
@@ -368,8 +385,8 @@ Add a `--strict` flag to preserve the old refuse-behavior for paranoid releases 
 **Diagnostic:** `md5sum` the previously-downloaded installer and a fresh re-download. If they differ, this bug fired.
 
 ```bash
-md5sum resonant-setup-0.2.1.exe                                                        # what I signed
-curl -sL -o fresh.exe https://github.com/.../releases/download/v0.2.1/resonant-setup-0.2.1.exe
+md5sum lumi-setup-0.2.1.exe                                                        # what I signed
+curl -sL -o fresh.exe https://github.com/.../releases/download/v0.2.1/lumi-setup-0.2.1.exe
 md5sum fresh.exe                                                                        # what users actually get
 # If hashes differ, the asset was rebuilt and re-uploaded
 ```
@@ -391,10 +408,10 @@ For v0.2.x: add a CI step `Verify signature is consistent with uploaded asset` t
 
 **Surfaced in:** v0.2.1 install (visible to user as a black-on-yellow PowerShell console showing the URL).
 
-**Cause:** `packaging/resonant.spec` has `console=True`. Was kept on for v0.x debugging — first-install Ollama-connection / port-bind issues are easier to triage when stderr is visible.
+**Cause:** `packaging/lumi.spec` has `console=True`. Was kept on for v0.x debugging — first-install Ollama-connection / port-bind issues are easier to triage when stderr is visible.
 
 **Fix proposal:**
-1. **Add proper logging-to-file.** Currently errors go to stderr (which the console swallows when `console=False`). Need a `~/.resonant/logs/resonant-YYYYMMDD.log` rotation.
+1. **Add proper logging-to-file.** Currently errors go to stderr (which the console swallows when `console=False`). Need a `~/.lumi/logs/resonant-YYYYMMDD.log` rotation.
 2. **Flip `console=False`** in the spec for v0.2.2+.
 3. Optionally add `--debug` flag that re-enables console for power users.
 

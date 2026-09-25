@@ -6,9 +6,9 @@ import json
 
 import httpx
 
-from resonant_client.engine.mcp import MCPConnection, MCPManager, MCPServerConfig
-from resonant_client.engine.tools import AGENT_TOOLS
-from resonant_client.gui.settings import SettingsManager
+from lumi.engine.mcp import MCPConnection, MCPManager, MCPServerConfig
+from lumi.engine.tools import AGENT_TOOLS
+from lumi.gui.settings import SettingsManager
 
 
 def test_no_mcp_server_is_configured_by_default(tmp_path):

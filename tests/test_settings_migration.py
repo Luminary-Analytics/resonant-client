@@ -2,7 +2,7 @@
 
 import json
 
-from resonant_client.gui.settings import DEFAULTS, SettingsManager
+from lumi.gui.settings import DEFAULTS, SettingsManager
 
 STOCK_URL = "http://127.0.0.1:9239/mcp"
 
@@ -101,7 +101,7 @@ def test_ollama_is_reprobed_before_being_declared_unreachable(monkeypatch, tmp_p
     (project / ".resonant").mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.chdir(project)
-    import resonant_client.gui.app as app_module
+    import lumi.gui.app as app_module
     app_module = importlib.reload(app_module)
 
     probes = []
@@ -135,7 +135,7 @@ def test_unreachable_ollama_error_names_the_configured_url(monkeypatch, tmp_path
     (project / ".resonant").mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.chdir(project)
-    import resonant_client.gui.app as app_module
+    import lumi.gui.app as app_module
     app_module = importlib.reload(app_module)
 
     monkeypatch.setattr(app_module.AppState, "detect_backends", lambda self, force=False: {})
@@ -167,7 +167,7 @@ def test_backend_probe_is_reused_within_the_freshness_window(monkeypatch, tmp_pa
     (project / ".resonant").mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.chdir(project)
-    import resonant_client.gui.app as app_module
+    import lumi.gui.app as app_module
     app_module = importlib.reload(app_module)
 
     probes = []
@@ -206,7 +206,7 @@ def test_a_stale_probe_is_refreshed(monkeypatch, tmp_path):
     (project / ".resonant").mkdir()
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.chdir(project)
-    import resonant_client.gui.app as app_module
+    import lumi.gui.app as app_module
     app_module = importlib.reload(app_module)
 
     probes = []

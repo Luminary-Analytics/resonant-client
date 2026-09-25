@@ -4,12 +4,19 @@ name: Release
 # Tag-only — never on plain commits to main, never on branches.
 #
 # What this workflow does end-to-end:
-#   1. Builds the PyInstaller bundle for the tagged version
-#   2. Wraps it into an Inno Setup installer (resonant-setup-X.Y.Z.exe)
+#   1. Builds the PyInstaller bundle for the tagged version from the
+#      hash-pinned packaging/requirements-release.txt, with third-party
+#      notices and a CycloneDX SBOM
+#   2. Authenticode-signs lumi.exe, wraps the bundle into an Inno Setup
+#      installer (lumi-setup-X.Y.Z.exe) and, for stable tags, an MSI for device
+#      management (lumi-X.Y.Z.msi), and Authenticode-signs both when signing
+#      credentials are configured (packaging/sign_windows.ps1)
 #   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
-#   4. Creates a GitHub Release, uploads the signed installer
+#   4. Creates a GitHub Release with the installer, SBOM and notices
 #   5. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
-#      keeps the newest three installers and updates appcast.xml to point there
+#      prunes old installers and adds the release to the update feeds: a
+#      stable tag to appcast.xml, the beta feed and its release line's feed;
+#      a beta tag (vX.Y.Z-beta.N) to the beta feed only
 #   6. Publishes gh-pages as one fresh commit. WinSparkle in installed copies
 #      picks up the release within 24h (or on next launch if the check is stale)
 
@@ -44,9 +51,9 @@ jobs:
       - name: Sanity check — tag matches __version__
         shell: bash
         run: |
-          PKG_VERSION=$(python -c "import re,pathlib;m=re.search(r'__version__\\s*=\\s*\"([^\"]+)\"',pathlib.Path('resonant_client/__init__.py').read_text());print(m.group(1))")
+          PKG_VERSION=$(python -c "import re,pathlib;m=re.search(r'__version__\\s*=\\s*\"([^\"]+)\"',pathlib.Path('lumi/__init__.py').read_text());print(m.group(1))")
           if [ "$PKG_VERSION" != "${{ steps.version.outputs.version }}" ]; then
-            echo "::error::Tag version (${{ steps.version.outputs.version }}) does not match resonant_client/__init__.py __version__ ($PKG_VERSION)"
+            echo "::error::Tag version (${{ steps.version.outputs.version }}) does not match lumi/__init__.py __version__ ($PKG_VERSION)"
             exit 1
           fi
           echo "Version match: $PKG_VERSION"
@@ -58,7 +65,7 @@ jobs:
           cache: 'pip'
 
       # Correctness gate. A signed installer that auto-updates every deployed
-      # copy of Resonant is the last artifact that should ever be cut from a red
+      # copy of Lumi is the last artifact that should ever be cut from a red
       # tree, and a tag push can race ahead of the PR that `tests.yml` gated.
       # ~2 minutes against a 30-minute job budget.
       - name: Install for tests
@@ -72,32 +79,48 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+      - name: Install the pinned SBOM tools
+        run: python -m pip install --require-hashes -r packaging/tools-requirements.txt
+
       - name: Build PyInstaller bundle
         shell: pwsh
         run: |
-          ./scripts/build_clean.ps1
-          if (-not (Test-Path "dist/resonant/resonant.exe")) {
-              throw "PyInstaller did not produce dist/resonant/resonant.exe"
+          ./scripts/build_clean.ps1 -SbomPath "dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json"
+          if (-not (Test-Path "dist/lumi/lumi.exe")) {
+              throw "PyInstaller did not produce dist/lumi/lumi.exe"
           }
+          Copy-Item "dist/lumi/_internal/licenses/THIRD_PARTY_NOTICES.txt" `
+              "dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt"
 
       - name: Smoke-test bundled exe
         shell: pwsh
         run: |
           # Just confirm --version works — quick sanity that the bundle is
           # not totally broken before we spend time wrapping it.
-          $stdout = Join-Path $env:RUNNER_TEMP "resonant-version.out"
-          $stderr = Join-Path $env:RUNNER_TEMP "resonant-version.err"
-          $proc = Start-Process -FilePath "dist/resonant/resonant.exe" `
+          $stdout = Join-Path $env:RUNNER_TEMP "lumi-version.out"
+          $stderr = Join-Path $env:RUNNER_TEMP "lumi-version.err"
+          $proc = Start-Process -FilePath "dist/lumi/lumi.exe" `
               -ArgumentList "--version" -Wait -PassThru `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           if ($proc.ExitCode -ne 0) {
               throw "Bundled exe --version exited $($proc.ExitCode): $(Get-Content $stderr -Raw)"
           }
           $output = (Get-Content $stdout -Raw).Trim()
-          if ($output -notmatch "resonant-client ${{ steps.version.outputs.version }}") {
+          if ($output -notmatch "lumi ${{ steps.version.outputs.version }}") {
               throw "Bundled exe reported wrong version: $output"
           }
           Write-Host "Smoke test passed: $output"
+
+      # Authenticode is Windows' publisher signature (SmartScreen, company
+      # policies); EdDSA below is the update feed's. Unsigned, with a warning,
+      # until a certificate is configured: see docs/release-pipeline.md.
+      - name: Authenticode-sign lumi.exe
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+        run: ./packaging/sign_windows.ps1 -Files "dist/lumi/lumi.exe"
 
       # NOTE: windows-latest GitHub-hosted runners ship Inno Setup pre-installed
       # (v6.7+ as of late 2025). No need to install — the "Build installer" step
@@ -113,12 +136,39 @@ jobs:
               $iscc = (Get-ChildItem "C:\" -Filter "ISCC.exe" -Recurse -ErrorAction SilentlyContinue -Depth 5 | Select-Object -First 1).FullName
           }
           & $iscc "/DAppVersion=${{ steps.version.outputs.version }}" "packaging/installer.iss"
-          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+          $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
           if (-not (Test-Path $installer)) {
               throw "Installer not produced at $installer"
           }
           $size = (Get-Item $installer).Length
           Write-Host "Installer: $installer ($([math]::Round($size / 1MB, 1)) MB)"
+
+      # An MSI for Intune, Configuration Manager and Group Policy. MSI versions
+      # are three numbers, so betas get none.
+      - name: Build the MSI
+        if: ${{ !contains(steps.version.outputs.version, '-') }}
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          ./packaging/build_msi.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Authenticode-sign the MSI
+        if: ${{ !contains(steps.version.outputs.version, '-') }}
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+        run: ./packaging/sign_windows.ps1 -Files "dist/installer/lumi-${{ steps.version.outputs.version }}.msi"
+
+      # Before the EdDSA signature, so the update feed signs the final bytes.
+      - name: Authenticode-sign the installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+        run: ./packaging/sign_windows.ps1 -Files "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
 
       - name: Sign installer with EdDSA
         id: sign
@@ -135,7 +185,7 @@ jobs:
           $env:EDDSA_PRIVATE_KEY | Out-File -Encoding ascii -NoNewline $keyPath
 
           $tool = "packaging/winsparkle/WinSparkle-0.9.2/bin/winsparkle-tool.exe"
-          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+          $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
 
           # winsparkle-tool sign prints just the base64 EdDSA signature to
           # stdout. The installer is the trailing positional arg, NOT --file.
@@ -151,52 +201,56 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
-          name: SONN Client ${{ steps.version.outputs.version }}
+          name: Lumi ${{ steps.version.outputs.version }}
           draft: false
           prerelease: ${{ contains(steps.version.outputs.version, '-') }}
           generate_release_notes: true
           files: |
-            dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe
+            dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe
+            dist/installer/lumi-${{ steps.version.outputs.version }}.msi
+            dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json
+            dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt
 
-      # Installed apps poll the GitHub Pages feed and download installers
+      # Installed apps poll the GitHub Pages feeds and download installers
       # anonymously. The source repository may be private, so Release assets
       # are not reachable for them; the Pages site hosts the newest installers
-      # too. Pre-release tags are not published to the feed.
+      # too. Pre-release tags reach only the beta feed (appcast-beta.xml), so
+      # installs on the stable channel never see them.
       - name: Checkout gh-pages branch
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
         uses: actions/checkout@v4
         with:
           ref: gh-pages
           path: gh-pages-checkout
 
       - name: Publish installer and appcast to the Pages site
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
         shell: pwsh
         run: |
           $owner = "${{ github.repository_owner }}".ToLowerInvariant()
           $repo = "${{ github.event.repository.name }}"
           $pages = "https://$owner.github.io/$repo"
-          $installer = "dist/installer/resonant-setup-${{ steps.version.outputs.version }}.exe"
+          $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
+          $extras = @()
+          $msi = "dist/installer/lumi-${{ steps.version.outputs.version }}.msi"
+          if (Test-Path $msi) { $extras = @("--extra", $msi) }
           python packaging/publish_pages.py `
               --site "gh-pages-checkout" `
               --installer $installer `
-              --version "${{ steps.version.outputs.version }}"
+              --version "${{ steps.version.outputs.version }}" @extras
           if ($LASTEXITCODE -ne 0) { throw "publish_pages.py failed" }
 
-          $notes = "<p>SONN Client ${{ steps.version.outputs.version }}. See <a href=`"$pages/`">$pages/</a>.</p>"
+          $notes = "<p>Lumi ${{ steps.version.outputs.version }}. See <a href=`"$pages/`">$pages/</a>.</p>"
           python packaging/update_appcast.py `
               --version "${{ steps.version.outputs.version }}" `
               --installer $installer `
               --signature "${{ steps.sign.outputs.signature }}" `
               --notes $notes `
-              --appcast "gh-pages-checkout/appcast.xml" `
+              --site "gh-pages-checkout" `
               --download-base "$pages/downloads"
           if ($LASTEXITCODE -ne 0) { throw "update_appcast.py failed" }
 
       # Publish gh-pages as one fresh commit so removed installers do not
       # accumulate in branch history. appcast.xml keeps the version history.
       - name: Push the Pages site
-        if: ${{ !contains(steps.version.outputs.version, '-') }}
         shell: bash
         working-directory: gh-pages-checkout
         run: |
@@ -205,5 +259,5 @@ jobs:
           git add -A
           git diff --cached --quiet && exit 0  # nothing changed, e.g. retry of an existing release
           tree=$(git write-tree)
-          commit=$(git commit-tree "$tree" -m "release: SONN Client ${{ steps.version.outputs.version }} installer and appcast")
+          commit=$(git commit-tree "$tree" -m "release: Lumi ${{ steps.version.outputs.version }} installer and appcast")
           git push --force origin "$commit:refs/heads/gh-pages"

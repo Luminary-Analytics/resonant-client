@@ -1,10 +1,10 @@
 import base64
 
-from resonant_client.capabilities import (
+from lumi.capabilities import (
     default_context_window,
     infer_model_capabilities,
 )
-from resonant_client.content import (
+from lumi.content import (
     build_user_content,
     content_text,
     normalize_content,

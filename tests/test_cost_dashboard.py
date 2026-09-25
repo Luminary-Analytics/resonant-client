@@ -3,17 +3,17 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.gui.costs import CostTracker
+from lumi.gui.costs import CostTracker
 
 
 ROOT = Path(__file__).parents[1]
-APP_JS = ROOT / "resonant_client" / "gui" / "static" / "app.js"
-APP_PY = ROOT / "resonant_client" / "gui" / "app.py"
+APP_JS = ROOT / "lumi" / "gui" / "static" / "app.js"
+APP_PY = ROOT / "lumi" / "gui" / "app.py"
 STYLES_CSS = APP_JS.with_name("styles.css")
 
 
 def frontend_source() -> str:
-    """All frontend scripts. ResonantApp is split across mixin files, so
+    """All frontend scripts. LumiApp is split across mixin files, so
     reading app.js alone would fail whenever a method moves between them."""
     return "\n".join(
         path.read_text(encoding="utf-8")
@@ -31,12 +31,16 @@ def test_cost_tracker_returns_persisted_total_and_current_session(tmp_path):
         "input_tokens": 1_000_000,
         "output_tokens": 500_000,
         "cost_usd": pytest.approx(0.45),
+        "unpriced_calls": 0,
+        "subscription_calls": 0,
     }
     assert payload["today"] == payload["daily"][date.today().isoformat()]
     assert payload["total"] == {
         "input_tokens": 1_000_000,
         "output_tokens": 500_000,
         "cost_usd": pytest.approx(0.45),
+        "unpriced_calls": 0,
+        "subscription_calls": 0,
     }
 
     reloaded = CostTracker(tmp_path / "costs.json").get_all_costs()
@@ -66,7 +70,7 @@ def test_session_history_is_replayed_before_runtime_rebuild():
     # inside whatever function actually serves it.
     import inspect
 
-    from resonant_client.gui import ws_commands
+    from lumi.gui import ws_commands
 
     body = inspect.getsource(ws_commands.HANDLERS["switch_session"])
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.network_defaults import (
+from lumi.network_defaults import (
     default_thinking_for_model,
     get_default_model,
     resolve_exo_url,
@@ -137,27 +137,27 @@ class TestResolveExoUrl:
 
 class TestGetDefaultModel:
     def test_fresh_install_uses_backend_discovery(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_DEFAULT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_DEFAULT_MODEL", raising=False)
         assert get_default_model(settings_data={}) == ""
 
     def test_env_var_overrides_default(self, monkeypatch):
-        monkeypatch.setenv("RESONANT_DEFAULT_MODEL", "deepseek-v4-pro:cloud")
+        monkeypatch.setenv("LUMI_DEFAULT_MODEL", "deepseek-v4-pro:cloud")
         assert get_default_model(settings_data={}) == "deepseek-v4-pro:cloud"
 
     def test_settings_value_overrides_default(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_DEFAULT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_DEFAULT_MODEL", raising=False)
         assert get_default_model(
             settings_data={"general": {"default_model": "deepseek-v4-flash:cloud"}}
         ) == "deepseek-v4-flash:cloud"
 
     def test_env_wins_over_settings(self, monkeypatch):
-        monkeypatch.setenv("RESONANT_DEFAULT_MODEL", "kimi-k2.5:cloud")
+        monkeypatch.setenv("LUMI_DEFAULT_MODEL", "kimi-k2.5:cloud")
         assert get_default_model(
             settings_data={"general": {"default_model": "deepseek-v4-pro:cloud"}}
         ) == "kimi-k2.5:cloud"
 
     def test_empty_settings_value_uses_backend_discovery(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_DEFAULT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_DEFAULT_MODEL", raising=False)
         assert get_default_model(
             settings_data={"general": {"default_model": ""}}
         ) == ""

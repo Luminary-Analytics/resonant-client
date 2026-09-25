@@ -7,7 +7,7 @@ append/read, teacher-escalation logging — were untested. The harness
 is opt-in (default off post v0.4.0 refocus), but anyone who DOES
 opt in needs the lifecycle to work correctly.
 
-Coverage delta target on resonant_client/harness/state.py: 61% → ~95%.
+Coverage delta target on lumi/harness/state.py: 61% → ~95%.
 
 Mirrors the fixtures from test_harness_state.py for consistency.
 """
@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from resonant_client.harness.state import (
+from lumi.harness.state import (
     EvaluatorReport,
     HarnessWorkspace,
     ProductSpec,
@@ -29,7 +29,7 @@ from resonant_client.harness.state import (
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -54,14 +54,14 @@ def ws(state_home, project_dir):
 class TestSpecRoundTrip:
     def test_round_trip(self, ws):
         spec = ProductSpec(
-            title="Resonant",
+            title="Lumi",
             summary="agentic coder",
             user_stories=["as a dev I want X"],
             sprint_order=["sp-1", "sp-2"],
         )
         ws.write_spec(spec)
         loaded = ws.read_spec()
-        assert loaded.title == "Resonant"
+        assert loaded.title == "Lumi"
         assert loaded.summary == "agentic coder"
         assert loaded.user_stories == ["as a dev I want X"]
         assert loaded.sprint_order == ["sp-1", "sp-2"]

@@ -73,7 +73,7 @@ def main():
     # Coverage
     if args.coverage:
         cmd.extend([
-            "--cov=resonant_client",
+            "--cov=lumi",
             "--cov-report=term-missing",
             "--cov-report=html:htmlcov",
             "--cov-config=pyproject.toml",

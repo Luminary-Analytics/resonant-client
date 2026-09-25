@@ -27,7 +27,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 
-from resonant_client.gui.app import (
+from lumi.gui.app import (
     _AUTONOMOUS_TERMINAL_EVENTS,
     _make_autonomous_event_forwarder,
 )
@@ -37,7 +37,7 @@ from resonant_client.gui.app import (
 
 
 class _FakeSession:
-    """Stand-in for `Session` (resonant_client.gui.sessions). Only
+    """Stand-in for `Session` (lumi.gui.sessions). Only
     implements the bits the forwarder touches: id, mission_state,
     advance_mission_phase, save."""
 
@@ -130,7 +130,7 @@ def _patch_run_coroutine_threadsafe(monkeypatch):
             pass
         return MagicMock()  # imitate the Future return
 
-    import resonant_client.gui.app as app_module
+    import lumi.gui.app as app_module
     monkeypatch.setattr(app_module.asyncio, "run_coroutine_threadsafe", fake_rcts)
     return scheduled
 
@@ -425,7 +425,7 @@ class TestForwarderDefensiveBehavior:
                 pass
             return MagicMock()
 
-        import resonant_client.gui.app as app_module
+        import lumi.gui.app as app_module
         monkeypatch.setattr(app_module.asyncio, "run_coroutine_threadsafe", fake_rcts)
 
         sess = _FakeSession(

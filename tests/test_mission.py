@@ -10,8 +10,8 @@ Covers:
 from __future__ import annotations
 
 
-from resonant_client.gui.sessions import SessionRecord
-from resonant_client.orchestration.grill_me import (
+from lumi.gui.sessions import SessionRecord
+from lumi.orchestration.grill_me import (
     GRILL_ME_PROMPT,
     extract_spec,
     format_grill_first_message,

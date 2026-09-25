@@ -5,9 +5,9 @@ import json
 import os
 from types import SimpleNamespace
 
-from resonant_client.codex_account import CodexAccount
-from resonant_client.gui.settings import SettingsManager
-from resonant_client.gui.ws_commands import CommandContext, _cmd_provider_connection, _cmd_switch_model
+from lumi.codex_account import CodexAccount
+from lumi.gui.settings import SettingsManager
+from lumi.gui.ws_commands import CommandContext, _cmd_provider_connection, _cmd_switch_model
 
 
 class Socket:
@@ -19,7 +19,7 @@ class Socket:
 
 
 def test_account_stdio_handshake_pagination_usage_and_cleanup(monkeypatch):
-    import resonant_client.codex_account as module
+    import lumi.codex_account as module
     replies = [
         {'id': 1, 'result': {}},
         {'id': 2, 'result': {'account': {'type': 'chatgpt', 'planType': 'plus'}}},
@@ -68,7 +68,7 @@ def test_account_login_can_be_cancelled_without_logging_out(monkeypatch):
 
 
 def test_account_response_is_allowlisted_before_sending_to_browser(monkeypatch):
-    from resonant_client.codex_account import codex_account
+    from lumi.codex_account import codex_account
     monkeypatch.setattr(codex_account, 'status', lambda: {
         'account': {'type': 'chatgpt', 'email': 'a@example.com', 'planType': 'plus', 'unexpected_secret': 'secret'},
         'models': [{'id': 'model', 'displayName': 'Model'}], 'rate_limits': None,

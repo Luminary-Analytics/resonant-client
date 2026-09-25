@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.engine.session import Session
+from lumi.engine.session import Session
 
 
 _RUFF_AVAILABLE = shutil.which("ruff") is not None
@@ -30,6 +30,7 @@ def _make_minimal_session(project_path: Path) -> Session:
     s._lint_feedback_cache = {}
     s._test_feedback_cache = {}
     s.project_path = str(project_path)
+    s.project_content_trusted = True
     return s
 
 
@@ -47,6 +48,15 @@ def lint_project(tmp_path):
 
 @pytest.mark.skipif(not _RUFF_AVAILABLE, reason="ruff not installed")
 class TestAutoLintFeedback:
+    def test_untrusted_projects_are_not_linted(self, lint_project):
+        # Linters run repository code (configs, plugins); they wait for trust.
+        s = _make_minimal_session(lint_project)
+        s.auto_lint_enabled = True
+        s.project_content_trusted = False
+
+        assert list(s._run_post_edit_feedback("bad.py")) == []
+        assert s.conversation_history == []
+
     def test_lint_feedback_injected(self, lint_project):
         s = _make_minimal_session(lint_project)
         s.auto_lint_enabled = True

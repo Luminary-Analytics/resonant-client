@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from resonant_client.engine.editing import EditMatchError, apply_text_edit
-from resonant_client.engine.tools import _exec_file_edit
+from lumi.engine.editing import EditMatchError, apply_text_edit
+from lumi.engine.tools import _exec_file_edit
 
 
 def test_exact_match_requires_uniqueness():

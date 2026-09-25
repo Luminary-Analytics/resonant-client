@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.engine.tools import execute_tool
+from lumi.engine.tools import execute_tool
 
 
 @pytest.fixture

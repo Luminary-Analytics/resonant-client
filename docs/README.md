@@ -1,4 +1,4 @@
-# SONN Client documentation index
+# Lumi documentation index
 
 **September 23, 2026: AI Employee work remains PAUSED by the user.**
 The [consolidated product checkpoint](D:/Repos/Lumina_DO/SelfOrganizingNN/product/AI_EMPLOYEES_CHECKPOINT_2026_09_23.md)
@@ -17,7 +17,7 @@ local dev11 capabilities, actual native-engine/browser runs, remaining gaps and
 the source-only project-picker fix. Consult it before interpreting older setup
 or evaluation notes as the current candidate state.
 
-The current release is [SONN Client 0.19.1](v0.19.1-release-notes.md).
+The current release is [Lumi 0.19.1](v0.19.1-release-notes.md).
 [Unreleased changes](unreleased.md) describe work in the checkout that has not
 yet shipped. Versioned release notes and dated evaluations record their own
 point in time; they are not instructions to restore an old design.
@@ -25,12 +25,31 @@ point in time; they are not instructions to restore an old design.
 The [documentation status catalog](documentation-status.md) identifies active
 guides, historical plans, and dated evidence, with links to current replacements.
 
-## Using SONN Client
+The user and administrator guides also build as a site, starting from
+[its home page](index.md); `mkdocs.yml` holds its navigation. Preview it with
+`pip install -r packaging/docs-requirements.txt` and `mkdocs serve`. A new
+guide belongs in that navigation; historical records stay out of it.
+
+## Using Lumi
 
 - [Install, configure providers, and run](../README.md)
+- [Plans: free for individuals, and what's planned for organizations](plans.md)
+- [Lumi account and Lumi Cloud: signing in, enrolling this computer, sharing a conversation, managed enrollment](lumi-cloud.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
+- [Comparing models on your own tasks before switching](model-comparisons.md)
+- [Code intelligence: language servers for definitions, references and diagnostics](code-intelligence.md)
+- [Code editors: sending selections and files from VS Code and JetBrains IDEs, and reviewing Lumi's changes there](code-editors.md)
+- [Issue trackers: starting from a Jira, Linear, GitHub or GitLab issue, and commenting on it](issue-trackers.md)
+- [Hand-offs: passing work to a teammate or a CI run](hand-offs.md)
+- [Team skills, prompts and project notes from your organization's library](team-library.md)
+- [Code review: agent changes wait for a named reviewer](code-review.md)
+- [A second person approves risky commands before they run](second-approval.md)
+- [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
 - [Skills and learning](skills.md)
+- [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
+- [Extensions: add a model provider with the Extension SDK (manifest, protocol, template, checker)](extensions.md)
+- [Accessibility conformance report (draft, self-assessed WCAG 2.1 AA)](accessibility.md)
 - [Blender, Unity, and Unreal Engine 5 setup](creative-editors.md)
 - [Known limitations and historical bug ledger](known-issues.md)
 
@@ -38,6 +57,21 @@ guides, historical plans, and dated evidence, with links to current replacements
 
 - [Shared agent/contributor instructions](../AGENTS.md)
 - [Architecture and module ownership](../ARCHITECTURE.md)
+- [Organization policy for administrators](enterprise-policy.md)
+- [Shell sandbox and command guardrails](shell-sandbox.md)
+- [Audit log and OpenTelemetry export](audit-log.md)
+- [Usage records and prices](usage-and-costs.md)
+- [Running Lumi without a UI (`lumi run`, CI, containers)](headless.md)
+- [Scheduled tasks (`lumi schedule`, Task Scheduler, launchd, cron)](scheduled-tasks.md)
+- [Chat gateway: working with the agent from Telegram or Slack, with approvals in the chat](chat-gateway.md)
+- [Pull requests on GitHub, GitLab, Bitbucket and Azure DevOps (reviews, checks, opening and commenting)](github.md)
+- [Fallback models, roles and capability overrides](models.md)
+- [Signing in to enterprise model endpoints (OAuth, Entra ID, client certificates)](connection-sign-in.md)
+- [Updates: channels, pins and turning them off](updates.md)
+- [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
+- [Lumi on macOS: building, signing and notarizing the app](macos.md)
+- [Deploying on macOS: the PKG, Jamf Pro, Intune and configuration profiles](deploy-macos.md)
+- [Lumi on Linux: the .deb, .rpm, AppImage and tarball, the desktop app in the browser, and servers](deploy-linux.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

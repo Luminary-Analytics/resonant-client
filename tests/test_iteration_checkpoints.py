@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import subprocess
 
-from resonant_client.orchestration.checkpoints import IterationCheckpointStore
+from lumi.orchestration.checkpoints import IterationCheckpointStore
 
 
 def _git(repo, *args):
@@ -38,6 +38,6 @@ def test_checkpoint_captures_untracked_compare_and_restore(tmp_path):
     assert tracked.read_text(encoding="utf-8") == "checkpoint\n"
     assert (tmp_path / "untracked.txt").read_text(encoding="utf-8") == "keep me\n"
     assert not (tmp_path / "new.txt").exists()
-    assert restored["recovery_branch"].startswith("resonant-recovery/")
+    assert restored["recovery_branch"].startswith("lumi-recovery/")
     assert _git(tmp_path, "show", f"{restored['recovery_branch']}:new.txt") == "failed state"
     assert len(store.list()) == 1

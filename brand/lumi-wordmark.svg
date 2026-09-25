@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 72" fill="none">
+  <title>lumi</title>
+  <defs>
+    <radialGradient id="lumi-dot-glow" cx="146" cy="12" r="12" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFC24B" stop-opacity="0.35"/>
+      <stop offset="0.5" stop-color="#FFC24B" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#FFC24B" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <g stroke="#F6F4EE" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8 6V64"/>
+    <path d="M26 28V48A16 16 0 0 0 58 48"/>
+    <path d="M58 28V64"/>
+    <path d="M78 64V40A12 12 0 0 1 102 40V64"/>
+    <path d="M102 40A12 12 0 0 1 126 40V64"/>
+    <path d="M146 28V64"/>
+  </g>
+  <circle cx="146" cy="12" r="12" fill="url(#lumi-dot-glow)"/>
+  <circle cx="146" cy="12" r="6" fill="#FFC24B"/>
+</svg>

@@ -5,17 +5,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-from resonant_client.engine.agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
-from resonant_client.engine.artifacts import ArtifactKind, ArtifactStore
-from resonant_client.engine.capability_packs import CapabilityPackManager
-from resonant_client.engine.checkpoint_timeline import SessionCheckpointStore
-from resonant_client.engine.code_intelligence import parse_code
-from resonant_client.engine.context_broker import ContextBroker
-from resonant_client.engine.flight_recorder import FlightRecorder
-from resonant_client.engine.hooks import HookDefinition, HookRunner, HookType
-from resonant_client.engine.model_roles import ModelRoleRouter
-from resonant_client.engine.tools import AGENT_TOOLS
-from resonant_client.engine.worktrees import WorktreeManager
+from lumi.engine.agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
+from lumi.engine.artifacts import ArtifactKind, ArtifactStore
+from lumi.engine.capability_packs import CapabilityPackManager, approve_pack
+from lumi.engine.checkpoint_timeline import SessionCheckpointStore
+from lumi.engine.code_intelligence import parse_code
+from lumi.engine.context_broker import ContextBroker
+from lumi.engine.flight_recorder import FlightRecorder
+from lumi.engine.hooks import HookDefinition, HookRunner, HookType
+from lumi.engine.model_roles import ModelRoleRouter
+from lumi.engine.tools import AGENT_TOOLS
+from lumi.engine.worktrees import WorktreeManager
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -191,6 +191,43 @@ def test_checkpoint_timeline_restores_conversation_and_non_git_files(tmp_path: P
     assert Path(restored["workspace"]["recovery_archive"]).is_file()
 
 
+def test_the_same_write_in_a_later_turn_gets_its_own_checkpoint(tmp_path: Path):
+    """Call ids are unique only within one response, so identical calls repeat across turns."""
+    from lumi.backends import EVENT_DONE, EVENT_TEXT_DELTA, EVENT_TOOL_CALL, _new_call_id
+    from lumi.engine.session import Session
+
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("original\n", encoding="utf-8")
+    arguments = json.dumps({"path": str(target), "content": "written by the model\n"})
+
+    class WriteEachTurn:
+        name, model, tool_mode, handles_tools = "write-each-turn", "stub-model", "native", False
+
+        def stream(self, conversation_history=(), **kwargs):
+            # Each turn: write first, then answer once the write's result is in.
+            if conversation_history and conversation_history[-1].get("role") == "tool_result":
+                yield (EVENT_TEXT_DELTA, {"delta": "Written."})
+            else:
+                yield (EVENT_TOOL_CALL, {"name": "file_write", "arguments": arguments,
+                                         "call_id": _new_call_id("file_write", arguments)})
+            yield (EVENT_DONE, {})
+
+    session = Session(WriteEachTurn(), max_steps=4, auto_approve=True)
+    session.checkpoint_store = SessionCheckpointStore(project, session_id="s1", root=tmp_path / "checkpoints")
+    first = list(session.run("Write it"))
+    target.write_text("edited by hand between the turns\n", encoding="utf-8")
+    second = list(session.run("Write it again"))
+
+    created = [[event for event in events if event.get("event") == "checkpoint.created"] for events in (first, second)]
+    assert [len(items) for items in created] == [1, 1]
+    # The second snapshot kept the hand edit that the repeated write replaced.
+    restored = session.checkpoint_store.restore(created[1][0]["checkpoint_id"], "files")
+    assert restored["workspace"]
+    assert target.read_text(encoding="utf-8") == "edited by hand between the turns\n"
+
+
 def test_structured_hook_can_modify_args_and_request_retry(tmp_path: Path):
     script = tmp_path / "hook.py"
     script.write_text(
@@ -287,13 +324,21 @@ def test_capability_pack_unifies_agents_skills_hooks_and_mcp(tmp_path: Path):
     (pack / "skill.md").write_text("Validate behavior and cite evidence.", encoding="utf-8")
     manifest = {
         "id": "quality", "name": "Quality Pack", "version": "1.0.0",
-        "enabled": True, "trust": "local", "agents": ["reviewer.md"],
+        "agents": ["reviewer.md"],
         "skills": ["skill.md"],
         "hooks": [{"hook_type": "session_start", "command": "echo ready"}],
         "mcp_servers": {"docs": {"command": "docs-server", "enabled": True}},
     }
     (pack / "resonant-pack.json").write_text(json.dumps(manifest), encoding="utf-8")
-    manager = CapabilityPackManager(tmp_path, roots=[tmp_path / "packs"])
+    # Trust comes from the user's settings, pinned to the reviewed content;
+    # tests/test_capability_pack_trust.py covers the trust rules themselves.
+    [reviewed] = CapabilityPackManager(tmp_path, roots=[tmp_path / "packs"]).discover()
+    assert not reviewed.trusted
+    manager = CapabilityPackManager(
+        tmp_path,
+        configured=approve_pack({}, reviewed, reviewed_digest=reviewed.digest),
+        roots=[tmp_path / "packs"],
+    )
     discovered = manager.discover()
     agent = manager.get_agent_type("pack-reviewer")
     assert discovered[0].trusted and discovered[0].enabled
@@ -324,16 +369,18 @@ def test_gui_exposes_runtime_control_plane_contract():
     substring search over one file asserts where the code sits rather than
     whether the command is actually routable.
     """
-    from resonant_client.gui import ws_commands
-    from resonant_client.gui.app import websocket_endpoint  # noqa: F401
+    from lumi.gui import ws_commands
+    from lumi.gui.app import websocket_endpoint  # noqa: F401
 
     root = Path(__file__).parents[1]
-    frontend = (root / "resonant_client" / "gui" / "static" / "app.js").read_text(encoding="utf-8")
-    endpoint_source = (root / "resonant_client" / "gui" / "app.py").read_text(encoding="utf-8")
+    frontend = (root / "lumi" / "gui" / "static" / "app.js").read_text(encoding="utf-8")
+    endpoint_source = (root / "lumi" / "gui" / "app.py").read_text(encoding="utf-8")
 
+    # A run card opens its trace and saved files (flight_recorder_detail,
+    # artifact_view); no view lists every artifact anymore.
     for command in (
-        "agent_runtime_control", "session_timeline_restore", "flight_recorder_export",
-        "artifact_list", "capability_pack_list", "context_catalog",
+        "agent_runtime_control", "session_timeline_restore", "flight_recorder_detail",
+        "flight_recorder_export", "artifact_view", "capability_pack_list", "context_catalog",
     ):
         assert command in ws_commands.HANDLERS or command in endpoint_source, command
         assert command in frontend, command

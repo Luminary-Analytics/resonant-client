@@ -8,7 +8,8 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
-SONN Client (formerly Resonant) is a provider-adaptive coding agent and desktop app.
+Lumi (formerly SONN Client, originally Resonant) is a provider-adaptive coding
+agent and desktop app.
 Read this file first, then the documentation relevant to the change. This is the
 shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point here.
 
@@ -30,15 +31,25 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 
 ## Product and architecture
 
-- Use **SONN Client** in product copy. Keep existing `resonant-client` package,
-  repository, executable compatibility strings, and updater identifiers unless
-  a migration is part of the task.
+- Use **Lumi** in product copy and new identifiers (`lumi` package, commands,
+  executable, `~/.lumi`, `.lumi/`, `LUMI_*`). SONN is the separate model
+  service; keep its name for SONN connections, accounts and the SONN
+  conversation id. Pre-rebrand locations and names (`~/.resonant`,
+  `.resonant/`, `RESONANT_*`, `resonant*` commands, `resonant-pack.json`,
+  `resonant-policy.json`) are still read; do not write new state under them.
+  The update feed URL and repository name stay until a bridge release moves
+  the feed (see [Unreleased](docs/unreleased.md)).
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.
-- Keep behavior capability-driven. Ollama, EXO, Kimi, OpenRouter, and SONN adapters
-  translate provider protocols into the engine contract. Codex and Claude Code
-  run their own CLI tool loops; do not claim identical native tool behavior.
+- Keep behavior capability-driven. Anthropic, OpenAI, Ollama, EXO, Kimi, OpenRouter,
+  SONN and custom-connection adapters translate provider protocols into the engine
+  contract. Connections are validated data (`lumi/connections.py`), not code per
+  provider; their keys live in `api_keys` as `conn_<id>`. A connection that
+  signs in (`auth_tokens.py`) sends its client secret only to the token
+  endpoint, and an app registration never falls back to the computer's
+  sign-in. Codex and Claude Code run their own CLI tool loops; do not claim
+  identical native tool behavior.
 - Preserve explicit model choices. Account discovery may update available
   models, but adding a model must not silently change a user's default.
 - SONN uses a user-configured project URL, `sonn-auto`, and standard Chat
@@ -55,6 +66,80 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - ChatGPT/Codex and OpenRouter are separate connections. Codex owns its login
   credentials; OpenRouter uses a separately billed API key. Never expose secrets
   in UI responses, diagnostics, fixtures, or serialized `BackendSpec` values.
+- API keys live in the OS credential store; `settings.json` keeps `__keychain__`.
+  Read keys only through `settings.get("api_keys", name)`. Never enable the store
+  for the legacy `~/.resonant` folder. Children that run code Lumi doesn't
+  control (the agent's shell, hooks, MCP servers, jobs, previews, checks) get
+  `secrets_store.child_env()`; the CLI backends keep their environment.
+  `secret_scan` removes saved key values from tool output before each request.
+  Tests and fixtures use `LUMI_KEYCHAIN=off` or an in-memory keyring, never the
+  real credential store.
+- File exclusions (`engine/exclusions.py`) are enforced at
+  `Session._prepare_workspace_tool_args` and inside the listing tools. Any new
+  path that reads project files for the model must check `session.exclusions`.
+- Commands the agent starts (`bash`, `check_run`, `job_start`,
+  `preview_start`) pass the guardrails (`engine/guardrails.py`: deny rules
+  first in every tier, and `check_floor` before they start) and, when
+  `security.shell_sandbox` is `"project"`, run through `engine/os_sandbox.py`
+  or not at all. A new tool that starts processes for the model must do both.
+  See [shell sandbox](docs/shell-sandbox.md).
+- Repository-provided instructions, notes, index summaries, policy `allow`
+  rules, automatic lint/test runs and language servers require project trust
+  (`gui/workspace_trust.py`). Repository content must never grant itself trust.
+- Language servers (`engine/lsp.py`, the `code_intel` tool) start with
+  `secrets_store.child_env()`, pass the guardrails and run in the shell
+  sandbox when it's on. Answers never list places in excluded files, show
+  line text only from inside the project, and Lumi never applies a server's
+  edits. Tests use `tests/fake_lsp_server.py`, not an installed server.
+- Organization policy (`policy.py`) outranks user settings, repositories and
+  tiers: read settings through `SettingsManager.get` (which applies locked
+  values), and check `policy.current()` where a new model, mode, MCP server,
+  pack or shell path is chosen. User-writable locations must never replace a
+  machine policy, and an invalid policy blocks requests instead of vanishing.
+  Build a session's execution policy with
+  `engine/policies.project_execution_policy`, or `with_organization_rules`
+  for a fallback: a broken `lumi-policy.json` must never cost the
+  organization's shell rules.
+- Every agent turn goes through `Session.run`, which records its events in
+  the audit log (`audit.py`); run new entry points through it rather than
+  `_run_turn`. Record content only through `audit.content` (capture levels)
+  and paths through `audit.name`; never record setting or key values.
+- Model calls outside a turn go through `engine/request_purpose.auxiliary_stream`
+  with a purpose, so `usage.py` records them. Prices come from `pricing.py`;
+  a model without a known price is unpriced (`None`), never $0. Budgets
+  (`budgets.py`) are checked before every model request of a turn; a new
+  loop that calls a model repeatedly must check them too.
+- Updates: `update_channels.py` picks the feed from `updates.mode`, `channel` and
+  `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
+  because every earlier install polls it. Running from source never loads
+  WinSparkle, and an MSI, PKG, deb or rpm install (`lumi-install.json`) never
+  updates itself. A macOS configuration profile that can't be used fails closed like
+  any machine policy (`policy.managed_preferences_policy`).
+  Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
+  feed needs the user's go-ahead.
+- Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private
+  key live in `api_keys` (`lumi_cloud_refresh`, `lumi_cloud_device_key`), in the
+  credential store; status sent to the page never includes them. Check-ins
+  send versions, usage counts per model and turn outcome counts
+  (`activity.py`), never prompts, code, paths or titles. A downloaded policy applies only when it verifies against machine
+  keys, or keys pinned when the person joined, and a joined organization
+  never replaces a machine policy (`policy._with_cloud_policy`).
+- `lumi run` (`headless.py`) builds its session from the same pieces as the
+  app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
+  trust and policy checks. Keep the two in step, and never let a headless run
+  trust a repository unless it was trusted in the app or `--trust-project` is set.
+- Computer use: `security.computer_use` (and policy) gates every tool in
+  `tools.COMPUTER_ACCESS_TOOL_NAMES`: the screen, input, other apps'
+  interfaces and the clipboard, not only the screen-driving
+  `DESKTOP_TOOL_NAMES`. A new tool that reaches outside the project must join
+  that set. Never write model-supplied text into AppleScript or other script
+  source; pass it as an argument (`on run argv`).
+- Scheduled tasks (`schedules.py`) run `lumi schedule run <id>`, which is a
+  `lumi run`; a schedule never passes `--trust-project`. Only `save`,
+  `set_enabled` and `remove` touch the OS scheduler (schtasks, launchctl,
+  crontab), and tests use `set_registrar_for_tests`: never register real
+  tasks from tests or fixtures. A run writes only its results folder, and
+  `running.json` keeps a schedule from running twice at once.
 
 ## Working in the codebase
 
@@ -66,10 +151,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Preserve project instructions, permissions, history, and source-of-key settings.
 - The frontend uses classic scripts and descriptor-based mixins. Do not convert
   one file to ES modules without updating the loading/build contract. New assets
-  must be included by `packaging/resonant.spec` and the bundle policy as needed.
+  must be included by `packaging/lumi.spec` and the bundle policy as needed.
 - Inspect the working tree before editing; preserve unrelated changes. Use
   isolated fixture projects and state for evaluation, not personal sessions.
-- Keep runtime state out of the repository: normally `~/.resonant/projects/`
+- Keep runtime state out of the repository: normally `~/.lumi/projects/`
   for sessions, ledgers, notes, workers, checkpoints, artifacts, and worktrees.
 
 ## Behavior to preserve
@@ -85,6 +170,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   dialogs from the requesting page's native bridge capability, not merely a
   server-side window. Keep typed-path selection, cancellation and new-session
   intent working without a native picker.
+- Every GUI endpoint that reads or changes state goes through
+  `gui/local_access.py` (exact Host, own Origin, per-launch token), checked
+  before a WebSocket is accepted. Launch codes travel only in URL fragments and
+  come from the launcher or the desktop bridge. Never put the token in a cookie,
+  URL, log or printed output. The socket's `update_settings` edits only
+  the fields Settings shows; hooks, stdio MCP servers, LSP servers, plugins and
+  the gateway stay file-edited.
 - Live working status follows the active turn output; preserve manual scroll
   position when the user reads older messages. Next-prompt suggestions are
   transient, scoped to the conversation, and never replace typed drafts. Tab
@@ -107,7 +199,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   identity must never supply the SONN profile. Echo is optional, respects reduced motion,
   and must not introduce model calls, polling, or completion claims.
 - Use accessible names, tooltips, visible keyboard focus, and reliable targets
-  for icon buttons. Session dates are hover details in the compact sidebar;
+  for icon buttons. Text color tokens keep 4.5:1 on every surface in both
+  themes; menus and popups work from the keyboard (arrows, Escape returning
+  focus). Update [the accessibility report](docs/accessibility.md) when that
+  changes. Session dates are hover details in the compact sidebar;
   retain working/needs-input states and pinned-session visibility.
 - Codex receives a text handoff of instructions, project notes, recent history,
   and retained summaries. It does not receive the original native provider
@@ -134,6 +229,85 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   state during a run; Stop and persistence must use captured run ownership.
   Keep main request allowances distinct from tool counts, auxiliary requests and
   dollar budgets. Preserve partial checkpoints and interrupted request uncertainty.
+- Autonomous sessions (`gui/autonomous_loop.py`) are experimental and shown
+  only when `general.autonomous_sessions` is on. Their spending limit counts
+  every priced request while the mission runs (`iter_cost_tracker`), is
+  checked at each heartbeat as well as between iterations, and is kept in the
+  roadmap with the spend so far, so a resumed mission counts on.
+- The chat gateway (`gateway/`) builds each chat's session with
+  `headless.build_session`, as `lumi run` does, and never trusts a project
+  itself. Approvals, stop and status are handled on the adapter's thread as
+  they arrive, never queued behind the turn they concern; an unanswered
+  approval is refused. Adapters are transport only and check their allowlist
+  for messages and button presses alike. Tests use mock transports, never
+  real Telegram or Slack.
+- Code editors reach the app only through `gui/editor_bridge.py`: a per-launch
+  bearer token in the user-only `editor-bridge.json`, no `Origin` (web pages
+  are refused), files inside the open project and not excluded. The bridge
+  only adds `@file:` attachments to the composer and reads changed files; it
+  never sends a message, starts a turn or changes settings.
+  `security.editor_bridge` turns it off. The VS Code extension
+  (`code_editors/vscode/`) stays plain JavaScript without dependencies, so
+  Lumi packs its .vsix; tests never start or install into a real editor.
+- Tasks from Slack and Teams (`remote_tasks.py`) are off until the person
+  turns them on, never run on a managed computer, and build their sessions
+  with `headless.build_session`. Their approvals go through Lumi Cloud to the
+  chat, and no answer refuses the action. Tests use the fake Lumi Cloud in
+  `tests/test_cloud.py`, never a real one.
+- Sharing a conversation (`share.py`) sends Lumi Cloud people's messages,
+  Lumi's replies and one line per action, never tool results, after
+  `secret_scan` removes saved keys and secret patterns. Keep new event kinds
+  out of the copy unless they carry only what the person or Lumi said.
+- The team library (`team_library.py`) is the organization's published
+  skills and prompts, synced from Lumi Cloud into `team/library.json` and
+  deleted on sign-out. Team skills are listed for the agent like pack skills
+  and read with `skill_view team:<org>/<slug>`; prompts only fill the
+  composer and are never sent without the person. Approved team project
+  notes are recalled only in clones of their repository and only while their
+  files' line-ending-normalized hashes match (`team_library.fingerprint`);
+  never mix them into the project's own `.lumi/memory.json`.
+- With `review.agent_changes` on (Settings or a policy lock), the review
+  gate (`engine/review_gate.py`) adds deny rules for merging and pushing to a
+  default branch right after the guardrails in every execution policy, and
+  `github_pr_create` names the reviewers and reports to Lumi Cloud's review
+  queue. A new tool that merges or pushes for the model must check
+  `review_gate.blocked` too.
+- Commands an organization's policy lists under `approvals` wait for a
+  second person (`engine/second_approval.py`): after the person's own
+  approval and after the irreversibility floor, the session asks Lumi Cloud
+  and waits, cancellably; only an approval runs the command, and no Lumi
+  Cloud means it doesn't run. Tests reset the requester (`tests/conftest.py`).
+- Hand-offs (`handoff.py`) carry that same copy, the note and the
+  repository's address (without credentials), branch and commit. A picked-up
+  hand-off is context (`@handoff:`, sticky in `ContextBroker.STICKY`), never
+  replayed history or instructions. Lumi never switches branches, fetches or
+  pulls for the person who continues. A file for CI names the sender without
+  an email address.
+- Provider extensions (`engine/provider_extensions.py`, docs/extensions.md)
+  run only from approved, enabled personal packs, and resolve the pack again
+  before every start, so a changed or revoked pack stops at once. Their
+  processes get `secrets_store.child_env()` plus the connection's key, a data
+  folder outside the pack and `PYTHONPYCACHEPREFIX`: nothing may write inside
+  an approved pack. Bare program names come from absolute PATH entries only.
+  Keep the SDK (`sdk/python/lumi_extension`) standard-library only and the
+  protocol backward compatible; a breaking change needs a new
+  `manifest_version`. Tests start real providers with `sys.executable`.
+- Pack signatures (`engine/pack_signing.py`, `lumi-pack.sig`) are checked
+  whenever a pack loads. They name a pack's publisher and never approve it.
+  An invalid signature makes the pack unverifiable. Only the organization's
+  `extensions.trusted_publishers` satisfy `extensions.require_signed`, never
+  keys a person trusted. `pack_publishers` in settings changes only through
+  the trust and forget commands, never `update_settings`.
+- An organization's registry (`extensions.registry`) pins packs to a commit
+  and maybe a content digest (`pack_signing.signed_digest`, which ignores
+  text line endings). `registry_only` turns every other pack off, and a
+  registry install checks the id and digest before replacing anything. A
+  registry listing never approves a pack.
+- Model comparisons (`model_evals.py`) run each task as a `lumi run`
+  subprocess in a detached git worktree of `HEAD` under the project's state
+  folder, never in the user's checkout; the user's check command passes the
+  guardrails and the shell sandbox. Test them with a fake `lumi run`, never
+  real providers.
 - Keep cancellation and user input live. Report completion only after work and
   relevant checks finish. Use enforced execution limits for qualification; a
   prompt-only tool-call limit is not enforcement. Preserve observed overruns and
@@ -157,11 +331,17 @@ keyboard interaction and relevant compact layouts.
 ```sh
 python -m ruff check .
 python -m pytest -q
-node --check resonant_client/gui/static/app.js
-node --check resonant_client/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs
+node --check lumi/gui/static/app.js
+node --check lumi/gui/static/settings_view.js
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs
 git diff --check
 ```
+
+Release builds install the hash-pinned `packaging/requirements-release.txt`.
+After changing dependencies in `pyproject.toml`, run `python scripts/lock_release.py`
+and commit the locks. A shipped package under GPL, AGPL or LGPL needs a
+`license_reviews` entry in `packaging/third-party-components.json`, or exclusion
+under `not_shipped`; the build fails otherwise.
 
 Use `scripts/build_clean.ps1` for Windows release builds. Never clean a running
 bundle; use a separate source copy for a candidate build while testing. The
@@ -186,7 +366,7 @@ configuration, streaming/tool semantics, and capability behavior. Do not infer
 a new service's protocol from an old provider name or archived engine plan.
 
 Commit/push/deploy when requested. Release version changes belong in both
-`pyproject.toml` and `resonant_client/__init__.py`; publish a matching tag and
+`pyproject.toml` and `lumi/__init__.py`; publish a matching tag and
 verify the release workflow and public appcast before reporting deployment.
 
 Start with [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), and the

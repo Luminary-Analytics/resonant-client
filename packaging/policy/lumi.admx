@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Group Policy / Intune administrative template for Lumi. Copy lumi.admx to
+  %SystemRoot%\PolicyDefinitions (or the central store) and en-US\lumi.adml to
+  the matching language folder. The values land under
+  HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi, where Lumi reads them
+  (lumi/policy.py). See docs/enterprise-policy.md.
+-->
+<policyDefinitions xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   revision="1.0" schemaVersion="1.0"
+                   xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <policyNamespaces>
+    <target prefix="lumi" namespace="LuminaryAnalytics.Policies.Lumi" />
+    <using prefix="windows" namespace="Microsoft.Policies.Windows" />
+  </policyNamespaces>
+  <resources minRequiredRevision="1.0" />
+  <supportedOn>
+    <definitions>
+      <definition name="SUPPORTED_Lumi" displayName="$(string.SUPPORTED_Lumi)" />
+    </definitions>
+  </supportedOn>
+  <categories>
+    <category name="Lumi" displayName="$(string.Lumi)" />
+  </categories>
+  <policies>
+    <policy name="Policy" class="Machine" displayName="$(string.Policy)"
+            explainText="$(string.Policy_Help)" presentation="$(presentation.Policy)"
+            key="SOFTWARE\Policies\Luminary Analytics\Lumi">
+      <parentCategory ref="Lumi" />
+      <supportedOn ref="SUPPORTED_Lumi" />
+      <elements>
+        <multiText id="Policy" valueName="Policy" required="true" maxLength="65535" />
+      </elements>
+    </policy>
+    <policy name="PolicyFile" class="Machine" displayName="$(string.PolicyFile)"
+            explainText="$(string.PolicyFile_Help)" presentation="$(presentation.PolicyFile)"
+            key="SOFTWARE\Policies\Luminary Analytics\Lumi">
+      <parentCategory ref="Lumi" />
+      <supportedOn ref="SUPPORTED_Lumi" />
+      <elements>
+        <text id="PolicyFile" valueName="PolicyFile" required="true" expandable="true" maxLength="1024" />
+      </elements>
+    </policy>
+    <policy name="PolicyKeys" class="Machine" displayName="$(string.PolicyKeys)"
+            explainText="$(string.PolicyKeys_Help)" presentation="$(presentation.PolicyKeys)"
+            key="SOFTWARE\Policies\Luminary Analytics\Lumi">
+      <parentCategory ref="Lumi" />
+      <supportedOn ref="SUPPORTED_Lumi" />
+      <elements>
+        <text id="PolicyKeys" valueName="PolicyKeys" required="true" maxLength="4096" />
+      </elements>
+    </policy>
+  </policies>
+</policyDefinitions>

@@ -19,9 +19,9 @@ import pytest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
-from resonant_client.engine.session import Session
-from resonant_client.gui.app import AppState
-from resonant_client.gui.runtime import BackendSpec
+from lumi.engine.session import Session
+from lumi.gui.app import AppState
+from lumi.gui.runtime import BackendSpec
 
 
 class _StubBackend:

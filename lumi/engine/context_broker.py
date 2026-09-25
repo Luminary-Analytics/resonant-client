@@ -1,0 +1,318 @@
+"""Provenance-aware context attachments for conversations and agents."""
+
+from __future__ import annotations
+
+import json
+import re
+import subprocess
+import time
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+from lumi.processes import background_process_kwargs
+from ..paths import project_dirs
+
+
+@dataclass(slots=True)
+class ContextItem:
+    id: str
+    provider: str
+    label: str
+    content: str
+    provenance: str
+    created_at: float
+    fresh_until: float | None = None
+    pinned: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def estimated_tokens(self) -> int:
+        return (len(self.content) + 3) // 4
+
+    def to_dict(self, *, include_content: bool = False) -> dict[str, Any]:
+        data = asdict(self)
+        data["estimated_tokens"] = self.estimated_tokens
+        if not include_content:
+            data.pop("content", None)
+        return data
+
+
+Provider = Callable[[str], ContextItem | list[ContextItem] | None]
+
+
+class ContextBroker:
+    """Resolve explicit ``@provider:selector`` attachments on demand."""
+
+    MENTION_RE = re.compile(
+        r"(?<!\w)@(?P<provider>[a-z][a-z0-9_-]{1,30}):(?P<selector>"
+        r"\"[^\"]+\"|'[^']+'|[^\s,;]+)",
+        re.IGNORECASE,
+    )
+
+    def __init__(
+        self,
+        project_path: str | Path,
+        *,
+        agent_registry: Any = None,
+        checkpoint_store: Any = None,
+        artifact_store: Any = None,
+        codebase_index: Any = None,
+        exclusions: Any = None,
+    ):
+        self.project_path = Path(project_path).expanduser().resolve()
+        # engine/exclusions.ExclusionRules: excluded files are never attached.
+        self.exclusions = exclusions
+        self.agent_registry = agent_registry
+        self.checkpoint_store = checkpoint_store
+        self.artifact_store = artifact_store
+        self.codebase_index = codebase_index
+        self._providers: dict[str, Provider] = {}
+        self._pinned: dict[str, ContextItem] = {}
+        self.register("file", self._file)
+        self.register("symbol", self._symbol)
+        self.register("diff", self._diff)
+        self.register("checkpoint", self._checkpoint)
+        self.register("agent", self._agent)
+        self.register("artifact", self._artifact)
+        self.register("test-failure", self._test_failure)
+        self.register("terminal", self._terminal)
+        self.register("plan", self._plan)
+        self.register("issue", self._issue)
+        self.register("handoff", self._handoff)
+
+    def register(self, name: str, provider: Provider) -> None:
+        self._providers[str(name).strip().lower()] = provider
+
+    # Attachments that stay for the rest of the conversation once mentioned.
+    STICKY = frozenset({"handoff"})
+
+    def recall(self, texts: list[str]) -> None:
+        """Attach sticky mentions from earlier messages again, as when a conversation is reopened."""
+        for text in texts:
+            for match in self.MENTION_RE.finditer(text or ""):
+                name = match.group("provider").lower()
+                if name in self.STICKY and name in self._providers:
+                    try:
+                        self._providers[name](match.group("selector").strip("\"'"))
+                    except Exception:
+                        continue
+
+    def resolve_mentions(self, text: str) -> list[ContextItem]:
+        items = list(self._pinned.values())
+        seen = {item.id for item in items}
+        for match in self.MENTION_RE.finditer(text or ""):
+            provider_name = match.group("provider").lower()
+            selector = match.group("selector").strip("\"'")
+            provider = self._providers.get(provider_name)
+            if provider is None:
+                continue
+            try:
+                result = provider(selector)
+            except Exception:
+                continue
+            resolved = result if isinstance(result, list) else [result] if result else []
+            for item in resolved:
+                if item.id not in seen:
+                    items.append(item)
+                    seen.add(item.id)
+        return items
+
+    def render(self, items: list[ContextItem]) -> str:
+        if not items:
+            return ""
+        blocks = ["\n\n--- EXPLICIT CONTEXT ATTACHMENTS ---"]
+        for item in items:
+            blocks.append(
+                f"[{item.provider}:{item.label} | provenance={item.provenance} | "
+                f"tokens~{item.estimated_tokens}]\n{item.content}"
+            )
+        blocks.append("--- END EXPLICIT CONTEXT ATTACHMENTS ---")
+        return "\n\n".join(blocks)
+
+    def pin(self, item: ContextItem) -> None:
+        item.pinned = True
+        self._pinned[item.id] = item
+
+    def unpin(self, item_id: str) -> bool:
+        return self._pinned.pop(item_id, None) is not None
+
+    def catalog(self) -> list[dict[str, Any]]:
+        return [
+            {"name": name, "syntax": f"@{name}:selector"}
+            for name in sorted(self._providers)
+        ]
+
+    # ``@file:src/app.py#L10-20`` (or ``#L10``) attaches only those lines; the
+    # editor extensions send selections this way (gui/editor_bridge.py).
+    LINES_RE = re.compile(r"#L(?P<start>\d{1,7})(?:-L?(?P<end>\d{1,7}))?$")
+
+    def _file(self, selector: str) -> ContextItem | None:
+        lines = self.LINES_RE.search(selector)
+        relative = selector[:lines.start()] if lines else selector
+        path = (self.project_path / relative).resolve()
+        if self.project_path not in path.parents and path != self.project_path:
+            return None
+        if not path.is_file():
+            return None
+        rule = self.exclusions.match(str(path)) if self.exclusions else None
+        if rule:
+            # Say why instead of dropping the mention silently.
+            return self._item("file", selector, self.exclusions.refusal(str(path), rule), "excluded")
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if lines:
+            start = max(1, int(lines.group("start")))
+            end = max(start, int(lines.group("end") or start))
+            all_lines = content.splitlines(keepends=True)
+            if start > len(all_lines):
+                return self._item("file", selector, f"{relative} has only {len(all_lines)} lines.", str(path))
+            content = "".join(all_lines[start - 1:end])
+            label = f"{relative} lines {start}-{min(end, len(all_lines))}"
+            return self._item("file", label, content, f"{path}#L{start}-{min(end, len(all_lines))}")
+        return self._item("file", selector, content, str(path))
+
+    def _symbol(self, selector: str) -> list[ContextItem]:
+        results = []
+        if self.codebase_index and getattr(self.codebase_index, "is_indexed", False):
+            for match in self.codebase_index.search(selector, max_results=8):
+                path = getattr(match, "path", "")
+                context = getattr(match, "context", "")
+                symbols = getattr(match, "symbols", [])
+                results.append(self._item(
+                    "symbol",
+                    f"{selector} in {path}",
+                    f"Symbols: {', '.join(symbols)}\n{context}",
+                    f"repo-index:{path}",
+                ))
+        return results
+
+    def _diff(self, selector: str) -> ContextItem | None:
+        args = ["git", "diff"]
+        if selector not in {"working", "workspace", "current", "."}:
+            # A selector is a revision; one starting with '-' would be read as
+            # an option (for example --output=<file>, which writes a file).
+            if selector.startswith("-") or any(ch.isspace() for ch in selector):
+                return None
+            args.append(selector)
+        args.append("--")
+        if self.exclusions:
+            # Only exclude pathspecs: git diffs everything else.
+            args.extend(self.exclusions.git_pathspecs())
+        result = subprocess.run(
+            args,
+            cwd=self.project_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            **background_process_kwargs(),
+        )
+        if result.returncode != 0:
+            return None
+        return self._item("diff", selector, result.stdout or "(no changes)", "git")
+
+    def _checkpoint(self, selector: str) -> ContextItem | None:
+        if not self.checkpoint_store:
+            return None
+        checkpoint = self.checkpoint_store.get(selector)
+        return self._item(
+            "checkpoint", selector,
+            json.dumps(checkpoint.to_dict(), indent=2, ensure_ascii=False),
+            checkpoint.conversation_path,
+        )
+    def _agent(self, selector: str) -> ContextItem | None:
+        if not self.agent_registry:
+            return None
+        record = self.agent_registry.get(selector)
+        if not record:
+            return None
+        payload = record.to_dict()
+        if record.handoff:
+            payload["handoff"] = record.handoff
+        return self._item(
+            "agent", selector, json.dumps(payload, indent=2, ensure_ascii=False),
+            record.transcript_path,
+        )
+
+    def _artifact(self, selector: str) -> ContextItem | None:
+        if not self.artifact_store:
+            return None
+        artifact = self.artifact_store.get(selector)
+        if not artifact:
+            return None
+        path = Path(artifact.path)
+        if artifact.kind in {"text", "terminal", "diff", "trace", "dom", "accessibility"}:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        else:
+            content = self.artifact_store.reference(artifact)
+        return self._item("artifact", selector, content, artifact.path)
+
+    def _test_failure(self, selector: str) -> ContextItem | None:
+        failures = sorted(
+            (self.project_path / ".pytest_cache").glob("**/lastfailed")
+            if (self.project_path / ".pytest_cache").exists() else [],
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not failures:
+            return None
+        content = failures[0].read_text(encoding="utf-8", errors="replace")
+        return self._item("test-failure", selector, content, str(failures[0]))
+
+    def _terminal(self, selector: str) -> ContextItem | None:
+        candidates = sorted(
+            (path for folder in project_dirs(self.project_path) if folder.is_dir()
+             for path in folder.glob("terminal*.log")),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            return None
+        content = candidates[0].read_text(encoding="utf-8", errors="replace")
+        return self._item("terminal", selector, content, str(candidates[0]))
+
+    def _plan(self, selector: str) -> ContextItem | None:
+        candidates = [self.project_path / "PLAN.md", self.project_path / "ROADMAP.md"]
+        path = next((candidate for candidate in candidates if candidate.exists()), None)
+        if not path:
+            return None
+        return self._item(
+            "plan", selector,
+            path.read_text(encoding="utf-8", errors="replace"), str(path),
+        )
+
+    def _issue(self, selector: str) -> ContextItem | None:
+        """A Jira, Linear, GitHub or GitLab issue (engine/issue_trackers.py); a failure says why."""
+        from .issue_trackers import IssueError, view
+
+        try:
+            text, metadata = view(selector, str(self.project_path))
+        except IssueError as exc:
+            return self._item("issue", selector, f"Couldn't read issue {selector}: {exc}", "error")
+        return self._item("issue", metadata["issue"], text, metadata.get("url") or metadata["tracker"])
+
+    def _handoff(self, selector: str) -> ContextItem | None:
+        """Work a teammate handed off, or saved for CI (lumi/handoff.py); it stays for the conversation."""
+        from .. import handoff
+
+        try:
+            data, source = handoff.load(selector, str(self.project_path), exclusions=self.exclusions)
+        except handoff.HandoffError as exc:
+            return self._item("handoff", selector, f"Couldn't read hand-off {selector}: {exc}", "error")
+        item = self._item("handoff", data["title"], handoff.render(data), source)
+        item.id = self._item("handoff", selector, "", "").id  # two hand-offs can share a title
+        self.pin(item)
+        return item
+
+    @staticmethod
+    def _item(provider: str, label: str, content: str, provenance: str) -> ContextItem:
+        stable = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{provider}-{label}").strip("-")[:96]
+        return ContextItem(
+            id=stable or f"ctx-{int(time.time())}",
+            provider=provider,
+            label=label,
+            content=content,
+            provenance=provenance,
+            created_at=time.time(),
+        )

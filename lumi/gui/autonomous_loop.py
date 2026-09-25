@@ -1,0 +1,1794 @@
+"""
+AutonomousMissionDaemon — the outer loop for a Phase 2 Autonomous Mission.
+
+Each daemon instance owns one in-flight autonomous mission (one
+roadmap, one intent_id). It runs a background thread that picks
+unchecked roadmap items, dispatches each as a Phase-1 sub-mission,
+marks the item done with its commit SHA when the sub-mission ships,
+and runs the REFLECT pass every K iterations. It stops when:
+
+  1. The user clicked Stop                       → "user_stop"
+  2. Wall-clock time budget elapsed              → "time_budget_exhausted"
+     Model spending reached the mission's limit   → "spend_limit_reached"
+  3. MAX_ITERATIONS=100 hit (defensive backstop) → "iteration_cap"
+  4. Full-reflect verdict was "satisfied"        → "satisfied"
+  5. Full-reflect verdict was "blocked" enough   → "blocked"
+  6. Consecutive sub-missions failed             → "check_failed"
+  7. Roadmap misconfigured (no criteria at all)  → "misconfigured"
+
+Stopping rules are checked in priority order at the top of every
+iteration AND between phases of the same iteration where appropriate.
+
+## Architecture: dependency injection for testability
+
+The daemon does NOT directly call `IntentService.start_intent`,
+shell out to `git`, or invoke the REFLECT model session. All of
+those happen via callables stashed in a `DaemonHooks` dataclass,
+injected at construction time. This is what lets the entire
+iteration loop be unit-tested with stubs that complete in
+microseconds — no real subprocess, no real LLM, no real WebSocket.
+
+Production wiring (a6) builds the hooks from a live `IntentService`,
+the project's git repo, and the engine's session machinery. Tests
+build hooks from lambdas.
+
+## What this module does NOT own
+
+- Resume-from-restart: that's an AppState concern. The daemon's
+  state (iter_count, started_at) is reconstructable from the
+  on-disk roadmap's iteration log + a recorded started-at
+  timestamp. a6 will own the resume code.
+- WS event format: the daemon emits dicts via its `on_event`
+  callback. a6 wraps those into the WS protocol.
+- Chat session integration: when the daemon's dispatched
+  sub-missions emit engine events, the wiring that gets those
+  to the right chat session is a6's job.
+- Roadmap-item bookkeeping via the model: contrary to the
+  design-doc §7 split (where REFLECT does both item-mark and
+  full-reflect modes), this implementation runs item-mark
+  PURELY in the daemon — no model session. The daemon already
+  knows which item it dispatched and can read the commit SHA
+  via `git log -1`; spending a model dispatch on bookkeeping
+  would burn tokens for no gain. The model session only fires
+  in full-reflect mode (every K iters), and only handles
+  [chrome] criteria + verdict + added/blocked items. See
+  ADR 9 in the implementation guide.
+"""
+from __future__ import annotations
+
+import hashlib
+import logging
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from ..gui import roadmap as roadmap_module
+from ..gui.roadmap import Roadmap, RoadmapItem
+from ..orchestration.acceptance_check import CheckContext
+from ..orchestration.reflect import ReflectPassResult, run_reflect_pass
+
+logger = logging.getLogger(__name__)
+
+
+# ── Dispatch & reflect outcome types ────────────────────────────────────
+
+
+@dataclass
+class DispatchOutcome:
+    """Result of one Phase-1 sub-mission dispatched by the daemon.
+
+    `success=True` means the sub-mission completed without crashing —
+    NOT that the work itself was correct. The daemon doesn't try to
+    judge correctness here; that's the next iteration's REFLECT pass.
+    """
+    success: bool
+    error: str = ""
+    handle: Any = None  # whatever dispatch_item returned (intent_id usually)
+
+
+@dataclass
+class FullReflectOutcome:
+    """Result of one full REFLECT pass — deterministic prelude PLUS,
+    if needed, the agentic model session.
+
+    `pass_result` is from `run_reflect_pass` (always populated).
+    `verdict` is the mechanically-cross-checked final verdict. The
+    other fields are the parsed JSON envelope from the model session
+    (empty when `needs_model_session() == False`).
+
+    v0.5.8a2 — `decision_request` is the structured "human-decision-
+    required" payload REFLECT emits when it can't autonomously pick
+    between two equally-valid resolutions (linux-bridge field-
+    observation #10: path-mismatch where the file IS present at a
+    different location, but REFLECT can't decide whether to move the
+    file or update the criterion). Shape:
+      {
+        "question": "<one-line phrasing of the decision>",
+        "options": [
+          {"id": "move",   "label": "...", "detail": "..."},
+          {"id": "update", "label": "...", "detail": "..."},
+          ...
+        ],
+        "context": "<optional additional info for the user>"
+      }
+    Daemon parks (does NOT terminate) when this is non-None and
+    waits for `provide_decision()`. The user's choice is then folded
+    into the next REFLECT pass's goal text.
+    """
+    pass_result: ReflectPassResult
+    verdict: str = "continue"   # "continue" | "satisfied" | "blocked"
+    chrome_results: list[dict] = field(default_factory=list)
+    added_items: list[dict] = field(default_factory=list)
+    blocked_items: list[dict] = field(default_factory=list)
+    manual_pending: list[str] = field(default_factory=list)
+    summary: str = ""
+    estimated_remaining_minutes: int = 0
+    error: str = ""
+    decision_request: Optional[dict] = None
+
+
+# ── Hooks (the I/O the daemon needs, injected) ──────────────────────────
+
+
+@dataclass
+class DaemonHooks:
+    """Everything the daemon depends on the outside world for.
+
+    Tests pass simple callables; production wraps `IntentService`,
+    `subprocess.run('git ...')`, the REFLECT model session, etc.
+
+    `dispatch_item(item)` → opaque handle (intent_id in production).
+        Kicks off a Phase-1 sub-mission for the given roadmap item.
+        Returns immediately; the daemon then calls
+        `wait_for_dispatch(handle)` to block until done.
+
+    `wait_for_dispatch(handle)` → DispatchOutcome.
+        Blocks until the handle's sub-mission terminates (completed /
+        cancelled / failed). The daemon's stop_event MUST be checkable
+        from inside this callable so user_stop interrupts cleanly.
+
+    `cancel_dispatch(handle)` → None.
+        Best-effort cancellation. Called by `daemon.stop()` if
+        a dispatch is in flight. Safe to be a no-op.
+
+    `get_commit_sha()` → Optional[str].
+        Returns the latest HEAD commit SHA, or None if the project
+        repo is in a state we can't read (no commits yet, detached
+        HEAD with no recorded SHA, git binary missing). Production
+        wraps `git log -1 --format=%H`.
+
+    `validate_sha(sha)` → bool.
+        True iff `sha` is a real commit in the repo. Production wraps
+        `git rev-parse --verify <sha>^{commit}`.
+
+    `run_full_reflect(roadmap, pass_result)` → FullReflectOutcome.
+        Run the REFLECT model session in `mode: full`. The
+        deterministic prelude (`run_reflect_pass`) has already been
+        called by the daemon — its output is `pass_result`, and the
+        roadmap's `acceptance_criteria[i].passed` fields already
+        reflect those results. The model's job is to validate
+        [chrome] criteria + emit the structured JSON verdict.
+        IMPORTANT: this callable can be skipped entirely when
+        `pass_result.needs_model_session() == False` — the daemon
+        decides.
+
+    `check_context_factory(roadmap)` → CheckContext.
+        Build a CheckContext for the deterministic pass, with
+        bash_runner, vision_runner, image_provider all set up for
+        the project's environment. Called once per full-reflect
+        pass so the runners can pick up any config drift.
+    """
+    dispatch_item: Callable[[RoadmapItem], Any]
+    wait_for_dispatch: Callable[[Any], DispatchOutcome]
+    cancel_dispatch: Callable[[Any], None]
+    get_commit_sha: Callable[[], Optional[str]]
+    validate_sha: Callable[[str], bool]
+    run_full_reflect: Callable[[Roadmap, ReflectPassResult], FullReflectOutcome]
+    check_context_factory: Callable[[Roadmap], CheckContext]
+    # v0.6.0 — skills integration. Optional callables (default None);
+    # when wired, the daemon extracts skills at verdict=satisfied and
+    # queues the curator at terminal-state transitions. Tests pass
+    # None to skip; production wraps `extract_skill_from_iter` and
+    # `run_curation` from `orchestration/`.
+    extract_skill_hook: Optional[Callable[..., Any]] = None
+    queue_curation_hook: Optional[Callable[[str], None]] = None
+    checkpoint_hook: Optional[Callable[..., dict]] = None
+    # What the mission's model requests have cost so far, in USD (priced
+    # requests only), for `spend_limit_usd`. None: spending isn't tracked.
+    spent_usd: Optional[Callable[[], float]] = None
+
+
+# ── Waiting policy ──────────────────────────────────────────────────────
+
+
+# No time budget (full auto) still deserves a stall guard, but there is no
+# mission length to scale it against.
+_DEFAULT_STALL_CEILING_SECONDS = 3600.0
+# A sub-mission that has consumed half the entire mission budget is pathological
+# regardless of how generous that budget was; the clamps keep the derived value
+# sane at both extremes.
+_MIN_STALL_CEILING_SECONDS = 900.0
+_MAX_STALL_CEILING_SECONDS = 14400.0
+
+# Distinguishes "the caller said no ceiling" from "the caller said nothing".
+_DERIVE_FROM_BUDGET = object()
+
+
+@dataclass(frozen=True)
+class WaitPolicy:
+    """How long the mission waits, and for what.
+
+    A mission blocks for two genuinely different reasons, and conflating them
+    produces the wrong recovery:
+
+    `human_seconds` — the daemon is parked on a person, because REFLECT emitted
+    a `decision_request` it could not resolve alone. Nothing proceeds without an
+    answer. On expiry the right move is to *continue* using the option REFLECT
+    nominated: the work is fine, only the decision is missing.
+
+    `dispatch_seconds` — one sub-mission is grinding. On expiry the right move
+    is the opposite: cancel it and fail the iteration, because the sub-mission
+    itself is the problem.
+
+    A note on history, because the previous rationale was stale and misled a
+    later reading of this code: the dispatch ceiling was documented as guarding
+    against a sub-mission calling `await_user` with no GUI attached and blocking
+    forever. That is no longer possible. `LocalSpecialistRunner` invokes
+    `session.run(node.goal)` with no `on_user_input` callback, and `await_user`
+    then returns "(no user available — proceed with your best judgment)"
+    immediately. The ceiling now guards only against genuine stalls: a hung
+    subprocess, a non-terminating tool loop, or a model that never stops.
+
+    Both durations use the same vocabulary as the time budget ("30m", "2h") so
+    there is one thing to learn.
+    """
+
+    human_seconds: Optional[float] = None
+    dispatch_seconds: Optional[float] = None
+
+    @staticmethod
+    def derive_stall_ceiling(time_budget_seconds: Optional[float]) -> float:
+        """Scale the stall ceiling to the mission it is protecting.
+
+        A fixed one-hour ceiling was wrong at both ends. On a 1h mission it
+        permitted a single sub-task to consume the entire budget; on a 48h
+        mission it killed legitimately long work — a large test suite or a slow
+        build — and each kill counts toward `check_failed_streak_limit`, so two
+        of them stop the whole mission.
+        """
+        if not time_budget_seconds or time_budget_seconds <= 0:
+            return _DEFAULT_STALL_CEILING_SECONDS
+        return max(
+            _MIN_STALL_CEILING_SECONDS,
+            min(_MAX_STALL_CEILING_SECONDS, time_budget_seconds * 0.5),
+        )
+
+    def describe(self) -> dict:
+        """Telemetry shape shared by both wait sites."""
+        return {
+            "human_seconds": self.human_seconds,
+            "dispatch_seconds": self.dispatch_seconds,
+        }
+
+
+# ── Configuration ───────────────────────────────────────────────────────
+
+
+@dataclass
+class AutonomousMissionConfig:
+    """Per-mission configuration for one daemon instance."""
+    intent_id: str
+    roadmap_path: Path
+    # None means full-auto (no time ceiling; iteration cap still applies).
+    time_budget_seconds: Optional[float] = None
+    # Stop once the mission's model requests have cost this much (USD). Checked
+    # before each iteration and while a sub-mission runs (at the heartbeat),
+    # so a run can pass it by what one heartbeat's worth of requests cost.
+    # None: no limit (organization budgets still apply to every request).
+    spend_limit_usd: Optional[float] = None
+    # Defensive backstop. A user who legitimately needs >100 iterations
+    # should run a follow-up mission against the same project.
+    max_iterations: int = 100
+    # Run a full REFLECT pass every K iterations (and on roadmap empty).
+    full_reflect_cadence: int = 3
+    # Sleep between iterations so the user can interject and so we don't
+    # pin a CPU core if dispatch returns instantly. Cancellable via the
+    # stop_event.
+    tick_pause_seconds: float = 5.0
+    # If we get this many consecutive `verdict=blocked` from full
+    # reflect, we stop and let the user untangle it.
+    blocked_streak_limit: int = 3
+    # If this many consecutive sub-missions fail (DispatchOutcome.success
+    # = False), we stop. Don't grind on something fundamentally broken.
+    check_failed_streak_limit: int = 2
+    # v0.6.5 (long-running hardening) — stall detection.
+    # Emit an `autonomous_heartbeat` every N seconds while blocked waiting
+    # on a sub-mission, so the GUI can tell a slow-but-alive daemon apart
+    # from a frozen one over a multi-day run. 0 disables.
+    heartbeat_seconds: float = 30.0
+    # ── Waiting. See WaitPolicy for why these are two settings, not one. ──
+    #
+    # Stall ceiling for a single sub-mission dispatch. On expiry the dispatch is
+    # cancelled (which unblocks the wait) and the iteration fails. Left unset it
+    # is derived from the time budget; pass None explicitly to disable it.
+    dispatch_timeout_seconds: Any = _DERIVE_FROM_BUDGET
+    # Deadline for a parked human decision. A park blocks the whole mission on a
+    # person, and an unattended run can burn hours doing nothing — the failure
+    # is invisible, because "parked" looks the same after ten seconds and after
+    # ten hours. On expiry the daemon proceeds with the option REFLECT
+    # nominated, recorded as an auto-decision so the transcript never implies a
+    # human made it.
+    #
+    # None (the default) waits indefinitely. A deadline is only safe when the
+    # request declares an option acceptable unattended, so opting in is the
+    # caller's call — the launch card asks for it per run.
+    decision_timeout_seconds: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        if self.dispatch_timeout_seconds is _DERIVE_FROM_BUDGET:
+            self.dispatch_timeout_seconds = WaitPolicy.derive_stall_ceiling(
+                self.time_budget_seconds,
+            )
+
+    @property
+    def wait_policy(self) -> WaitPolicy:
+        """The two waits as one object, for telemetry and for the wait sites."""
+        return WaitPolicy(
+            human_seconds=self.decision_timeout_seconds,
+            dispatch_seconds=self.dispatch_timeout_seconds,
+        )
+
+
+# ── The daemon ──────────────────────────────────────────────────────────
+
+
+# Stop reason → kind of WS event the daemon emits at end-of-loop.
+# "satisfied" is the only "complete" ending; everything else is "paused".
+_COMPLETE_REASONS = frozenset({"satisfied"})
+
+
+class AutonomousMissionDaemon:
+    """Background-thread orchestrator for one autonomous mission.
+
+    Lifecycle: construct → `start()` → events flow via on_event →
+    `stop(reason)` (or natural termination) → `join()`.
+
+    Idempotent: `start()` while already running is a no-op. `stop()`
+    is safe to call multiple times.
+
+    Thread-safe: `stop()` and `is_running()` may be called from any
+    thread. Internal state mutations are guarded by `_lock`.
+    """
+
+    def __init__(
+        self,
+        config: AutonomousMissionConfig,
+        hooks: DaemonHooks,
+        on_event: Optional[Callable[[dict], None]] = None,
+    ):
+        self.config = config
+        self.hooks = hooks
+        self.on_event = on_event or (lambda ev: None)
+
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self._stop_reason: str = ""
+        self._stop_message: str = ""
+
+        # v0.5.9a4 — pause-after-current-iter. Distinct from `stop()`
+        # which cancels mid-flight. When set, the next call to
+        # `_check_stop_rules` (at the TOP of the next iteration)
+        # returns ("user_pause", message) so the daemon exits
+        # cleanly AFTER the current iter completes its dispatch +
+        # reflection. UX: lets the user "stop after this completes"
+        # without losing the work-in-progress.
+        self._pause_after_iter: bool = False
+        self._pause_message: str = ""
+
+        # Iteration state (read by tests + emitted in events).
+        self._iter_count = 0
+        self._started_at: float = 0.0
+        self._blocked_streak = 0
+        self._check_failed_streak = 0
+        self._verdict: str = "continue"
+        self._in_flight_handle: Any = None
+
+        # v0.5.8a2 — human-decision-required park/resume state.
+        # Daemon parks (does NOT terminate) when REFLECT emits a
+        # well-formed `decision_request`. The user's response unblocks
+        # the loop via `provide_decision()`; the choice is folded into
+        # the next REFLECT pass's goal text so the model can act on it
+        # (e.g. file_edit the criterion, file_move the source file).
+        self._decision_event = threading.Event()
+        self._decision_response: dict = {}
+        # Carries the decision context forward into the next REFLECT
+        # call. Cleared after one use so old decisions don't pollute
+        # subsequent passes.
+        self._pending_decision_context: str = ""
+
+        # v0.5.9a1 — live-activity tracking. The daemon transitions
+        # through a small set of phases during one iteration (picking
+        # an item → dispatching → waiting → reflecting → tick-pause)
+        # plus the parked phase for human-decision-required. Each
+        # transition emits `autonomous_activity` so the GUI can show
+        # "what is the daemon doing RIGHT NOW" — the killer
+        # diagnostic for "is it stuck or just slow" during long runs.
+        # `_activity` is also surfaced via state_snapshot for tests
+        # and anything that polls.
+        self._activity: dict = {
+            "phase": "idle",       # idle/picking/dispatching/waiting_dispatch/reflecting/parked/tick_pause
+            "detail": "",          # short context line
+            "specialist": "",      # if applicable (e.g. "reflect" while reflecting)
+            "started_iso": "",     # when this phase started
+            "iter_count": 0,
+        }
+
+    # ── Public API ────────────────────────────────────────────────
+
+    def start(self) -> None:
+        """Spawn the background thread. Idempotent — calling again
+        while running is a no-op."""
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"autonomous-{self.config.intent_id[:8]}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def stop(self, reason: str = "user_stop", message: str = "") -> None:
+        """Signal the daemon to wind down at the next safe point.
+
+        Cancels any in-flight dispatch via `cancel_dispatch`. The
+        cancelled sub-mission's tool calls finish naturally — we
+        don't kill them mid-execution. The daemon thread exits
+        cleanly after the current iteration's bookkeeping.
+
+        Safe to call from any thread; safe to call multiple times.
+        """
+        with self._lock:
+            # First-call wins on reason — subsequent stops keep the
+            # original explanation. (e.g. budget expires AND user
+            # clicks stop within the same tick: budget reason is
+            # the "real" cause.)
+            if not self._stop_reason:
+                self._stop_reason = reason
+                self._stop_message = message
+            in_flight = self._in_flight_handle
+        self._stop_event.set()
+
+        if in_flight is not None:
+            try:
+                self.hooks.cancel_dispatch(in_flight)
+            except Exception:
+                logger.debug(
+                    "cancel_dispatch raised; ignoring",
+                    exc_info=True,
+                )
+        # If the daemon was parked waiting on a decision, wake the
+        # wait-loop so it can observe the stop and exit cleanly.
+        self._decision_event.set()
+
+    def pause_after_iter(self, message: str = "user paused") -> None:
+        """v0.5.9a4 — request a graceful pause AFTER the current iter
+        completes. Distinct from `stop()` which cancels in-flight.
+
+        Sets `_pause_after_iter=True`; the next top-of-loop stop-rule
+        check returns ("user_pause", message). The current iter
+        finishes its dispatch + reflection; the daemon exits cleanly
+        after that.
+
+        Lower priority than user_stop, time_budget, iteration_cap so
+        a pause request doesn't override a more urgent stop rule.
+
+        Thread-safe; safe to call multiple times (only the first
+        message wins; subsequent calls are no-ops).
+        """
+        with self._lock:
+            if not self._pause_after_iter:
+                self._pause_after_iter = True
+                self._pause_message = message or "user paused"
+
+    def provide_decision(
+        self, option_id: str, response_text: str = "",
+    ) -> bool:
+        """v0.5.8a2 — supply the user's choice to a parked daemon.
+
+        Returns True if the daemon was actually parked (the call
+        unblocked the wait-loop), False if the daemon wasn't waiting
+        for a decision (race condition: daemon already moved past
+        the park point, or stop was called first).
+
+        `option_id` should match one of the option ids the daemon
+        emitted. `response_text` is optional free-text the user can
+        attach (e.g. "use the criterion-path AND clean up the dupe
+        file"). Both flow into the next REFLECT pass as context.
+
+        Thread-safe. Calling provide_decision twice is harmless —
+        the second call lands after the daemon has already cleared
+        the event for the next park, so it just re-arms the next
+        decision's data prematurely. We swap the response under the
+        lock so a second call doesn't tear the dict.
+        """
+        if not option_id or not isinstance(option_id, str):
+            return False
+        was_parked = not self._decision_event.is_set()
+        with self._lock:
+            self._decision_response = {
+                "option_id": option_id.strip(),
+                "response_text": (response_text or "").strip(),
+                "responded_at_iso": _now_iso(),
+            }
+        self._decision_event.set()
+        return was_parked
+
+    def _wait_for_decision(self, deadline_seconds: Optional[float] = None) -> bool:
+        """Block until provide_decision() OR stop() is called.
+
+        Returns True if a decision arrived (unblock + proceed), False
+        if the daemon is being torn down (treat as a stop).
+
+        `deadline_seconds` bounds the wait. On expiry this returns True
+        WITHOUT a queued response; the caller detects the empty response and
+        applies the request's declared default. Expiry is not an error — the
+        run continues, it just continues unattended.
+        """
+        # Loop with short timeouts so the stop_event check fires
+        # promptly even when the user takes hours to respond.
+        started = time.time()
+        while True:
+            if self._stop_event.is_set():
+                return False
+            if self._decision_event.wait(timeout=0.5):
+                # Make sure stop didn't race in between the wait
+                # returning and us reading the response.
+                if self._stop_event.is_set():
+                    return False
+                return True
+            if (
+                deadline_seconds
+                and deadline_seconds > 0
+                and (time.time() - started) >= deadline_seconds
+            ):
+                return True
+
+    def _emit_wait_expired(self, kind: str, waited_seconds: Optional[float], **extra) -> None:
+        """One event for "we stopped waiting", whatever we were waiting on.
+
+        The two waits recover differently — a human wait proceeds, a dispatch
+        wait cancels — but the GUI's question is the same either way ("why did
+        this move on?"), and the answer should not depend on which of two
+        unrelated event names it happened to learn.
+        """
+        self._emit("autonomous_wait_expired", {
+            "iter_count": self._iter_count,
+            "kind": kind,
+            "waited_seconds": waited_seconds,
+            "policy": self.config.wait_policy.describe(),
+            **extra,
+        })
+
+    @staticmethod
+    def _default_decision_option(request: dict) -> str:
+        """The option to apply when a park deadline expires.
+
+        Prefers whatever REFLECT explicitly nominated; otherwise the first
+        offered option, which is the convention REFLECT already follows when
+        ordering them (most conservative resolution first).
+        """
+        declared = str((request or {}).get("default_option_id") or "").strip()
+        options = (request or {}).get("options") or []
+        valid = [str(o.get("id") or "").strip() for o in options if isinstance(o, dict)]
+        valid = [o for o in valid if o]
+        if declared and declared in valid:
+            return declared
+        return valid[0] if valid else ""
+
+    def _consume_pending_decision(self) -> dict:
+        """Atomic read-and-clear of the latest decision response.
+        Returns an empty dict if nothing's queued. Called by the
+        run-loop after `_wait_for_decision()` returns True."""
+        with self._lock:
+            response = dict(self._decision_response)
+            self._decision_response = {}
+        # Re-arm for the next park.
+        self._decision_event.clear()
+        return response
+
+    def is_running(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        if self._thread is not None:
+            self._thread.join(timeout)
+
+    def state_snapshot(self) -> dict:
+        """Read-only view of the daemon's current state — useful for
+        WS event payloads and tests. Safe to call from any thread."""
+        with self._lock:
+            elapsed = (
+                time.time() - self._started_at
+                if self._started_at else 0.0
+            )
+            activity_copy = dict(self._activity)
+            return {
+                "intent_id": self.config.intent_id,
+                "iter_count": self._iter_count,
+                "elapsed_seconds": elapsed,
+                "time_budget_seconds": self.config.time_budget_seconds,
+                "spend_limit_usd": self.config.spend_limit_usd,
+                "spent_usd": self._spent(),
+                "verdict": self._verdict,
+                "blocked_streak": self._blocked_streak,
+                "check_failed_streak": self._check_failed_streak,
+                "is_running": self.is_running(),
+                "stop_reason": self._stop_reason,
+                # v0.5.9a1 — live activity (phase + detail + specialist
+                # + started_iso) so polling clients can render the
+                # "what's the daemon doing right now" line.
+                "activity": activity_copy,
+            }
+
+    def _set_activity(
+        self,
+        phase: str,
+        *,
+        detail: str = "",
+        specialist: str = "",
+        emit: bool = True,
+    ) -> None:
+        """v0.5.9a1 — record the current phase + emit an
+        `autonomous_activity` event so the GUI's live-activity panel
+        updates. Thread-safe; safe to call from the daemon thread or
+        any callback the daemon owns.
+
+        `phase`: one of "idle", "picking", "dispatching",
+        "waiting_dispatch", "reflecting", "parked", "tick_pause", or
+        any future label. Open-vocabulary on purpose — the GUI
+        renders whatever string we send + a colored dot.
+
+        `detail`: one-line free-form context (e.g. "T1.2 — first
+        scaffold item", or "blocked-streak 2/3").
+
+        `specialist`: when applicable, the NodeSpecialization.value
+        (e.g. "reflect", "implement"). Empty for daemon-internal
+        phases like tick_pause.
+
+        Set `emit=False` to update internal state without firing an
+        event (e.g. when batching multiple updates within one phase).
+        """
+        started_iso = _now_iso()
+        with self._lock:
+            self._activity = {
+                "phase": phase,
+                "detail": detail,
+                "specialist": specialist,
+                "started_iso": started_iso,
+                "iter_count": self._iter_count,
+            }
+            payload = dict(self._activity)
+        if emit:
+            self._emit("autonomous_activity", payload)
+
+    # ── Iteration loop (runs in the daemon thread) ────────────────
+
+    def _run(self) -> None:
+        """Thread entrypoint. Iterates until a stopping rule fires
+        or an unhandled exception bubbles up (which is logged and
+        emitted as `autonomous_mission_failed` so the user isn't
+        left wondering)."""
+        self._started_at = time.time()
+        self._emit("autonomous_mission_started", {
+            "started_iso": _now_iso(),
+            "time_budget_seconds": self.config.time_budget_seconds,
+            "spend_limit_usd": self.config.spend_limit_usd,
+            "max_iterations": self.config.max_iterations,
+        })
+
+        try:
+            while True:
+                # Stopping rules at top of iteration. These are
+                # priority-ordered: the most severe (user_stop)
+                # wins.
+                stop = self._check_stop_rules()
+                if stop is not None:
+                    self._emit_stop(*stop)
+                    return
+
+                # v0.5.9a1 — activity tick: top of iteration.
+                self._set_activity("picking",
+                    detail="loading roadmap + selecting next item")
+
+                rm = self._load_roadmap()
+
+                # Misconfiguration: no acceptance criteria means
+                # the rigorous grill failed silently. Stop loud.
+                if not rm.has_any_acceptance_criteria():
+                    self._emit_stop(
+                        "misconfigured",
+                        "roadmap has no acceptance criteria; "
+                        "rigorous grill must produce ≥4",
+                    )
+                    return
+
+                # Pick the next item. None means roadmap is empty
+                # (or fully checked); trigger a full reflect to see
+                # if we've converged or if REFLECT wants to add
+                # items.
+                item = rm.next_unchecked_item()
+                if item is None:
+                    self._set_activity("reflecting",
+                        detail="roadmap empty — checking convergence",
+                        specialist="reflect")
+                    full = self._run_full_reflect(rm)
+                    if full.verdict == "satisfied":
+                        self._emit_stop(
+                            "satisfied",
+                            "all roadmap items shipped + acceptance criteria met",
+                        )
+                        return
+                    if full.verdict == "blocked":
+                        self._blocked_streak += 1
+                        if self._blocked_streak >= self.config.blocked_streak_limit:
+                            self._emit_stop(
+                                "blocked",
+                                f"{self._blocked_streak} consecutive blocked verdicts",
+                            )
+                            return
+                    else:
+                        self._blocked_streak = 0
+                        # `continue` verdict with no new items + an
+                        # empty roadmap means we're stuck: no work to
+                        # do, criteria still red, and nobody is
+                        # adding items.
+                        #
+                        # v0.5.0 GA prep — re-load the roadmap from
+                        # disk and check `next_unchecked_item` rather
+                        # than trusting `full.added_items`. The
+                        # REFLECT model can add items two ways:
+                        # (1) via the JSON envelope's `added` field
+                        # (the daemon's add_items loop applies these
+                        # to the roadmap), and (2) via direct
+                        # `file_edit` to roadmap.md. Path 2 won't
+                        # show up in `outcome.added_items` but WILL
+                        # appear in the roadmap on disk. Found in
+                        # v0.5.0 GA smoke run #3 — model used
+                        # file_edit directly and the daemon then
+                        # mis-detected stuck. ADR 15 in the impl
+                        # guide.
+                        rm_post = self._load_roadmap()
+                        if rm_post.next_unchecked_item() is None:
+                            repair_items = self._ensure_acceptance_repair_items(
+                                rm_post
+                            )
+                            if repair_items:
+                                self._tick_pause_or_stop()
+                                continue
+                            self._emit_stop(
+                                "stuck",
+                                "roadmap empty but acceptance criteria "
+                                "not converged; no new items added by "
+                                "REFLECT — manual intervention needed",
+                            )
+                            return
+                    # Otherwise: model added items. Loop and re-pick.
+                    self._tick_pause_or_stop()
+                    continue
+
+                # Dispatch as a Phase-1 sub-mission and wait for it
+                # to finish. The daemon thread blocks here — but
+                # the engine's existing event stream still flows
+                # to the GUI via the IntentService callbacks.
+                iteration_ok = self._run_one_iteration(item)
+                # The outcome is now durably in the roadmap (shipped →
+                # checked, or failed → still unchecked), so the in-flight
+                # checkpoint has done its job. Clearing it here means only
+                # a crash DURING the iteration leaves it set — exactly the
+                # signal the resume path looks for.
+                roadmap_module.clear_inflight(self.config.roadmap_path)
+                if not iteration_ok:
+                    if self._check_failed_streak >= self.config.check_failed_streak_limit:
+                        self._emit_stop(
+                            "check_failed",
+                            f"{self._check_failed_streak} consecutive failed iterations",
+                        )
+                        return
+
+                # Full reflect every K iterations.
+                if self._iter_count % self.config.full_reflect_cadence == 0:
+                    self._set_activity("reflecting",
+                        detail=f"full REFLECT pass after iter {self._iter_count}",
+                        specialist="reflect")
+                    rm = self._load_roadmap()
+                    full = self._run_full_reflect(rm)
+                    if full.verdict == "satisfied":
+                        self._emit_stop(
+                            "satisfied",
+                            "acceptance criteria converged",
+                        )
+                        return
+                    if full.verdict == "blocked":
+                        self._blocked_streak += 1
+                        if self._blocked_streak >= self.config.blocked_streak_limit:
+                            self._emit_stop(
+                                "blocked",
+                                f"{self._blocked_streak} consecutive blocked verdicts",
+                            )
+                            return
+                    else:
+                        self._blocked_streak = 0
+
+                # v0.5.9a1 — between iterations, brief pause so the
+                # GUI sees the "tick" phase rather than thinking the
+                # daemon is stuck on the previous specialist.
+                self._set_activity("tick_pause",
+                    detail=f"between iter {self._iter_count} and {self._iter_count + 1}")
+                self._tick_pause_or_stop()
+
+        except Exception as exc:
+            logger.exception(
+                "Autonomous mission daemon crashed for intent %s",
+                self.config.intent_id,
+            )
+            # v0.5.6a3 — same atomicity guarantee as _emit_stop: write
+            # roadmap.md status + emit the terminal event with new_phase
+            # so the WS handler can update session state in lock-step.
+            self._update_roadmap_status_safely("failed")
+            self._emit("autonomous_mission_failed", {
+                "iter_count": self._iter_count,
+                "error": str(exc),
+                "elapsed_seconds": time.time() - self._started_at,
+                "new_phase": "autonomous_failed",
+            })
+
+    # ── Stop-rule evaluation ──────────────────────────────────────
+
+    def _check_stop_rules(self) -> Optional[tuple[str, str]]:
+        """Evaluate the priority-ordered stopping rules. Returns
+        `(reason, message)` to stop, or None to continue. Called at
+        the top of every iteration."""
+        # 1. User stop (highest priority).
+        if self._stop_event.is_set():
+            with self._lock:
+                reason = self._stop_reason or "user_stop"
+                message = self._stop_message or "stop requested"
+            return (reason, message)
+
+        # 2. Time budget. None means full-auto (skip this rule).
+        if self.config.time_budget_seconds is not None:
+            elapsed = time.time() - self._started_at
+            if elapsed >= self.config.time_budget_seconds:
+                return (
+                    "time_budget_exhausted",
+                    f"elapsed {elapsed:.1f}s ≥ budget "
+                    f"{self.config.time_budget_seconds:.1f}s",
+                )
+
+        # 2b. Spending limit. None means no limit.
+        exceeded = self._spend_exceeded()
+        if exceeded is not None:
+            return exceeded
+
+        # 3. Iteration cap (defensive backstop, always applies).
+        if self._iter_count >= self.config.max_iterations:
+            return (
+                "iteration_cap",
+                f"{self._iter_count} iterations ≥ cap "
+                f"{self.config.max_iterations}",
+            )
+
+        # 4. v0.5.9a4 — user-requested pause-after-iter. Lower
+        # priority than the above three so a more-urgent stop wins.
+        # Fires at the TOP of the iteration that follows the pause
+        # request, so the iteration in progress when pause was
+        # called completes naturally first.
+        with self._lock:
+            if self._pause_after_iter:
+                return ("user_pause", self._pause_message or "user paused")
+
+        return None
+
+    def _spent(self) -> Optional[float]:
+        """The mission's spending so far, or None when it isn't tracked."""
+        if self.hooks.spent_usd is None:
+            return None
+        try:
+            return float(self.hooks.spent_usd())
+        except Exception:
+            logger.debug("spent_usd hook raised", exc_info=True)
+            return None
+
+    def _spend_exceeded(self) -> Optional[tuple[str, str]]:
+        limit = self.config.spend_limit_usd
+        if limit is None:
+            return None
+        spent = self._spent()
+        if spent is None or spent < limit:
+            return None
+        return ("spend_limit_reached", f"spent ${spent:.2f} of the ${limit:.2f} limit")
+
+    # ── One iteration: dispatch + mark item ───────────────────────
+
+    def _run_one_iteration(self, item: RoadmapItem) -> bool:
+        """Dispatch one roadmap item as a sub-mission, wait for it,
+        mark it complete in the roadmap with its commit SHA.
+
+        Returns True if the iteration succeeded (item shipped),
+        False if it failed or was cancelled. Updates
+        `_check_failed_streak` accordingly.
+        """
+        self._iter_count += 1
+        started = time.time()
+
+        if self.hooks.checkpoint_hook is not None:
+            try:
+                checkpoint = self.hooks.checkpoint_hook(
+                    intent_id=self.config.intent_id,
+                    iteration=self._iter_count,
+                    item_id=item.id,
+                )
+                self._emit("autonomous_iteration_checkpoint", {
+                    "iter_count": self._iter_count,
+                    "item_id": item.id,
+                    "checkpoint": checkpoint,
+                })
+            except Exception as exc:
+                logger.warning("iteration checkpoint failed: %s", exc)
+                self._emit("autonomous_iteration_checkpoint_failed", {
+                    "iter_count": self._iter_count,
+                    "item_id": item.id,
+                    "error": str(exc),
+                })
+
+        self._emit("autonomous_iteration_started", {
+            "iter_count": self._iter_count,
+            "item_id": item.id,
+            "item_title": item.title,
+        })
+
+        # v0.5.9a1 — dispatching phase. Brief; the next phase
+        # transition (waiting_dispatch) fires immediately after.
+        self._set_activity("dispatching",
+            detail=f"{item.id}: {item.title[:60]}",
+            specialist="implement")
+
+        # v0.6.5 (long-running hardening) — record the in-flight item
+        # BEFORE dispatch. If the process dies between "sub-mission
+        # shipped + committed" and "roadmap saved", the resume path
+        # finds this checkpoint and surfaces a recovery event rather
+        # than silently re-running committed work. The caller clears it
+        # once this method returns (the roadmap then reflects the
+        # outcome), so only a crash mid-iteration leaves it behind.
+        roadmap_module.write_inflight(
+            self.config.roadmap_path,
+            item_id=item.id,
+            iter_num=self._iter_count,
+            started_at=started,
+        )
+
+        try:
+            handle = self.hooks.dispatch_item(item)
+        except Exception as exc:
+            logger.exception("dispatch_item raised for %s", item.id)
+            self._check_failed_streak += 1
+            self._emit("autonomous_iteration_failed", {
+                "iter_count": self._iter_count,
+                "item_id": item.id,
+                "error": f"dispatch raised: {exc}",
+            })
+            return False
+
+        with self._lock:
+            self._in_flight_handle = handle
+
+        # v0.5.9a1 — actively waiting on the sub-mission. The
+        # IntentService's tool calls flow to the GUI via on_session_event
+        # (separate stream); this activity-line is the daemon's own
+        # "still here, blocked on wait_for_dispatch" heartbeat.
+        self._set_activity("waiting_dispatch",
+            detail=f"{item.id}: sub-mission running",
+            specialist="implement")
+
+        try:
+            outcome = self._wait_with_monitor(item, handle, started)
+        finally:
+            with self._lock:
+                self._in_flight_handle = None
+
+        if not outcome.success:
+            self._check_failed_streak += 1
+            self._emit("autonomous_iteration_failed", {
+                "iter_count": self._iter_count,
+                "item_id": item.id,
+                "error": outcome.error or "(no error message)",
+            })
+            return False
+
+        # Sub-mission shipped. Reset the failure streak.
+        self._check_failed_streak = 0
+
+        duration = time.time() - started
+        sha = self._read_and_validate_sha()
+
+        # Re-read the roadmap from disk in case the user (or REFLECT
+        # in a parallel pass — though we serialize so that shouldn't
+        # happen) edited it during the iteration.
+        rm = self._load_roadmap()
+        # When SHA is None / invalid, write empty commit_sha + a note
+        # marker. The roadmap parser only recognizes 6-40-hex SHAs, so
+        # passing a "<empty>" placeholder wouldn't survive a round-trip
+        # through save/load — the iteration_log carries the explanatory
+        # `<empty>` marker instead.
+        item_note = (
+            f"iter {self._iter_count}"
+            if sha
+            else f"iter {self._iter_count} (no commit recorded)"
+        )
+        marked = roadmap_module.mark_item_complete(
+            rm,
+            item_id=item.id,
+            commit_sha=sha or "",
+            note=item_note,
+        )
+        if not marked:
+            # User hand-edited the item out mid-run. Don't crash;
+            # log + continue.
+            logger.info(
+                "Item %s vanished from roadmap during iteration; "
+                "user must have edited the file. Skipping mark.",
+                item.id,
+            )
+
+        roadmap_module.append_iteration_log(
+            rm,
+            iter_num=self._iter_count,
+            duration_label=_format_duration(duration),
+            note=(
+                f"shipped {item.id}"
+                if sha
+                else f"shipped {item.id} <empty>"
+            ),
+            item_id=item.id,
+            commit_sha=sha or "",
+            kind="shipped",
+        )
+        spent = self._spent()
+        if spent is not None:
+            rm.spent_label = f"${spent:.2f}"
+        try:
+            roadmap_module.save(rm, self.config.roadmap_path)
+        except Exception:
+            logger.warning(
+                "Failed to persist roadmap after iter %s",
+                self._iter_count,
+                exc_info=True,
+            )
+
+        self._emit("autonomous_iteration_complete", {
+            "iter_count": self._iter_count,
+            "item_id": item.id,
+            "commit_sha": sha or "",
+            "duration_seconds": duration,
+        })
+        return True
+
+    def _wait_with_monitor(self, item: RoadmapItem, handle: Any,
+                           started: float) -> DispatchOutcome:
+        """Block on the sub-mission via the hook, with a daemon-side
+        monitor thread running alongside (v0.6.5 long-running hardening):
+
+          * Heartbeat — emit `autonomous_heartbeat` every
+            `config.heartbeat_seconds` so the GUI can tell a slow-but-
+            alive wait apart from a frozen daemon.
+          * Stall ceiling — if the wait exceeds the policy's
+            `dispatch_seconds`, cancel the in-flight dispatch (which
+            unblocks `wait_for_dispatch`) and report a timeout.
+
+        This is the work-stall half of the mission's WaitPolicy; the
+        human half lives at the decision-park in `_run_full_reflect`.
+        Cancelling is right here and wrong there — see WaitPolicy.
+
+        Returns the DispatchOutcome (a synthesized failure/timeout
+        outcome when the wait raises or the ceiling trips)."""
+        timed_out = {"flag": False}
+        monitor_stop = threading.Event()
+        hb = self.config.heartbeat_seconds or 0.0
+        ceiling = self.config.wait_policy.dispatch_seconds
+        watch_spend = self.config.spend_limit_usd is not None
+
+        def _monitor() -> None:
+            # Tick at the heartbeat cadence (fall back to 30s when only
+            # the ceiling is configured). Each tick: emit a heartbeat and
+            # check the stall ceiling.
+            tick = hb if hb > 0 else 30.0
+            while not monitor_stop.wait(tick):
+                elapsed = time.time() - started
+                if hb > 0:
+                    self._emit("autonomous_heartbeat", {
+                        "iter_count": self._iter_count,
+                        "item_id": item.id,
+                        "phase": "waiting_dispatch",
+                        "elapsed_seconds": round(elapsed, 1),
+                    })
+                exceeded = self._spend_exceeded() if watch_spend else None
+                if exceeded is not None:
+                    self._emit("autonomous_spend_limit", {
+                        "iter_count": self._iter_count,
+                        "item_id": item.id,
+                        "spent_usd": self._spent(),
+                        "spend_limit_usd": self.config.spend_limit_usd,
+                    })
+                    # Cancels the sub-mission and stops at the next safe point.
+                    self.stop(*exceeded)
+                    return
+                if (ceiling and ceiling > 0 and elapsed >= ceiling
+                        and not timed_out["flag"]):
+                    timed_out["flag"] = True
+                    logger.warning(
+                        "Dispatch for %s exceeded the %.0fs stall ceiling; "
+                        "cancelling the sub-mission (hung process, "
+                        "non-terminating tool loop, or a model that never "
+                        "stops). This is NOT the human-decision wait — see "
+                        "WaitPolicy.",
+                        item.id, ceiling,
+                    )
+                    self._emit("autonomous_iteration_timeout", {
+                        "iter_count": self._iter_count,
+                        "item_id": item.id,
+                        "timeout_seconds": ceiling,
+                    })
+                    self._emit_wait_expired(
+                        "dispatch",
+                        ceiling,
+                        outcome="cancelled",
+                        item_id=item.id,
+                    )
+                    try:
+                        self.hooks.cancel_dispatch(handle)
+                    except Exception:
+                        logger.debug(
+                            "cancel_dispatch raised during timeout",
+                            exc_info=True,
+                        )
+                    return  # ceiling hit; the cancel unblocks the wait
+
+        monitor: Optional[threading.Thread] = None
+        if hb > 0 or (ceiling and ceiling > 0) or watch_spend:
+            monitor = threading.Thread(
+                target=_monitor, name="autonomous-wait-monitor", daemon=True,
+            )
+            monitor.start()
+
+        try:
+            outcome = self.hooks.wait_for_dispatch(handle)
+        except Exception as exc:
+            logger.exception("wait_for_dispatch raised for %s", item.id)
+            outcome = DispatchOutcome(
+                success=False, error=f"wait raised: {exc}", handle=handle,
+            )
+        finally:
+            monitor_stop.set()
+            if monitor is not None:
+                monitor.join(timeout=2.0)
+
+        if timed_out["flag"]:
+            # Whatever the cancel produced, report it as a timeout so the
+            # failure streak + telemetry read "stalled", not generic.
+            outcome = DispatchOutcome(
+                success=False,
+                error=(f"dispatch timed out after {ceiling:.0f}s "
+                       f"(sub-mission cancelled — no completion)"),
+                handle=handle,
+            )
+        return outcome
+
+    def _read_and_validate_sha(self) -> Optional[str]:
+        """Read latest HEAD SHA via the hook, validate it via
+        `git rev-parse`. Returns the SHA on success, None when the
+        repo is in a weird state OR the SHA fails validation (which
+        shouldn't happen for a SHA we just read from `git log`, but
+        the validate hook is the same one we'd use to check
+        model-claimed SHAs in full reflect).
+        """
+        try:
+            sha = self.hooks.get_commit_sha()
+        except Exception:
+            logger.debug("get_commit_sha raised", exc_info=True)
+            return None
+        if not sha:
+            return None
+        try:
+            if not self.hooks.validate_sha(sha):
+                logger.warning(
+                    "validate_sha rejected SHA %r read from git log; "
+                    "marking as <empty>",
+                    sha,
+                )
+                return None
+        except Exception:
+            logger.debug("validate_sha raised", exc_info=True)
+            return None
+        return sha
+
+    # ── Full reflect pass ─────────────────────────────────────────
+
+    def _run_full_reflect(self, rm: Roadmap) -> FullReflectOutcome:
+        """Run the deterministic prelude, optionally dispatch the
+        REFLECT model session, cross-check the verdict against the
+        roadmap state, and emit the autonomous_reflection event.
+
+        The cross-check is the "convergence is real, not a model
+        mood" enforcement: if the model claims `satisfied` while
+        `roadmap.is_converged()` is False, we override to
+        `continue`. The model can't fake convergence; the runtime
+        is the source of truth.
+        """
+        # Deterministic prelude.
+        try:
+            ctx = self.hooks.check_context_factory(rm)
+        except Exception:
+            logger.exception("check_context_factory raised")
+            ctx = CheckContext()  # degraded fallback
+        pass_result = run_reflect_pass(rm, ctx)
+
+        # Persist the deterministic results so the user can read the
+        # roadmap on disk and see what's been validated.
+        try:
+            roadmap_module.save(rm, self.config.roadmap_path)
+        except Exception:
+            logger.warning(
+                "Failed to persist roadmap after reflect pass",
+                exc_info=True,
+            )
+
+        # If everything's settled deterministically, skip the model
+        # session entirely. Cost optimization for pure-bash specs.
+        if not pass_result.needs_model_session():
+            verdict = "satisfied" if pass_result.converged else "continue"
+            outcome = FullReflectOutcome(
+                pass_result=pass_result,
+                verdict=verdict,
+                manual_pending=[c.text for c in pass_result.manual_pending],
+                summary=(
+                    f"Deterministic pass: "
+                    f"{pass_result.bash_passed + pass_result.vision_passed} passed, "
+                    f"{pass_result.bash_failed + pass_result.vision_failed} failed"
+                ),
+            )
+        else:
+            # Hand off to the REFLECT model session for [chrome]
+            # criteria validation + verdict + added/blocked items.
+            try:
+                outcome = self.hooks.run_full_reflect(rm, pass_result)
+            except Exception as exc:
+                logger.exception("run_full_reflect hook raised")
+                outcome = FullReflectOutcome(
+                    pass_result=pass_result,
+                    verdict="continue",
+                    error=f"reflect hook raised: {exc}",
+                    summary="REFLECT model session failed; continuing",
+                )
+
+            # v0.5.8a2 — park-and-retry on human-decision-required.
+            # If REFLECT emitted a well-formed `decision_request`, we
+            # park the daemon (no terminal transition), surface the
+            # request to the GUI, and wait for the user's choice.
+            # Once provide_decision() unblocks us, we re-run REFLECT
+            # with the user's response folded into the prompt so the
+            # model can ACT on the choice in the same iteration. This
+            # avoids the "stuck-on-path-mismatch" failure mode
+            # observed in the linux-bridge field run (#10).
+            if outcome.decision_request:
+                self._emit("autonomous_human_decision_required", {
+                    "iter_count": self._iter_count,
+                    "request": outcome.decision_request,
+                })
+                # v0.5.9a1 — parked phase. The daemon is intentionally
+                # blocked here waiting for the user; this differs from
+                # waiting_dispatch (waiting on the sub-mission) and
+                # tick_pause (between iterations). The GUI distinguishes
+                # all three so the user can tell at a glance whether
+                # THEY are the bottleneck.
+                self._set_activity("parked",
+                    detail=outcome.decision_request.get("question", "")[:80],
+                    specialist="reflect")
+                proceeded = self._wait_for_decision(
+                    self.config.decision_timeout_seconds,
+                )
+                if not proceeded:
+                    # Daemon being torn down. Return the outcome as-is;
+                    # the run loop's stop_event check will exit cleanly
+                    # on the next iteration of the outer while-True.
+                    return outcome
+                response = self._consume_pending_decision()
+                # An empty response means the deadline expired rather than a
+                # human answering. Apply the declared default and say so
+                # loudly: the transcript must never read as though someone
+                # made this call.
+                auto_decided = not response.get("option_id")
+                if auto_decided:
+                    fallback = self._default_decision_option(outcome.decision_request)
+                    if not fallback:
+                        # Nothing safe to pick. Keep the original semantics —
+                        # a park with no usable default stays parked rather
+                        # than inventing an answer.
+                        proceeded = self._wait_for_decision()
+                        if not proceeded:
+                            return outcome
+                        response = self._consume_pending_decision()
+                        auto_decided = False
+                    else:
+                        response = {
+                            "option_id": fallback,
+                            "response_text": "",
+                            "responded_at_iso": _now_iso(),
+                            "auto": True,
+                        }
+                        logger.warning(
+                            "Mission %s: no decision within %ss; proceeding with "
+                            "default option %r.",
+                            self.config.intent_id,
+                            self.config.decision_timeout_seconds,
+                            fallback,
+                        )
+                        self._emit("autonomous_decision_auto_applied", {
+                            "iter_count": self._iter_count,
+                            "option_id": fallback,
+                            "timeout_seconds": self.config.decision_timeout_seconds,
+                            "question": outcome.decision_request.get("question", ""),
+                        })
+                        self._emit_wait_expired(
+                            "human",
+                            self.config.decision_timeout_seconds,
+                            outcome="proceeded",
+                            option_id=fallback,
+                            question=outcome.decision_request.get("question", ""),
+                        )
+                # Build a compact context string summarizing the
+                # user's choice. The model sees this verbatim as the
+                # "## User decision (act on this)" block in the next
+                # REFLECT prompt.
+                option_id = response.get("option_id", "")
+                response_text = response.get("response_text", "")
+                context_parts = [
+                    f"User chose option `{option_id}` for the previous "
+                    f"`decision_request`."
+                ]
+                if response_text:
+                    context_parts.append(
+                        f"Additional notes from user: {response_text}"
+                    )
+                context_parts.append(
+                    f"Original question was: "
+                    f"{outcome.decision_request.get('question', '')}"
+                )
+                decision_context = "\n\n".join(context_parts)
+
+                self._emit("autonomous_human_decision_received", {
+                    "iter_count": self._iter_count,
+                    "option_id": option_id,
+                    "responded_at_iso": response.get("responded_at_iso", ""),
+                })
+
+                # Re-run REFLECT with the decision context. We re-use
+                # the SAME pass_result (deterministic checks didn't
+                # change) and the current roadmap state. If the hook
+                # signature doesn't accept the kwarg (older custom
+                # hooks), drop back to the basic call — the user's
+                # choice still got recorded via the event but won't
+                # flow into the next prompt automatically.
+                rm_post_decision = self._load_roadmap()
+                try:
+                    outcome = self.hooks.run_full_reflect(
+                        rm_post_decision, pass_result,
+                        decision_context=decision_context,
+                    )
+                except TypeError:
+                    # Hook is the old 2-arg shape — best-effort retry
+                    # without the kwarg, surface a warning so the user
+                    # knows the decision context was lost.
+                    logger.warning(
+                        "run_full_reflect hook doesn't accept "
+                        "decision_context kwarg; user choice recorded "
+                        "in event log but not folded into prompt"
+                    )
+                    try:
+                        outcome = self.hooks.run_full_reflect(
+                            rm_post_decision, pass_result,
+                        )
+                    except Exception as exc:
+                        logger.exception("run_full_reflect retry raised")
+                        outcome = FullReflectOutcome(
+                            pass_result=pass_result,
+                            verdict="continue",
+                            error=f"reflect hook raised: {exc}",
+                            summary="REFLECT post-decision retry failed",
+                        )
+                except Exception as exc:
+                    logger.exception("run_full_reflect retry raised")
+                    outcome = FullReflectOutcome(
+                        pass_result=pass_result,
+                        verdict="continue",
+                        error=f"reflect hook raised: {exc}",
+                        summary="REFLECT post-decision retry failed",
+                    )
+
+        # Cross-check: if the model claimed `satisfied`, the roadmap
+        # had better agree. Re-load from disk because the model may
+        # have written checkbox flips via file_edit.
+        rm_after = self._load_roadmap()
+
+        # v0.5.0 GA prep — apply `added` items from REFLECT's JSON
+        # verdict to the roadmap. The model can also write items via
+        # `file_edit` directly; we don't preempt that, but if the
+        # JSON envelope lists items the model didn't actually edit
+        # in (the common case), we add them here so the next
+        # iteration has work to do. Without this, REFLECT's add-
+        # items signal got lost and the daemon loop stuck on iter 1
+        # — found in the v0.5.0 GA smoke. ADR 14 in the impl guide.
+        added_count = 0
+        for item_dict in outcome.added_items or []:
+            if not isinstance(item_dict, dict):
+                continue
+            tier = item_dict.get("tier") or 1
+            try:
+                tier = int(tier)
+            except (TypeError, ValueError):
+                tier = 1
+            title = (item_dict.get("title") or "").strip()
+            description = (item_dict.get("description") or "").strip()
+            if not title:
+                continue
+            try:
+                roadmap_module.add_item(
+                    rm_after,
+                    tier=tier,
+                    title=title,
+                    description=description,
+                    source_iter=self._iter_count,
+                )
+                added_count += 1
+            except Exception:
+                logger.debug(
+                    "add_item raised for added entry %r",
+                    item_dict, exc_info=True,
+                )
+        if added_count:
+            try:
+                roadmap_module.save(rm_after, self.config.roadmap_path)
+            except Exception:
+                logger.warning(
+                    "Failed to persist roadmap after applying %d added items",
+                    added_count, exc_info=True,
+                )
+            logger.info(
+                "REFLECT added %d follow-up items to the roadmap "
+                "for iter %s+", added_count, self._iter_count + 1,
+            )
+
+        # v0.5.9a3 — track verdict provenance. The model's claim is
+        # captured BEFORE the cross-check overrides it; the override
+        # reason is structured (not just embedded in the summary
+        # string) so the GUI can render a distinct "model said X /
+        # daemon said Y" badge instead of relying on prose parsing.
+        model_verdict = outcome.verdict
+        verdict_overridden = False
+        override_reason = ""
+        # List of unpassed criteria for the override-reason payload.
+        unpassed_criteria: list[str] = []
+
+        if outcome.verdict == "satisfied" and not rm_after.is_converged():
+            logger.warning(
+                "REFLECT verdict=satisfied but roadmap.is_converged()=False; "
+                "overriding to continue. (This usually means the model "
+                "mis-judged a chrome criterion.)"
+            )
+            outcome.verdict = "continue"
+            verdict_overridden = True
+            # Build a structured reason. Pin the actual unpassed
+            # criteria so the user can see WHICH ones blocked.
+            for c in rm_after.acceptance_criteria:
+                if c.is_blocking and c.passed is not True:
+                    label = f"[{c.type}] {c.text}"
+                    if c.evidence:
+                        label += f" — {c.evidence[:80]}"
+                    unpassed_criteria.append(label[:200])
+            override_reason = (
+                f"Model claimed `satisfied` but {len(unpassed_criteria)} "
+                f"blocking criteri{'on' if len(unpassed_criteria) == 1 else 'a'} "
+                f"still unpassed. Verdict downgraded to `continue`."
+            )
+            outcome.summary += (
+                "  [Daemon override: model claimed satisfied but at least "
+                "one acceptance criterion is not yet passed.]"
+            )
+
+        # Track verdict for state_snapshot.
+        with self._lock:
+            self._verdict = outcome.verdict
+
+        passed_count, total_count = rm_after.acceptance_summary()
+        self._emit("autonomous_reflection", {
+            "iter_count": self._iter_count,
+            "verdict": outcome.verdict,
+            # v0.5.9a3 — structured provenance.
+            "model_verdict": model_verdict,
+            "verdict_overridden": verdict_overridden,
+            "override_reason": override_reason,
+            "unpassed_criteria": unpassed_criteria,
+            "added": outcome.added_items,
+            "blocked": outcome.blocked_items,
+            "manual_pending": outcome.manual_pending,
+            "summary": outcome.summary,
+            "estimated_remaining_minutes": outcome.estimated_remaining_minutes,
+            "acceptance_summary": {
+                "passed": passed_count,
+                "total": total_count,
+            },
+            "pass_tally": {
+                "bash_passed": pass_result.bash_passed,
+                "bash_failed": pass_result.bash_failed,
+                "bash_errored": pass_result.bash_errored,
+                "vision_passed": pass_result.vision_passed,
+                "vision_failed": pass_result.vision_failed,
+                "vision_errored": pass_result.vision_errored,
+                "chrome_pending": len(pass_result.chrome_pending),
+                "manual_pending": len(pass_result.manual_pending),
+            },
+            "error": outcome.error,
+        })
+
+        # v0.6.0 — skill extraction at verdict=satisfied.
+        # Best-effort: any failure inside the hook is swallowed by the
+        # hook itself (`extract_skill_from_iter` catches all). We still
+        # wrap in try/except as defense in depth — the daemon must NEVER
+        # die on a skill-extraction failure.
+        if (
+            self.hooks.extract_skill_hook is not None
+            and outcome.verdict == "satisfied"
+            and not verdict_overridden
+        ):
+            try:
+                # Find the most recently checked item for context.
+                # `checked` is the RoadmapItem's "shipped" boolean,
+                # set by REFLECT when the item passes its criteria.
+                item_title = ""
+                item_description = ""
+                for it in reversed(rm_after.items):
+                    if it.checked:
+                        item_title = it.title
+                        item_description = it.description or ""
+                        break
+                self.hooks.extract_skill_hook(
+                    roadmap_item_title=item_title,
+                    roadmap_item_description=item_description,
+                    iter_count=self._iter_count,
+                    intent_id=self.config.intent_id,
+                    project_path=str(self.config.roadmap_path.parent.parent),
+                    outcome_verdict=outcome.verdict,
+                    outcome_summary=outcome.summary or "",
+                    pass_result_bash_passed=pass_result.bash_passed,
+                    pass_result_bash_failed=pass_result.bash_failed,
+                    pass_result_vision_passed=pass_result.vision_passed,
+                    pass_result_vision_failed=pass_result.vision_failed,
+                    decision_request_resolved=bool(outcome.decision_request),
+                    verdict_overridden=verdict_overridden,
+                )
+            except Exception:
+                logger.warning(
+                    "extract_skill_hook raised; continuing iter loop",
+                    exc_info=True,
+                )
+
+        return outcome
+
+    def _ensure_acceptance_repair_items(
+        self, rm: Roadmap
+    ) -> list[RoadmapItem]:
+        """Turn definitive acceptance failures into actionable work.
+
+        REFLECT is encouraged to add follow-up work, but a malformed or
+        underspecified model response must not strand an autonomous mission
+        with a red criterion and an empty roadmap.  We synthesize one stable,
+        deduplicated repair item for each blocking criterion that actually
+        failed.  Pending/manual checks remain human/model concerns and do not
+        produce speculative work.
+        """
+        existing_text = "\n".join(
+            f"{item.title}\n{item.description}" for item in rm.items
+        )
+        added: list[RoadmapItem] = []
+        criteria_payload: list[dict[str, str]] = []
+
+        for criterion in rm.acceptance_criteria:
+            if not criterion.is_blocking or criterion.passed is not False:
+                continue
+
+            digest = hashlib.sha256(
+                f"{criterion.type}\0{criterion.text}".encode("utf-8")
+            ).hexdigest()[:12]
+            marker = f"acceptance-repair:{digest}"
+            if marker in existing_text:
+                continue
+
+            evidence = criterion.evidence.strip() or "No evidence was recorded."
+            description = (
+                f"[{marker}] Fix the failing [{criterion.type}] acceptance "
+                f"criterion: {criterion.text}. Last evidence: {evidence}"
+            )
+            item = roadmap_module.add_item(
+                rm,
+                tier=1,
+                title=f"Repair failed [{criterion.type}] acceptance criterion",
+                description=description,
+                source_iter=self._iter_count,
+            )
+            added.append(item)
+            existing_text += f"\n{item.title}\n{item.description}"
+            criteria_payload.append({
+                "item_id": item.id,
+                "type": criterion.type,
+                "criterion": criterion.text,
+                "evidence": evidence[:500],
+                "marker": marker,
+            })
+
+        if not added:
+            return []
+
+        try:
+            roadmap_module.save(rm, self.config.roadmap_path)
+        except Exception:
+            logger.exception("Failed to persist acceptance repair items")
+            return []
+
+        self._emit("autonomous_repair_items_added", {
+            "iter_count": self._iter_count,
+            "count": len(added),
+            "items": criteria_payload,
+        })
+        logger.info(
+            "Synthesized %d deterministic acceptance repair item(s)",
+            len(added),
+        )
+        return added
+
+    # ── Internal helpers ──────────────────────────────────────────
+
+    def _load_roadmap(self) -> Roadmap:
+        """Load the roadmap from disk. Wrapped so we can swap in
+        caching later if the I/O proves expensive (it shouldn't —
+        roadmaps are KB-sized markdown files)."""
+        return roadmap_module.load(self.config.roadmap_path)
+
+    def _tick_pause_or_stop(self) -> None:
+        """Sleep `tick_pause_seconds`, but wake immediately if
+        `stop()` is called. The daemon's inner loop calls this at
+        the bottom of each iteration so user_stop interrupts within
+        ~5s rather than waiting for the next iteration to begin."""
+        # `Event.wait(timeout)` returns True if the event was set
+        # before the timeout expired. We don't act on it here —
+        # the next iteration's `_check_stop_rules` will pick it up.
+        # We just want the wait to be cancellable.
+        self._stop_event.wait(self.config.tick_pause_seconds)
+
+    def _emit(self, kind: str, payload: dict) -> None:
+        """Dispatch an event to the on_event callback. Swallows
+        callback errors so a buggy WS handler can't crash the
+        daemon thread."""
+        try:
+            self.on_event({
+                "event": kind,
+                "intent_id": self.config.intent_id,
+                **payload,
+            })
+        except Exception:
+            logger.debug("on_event raised; swallowing", exc_info=True)
+
+    def _emit_stop(self, reason: str, message: str) -> None:
+        """Final event emission before the loop exits. Picks
+        `mission_complete` for `satisfied`, `mission_paused` for
+        everything else.
+
+        v0.5.6a3 — also updates the on-disk roadmap status to match
+        the terminal state BEFORE emitting the WS event. Without this
+        the GUI's autonomous badge clears (response to the WS event)
+        but the roadmap.md keeps `**Status:** running`. After app
+        restart the orphan-detection scanner sees a "running" mission
+        with no live daemon and offers to resume — which is wrong for
+        a stuck/satisfied mission. Linux-bridge field-observation #6.
+        """
+        with self._lock:
+            self._stop_reason = self._stop_reason or reason
+            self._stop_message = self._stop_message or message
+        is_complete = reason in _COMPLETE_REASONS
+        new_status = "complete" if is_complete else "paused"
+        self._update_roadmap_status_safely(new_status)
+        kind = (
+            "autonomous_mission_complete"
+            if is_complete
+            else "autonomous_mission_paused"
+        )
+        # v0.5.6a3 — include `new_phase` in the payload so the WS
+        # handler in app.py can update session.mission_state.phase
+        # atomically with the badge transition. Without this the
+        # session record stays in `autonomous_running` forever.
+        new_phase = (
+            "autonomous_complete" if is_complete else "autonomous_paused"
+        )
+        self._emit(kind, {
+            "iter_count": self._iter_count,
+            "stop_reason": reason,
+            "stop_message": message,
+            "spent_usd": self._spent(),
+            "spend_limit_usd": self.config.spend_limit_usd,
+            "elapsed_seconds": time.time() - self._started_at,
+            "final_verdict": self._verdict,
+            "new_phase": new_phase,
+        })
+
+        # v0.6.0 — queue curator post-GA. Only on satisfied terminal
+        # states ("the mission actually succeeded"). The curator runs
+        # in a background thread inside the hook; the daemon doesn't
+        # block. Best-effort wrt failures.
+        if (
+            self.hooks.queue_curation_hook is not None
+            and is_complete
+            and reason == "satisfied"
+        ):
+            try:
+                self.hooks.queue_curation_hook(
+                    str(self.config.roadmap_path.parent.parent)
+                )
+            except Exception:
+                logger.warning(
+                    "queue_curation_hook raised; daemon shutting down anyway",
+                    exc_info=True,
+                )
+
+    def _update_roadmap_status_safely(self, new_status: str) -> None:
+        """v0.5.6a3 — load the roadmap, set its status field, persist.
+        Best-effort: a write failure here doesn't block the daemon's
+        terminal event (the GUI badge update happens regardless), but
+        does log loudly so the orphan-detection drift is debuggable.
+        """
+        try:
+            rm = self._load_roadmap()
+            # The spending so far, including REFLECT and a stopped
+            # iteration, so a resumed mission counts on from here.
+            spent = self._spent()
+            spent_label = f"${spent:.2f}" if spent is not None else rm.spent_label
+            if rm.status == new_status and rm.spent_label == spent_label:
+                return  # idempotent — already at target state
+            rm.status, rm.spent_label = new_status, spent_label
+            roadmap_module.save(rm, self.config.roadmap_path)
+        except Exception:
+            logger.exception(
+                "Failed to update roadmap status to %r for intent %s; "
+                "GUI/disk state will diverge until next save",
+                new_status, self.config.intent_id,
+            )
+
+
+# ── Helpers ─────────────────────────────────────────────────────────────
+
+
+def _format_duration(seconds: float) -> str:
+    """Compact human-readable duration for the iteration log."""
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+def _now_iso() -> str:
+    """UTC ISO 8601 timestamp suitable for the roadmap header and
+    iteration-log entries."""
+    return datetime.now(timezone.utc).isoformat()

@@ -3,7 +3,7 @@ from __future__ import annotations
 import queue
 from collections import deque
 
-from resonant_client.gui.app import _get_coalesced_stream_event
+from lumi.gui.app import _get_coalesced_stream_event
 
 
 def test_adjacent_text_deltas_are_combined_without_reordering():

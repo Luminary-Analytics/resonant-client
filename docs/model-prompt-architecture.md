@@ -29,7 +29,8 @@ have explicit size ceilings.
 
 ## Fast execution path
 
-The normal engine-driven coding path (Ollama, EXO, Kimi, OpenRouter, and SONN) is deliberately small:
+The normal engine-driven coding path (Anthropic, OpenAI, Ollama, EXO, Kimi, OpenRouter,
+SONN and custom connections) is deliberately small:
 
 1. Send a byte-stable system prompt and a ten-tool coding core: read, write,
    edit, shell, glob, grep, parallel read batch, sub-agent, user decision, and

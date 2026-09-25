@@ -1,0 +1,800 @@
+<!DOCTYPE html>
+<html lang="en" data-theme-setting="{{ appearance.theme }}"{% if appearance.theme == 'light' %} data-theme="light"{% endif %}{% if appearance.density == 'compact' %} data-density="compact"{% endif %}{% if appearance.font_size %} style="--text-base: {{ appearance.font_size }}px"{% endif %}>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lumi</title>
+    <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v={{ asset_version }}">
+    <!-- Everything below is served locally. Until v0.11.14 these five came
+         from fonts.googleapis.com and cdn.jsdelivr.net, all in <head> and so
+         all render-blocking: a network round trip on the critical path of
+         every launch, a hard dependency on internet access, and a third party
+         notified each time the app opened. The Google Fonts stylesheet alone
+         measured 273 ms on a warm local connection.
+
+         Fetched and SHA-256 verified at build time by
+         packaging/fetch_web_assets.ps1 and required by bundle-policy.json, so
+         a missing one fails the build rather than the user's startup.
+
+         Mono still falls through to system-installed Cascadia Code (Windows
+         10+) / SF Mono (macOS) / Consolas. -->
+    <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
+    <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
+    <!-- Syntax highlighting theme (dark); styles.css recolors it for the light theme -->
+    <link rel="stylesheet" href="/static/vendor/github-dark-dimmed.min.css?v={{ asset_version }}">
+    <!-- Not deferred: resolves "Match system" before the first paint. -->
+    <script src="/static/appearance.js?v={{ asset_version }}"></script>
+    <!-- Markdown rendering, syntax highlighting, sanitizer. Deferred: none is
+         needed before first paint, so they no longer block rendering.
+
+         Safe despite app.js loading at the end of <body> without `defer`:
+         app.js only *registers* a DOMContentLoaded handler at top level and
+         constructs LumiApp inside it, and deferred scripts are guaranteed
+         to have executed before DOMContentLoaded fires. Keep it that way — a
+         top-level `marked.`/`hljs.`/`DOMPurify.` call in app.js would run
+         before these have loaded. -->
+    <!-- Not deferred: takes the one-time launch code out of the URL fragment
+         and starts redeeming it before anything else runs. The server refuses
+         the app socket without the resulting token (gui/local_access.py). -->
+    <script src="/static/local_access.js?v={{ asset_version }}"></script>
+    <script defer src="/static/vendor/marked.min.js?v={{ asset_version }}"></script>
+    <script defer src="/static/vendor/highlight.min.js?v={{ asset_version }}"></script>
+    <script defer src="/static/vendor/purify.min.js?v={{ asset_version }}"></script>
+</head>
+<body>
+    <!-- Skip past the titlebar and sidebar (WCAG 2.4.1). A button, not a #link:
+         the launch code travels in the URL fragment. -->
+    <button type="button" class="skip-link" id="skip-to-main">Skip to the message box</button>
+    <!-- ═══ Single titlebar — brand + menus + project context + window controls ═══ -->
+    <div id="app-titlebar" class="app-titlebar pywebview-drag-region">
+        <div class="titlebar-left">
+            <button class="titlebar-menu-button" type="button" title="Menu" aria-label="Menu" aria-haspopup="menu" aria-expanded="false">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M3 4.5h10M3 8h10M3 11.5h10" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+                </svg>
+            </button>
+            <button id="titlebar-sidebar-toggle" class="titlebar-icon-btn" type="button" title="Toggle sidebar (Ctrl+Shift+D)" aria-label="Toggle sidebar">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <rect x="2" y="2" width="12" height="12" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+                    <path d="M6.5 2v12" stroke="currentColor" stroke-width="1.2"/>
+                </svg>
+            </button>
+            <!-- back/forward nav removed until session-history navigation
+                 exists — permanently-disabled buttons were dead chrome. -->
+            <nav class="titlebar-menus" aria-label="Application menu" role="menu">
+                <div class="menubar-item" data-menu="file">
+                    <span>File</span>
+                    <div class="menubar-dropdown">
+                        <div class="menubar-action" data-action="new-agent">New Session <span class="menubar-shortcut">Ctrl+N</span></div>
+                        <div class="menubar-action" data-action="open-folder">Open Folder...</div>
+                        <div class="menubar-action" data-action="open-in-browser" hidden>Open in Browser</div>
+                        <div class="menubar-sep"></div>
+                        <div class="menubar-action" data-action="settings">Settings <span class="menubar-shortcut">Ctrl+,</span></div>
+                    </div>
+                </div>
+                <div class="menubar-item" data-menu="edit">
+                    <span>Edit</span>
+                    <div class="menubar-dropdown">
+                        <div class="menubar-action" data-action="undo">Undo <span class="menubar-shortcut">Ctrl+Z</span></div>
+                        <div class="menubar-action" data-action="redo">Redo <span class="menubar-shortcut">Ctrl+Y</span></div>
+                        <div class="menubar-sep"></div>
+                        <div class="menubar-action" data-action="copy">Copy <span class="menubar-shortcut">Ctrl+C</span></div>
+                        <div class="menubar-action" data-action="paste">Paste <span class="menubar-shortcut">Ctrl+V</span></div>
+                    </div>
+                </div>
+                <div class="menubar-item" data-menu="view">
+                    <span>View</span>
+                    <div class="menubar-dropdown">
+                        <div class="menubar-action" data-action="cmd-palette">Command Palette <span class="menubar-shortcut">Ctrl+K</span></div>
+                        <div class="menubar-sep"></div>
+                        <div class="menubar-action" data-action="toggle-sidebar">Toggle Sidebar <span class="menubar-shortcut">Ctrl+Shift+D</span></div>
+                        <div class="menubar-action" data-action="toggle-preview">Toggle Preview</div>
+                    </div>
+                </div>
+                <div class="menubar-item" data-menu="go">
+                    <span>Go</span>
+                    <div class="menubar-dropdown">
+                        <div class="menubar-action" data-action="cmd-palette">Search Lumi <span class="menubar-shortcut">Ctrl+K</span></div>
+                        <div class="menubar-action" data-action="project-switch">Projects</div>
+                        <div class="menubar-action" data-action="open-folder">Open Project&hellip;</div>
+                    </div>
+                </div>
+                <div class="menubar-item" data-menu="window">
+                    <span>Window</span>
+                    <div class="menubar-dropdown">
+                        <div class="menubar-action" data-action="toggle-sidebar">Toggle Sidebar <span class="menubar-shortcut">Ctrl+Shift+D</span></div>
+                        <div class="menubar-action" data-action="toggle-preview">Toggle Preview</div>
+                        <div class="menubar-sep"></div>
+                        <div class="menubar-action" data-action="settings">Settings <span class="menubar-shortcut">Ctrl+,</span></div>
+                    </div>
+                </div>
+                <div class="menubar-item" data-menu="help">
+                    <span>Help</span>
+                    <div class="menubar-dropdown">
+                        <div class="menubar-action" data-action="shortcuts">Keyboard Shortcuts <span class="menubar-shortcut">Ctrl+/</span></div>
+                        <div class="menubar-action" data-action="check-updates">Check for Updates&hellip;</div>
+                        <div class="menubar-action" data-action="save-diagnostics">Save Diagnostics ZIP&hellip;</div>
+                        <div class="menubar-sep"></div>
+                        <div class="menubar-action" data-action="about">About Lumi</div>
+                    </div>
+                </div>
+            </nav>
+        </div>
+        <div class="titlebar-center">
+            <button id="titlebar-command" class="titlebar-command" type="button" title="Command palette (Ctrl+K)" aria-label="Open command palette">
+                <span class="titlebar-command-text">Search Lumi</span>
+                <kbd>Ctrl+K</kbd>
+            </button>
+            <span id="header-project" class="titlebar-project" title="Current project" aria-label="Current project"></span>
+        </div>
+        <div class="titlebar-right">
+            <div class="titlebar-status-wrap">
+                <button id="status-popover-trigger" class="titlebar-status-btn" type="button"
+                        title="Runtime status" aria-label="Runtime status" aria-haspopup="dialog" aria-expanded="false">
+                    <svg class="status-glyph" width="17" height="17" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                        <rect x="2" y="2" width="12" height="12" rx="1.8" stroke="currentColor" stroke-width="1.15"/>
+                        <path d="M4.5 5h4.2M4.5 8h7M4.5 11h4.8" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/>
+                    </svg>
+                    <span class="header-status" id="header-status" aria-hidden="true"></span>
+                </button>
+                <div id="status-popover" class="status-popover" role="dialog" aria-label="Runtime status" hidden>
+                    <div class="status-popover-tabs" role="tablist" aria-label="Runtime status categories">
+                        <button class="status-tab active" type="button" data-status-tab="servers">Servers</button>
+                        <button class="status-tab" type="button" data-status-tab="mcp">MCP</button>
+                        <button class="status-tab" type="button" data-status-tab="lsp">LSP</button>
+                        <button class="status-tab" type="button" data-status-tab="plugins">Plugins</button>
+                        <button class="status-tab" type="button" data-status-tab="skills">Skills</button>
+                    </div>
+                    <div id="status-popover-body" class="status-popover-body"></div>
+                </div>
+            </div>
+            <button id="sidebar-toggle" class="titlebar-icon-btn titlebar-sidebar-legacy" title="Toggle sidebar (Ctrl+Shift+D)" aria-label="Toggle sidebar">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <rect x="1" y="1" width="5" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                    <rect x="8" y="1" width="7" height="14" rx="1" stroke="currentColor" stroke-width="1.2"/>
+                </svg>
+            </button>
+            <button type="button" id="managed-previews-button" class="titlebar-icon-btn" title="Project previews" aria-label="Project previews">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <rect x="1.5" y="2" width="13" height="11.5" rx="2" stroke="currentColor" stroke-width="1.2"/>
+                    <path d="M2 5h12M6.5 7.5l3 1.75-3 1.75z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+                </svg>
+            </button>
+            <button type="button" id="project-memory-button" class="titlebar-icon-btn" title="Project notes" aria-label="Project notes">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                    <path d="M4 1.5h6l3 3v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1zM10 1.5v3h3M5.5 7.5h5M5.5 10.5h4" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+                </svg>
+            </button>
+            <button id="preview-toggle" class="titlebar-icon-btn" title="Browser &amp; design preview" aria-label="Toggle preview panel">
+                <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <rect x="1" y="1" width="14" height="14" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+                    <line x1="9" y1="1" x2="9" y2="15" stroke="currentColor" stroke-width="1.2"/>
+                    <circle cx="12.5" cy="5" r="1.2" fill="currentColor" opacity="0.5"/>
+                </svg>
+            </button>
+            <div class="titlebar-window-controls" id="window-controls">
+                <button class="win-ctrl win-minimize" id="win-minimize" title="Minimize">
+                    <svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.2"/></svg>
+                </button>
+                <button class="win-ctrl win-maximize" id="win-maximize" title="Maximize">
+                    <svg width="10" height="10" viewBox="0 0 10 10"><rect x="1" y="1" width="8" height="8" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+                </button>
+                <button class="win-ctrl win-close" id="win-close" title="Close">
+                    <svg width="10" height="10" viewBox="0 0 10 10"><path d="M2 2l6 6M8 2l-6 6" stroke="currentColor" stroke-width="1.2"/></svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <div id="app">
+        <!-- ═══ Sidebar — project switcher + search + sessions + footer nav ═══ -->
+        <aside id="sidebar" role="navigation" aria-label="Projects and sessions">
+            <div class="sidebar-brand"><svg class="lumi-mark" viewBox="0 0 64 64" width="28" height="28" aria-hidden="true"><path d="M16 16V48H48" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="36" cy="28" r="9.5" fill="#10122B"/><circle cx="36" cy="28" r="7" fill="#FFC24B"/></svg><svg class="lumi-wordmark" viewBox="0 0 160 72" width="44" height="20" role="img" aria-label="Lumi"><g fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6V64"/><path d="M26 28V48A16 16 0 0 0 58 48"/><path d="M58 28V64"/><path d="M78 64V40A12 12 0 0 1 102 40V64"/><path d="M102 40A12 12 0 0 1 126 40V64"/><path d="M146 28V64"/></g><circle cx="146" cy="12" r="7" fill="#10122B"/><circle cx="146" cy="12" r="5" fill="#FFC24B"/></svg></div>
+            <div class="sidebar-search">
+                <span aria-hidden="true">⌕</span>
+                <input type="search" placeholder="Find projects or sessions" aria-label="Find projects or sessions" id="search-input" />
+            </div>
+            <div hidden id="rail-projects"></div>
+            <div hidden><span id="sidebar-shell-project-name"></span><span id="sidebar-shell-project-path"></span></div>
+            <button id="new-agent-btn" class="sidebar-new-session" title="New session &mdash; Ctrl+N" aria-label="New session">
+                <span class="sns-icon" aria-hidden="true"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
+                <span class="sns-label">New session</span>
+                <span class="sns-shortcut">Ctrl+N</span>
+            </button>
+            <button id="handoffs-btn" class="sidebar-new-session sidebar-handoffs" type="button" aria-haspopup="dialog" hidden>
+                <span class="sns-icon" aria-hidden="true">&#8618;</span>
+                <span class="sns-label" id="handoffs-btn-label">Hand-offs for you</span>
+            </button>
+            <div class="sidebar-session-heading unified-heading"><span>Projects <span id="session-count"></span></span>
+                <div class="sidebar-heading-actions"><select id="sidebar-session-scope" aria-label="Session scope">
+                    <option value="all">All sessions</option><option value="pinned">Pinned</option>
+                </select><button id="rail-open-project" class="project-add-button" type="button" aria-label="Add project" title="Add project">+</button></div>
+            </div>
+            <button id="sidebar-project-switch" hidden><span id="sidebar-project-switch-label">All projects</span></button>
+            <!-- v0.5.3a3 — Sidebar roadmap inspector. Hidden when the
+                 current session isn't an autonomous mission. Shows
+                 acceptance-criteria progress, the next unchecked item,
+                 and a trimmed reflection summary so the user can see
+                 mission state at a glance without opening roadmap.md. -->
+            <div id="autonomous-roadmap-inspector" class="autonomous-roadmap-inspector" hidden></div>
+            <!-- v0.5.5a2 — Sidebar mission browser. Lists ALL autonomous
+                 missions for the project (running + complete + paused
+                 + failed), each row clickable to switch sessions. Hidden
+                 when no autonomous missions exist. -->
+            <div id="autonomous-mission-browser" class="autonomous-mission-browser" hidden></div>
+            <div id="agent-list" class="agent-list unified-project-list">
+                <div class="agent-empty">Loading sessions…</div>
+            </div>
+            <div class="sidebar-footer">
+                <div id="sidebar-companion" class="sidebar-companion" hidden>
+                    <svg class="echo-pet" width="52" height="44" viewBox="0 0 64 54" fill="none" aria-hidden="true">
+                        <path d="M13 24L9 9l15 8c5-2 11-2 16 0l15-8-4 15c9 19-1 25-19 25S4 43 13 24Z" fill="currentColor" fill-opacity=".15" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>
+                        <path d="M20 29v4m24-4v4m-18 5q6 5 12 0" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+                        <path d="m26 22 4-5 4 8 4-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span><strong>Echo</strong><small id="echo-status">Ready when you are</small></span>
+                    <button id="echo-hide" type="button" aria-label="Hide Echo" title="Hide Echo">×</button>
+                </div>
+                <div id="account-popover" class="account-popover" role="dialog" aria-label="Your profile and account" hidden>
+                    <div class="account-summary"><strong id="account-menu-name">SONN account</strong><span id="account-menu-detail">Not connected to SONN</span><small id="account-menu-status"></small></div>
+                    <button type="button" id="account-usage">SONN account &amp; credits</button>
+                    <button type="button" id="account-connections">Provider connections <span aria-hidden="true">↗</span></button>
+                    <button type="button" id="account-pet" aria-pressed="false">Show Echo <span aria-hidden="true">✧</span></button>
+                    <button type="button" id="account-settings">Settings <kbd>Ctrl+,</kbd></button>
+                </div>
+                <button type="button" id="sidebar-account" class="sidebar-account" aria-label="Profile and settings" aria-haspopup="dialog" aria-expanded="false" aria-controls="account-popover">
+                    <span id="account-avatar" class="account-avatar" aria-hidden="true">S</span>
+                    <span class="account-copy"><strong id="account-name">SONN account</strong><small id="account-detail">Not connected to SONN</small></span>
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m5 9 3-3 3 3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <!-- Hidden DOM nodes preserved so existing JS that reads sidebar-project-name / sidebar-cwd
+                     (e.g. for tooltip text or empty-state placeholder) keeps working. -->
+                <div id="project-selector" hidden>
+                    <span id="sidebar-project-name"></span>
+                    <span id="sidebar-cwd"></span>
+                </div>
+            </div>
+        </aside>
+
+        <!-- ═══ Main Content — chat takes the full main area, no inner header ═══ -->
+        <main id="main">
+
+            <!-- ═══ Split content area (chat + preview) ═══ -->
+            <div id="main-split" class="main-split">
+
+                <!-- ═══ Primary content column ═══ -->
+                <div id="main-content" class="main-content">
+
+                    <!-- ═══ Welcome / New Session Setup ═══ -->
+                    <div id="welcome-screen" class="welcome-screen">
+                        <div class="welcome-content">
+                            <div class="welcome-brand">
+                                <img class="welcome-icon" src="/static/lumi-app-icon.svg?v={{ asset_version }}" width="64" height="64" alt="">
+                                <h1>Lumi</h1>
+                            </div>
+                            <p class="welcome-subtitle">Local-first multimodal coding agent for open-source models</p>
+
+                            <!-- Shown when the server refuses this page's access token
+                                 (static/local_access.js); nothing else here works then. -->
+                            <div id="access-required" class="access-required" role="alert" hidden>
+                                <p class="access-required-title">Open Lumi from its launch link</p>
+                                <p>This page is not connected to the running Lumi. Open it from the
+                                   Lumi window with <strong>File &gt; Open in Browser</strong>, or use the
+                                   one-time link printed when Lumi started in browser mode.</p>
+                            </div>
+
+                            <!-- Step 1: Workspace folder -->
+                            <div id="project-step" class="setup-step">
+                                <p class="setup-label">Open workspace</p>
+                                <div class="project-path-input" id="welcome-path-input">
+                                    <input type="text" id="welcome-folder-input" placeholder="Enter folder path..." />
+                                    <button id="welcome-folder-browse" title="Browse for folder">&#128193;</button>
+                                    <button id="welcome-folder-open">Open</button>
+                                </div>
+                                <div id="welcome-dir-browser" class="dir-browser" style="display:none"></div>
+                                <div id="welcome-recent-projects" class="recent-projects-list"></div>
+                            </div>
+
+                            <!-- Step 2: Backend Selection (shown after folder picked) -->
+                            <div id="backend-step" class="setup-step" style="display:none;">
+                                <div class="setup-project-badge" id="setup-project-badge"></div>
+                                <div class="chat-welcome-footer" style="margin-bottom:12px;">
+                                    <select id="setup-session-role" class="chat-welcome-model-select" title="Agent role">
+                                        <option value="generator">Build</option>
+                                        <option value="planner">Plan</option>
+                                        <option value="evaluator">Review</option>
+                                    </select>
+                                </div>
+                                <div id="backend-selector" class="backend-selector">
+                                    <p class="backend-label">Select a model</p>
+                                    <div id="backend-list" class="backend-list"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ═══ Chat Area ═══ -->
+                    <div class="agent-panel" id="agent-panel" style="display:none;">
+                        <!-- Chat header — slim bar above the messages. Hosts the
+                             Mission toggle (off-state) or Mission badge (on-state).
+                             See docs/long-running-agents.md (Phase 1 UI). -->
+                        <div id="chat-header" class="chat-header">
+                            <div id="chat-session-title" class="chat-session-title">Lumi</div>
+                            <button type="button" id="employee-task-button" class="mission-toggle" hidden
+                                    aria-haspopup="dialog">Employee task</button>
+                            <!-- v0.3.3 — surface the active project path so misconfigurations
+                                 are visible BEFORE the agent writes anywhere. Click to swap
+                                 projects via the native folder picker. -->
+                            <button type="button" id="header-project-path" class="header-project-path"
+                                    title="Click to change project folder">
+                                <span class="header-project-path-icon" aria-hidden="true">📁</span>
+                                <span class="header-project-path-text" id="header-project-path-text">—</span>
+                            </button>
+                            <button type="button" id="timeline-button" class="timeline-toggle"
+                                    aria-haspopup="dialog"
+                                    title="Checkpoints Lumi saved before each change in this conversation">
+                                <span class="mission-toggle-icon" aria-hidden="true">&#10226;</span>
+                                <span class="mission-toggle-label">Timeline</span>
+                            </button>
+                            <button type="button" id="mission-toggle" class="mission-toggle"
+                                    title="Run autonomously — long-running spec → roadmap → execution">
+                                <span class="mission-toggle-icon" aria-hidden="true">🎯</span>
+                                <span class="mission-toggle-label">Autonomous</span>
+                            </button>
+                            <!-- Mission badge gets injected here when a Mission is active -->
+                        </div>
+                        <div id="chat-container" class="chat-container">
+                            <!-- v0.5.3a2 — Resume orphaned autonomous missions
+                                 banner. Populated by handleAutonomousOrphans
+                                 in app.js when the server reports interrupted
+                                 missions (server restart / app crash / sleep). -->
+                            <div id="autonomous-orphans-banner" class="autonomous-orphans-banner" hidden></div>
+                            <div id="chat-messages" class="chat-messages"></div>
+                        </div>
+                        <button type="button" id="chat-scroll-end" class="chat-scroll-end" aria-label="Scroll to bottom">Scroll</button>
+                    </div>
+
+                    <!-- ═══ Terminal Status Bar ═══ -->
+                    <div id="terminal-bar" class="terminal-bar" style="display:none;">
+                        <div class="terminal-bar-header" id="terminal-bar-header">
+                            <div class="terminal-bar-left">
+                                <span class="terminal-bar-spinner"></span>
+                                <svg class="terminal-bar-icon" width="14" height="14" viewBox="0 0 14 14" fill="none">
+                                    <rect x="1" y="2" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.2"/>
+                                    <path d="M4 6l2 2-2 2" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+                                    <line x1="7.5" y1="10" x2="10" y2="10" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
+                                </svg>
+                                <span class="terminal-bar-label" id="terminal-bar-label">Running 1 terminal</span>
+                            </div>
+                            <div class="terminal-bar-right">
+                                <button class="terminal-bar-stop" id="terminal-stop-all" title="Stop all terminals">
+                                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                        <rect x="2" y="2" width="8" height="8" rx="1" fill="currentColor"/>
+                                    </svg>
+                                </button>
+                                <button class="terminal-bar-toggle" id="terminal-bar-toggle" title="Toggle terminal list">
+                                    <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                                        <path d="M3 5l3 3 3-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="terminal-bar-list" id="terminal-bar-list">
+                            <!-- Individual terminal entries rendered by JS -->
+                        </div>
+                    </div>
+
+                    <!-- ═══ Bottom Input Bar ═══ -->
+                    <div id="input-bar" class="input-bar" style="display:none;">
+                        <section id="live-run-surface" class="live-run-surface" hidden aria-live="polite"></section>
+                        <!-- Persistent "the runtime is not usable" notice. The
+                             reason used to be a toast that vanished before the
+                             user pressed send, leaving only a model name and a
+                             contradictory error. -->
+                        <div id="runtime-banner" class="runtime-banner" hidden role="status" aria-live="polite"></div>
+                        <div id="composer-queue" class="composer-queue" hidden></div>
+                        <div class="input-wrapper">
+                            <div class="input-top">
+                                <div class="drop-hint">Drop image here</div>
+                                <textarea id="user-input"
+                                          placeholder="Message Lumi"
+                                          aria-label="Message Lumi"
+                                          aria-describedby="composer-suggestion-hint"
+                                          rows="2"
+                                          autocomplete="off"
+                                          spellcheck="false"></textarea>
+                                <button id="send-btn" class="send-btn" title="Send message (Enter) &mdash; Shift+Enter for newline">
+                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                        <path d="M8 13V3M4 7l4-4 4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                                    </svg>
+                                </button>
+                                <button id="stop-btn" class="stop-btn" title="Stop the agent" style="display:none;">
+                                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                        <rect x="3" y="3" width="10" height="10" rx="1" fill="currentColor"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <small id="composer-suggestion-hint" class="composer-suggestion-hint" hidden>Suggested next prompt · Tab to accept · Esc to dismiss</small>
+                            <div class="input-footer">
+                                <div class="input-footer-left">
+                                    <button class="add-context-btn" id="add-context-btn" title="Add context (paste/drop image, attach file)" aria-label="Add context">+</button>
+                                    <button type="button" class="add-context-btn composer-prompts-btn" id="composer-prompts-btn" title="Team prompts" aria-label="Team prompts" aria-haspopup="dialog" hidden>&#10077;</button>
+                                    <button class="mic-btn" id="mic-btn" title="Hold to dictate &mdash; release to insert transcript" aria-label="Voice input (push-to-talk)">
+                                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                            <rect x="6" y="2" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.4"/>
+                                            <path d="M3.5 8a4.5 4.5 0 009 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                                            <path d="M8 12.5v1.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+                                        </svg>
+                                    </button>
+                                    <button type="button" class="add-context-btn composer-autonomous-btn" id="composer-autonomous-btn"
+                                            title="Autonomous session: agree a spec, then let Lumi work through it unattended"
+                                            aria-label="Start an autonomous session">&infin;</button>
+                                    <div class="permission-dropdown" id="permission-dropdown">
+                                        <button class="permission-toggle" id="permission-toggle" title="Permission mode &mdash; how the agent treats risky actions" aria-haspopup="menu" aria-expanded="false" aria-controls="permission-menu">
+                                            <span class="perm-icon" id="perm-icon" aria-hidden="true">&#9881;</span>
+                                            <span id="perm-label">Full-auto</span>
+                                            <span class="perm-chevron" aria-hidden="true">&#9662;</span>
+                                        </button>
+                                        <div class="permission-menu" id="permission-menu" role="menu" aria-label="Permission mode">
+                                            <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="ask">
+                                                <span class="perm-opt-icon" aria-hidden="true">&#9881;</span>
+                                                <span class="perm-opt-text">
+                                                    <span class="perm-opt-name">Ask permissions</span>
+                                                    <span class="perm-opt-desc">Always ask before making changes</span>
+                                                </span>
+                                            </button>
+                                            <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="auto-edit">
+                                                <span class="perm-opt-icon" aria-hidden="true">&lt;/&gt;</span>
+                                                <span class="perm-opt-text">
+                                                    <span class="perm-opt-name">Auto accept edits</span>
+                                                    <span class="perm-opt-desc">Accept file edits; ask before commands and other actions</span>
+                                                </span>
+                                            </button>
+                                            <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="plan">
+                                                <span class="perm-opt-icon" aria-hidden="true">&#9776;</span>
+                                                <span class="perm-opt-text">
+                                                    <span class="perm-opt-name">Plan mode</span>
+                                                    <span class="perm-opt-desc">Create a plan before making changes</span>
+                                                </span>
+                                            </button>
+                                            <button type="button" class="perm-option active" role="menuitemradio" aria-checked="true" tabindex="-1" data-mode="bypass">
+                                                <span class="perm-opt-icon" aria-hidden="true">🛡</span>
+                                                <span class="perm-opt-text">
+                                                    <span class="perm-opt-name">Full-auto (sandboxed)</span>
+                                                    <span class="perm-opt-desc">Accepts all permissions</span>
+                                                </span>
+                                                <span class="perm-check" aria-hidden="true">&#10003;</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <button class="input-project" id="footer-project-btn" title="Current project folder — click to switch projects or open another folder">
+                                        <svg width="13" height="13" viewBox="0 0 14 14" fill="none"><path d="M1.5 4a.8.8 0 01.8-.8h2.4l1 1.1h4.8a.8.8 0 01.8.8v5a.8.8 0 01-.8.8H2.3a.8.8 0 01-.8-.8V4z" stroke="currentColor" stroke-width="1.1"/></svg>
+                                        <span class="input-project-name" id="footer-project-name">project</span>
+                                    </button>
+                                </div>
+                                <div class="input-footer-right">
+                                    <span class="token-info" id="token-info" title="Approximate context tokens used by this turn"></span>
+                                    <select id="thinking-mode-selector" class="reasoning-selector" title="Reasoning depth for thinking models" aria-label="Reasoning depth" style="display:none;">
+                                        <option value="default">Provider default</option>
+                                        <option value="off">Off</option>
+                                        <option value="low">Low</option>
+                                        <option value="med">Med</option>
+                                        <option value="high">High</option>
+                                        <option value="max">Max</option>
+                                    </select>
+                                    <button id="browse-models" type="button" class="btn-sm" title="Search models, manage favorites and project defaults">Models</button>
+                                    <select id="model-selector" class="model-selector" title="Switch backend / model for this session">
+                                        <option value="">No model</option>
+                                    </select>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- ═══ Settings / Customize View ═══ -->
+                    <div id="settings-view" class="feature-view" style="display:none">
+                        <aside class="settings-sidebar" aria-label="Settings navigation">
+                            <button id="settings-back" class="feature-view-back" type="button" title="Back to session" aria-label="Back to session">
+                                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m7 3-5 5 5 5M2 8h12" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                                <span>Back to app</span>
+                            </button>
+                            <label class="settings-search"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="4.5" stroke="currentColor"/><path d="m10.5 10.5 3 3" stroke="currentColor"/></svg><input id="settings-search" type="search" placeholder="Search settings…" aria-label="Search settings" autocomplete="off"></label>
+                            <nav id="settings-nav" aria-label="Settings categories"></nav>
+                        </aside>
+                        <div class="settings-content" id="settings-content">
+                            <header class="settings-page-header"><p class="settings-eyebrow">Settings</p><h2 id="settings-page-title" tabindex="-1">General</h2><p id="settings-page-description"></p></header>
+                            <div id="settings-empty" class="settings-empty" hidden><p>No settings match your search.</p><button id="settings-clear-search" class="btn-sm" type="button">Clear search</button></div>
+                            <div class="feature-view-body" id="settings-body"></div>
+                        </div>
+                    </div>
+
+                    <!-- ═══ Keyboard Shortcuts Overlay ═══ -->
+                    <div id="shortcuts-overlay" class="shortcuts-overlay" style="display:none">
+                        <div class="shortcuts-panel">
+                            <div class="shortcuts-header">
+                                <h3>Keyboard Shortcuts</h3>
+                                <button class="icon-btn" id="shortcuts-close">&times;</button>
+                            </div>
+                            <div class="shortcuts-body" id="shortcuts-body">
+                                <!-- Rendered by JS -->
+                            </div>
+                        </div>
+                    </div>
+
+                </div><!-- /#main-content -->
+
+                <!-- ═══ Resize handle ═══ -->
+                <div id="preview-resize" class="preview-resize"></div>
+
+                <!-- ═══ Preview Panel ═══ -->
+                <aside id="preview-panel" class="preview-panel">
+                    <!-- Tab bar -->
+                    <div class="preview-tab-bar">
+                        <div class="preview-tab active" id="preview-tab" data-pane="browser">
+                            <span class="preview-tab-dot"></span>
+                            <span class="preview-tab-name" id="preview-tab-name">Browser</span>
+                        </div>
+                        <div class="preview-tab" id="plan-tab" data-pane="plan" title="Live plan-graph for the active intent">
+                            <span class="preview-tab-dot"></span>
+                            <span class="preview-tab-name">Plan</span>
+                            <span class="preview-tab-badge" id="plan-tab-badge" style="display:none">0</span>
+                        </div>
+                        <div class="preview-tab" id="context-tab" data-pane="context" title="Live context composition and budget">
+                            <span class="preview-tab-dot"></span>
+                            <span class="preview-tab-name">Context</span>
+                        </div>
+                        <button id="preview-close" class="preview-tab-close" title="Close preview">&times;</button>
+                    </div>
+                    <!-- Browser chrome — nav + URL bar -->
+                    <div class="preview-chrome">
+                        <div class="preview-nav">
+                            <button class="preview-nav-btn" id="preview-back" title="Previous screenshot" disabled>
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M8 2L4 6l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </button>
+                            <button class="preview-nav-btn" id="preview-forward" title="Next screenshot" disabled>
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M4 2l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </button>
+                            <button class="preview-nav-btn" id="preview-reload" title="Reload">
+                                <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M10 6a4 4 0 11-1.2-2.8" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><path d="M10 1.5V4H7.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </button>
+                        </div>
+                        <div class="preview-url-bar" id="preview-url-bar">
+                            <span class="preview-url-text" id="preview-url-text"></span>
+                        </div>
+                    </div>
+                    <!-- Viewport — screenshot display -->
+                    <div id="preview-viewport" class="preview-viewport">
+                        <div class="preview-empty" id="preview-empty">
+                            <div class="preview-empty-icon">
+                                <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                                    <rect x="2" y="4" width="28" height="20" rx="2" stroke="currentColor" stroke-width="1.5"/>
+                                    <line x1="2" y1="10" x2="30" y2="10" stroke="currentColor" stroke-width="1" opacity="0.3"/>
+                                    <circle cx="6" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                    <circle cx="10" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                    <circle cx="14" cy="7" r="1.2" fill="currentColor" opacity="0.3"/>
+                                    <rect x="8" y="26" width="16" height="2" rx="1" fill="currentColor" opacity="0.2"/>
+                                </svg>
+                            </div>
+                            <span>Waiting for output...</span>
+                        </div>
+                    </div>
+                    <!-- Plan-graph viewport (toggle via the Plan tab) -->
+                    <div id="plan-graph-pane" class="plan-graph-pane" style="display:none">
+                        <div class="plan-graph-toolbar">
+                            <span class="plan-graph-intent" id="plan-graph-intent">No active intent</span>
+                            <span class="plan-graph-spacer"></span>
+                            <button class="plan-graph-btn" id="plan-graph-pause" title="Pause new node spawns">Pause</button>
+                            <button class="plan-graph-btn" id="plan-graph-history" title="Plan snapshots / restore">History</button>
+                            <button class="plan-graph-btn" id="plan-graph-branch" title="Fork plan-graph from selected node">Branch</button>
+                        </div>
+                        <div id="plan-graph-checkpoint" class="plan-graph-checkpoint" style="display:none"></div>
+                        <div id="plan-graph-canvas" class="plan-graph-canvas">
+                            <div class="plan-graph-empty">Plan-graph idle &mdash; start an intent to see it populate.</div>
+                        </div>
+                        <div id="plan-graph-detail" class="plan-graph-detail" style="display:none"></div>
+                    </div>
+                    <div id="context-cockpit-pane" class="context-cockpit-pane" style="display:none">
+                        <div class="context-cockpit-toolbar">
+                            <span>Context cockpit</span>
+                            <button id="context-cockpit-refresh" class="plan-graph-btn" type="button">Refresh</button>
+                        </div>
+                        <div id="context-cockpit-body" class="context-cockpit-body">
+                            <div class="agent-activity-empty">Context telemetry appears when a session starts.</div>
+                        </div>
+                    </div>
+                    <!-- Console / logs panel -->
+                    <div class="preview-console" id="preview-console">
+                        <div class="preview-console-header">
+                            <input type="text" class="preview-console-search" placeholder="Search..." id="preview-console-search" />
+                            <div class="preview-console-tabs">
+                                <button class="preview-console-tab active" data-filter="all">all</button>
+                                <button class="preview-console-tab" data-filter="stdout">stdout</button>
+                                <button class="preview-console-tab" data-filter="stderr">stderr</button>
+                            </div>
+                        </div>
+                        <div class="preview-console-body" id="preview-console-body">
+                            <div class="preview-console-waiting">Waiting for output...</div>
+                        </div>
+                    </div>
+                </aside>
+
+            </div><!-- /#main-split -->
+        </main>
+    </div>
+
+    <!-- ═══ Permission Dialog ═══ -->
+    <div id="permission-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Tool permission" tabindex="-1">
+        <div class="dialog diff-review-dialog">
+            <div class="dialog-header">
+                <span id="permission-title">Tool Approval</span>
+                <span id="permission-risk" class="risk-badge"></span>
+            </div>
+            <div class="dialog-body">
+                <p id="permission-text"></p>
+                <div id="permission-warnings" class="review-warnings" style="display:none;"></div>
+                <div id="permission-diff" class="review-diff" style="display:none;"></div>
+                <pre id="permission-details" class="permission-details"></pre>
+            </div>
+            <div class="dialog-actions">
+                <button id="permission-deny" class="dialog-btn deny">Deny</button>
+                <button id="permission-allow" class="dialog-btn allow">Allow</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Skill Detail Dialog (v0.6.2a3) ═══ -->
+    <div id="team-prompts-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="team-prompts-title">
+        <div class="dialog team-prompts-dialog">
+            <div class="dialog-header">
+                <span id="team-prompts-title">Team prompts</span>
+                <button type="button" id="team-prompts-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <label class="share-label" for="team-prompts-filter">Find a prompt</label>
+                <input id="team-prompts-filter" class="settings-input" type="search" autocomplete="off" placeholder="Name or words in it" aria-controls="team-prompts-list">
+                <div id="team-prompts-list" class="team-prompts-list" role="list"></div>
+                <p class="share-note">From your organization’s library in Lumi Cloud. A prompt goes into your message; nothing is sent until you send it.</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="handoff-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoff-dialog-title">
+        <div class="dialog handoff-dialog">
+            <div class="dialog-header">
+                <span id="handoff-dialog-title">Hand off this conversation</span>
+                <button type="button" id="handoff-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="handoff-dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="handoffs-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoffs-dialog-title">
+        <div class="dialog handoffs-dialog">
+            <div class="dialog-header">
+                <span id="handoffs-dialog-title">Hand-offs for you</span>
+                <button type="button" id="handoffs-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="handoffs-dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="share-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
+        <div class="dialog share-dialog">
+            <div class="dialog-header">
+                <span id="share-dialog-title">Share this conversation</span>
+                <button type="button" id="share-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="share-dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="timeline-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="timeline-dialog-title">
+        <div class="dialog timeline-dialog">
+            <div class="dialog-header">
+                <span id="timeline-dialog-title">Timeline</span>
+                <button type="button" id="timeline-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="timeline-dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="run-trace-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="run-trace-title">
+        <div class="dialog run-trace-dialog">
+            <div class="dialog-header">
+                <span id="run-trace-title">Trace</span>
+                <button type="button" id="run-trace-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="run-trace-body"></div>
+        </div>
+    </div>
+
+    <div id="artifact-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="artifact-dialog-title">
+        <div class="dialog artifact-dialog">
+            <div class="dialog-header">
+                <span id="artifact-dialog-title">Saved file</span>
+                <button type="button" id="artifact-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="artifact-dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="worker-transcript-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="worker-transcript-title">
+        <div class="dialog worker-transcript-dialog">
+            <div class="dialog-header">
+                <span id="worker-transcript-title">Worker transcript</span>
+                <button type="button" id="worker-transcript-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="worker-transcript-body"></div>
+        </div>
+    </div>
+
+    <div id="worker-steer-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="worker-steer-title">
+        <div class="dialog worker-steer-dialog">
+            <div class="dialog-header">
+                <span id="worker-steer-title">Steer the worker</span>
+                <button type="button" id="worker-steer-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <label for="worker-steer-text" class="share-label">What should it do differently?</label>
+                <textarea id="worker-steer-text" class="handoff-note" rows="3"></textarea>
+                <p class="share-note worker-steer-note">The worker reads this before its next step and keeps going. Enter sends; Shift+Enter starts a new line.</p>
+                <div class="dialog-actions">
+                    <button type="button" id="worker-steer-send" class="dialog-btn allow">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="skill-detail-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Skill detail">
+        <div class="dialog skill-detail-dialog">
+            <div class="dialog-header">
+                <span id="skill-detail-name">Skill</span>
+                <button type="button" id="skill-detail-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <div id="skill-detail-meta" class="skill-detail-meta"></div>
+                <p id="skill-detail-description" class="skill-detail-description"></p>
+                <pre id="skill-detail-procedure" class="skill-detail-procedure"></pre>
+            </div>
+            <div class="dialog-actions">
+                <button type="button" id="skill-detail-pin" class="dialog-btn">Pin</button>
+                <button type="button" id="skill-detail-archive" class="dialog-btn deny">Archive</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Command Palette ═══ -->
+    <div id="command-palette" class="cmd-palette-overlay" style="display:none" role="dialog" aria-modal="true" aria-label="Command palette">
+        <div class="cmd-palette">
+            <div class="cmd-palette-input-row">
+                <svg class="cmd-palette-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="4.5" stroke="currentColor" stroke-width="1.3"/><path d="M10 10l4 4" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                <input type="text" id="cmd-palette-input" placeholder="Find a project, session, or command…" aria-label="Find a project, session, or command" autocomplete="off" spellcheck="false" />
+            </div>
+            <div class="cmd-palette-results" id="cmd-palette-results"></div>
+            <div class="cmd-palette-footer">
+                <span><kbd>↑↓</kbd> navigate</span>
+                <span><kbd>↵</kbd> select</span>
+                <span><kbd>Esc</kbd> close</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/plan_graph_view.js?v={{ asset_version }}"></script>
+    <!-- Mixed into LumiApp.prototype at class-definition time, so these
+         must load before app.js. app.js throws a named error if one is
+         missing, rather than failing later at call time. -->
+    <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
+    <script src="/static/settings_view.js?v={{ asset_version }}"></script>
+    <script src="/static/run_cards.js?v={{ asset_version }}"></script>
+    <script src="/static/employee_tasks.js?v={{ asset_version }}"></script>
+    <div class="window-resize-edge window-resize-top" data-resize-edge="top" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-right" data-resize-edge="right" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-bottom" data-resize-edge="bottom" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-left" data-resize-edge="left" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-top-left" data-resize-edge="top-left" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-top-right" data-resize-edge="top-right" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-bottom-left" data-resize-edge="bottom-left" aria-hidden="true"></div>
+    <div class="window-resize-edge window-resize-corner" data-resize-edge="bottom-right" aria-hidden="true"></div>
+    <script src="/static/app.js?v={{ asset_version }}"></script>
+</body>
+</html>

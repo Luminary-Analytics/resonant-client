@@ -1,4 +1,4 @@
-# Releasing SONN Client
+# Releasing Lumi
 
 The release is complete when the tagged source, published Windows installer,
 and public signed update feed agree. A successful push alone is not deployment.
@@ -9,7 +9,7 @@ See [pipeline architecture](docs/release-pipeline.md) for component ownership.
 1. Inspect the working tree and intended changes. Keep unrelated local changes
    out of the release. Verify the GitHub account has write access to
    `Luminary-Analytics/resonant-client` before pushing.
-2. Update both `resonant_client/__init__.py` and `pyproject.toml` to the chosen
+2. Update both `lumi/__init__.py` and `pyproject.toml` to the chosen
    version. Add `docs/vX.Y.Z-release-notes.md`, update the docs index, and move
    shipped entries out of `docs/unreleased.md`. Do not relabel unshipped work as
    part of an existing release.
@@ -21,18 +21,29 @@ See [pipeline architecture](docs/release-pipeline.md) for component ownership.
 python -m pip install -e ".[all,dev]"
 python -m ruff check .
 python -m pytest -q
-node --check resonant_client/gui/static/app.js
-node --check resonant_client/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs
+node --check lumi/gui/static/app.js
+node --check lumi/gui/static/settings_view.js
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs
 git diff --check
 ```
 
-On Windows, run `./scripts/build_clean.ps1`. It builds in a fresh environment,
-fetches verified ripgrep/web assets, runs PyInstaller, and enforces the bundle
-policy. Do not build from an arbitrary environment with accumulated packages.
+On Windows, run `./scripts/build_clean.ps1`. It builds in a fresh environment
+from the hash-pinned `packaging/requirements-release.txt`, fetches verified
+ripgrep/web assets, writes the third-party notices (failing on unreviewed
+copyleft licenses), runs PyInstaller, and enforces the bundle policy. Add
+`-SbomPath dist/lumi-sbom.cdx.json` for the CycloneDX SBOM; that needs the
+pinned tools (`python -m pip install --require-hashes -r
+packaging/tools-requirements.txt`) in the Python running the script. Do not
+build from an arbitrary environment with accumulated packages.
+
+When dependencies in `pyproject.toml` change, run `python scripts/lock_release.py`
+(needs [uv](https://docs.astral.sh/uv/)), review the lock diff, and commit it.
+The tests fail while the lock misses a declared dependency, and the weekly
+**Dependency audit** workflow reports newly published vulnerabilities in pinned
+versions.
 
 For UI/provider changes, test the source UI's affected flows and the packaged
-`dist/resonant/resonant.exe`. Use an isolated profile and fixture project; do
+`dist/lumi/lumi.exe`. Use an isolated profile and fixture project; do
 not kill a user's running app or delete their startup logs. Launch any test
 process hidden, keep its PID, and stop only that owned process afterward.
 Verify:
@@ -50,7 +61,7 @@ version change. Create an annotated `vX.Y.Z` tag at that commit and push the
 branch and tag together where supported:
 
 ```sh
-git tag -a vX.Y.Z -m "Resonant X.Y.Z"
+git tag -a vX.Y.Z -m "Lumi X.Y.Z"
 git push --atomic origin main vX.Y.Z
 ```
 
@@ -84,12 +95,12 @@ use a file to preserve literal text and newlines.
 ## Verify deployment
 
 - The release workflow and relevant checks succeeded for the tagged commit.
-- The published, non-draft release includes `resonant-setup-X.Y.Z.exe` in
+- The published, non-draft release includes `lumi-setup-X.Y.Z.exe` in
   uploaded state with a nonzero size.
 - The Pages deployment succeeded, and the live feed at
   [appcast.xml](https://luminary-analytics.github.io/resonant-client/appcast.xml)
   has the intended version as its first item.
-- Its enclosure points to `downloads/vX.Y.Z/resonant-setup-X.Y.Z.exe` on the
+- Its enclosure points to `downloads/vX.Y.Z/lumi-setup-X.Y.Z.exe` on the
   Pages site. Download it without signing in and confirm the byte length and a
   nonempty EdDSA signature. A local `gh-pages` commit alone is insufficient.
 - The [download page](https://luminary-analytics.github.io/resonant-client/)
@@ -106,12 +117,18 @@ secret, and Pages configured for `gh-pages` at the root. If the repository is
 private, Pages must still publish publicly; that needs a paid GitHub plan such as
 Team. On the free plan, making the repository private unpublishes the site and
 stops every installed app from updating. The public verification
-key is embedded in `resonant_client/updater.py`; the private key stays outside
+key is embedded in `lumi/updater.py`; the private key stays outside
 source control. WinSparkle tools are under `packaging/winsparkle/`.
 
 EdDSA validates the installer bytes against the update feed. It is separate
 from Windows Authenticode publisher signing; do not describe an update-feed
 signature as a SmartScreen-trusted publisher certificate.
+
+Authenticode signing of `lumi.exe` and the installer runs through
+`packaging/sign_windows.ps1` when credentials are configured, and otherwise
+leaves a warning on the run; see
+[pipeline architecture](docs/release-pipeline.md#authenticode). Buying a
+certificate or a signing service is an account decision for the owner.
 
 ## Failures and recovery
 
@@ -132,20 +149,32 @@ signature as a SmartScreen-trusted publisher certificate.
   signature or rerun an already successful release casually.
 - **Version/source correction:** prefer a new version for changed source. Rerun
   failed jobs at the existing SHA only when the source and version are correct.
-- **Pre-releases:** the tag glob accepts more than stable semver. A hyphenated
-  tag is marked prerelease and is not published to Pages or the appcast.
-  `publish_pages.py` also rejects anything other than `X.Y.Z`, so a Python
-  `a1`-style tag fails the Pages step instead of reaching installed apps.
+- **Betas:** tag `vX.Y.Z-beta.N` (or `-alpha.N`, `-rc.N`) with the same string
+  in both version files. The GitHub release is marked prerelease; the installer
+  goes to the Pages site and only into `appcast-beta.xml`, so installs on the
+  stable channel never see it. The download page is left alone. Other
+  hyphenated or Python `a1`-style tags fail the Pages step, which accepts only
+  `X.Y.Z` and those three forms, instead of reaching installed apps. See
+  [Updates](docs/updates.md#how-the-feeds-work).
 
 Current release evidence is recorded in [0.19.1 notes](docs/v0.19.1-release-notes.md).
 
-## SONN Client branding compatibility
+## Lumi rebrand and upgrades
 
-The product display name is SONN Client; `resonant.exe`, `resonant-client`,
-installer filenames, `~/.resonant`, the existing installer AppId, install
-folder/program group, WinSparkle registry path, and appcast URL stay unchanged.
-The installer removes only the old Resonant shortcut files when installing
-SONN Client shortcuts. Verify an upgrade before release; do not publish a new
-feed or rename release assets as an incidental branding change. Regenerate
-Windows icons with `python scripts/build_brand_assets.py`; the source favicon
-is SONN's shared continuity SVG from its product brand assets.
+The product is Lumi: `lumi.exe`, `lumi-setup-X.Y.Z.exe`, `Program Files\Lumi`
+and the `lumi` distribution. The installer has its own AppId and silently runs
+the pre-rebrand SONN Client/Resonant uninstaller first (per-machine and
+per-user), so Apps & Features keeps one entry. WinSparkle preferences move to
+`Software\Luminary Analytics\Lumi\WinSparkle` and start fresh.
+
+The appcast URL deliberately stays at the current Pages address: installed
+SONN Client builds poll it, so the first Lumi releases are published there.
+Moving the feed to a Lumi domain needs a bridge release whose binary points
+at the new URL. Rename the repository only after that; GitHub does not
+redirect Pages project sites after a rename.
+
+Before publishing the first Lumi release, upgrade an installed SONN Client
+from the new installer and check that the old Apps & Features entry is gone,
+Lumi launches from the Start menu, and `~/.resonant` moved to `~/.lumi` with
+sessions and settings intact. Regenerate icons with
+`python scripts/build_brand_assets.py` (see [brand/README.md](brand/README.md)).

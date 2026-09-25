@@ -1,5 +1,5 @@
 """
-Tests for resonant_client/engine/repl.py
+Tests for lumi/engine/repl.py
 
 Covers:
   - ReplProcess lifecycle (start, eval, stop)
@@ -18,7 +18,7 @@ import shutil
 
 import pytest
 
-from resonant_client.engine import repl as repl_mod
+from lumi.engine import repl as repl_mod
 
 
 # ── Shared cleanup ──────────────────────────────────────────────────────
@@ -159,7 +159,7 @@ class TestRegistry:
 
 class TestExecWrappers:
     def test_python_round_trip(self, tmp_path):
-        from resonant_client.engine.repl import (
+        from lumi.engine.repl import (
             exec_repl_python_start, exec_repl_python_eval, exec_repl_python_stop,
         )
         r1 = exec_repl_python_start({"cwd": str(tmp_path)}, start=0.0)
@@ -176,13 +176,13 @@ class TestExecWrappers:
         assert "Stopped" in r3.output
 
     def test_eval_missing_repl_id(self):
-        from resonant_client.engine.repl import exec_repl_python_eval
+        from lumi.engine.repl import exec_repl_python_eval
         r = exec_repl_python_eval({"code": "1+1"}, start=0.0)
         assert r.is_error is True
         assert "repl_id is required" in r.output
 
     def test_eval_missing_code(self, tmp_path):
-        from resonant_client.engine.repl import exec_repl_python_start, exec_repl_python_eval
+        from lumi.engine.repl import exec_repl_python_start, exec_repl_python_eval
         r1 = exec_repl_python_start({"cwd": str(tmp_path)}, start=0.0)
         rid = r1.metadata["repl_id"]
         r = exec_repl_python_eval({"repl_id": rid}, start=0.0)
@@ -195,7 +195,7 @@ class TestExecWrappers:
 
 class TestToolRegistration:
     def test_all_repl_tools_registered(self):
-        from resonant_client.engine import tools as tools_mod
+        from lumi.engine import tools as tools_mod
         names = {t["function"]["name"] for t in tools_mod.AGENT_TOOLS}
         for n in [
             "repl_python_start", "repl_python_eval", "repl_python_stop",
@@ -204,7 +204,7 @@ class TestToolRegistration:
             assert n in names, f"REPL tool '{n}' not registered"
 
     def test_dispatch_routes_repl_tools(self, tmp_path):
-        from resonant_client.engine.tools import execute_tool
+        from lumi.engine.tools import execute_tool
         r1 = execute_tool("repl_python_start", {"cwd": str(tmp_path)})
         assert r1.is_error is False
         rid = r1.metadata["repl_id"]

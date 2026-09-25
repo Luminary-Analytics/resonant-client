@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     KIND_DECISION,
     KIND_FLOOR,
     KIND_PLAN_CHANGE,
@@ -25,7 +25,7 @@ from resonant_client.orchestration import (
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 

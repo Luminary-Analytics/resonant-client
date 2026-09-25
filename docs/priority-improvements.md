@@ -95,11 +95,13 @@ and exclude them from recall. Agent-created notes remain labeled **model
 assertion**; user-authored notes say **user supplied**. A source hash establishes
 freshness, not the truth of the claim. Notes without files rely on user review.
 Storage is inspectable JSON at `.resonant/memory.json`, capped at 40 notes of
-1,000 characters; prompt recall is capped at 2,400 characters.
+1,000 characters; prompt recall is capped at 2,400 characters. A note can be
+shared with the team through Lumi Cloud; once approved, it's recalled in
+clones of the same repository while its files match ([team library](team-library.md#project-notes-for-the-team)).
 
 Engram's fallback conversation excerpt is no longer silently persisted as
 knowledge. Recalled external memories are bounded and labeled unverified.
-`RESONANT_EVALUATION_MODE=1` disables Engram recall/storage and excludes personal
+`LUMI_EVALUATION_MODE=1` disables Engram recall/storage and excludes personal
 global skills, while allowing bundled references and the fixture's own project
 state. Use a fresh project and state/home directory for each independent run.
 

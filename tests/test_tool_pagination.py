@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from unittest.mock import patch
 
-from resonant_client.engine.tools import _exec_file_read, _exec_glob, _exec_grep
+from lumi.engine.tools import _exec_file_read, _exec_glob, _exec_grep
 
 
 def test_file_read_returns_requested_line_window_and_actionable_footer(tmp_path):
@@ -54,7 +54,7 @@ def test_glob_paginates_sorted_paths(tmp_path):
 def test_grep_paginates_matches_and_preserves_total(tmp_path):
     stdout = "\n".join(f"file.py:{index}:match" for index in range(8)).encode()
     with patch(
-        "resonant_client.engine.tools._run_subprocess_with_cancel",
+        "lumi.engine.tools._run_subprocess_with_cancel",
         return_value=(0, stdout, b"", False),
     ):
         result = _exec_grep(

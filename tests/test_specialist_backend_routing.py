@@ -19,9 +19,9 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
-from resonant_client.backends import OllamaBackend
-from resonant_client.gui.app import AppState
-from resonant_client.orchestration import (
+from lumi.backends import OllamaBackend
+from lumi.gui.app import AppState
+from lumi.orchestration import (
     LocalSpecialistRunner,
     NodeSpecialization,
     PlanGraph,
@@ -149,10 +149,10 @@ class TestRunnerSessionUsesResolvedBackend:
         g.add_node(node)
 
         with patch(
-            "resonant_client.orchestration.runner.Session.__init__",
+            "lumi.orchestration.runner.Session.__init__",
             capture_session_init,
         ), patch(
-            "resonant_client.orchestration.runner.Session.run", fake_run,
+            "lumi.orchestration.runner.Session.run", fake_run,
         ):
             runner(node, g)
 
@@ -193,10 +193,10 @@ class TestRunnerSessionUsesResolvedBackend:
         g.add_node(node)
 
         with patch(
-            "resonant_client.orchestration.runner.Session.__init__",
+            "lumi.orchestration.runner.Session.__init__",
             capture_session_init,
         ), patch(
-            "resonant_client.orchestration.runner.Session.run", fake_run,
+            "lumi.orchestration.runner.Session.run", fake_run,
         ):
             runner(node, g)
 
@@ -218,12 +218,12 @@ def _make_state_with_settings(get_handler):
 
 class TestSpecialistModelOverrideResolution:
     def test_no_settings_no_env_returns_empty(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
         state = _make_state_with_settings(lambda *a, **kw: {})
         assert state._resolve_specialist_model_override("reflect") == ""
 
     def test_settings_hit_returns_value(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -236,7 +236,7 @@ class TestSpecialistModelOverrideResolution:
 
     def test_settings_wins_over_env(self, monkeypatch):
         monkeypatch.setenv(
-            "RESONANT_SPECIALIST_REFLECT_MODEL", "env-model:cloud",
+            "LUMI_SPECIALIST_REFLECT_MODEL", "env-model:cloud",
         )
 
         def get(section, key, default):
@@ -251,16 +251,16 @@ class TestSpecialistModelOverrideResolution:
 
     def test_env_var_fallback_when_settings_empty(self, monkeypatch):
         monkeypatch.setenv(
-            "RESONANT_SPECIALIST_REFLECT_MODEL", "env-fallback:cloud",
+            "LUMI_SPECIALIST_REFLECT_MODEL", "env-fallback:cloud",
         )
         state = _make_state_with_settings(lambda *a, **kw: {})
         assert state._resolve_specialist_model_override("reflect") == \
             "env-fallback:cloud"
 
     def test_env_var_uppercase_normalization(self, monkeypatch):
-        # `plan_deep` (lowercase) → RESONANT_SPECIALIST_PLAN_DEEP_MODEL
+        # `plan_deep` (lowercase) → LUMI_SPECIALIST_PLAN_DEEP_MODEL
         monkeypatch.setenv(
-            "RESONANT_SPECIALIST_PLAN_DEEP_MODEL", "deep-pro:cloud",
+            "LUMI_SPECIALIST_PLAN_DEEP_MODEL", "deep-pro:cloud",
         )
         state = _make_state_with_settings(lambda *a, **kw: {})
         assert state._resolve_specialist_model_override("plan_deep") == \
@@ -270,7 +270,7 @@ class TestSpecialistModelOverrideResolution:
         # If settings returns a string instead of a dict (corrupted /
         # manually-edited settings.json), we shouldn't crash — fall
         # through to env/empty.
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -281,7 +281,7 @@ class TestSpecialistModelOverrideResolution:
         assert state._resolve_specialist_model_override("reflect") == ""
 
     def test_settings_non_string_value_ignored(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -292,7 +292,7 @@ class TestSpecialistModelOverrideResolution:
         assert state._resolve_specialist_model_override("reflect") == ""
 
     def test_settings_whitespace_stripped(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -311,7 +311,7 @@ class TestSpecialistModelOverrideResolution:
     def test_settings_get_raising_falls_through(self, monkeypatch):
         # If settings.get crashes (e.g. settings.json deleted mid-run),
         # the override resolution should not crash either.
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(*a, **kw):
             raise RuntimeError("settings unreachable")
@@ -325,7 +325,7 @@ class TestSpecialistModelOverrideResolution:
 
 class TestBuildSpecialistBackend:
     def test_no_override_returns_none(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
         state = _make_state_with_settings(lambda *a, **kw: {})
         state.backend = OllamaBackend(
             base_url="http://10.0.0.133:11434",
@@ -335,7 +335,7 @@ class TestBuildSpecialistBackend:
         assert state._build_specialist_backend("reflect") is None
 
     def test_override_builds_fresh_ollama_backend(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -357,7 +357,7 @@ class TestBuildSpecialistBackend:
         assert result is not state.backend
 
     def test_override_inherits_thinking_mode(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -376,7 +376,7 @@ class TestBuildSpecialistBackend:
         assert result.thinking_mode == "high"
 
     def test_no_override_never_changes_reasoning_effort(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
         state = _make_state_with_settings(lambda *a, **kw: {})
         state.backend = OllamaBackend(
             base_url="http://10.0.0.133:11434",
@@ -389,7 +389,7 @@ class TestBuildSpecialistBackend:
         assert result is None
 
     def test_override_with_no_thinking_passes_none(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -410,7 +410,7 @@ class TestBuildSpecialistBackend:
         # Defensive — if the default backend is somehow non-Ollama
         # (shouldn't happen post-v0.4.0 but who knows), don't crash.
         # Fall through to default.
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -428,7 +428,7 @@ class TestBuildSpecialistBackend:
         # the caller uses the default backend. We patch the class's
         # __init__ rather than the whole class so isinstance() in the
         # production code still works against the real type.
-        monkeypatch.delenv("RESONANT_SPECIALIST_REFLECT_MODEL", raising=False)
+        monkeypatch.delenv("LUMI_SPECIALIST_REFLECT_MODEL", raising=False)
 
         def get(section, key, default):
             if section == "general" and key == "specialist_model_overrides":
@@ -461,7 +461,7 @@ class TestBuildSpecialistBackend:
 
 class TestIntentServiceWiresResolver:
     def test_resolver_threaded_through_to_runner(self):
-        from resonant_client.orchestration.intent_service import IntentService
+        from lumi.orchestration.intent_service import IntentService
 
         resolver = MagicMock(return_value=None)
         svc = IntentService(
@@ -473,7 +473,7 @@ class TestIntentServiceWiresResolver:
         assert svc.specialist_backend_resolver is resolver
 
     def test_resolver_default_is_none(self):
-        from resonant_client.orchestration.intent_service import IntentService
+        from lumi.orchestration.intent_service import IntentService
 
         svc = IntentService(
             project_path="/tmp/proj",

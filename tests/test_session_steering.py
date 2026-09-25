@@ -1,7 +1,7 @@
 import threading
 
-from resonant_client.backends import EVENT_DONE, EVENT_TEXT_DELTA
-from resonant_client.engine.session import Session
+from lumi.backends import EVENT_DONE, EVENT_TEXT_DELTA
+from lumi.engine.session import Session
 
 
 class _BoundaryBackend:

@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-from resonant_client import processes
+from lumi import processes
 
 
 def test_background_process_kwargs_are_empty_on_non_windows(monkeypatch):
@@ -33,7 +33,7 @@ def test_background_process_kwargs_hide_windows_console(monkeypatch):
 
 
 def test_main_tool_runner_combines_hidden_window_and_process_group_policy():
-    source = (Path(__file__).parents[1] / "resonant_client" / "engine" / "tools.py").read_text(
+    source = (Path(__file__).parents[1] / "lumi" / "engine" / "tools.py").read_text(
         encoding="utf-8"
     )
     assert "background_process_kwargs(new_process_group=True)" in source

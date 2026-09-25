@@ -1,4 +1,4 @@
-from resonant_client.engine.turn_outcomes import (
+from lumi.engine.turn_outcomes import (
     classify_turn_outcome,
     request_requires_workspace_change,
     response_promises_future_action,

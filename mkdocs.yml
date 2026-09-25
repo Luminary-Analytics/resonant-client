@@ -1,0 +1,102 @@
+# The Lumi documentation site, built from docs/ with MkDocs and Material.
+#
+#   pip install -r packaging/docs-requirements.txt
+#   mkdocs build --strict      # into site/
+#
+# .github/workflows/docs.yml builds it on every docs change and keeps the
+# site as an artifact. Publishing it is a separate, deliberate step.
+site_name: Lumi documentation
+site_description: The coding agent that runs on your computer, with the models you choose.
+docs_dir: docs
+site_dir: site
+repo_url: https://github.com/Luminary-Analytics/resonant-client
+edit_uri: ""
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Dark theme
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Light theme
+
+extra_css:
+  - stylesheets/lumi.css
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+
+# docs/README.md is the repository's documentation index. Both it and
+# index.md would become the home page, and MkDocs warns about that (which
+# --strict turns into a failure), so the site leaves README.md out.
+exclude_docs: |
+  /README.md
+
+# Every other page in docs/ is built, so links between guides, release notes
+# and records work. Links to files outside docs/ (RELEASING.md, source files)
+# point into the repository and aren't pages here; tests/test_docs_links.py
+# checks that the guides' links resolve in the repository instead.
+validation:
+  omitted_files: info
+  absolute_links: info
+  unrecognized_links: info
+  anchors: info
+  links:
+    not_found: info
+
+nav:
+  - Home: index.md
+  - Using Lumi:
+      - Getting started, projects and sessions: desktop-workflow.md
+      - Models, fallbacks and image descriptions: models.md
+      - Comparing models on your tasks: model-comparisons.md
+      - Code intelligence (language servers): code-intelligence.md
+      - Code editors (VS Code, JetBrains): code-editors.md
+      - Issue trackers (Jira, Linear, GitHub, GitLab): issue-trackers.md
+      - Hand-offs to a teammate or CI: hand-offs.md
+      - Team skills, prompts and project notes: team-library.md
+      - Code review for agent changes: code-review.md
+      - Second-person approval of commands: second-approval.md
+      - Autonomous sessions (experimental): autonomous-sessions.md
+      - Signing in to enterprise endpoints: connection-sign-in.md
+      - Usage, prices and budgets: usage-and-costs.md
+      - Updates: updates.md
+      - macOS: macos.md
+      - Plans: plans.md
+      - Lumi account and Lumi Cloud: lumi-cloud.md
+  - For organizations:
+      - Organization policy: enterprise-policy.md
+      - Shell sandbox and command guardrails: shell-sandbox.md
+      - Deploying on Windows: deploy-windows.md
+      - Deploying on macOS: deploy-macos.md
+      - Lumi on Linux: deploy-linux.md
+      - Audit log: audit-log.md
+      - Running without a UI: headless.md
+      - Scheduled tasks: scheduled-tasks.md
+      - Chat gateway (Telegram, Slack): chat-gateway.md
+      - Pull requests (GitHub, GitLab, Bitbucket, Azure DevOps): github.md
+  - Extending Lumi:
+      - Writing a capability pack: packs.md
+      - "Extensions: add a model provider": extensions.md
+      - Accessibility conformance report: accessibility.md
+      - Skills: skills.md
+      - Creative editors: creative-editors.md
+  - Project records:
+      - Unreleased changes: unreleased.md
+      - Documentation status: documentation-status.md

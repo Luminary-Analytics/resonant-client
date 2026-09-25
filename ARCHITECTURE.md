@@ -1,4 +1,4 @@
-# SONN Client architecture
+# Lumi architecture
 
 Current baseline: [v0.19.1](docs/v0.19.1-release-notes.md), including the compact
 toolbar, sidebar, new-session project chooser, and SONN connection. Subsequent work is tracked in [Unreleased](docs/unreleased.md). Contributor rules live in [AGENTS.md](AGENTS.md);
@@ -6,9 +6,14 @@ product priorities live in the [harness north star](docs/agentic-harness-north-s
 
 ## Runtime boundaries
 
-SONN Client is a Python agent runtime with a Starlette/WebSocket GUI, a Rich TUI,
-and a pywebview desktop shell. Ollama, EXO, Kimi, OpenRouter, and SONN supply models to
-SONN Client's engine loop. Codex and Claude Code adapters instead run installed
+Lumi is a Python agent runtime with a Starlette/WebSocket GUI, a Rich TUI,
+and a pywebview desktop shell. Anthropic, OpenAI, Ollama, EXO, Kimi, OpenRouter, SONN and
+custom connections supply models to Lumi's engine loop. `anthropic_api.py` (Messages
+API, direct/Bedrock/Vertex) and `openai_api.py` (Responses API, OpenAI/Azure) render
+history with the shared Chat Completions converter, then translate it, so tool-call
+repair behaves the same everywhere. `connections.py` validates user-defined
+connections and builds their backends; `auth_tokens.py` supplies their OAuth
+and Entra ID tokens and client-certificate TLS contexts. Codex and Claude Code adapters instead run installed
 CLIs, whose native tool execution remains inside those CLIs.
 
 The GUI owns interaction and rendering. Runtime construction owns provider,
@@ -24,9 +29,18 @@ these services; it is not required for ordinary chat-based coding.
 | Model context | `engine/model_prompts.py`, `protocol.py`, `engine/compression.py` | Stable prompt, tool schemas/parsing, context compaction |
 | Agent loop | `engine/session.py`, `engine/tools.py`, `engine/sandbox.py` | Model/tool iteration, execution, permissions, cancellation |
 | GUI server | `gui/app.py`, `gui/ws_commands.py`, `gui/chat_loop.py` | Startup, state, commands, streaming and active-run lifecycle |
+| Local access | `gui/local_access.py`, `gui/static/local_access.js`, `gui/server.py` | Per-launch token, one-time launch links, Host/Origin checks |
 | Construction | `gui/runtime.py` | Serializable `BackendSpec`, shared session construction |
 | Saved work | `gui/sessions.py`, `gui/session_ledger.py`, `gui/ui_state.py` | Projects, session metadata, transcript ledger, composer drafts |
 | Configuration | `gui/settings.py`, `network_defaults.py`, `gui/project_instructions.py` | Settings, endpoint resolution, layered repository instructions |
+| Client security | `engine/exclusions.py`, `gui/workspace_trust.py`, `gui/retention.py` | File exclusion rules, trust for repository content, transcript retention |
+| Organization policy | `policy.py`, `packaging/policy/` | Machine policy sources, signatures, locked settings and allowlists |
+| Audit log | `audit.py`, `file_lock.py` | Hash-chained local records of every turn's events (recorded by `Session.run`), capture levels, OTLP export |
+| Model routing | `engine/model_roles.py`, `capabilities.py` | Role models, fallback chains (`Session._next_fallback`), capability inference with policy overrides |
+| GitHub | `engine/github_tools.py` | Pull request tools over the REST API: read reviews, checks and job logs; open, comment, update. Token from Settings or `GITHUB_TOKEN` |
+| Headless runs | `headless.py`, `packaging/docker/` | `lumi run`: a session built as the desktop app builds it (`engine/policies.project_execution_policy`, exclusions, trust), no prompts, JSON result and exit codes |
+| Usage and prices | `usage.py`, `pricing.py`, `budgets.py`, `gui/costs.py`, `engine/request_purpose.py` | One record per model call (turns in `Session.run`, auxiliary requests in `auxiliary_stream`), price resolution, budgets checked before each model request, daily totals, `lumi usage` |
+| Network and secrets | `net.py`, `secrets_store.py`, `secret_scan.py` | Proxy and OS certificate store, keys in the OS credential store, clean child environments, secrets removed before model requests |
 | Desktop UI | `gui/templates/index.html`, `gui/static/app.js`, `gui/static/styles.css` | Sidebar, composer, model picker, command palette, shell |
 | Settings UI | `gui/static/settings_view.js` | Connection flows, API keys, preferences |
 | Project resources | `engine/previews.py`, `engine/project_memory.py` | Managed preview servers, sourced project notes |
@@ -36,7 +50,7 @@ these services; it is not required for ordinary chat-based coding.
 | Context and evidence | `engine/context_broker.py`, `engine/artifacts.py`, `engine/checkpoint_timeline.py`, `engine/flight_recorder.py` | Context attachments, artifacts, rewind, traces |
 | Optional orchestration | `orchestration/`, `gui/autonomous_*.py` | Specialists, plan graphs, autonomous iteration, skills |
 
-Paths in the table are relative to `resonant_client/`.
+Paths in the table are relative to `lumi/`.
 
 ## GUI and saved-work flow
 
@@ -56,6 +70,18 @@ Paths in the table are relative to `resonant_client/`.
    the user accepts it. See [0.18.2 notes](docs/v0.18.2-release-notes.md).
 7. Engine events travel through a thread-safe queue to WebSocket clients;
    classic JavaScript scripts and descriptor-based mixins render them.
+
+Loopback is not a trust boundary: other accounts, sandboxed processes, and web
+pages (WebSockets bypass CORS; DNS rebinding) can reach 127.0.0.1. The socket
+and `/api/ui-state` therefore require an exact `Host`, this server's `Origin`,
+and the per-process access token. They check these before accepting a WebSocket.
+Pages redeem a one-time code from the launch
+link's URL fragment at `/api/access` and keep the token in origin storage, which
+is port-isolated unlike cookies; they send it as a `lumi.access.<token>`
+WebSocket subprotocol or an `X-Lumi-Access` header. Codes come from the
+launcher (desktop window, `--browser` link) or the desktop bridge's
+`open_in_browser`, never from a web request. The server never logs or prints
+the token.
 
 Preserve render signatures, scroll/focus restoration, session-scoped draft
 writes, and immediate catalog updates after session mutations. The compact
@@ -105,7 +131,7 @@ fallback or role routing.
 Codex receives project instructions, relevant notes, recent text history, and
 retained summaries. This is a text handoff, not native thread continuation;
 image attachments are not transferred. CLI tool displays must not be treated
-as evidence that SONN Client's own tool handlers executed.
+as evidence that Lumi's own tool handlers executed.
 
 ## Instructions, notes, and skills
 
@@ -120,7 +146,8 @@ is generated at invocation from current settings and is never serialized in a
 permission boundaries, setup versions, and live versus fixture evidence.
 
 `gui/project_instructions.py` prefers `AGENTS.md`, then `.agents/AGENTS.md`,
-`RESONANT.md`, `.resonant/RESONANT.md`, and `CLAUDE.md` at a given scope. Global
+`LUMI.md`, `.lumi/LUMI.md`, the legacy `RESONANT.md` and
+`.resonant/RESONANT.md`, and `CLAUDE.md` at a given scope. Global
 and working-directory hierarchy handling live in that module. This repository
 uses `AGENTS.md` as its shared source; `CLAUDE.md` imports it.
 
@@ -132,8 +159,8 @@ and [self-improvement loop](docs/self-improvement-loop.md).
 
 ## Storage, safety, and packaging
 
-Settings normally live in `~/.resonant/settings.json`; project state lives under
-`~/.resonant/projects/<project-hash>/`. Skills use `~/.resonant/skills/`.
+Settings normally live in `~/.lumi/settings.json`; project state lives under
+`~/.lumi/projects/<project-hash>/`. Skills use `~/.lumi/skills/`.
 Explicit project-local configuration files are separate from generated runtime
 state. Avoid writing fixtures, secrets, or session data into the repository.
 
@@ -144,7 +171,7 @@ resources, not persistent deployments. Named acceptance results describe their
 actual commands and inputs, not universal proof of correctness.
 
 Windows builds use `scripts/build_clean.ps1`, pinned asset fetches,
-`packaging/resonant.spec`, and `packaging/bundle-policy.json`. New UI resources
+`packaging/lumi.spec`, and `packaging/bundle-policy.json`. New UI resources
 must be bundled and cache-busted. Source tests do not prove frozen startup or
 WebSocket dependencies work; verify the packaged app before releasing.
 

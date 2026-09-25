@@ -30,7 +30,7 @@ class _DummyBackend:
 def _load_app_module(monkeypatch, cwd: Path):
     monkeypatch.setattr(Path, "home", lambda: cwd)
     monkeypatch.chdir(cwd)
-    import resonant_client.gui.app as app_module
+    import lumi.gui.app as app_module
 
     return importlib.reload(app_module)
 

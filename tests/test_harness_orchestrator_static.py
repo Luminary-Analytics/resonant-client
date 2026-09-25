@@ -19,7 +19,7 @@ import json
 from datetime import datetime
 
 
-from resonant_client.harness.orchestrator import (
+from lumi.harness.orchestrator import (
     HarnessCycleRun,
     HarnessCycleStep,
     HarnessOrchestrator,

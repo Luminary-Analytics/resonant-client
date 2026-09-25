@@ -1,0 +1,656 @@
+"""v0.6.1a2 — CLI for the skill library.
+
+Wired as the `lumi-skill` console script in pyproject.toml.
+Subcommands cover the day-to-day skill management surface:
+
+    lumi-skill list                      # list all skills
+    lumi-skill list --created-by agent   # filter by provenance
+    lumi-skill list --pinned             # only pinned
+    lumi-skill list --scope project      # only project-scoped
+    lumi-skill list --json               # machine-readable output
+
+    lumi-skill view <id>                 # print skill body
+    lumi-skill view <id> --json          # full skill.json
+
+    lumi-skill pin <id>                  # mark pinned
+    lumi-skill unpin <id>                # mark unpinned
+
+    lumi-skill archive <id> [--reason X] # curator-style archival
+    lumi-skill curate [--dry-run]        # run a curator pass now
+
+The `promote` and `demote` subcommands (user-global elevation) ship
+in v0.6.1a3.
+
+The CLI is a THIN wrapper around the existing skills.py / skill_curator.py
+public API. No orchestration logic lives here — it's pure surface.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+from typing import Optional
+
+from .bundled_skills import install_bundled_skills
+from .field_observation_ingest import (
+    ingest_field_observation_dir,
+    ingest_field_observation_file,
+)
+from .skill_curator import run_curation
+from .skills import (
+    SKILL_SCOPES,
+    Skill,
+    archive_skill,
+    demote_skill,
+    list_archived_skills,
+    list_skills_filtered,
+    load_skill,
+    promote_skill,
+    restore_skill,
+    set_pinned,
+    skill_dir,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# ── Helpers ────────────────────────────────────────────────────────────
+
+
+def _resolve_skill(
+    skill_id: str,
+    *,
+    project_path: Optional[str] = None,
+) -> Optional[tuple[Skill, str]]:
+    """Find a skill across scopes. Returns (skill, scope) or None.
+
+    Order: project (if given) → global → stack. First hit wins.
+    The caller usually wants to know WHICH scope the skill came
+    from for path-printing.
+    """
+    candidates = []
+    if project_path:
+        candidates.append(("project", {"project_path": project_path}))
+    candidates.append(("global", {}))
+    # stack scope needs a stack_sig — out of scope for v0.6.1; skip.
+    for scope, kwargs in candidates:
+        skill = load_skill(skill_id, scope=scope, **kwargs)
+        if skill is not None:
+            return skill, scope
+    return None
+
+
+def _format_skill_row(skill: Skill, *, scope_label: str = "") -> str:
+    """One-line summary for `list` output.
+
+    ASCII-only on purpose: Windows cp1252 console can't print emoji
+    via plain stdout. The format_skills_for_prompt path in
+    skill_loader.py keeps 📌 because that prose goes into the model's
+    prompt (UTF-8 always). CLI output is for humans on whatever
+    terminal they have."""
+    pin = "[PIN]" if skill.pinned else "     "
+    provenance = f"[{skill.created_by:7}]"
+    scope = f"({skill.scope})" if not scope_label else f"({scope_label})"
+    desc = skill.description[:80]
+    if len(skill.description) > 80:
+        desc = desc[:79] + "..."
+    return f"{pin} {provenance} {skill.id:40} {scope:10} {desc}"
+
+
+# ── Subcommand handlers ────────────────────────────────────────────────
+
+
+def cmd_list(args: argparse.Namespace) -> int:
+    """List skills (live or archived), with optional filters."""
+    # v0.6.2a4 — `--archived` swaps to the _archive listing.
+    if getattr(args, "archived", False):
+        return _cmd_list_archived(args)
+
+    scope = args.scope if args.scope != "all" else None
+    project_path = args.project_path
+
+    skills = list_skills_filtered(
+        scope=scope,
+        project_path=project_path,
+        created_by=args.created_by,
+        pinned=(True if args.pinned else None),
+        include_deprecated=args.include_deprecated,
+    )
+
+    if args.json:
+        print(json.dumps(
+            [s.to_dict() for s in skills],
+            indent=2, ensure_ascii=False,
+        ))
+        return 0
+
+    if not skills:
+        print("No skills found matching the filters.")
+        return 0
+
+    print(f"Found {len(skills)} skill(s):")
+    print()
+    for s in sorted(skills, key=lambda s: (s.scope, s.id)):
+        print(_format_skill_row(s))
+    return 0
+
+
+def _cmd_list_archived(args: argparse.Namespace) -> int:
+    """Inner helper for `list --archived`."""
+    scope = args.scope if args.scope != "all" else None
+    entries = list_archived_skills(
+        scope=scope,
+        project_path=args.project_path,
+    )
+    if args.json:
+        print(json.dumps([
+            {
+                "id": e["skill"].id,
+                "scope": e["scope"],
+                "archived_at": e["archived_at"],
+                "reason": e["reason"],
+                "archive_dir": str(e["archive_dir"]),
+                "skill": e["skill"].to_dict(),
+            }
+            for e in entries
+        ], indent=2, ensure_ascii=False))
+        return 0
+    if not entries:
+        print("No archived skills.")
+        return 0
+    import datetime as _dt
+    print(f"Found {len(entries)} archived skill(s):")
+    print()
+    for e in entries:
+        ts = _dt.datetime.fromtimestamp(e["archived_at"]).strftime("%Y-%m-%d %H:%M")
+        s = e["skill"]
+        reason = (e["reason"] or "")[:50]
+        print(
+            f"  [{e['scope']:7s}] {s.id:60s}  "
+            f"archived {ts}  "
+            f"{reason}"
+        )
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    """Restore the most-recent archive of a skill back to live."""
+    dest = restore_skill(
+        args.skill_id,
+        project_path=args.project_path,
+        force=bool(args.force),
+    )
+    if dest is None:
+        # Two failure modes — distinguish via a probe.
+        from .skills import list_archived_skills as _list_arch
+        entries = [
+            e for e in _list_arch(project_path=args.project_path)
+            if e["skill"].id == args.skill_id
+        ]
+        if not entries:
+            print(
+                f"No archive found for `{args.skill_id}`. "
+                f"Use `lumi-skill list --archived` to see candidates.",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"Refused: a live skill named `{args.skill_id}` already "
+            f"exists. Pass --force to overwrite it (destructive — "
+            f"the live skill will be removed).",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"Restored {args.skill_id} → {dest}")
+    return 0
+
+
+def cmd_view(args: argparse.Namespace) -> int:
+    """Print a skill's procedure body or full JSON."""
+    found = _resolve_skill(args.skill_id, project_path=args.project_path)
+    if found is None:
+        print(f"Skill not found: {args.skill_id}", file=sys.stderr)
+        return 1
+
+    skill, scope = found
+    if args.json:
+        out = skill.to_dict()
+        out["_resolved_scope"] = scope
+        print(json.dumps(out, indent=2, ensure_ascii=False))
+        return 0
+
+    # Human-readable: header + procedure.md body if present.
+    print(f"# {skill.name}")
+    print()
+    print(f"**ID:** `{skill.id}` * **Scope:** {scope} * **Provenance:** {skill.created_by}")
+    if skill.pinned:
+        print("**[PINNED]**")
+    print(f"**Description:** {skill.description}")
+    print(f"**Version:** {skill.version}  ·  **Uses:** {skill.success_count} ok / {skill.fail_count} fail")
+    print()
+    target = skill_dir(
+        skill.id, scope=scope,
+        project_path=args.project_path if scope == "project" else None,
+    )
+    procedure = target / "procedure.md"
+    if procedure.exists():
+        print("---")
+        print()
+        print(procedure.read_text(encoding="utf-8"))
+    else:
+        print("_(no procedure.md sidecar — skill metadata only)_")
+    return 0
+
+
+def cmd_pin(args: argparse.Namespace) -> int:
+    """Mark a skill as pinned (curator-exempt)."""
+    return _set_pinned_helper(args, pinned=True)
+
+
+def cmd_unpin(args: argparse.Namespace) -> int:
+    """Mark a skill as unpinned."""
+    return _set_pinned_helper(args, pinned=False)
+
+
+def _set_pinned_helper(args: argparse.Namespace, *, pinned: bool) -> int:
+    found = _resolve_skill(args.skill_id, project_path=args.project_path)
+    if found is None:
+        print(f"Skill not found: {args.skill_id}", file=sys.stderr)
+        return 1
+    skill, scope = found
+    project_kw = (
+        args.project_path if scope == "project" else None
+    )
+    updated = set_pinned(
+        skill.id, pinned=pinned,
+        scope=scope, project_path=project_kw,
+    )
+    state = "pinned" if pinned else "unpinned"
+    print(f"{updated.id} ({scope}) is now {state}.")
+    return 0
+
+
+def cmd_archive(args: argparse.Namespace) -> int:
+    """Manually archive a skill. Refused on bundled / user / pinned."""
+    found = _resolve_skill(args.skill_id, project_path=args.project_path)
+    if found is None:
+        print(f"Skill not found: {args.skill_id}", file=sys.stderr)
+        return 1
+    skill, scope = found
+
+    project_kw = args.project_path if scope == "project" else None
+    dest = archive_skill(
+        skill,
+        project_path=project_kw,
+        reason=args.reason or "manually archived via CLI",
+    )
+    if dest is None:
+        # archive_skill prints a warning via logger; surface a clean
+        # CLI message too.
+        print(
+            f"Refused to archive `{skill.id}`: skill must be "
+            f"created_by=agent and not pinned. Got "
+            f"created_by={skill.created_by!r}, pinned={skill.pinned}.",
+            file=sys.stderr,
+        )
+        return 2
+    print(f"Archived `{skill.id}` ({scope}) to {dest}")
+    return 0
+
+
+def cmd_promote(args: argparse.Namespace) -> int:
+    """Elevate a project-scoped skill to global scope."""
+    if not args.project_path:
+        print(
+            "promote requires --project-path (the source project the "
+            "skill currently lives under)",
+            file=sys.stderr,
+        )
+        return 1
+    promoted = promote_skill(
+        args.skill_id,
+        project_path=args.project_path,
+        keep_project_copy=args.keep,
+    )
+    if promoted is None:
+        # Most common failure modes: source missing, bundled (refused),
+        # global collision. promote_skill logs each.
+        print(
+            f"Could not promote `{args.skill_id}`. Possible causes:\n"
+            f"  - skill not found in project scope at {args.project_path}\n"
+            f"  - skill is bundled (already global, can't promote)\n"
+            f"  - global skill with same id already exists\n"
+            f"See logs for details.",
+            file=sys.stderr,
+        )
+        return 2
+    where = "kept in place" if args.keep else "archived"
+    print(
+        f"Promoted `{promoted.id}` to global scope. "
+        f"Project copy: {where}."
+    )
+    return 0
+
+
+def cmd_demote(args: argparse.Namespace) -> int:
+    """Move a global-scope skill to project scope."""
+    if not args.project_path:
+        print(
+            "demote requires --project-path (the target project the "
+            "skill should land under)",
+            file=sys.stderr,
+        )
+        return 1
+    demoted = demote_skill(
+        args.skill_id,
+        target_project_path=args.project_path,
+        keep_global_copy=args.keep,
+    )
+    if demoted is None:
+        print(
+            f"Could not demote `{args.skill_id}`. Possible causes:\n"
+            f"  - skill not found in global scope\n"
+            f"  - skill is bundled (provenance non-negotiable)\n"
+            f"  - project skill with same id already exists\n"
+            f"See logs for details.",
+            file=sys.stderr,
+        )
+        return 2
+    where = "kept in place" if args.keep else "archived"
+    print(
+        f"Demoted `{demoted.id}` to project scope at "
+        f"{args.project_path}. Global copy: {where}."
+    )
+    return 0
+
+
+def cmd_ingest_field_obs(args: argparse.Namespace) -> int:
+    """v0.6.2a5 — Convert field-observation .md docs into user skills."""
+    p = Path(args.path)
+    if not p.exists():
+        print(f"Path not found: {args.path}", file=sys.stderr)
+        return 1
+
+    if p.is_file():
+        try:
+            r = ingest_field_observation_file(
+                p, force=args.force, dry_run=args.dry_run,
+            )
+        except Exception as exc:
+            print(f"Failed to ingest {p}: {exc}", file=sys.stderr)
+            return 1
+        results = [r]
+    else:
+        results = ingest_field_observation_dir(
+            p, force=args.force, dry_run=args.dry_run,
+        )
+
+    written = sum(1 for r in results if r.written)
+    skipped = sum(1 for r in results if not r.written)
+    if not results:
+        print("No matching .md files found.")
+        return 0
+
+    if args.dry_run:
+        print(f"DRY RUN — would ingest {len(results)} file(s):")
+    else:
+        print(f"Ingested {written} file(s) ({skipped} skipped):")
+    for r in results:
+        marker = "+" if r.written else ("·" if r.skipped_reason == "dry-run" else "=")
+        suffix = ""
+        if not r.written and r.skipped_reason and not r.dry_run:
+            suffix = f"  ({r.skipped_reason})"
+        skill_name = (r.skill.name if r.skill else "(parse failed)")[:60]
+        print(f"  {marker} {r.skill_id:50s} {skill_name}{suffix}")
+    return 0
+
+
+def cmd_curate(args: argparse.Namespace) -> int:
+    """Run a curator pass for the project NOW (bypasses rate limit)."""
+    if not args.project_path:
+        print(
+            "curate requires --project-path (or pass it as a positional "
+            "argument)",
+            file=sys.stderr,
+        )
+        return 1
+    report = run_curation(args.project_path, dry_run=args.dry_run)
+    archived = report.archived()
+    retained = report.retained()
+    print(f"Curator pass complete: reviewed {report.skills_reviewed} skill(s).")
+    print(f"  Archived: {len(archived)}")
+    for a in archived:
+        print(f"    - {a.skill_id} — {a.reason}")
+    print(f"  Retained: {len(retained)}")
+    if args.dry_run:
+        print("(dry-run — no changes written to disk)")
+    elif report.state_dir:
+        print(f"Report: {report.state_dir}")
+    return 0
+
+
+# ── Argparse builder ───────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lumi-skill",
+        description=(
+            "Manage the Lumi skill library. Skills are reusable "
+            "patterns extracted from successful autonomous-mission iters. "
+            "See docs/skills.md for the full lifecycle."
+        ),
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # list
+    p_list = subparsers.add_parser("list", help="List skills with optional filters")
+    p_list.add_argument(
+        "--scope", choices=list(SKILL_SCOPES) + ["all"], default="all",
+        help="Restrict to one scope (default: all)",
+    )
+    p_list.add_argument("--project-path", default=None,
+                        help="Required for --scope project")
+    p_list.add_argument(
+        "--created-by", choices=["bundled", "agent", "user"], default=None,
+        help="Filter by provenance",
+    )
+    p_list.add_argument(
+        "--pinned", action="store_true",
+        help="Only show pinned skills",
+    )
+    p_list.add_argument(
+        "--include-deprecated", action="store_true",
+        help="Include skills that match auto-deprecation thresholds",
+    )
+    p_list.add_argument("--json", action="store_true", help="Machine-readable output")
+    # v0.6.2a4 — list archived instead of live skills
+    p_list.add_argument(
+        "--archived", action="store_true",
+        help="List skills in the _archive folder (with archived_at + reason)",
+    )
+
+    # view
+    p_view = subparsers.add_parser("view", help="Show a skill's body")
+    p_view.add_argument("skill_id")
+    p_view.add_argument("--project-path", default=None)
+    p_view.add_argument("--json", action="store_true",
+                        help="Print full skill.json instead of procedure.md body")
+
+    # pin
+    p_pin = subparsers.add_parser("pin", help="Mark a skill pinned (curator-exempt)")
+    p_pin.add_argument("skill_id")
+    p_pin.add_argument("--project-path", default=None)
+
+    # unpin
+    p_unpin = subparsers.add_parser("unpin", help="Mark a skill unpinned")
+    p_unpin.add_argument("skill_id")
+    p_unpin.add_argument("--project-path", default=None)
+
+    # archive
+    p_archive = subparsers.add_parser(
+        "archive",
+        help="Archive a skill (curator-style; bundled/user/pinned refused)",
+    )
+    p_archive.add_argument("skill_id")
+    p_archive.add_argument("--project-path", default=None)
+    p_archive.add_argument("--reason", default="")
+
+    # promote (project → global)
+    p_promote = subparsers.add_parser(
+        "promote",
+        help="Elevate a project-scoped skill to global scope",
+    )
+    p_promote.add_argument("skill_id")
+    p_promote.add_argument(
+        "--project-path", required=True,
+        help="Source project path (where the skill currently lives)",
+    )
+    p_promote.add_argument(
+        "--keep", action="store_true",
+        help="Keep the project copy in place (default: archive it)",
+    )
+
+    # demote (global → project)
+    p_demote = subparsers.add_parser(
+        "demote",
+        help="Move a global skill to project scope",
+    )
+    p_demote.add_argument("skill_id")
+    p_demote.add_argument(
+        "--project-path", required=True,
+        help="Target project path (where the skill should land)",
+    )
+    p_demote.add_argument(
+        "--keep", action="store_true",
+        help="Keep the global copy in place (default: archive it)",
+    )
+
+    # ingest-field-obs (v0.6.2a5)
+    p_ingest = subparsers.add_parser(
+        "ingest-field-obs",
+        help="Convert field-observations docs into user-provenance skills",
+    )
+    p_ingest.add_argument(
+        "path",
+        help="Single .md file OR directory of field-obs files",
+    )
+    p_ingest.add_argument(
+        "--force", action="store_true",
+        help="Overwrite existing skills of the same id (default: skip)",
+    )
+    p_ingest.add_argument(
+        "--dry-run", action="store_true",
+        help="Show what would be ingested without writing",
+    )
+
+    # restore (v0.6.2a4)
+    p_restore = subparsers.add_parser(
+        "restore",
+        help="Restore the most-recent archive of a skill",
+    )
+    p_restore.add_argument("skill_id")
+    p_restore.add_argument("--project-path", default=None,
+                           help="Use when the archive is project-scoped")
+    p_restore.add_argument(
+        "--force", action="store_true",
+        help="Overwrite a live skill of the same id (destructive)",
+    )
+
+    # curate
+    p_curate = subparsers.add_parser("curate", help="Run a curator pass now")
+    p_curate.add_argument(
+        "project_path", nargs="?", default=None,
+        help="Project to curate (or use --project-path)",
+    )
+    p_curate.add_argument("--project-path", dest="project_path_flag", default=None)
+    p_curate.add_argument("--dry-run", action="store_true")
+
+    return parser
+
+
+def _ensure_utf8_stdout() -> None:
+    """Force UTF-8 on stdout/stderr so Unicode in skill descriptions
+    (em-dashes, arrows, etc.) doesn't crash on Windows cp1252 consoles.
+
+    `errors="replace"` is the safety net — if the underlying terminal
+    can't actually display a glyph, it gets `?` instead of a crash.
+    Modern Windows Terminal handles UTF-8 natively; only the legacy
+    `cmd.exe` cp1252 path needed this dance.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None or not hasattr(stream, "reconfigure"):
+            continue
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, OSError):
+            # Pytest captures use io.StringIO which doesn't have
+            # reconfigure; that's fine, those don't have encoding
+            # restrictions anyway.
+            pass
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    _ensure_utf8_stdout()
+    from ..paths import migrate_legacy_home
+    migrate_legacy_home()
+    # v0.6.1a3 — auto-install bundled skills on every CLI invocation.
+    # Idempotent: skips skills that already exist on disk. Cheap
+    # enough to run unconditionally (just a stat per bundled skill).
+    # First run materializes the package's reference skills into
+    # ~/.lumi/skills/global/ so `lumi-skill list` shows
+    # them out of the box without an explicit install step.
+    try:
+        install_bundled_skills()
+    except Exception:
+        # Non-fatal: a broken bundled skill shouldn't block CLI use.
+        logger.warning(
+            "install_bundled_skills failed at CLI startup; continuing",
+            exc_info=True,
+        )
+
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # `curate` accepts project_path as positional OR --flag; reconcile.
+    if args.command == "curate":
+        args.project_path = args.project_path or args.project_path_flag
+
+    try:
+        if args.command == "list":
+            return cmd_list(args)
+        if args.command == "view":
+            return cmd_view(args)
+        if args.command == "pin":
+            return cmd_pin(args)
+        if args.command == "unpin":
+            return cmd_unpin(args)
+        if args.command == "archive":
+            return cmd_archive(args)
+        if args.command == "promote":
+            return cmd_promote(args)
+        if args.command == "demote":
+            return cmd_demote(args)
+        if args.command == "restore":
+            return cmd_restore(args)
+        if args.command == "ingest-field-obs":
+            return cmd_ingest_field_obs(args)
+        if args.command == "curate":
+            return cmd_curate(args)
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        logger.exception("lumi-skill subcommand crashed")
+        return 1
+
+    parser.print_help()
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

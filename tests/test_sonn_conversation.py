@@ -4,9 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from resonant_client.gui.runtime import bind_sonn_conversation
-from resonant_client.sonn import SonnBackend
-from resonant_client.engine.request_purpose import auxiliary_stream
+from lumi.gui.runtime import bind_sonn_conversation
+from lumi.sonn import SonnBackend
+from lumi.engine.request_purpose import auxiliary_stream
 
 
 BASE = "https://sonn.example/v1/workspace/projects/project-fixture/openai/v1"

@@ -4,9 +4,9 @@ from pathlib import Path
 import httpx
 import pytest
 
-from resonant_client.sonn_workers import SonnWorkerBackend, create_worker_session, fingerprint
-from resonant_client.sonn_tasks import SonnTaskError
-from resonant_client.engine.sandbox import SandboxViolation
+from lumi.sonn_workers import SonnWorkerBackend, create_worker_session, fingerprint
+from lumi.sonn_tasks import SonnTaskError
+from lumi.engine.sandbox import SandboxViolation
 
 
 @pytest.fixture
@@ -86,7 +86,7 @@ def test_special_worker_tools_cannot_bypass_early_guard(worker, tmp_path):
 
 def test_verified_inputs_preserve_conflicting_versions_and_reject_tampering(worker, tmp_path):
     import hashlib
-    from resonant_client.sonn_workers import install_worker_inputs, worker_input_path
+    from lumi.sonn_workers import install_worker_inputs, worker_input_path
     backend, _, _ = worker
     session = create_worker_session(backend, tmp_path / 'workspaces')
     a, b = b'first', b'second'
@@ -119,7 +119,7 @@ def test_verified_inputs_preserve_conflicting_versions_and_reject_tampering(work
     ['folder', 'folder/file'], ['Folder', 'folder/file'], ['file?']])
 def test_invalid_dependency_paths_fail_before_install(worker, tmp_path, paths):
     import hashlib
-    from resonant_client.sonn_workers import install_worker_inputs
+    from lumi.sonn_workers import install_worker_inputs
     backend, _, _ = worker
     session = create_worker_session(backend, tmp_path / 'workspaces')
     raw = b'file'

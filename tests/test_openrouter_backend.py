@@ -6,11 +6,11 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from resonant_client.backends import EVENT_DONE, EVENT_ERROR, EVENT_TOOL_CALL, _build_codex_prompt, create_backend
-from resonant_client.gui.app import AppState
-from resonant_client.gui.costs import CostTracker
-from resonant_client.gui.settings import SettingsManager
-from resonant_client.openrouter import OpenRouterBackend
+from lumi.backends import EVENT_DONE, EVENT_ERROR, EVENT_TOOL_CALL, _build_codex_prompt, create_backend
+from lumi.gui.app import AppState
+from lumi.gui.costs import CostTracker
+from lumi.gui.settings import SettingsManager
+from lumi.openrouter import OpenRouterBackend
 
 
 def sse(*events):
@@ -141,7 +141,7 @@ def test_codex_handoff_keeps_project_notes_and_compaction_summary():
 
 
 def test_engine_builds_a_file_and_continues_with_tool_result(tmp_path):
-    from resonant_client.engine.session import Session
+    from lumi.engine.session import Session
     target = tmp_path / 'hello.py'
     requests = []
     def handler(request):

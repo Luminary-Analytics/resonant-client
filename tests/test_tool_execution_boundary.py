@@ -9,9 +9,9 @@ from unittest.mock import patch
 
 import pytest
 
-from resonant_client.engine.sandbox import PathSandbox, SandboxViolation
-from resonant_client.engine.session import Session, ToolBoundaryViolation
-from resonant_client.engine.tools import (
+from lumi.engine.sandbox import PathSandbox, SandboxViolation
+from lumi.engine.session import Session, ToolBoundaryViolation
+from lumi.engine.tools import (
     ToolResult,
     _build_grep_command,
     _exec_batch,
@@ -113,7 +113,7 @@ def test_batch_forwards_project_context_to_safe_children(tmp_path):
     calls = [{"name": "file_read", "arguments": {"path": str(tmp_path / "x")}}]
 
     with patch(
-        "resonant_client.engine.tools.execute_tool",
+        "lumi.engine.tools.execute_tool",
         return_value=ToolResult("ok"),
     ) as execute:
         result = _exec_batch(
@@ -131,7 +131,7 @@ def test_batch_forwards_project_context_to_safe_children(tmp_path):
 def test_grep_uses_argv_without_a_shell(tmp_path):
     hostile = 'needle" & echo injected & "'
     with patch(
-        "resonant_client.engine.tools._run_subprocess_with_cancel",
+        "lumi.engine.tools._run_subprocess_with_cancel",
         return_value=(0, b"", b"", False),
     ) as run:
         _exec_grep(
@@ -151,7 +151,7 @@ def test_grep_uses_argv_without_a_shell(tmp_path):
 
 
 def _with_ripgrep(path):
-    return patch("resonant_client.engine.tools._ripgrep_executable", return_value=path)
+    return patch("lumi.engine.tools._ripgrep_executable", return_value=path)
 
 
 def test_grep_prefers_ripgrep_when_available():
@@ -183,17 +183,19 @@ def test_grep_pattern_starting_with_dash_is_not_read_as_a_flag():
 
 
 def test_grep_falls_back_to_findstr_on_windows_without_ripgrep():
-    with _with_ripgrep(None), patch("resonant_client.engine.tools.sys.platform", "win32"):
+    with _with_ripgrep(None), patch("lumi.engine.tools.sys.platform", "win32"):
         command = _build_grep_command("needle", "src", "")
 
     assert command[0] == "findstr"
 
 
 def test_grep_falls_back_to_posix_grep_without_ripgrep():
-    with _with_ripgrep(None), patch("resonant_client.engine.tools.sys.platform", "linux"):
+    with _with_ripgrep(None), patch("lumi.engine.tools.sys.platform", "linux"):
         command = _build_grep_command("needle", "src", "*.py")
 
     assert command[0] == "grep"
+    # Extended syntax: `a|b`, `x+` and groups mean what they do in ripgrep.
+    assert command[1] == "-rnE"
     assert "--include=*.py" in command
     assert command[-2:] == ["needle", "src"]
 
@@ -201,7 +203,7 @@ def test_grep_falls_back_to_posix_grep_without_ripgrep():
 def test_bundled_ripgrep_wins_over_whatever_is_on_path(tmp_path):
     """A packaged install ships a pinned, verified rg; it must be preferred so
     every user gets the same search behaviour."""
-    from resonant_client.engine.tools import _ripgrep_executable
+    from lumi.engine.tools import _ripgrep_executable
 
     bundle = tmp_path / "_internal"
     bundle.mkdir()
@@ -211,8 +213,8 @@ def test_bundled_ripgrep_wins_over_whatever_is_on_path(tmp_path):
 
     _ripgrep_executable.cache_clear()
     try:
-        with patch("resonant_client.engine.tools.sys._MEIPASS", str(bundle), create=True), \
-             patch("resonant_client.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+        with patch("lumi.engine.tools.sys._MEIPASS", str(bundle), create=True), \
+             patch("lumi.engine.tools.shutil.which", return_value="/usr/bin/rg"):
             assert _ripgrep_executable() == str(bundled)
     finally:
         _ripgrep_executable.cache_clear()
@@ -221,7 +223,7 @@ def test_bundled_ripgrep_wins_over_whatever_is_on_path(tmp_path):
 def test_a_source_checkout_prefers_a_fetched_binary(tmp_path):
     """A developer who ran the fetch script gets the same rg the bundle ships,
     so `grep` behaves identically here and in a packaged install."""
-    from resonant_client.engine.tools import _ripgrep_executable
+    from lumi.engine.tools import _ripgrep_executable
 
     vendored = tmp_path / "vendored"
     vendored.mkdir()
@@ -230,8 +232,8 @@ def test_a_source_checkout_prefers_a_fetched_binary(tmp_path):
 
     _ripgrep_executable.cache_clear()
     try:
-        with patch("resonant_client.engine.tools._VENDORED_RIPGREP_DIR", vendored), \
-             patch("resonant_client.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+        with patch("lumi.engine.tools._VENDORED_RIPGREP_DIR", vendored), \
+             patch("lumi.engine.tools.shutil.which", return_value="/usr/bin/rg"):
             assert _ripgrep_executable() == str(vendored / name)
     finally:
         _ripgrep_executable.cache_clear()
@@ -244,12 +246,12 @@ def test_a_source_checkout_without_a_fetched_binary_uses_path(tmp_path):
     real repo, so this asserts the same thing whether or not the developer
     running it has fetched ripgrep.
     """
-    from resonant_client.engine.tools import _ripgrep_executable
+    from lumi.engine.tools import _ripgrep_executable
 
     _ripgrep_executable.cache_clear()
     try:
-        with patch("resonant_client.engine.tools._VENDORED_RIPGREP_DIR", tmp_path / "absent"), \
-             patch("resonant_client.engine.tools.shutil.which", return_value="/usr/bin/rg"):
+        with patch("lumi.engine.tools._VENDORED_RIPGREP_DIR", tmp_path / "absent"), \
+             patch("lumi.engine.tools.shutil.which", return_value="/usr/bin/rg"):
             assert _ripgrep_executable() == "/usr/bin/rg"
     finally:
         _ripgrep_executable.cache_clear()
@@ -258,16 +260,16 @@ def test_a_source_checkout_without_a_fetched_binary_uses_path(tmp_path):
 def test_a_bundle_without_ripgrep_still_falls_back(tmp_path):
     """Belt and braces: the bundle policy gate should prevent this, but a
     missing binary must degrade rather than crash the tool."""
-    from resonant_client.engine.tools import _ripgrep_executable
+    from lumi.engine.tools import _ripgrep_executable
 
     empty = tmp_path / "_internal"
     empty.mkdir()
 
     _ripgrep_executable.cache_clear()
     try:
-        with patch("resonant_client.engine.tools.sys._MEIPASS", str(empty), create=True), \
-             patch("resonant_client.engine.tools._VENDORED_RIPGREP_DIR", tmp_path / "absent"), \
-             patch("resonant_client.engine.tools.shutil.which", return_value=None):
+        with patch("lumi.engine.tools.sys._MEIPASS", str(empty), create=True), \
+             patch("lumi.engine.tools._VENDORED_RIPGREP_DIR", tmp_path / "absent"), \
+             patch("lumi.engine.tools.shutil.which", return_value=None):
             assert _ripgrep_executable() is None
     finally:
         _ripgrep_executable.cache_clear()

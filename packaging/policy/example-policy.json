@@ -1,0 +1,37 @@
+{
+  "schema": "lumi.policy/v1",
+  "organization": "Example Corp",
+  "issued_at": "2026-09-25T00:00:00Z",
+  "settings": {
+    "general.default_permission_mode": "ask",
+    "privacy.secret_scan": true,
+    "privacy.transcript_retention_days": 30,
+    "security.cli_adapters": false,
+    "security.computer_use": false,
+    "security.chat_gateway": false,
+    "network.system_certificates": true
+  },
+  "permissions": {
+    "allowed_modes": ["ask", "auto-edit", "plan"]
+  },
+  "models": {
+    "allowed": ["anthropic:*", "openai:*", "conn-*:*"],
+    "blocked": ["openrouter:*"]
+  },
+  "files": {
+    "exclude": [".env", ".env.*", "*.pem", "*.key", "secrets/**"]
+  },
+  "shell": {
+    "rules": [
+      {"tool_pattern": "bash", "action": "deny", "arg_patterns": {"command": "\\b(curl|wget)\\b"},
+       "reason": "Network downloads from the agent's shell are not allowed by policy"}
+    ]
+  },
+  "mcp": {
+    "allowed_servers": ["github", "docs-*"],
+    "allow_stdio": false
+  },
+  "extensions": {
+    "allowed_packs": ["example-*"]
+  }
+}

@@ -19,7 +19,7 @@ import asyncio
 
 import pytest
 
-from resonant_client.gui.ws_commands import CommandContext
+from lumi.gui.ws_commands import CommandContext
 
 
 class _ClosedSocket:

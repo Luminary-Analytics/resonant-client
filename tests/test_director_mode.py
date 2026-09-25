@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.engine.director import (
+from lumi.engine.director import (
     DirectorBenchmarkStore,
     DirectorConfig,
     DirectorDecision,
@@ -14,9 +14,9 @@ from resonant_client.engine.director import (
     WorkerPerformanceStore,
     WorkerScheduler,
 )
-from resonant_client.engine.model_roles import ModelRoleRouter
-from resonant_client.engine.session import Session
-from resonant_client.gui.sessions import SessionRecord
+from lumi.engine.model_roles import ModelRoleRouter
+from lumi.engine.session import Session
+from lumi.gui.sessions import SessionRecord
 
 
 class _Backend:
@@ -313,9 +313,9 @@ def test_session_record_round_trips_director_configuration():
 
 def test_director_gui_contract_is_retired():
     root = Path(__file__).parents[1]
-    template = (root / "resonant_client/gui/templates/index.html").read_text(encoding="utf-8")
-    script = (root / "resonant_client/gui/static/app.js").read_text(encoding="utf-8")
-    styles = (root / "resonant_client/gui/static/styles.css").read_text(encoding="utf-8")
+    template = (root / "lumi/gui/templates/index.html").read_text(encoding="utf-8")
+    script = (root / "lumi/gui/static/app.js").read_text(encoding="utf-8")
+    styles = (root / "lumi/gui/static/styles.css").read_text(encoding="utf-8")
 
     assert 'id="director-mode-btn"' not in template
     assert 'data-pane="agents"' not in template

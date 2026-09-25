@@ -8,13 +8,14 @@ take an explicit context, so each one can be driven directly.
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from resonant_client.gui import ws_commands
-from resonant_client.gui.app import websocket_endpoint  # noqa: F401  (import smoke)
+from lumi.gui import ws_commands
+from lumi.gui.app import websocket_endpoint  # noqa: F401  (import smoke)
 
 
 class _StubWS:
@@ -229,12 +230,111 @@ def test_settings_are_sent_masked():
     assert sent[0] == {"event": "settings", "data": {"api_key": "sk-***"}}
 
 
-def test_set_permission_mode_defaults_and_sends_nothing():
+def test_set_permission_mode_requires_an_explicit_known_mode():
+    """The backends treat an unknown mode as Full-auto, so none may default in."""
     applied = []
     state = SimpleNamespace(apply_permission_mode=applied.append)
+    handler = ws_commands.HANDLERS["set_permission_mode"]
 
-    assert _run(ws_commands.HANDLERS["set_permission_mode"], _ctx(state=state)) == []
-    assert applied == ["bypass"]
+    for msg in ({}, {"mode": None}, {"mode": ""}, {"mode": "full-auto"}, {"mode": ["bypass"]}):
+        sent = _run(handler, _ctx(state=state, msg=msg))
+        assert sent[0]["event"] == "error", msg
+    assert applied == []
+
+    assert _run(handler, _ctx(state=state, msg={"mode": "ask"})) == []
+    assert applied == ["ask"]
+
+
+def _settings_ctx(msg):
+    writes = []
+    stored: dict = {}
+
+    def update_setting_value(section, key, value, *, clear_secret=False):
+        writes.append((section, key, value))
+        stored[(section, key)] = value
+        return {"saved": True}
+
+    state = SimpleNamespace(
+        # The handler compares values before and after to audit what changed.
+        settings=SimpleNamespace(get=lambda section, key=None, default=None: stored.get((section, key), default)),
+        update_setting_value=update_setting_value,
+        get_init_data=lambda refresh_only=False: {"event": "init"},
+    )
+    return _ctx(state=state, msg=msg, runs=SimpleNamespace(busy=False)), writes
+
+
+@pytest.mark.parametrize("msg", [
+    # Hooks, LSP servers, plugins and the gateway run commands or grant remote
+    # control; Settings shows them read-only.
+    {"section": "hooks", "value": [{"event": "session_start", "command": "calc.exe"}]},
+    {"section": "hooks", "key": "0", "value": {"command": "calc.exe"}},
+    {"section": "lsp_servers", "key": "py", "value": {"command": "calc.exe"}},
+    {"section": "plugins", "key": "x", "value": {"path": "C:/evil"}},
+    {"section": "gateway", "key": "allowed_chat_ids", "value": [1]},
+    {"section": "api_keys", "key": "telegram_bot", "value": "123:abc"},
+    {"section": "general", "key": "unknown", "value": True},
+    {"section": "general", "value": {"theme": "light"}},  # whole-section replace
+    {"section": ["general"], "key": "theme", "value": "light"},
+    {"section": "general", "key": "default_permission_mode", "value": "yolo"},
+    {"section": "general", "key": "default_permission_mode", "value": ["bypass"]},
+    {"section": "mcp_servers", "key": "x", "value": {"command": "calc.exe", "args": []}},
+    {"section": "mcp_servers", "key": "x", "value": {"transport": "stdio", "command": "calc.exe"}},
+    {"section": "mcp_servers", "key": "x", "value": {"transport": "http", "url": "file:///C:/x"}},
+    {"section": "mcp_servers", "key": "", "value": {"transport": "http", "url": "http://127.0.0.1:3000/mcp"}},
+    {"section": "network", "values": {"ollama_url": "http://x", "hooks": []}},
+    {"section": "network", "values": {}},
+])
+def test_update_settings_refuses_what_settings_does_not_edit(msg):
+    ctx, writes = _settings_ctx({"command": "update_settings", **msg})
+
+    sent = _run(ws_commands.HANDLERS["update_settings"], ctx)
+
+    assert writes == []
+    assert [event["event"] for event in sent] == ["error"]
+
+
+def test_update_settings_applies_ui_fields():
+    ctx, writes = _settings_ctx({"section": "appearance", "key": "theme", "value": "light"})
+
+    sent = _run(ws_commands.HANDLERS["update_settings"], ctx)
+
+    assert writes == [("appearance", "theme", "light")]
+    assert [event["event"] for event in sent] == ["settings", "init"]
+
+
+def test_update_settings_stores_http_mcp_servers_without_process_fields():
+    ctx, writes = _settings_ctx({"section": "mcp_servers", "key": "docs", "value": {
+        "transport": "http", "url": " http://127.0.0.1:3000/mcp ", "enabled": True,
+        "command": "calc.exe", "args": ["/c"], "env": {"X": "1"}, "headers": {"Authorization": "Bearer t"},
+    }})
+
+    _run(ws_commands.HANDLERS["update_settings"], ctx)
+
+    assert writes == [("mcp_servers", "docs", {
+        "transport": "http", "url": "http://127.0.0.1:3000/mcp", "enabled": True,
+        "headers": {"Authorization": "Bearer t"},
+    })]
+
+
+def test_ollama_wizard_url_is_saved():
+    # The setup wizard sends `values`, which the handler used to ignore.
+    ctx, writes = _settings_ctx({"section": "network", "values": {"ollama_url": "http://10.0.0.131:11434"}})
+
+    _run(ws_commands.HANDLERS["update_settings"], ctx)
+
+    assert writes == [("network", "ollama_url", "http://10.0.0.131:11434")]
+
+
+def test_approval_requires_an_explicit_true():
+    # The answer must also name the waiting prompt (see test_permission_decisions);
+    # this checks the value rule for an answer that does.
+    for msg, expected in (({}, False), ({"approved": "yes"}, False), ({"approved": 1}, False),
+                          ({"approved": False}, False), ({"approved": True}, True)):
+        state = SimpleNamespace(permission_result=[None], permission_response=threading.Event(),
+                                permission_request_id="req-1", _permission_lock=threading.Lock())
+        _run(ws_commands.HANDLERS["approve"], _ctx(state=state, msg={**msg, "request_id": "req-1"}))
+        assert state.permission_result[0] is expected, msg
+        assert state.permission_response.is_set()
 
 
 def test_git_status_runs_against_the_active_project():
@@ -246,7 +346,7 @@ def test_git_status_runs_against_the_active_project():
         seen["path"] = project_path
         return {"is_repo": True, "branch": "main"}
 
-    with patch("resonant_client.gui.ws_commands._git_status", _fake_status):
+    with patch("lumi.gui.ws_commands._git_status", _fake_status):
         sent = _run(ws_commands.HANDLERS["git_status"], _ctx())
 
     assert seen["path"] == "/tmp/project"
@@ -260,7 +360,7 @@ def test_git_quick_passes_the_action_and_project():
         seen.update(action=action, project_path=project_path, count=msg.get("count"))
         return {"output": "abc123 commit"}
 
-    with patch("resonant_client.gui.ws_commands._git_quick", _fake_quick):
+    with patch("lumi.gui.ws_commands._git_quick", _fake_quick):
         sent = _run(
             ws_commands.HANDLERS["git_quick"],
             _ctx(msg={"action": "log", "count": 3}),

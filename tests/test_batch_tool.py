@@ -12,8 +12,8 @@ import time
 
 from unittest.mock import patch
 
-from resonant_client.engine import tools as tools_mod
-from resonant_client.engine.tools import (
+from lumi.engine import tools as tools_mod
+from lumi.engine.tools import (
     BATCH_MAX_CALLS,
     ToolResult,
     _exec_batch,

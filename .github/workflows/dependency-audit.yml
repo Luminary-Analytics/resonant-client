@@ -1,0 +1,56 @@
+name: Dependency audit
+
+# Checks every pinned release and CI-tool dependency against the PyPI/OSV
+# vulnerability database with pip-audit.
+#
+# Runs when the locks change, and weekly: advisories arrive for versions that
+# were clean when they were pinned. packaging/audit_locks.py removes the locks'
+# platform markers first, because pip-audit otherwise skips every package that
+# doesn't apply to the runner's own OS (the Windows installer's pythonnet on
+# this Linux runner, for example).
+#
+# A failure means a pinned version has a published vulnerability: raise the
+# pin with `python scripts/lock_release.py` (after bumping the range in
+# pyproject.toml if needed), then rebuild and retest.
+
+on:
+  pull_request:
+    paths:
+      - 'pyproject.toml'
+      - 'packaging/*requirements*'
+      - 'packaging/audit_locks.py'
+      - '.github/workflows/dependency-audit.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'pyproject.toml'
+      - 'packaging/*requirements*'
+      - 'packaging/audit_locks.py'
+      - '.github/workflows/dependency-audit.yml'
+  schedule:
+    - cron: '23 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pip-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install the pinned audit tools
+        run: python -m pip install --require-hashes -r packaging/tools-requirements.txt
+
+      - name: Audit every pin
+        run: python packaging/audit_locks.py

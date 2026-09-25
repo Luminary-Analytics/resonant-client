@@ -16,14 +16,14 @@ from unittest.mock import patch, MagicMock
 # Add project root to path
 sys.path.insert(0, "D:/Repos/resonant-client")
 
-from resonant_client.protocol import (
+from lumi.protocol import (
     build_tool_system_prompt,
     parse_tool_calls,
     strip_think_tags,
     _try_parse_tool_json,
     _tool_prompt_cache,
 )
-from resonant_client.backends import (
+from lumi.backends import (
     OllamaBackend,
     _detect_json_tool_calls,
     _detect_text_tool_calls,

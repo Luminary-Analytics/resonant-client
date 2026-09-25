@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Example macOS configuration profile for Lumi. make_mobileconfig.py (beside
+  this file) makes one from your lumi.policy/v1 document and checks it; see
+  docs/deploy-macos.md. Deploy it with Jamf, Intune or another MDM at system
+  scope. Lumi reads the Policy key (and PolicyKeys, the trusted signing keys)
+  from the com.luminaryanalytics.lumi managed preferences.
+-->
+<plist version="1.0">
+<dict>
+  <key>PayloadContent</key>
+  <array>
+    <dict>
+      <key>PayloadType</key>
+      <string>com.luminaryanalytics.lumi</string>
+      <key>PayloadIdentifier</key>
+      <string>com.luminaryanalytics.lumi.policy</string>
+      <key>PayloadUUID</key>
+      <string>3F2E1D0C-6B7A-4C5D-8E9F-102132435465</string>
+      <key>PayloadVersion</key>
+      <integer>1</integer>
+      <key>PayloadDisplayName</key>
+      <string>Lumi organization policy</string>
+      <key>Policy</key>
+      <string>{"schema": "lumi.policy/v1", "organization": "Example Corp", "settings": {"privacy.secret_scan": true}}</string>
+    </dict>
+  </array>
+  <key>PayloadDisplayName</key>
+  <string>Lumi</string>
+  <key>PayloadIdentifier</key>
+  <string>com.luminaryanalytics.lumi.profile</string>
+  <key>PayloadScope</key>
+  <string>System</string>
+  <key>PayloadType</key>
+  <string>Configuration</string>
+  <key>PayloadUUID</key>
+  <string>9A8B7C6D-5E4F-4A3B-9C2D-1E0F2A3B4C5D</string>
+  <key>PayloadVersion</key>
+  <integer>1</integer>
+</dict>
+</plist>

@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   pytest:
-    # windows-latest matches the platform Resonant actually ships on, and the
+    # windows-latest matches the platform Lumi actually ships on, and the
     # platform-sensitive parts of the harness (subprocess-tree cancellation,
     # path validation, the grep/glob tools) behave differently elsewhere.
     runs-on: windows-latest
@@ -55,7 +55,7 @@ jobs:
           pip install -e ".[all,dev]"
 
       - name: Lint
-        # `resonant_client/**` is held to ruff's full default rule set. Test and
+        # `lumi/**` is held to ruff's full default rule set. Test and
         # support code carries narrow per-file exemptions declared in
         # pyproject.toml rather than being excluded outright.
         run: python -m ruff check .
@@ -70,5 +70,5 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Test draft recovery
-        run: node --test tests/ui_recovery.test.cjs
+      - name: Test draft recovery and appearance
+        run: node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs

@@ -114,6 +114,50 @@ repository allow rules change):
 Not exercised: a packaged build, a live model, Codex or Claude Code (they run
 their own tool loops), macOS and Linux.
 
+## September 25 worker handoffs in the conversation — source only, not released
+
+- **A worker's handoff shows under its block** (`lumi/gui/static/app.js`,
+  `handleSubagentEnd`). The line that ends a worker's block in the task's
+  activity now says whether it changed files, for example "✓ build · 2 steps ·
+  12.2s · 1 file changed" or "no files changed". Opening it shows the
+  handoff's changed files, checks, blockers, other evidence and next step. A
+  file opens with a click or **Enter**. A failed or blocked worker's handoff
+  opens by itself. The Agents pane that used to show handoffs left the page in
+  v0.14.0, so the app had no place that showed them.
+- A failed worker's result line uses the error color instead of the success
+  color.
+- "Opening *file*…" showed "â€¦" instead of an ellipsis.
+- The runtime guide and [known issues](known-issues.md) now name the views
+  that lost their entry point with the Agents pane: worker transcripts and
+  controls, the checkpoint Timeline, traces and the artifact list.
+
+Validation on September 25, 2026:
+
+- Full `pytest` 4,149 passed, 5 skipped, before the last merge of `main`;
+  `ruff check` clean; the UI node tests (`ui_recovery`, `appearance`,
+  `autonomous_view`) 47 passed after it.
+- A new node test covers:
+  - the result line: counts, "no files changed", and no claim about files
+    without a handoff;
+  - which parts show, with the engine's step and time evidence left out;
+  - opening on failure or blockers;
+  - escaping of paths and blockers;
+  - the 12-file limit.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model that delegates an edit of `notes.txt` to a build
+  worker, in Ask mode, allowing the task:
+  - **Reject** showed "✓ build · 2 steps · 10.5s · no files changed" and
+    the next step. **Accept** showed "1 file changed" and **Changed files:
+    notes.txt**.
+  - **Enter** on the result line opened it. **Enter** on the file sent
+    `open_workspace_path` for `notes.txt`; the page intercepted it, so nothing
+    opened.
+  - After a reload, both handoffs showed the same. At 400 pixels wide the
+    handoff fit without horizontal scrolling.
+  - The real `~/.resonant/settings.json` was unchanged, no `~/.lumi` was
+    created, no Lumi credential was stored, and the fixture's `CODEX_HOME`
+    stayed empty.
+
 ## September 25 gate hooks fail closed — source only, not released
 
 **A guard hook that hung or couldn't start let the tool run.** A gate hook

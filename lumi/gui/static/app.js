@@ -7280,7 +7280,7 @@ class LumiApp {
         const value = String(path || '').trim();
         if (!value) return;
         this.send({ command: 'open_workspace_path', path: value });
-        this.showStatusMessage(`Opening ${this.shortenPath(value)}â€¦`);
+        this.showStatusMessage(`Opening ${this.shortenPath(value)}…`);
     }
 
     _selectAlternateModelValue() {
@@ -7907,9 +7907,21 @@ class LumiApp {
         if (workerContainer) {
             const block = workerContainer.closest('.subagent-block');
             if (block) {
-                const result = document.createElement('div');
-                result.className = `subagent-result${workerFailed ? ' is-error' : ''}`;
-                result.textContent = `${workerFailed ? '✗' : '✓'} ${agentType} · ${steps} steps · ${elapsed.toFixed(1)}s`;
+                const view = this._subagentHandoffView(event, workerFailed);
+                let result;
+                if (view.sections.length || view.next) {
+                    result = document.createElement('details');
+                    result.className = 'subagent-handoff';
+                    result.open = view.open;
+                    result.innerHTML = this._subagentHandoffHtml(view);
+                    result.querySelectorAll('[data-file-path]').forEach((button) => {
+                        button.addEventListener('click', () => this._openWorkspacePath(button.dataset.filePath || ''));
+                    });
+                } else {
+                    result = document.createElement('div');
+                    result.className = `subagent-result${workerFailed ? ' is-error' : ''}`;
+                    result.textContent = view.line;
+                }
                 block.appendChild(result);
 
                 // If subagent had content, auto-expand it
@@ -7933,6 +7945,63 @@ class LumiApp {
                 ? `${agentType || 'Sub-agent'} stopped before completing its handoff`
                 : `Reviewing the ${agentType || 'sub-agent'} handoff`,
         );
+    }
+
+    /**
+     * What a finished worker reports, shown under its block: the result line,
+     * then its handoff's changed files, checks, blockers and next step. The
+     * worker's summary is already in the block as its own reply. (The Agents
+     * panel that used to show the handoff left the page in v0.14.0.)
+     */
+    _subagentHandoffView(event = {}, failed = false) {
+        const handoff = event.handoff && typeof event.handoff === 'object' ? event.handoff : null;
+        const list = (value) => (Array.isArray(value) ? value : [])
+            .map((item) => String(item ?? '').trim())
+            .filter(Boolean);
+        const steps = Number(event.steps || 0);
+        const changed = list(handoff?.changed_files);
+        const blockers = list(handoff?.blockers);
+        const parts = [
+            event.agent_type || 'worker',
+            `${steps} step${steps === 1 ? '' : 's'}`,
+            `${Number(event.elapsed || 0).toFixed(1)}s`,
+        ];
+        // Without a handoff, nothing says whether files changed.
+        if (handoff) {
+            parts.push(changed.length
+                ? `${changed.length} file${changed.length === 1 ? '' : 's'} changed`
+                : 'no files changed');
+        }
+        const sections = [
+            { label: 'Changed files', items: changed, files: true },
+            { label: 'Checks', items: list(handoff?.validation) },
+            { label: 'Blockers', items: blockers },
+            // The engine's step count and time are already on the result line.
+            { label: 'Evidence', items: list(handoff?.evidence).filter((item) => !/^(?:\d+ worker steps|[\d.]+s elapsed)$/.test(item)) },
+            { label: 'Artifacts', items: list(handoff?.artifacts) },
+        ].filter((section) => section.items.length);
+        return {
+            line: `${failed ? '✗' : '✓'} ${parts.join(' · ')}`,
+            failed,
+            sections,
+            next: String(handoff?.recommended_next_action || '').trim(),
+            open: failed || blockers.length > 0,
+        };
+    }
+
+    _subagentHandoffHtml(view) {
+        const esc = (value) => this.escapeHtml(value);
+        const shown = 12;
+        const rows = view.sections.map((section) => {
+            const items = section.items.slice(0, shown).map((item) => (section.files
+                ? `<li><button type="button" class="subagent-handoff-file" data-file-path="${esc(item)}" title="Open ${esc(item)}">${esc(this.shortenPath(item))}</button></li>`
+                : `<li>${esc(item)}</li>`));
+            if (section.items.length > shown) items.push(`<li class="subagent-handoff-more">${section.items.length - shown} more</li>`);
+            return `<dt>${esc(section.label)}</dt><dd><ul>${items.join('')}</ul></dd>`;
+        }).join('');
+        const next = view.next ? `<dt>Next</dt><dd>${esc(view.next)}</dd>` : '';
+        return `<summary class="subagent-result${view.failed ? ' is-error' : ''}">${esc(view.line)}</summary>`
+            + `<dl class="subagent-handoff-fields">${rows}${next}</dl>`;
     }
 
     handleSubagentError(event) {

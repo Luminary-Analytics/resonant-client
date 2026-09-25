@@ -9113,6 +9113,7 @@ class LumiApp {
             this.stepRendered = false;
             this.collapsedGroup = [];
             this._liveCollapsedGroup = null;
+            this._currentTurn = this._freshTurnAggregate();
         }
     }
 

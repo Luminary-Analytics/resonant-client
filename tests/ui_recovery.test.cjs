@@ -886,3 +886,318 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
     }
     assert.equal(collapsed.length, 2);
 });
+
+// ── A refused call says why ───────────────────────────────────────────
+// Its row shows the reason the model was told: a hook's message, a policy
+// rule, an approval nobody could answer. The person's own Deny needs none.
+
+// Enough DOM for tool rows. innerHTML is parsed into elements and every
+// write is kept, so a test can check untrusted text never became markup.
+// querySelector reads only the compound selectors the rows use (tag,
+// .class, [attr], [attr="value"], :not([attr])) and throws on anything
+// else, so a selector built from an unescaped name fails.
+function fakeDom() {
+    const htmlWrites = [];
+    const entities = {amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'"};
+    const decode = text => text.replace(/&(amp|lt|gt|quot|#39);/g, (_, name) => entities[name]);
+    const unescapeCss = text => text.replace(/\\([0-9a-f]{1,6} ?|[^0-9a-f])/gi,
+        (_, code) => (/^[0-9a-f]/i.test(code) ? String.fromCodePoint(parseInt(code, 16)) : code));
+    const compile = selector => {
+        const checks = [];
+        let rest = selector;
+        const take = pattern => {
+            const match = pattern.exec(rest);
+            if (match) rest = rest.slice(match[0].length);
+            return match;
+        };
+        let match = take(/^[a-z]+/i);
+        if (match) {
+            const tag = match[0].toUpperCase();
+            checks.push(el => el.tagName === tag);
+        }
+        while (rest) {
+            if ((match = take(/^\.([\w-]+)/))) {
+                const name = match[1];
+                checks.push(el => el.classList.contains(name));
+            } else if ((match = take(/^\[([\w-]+)(?:="((?:\\.|[^"\\])*)")?\]/))) {
+                const [, attr, raw] = match;
+                checks.push(el => el.hasAttribute(attr) && (raw === undefined || el.getAttribute(attr) === unescapeCss(raw)));
+            } else if ((match = take(/^:not\(\[([\w-]+)\]\)/))) {
+                const attr = match[1];
+                checks.push(el => !el.hasAttribute(attr));
+            } else {
+                throw new Error(`fake DOM cannot read the selector ${JSON.stringify(selector)}`);
+            }
+        }
+        return el => checks.every(check => check(el));
+    };
+    const detach = node => {
+        if (node.parentNode) node.parentNode.childNodes.splice(node.parentNode.childNodes.indexOf(node), 1);
+        node.parentNode = null;
+    };
+    class Text {
+        constructor(text) { this.nodeType = 3; this.textContent = text; this.parentNode = null; }
+    }
+    class Element {
+        constructor(tag) {
+            this.tagName = tag.toUpperCase();
+            this.nodeType = 1;
+            this.childNodes = [];
+            this.parentNode = null;
+            this.attributes = new Map();
+            this.style = {};
+            this.listeners = {};
+            const attr = key => `data-${key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}`;
+            this.dataset = new Proxy({}, {
+                get: (_, key) => (typeof key === 'string' && this.hasAttribute(attr(key)) ? this.getAttribute(attr(key)) : undefined),
+                set: (_, key, value) => { this.setAttribute(attr(key), value); return true; },
+            });
+            const classes = () => this.className.split(/\s+/).filter(Boolean);
+            this.classList = {
+                contains: name => classes().includes(name),
+                add: (...names) => { this.className = [...new Set([...classes(), ...names])].join(' '); },
+                remove: (...names) => { this.className = classes().filter(name => !names.includes(name)).join(' '); },
+                toggle: name => {
+                    const on = !classes().includes(name);
+                    if (on) this.classList.add(name); else this.classList.remove(name);
+                    return on;
+                },
+            };
+        }
+        get className() { return this.getAttribute('class') || ''; }
+        set className(value) { this.setAttribute('class', value); }
+        get children() { return this.childNodes.filter(node => node.nodeType === 1); }
+        get nextElementSibling() {
+            const siblings = this.parentNode ? this.parentNode.children : [];
+            return siblings[siblings.indexOf(this) + 1] || null;
+        }
+        get textContent() { return this.childNodes.map(node => node.textContent).join(''); }
+        set textContent(value) {
+            this.childNodes.slice().forEach(detach);
+            if (String(value)) this.appendChild(new Text(String(value)));
+        }
+        set innerHTML(html) {
+            html = String(html);
+            htmlWrites.push(html);
+            this.childNodes.slice().forEach(detach);
+            const open = [this];
+            let at = 0;
+            for (const token of html.matchAll(/<\/([a-z]+)\s*>|<([a-z]+)((?:\s+[\w-]+(?:="[^"]*")?)*)\s*>|[^<]+/gi)) {
+                if (token.index !== at) break;
+                at += token[0].length;
+                const parent = open[open.length - 1];
+                if (token[1]) {
+                    if (parent.tagName !== token[1].toUpperCase()) break;
+                    open.pop();
+                } else if (token[2]) {
+                    const el = parent.appendChild(new Element(token[2]));
+                    for (const [, name, value = ''] of token[3].matchAll(/([\w-]+)(?:="([^"]*)")?/g)) {
+                        el.setAttribute(name, decode(value));
+                    }
+                    open.push(el);
+                } else if (token[0].trim()) {
+                    parent.appendChild(new Text(decode(token[0])));
+                }
+            }
+            if (at !== html.length || open.length !== 1) throw new Error(`fake DOM cannot parse ${JSON.stringify(html)}`);
+        }
+        setAttribute(name, value) { this.attributes.set(name, String(value)); }
+        getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+        hasAttribute(name) { return this.attributes.has(name); }
+        addEventListener(type, handler) { this.listeners[type] = handler; }
+        appendChild(node) { return this.insertBefore(node, null); }
+        insertBefore(node, reference) {
+            detach(node);
+            const index = reference ? this.childNodes.indexOf(reference) : this.childNodes.length;
+            assert.ok(index >= 0, 'insertBefore needs a child of this element');
+            this.childNodes.splice(index, 0, node);
+            node.parentNode = this;
+            return node;
+        }
+        remove() { detach(this); }
+        matches(selector) { return compile(selector)(this); }
+        querySelectorAll(selector) {
+            const matches = compile(selector);
+            const found = [];
+            const visit = el => el.children.forEach(child => {
+                if (matches(child)) found.push(child);
+                visit(child);
+            });
+            visit(this);
+            return found;
+        }
+        querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    }
+    return {
+        htmlWrites,
+        document: {createElement: tag => new Element(tag), getElementById: () => null, querySelector: () => null},
+        // Like the browser's CSS.escape for these values: every character
+        // that can't stand bare in an identifier becomes a hex escape.
+        CSS: {escape: value => String(value).replace(/[^\w\u00a0-\uffff-]/g, c => `\\${c.codePointAt(0).toString(16)} `)},
+    };
+}
+
+// The real tool-call and tool-result handlers, drawing into a task card's
+// activity, with the Evidence group mixed in from run_cards.js.
+function toolRowApp() {
+    const dom = fakeDom();
+    const context = vm.createContext({console, document: dom.document, CSS: dom.CSS, window: {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/run_cards.js'), 'utf8'), context);
+    const cards = context.window.LumiRunCards.prototype;
+    const app = Object.create(context.App.prototype);
+    const noop = () => {};
+    const activity = dom.document.createElement('div');
+    Object.assign(app, {
+        _appendToLiveCollapsedGroup: cards._appendToLiveCollapsedGroup,
+        _finalizeLiveCollapsedGroup: cards._finalizeLiveCollapsedGroup,
+        removeThinking: noop, _setLiveRunPhase: noop, ensureStepRendered: noop, scrollToBottom: noop,
+        trackTerminalStart: noop, trackTerminalEnd: noop,
+        _liveRunToolActivity: () => ({active: 'Working', completed: 'Worked'}),
+        _ensureTaskCard: () => ({activityEl: activity}),
+        activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(),
+        _blockToolRows: new Map(), stepToolCalls: [], stepToolResults: [], stepIsInlineOnly: false,
+        handlesTools: false, _agentRunSummary: {title: '', fileChanges: [], todos: null},
+    });
+    app.activity = activity;
+    app.htmlWrites = dom.htmlWrites;
+    app.element = tag => dom.document.createElement(tag);
+    app.play = (...events) => events.forEach(event => app.handleEvent(event));
+    return app;
+}
+
+const refusal = (call, output, fields = {}) => ({event: 'tool.result', name: call.name, call_id: call.call_id,
+    output, is_error: false, denied: true, elapsed: 0, ...fields});
+const HOOK_TIMEOUT = 'Blocked by hook: pre_tool_use hook `slow-guard` timed out after 2 s; gate hooks block when '
+    + 'they give no answer. Raise its timeout_seconds if it needs longer.';
+const NO_PROMPT = 'Tool execution requires approval, but no approval prompt is available for this run, so grep '
+    + 'was not executed. Continue without it, or ask the user to switch to a permission mode that allows it.';
+
+test('a refused command says why in its own row; the person\'s own Deny only says denied', () => {
+    const app = toolRowApp();
+    const bash = (id, command) => ({event: 'tool.call', name: 'bash', call_id: id, arguments: {command}});
+    const guarded = bash('call_1', 'rm -rf build');
+    const policed = bash('call_2', 'rm -rf dist');
+    const declined = bash('call_3', 'make deploy');
+    app.play(guarded, refusal(guarded, `${HOOK_TIMEOUT}\n`),
+        policed, refusal(policed, 'Blocked by policy: Recursive delete blocked', {is_error: true}),
+        declined, refusal(declined, 'Tool execution denied by user.'));
+
+    // The refusal settles the call's own row; no second "denied" line.
+    const rows = app.activity.children;
+    assert.equal(rows.length, 3);
+    for (const row of rows) {
+        const status = row.querySelector('[data-status]');
+        assert.equal(status.textContent, '✗');
+        assert.ok(status.classList.contains('denied') && !status.classList.contains('pending'));
+        assert.ok(row.classList.contains('denied'));
+    }
+    const [hookRow, policyRow, deniedRow] = rows;
+    assert.equal(hookRow.querySelector('[data-meta]').textContent, 'not run');
+    const why = hookRow.querySelector('.tool-denial-reason');
+    assert.equal(why.textContent, HOOK_TIMEOUT);
+    assert.equal(why.nextElementSibling, hookRow.querySelector('[data-detail]'), 'above the expandable detail');
+    assert.equal(policyRow.querySelector('.tool-denial-reason').textContent, 'Blocked by policy: Recursive delete blocked');
+    assert.equal(deniedRow.querySelector('[data-meta]').textContent, 'denied');
+    assert.equal(deniedRow.querySelector('.tool-denial-reason'), null);
+
+    // Expanded, a command that never ran has no output to show.
+    app._toggleBlockRowDetail(hookRow);
+    assert.equal(hookRow.querySelector('code').textContent, 'rm -rf build');
+    assert.equal(hookRow.querySelector('pre').textContent, '(not run)');
+});
+
+test('refusal reasons from hooks, policies and models render as text on their own call\'s row', () => {
+    const app = toolRowApp();
+    // A model or MCP server names the tool; a hook writes the reason.
+    const first = {event: 'tool.call', name: UNTRUSTED, call_id: `${UNTRUSTED}:1`, arguments: {}};
+    const second = {event: 'tool.call', name: UNTRUSTED, call_id: `${UNTRUSTED}:2`, arguments: {}};
+    const reason = `Blocked by hook: ${UNTRUSTED}`;
+    app.play(first, second,
+        {event: 'tool.result', name: UNTRUSTED, call_id: first.call_id, output: 'fetched', is_error: false, denied: false},
+        refusal(second, reason));
+
+    const [done, refused] = app.activity.children;
+    assert.equal(app.activity.children.length, 2);
+    assert.equal(done.querySelector('.tool-status').textContent, '✓');
+    assert.equal(done.querySelector('.tool-denial-reason'), null);
+    assert.equal(refused.querySelector('.tool-status').textContent, '✗ not run');
+    assert.ok(refused.querySelector('.tool-status').classList.contains('denied'));
+    assert.ok(refused.classList.contains('is-denied'));
+    const why = refused.querySelector('.tool-denial-reason');
+    assert.equal(why.textContent, reason);
+    assert.equal(why.children.length, 0);
+
+    // A refusal whose call has no row still shows, on a line of its own.
+    app.play(refusal({name: 'web_fetch', call_id: 'call_9'}, `Blocked by policy: ${UNTRUSTED}`));
+    const line = app.activity.children[2];
+    assert.ok(line.classList.contains('is-denied'));
+    assert.equal(line.querySelector('.tool-status').textContent, '✗ not run');
+    assert.equal(line.querySelector('.tool-denial-reason').textContent, `Blocked by policy: ${UNTRUSTED}`);
+
+    // Only the two call rows were markup, and the name in them stayed text.
+    assert.equal(app.htmlWrites.length, 2);
+    app.htmlWrites.forEach((html, index) => assertRenderedAsText(html, `tool row ${index}`));
+});
+
+test('a refused evidence call reads ✗ with its reason, never ✓, and keeps the group open', () => {
+    const app = toolRowApp();
+    app.stepIsInlineOnly = true;
+    const grep = (id, pattern) => ({event: 'tool.call', name: 'grep', call_id: id, arguments: {pattern, path: '.'}});
+    const found = grep('g1', 'TODO'), unanswered = grep('g2', 'FIXME'), declined = grep('g3', 'XXX');
+    app.play(found, unanswered, declined,
+        {event: 'tool.result', name: 'grep', call_id: 'g1', output: 'a.py:1: TODO', is_error: false, denied: false,
+         metadata: {count: 1}},
+        refusal(unanswered, NO_PROMPT),
+        refusal(declined, 'Tool execution denied by user.'));
+
+    const [ok, blocked, denied] = app.activity.querySelectorAll('.evidence-item');
+    assert.equal(ok.querySelector('.tool-status').textContent, '✓');
+    // A refusal the person didn't make is open, with its reason as the output.
+    assert.equal(blocked.querySelector('.tool-status').textContent, '✗');
+    assert.equal(blocked.querySelector('.tool-status').style.color, 'var(--warn)');
+    assert.equal(blocked.querySelector('.tool-meta').textContent, 'not run');
+    assert.equal(blocked.querySelector('.tool-evidence-output').textContent, NO_PROMPT);
+    assert.ok(blocked.classList.contains('is-denied') && blocked.classList.contains('show-output'));
+    assert.equal(blocked.getAttribute('aria-expanded'), 'true');
+    assert.equal(ok.getAttribute('aria-expanded'), 'false');
+    // The person's own Deny: marked, with nothing to open.
+    assert.equal(denied.querySelector('.tool-status').textContent, '✗');
+    assert.equal(denied.querySelector('.tool-meta').textContent, 'denied');
+    assert.equal(denied.querySelector('.tool-evidence-output'), null);
+    assert.ok(!denied.classList.contains('show-output'));
+
+    const group = app.activity.querySelector('.collapsed-group');
+    assert.match(group.querySelector('.collapsed-summary').textContent, / · 2 not run$/);
+    app._finalizeLiveCollapsedGroup();
+    assert.ok(group.classList.contains('expanded'), 'refusals stay in view');
+    assert.ok(!group.classList.contains('has-errors'), 'a refusal is not a failure');
+});
+
+test('a worker\'s refused call shows its reason in the worker\'s own rows', () => {
+    const app = toolRowApp();
+    const parentTask = {event: 'tool.call', name: 'task', call_id: 'call_2', arguments: {prompt: 'Explore'}};
+    app.play(parentTask);
+    // The worker it starts draws in its own lane, inside the parent's activity.
+    const lane = app.activity.appendChild(app.element('div')).appendChild(app.element('div'));
+    app.subagentContainers.set('w1', lane);
+    const worker = event => ({...event, _subagent: true, _agent_id: 'w1', _agent_type: 'explore'});
+    const allowlist = tool => `Tool '${tool}' is not in this session's allowlist. Allowed tools: ['file_read', 'grep']`;
+    const write = worker({event: 'tool.call', name: 'file_write', call_id: 'call_1', arguments: {path: 'a.txt', content: 'x'}});
+    const workerTask = worker({event: 'tool.call', name: 'task', call_id: 'call_2', arguments: {prompt: 'Build'}});
+    app.play(write, workerTask,
+        worker(refusal(write, allowlist('file_write'), {is_error: true})),
+        worker(refusal(workerTask, allowlist('task'), {is_error: true})),
+        {event: 'tool.result', name: 'task', call_id: 'call_2', output: 'handoff', is_error: false, denied: false});
+
+    const [writeRow, taskRow] = lane.children;
+    assert.equal(writeRow.querySelector('[data-meta]').textContent, 'not run');
+    assert.equal(writeRow.querySelector('.tool-denial-reason').textContent, allowlist('file_write'));
+    assert.equal(taskRow.querySelector('.tool-status').textContent, '✗ not run');
+    assert.equal(taskRow.querySelector('.tool-denial-reason').textContent, allowlist('task'));
+    // The parent's call with the same id is answered by its own result.
+    const parentRow = app.activity.children[0];
+    assert.equal(parentRow.getAttribute('data-call-id'), 'call_2');
+    assert.equal(parentRow.querySelector('.tool-status').textContent, '✓');
+    assert.equal(parentRow.querySelector('.tool-denial-reason'), null);
+});

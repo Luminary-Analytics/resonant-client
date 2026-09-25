@@ -859,8 +859,11 @@ class AppState:
         root = str(manager.project_path)
 
         def _combined_skill_context(query):
+            from .. import team_library
+
             built_in = build_skill_context(query, project_path=root, max_skills=6)
-            return (getattr(built_in, "block", "") or "") + manager.skill_context(query)
+            return (getattr(built_in, "block", "") or "") + manager.skill_context(query) + \
+                team_library.skill_context(query)
 
         session._skill_context_provider = _combined_skill_context
         session.mcp_tools = self._safe_mcp_tools()

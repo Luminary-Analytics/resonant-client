@@ -18,6 +18,9 @@ from lumi.gui.ws_commands import CommandContext, _cmd_rename_session
     ('Please review the authentication module for bugs.', 'Review the authentication module for bugs'),
     ('## My request:\nCan you improve session navigation?', 'Improve session navigation'),
     ('Explain how worker cancellation works.', 'Explain how worker cancellation works'),
+    ('@file:src/app.py fix the login bug', 'Fix the login bug'),
+    ('@handoff:hof_2b43ade9e507bb56 Continue the work Ada handed off: API rename.',
+     'Continue the work Ada handed off: API rename'),
     ('', 'New task'),
 ])
 def test_immediate_title_removes_conversation_filler(prompt, expected):

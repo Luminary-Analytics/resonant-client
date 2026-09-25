@@ -198,6 +198,10 @@
                 <span class="sns-label">New session</span>
                 <span class="sns-shortcut">Ctrl+N</span>
             </button>
+            <button id="handoffs-btn" class="sidebar-new-session sidebar-handoffs" type="button" aria-haspopup="dialog" hidden>
+                <span class="sns-icon" aria-hidden="true">&#8618;</span>
+                <span class="sns-label" id="handoffs-btn-label">Hand-offs for you</span>
+            </button>
             <div class="sidebar-session-heading unified-heading"><span>Projects <span id="session-count"></span></span>
                 <div class="sidebar-heading-actions"><select id="sidebar-session-scope" aria-label="Session scope">
                     <option value="all">All sessions</option><option value="pinned">Pinned</option>
@@ -405,6 +409,7 @@
                             <div class="input-footer">
                                 <div class="input-footer-left">
                                     <button class="add-context-btn" id="add-context-btn" title="Add context (paste/drop image, attach file)" aria-label="Add context">+</button>
+                                    <button type="button" class="add-context-btn composer-prompts-btn" id="composer-prompts-btn" title="Team prompts" aria-label="Team prompts" aria-haspopup="dialog" hidden>&#10077;</button>
                                     <button class="mic-btn" id="mic-btn" title="Hold to dictate &mdash; release to insert transcript" aria-label="Voice input (push-to-talk)">
                                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                                             <rect x="6" y="2" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.4"/>
@@ -629,6 +634,41 @@
     </div>
 
     <!-- ═══ Skill Detail Dialog (v0.6.2a3) ═══ -->
+    <div id="team-prompts-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="team-prompts-title">
+        <div class="dialog team-prompts-dialog">
+            <div class="dialog-header">
+                <span id="team-prompts-title">Team prompts</span>
+                <button type="button" id="team-prompts-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <label class="share-label" for="team-prompts-filter">Find a prompt</label>
+                <input id="team-prompts-filter" class="settings-input" type="search" autocomplete="off" placeholder="Name or words in it" aria-controls="team-prompts-list">
+                <div id="team-prompts-list" class="team-prompts-list" role="list"></div>
+                <p class="share-note">From your organization’s library in Lumi Cloud. A prompt goes into your message; nothing is sent until you send it.</p>
+            </div>
+        </div>
+    </div>
+
+    <div id="handoff-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoff-dialog-title">
+        <div class="dialog handoff-dialog">
+            <div class="dialog-header">
+                <span id="handoff-dialog-title">Hand off this conversation</span>
+                <button type="button" id="handoff-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="handoff-dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="handoffs-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="handoffs-dialog-title">
+        <div class="dialog handoffs-dialog">
+            <div class="dialog-header">
+                <span id="handoffs-dialog-title">Hand-offs for you</span>
+                <button type="button" id="handoffs-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="handoffs-dialog-body"></div>
+        </div>
+    </div>
+
     <div id="share-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="share-dialog-title">
         <div class="dialog share-dialog">
             <div class="dialog-header">

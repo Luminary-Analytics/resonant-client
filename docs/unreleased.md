@@ -8,6 +8,79 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 Evidence calls drawn once — source only, not released
+
+**A read, a search or a check could show twice.** Evidence calls (`file_read`,
+`glob`, `grep`, `code_intel`, screenshots, and check commands such as `pytest`
+or `git status`) go into the collapsed Evidence group as they arrive. When
+prose, an error or Stop then closed the group in the same step,
+`ensureStepRendered` drew the step's calls again below it, as rows of their own
+with the results that had come in.
+
+- **Each call stays in its group only** (`lumi/gui/static/app.js`
+  `ensureStepRendered`). The calls were already drawn there, so they now leave
+  with the closed group. The duplicates showed:
+  - on Stop during a step with Evidence calls. The engine ends the run with
+    "Interrupted", and a stopped check also got a red "Command cancelled" row
+    below the group;
+  - when a turn stopped at its step, budget or model-request limit. The engine
+    reports those after the last step ends, so an agent that read files until
+    its limit showed its last step's reads twice;
+  - when a provider streamed prose after the step's calls;
+  - after a reload, for every step whose response had prose. A saved turn
+    keeps the engine's order: the response's calls, then its `text.done`, not
+    the deltas that streamed first. Those steps also left their calls in the
+    step-end buffer, so the next closed group drew them a third time, in a
+    group of its own.
+- A result that arrives after prose closed its group (a reloaded step with
+  prose, or prose streamed after the calls) settles its item in the closed
+  group, as other late results do since #65. Before #65 and this fix, it
+  showed only on the duplicate row and its item kept "…".
+
+Validation on September 25, 2026:
+
+- Two tests in `tests/ui_recovery.test.cjs` drive the real handlers
+  (`handleEvent`, `replayDisplayEvents`, `ensureStepRendered`, the Evidence
+  group from `run_cards.js`) in the fake DOM from #67, live and reloaded:
+  - Stop while a read waits, and a run stopped by its step limit after two
+    Evidence steps: each call once, in its group, with its status;
+  - prose streamed after a search, and the same turn reloaded: one item in one
+    group, settled "✓" by its result.
+
+  On `main`'s `app.js` both fail: each call drawn twice, and three times, in
+  two groups, for the reloaded prose. Dropping only the redraw, keeping the
+  buffered calls, fails the reloaded prose case with a second group.
+- The GUI in the Browser pane: isolated home and state, keychain off, and a
+  scripted Ollama-compatible stub, so no real provider. The fixture allowed 2
+  model requests per turn. With `main`'s `app.js` (before #67, and again after
+  it for the saved turns):
+  - Stop while `python -m pytest` ran a 90 s test after a `grep`: the group
+    showed `'TODO'` ✓ and pytest ✗, then both again below it, a plain
+    `'TODO'` row ("1 matches") and a red, expanded "Command cancelled" row.
+    The same after a reload.
+  - A turn that kept reading until "Paused after 2 model requests" showed its
+    last read, `app.py` (4 lines), again below the group.
+  - Prose, then a `grep`, in one response was right live (a plain row, since
+    the prose came first). After a reload the call showed three times: group
+    item "…", a plain row "1 matches", and a second group with "…".
+
+  With the fix, merged with `main` at e004b5a (#65 and #75 included), a new
+  live Stop and a new prose turn drew each call once. After a reload, all
+  eleven saved turns did too, with the prose items settled on "✓ 1 matches".
+  The page loaded no failed resources and kept its socket open. Earlier runs
+  on `main` with #67 alone matched, except that the reloaded prose items kept
+  "…".
+- The four Node UI test files pass (88 tests); `ruff check .` clean,
+  `node --check` passes for `app.js` and `settings_view.js`, `git diff --check`
+  clean.
+- Full `pytest` on the branch before merging `main` at e004b5a: 4,392 passed,
+  5 skipped and 2 failed, `tests/test_repl.py`'s `test_stderr_captured` and
+  `test_traceback_in_stderr` (empty REPL output while about 12 parallel
+  sessions ran pytest on this machine). Run alone, `tests/test_repl.py`
+  passed (22 tests). Not rerun after the merge; CI runs it.
+- The real home's `.resonant` settings and recent projects kept their hashes;
+  no `~/.lumi` or Lumi credential appeared.
+
 ## September 25 the terminal's own lines and prompts print names as written — source only, not released
 
 **Outside a turn's display, `lumi/tui.py` still read names as markup.** The

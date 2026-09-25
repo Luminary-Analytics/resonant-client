@@ -1,10 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
-  Example macOS configuration profile for Lumi. Replace the Policy string with
-  your lumi.policy/v1 document (see example-policy.json) and new UUIDs, then
-  deploy it with Jamf, Intune or another MDM at system scope. Lumi reads the
-  Policy key from the com.luminaryanalytics.lumi managed preferences.
+  Example macOS configuration profile for Lumi. make_mobileconfig.py (beside
+  this file) makes one from your lumi.policy/v1 document and checks it; see
+  docs/deploy-macos.md. Deploy it with Jamf, Intune or another MDM at system
+  scope. Lumi reads the Policy key (and PolicyKeys, the trusted signing keys)
+  from the com.luminaryanalytics.lumi managed preferences.
 -->
 <plist version="1.0">
 <dict>

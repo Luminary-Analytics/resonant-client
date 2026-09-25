@@ -4198,13 +4198,31 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
+    width: 100%;
     padding: 8px 14px;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     cursor: pointer;
     transition: background 0.12s;
 }
 
 .perm-option:hover {
     background: var(--bg-hover);
+}
+
+/* The menu is operable from the keyboard (arrow keys, Escape); focus shows. */
+.perm-option:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    background: var(--bg-hover);
+}
+
+.perm-opt-name,
+.perm-opt-desc {
+    display: block;
 }
 
 .perm-opt-icon {
@@ -10347,6 +10365,33 @@ body {
     color: var(--text-secondary);
 }
 
+/* Off screen until keyboard focus reaches it (WCAG 2.4.1). */
+.skip-link {
+    position: fixed;
+    left: 12px;
+    top: -80px;
+    z-index: 10000;
+    padding: 8px 14px;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+    top: 12px;
+    outline: none;
+}
+
+/* Keyboard focus needs more than hover's faint border (WCAG 2.4.7). */
+.titlebar-command:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .titlebar-command kbd {
     flex: none;
     white-space: nowrap;
@@ -11870,6 +11915,13 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
     color: var(--text);
     background: var(--bg-hover);
     outline: none;
+}
+
+/* Keyboard focus needs a ring, not just hover's color change (WCAG 2.4.7). */
+.model-selector:focus-visible,
+.reasoning-selector:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
 }
 
 .window-resize-edge {
@@ -13654,7 +13706,7 @@ body.is-window-dragging * {
 /* Keep the settings light palette independent of legacy dark shell overrides. */
 [data-theme="light"] #settings-view {
     --bg: #fbfaf6; --bg-sidebar: #efece3; --bg-panel: #f6f4ee; --bg-hover: #e6e2d6;
-    --text: #15172e; --muted: #64667d; --dim: #6e7087;
+    --text: #15172e; --muted: #55576c; --dim: #626378;
     --border: #e3dfd3; --border-strong: #cfc9b8; --brand: #8a5600;
 }
 
@@ -13700,8 +13752,9 @@ body.is-window-dragging * {
     --file: #7bc8ff;
     --text: #ecebf6;
     --text-secondary: #b7b9d4;
-    --muted: #8d90b0;
-    --dim: #6a6d8f;
+    /* Every text token reaches 4.5:1 (WCAG 2.1 AA) on every surface, hover included. */
+    --muted: #a3a6c4;
+    --dim: #8e91aa;
     --dimmer: #464a6b;
     --border: rgba(236,235,246,.08);
     --border-strong: rgba(236,235,246,.15);
@@ -13718,8 +13771,8 @@ body.is-window-dragging * {
     --chat-composer-border: rgba(236,235,246,.12);
     --chat-soft-hover: rgba(236,235,246,.06);
 }
-/* Light: text tokens reach 4.5:1 on paper and panels (--dim, for hints and
-   counts, stays above 4:1 on the darker sidebar). */
+/* Light: every text token reaches 4.5:1 (WCAG 2.1 AA) on every surface,
+   the sidebar and hover included. */
 [data-theme="light"] {
     color-scheme: light;
     --brand: #8a5600;
@@ -13741,8 +13794,8 @@ body.is-window-dragging * {
     --file: #0369a1;
     --text: #15172e;
     --text-secondary: #45475f;
-    --muted: #64667d;
-    --dim: #6e7087;
+    --muted: #55576c;
+    --dim: #626378;
     --dimmer: #dcd8cc;
     --border: rgba(21,23,46,.1);
     --border-strong: rgba(21,23,46,.18);
@@ -13908,6 +13961,28 @@ body.is-window-dragging * {
     .timeline-item-actions { justify-content: flex-start; }
     .timeline-item-copy strong, .timeline-item-copy small { white-space: normal; overflow-wrap: anywhere; }
 }
+/* A run's trace and saved files (app.js, _appendRunRecords, openRunTrace, openArtifact). */
+.task-run-records { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 2px; }
+.task-run-records .task-review-btn, .run-trace-actions .task-review-btn, .artifact-actions .task-review-btn { margin-left: 0; }
+.task-review-btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+.task-run-records-label { margin-left: 4px; color: var(--muted); font-size: 11.5px; }
+.run-trace-dialog, .artifact-dialog { width: 680px; max-height: 85vh; display: flex; flex-direction: column; }
+.run-trace-dialog .dialog-header, .artifact-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.run-trace-dialog .dialog-body, .artifact-dialog .dialog-body { overflow: auto; }
+.run-trace-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.run-trace-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 3px 6px; border-radius: var(--radius-sm); }
+.run-trace-row:nth-child(odd) { background: color-mix(in srgb, var(--border) 25%, transparent); }
+.run-trace-row.is-error .run-trace-text { color: var(--err); }
+.run-trace-at { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.run-trace-text { min-width: 0; overflow-wrap: anywhere; }
+.run-trace-text b { margin-right: 4px; color: var(--text-secondary); font-weight: 600; }
+.run-trace-actions, .artifact-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.run-trace-saved, .artifact-path { flex-basis: 100%; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.artifact-text { max-height: 55vh; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.artifact-image { display: block; max-width: 100%; height: auto; margin: 8px auto 0; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+@media (max-width: 520px) {
+    .run-trace-row { grid-template-columns: 52px minmax(0, 1fr); gap: 6px; }
+}
 /* Where the chat was restored (a display-only timeline.restored event). */
 .timeline-restored-note { margin: 8px 16px; padding: 6px 12px; border: 1px dashed var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
 .timeline-restored-note::before { content: "\27F2\00a0"; }
@@ -13947,6 +14022,22 @@ body.is-window-dragging * {
 .share-link-row input { flex: 1; min-width: 0; }
 .share-who { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; border: 0; }
 .share-who label { display: flex; align-items: center; gap: 8px; }
+
+/* A plan's specialists under its card, one step each (app.js, "Plan activity").
+   A step's line spans the card, so a long goal ends in an ellipsis before its status. */
+.plan-step > summary { display: flex; min-width: 0; }
+.plan-step > summary:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; border-radius: 6px; }
+.plan-step-goal { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.plan-step > summary .task-activity-meta { flex-shrink: 0; margin-left: 0; white-space: nowrap; }
+.plan-step.is-running > summary .task-activity-meta { color: var(--brand-text); }
+.plan-step.is-attention > summary .task-activity-meta { color: var(--warn-soft-text); }
+.plan-step-body { display: flex; flex-direction: column; gap: 6px; }
+.plan-step-body .msg-assistant { margin: 0; }
+.plan-step-body .message-content { font-size: 13px; }
+.plan-run-status .task-run-detail { white-space: normal; overflow-wrap: anywhere; }
+.plan-run-status.is-running .task-run-mark { background: transparent; }
+.plan-run-status.is-running .task-run-mark::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); animation: live-run-pulse 1.8s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .plan-run-status.is-running .task-run-mark::before { animation: none; } }
 
 /* ── Former inline styles ──────────────────────────────────────────────
    The page's Content-Security-Policy (gui/local_access.py) refuses style=""

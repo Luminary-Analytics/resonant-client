@@ -278,8 +278,9 @@ class IntentService:
         """Wrap an engine-session event with the intent_id and ship to the GUI."""
         out = dict(event)
         out["intent_id"] = intent_id
-        # Tag so the GUI can route engine events for an intent into the chat
-        # stream alongside the plan-graph viz.
+        # The tag keeps a specialist's session out of the conversation's own
+        # turn: the GUI draws it under the plan's card, as a step of the
+        # plan (app.js, "Plan activity").
         out["_source"] = "intent"
         self._emit(out)
 

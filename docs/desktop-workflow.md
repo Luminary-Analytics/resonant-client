@@ -363,6 +363,28 @@ original keeps its transcript and is marked restarted. After a reload, a turn
 that Lumi closed during shows as interrupted, with its work under **Work
 details**.
 
+A turn's **Work details** (the "Worked for …" line) end with its records.
+**Trace** lists what happened and when: each step, tool call and result, model
+call and checkpoint, a worker's included. **Save for OpenTelemetry** saves that
+trace as a file for an observability tool, and the dialog shows where. Under
+**Saved** are the files the turn kept: an output too long for the
+conversation, a screenshot. Open one to read it a page at a time, or see the
+image; **Copy path** copies where it's stored. A reply that did no work has no
+work details, so nothing is added to it.
+
+A plan (a `/plan` message, or a Mission's **Build this roadmap**) reports
+under its own card (Unreleased): the `/plan` message, or a "Plan" card named
+from the roadmap's spec. Each specialist has a line, for example "Implementer
+· Add a toggle to the settings page · done · 2 actions · 1s", open while it
+runs with its commands, edits and prose. A finished line folds; one that
+didn't finish, or whose check asked for a repair, stays open. A status line
+says whether the plan is running (and which step), paused, complete or
+stopped. A plan isn't a turn of the conversation: it gets no suggested next
+prompt or Retry, the message box stays free, and keyboard focus stays where
+you put it, on the Plan tab's **Pause** for example. Plan activity isn't saved
+with the conversation; the Plan tab's **History** keeps the plan's snapshots.
+See [Unreleased](unreleased.md).
+
 New sessions also get a short task title from the first prompt. A local title
 appears immediately. With native model connections, a small tool-free request
 refines it after the first turn; slow or failed requests keep the local title.

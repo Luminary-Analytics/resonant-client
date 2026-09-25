@@ -42,6 +42,9 @@
     <script defer src="/static/vendor/purify.min.js?v={{ asset_version }}"></script>
 </head>
 <body>
+    <!-- Skip past the titlebar and sidebar (WCAG 2.4.1). A button, not a #link:
+         the launch code travels in the URL fragment. -->
+    <button type="button" class="skip-link" id="skip-to-main">Skip to the message box</button>
     <!-- ═══ Single titlebar — brand + menus + project context + window controls ═══ -->
     <div id="app-titlebar" class="app-titlebar pywebview-drag-region">
         <div class="titlebar-left">
@@ -427,41 +430,41 @@
                                             title="Autonomous session: agree a spec, then let Lumi work through it unattended"
                                             aria-label="Start an autonomous session">&infin;</button>
                                     <div class="permission-dropdown" id="permission-dropdown">
-                                        <button class="permission-toggle" id="permission-toggle" title="Permission mode &mdash; how the agent treats risky actions">
+                                        <button class="permission-toggle" id="permission-toggle" title="Permission mode &mdash; how the agent treats risky actions" aria-haspopup="menu" aria-expanded="false" aria-controls="permission-menu">
                                             <span class="perm-icon" id="perm-icon" aria-hidden="true">&#9881;</span>
                                             <span id="perm-label">Full-auto</span>
                                             <span class="perm-chevron" aria-hidden="true">&#9662;</span>
                                         </button>
-                                        <div class="permission-menu" id="permission-menu">
-                                            <div class="perm-option" data-mode="ask">
-                                                <span class="perm-opt-icon">&#9881;</span>
-                                                <div class="perm-opt-text">
-                                                    <div class="perm-opt-name">Ask permissions</div>
-                                                    <div class="perm-opt-desc">Always ask before making changes</div>
-                                                </div>
-                                            </div>
-                                            <div class="perm-option" data-mode="auto-edit">
-                                                <span class="perm-opt-icon">&lt;/&gt;</span>
-                                                <div class="perm-opt-text">
-                                                    <div class="perm-opt-name">Auto accept edits</div>
-                                                    <div class="perm-opt-desc">Accept file edits; ask before commands and other actions</div>
-                                                </div>
-                                            </div>
-                                            <div class="perm-option" data-mode="plan">
-                                                <span class="perm-opt-icon">&#9776;</span>
-                                                <div class="perm-opt-text">
-                                                    <div class="perm-opt-name">Plan mode</div>
-                                                    <div class="perm-opt-desc">Create a plan before making changes</div>
-                                                </div>
-                                            </div>
-                                            <div class="perm-option active" data-mode="bypass">
-                                                <span class="perm-opt-icon">🛡</span>
-                                                <div class="perm-opt-text">
-                                                    <div class="perm-opt-name">Full-auto (sandboxed)</div>
-                                                    <div class="perm-opt-desc">Accepts all permissions</div>
-                                                </div>
-                                                <span class="perm-check">&#10003;</span>
-                                            </div>
+                                        <div class="permission-menu" id="permission-menu" role="menu" aria-label="Permission mode">
+                                            <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="ask">
+                                                <span class="perm-opt-icon" aria-hidden="true">&#9881;</span>
+                                                <span class="perm-opt-text">
+                                                    <span class="perm-opt-name">Ask permissions</span>
+                                                    <span class="perm-opt-desc">Always ask before making changes</span>
+                                                </span>
+                                            </button>
+                                            <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="auto-edit">
+                                                <span class="perm-opt-icon" aria-hidden="true">&lt;/&gt;</span>
+                                                <span class="perm-opt-text">
+                                                    <span class="perm-opt-name">Auto accept edits</span>
+                                                    <span class="perm-opt-desc">Accept file edits; ask before commands and other actions</span>
+                                                </span>
+                                            </button>
+                                            <button type="button" class="perm-option" role="menuitemradio" aria-checked="false" tabindex="-1" data-mode="plan">
+                                                <span class="perm-opt-icon" aria-hidden="true">&#9776;</span>
+                                                <span class="perm-opt-text">
+                                                    <span class="perm-opt-name">Plan mode</span>
+                                                    <span class="perm-opt-desc">Create a plan before making changes</span>
+                                                </span>
+                                            </button>
+                                            <button type="button" class="perm-option active" role="menuitemradio" aria-checked="true" tabindex="-1" data-mode="bypass">
+                                                <span class="perm-opt-icon" aria-hidden="true">🛡</span>
+                                                <span class="perm-opt-text">
+                                                    <span class="perm-opt-name">Full-auto (sandboxed)</span>
+                                                    <span class="perm-opt-desc">Accepts all permissions</span>
+                                                </span>
+                                                <span class="perm-check" aria-hidden="true">&#10003;</span>
+                                            </button>
                                         </div>
                                     </div>
                                     <button class="input-project" id="footer-project-btn" title="Current project folder — click to switch projects or open another folder">
@@ -692,6 +695,26 @@
                 <button type="button" id="timeline-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
             </div>
             <div class="dialog-body" id="timeline-dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="run-trace-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="run-trace-title">
+        <div class="dialog run-trace-dialog">
+            <div class="dialog-header">
+                <span id="run-trace-title">Trace</span>
+                <button type="button" id="run-trace-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="run-trace-body"></div>
+        </div>
+    </div>
+
+    <div id="artifact-dialog" class="dialog-overlay" data-start-hidden role="dialog" aria-modal="true" aria-labelledby="artifact-dialog-title">
+        <div class="dialog artifact-dialog">
+            <div class="dialog-header">
+                <span id="artifact-dialog-title">Saved file</span>
+                <button type="button" id="artifact-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="artifact-dialog-body"></div>
         </div>
     </div>
 

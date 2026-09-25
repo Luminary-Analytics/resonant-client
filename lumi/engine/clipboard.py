@@ -210,20 +210,23 @@ def _read_macos() -> tuple[Optional[bytes], str]:
     """
     tmp = os.path.join(tempfile.gettempdir(), "lumi_clipboard.png")
 
-    applescript = f'''
-        try
-            set imgData to the clipboard as «class PNGf»
-            set outFile to open for access POSIX file "{tmp}" with write permission
-            write imgData to outFile
-            close access outFile
-            return "OK"
-        on error
-            return "NONE"
-        end try
+    # The path goes in as an argument, not written into the script's source.
+    applescript = '''
+        on run argv
+            try
+                set imgData to the clipboard as «class PNGf»
+                set outFile to open for access POSIX file (item 1 of argv) with write permission
+                write imgData to outFile
+                close access outFile
+                return "OK"
+            on error
+                return "NONE"
+            end try
+        end run
     '''
     try:
         result = subprocess.run(
-            ["osascript", "-e", applescript],
+            ["osascript", "-e", applescript, tmp],
             capture_output=True, text=True, timeout=10,
         )
         output = result.stdout.strip()

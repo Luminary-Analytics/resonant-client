@@ -36,7 +36,8 @@ Every task runs once per model:
 3. The task's check runs in the worktree. Exit code 0 passes. The check is
    your command: it passes the command guardrails and runs in the
    [shell sandbox](shell-sandbox.md) when that's on. It has 10 minutes.
-4. Lumi keeps the run's diff and removes the worktree.
+4. Lumi keeps the run's diff from the commit it started from and removes the
+   worktree.
 
 ## Results
 
@@ -45,6 +46,11 @@ priced requests and the median run time. Open a task to see each model's
 status, time, cost, how many files it changed, and the end of the check's
 output. Diffs are kept in `~/.lumi/model_evals/<id>/`, up to 200 KB each.
 Lumi keeps the 30 newest comparisons.
+
+A run's diff and its count of changed files cover everything it changed since
+the commit it started from, including work it committed: a model can run
+`git commit`, for example with **Everything**. Each result in
+`~/.lumi/model_evals/<id>.json` names that commit as `start_commit`.
 
 A comparison that was running when Lumi closed is shown as interrupted; run
 it again.

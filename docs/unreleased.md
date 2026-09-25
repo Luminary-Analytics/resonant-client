@@ -8,6 +8,48 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 comparison diffs include what a run committed — source only, not released
+
+- **Fixed:** when a model comparison run committed its work, those changes
+  were missing from its kept diff and its count of changed files. A model
+  with **Everything** can run `git commit`. Both compared the worktree's HEAD
+  at the end, which the commits had moved. The check runs on the final files,
+  so pass or fail was right.
+- **Each run records the commit it starts from**: the project's HEAD, which
+  its worktree is made from. The result keeps it as `start_commit`. The diff
+  and the changed files are taken against it, committed or not: `git add -A`,
+  then `git diff --cached <start> --` (`model_evals._keep_diff`). A kept diff
+  still holds up to 200 KB.
+- Docs: [model comparisons](model-comparisons.md).
+
+Validation on September 25, 2026:
+
+- `tests/test_model_evals.py` (8 tests, 2 new). The fake `lumi run` gains two
+  models that commit:
+  - one commits a new file, then an edit, in two commits, and leaves a file
+    uncommitted;
+  - the other commits a 300 KB file.
+
+  Before the fix, each run counted 1 changed file, the uncommitted one,
+  though its check passed. Now:
+  - they count 3 and 2, and the committed lines are in the diff;
+  - the 300 KB diff is cut at 200 KB;
+  - `start_commit` is the project's HEAD;
+  - the checkout and its HEAD are unchanged.
+- A file named like the start commit doesn't empty the diff. git refuses an
+  argument that names both a revision and a file, so the diff passes `--`.
+- A real `lumi run` with **Everything** and a scripted model, no provider
+  (a scratch test, not kept): its bash tool ran `git add` and `git commit`,
+  and the check confirmed the commit. With main's `_keep_diff`, both runs
+  passed and kept 0 changed files and an empty diff; with the fix, 1 file
+  and its lines.
+- Seven mutants each switch off one part: the start commit for the names,
+  for the diff, for both (the old code), `HEAD~1` in its place, the `--`,
+  reading the start after the run, and the 200 KB limit. Each fails at least
+  one of these tests.
+- Full suite before merging main: 4420 passed, 5 skipped. Ruff, `node --check`
+  and the node UI tests (81) pass.
+
 ## September 25 Linux packages — source only, not released
 
 - **A .deb, an .rpm, an AppImage and a tarball** for x86_64

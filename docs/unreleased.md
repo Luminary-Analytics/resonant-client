@@ -8,6 +8,58 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 computer use: one switch for every desktop tool, and macOS fixes — source only, not released
+
+- **Turning computer use off now turns off all of it.** This covers
+  `security.computer_use` in Settings and an organization's policy.
+  - `clipboard_read`, `clipboard_write`, `screen_record_start`,
+    `screen_record_stop`, `screen_diff`, `accessibility_tree` and
+    `accessibility_click` were outside the switch. They were offered to the
+    model and ran, even when policy turned computer use off.
+  - They're now in `tools.COMPUTER_ACCESS_TOOL_NAMES`. Session refuses them
+    and leaves them out of what it offers.
+  - Models that can't see still get the ones that need no screenshots.
+- **A window title can't run AppleScript.** `window_focus` on macOS wrote the
+  title into the script's source. A title with a quote could end the string
+  and run `do shell script`, outside the guardrails and the shell sandbox.
+  The title is an argument now (`on run argv`), and a failure says the
+  window wasn't found. The clipboard's image script passes its path the
+  same way.
+- **Clicks land on Retina Macs.** Screenshots there have twice as many pixels
+  as the screen has points, and pyautogui clicks in points.
+  - Mapping the model's coordinates through the pixel size put every click
+    twice as far from the corner as meant.
+  - Capture geometry now uses the screen's size in points
+    (`computer._finish_capture`, `computer_use.take_screenshot_scaled`), and
+    the cursor crosshair follows.
+- **macOS permissions are checked before each desktop tool**
+  (`engine/macos_permissions.py`).
+  - Without Accessibility or Screen Recording, macOS drops clicks or returns
+    blank screenshots, and the tool looked like it worked.
+  - Now it fails and says where to allow the permission. The checks are the
+    system's own, called through ctypes; they never prompt, and an unknown
+    answer doesn't block.
+- **The on-screen indicator** now also shows for `accessibility_click` and
+  `screen_record_start`. It's still Windows-only.
+
+Validation on September 25, 2026:
+
+- `tests/test_client_security.py` covers:
+  - every computer-access tool refused and hidden when the switch is off;
+  - the no-screenshot tools kept for models that can't see;
+  - a hostile window title passed as an AppleScript argument.
+- `tests/test_computer_retina.py` covers:
+  - a 2880 x 1800 capture of a 1440 x 900 point screen: a click at the
+    image's centre maps to (720, 450) in points, and the crosshair is drawn at
+    the centre;
+  - screens where pixels are the coordinates, unchanged.
+- `tests/test_macos_permissions.py` covers the permission messages, other
+  systems never asked, and `execute_tool` refusing before anything is
+  clicked.
+- The macOS CI job checks that both permission checks answer on a real Mac.
+- Not verified on a Mac with a screen: real clicks on a Retina display, or
+  the permission prompts. CI has no screen to drive.
+
 ## September 25 Linux packages — source only, not released
 
 - **A .deb, an .rpm, an AppImage and a tarball** for x86_64

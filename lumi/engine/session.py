@@ -2776,6 +2776,38 @@ class Session:
                     except RuntimeError as exc:
                         yield make_event(EngineEvent.ERROR, message=str(exc), code='worker_action_blocked')
                         return
+                # Allowlist guard: a session built with a tool list (a worker,
+                # a specialist) runs only those tools. The list offered to the
+                # model hints it away from others but doesn't enforce anything:
+                # models invent names or pull them from text-mode XML blocks.
+                # This is the real boundary, so it comes before the hooks,
+                # policy and approval prompt, and before the branches below that
+                # run a tool themselves (task, task_batch, await_user,
+                # search_tools, mcp_*). Otherwise a read-only worker could start
+                # a writing worker through `task`.
+                if self._allowed_tools is not None:
+                    allowed_names = {t.get("function", {}).get("name", "")
+                                     for t in self._allowed_tools}
+                    if fn_name not in allowed_names:
+                        turn_failed_tools.append(fn_name)
+                        denial = (
+                            f"Tool '{fn_name}' is not in this session's allowlist. "
+                            f"Allowed tools: {sorted(allowed_names)}"
+                        )
+                        yield make_event(EngineEvent.TOOL_RESULT,
+                                        name=fn_name, call_id=call_id,
+                                        output=denial, is_error=True,
+                                        denied=True, elapsed=0.0)
+                        self.conversation_history.append({
+                            "role": "tool_call", "name": fn_name,
+                            "arguments": fn_args_str, "call_id": call_id,
+                            "content": f"Called {fn_name}",
+                        })
+                        self.conversation_history.append({
+                            "role": "tool_result", "call_id": call_id,
+                            "content": denial,
+                        })
+                        continue
                 if fn_name == 'check_run':
                     turn_checks.append({'command': fn_args.get('command', ''),
                         'requirement': fn_args.get('requirement', ''), 'status': 'not_run',
@@ -3200,36 +3232,6 @@ class Session:
                     self.conversation_history.append(mcp_history)
                     (turn_failed_tools if result.is_error else turn_successful_tools).append(fn_name)
                 else:
-                    # Allowlist guard: when this Session was constructed with a
-                    # filtered tool list (e.g. via specialist dispatch), refuse
-                    # to dispatch tools the model invented or pulled from text-mode
-                    # XML blocks. The filter at the API/system-prompt layer hints
-                    # the model away from disallowed tools, but doesn't enforce —
-                    # this is the real boundary.
-                    if self._allowed_tools is not None:
-                        allowed_names = {t.get("function", {}).get("name", "")
-                                          for t in self._allowed_tools}
-                        if fn_name not in allowed_names:
-                            turn_failed_tools.append(fn_name)
-                            denial = (
-                                f"Tool '{fn_name}' is not in this session's allowlist. "
-                                f"Allowed tools: {sorted(allowed_names)}"
-                            )
-                            yield make_event(EngineEvent.TOOL_RESULT,
-                                            name=fn_name, call_id=call_id,
-                                            output=denial, is_error=True,
-                                            denied=True, elapsed=0.0)
-                            self.conversation_history.append({
-                                "role": "tool_call", "name": fn_name,
-                                "arguments": fn_args_str, "call_id": call_id,
-                                "content": f"Called {fn_name}",
-                            })
-                            self.conversation_history.append({
-                                "role": "tool_result", "call_id": call_id,
-                                "content": denial,
-                            })
-                            continue
-
                     # Normalize every path-bearing call at one boundary. This
                     # also validates batch children before parallel fan-out.
                     from .sandbox import SandboxViolation
@@ -3895,7 +3897,8 @@ class Session:
             })
             return
 
-        # Filter tools — remove 'task' to prevent recursion
+        # Filter tools — remove 'task' to prevent recursion. The worker's run
+        # refuses any tool outside this list (the allowlist guard in _run_turn).
         model_role = str(fn_args.get("model_role") or agent_type.model_role or "primary")
         requested_isolation = str(
             fn_args.get("isolation") or agent_type.default_isolation or "shared"

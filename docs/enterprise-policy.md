@@ -18,7 +18,7 @@ Lumi uses the first of these that exists:
 | --- | --- |
 | Windows | Registry `HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi`: value `Policy` (the JSON document) or `PolicyFile` (a path; environment variables are expanded). Set them with the ADMX template below, Intune or any registry tool. |
 | Windows | `%ProgramData%\Lumi\policy.json` |
-| macOS | The `Policy` key of the `com.luminaryanalytics.lumi` managed preferences, from a configuration profile (`packaging/policy/lumi-policy.mobileconfig`) |
+| macOS | The `Policy` key of the `com.luminaryanalytics.lumi` managed preferences, from a device-scope configuration profile (`packaging/policy/make_mobileconfig.py` makes one; see [Deploying on macOS](deploy-macos.md)) |
 | macOS | `/Library/Application Support/Lumi/policy.json` |
 | Linux | `/etc/lumi/policy.json` |
 
@@ -170,6 +170,11 @@ three machine policies under **Lumi** in the Group Policy editor:
 Copy the ADMX to `%SystemRoot%\PolicyDefinitions` or the central store, and
 the ADML to its `en-US` folder. For Intune, import the ADMX as a custom
 administrative template, or set the registry values with a script.
+
+On macOS, a configuration profile carries the policy (`Policy`) and, if
+needed, the trusted signing keys (`PolicyKeys`) for Jamf Pro, Intune or
+another MDM. `packaging/policy/make_mobileconfig.py` makes the profile from
+your policy file and checks it first. See [Deploying on macOS](deploy-macos.md).
 
 ## What policy doesn't cover yet
 

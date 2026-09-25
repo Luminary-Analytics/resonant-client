@@ -193,12 +193,19 @@ class ArtifactStore:
             f"sha256={artifact.sha256[:12]} path={artifact.path}]"
         )
 
+    TEXT_KINDS = frozenset({"text", "terminal", "diff", "trace", "dom", "accessibility"})
+
     def read_text_page(self, artifact_id: str, offset: int = 0, limit: int = 8000) -> str:
         """Read archived evidence by manifest id, never by a model-supplied path."""
+        page, more = self.read_text(artifact_id, offset, limit)
+        return page + (f"\n[More evidence: artifact_read offset={offset + len(page)}]" if more else "")
+
+    def read_text(self, artifact_id: str, offset: int = 0, limit: int = 8000) -> tuple[str, bool]:
+        """A page of a text artifact by manifest id, and whether more follows."""
         artifact = self.get(artifact_id)
         if artifact is None:
             raise ValueError(f"Unknown artifact: {artifact_id}")
-        if artifact.kind not in {"text", "terminal", "diff", "trace", "dom", "accessibility"}:
+        if artifact.kind not in self.TEXT_KINDS:
             raise ValueError("This artifact is not text")
         if offset < 0 or not 1 <= limit <= 16000:
             raise ValueError("offset must be nonnegative and limit must be between 1 and 16000")
@@ -212,7 +219,7 @@ class ArtifactStore:
                 remaining -= len(skipped)
             page = stream.read(limit)
             more = bool(stream.read(1))
-        return page + (f"\n[More evidence: artifact_read offset={offset + len(page)}]" if more else "")
+        return page, more
 
     def copy_to(self, artifact_id: str, destination: str | Path) -> Path:
         artifact = self.get(artifact_id)

@@ -15,10 +15,11 @@ Each channel and release line has its own feed beside the installers on the
 update site; ``packaging/update_appcast.py`` writes them. WinSparkle takes a
 feed URL, not a filter, so choosing the feed is how the choice is enforced.
 
-A copy installed from the MSI package (packaging/lumi.wxs) never updates
-itself: the device management that installed it does, and the two
-installers would otherwise fight over the same Program Files folder. The package puts
-``lumi-install.json`` beside ``lumi.exe`` to say so; it wins over everything.
+A copy installed from the MSI package (packaging/lumi.wxs) or the macOS
+installer package (packaging/macos_pkg.py) never updates itself: the device
+management that installed it does, and two updaters would otherwise fight over
+the same folder. The package puts ``lumi-install.json`` beside ``lumi.exe``, or
+in ``Lumi.app/Contents/Resources``, to say so; it wins over everything.
 
 Like the policy, these are read once at startup (``read``): a change applies
 the next time Lumi starts. ``read`` parses settings.json itself rather than
@@ -41,6 +42,8 @@ FEED_BASE = "https://luminary-analytics.github.io/resonant-client/"
 MODES = ("automatic", "manual", "off")
 CHANNELS = ("stable", "beta")
 DEFAULTS = {"mode": "automatic", "channel": "stable", "pin": ""}
+# Packages device management installs and updates, by their install marker's name.
+MANAGED_INSTALLERS = {"msi": "the MSI package", "pkg": "the macOS installer package"}
 _PIN = re.compile(r"(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})")
 
 
@@ -77,16 +80,27 @@ def validate_policy_settings(settings: dict[str, Any]) -> None:
 
 
 def installed_by(executable: str | None = None) -> str:
-    """``"msi"`` when this copy came from the MSI package, else ``""``."""
+    """The package this copy came from (``"msi"`` or ``"pkg"``), else ``""``.
+
+    The MSI's marker is beside ``lumi.exe``. In a macOS app the executable is
+    in ``Contents/MacOS``, and the installer package keeps its marker in
+    ``Contents/Resources``, inside what the signature covers.
+    """
     if executable is None:
         if not getattr(sys, "frozen", False):
             return ""
         executable = sys.executable
-    try:
-        data = json.loads(Path(executable).with_name("lumi-install.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return ""
-    return str(data.get("installer") or "") if isinstance(data, dict) else ""
+    path = Path(executable)
+    markers = [path.with_name("lumi-install.json")]
+    if path.parent.name == "MacOS":
+        markers.append(path.parent.parent / "Resources" / "lumi-install.json")
+    for marker in markers:
+        try:
+            data = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        return str(data.get("installer") or "") if isinstance(data, dict) else ""
+    return ""
 
 
 def feed_name(channel: str, pin: str) -> str:
@@ -105,7 +119,7 @@ class UpdatePreferences:
     managed_by: str = ""  # the organization whose policy sets any of these
     locked: tuple[str, ...] = ()  # which keys the policy sets
     problems: tuple[str, ...] = field(default=())  # stored values that were ignored, and why
-    installed_by: str = ""  # "msi": device management updates this copy
+    installed_by: str = ""  # "msi" or "pkg": device management updates this copy
 
     @property
     def feed_url(self) -> str:
@@ -129,7 +143,7 @@ def read(settings_path: Path | None = None, policy_state: Any = None,
 
     An invalid policy pauses automatic updates (``manual``): the administrator
     may have meant to turn them off, and a person can still check by hand.
-    An MSI installation turns them off whatever the settings say.
+    An MSI or PKG installation turns them off whatever the settings say.
     """
     from . import policy as policy_module
     from .paths import state_home
@@ -158,7 +172,7 @@ def read(settings_path: Path | None = None, policy_state: Any = None,
         values["mode"] = "manual"
         problems.append("The organization policy is invalid, so automatic updates are paused.")
     source = installed_by() if installer is None else installer
-    if source == "msi":
+    if source in MANAGED_INSTALLERS:
         values["mode"] = "off"
     return UpdatePreferences(mode=values["mode"], channel=values["channel"], pin=values["pin"],
                              managed_by=policy.organization if (policy and locked) else "",

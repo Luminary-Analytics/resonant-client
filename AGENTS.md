@@ -112,7 +112,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Updates: `update_channels.py` picks the feed from `updates.mode`, `channel` and
   `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
   because every earlier install polls it. Running from source never loads
-  WinSparkle, and an MSI install (`lumi-install.json`) never updates itself.
+  WinSparkle, and an MSI or PKG install (`lumi-install.json`) never updates
+  itself. A macOS configuration profile that can't be used fails closed like
+  any machine policy (`policy.managed_preferences_policy`).
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
   feed needs the user's go-ahead.
 - Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private
@@ -199,7 +201,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   identity must never supply the SONN profile. Echo is optional, respects reduced motion,
   and must not introduce model calls, polling, or completion claims.
 - Use accessible names, tooltips, visible keyboard focus, and reliable targets
-  for icon buttons. Session dates are hover details in the compact sidebar;
+  for icon buttons. Text color tokens keep 4.5:1 on every surface in both
+  themes; menus and popups work from the keyboard (arrows, Escape returning
+  focus). Update [the accessibility report](docs/accessibility.md) when that
+  changes. Session dates are hover details in the compact sidebar;
   retain working/needs-input states and pinned-session visibility.
 - Codex receives a text handoff of instructions, project notes, recent history,
   and retained summaries. It does not receive the original native provider

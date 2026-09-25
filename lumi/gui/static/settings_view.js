@@ -17,6 +17,9 @@
  * Load order matters: this file must load BEFORE app.js.
  */
 
+// Packages device management installs and updates (update_channels.MANAGED_INSTALLERS).
+const MANAGED_INSTALLERS = Object.freeze({msi: 'the MSI package', pkg: 'the macOS installer package'});
+
 class LumiSettingsView {
     _accountSummary() {
         const account = this.sonnAccount;
@@ -309,7 +312,7 @@ class LumiSettingsView {
         const info = this.aboutInfo;
         if (!info) return '<p class="editor-help">Loading…</p>';
         const esc = value => this.escapeHtml(String(value ?? ''));
-        const managed = info.installed_by === 'msi'
+        const managed = MANAGED_INSTALLERS[info.installed_by]
             ? 'Installed by your organization’s device management.'
             : info.organization ? `Managed by ${esc(info.organization)}.` : '';
         const row = (label, body) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${body}</div></div></div>`;
@@ -478,8 +481,8 @@ class LumiSettingsView {
         const esc = value => this.escapeHtml(String(value ?? ''));
         const modes = { automatic: 'Automatic', manual: 'Only when you check', off: 'Off' };
         const describe = s => `${esc(modes[s.mode] || s.mode)}${s.mode === 'off' ? '' : `, from ${esc(s.describe)}`}`;
-        const managed = status.installed_by === 'msi'
-            ? ' · installed from the MSI package, so your organization’s device management updates it'
+        const managed = MANAGED_INSTALLERS[status.installed_by]
+            ? ` · installed from ${MANAGED_INSTALLERS[status.installed_by]}, so your organization’s device management updates it`
             : status.managed_by ? ` · managed by ${esc(status.managed_by)}` : '';
         const checking = status.mode !== 'off' && status.available;
         const hints = [

@@ -119,6 +119,11 @@ Validation on September 25, 2026:
   - `ruff check .` (ruff 0.12.12) and `git diff --check`: clean;
   - `node --check`: passes for `app.js` and `settings_view.js`;
   - the four Node UI test files: pass (70 tests).
+- After merging main (the Mac package, run traces, late Evidence results and
+  the accessibility review):
+  - full `pytest`: 4,421 passed, 5 skipped;
+  - `ruff check .`, `node --check` and `git diff --check`: clean;
+  - the Node UI test files: pass (81 tests).
 - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
   credential was stored.
 
@@ -127,6 +132,261 @@ Tasks from chat run inside it, and its background work gets the
 organization-prompt limit; both were tested only at the engine and function
 level. Also not exercised: Codex or Claude Code (their tools never reach tool
 hooks), real Telegram, Slack or Lumi Cloud, and hooks on macOS or Linux.
+
+## September 25 an installer package and profiles for managed Macs — source only, not released
+
+- **`lumi-X.Y.Z.pkg`** for Jamf Pro, Intune and other device management
+  ([guide](deploy-macos.md)). `packaging/build_macos.sh` makes it after the
+  DMG, with Apple's pkgbuild and productbuild and `packaging/macos_pkg.py`.
+  - It installs `/Applications/Lumi.app` for every user.
+  - It has no choices and no scripts.
+  - It refuses Intel Macs and macOS before 12.
+  - Every version has the package id `com.luminaryanalytics.lumi` and upgrades
+    in place: the app isn't relocatable.
+  - With `MACOS_INSTALLER_IDENTITY`, it's signed, notarized and stapled.
+- **A PKG copy never updates itself**, like an MSI copy.
+  - `Lumi.app/Contents/Resources/lumi-install.json` marks it, inside what the
+    signature covers. The build signs the staged copy again: with the
+    Developer ID, or ad hoc.
+  - `lumi updates` reports `"installed_by": "pkg"`.
+  - Settings > Updates, About and Check for Updates say it came from the
+    installer package (`update_channels.MANAGED_INSTALLERS`).
+- **`packaging/policy/make_mobileconfig.py`** turns a policy file into a
+  configuration profile.
+  - It checks the policy with the app's parser first, and with `--keys` also
+    a signed policy's signature.
+  - UUIDs come from the contents.
+  - `--plist` writes the bare preferences, for Jamf's Custom Settings or an
+    Intune preference file.
+- **Profiles can carry trusted signing keys** (`PolicyKeys`), as the registry
+  does on Windows (`policy.machine_keys`). A signed policy and its keys then
+  deploy together.
+- **A profile that can't be used fails closed.** Lumi refuses model requests,
+  as for any invalid machine policy, when:
+  - its plist can't be read;
+  - its `Policy` is empty;
+  - its `Policy` is neither text nor a dictionary.
+
+  Before, each of these read as "no policy" (`policy.managed_preferences_policy`).
+
+Validation on September 25, 2026:
+
+- `tests/test_macos_pkg.py` (9 tests) covers:
+  - the marker and the installed-by check on an app bundle's layout;
+  - the non-relocatable component list, and the distribution file against
+    `lumi.spec`'s bundle id and minimum macOS;
+  - the command line;
+  - generated profiles read back by the app's reader;
+  - the generator refusing an invalid policy, a bad signature and a keys file
+    that isn't an object;
+  - a signed policy and its keys applying through managed preferences;
+  - the reader failing closed.
+- The policy, MSI and Lumi Cloud tests pass.
+- Not run locally: pkgbuild, productbuild and installer need a Mac. The macOS
+  CI job builds the PKG, installs it with `sudo installer`, and checks the
+  installed copy. It checks updates left to the MDM, a policy from managed
+  preferences made by the generator, and an empty `Policy` failing closed.
+  See the pull request for its result.
+
+## September 25 a run's trace and saved files — source only, not released
+
+- **Trace** (`lumi/gui/static/app.js`, `openRunTrace`;
+  [guide](desktop-workflow.md#conversation-progress-suggestions-and-titles)).
+  - A run card's work details now end with **Trace**. It lists what the turn
+    did and when: each step, tool call and result (how long it took, how long
+    its output was), model call with its tokens, checkpoint and worker. The
+    dialog also names the model and duration.
+  - **Save for OpenTelemetry** saves the turn's OTLP JSON among the saved
+    files, and shows where.
+  - The Traces tab left with the Agents pane in v0.14.0. It listed runs and
+    showed a session's whole trace as raw JSON.
+- **Saved files** (`openArtifact`).
+  - Under **Saved** are the files the turn kept: an output over 50,000
+    characters, or a screenshot.
+  - The viewer shows text a page at a time, or an image, with the file's path.
+  - It reads a file by its id, never by a path from the page
+    (`artifact_view`).
+- **Each turn is its own slice of the session's trace**
+  (`lumi/engine/flight_recorder.py`).
+  - A session's recorder spans its turns. Each top-level turn now begins a
+    slice (`begin_turn`).
+  - The turn's session.end names the slice (`trace: {run_id, turn_id}`), so a
+    card can open it after a reload.
+  - A worker's events belong to the turn that started it.
+- Trace fixes:
+  - The app records every event it streams. Events the engine had already
+    recorded as it yielded them (session.start, checkpoints, attached files)
+    were in the trace twice.
+  - An event's own fields replaced the trace's: a checkpoint's `sequence` was
+    recorded as the event's sequence number.
+  - Reading a trace rewrote the run's manifest, which a session may still be
+    writing. Reading a turn now reads only the events file.
+
+Validation on September 25, 2026:
+
+- `tests/test_run_trace.py` (6 tests) covers:
+  - each turn's slice, with engine-recorded events kept once;
+  - a worker's events in its parent's turn;
+  - the rows the dialog gets, without a call's contents or a result's text;
+  - an unknown trace, and a run id outside the traces folder;
+  - a turn's export, leaving the run's manifest untouched;
+  - the viewer's pages, image and refusals.
+- `tests/ui_recovery.test.cjs` adds 5 tests: row wording, a run's saved
+  files, errors in their dialogs, paging, and the export flow. The four UI
+  node suites: 80 passed after merging `main`. `ruff check` clean.
+- Full `pytest` after merging `main`: 4,400 passed, 5 skipped.
+- In the browser pane, with an isolated home and a scripted local model whose
+  turn printed about 70,000 characters:
+  - The card's work details showed Trace and "Saved: bash result · 50 KB",
+    after a reload too.
+  - Trace listed 12 rows, from "Started with stub:latest" to "Finished:
+    answered". They included the command, the checkpoint, "bash finished in
+    556 ms · 51,164 characters · saved “bash result”" and each model call's
+    tokens. session.start appeared once.
+  - Save for OpenTelemetry saved the JSON in the home's artifacts folder.
+    Open showed it, and Show more added the next 16,000 characters.
+  - The saved output opened as "terminal · 50 KB". A plain answer got no work
+    details.
+  - With the run's trace folder moved away, Trace said "This run's trace is
+    no longer saved.", with no error in the chat.
+  - By keyboard: Enter opened Trace with focus on Close. Saving kept focus on
+    its button, then moved it to Open. Escape closed only the file viewer, then
+    Trace, returning focus each time. At 375px nothing scrolled sideways.
+  - Fixes from this run:
+    - A shared style pushed the records' buttons apart.
+    - Re-rendering a dialog dropped keyboard focus to the page.
+    - A row said "1 tokens".
+  - After merging the accessibility review: text contrast in both dialogs,
+    both themes, an error row and the striped rows included. The lowest was
+    5.89:1. [The accessibility report](accessibility.md) lists both dialogs.
+
+Not exercised: a stopped turn's Trace, a screenshot artifact (it needs a
+browser tool), a worker's rows in the app (pytest only), a packaged build.
+
+## September 25 Evidence results after their group closed — source only, not released
+
+**Reads and searches could keep a pulsing "…" for good.** The engine
+announces every tool call of a model response before it runs any of them.
+When a command, an edit or a write followed a read, a search or a check
+command in the same response, the command's row closed the collapsed Evidence
+group, and the earlier calls' results arrived after that. They found no row, so their
+items kept "…" with no count or output. A refused one got a "✗ not run" line
+of its own at the end of the activity, and the header never counted it.
+
+- **A result settles its own item after the group closed**
+  (`lumi/gui/static/run_cards.js` `_finalizeLiveCollapsedGroup`,
+  `lumi/gui/static/app.js` `_settleClosedEvidenceItem`). A group that closes
+  while calls in it still wait to run is kept for the rest of the turn. Their
+  results update their items as they would have in the open group: status,
+  count, output, a refusal's reason (open), and the header's "N failed" and
+  "N not run". A group with a failure or a refusal opens again.
+- **A screenshot's item settles too.** An image in its result closes the group
+  so the picture can show; the screenshot's own item kept "…".
+- **Only in its own card and lane.** A closed group answers only results drawn
+  where it is. An earlier turn's card and a worker's lane never take a result,
+  even when a backend that derives call ids from the call (Ollama) gives a
+  repeated call the same id.
+- **Fixed along the way:** a late Evidence command (`pytest`, `git status`) put
+  its status, exit code and output on the last command row instead, such as
+  the command after it that hadn't run yet.
+
+Validation on September 25, 2026:
+
+- Five tests in `tests/ui_recovery.test.cjs` drive the real handlers through
+  step start and end, with the Evidence group from `run_cards.js`:
+  - a search answered after a command closed a group spanning two steps (the
+    header keeps "steps 1–2 · 2 calls" and no failure count);
+  - a failing `pytest` answered after `make deploy` closed its group: its item
+    opens with the output and the header counts "1 failed", while the waiting
+    `make deploy` row and an earlier `npm install` row keep their own results;
+  - a policy's refusal and the user's own Deny answered after the group
+    closed: reasons on their items, "2 not run", no lines of their own;
+  - a screenshot whose image closes its group, and one whose group a later
+    `browser_js` closed;
+  - a closed group from an earlier turn doesn't take a later turn's result with
+    the same call id.
+- On the previous `app.js` and `run_cards.js`, the first four failed: items
+  still "…", `pytest`'s result on the waiting `make deploy` row, and four rows
+  for a group and one command. The fifth passed there; without the fix's
+  card-and-lane check it fails. Taking out any other part of the fix (keeping
+  closed groups, the check in `renderToolResult`, a closed group's header
+  counts, the screenshot's image) fails at least one of the others.
+- Full `pytest` 4,294 passed, 5 skipped. `ruff check .` clean, `node --check`
+  passes for `app.js` and `settings_view.js`, the four Node UI test files pass
+  (70 tests), `git diff --check` clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub, in
+  Full-auto: one response called `git status --short`, grep `TODO`, grep
+  `FORBIDDEN` (refused by the project's `lumi-policy.json`) and
+  `echo built> build.txt`.
+  - Before the fix, all three Evidence items kept "…" with no output, the
+    refusal read "✗ not run" with its reason on a line after the build
+    command, and the header read "Evidence · Searching codebase".
+  - After the fix, a reload replayed the same saved turn with ✓ and output on
+    `git status --short` and `TODO` ("1 matches"), ✗ "not run" with the
+    policy's reason open on `FORBIDDEN`, "Evidence · Searching codebase ·
+    1 not run", and no line of its own.
+  - A live run, recorded after each event: the build call closed the group
+    with three waiting items, each result then settled its own item while the
+    build row still waited, and the refusal opened the group again. Its calls
+    had the first turn's ids (the adapter derives them from the call); the
+    first turn's items kept one output each.
+  - Enter and Space opened and closed a late item's output and a refusal's
+    reason, with `aria-expanded` following. At 375 px there was no horizontal
+    scroll. A response with only a search still settled it in the open group.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+    credential was stored. `~/.codex` changed during the run, as it had before
+    it started; the fixture pointed `CODEX_HOME` at its own home and never
+    started Codex, so those writes are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code (their
+tools use the activity panel, not Evidence groups), a real screenshot in the
+app (a Node test covers the image path) and a worker's lane in the app (worker
+calls are never grouped). Unchanged: a call that never ran because the turn
+was stopped first still reads "…".
+
+## September 25 accessibility review and conformance report — source only, not released
+
+- **[`docs/accessibility.md`](accessibility.md)** reports conformance with
+  WCAG 2.1 A and AA in the VPAT 2.5 format, for the app and Lumi Cloud's
+  portal.
+  - It's a self-assessed draft, not independently verified.
+  - It says what was checked and how. Screen readers haven't been tried.
+- **Fixed during the review:**
+  - **Contrast.** The dark theme's secondary text (`--dim`) reached 3.0:1 on
+    some surfaces, and the light theme's 3.7:1. The light theme's `--muted`
+    reached 4.34:1. Every text token now reaches 4.5:1 on every surface in
+    both themes, hover included (`styles.css`).
+  - **The permission-mode menu couldn't be used from the keyboard.** Its
+    options were plain elements. It's now a menu of radio items: Enter,
+    Space or the arrows open it on the current mode, the arrows, Home and
+    End move, and Escape closes it and returns focus. `aria-expanded` and
+    `aria-checked` report its state.
+  - **A skip control**, "Skip to the message box" (or "Skip to the Settings
+    page"), is the first thing in the tab order. It's a button because the
+    launch code travels in the URL fragment.
+  - **Window titles** name the screen: "Settings · Lumi".
+  - **Focus rings** on the command-palette button, which showed only hover's
+    faint border, and on the composer's model and reasoning menus, which
+    showed only a text color change.
+  - **The daily budget field** in Usage & cost has a label.
+
+Validation on September 25, 2026, in the browser pane. A checker ran on
+rendered pages in each theme, rendered from load. It covered names, labels,
+duplicate ids, headings, language, landmarks and composited text contrast:
+
+- The app: the main view and all 25 Settings pages, clean after the fixes.
+- The portal: 21 pages as an owner, clean.
+- With real key presses: the Tab order, focus rings, the permission menu
+  (open, move, choose, Escape), the command palette and model picker
+  returning focus, and the skip control.
+- After merging the checkpoint Timeline: the Timeline dialog (opened from the
+  command palette, with no checkpoints in it) in both themes, focus moving to
+  Close and returning on Escape, the permission menu again, and the model
+  menu's focus ring in both themes.
+- Switching themes in place left CSS transitions half-done in the hidden
+  pane and gave false contrast results, so each theme was rendered from load.
+
+The full suite and the node UI tests pass.
 
 ## September 25 refused tool calls say why — source only, not released
 
@@ -852,8 +1112,8 @@ their own tool loops), macOS and Linux.
 - "Opening *file*…" showed "â€¦" instead of an ellipsis.
 - The runtime guide and [known issues](known-issues.md) now name the views
   that lost their entry point with the Agents pane: the checkpoint Timeline,
-  traces and the artifact list. (Worker transcripts and controls, and the
-  checkpoint Timeline, are back; see their sections above.)
+  traces and the artifact list. (Each is back; see worker transcripts and
+  controls, the checkpoint Timeline, and a run's trace and saved files above.)
 
 Validation on September 25, 2026:
 

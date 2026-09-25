@@ -2,7 +2,8 @@
 
 Lumi builds as a macOS app (`Lumi.app`) in a disk image (`lumi-X.Y.Z.dmg`) for
 Apple silicon. It's the same code as the Windows app, with WebKit instead of
-Edge for the window.
+Edge for the window. An installer package (`lumi-X.Y.Z.pkg`) holds the same
+app for device management; see [Deploying on macOS](deploy-macos.md).
 
 Status: source only, not released. CI builds and starts the app on every
 change (`.github/workflows/build-macos.yml`) and keeps the DMG as a build
@@ -27,6 +28,8 @@ It does what `scripts/build_clean.ps1` does on Windows:
 5. Checks the bundle against `packaging/bundle-policy-macos.json`.
 6. Makes `dist/installer/lumi-X.Y.Z.dmg`, with an Applications shortcut for
    drag-to-install.
+7. Makes `dist/installer/lumi-X.Y.Z.pkg` for device management: the same app,
+   marked so it leaves updates to the MDM (`packaging/macos_pkg.py`).
 
 ## Signing and notarization
 
@@ -44,6 +47,7 @@ the script signs `Lumi.app` with the hardened runtime and
 | `MACOS_SIGN_P12_BASE64` | The certificate and private key, exported as .p12 and base64-encoded |
 | `MACOS_SIGN_P12_PASSWORD` | The .p12 password |
 | `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` | The Apple ID, team and an app-specific password for notarization |
+| `MACOS_INSTALLER_IDENTITY` | `Developer ID Installer: <Company> (<TEAMID>)`, in the same .p12, to sign the PKG, which is then notarized and stapled too |
 
 A Developer ID needs a paid Apple Developer Program membership.
 

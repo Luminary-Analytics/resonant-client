@@ -368,6 +368,21 @@ test('billing-off and failed SONN discovery never appear as a paid subscription'
     assert.equal(app._accountSummary().name, 'SONN account');
 });
 
+test('Settings say device management updates an MSI or PKG copy', () => {
+    const app = accountView();
+    app.escapeHtml = value => String(value).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+    app.updateStatus = {version: '0.20.0', mode: 'off', describe: 'the stable channel', installed_by: 'pkg',
+        available: false, problems: []};
+    assert.match(app._renderUpdateStatus(),
+        /installed from the macOS installer package, so your organization’s device management updates it/);
+    app.updateStatus.installed_by = 'msi';
+    assert.match(app._renderUpdateStatus(), /installed from the MSI package, so/);
+    app.updateStatus = {...app.updateStatus, installed_by: 'someday', managed_by: 'Acme'};
+    assert.match(app._renderUpdateStatus(), /managed by Acme/);
+    app.aboutInfo = {version: '0.20.0', license: 'MIT', installed_by: 'pkg'};
+    assert.match(app._renderAbout(), /Installed by your organization’s device management\./);
+});
+
 test('Settings shortcut works from a composer draft without sending or clearing it', () => {
     const app = setup();
     app.userInput.value = 'Keep this draft';
@@ -983,6 +998,88 @@ test('a restored conversation stops at its checkpoint instead of replaying as a 
     assert.equal(notes[0].textContent, 'Files and conversation restored to before writing notes.txt.');
 });
 
+// A run's trace and saved files, at the end of its card's work details.
+test('a trace row says what happened, never what a call contained', () => {
+    const app = setup(() => {});
+    const label = (row) => app._traceRowLabel(row);
+    assert.equal(label({event: 'tool.call', name: 'file_write', target: 'notes.txt'}), 'Called file_write: notes.txt');
+    assert.equal(label({event: 'tool.result', name: 'bash', elapsed: 0.25, chars: 600, artifact: 'bash result'}),
+        'bash finished in 250 ms · 600 characters · saved “bash result”');
+    assert.equal(label({event: 'tool.result', name: 'bash', is_error: true, elapsed: 1.5}), 'bash failed in 1.50s');
+    assert.equal(label({event: 'tool.result', name: 'task', denied: true}), 'task was refused');
+    assert.equal(label({event: 'status', tokens: [120, 30]}), 'Model call: 120 tokens in, 30 out');
+    assert.equal(label({event: 'status', tokens: [1, 1]}), 'Model call: 1 token in, 1 out');
+    assert.equal(label({event: 'step.start', step: 2, detail: 'after file_write'}), 'Step 2 (after file_write)');
+    assert.equal(label({event: 'session.end', outcome: 'changed_unverified'}), 'Finished: changed, not verified');
+    assert.equal(label({event: 'mystery.event'}), 'mystery.event');
+    assert.equal(app._traceTime(0.5), '+0.50s');
+    assert.equal(app._traceTime(75), '+1m 15s');
+});
+
+test('a run keeps the files it saved, a worker\'s included', () => {
+    const app = setup(() => {});
+    app._liveRun = null;
+    app.renderToolResult = () => {};
+    app._activeTask = {};
+    const result = (metadata) => ({event: 'tool.result', name: 'bash', _subagent: true, metadata});
+    app.handleToolResult(result({artifact: {id: 'art_1', label: 'bash result', size: 61000}}));
+    app.handleToolResult(result({}));
+    assert.deepEqual(Array.from(app._activeTask.artifacts, (saved) => saved.id), ['art_1']);
+    assert.equal(app._artifactName(app._activeTask.artifacts[0]), 'bash result · 60 KB');
+    assert.equal(app._formatBytes(0), '');
+    assert.equal(app._formatBytes(512), '512 B');
+    assert.equal(app._formatBytes(3.5 * 1024 * 1024), '3.5 MB');
+});
+
+test('a trace or saved file that can\'t be read says so in its own dialog', () => {
+    const app = setup(() => {});
+    const renders = [];
+    app._renderRunTrace = () => renders.push('trace');
+    app._renderArtifact = () => renders.push('artifact');
+    app.handleError = () => renders.push('chat');
+    app._runTrace = {turn_id: 'turn_1', data: null};
+    app.handleEvent({event: 'error', source: 'trace', turn_id: 'turn_1', message: "This run's trace is no longer saved."});
+    assert.equal(app._runTrace.error, "This run's trace is no longer saved.");
+    // A failed save keeps the trace on show.
+    app._runTrace = {turn_id: 'turn_1', data: {rows: []}, exporting: true};
+    app.handleEvent({event: 'error', source: 'trace', turn_id: 'turn_1', message: 'The disk is full.'});
+    assert.equal(app._runTrace.exportError, 'The disk is full.');
+    assert.equal(app._runTrace.exporting, false);
+    assert.equal(app._runTrace.error, undefined);
+    app._artifactView = {id: 'art_1', loading: true};
+    app.handleEvent({event: 'error', source: 'artifact', artifact_id: 'art_1', message: 'This file is no longer saved.'});
+    assert.equal(app._artifactView.error, 'This file is no longer saved.');
+    assert.deepEqual(renders, ['trace', 'trace', 'artifact']);  // never a chat error
+});
+
+test('the saved-file viewer adds each page it is shown, and only its own', () => {
+    const app = setup(() => {});
+    app._renderArtifact = () => {};
+    app._artifactView = {id: 'art_1', artifact: {id: 'art_1'}, text: null, next: null, loading: true};
+    app._receiveArtifactView({artifact: {id: 'art_1', label: 'bash result'}, text: 'aaa', offset: 0, next_offset: 3});
+    app._receiveArtifactView({artifact: {id: 'art_2'}, text: 'zzz', offset: 3});
+    app._receiveArtifactView({artifact: {id: 'art_1'}, text: 'bbb', offset: 3, next_offset: null});
+    assert.equal(app._artifactView.text, 'aaabbb');
+    assert.equal(app._artifactView.next, null);
+    assert.equal(app._artifactView.artifact.label, 'bash result');
+});
+
+test('a turn\'s trace is saved for OpenTelemetry once, from its own dialog', () => {
+    const app = setup(() => {});
+    const sent = [];
+    app.send = (message) => sent.push(`${message.command}:${message.run_id}:${message.turn_id}`);
+    app._renderRunTrace = () => {};
+    app._runTrace = {run_id: 'run_1', turn_id: 'turn_1', data: {rows: []}};
+    app._onRunTraceAction('export');
+    app._onRunTraceAction('export');
+    assert.deepEqual(sent, ['flight_recorder_export:run_1:turn_1']);
+    app.handleEvent({event: 'artifact.created', turn_id: 'turn_2', artifact: {id: 'art_8'}});
+    assert.equal(app._runTrace.exported, undefined);
+    app.handleEvent({event: 'artifact.created', turn_id: 'turn_1', artifact: {id: 'art_9', path: 'C:/trace.json'}});
+    assert.equal(app._runTrace.exported.id, 'art_9');
+    assert.equal(app._runTrace.exporting, false);
+});
+
 // ── A refused call says why ───────────────────────────────────────────
 // Its row shows the reason the model was told: a hook's message, a policy
 // rule, an approval nobody could answer. The person's own Deny needs none.
@@ -1147,13 +1244,14 @@ function toolRowApp() {
     Object.assign(app, {
         _appendToLiveCollapsedGroup: cards._appendToLiveCollapsedGroup,
         _finalizeLiveCollapsedGroup: cards._finalizeLiveCollapsedGroup,
-        removeThinking: noop, _setLiveRunPhase: noop, ensureStepRendered: noop, scrollToBottom: noop,
+        removeThinking: noop, addThinking: noop, _setLiveRunPhase: noop, _advanceLiveMilestone: noop,
+        ensureStepRendered: noop, scrollToBottom: noop,
         trackTerminalStart: noop, trackTerminalEnd: noop,
         _liveRunToolActivity: () => ({active: 'Working', completed: 'Worked'}),
         _ensureTaskCard: () => ({activityEl: activity}),
         activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(),
         _blockToolRows: new Map(), stepToolCalls: [], stepToolResults: [], stepIsInlineOnly: false,
-        handlesTools: false, _agentRunSummary: {title: '', fileChanges: [], todos: null},
+        collapsedGroup: [], handlesTools: false, _agentRunSummary: {title: '', fileChanges: [], todos: null},
     });
     app.activity = activity;
     app.htmlWrites = dom.htmlWrites;
@@ -1296,4 +1394,144 @@ test('a worker\'s refused call shows its reason in the worker\'s own rows', () =
     assert.equal(parentRow.getAttribute('data-call-id'), 'call_2');
     assert.equal(parentRow.querySelector('.tool-status').textContent, '✓');
     assert.equal(parentRow.querySelector('.tool-denial-reason'), null);
+});
+
+// ── Evidence answered after its group closed ──────────────────────────
+// The engine announces every call of a response before it runs any. A
+// command or an edit after an Evidence call therefore closes the group while
+// that call still waits to run, and its result arrives afterwards. It still
+// belongs on its own item.
+
+const stepStart = step => ({event: 'step.start', step});
+const stepEnd = step => ({event: 'step.end', step, elapsed: 0.5});
+const grepCall = (id, pattern) => ({event: 'tool.call', name: 'grep', call_id: id, arguments: {pattern, path: '.'}});
+const bashCall = (id, command) => ({event: 'tool.call', name: 'bash', call_id: id, arguments: {command}});
+const answer = (call, output, fields = {}) => ({event: 'tool.result', name: call.name, call_id: call.call_id,
+    output, is_error: false, denied: false, elapsed: 0.2, ...fields});
+
+test('an Evidence call answered after a command closed its group settles its own item', () => {
+    const app = toolRowApp();
+    const early = grepCall('g1', 'TODO'), late = grepCall('g2', 'FIXME');
+    const build = bashCall('b1', 'make build');
+    app.play(stepStart(1), early, answer(early, 'a.py:1: TODO', {metadata: {count: 1}}), stepEnd(1),
+        stepStart(2), late, build);
+    const [group, buildRow] = app.activity.children;
+    assert.ok(!group.classList.contains('running'), 'the command closed the group');
+
+    app.play(answer(late, 'b.py:4: FIXME\nc.py:9: FIXME', {metadata: {count: 2}}),
+        answer(build, 'built', {metadata: {exit_code: 0}}), stepEnd(2));
+    const item = group.querySelectorAll('.evidence-item')[1];
+    assert.equal(item.querySelector('.tool-status').textContent, '✓');
+    assert.ok(!item.classList.contains('pending'));
+    assert.equal(item.querySelector('.tool-meta').textContent, '2 matches');
+    assert.equal(item.querySelector('.tool-evidence-output').textContent, 'b.py:4: FIXME\nc.py:9: FIXME');
+    assert.ok(item.classList.contains('has-output') && !item.classList.contains('show-output'));
+    // The header still counts both steps' calls and no failures, and stays closed.
+    assert.equal(group.querySelector('.collapsed-meta').textContent, 'steps 1–2 · 2 calls');
+    assert.doesNotMatch(group.querySelector('.collapsed-summary').textContent, /failed|not run/);
+    assert.ok(!group.classList.contains('expanded'));
+    assert.equal(buildRow.querySelector('[data-status]').textContent, '✓');
+    assert.equal(app.activity.children.length, 2, 'the result drew no line of its own');
+});
+
+test('a late Evidence command never lends its result to another command\'s row', () => {
+    const app = toolRowApp();
+    const install = bashCall('b1', 'npm install');
+    app.play(stepStart(1), install, answer(install, 'added 12 packages', {metadata: {exit_code: 0}}), stepEnd(1));
+    const checks = bashCall('b2', 'pytest -q');  // Evidence
+    const deploy = bashCall('b3', 'make deploy');  // a command row of its own
+    app.play(stepStart(2), checks, deploy,
+        answer(checks, '1 failed, 3 passed', {is_error: true, metadata: {exit_code: 1}}));
+
+    const [installRow, group, deployRow] = app.activity.children;
+    assert.equal(installRow.dataset.fullOutput, 'added 12 packages');
+    assert.match(installRow.querySelector('[data-meta]').textContent, /^exit 0/);
+    assert.ok(deployRow.querySelector('[data-status]').classList.contains('pending'), 'still waiting to run');
+    assert.equal(deployRow.dataset.fullOutput, undefined);
+    // It failed on its own item, which opens with its output, and the closed
+    // group opens again and counts it.
+    const item = group.querySelector('.evidence-item');
+    assert.equal(item.querySelector('.tool-status').textContent, '✗');
+    assert.ok(item.classList.contains('is-error') && item.classList.contains('show-output'));
+    assert.equal(item.getAttribute('aria-expanded'), 'true');
+    assert.equal(item.querySelector('.tool-evidence-output').textContent, '1 failed, 3 passed');
+    assert.match(group.querySelector('.collapsed-summary').textContent, / · 1 failed$/);
+    assert.ok(group.classList.contains('expanded') && group.classList.contains('has-errors'));
+    assert.equal(group.querySelector('.collapsed-icon').textContent, '▾');
+
+    app.play(answer(deploy, 'deployed', {metadata: {exit_code: 0}}));
+    assert.equal(deployRow.dataset.fullOutput, 'deployed');
+    assert.equal(deployRow.querySelector('[data-status]').textContent, '✓');
+});
+
+test('a refusal answered after its group closed opens its reason on its item, not on a line of its own', () => {
+    const app = toolRowApp();
+    const unanswered = grepCall('g1', 'FIXME'), declined = grepCall('g2', 'XXX');
+    const deploy = bashCall('b1', 'make deploy');
+    app.play(stepStart(1), unanswered, declined, deploy,
+        refusal(unanswered, NO_PROMPT), refusal(declined, 'Tool execution denied by user.'),
+        answer(deploy, 'deployed', {metadata: {exit_code: 0}}));
+
+    const rows = app.activity.children;
+    assert.equal(rows.length, 2);
+    assert.ok(!rows.some(row => row.classList.contains('is-denied')));
+    const group = rows[0];
+    const [blocked, denied] = group.querySelectorAll('.evidence-item');
+    assert.equal(blocked.querySelector('.tool-status').textContent, '✗');
+    assert.equal(blocked.querySelector('.tool-status').style.color, 'var(--warn)');
+    assert.equal(blocked.querySelector('.tool-meta').textContent, 'not run');
+    assert.equal(blocked.querySelector('.tool-evidence-output').textContent, NO_PROMPT);
+    assert.ok(blocked.classList.contains('is-denied') && blocked.classList.contains('show-output'));
+    assert.equal(blocked.getAttribute('aria-expanded'), 'true');
+    // The person's own Deny: marked, with nothing to open.
+    assert.equal(denied.querySelector('.tool-status').textContent, '✗');
+    assert.equal(denied.querySelector('.tool-meta').textContent, 'denied');
+    assert.equal(denied.querySelector('.tool-evidence-output'), null);
+    // The group counts both, opens again, and doesn't call them failures.
+    assert.match(group.querySelector('.collapsed-summary').textContent, / · 2 not run$/);
+    assert.ok(group.classList.contains('expanded') && !group.classList.contains('has-errors'));
+    assert.equal(group.querySelector('.collapsed-icon').textContent, '▾');
+});
+
+test('a screenshot settles its item when its image closes the group, or a later call already did', () => {
+    const app = toolRowApp();
+    const images = [];
+    app.renderScreenshotImage = (data, type, name) => images.push(`${name}:${data}`);
+    const shot = id => ({event: 'tool.call', name: 'browser_screenshot', call_id: id, arguments: {}});
+    const image = data => ({image: {data, media_type: 'image/png'}});
+    const alone = shot('s1');
+    app.play(stepStart(1), alone, answer(alone, 'Captured the page', image('AAAA')), stepEnd(1));
+    const followed = shot('s2');
+    const script = {event: 'tool.call', name: 'browser_js', call_id: 'j1', arguments: {code: 'document.title'}};
+    app.play(stepStart(2), followed, script, answer(followed, 'Captured the page', image('BBBB')));
+
+    const items = app.activity.querySelectorAll('.evidence-item');
+    assert.equal(items.length, 2);
+    for (const item of items) {
+        assert.equal(item.querySelector('.tool-status').textContent, '✓');
+        assert.ok(!item.classList.contains('pending'));
+    }
+    assert.equal(images.join(' '), 'browser_screenshot:AAAA browser_screenshot:BBBB');
+    assert.equal(app.activity.children.length, 3, 'two groups and the script\'s row, no other lines');
+});
+
+test('a closed group\'s waiting item answers only results drawn in its own turn', () => {
+    const app = toolRowApp();
+    // A turn that never finished (Lumi closed while its search waited to run),
+    // as a replay shows it: no session end cleared its closed group.
+    const stale = grepCall('call_5f2a9c01', 'TODO');
+    app.play(stepStart(1), stale, bashCall('b1', 'make build'));
+    const staleItem = app.activity.querySelector('.evidence-item');
+    // The next turn draws in a new task card. A backend that derives ids from
+    // the call gives the same search the same id there.
+    const nextActivity = app.element('div');
+    app._ensureTaskCard = () => ({activityEl: nextActivity});
+    const again = grepCall('call_5f2a9c01', 'TODO');
+    app.play(stepStart(1), bashCall('b2', 'make lint'), again,
+        answer(again, 'a.py:1: TODO', {metadata: {count: 1}}));
+
+    const row = nextActivity.children.find(el => el.getAttribute('data-call-id') === 'call_5f2a9c01');
+    assert.equal(row.querySelector('.tool-status').textContent, '1 matches');
+    assert.ok(staleItem.classList.contains('pending'));
+    assert.equal(staleItem.querySelector('.tool-status').textContent, '…');
 });

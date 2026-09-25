@@ -28,6 +28,8 @@ CONNECTION_TYPES: dict[str, str] = {
     "anthropic": "Anthropic Messages API",
     "anthropic-bedrock": "Claude on Amazon Bedrock",
     "anthropic-vertex": "Claude on Google Vertex AI",
+    # A model provider a capability pack runs as a process (engine/provider_extensions.py).
+    "extension": "A provider from a capability pack",
 }
 AUTH_METHODS = ("bearer", "header", "none", "aws", "google", "entra", "oauth")
 BACKEND_PREFIX = "conn-"
@@ -107,8 +109,13 @@ def normalize_connection(raw: Any, existing_ids: set[str] | None = None) -> dict
         "id": connection_id,
         "name": name,
         "type": kind,
-        "base_url": _base_url(raw.get("base_url"), required=needs_url),
+        "base_url": "" if kind == "extension" else _base_url(raw.get("base_url"), required=needs_url),
     }
+    if kind == "extension":
+        pack, provider = str(raw.get("pack") or "").strip(), str(raw.get("provider") or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", pack) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,39}", provider):
+            raise ValueError("An extension connection names its pack and the pack's provider.")
+        connection["pack"], connection["provider"] = pack, provider
     default_auth = {"anthropic-bedrock": "aws", "anthropic-vertex": "google"}.get(kind, "bearer")
     if kind == "azure-openai" or kind == "anthropic":
         default_auth = "header"
@@ -123,6 +130,8 @@ def normalize_connection(raw: Any, existing_ids: set[str] | None = None) -> dict
         raise ValueError("Microsoft Entra ID sign-in only applies to Azure OpenAI connections.")
     if auth == "oauth" and kind in {"anthropic-bedrock", "anthropic-vertex"}:
         raise ValueError("OAuth sign-in applies to HTTP gateways, not Bedrock or Vertex AI.")
+    if kind == "extension" and auth not in ("bearer", "none"):
+        raise ValueError("An extension's key, if it has one, goes to its process as LUMI_PROVIDER_API_KEY.")
     connection["auth"] = auth
     default_header = {"azure-openai": "api-key", "anthropic": "x-api-key"}.get(kind, "Authorization")
     header = str(raw.get("auth_header") or default_header).strip()
@@ -179,6 +188,9 @@ def normalize_connection(raw: Any, existing_ids: set[str] | None = None) -> dict
         if path and not os.path.isfile(path):
             raise ValueError(f"{path} doesn't exist or isn't a file.")
     connection["client_cert"], connection["client_key"] = cert, cert_key
+    if kind == "extension":
+        # Only the key reaches a provider's process; HTTP settings don't apply.
+        connection.update(headers={}, client_cert="", client_key="", auth_header="")
     if kind in {"anthropic-bedrock", "anthropic-vertex"} and not connection["region"]:
         raise ValueError("Set the region for this connection.")
     if kind == "anthropic-vertex" and not connection["project"]:
@@ -345,13 +357,24 @@ class OpenAICompatibleBackend(KimiBackend):
 
 
 def discover_models(connection: dict[str, Any], api_key: str = "", *, timeout: float = 5.0,
-                    transport=None) -> list[str]:
-    """Models to offer: the configured list, else what the endpoint reports."""
+                    transport=None, settings=None) -> list[str]:
+    """Models to offer: the configured list, else what the endpoint reports.
+
+    ``settings`` supplies an extension's pack approvals; an extension that
+    can't run raises ProviderExtensionError, which says why.
+    """
     if connection.get("models"):
         return list(connection["models"])
     kind = connection["type"]
     if kind in {"anthropic-bedrock", "anthropic-vertex", "azure-openai"}:
         return []
+    if kind == "extension":
+        from .engine.provider_extensions import find_provider, list_models
+
+        pack, provider = find_provider(connection["pack"], connection["provider"], settings)
+        # Models the manifest lists are offered without starting the process.
+        declared = [model["id"] for model in provider.get("models") or []]
+        return declared or [model["id"] for model in list_models(pack, provider, api_key=api_key, timeout=timeout)]
     try:
         token_provider, tls = sign_in(connection, api_key, transport=transport)
         # With sign-in, the saved secret goes only to the token endpoint.
@@ -407,9 +430,13 @@ def sign_in(connection: dict[str, Any], api_key: str = "", *, transport=None):
 
 
 def create_connection_backend(connection: dict[str, Any], model: str, api_key: str = "", *,
-                              thinking: str | None = None, transport=None):
-    """The backend for one connection and model."""
+                              thinking: str | None = None, transport=None, settings=None):
+    """The backend for one connection and model; ``settings`` supplies an extension's pack approvals."""
     kind = connection["type"]
+    if kind == "extension":
+        from .engine.provider_extensions import ExtensionBackend
+
+        return ExtensionBackend(connection, model, api_key, settings=settings)
     overrides = capability_overrides(connection)
     common_headers = connection.get("headers") or {}
     token_provider, tls = sign_in(connection, api_key, transport=transport)

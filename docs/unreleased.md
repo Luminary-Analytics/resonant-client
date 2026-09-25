@@ -103,6 +103,290 @@ text), a second approver's refusal (it takes the same path, with the
 approval's message as the reason), and the terminal UI, which still prints
 "✗ denied" without the reason.
 
+## September 25 checkpoint Timeline — source only, not released
+
+- **The Timeline is back** (`lumi/gui/static/app.js`, `openTimeline`;
+  [guide](desktop-workflow.md#undoing-changes-the-timeline)).
+  - **Timeline** in the chat header lists the open conversation's
+    checkpoints, newest first, by what each was saved before, for example
+    "Before writing notes.txt". The command palette and the session's menu
+    open it too.
+  - **Compare** (Git projects) shows what changed since a checkpoint.
+  - **Restore…** asks for Files, Conversation, or Files and conversation. It
+    says what each does and where your current files will be kept, and it
+    waits for the current run to stop.
+  - The Timeline left the page with the Agents pane in v0.14.0, so restoring
+    a conversation or a non-Git snapshot had no desktop control.
+- **Checkpoints belong to the saved conversation**
+  (`AppState.bind_conversation_checkpoints`). They were filed under a random
+  id for each session build, so an app restart, or a draft's first message,
+  started an empty Timeline.
+- **A worker's checkpoint restores files only.** It holds the worker's
+  conversation. Checkpoints now record whether a worker saved them
+  (`metadata.subagent`), and the server refuses the other modes.
+- **The list sends only what each call acted on**: a path, or a command's
+  first line. It sent each checkpoint's full arguments, including a write's
+  whole file.
+- **Each restore is marked in the chat** by a display-only `timeline.restored`
+  event. Without it, a conversation restored mid-turn showed "Response didn't
+  start" and Retry, as if the turn had crashed, after every reload. The
+  model's conversation never contains the event.
+- For Codex and Claude Code conversations, the Timeline says that their own
+  changes have no checkpoints.
+- Replay fixes found on the way:
+  - A replayed turn that never ended kept a ticking "thinking" row inside its
+    **Work details**.
+  - A reloaded conversation counted each turn's tools on top of the earlier
+    turns', for example "2 actions" for a turn with one.
+
+Validation on September 25, 2026:
+
+- Full `pytest` 4,351 passed, 5 skipped, after merging `main`; `ruff check`
+  clean.
+- `tests/test_checkpoint_timeline_ui.py` (6 tests) covers:
+  - the list without a call's contents;
+  - a worker's checkpoint, refused for the conversation, restored for files;
+  - checkpoints that outlive a rebuilt session, and a draft's first turn
+    saving to its conversation;
+  - the worker flag on checkpoints;
+  - the chat marker after a files and a conversation restore, kept out of the
+    model's conversation.
+- `tests/ui_recovery.test.cjs` adds 5 Timeline tests: labels, restore choices
+  and messages, the confirm flow, CLI connections, and a restored
+  conversation's replay. The three UI node suites: 58 passed.
+- In the browser pane, with an isolated home and a scripted local model:
+  - A non-Git project, where two turns wrote `notes.txt`. The Timeline listed
+    two "Before writing notes.txt" file snapshots. **Files** put back the
+    original and kept the replaced copy in a recovery archive.
+    **Conversation**, chosen and confirmed with the keyboard, rewound the
+    chat.
+  - After an app restart, the Timeline still listed them. **Files and
+    conversation** put back the first turn's file and ended the chat with
+    "Files and conversation restored to before writing notes.txt", with no
+    crash banner, after a reload too. A new message carried on from there
+    and saved a third checkpoint.
+  - The header button, the palette and the session menu each opened it.
+    Escape returned focus to the Timeline button. At 375px nothing scrolled
+    sideways.
+  - A Git project. **Compare** listed `M notes.txt` with its diff stat.
+    **Files** put the file back and kept the replaced copy on a
+    `lumi-recovery/…` branch.
+  - Fixes from this run:
+    - The header button was hidden while autonomous sessions are off, because
+      it shared their CSS class.
+    - A restored conversation showed the crash banner.
+    - The thinking row and the tool counts in replays.
+    - The Restore buttons had identical accessible names; they now include
+      the checkpoint's time.
+    - At 375px the checkpoint details were cut off.
+
+Not exercised: a Codex or Claude Code conversation (its Timeline text is
+tested only in node); a packaged build.
+
+## September 25 the organization's pack registry — source only, not released
+
+- **The registry in policy** (`lumi/policy.py`, `lumi/engine/capability_packs.py`,
+  [guide](extensions.md#your-organizations-registry)).
+  - `extensions.registry` lists the packs an organization approves: an id,
+    a public https repository, a full commit, an optional folder and an
+    optional content digest.
+  - `extensions.registry_only` turns off every other pack, and a registry
+    pack at another version, with the reason in Settings.
+  - A pack matches its entry by its content digest when one is pinned.
+    Otherwise it must have been installed from that repository, commit and
+    folder.
+  - Lumi Cloud's new Extensions page writes the registry
+    (Luminary-Analytics/lumi-cloud#26).
+- **Settings > Capability packs** lists the registry under the organization's name.
+  - Each entry shows whether it's installed at the pinned version, with
+    **Install** or **Install this version**. Registry packs' cards say
+    whether they're that version.
+  - A registry install fetches exactly the pinned commit. It refuses a pack
+    whose id or content digest differs before replacing what's installed.
+  - People still approve each pack.
+- **`lumi extension check`** prints the content digest to pin.
+- **Line endings.** Signatures and registry digests now count CRLF as LF in
+  text files. A file with a NUL byte still counts byte for byte. The
+  browser check below found this: the fixture's digest came from a CRLF
+  working copy and the installed checkout had LF, so the pin never matched.
+  Signatures from #61 had the same problem across Windows and other systems.
+
+Validation on September 25, 2026:
+
+- `tests/test_pack_registry.py` (5 tests) covers:
+  - the policy's checks;
+  - `registry_only` with a digest pin and with install records, and
+    without the switch;
+  - the digest `lumi extension check` prints;
+  - the Settings commands with a real Git repository: installing, a newer
+    pin turning the old install off until updated, and refusals (a wrong
+    digest leaving the install alone, an id not in the registry, a commit
+    holding another pack).
+- `test_pack_signing.py` adds line-ending, binary and lone-CR cases.
+
+In the browser pane, with a pilot policy whose registry pinned one pack by
+commit and digest, and a stray personal pack:
+
+- The stray pack was off: "Fixture Org's policy allows only packs from its
+  registry."
+- The registry listed Review tools at its commit, "content pinned · Not
+  installed".
+- **Install** failed until the line-ending fix. After it, the pack
+  installed "at this version", waited for approval, and was approved and
+  active.
+
+Not yet: approving a registry pack for everyone, private repositories (a
+GitHub App), and update notices.
+
+## September 25 signed capability packs — source only, not released
+
+- **Publisher signatures** (`lumi/engine/pack_signing.py`,
+  [guide](extensions.md#signing-a-pack)).
+  - `lumi extension keygen` makes an Ed25519 key, and `lumi extension sign`
+    writes `lumi-pack.sig`. It covers every file in the pack but itself,
+    signed together with the publisher's name and key.
+  - A key's id is the first 16 hex digits of the SHA-256 of the key.
+- **Lumi checks the signature whenever it loads a pack.** Settings >
+  Capability packs shows the result:
+  - **Verified**, under the name you or your organization gave the key;
+  - **Signed with a key you haven't trusted**, which offers to trust it;
+  - **Invalid**: the files changed or the signature is malformed. The pack
+    can't be approved.
+  - **Not signed**.
+  - Trusting a key approves nothing.
+  - **Trusted publishers** lists yours, with **Forget**, and your
+    organization's.
+- **Organization policy.** `extensions.trusted_publishers` names publishers
+  and their keys. `extensions.require_signed` turns off every pack one of
+  them didn't sign. Keys a person trusted don't count, and then no Trust
+  buttons appear. Lumi Cloud's Policy page writes both
+  (Luminary-Analytics/lumi-cloud#25).
+- `lumi extension check` shows a pack's signature too.
+
+Validation on September 25, 2026: `tests/test_pack_signing.py` (13 tests)
+covers:
+
+- signing and checking, and keys that are trusted, unknown, or match only
+  by id;
+- tampering: an edited file, an added file, a changed publisher name, a
+  wrong key id, a new format, unreadable JSON;
+- refusing a missing publisher, a non-key and an RSA key;
+- an invalid signature turning a pack off;
+- an organization requiring its publishers, where a key the person trusted
+  doesn't count, and the policy's validation;
+- trusting and forgetting a publisher through the Settings commands,
+  including refusing one whose files changed;
+- the CLI's keygen (never overwriting a key), sign and check.
+
+In the browser pane, with four personal packs:
+
+- The genuine pack showed "Signed as “Acme” with key 1966 f367 e44a 956b".
+  A look-alike signed "Acme" with another key showed its own key. The
+  unsigned pack showed "Not signed". The tampered pack was off, with its
+  reason shown once and no Approve button.
+- **Trust “Acme”** made only the genuine pack "Signed by Acme · verified",
+  still not approved. **Forget** undid it.
+- With a pilot policy trusting the key as "Acme IT" and requiring
+  signatures:
+  - The genuine pack showed "Signed by Acme IT" and could be approved.
+  - The look-alike and the unsigned pack were off, with "Fixture Org's
+    policy turns off packs that a publisher it trusts didn't sign."
+  - The policy's publisher was listed without Forget.
+  - Two fixes came from this run: the Trust buttons now name their key and
+    pack for screen readers, and they no longer appear under such a policy.
+
+Not yet: signed updates approving themselves, a revocation list, an
+organization registry of packs.
+
+## September 25 model providers as extensions (Extension SDK v1) — source only, not released
+
+- **Model providers from capability packs** (`lumi/engine/provider_extensions.py`,
+  [guide](extensions.md)).
+  - A pack's manifest can declare `providers`: a command, or one per system,
+    and the models it offers.
+  - Lumi starts the provider for each request and talks to it in JSON lines
+    over standard input and output: `models`, and `stream` answered with
+    text, tool calls, then `done` (usage, and a cost when the provider knows
+    it) or `error`.
+- **Connections.** Settings > Connections has a new type, **A provider from a
+  capability pack**, which picks an approved pack's provider.
+  - The connection's key reaches the process as `LUMI_PROVIDER_API_KEY`.
+  - **Test connection** starts the provider.
+  - Models the manifest lists are offered without starting it.
+- **Trust.**
+  - Only approved, enabled personal packs provide models. The pack is
+    resolved again before every start, so a changed or revoked pack stops at
+    once.
+  - Settings > Capability packs shows each provider's command before
+    approval.
+  - The process gets the usual child environment, a data folder outside the
+    pack, and `PYTHONPYCACHEPREFIX`. Without that, a Python provider wrote
+    `__pycache__` into its pack on its first run and turned the pack off. It
+    also keeps `.pyc` files shipped in a pack from running instead of the
+    reviewed source.
+  - A bare program name comes from absolute PATH entries only; Windows would
+    otherwise look in Lumi's current folder first.
+- **Manifest version 1** (`lumi/engine/capability_packs.py`):
+  - `manifest_version`; a newer one doesn't load, and Settings says why;
+  - `lumi`, the Lumi versions a pack works with;
+  - checked `providers`.
+- **The SDK** (`sdk/`):
+  - `lumi_extension`, a Python package using only the standard library:
+    `Provider`, `serve`, the events and `data_dir`;
+  - `lumi_extension.testing`, which runs a provider as Lumi does;
+  - `sdk/templates/provider-python`, with an offline `echo` model, an
+    OpenAI-compatible `remote` model and tests;
+  - `sdk/new_pack.py`, which makes a pack from the template;
+  - `sdk/schema/lumi-pack.schema.json`, for editors.
+- **`lumi extension check <folder>`** (`lumi/extension_check.py`) loads a
+  pack with Lumi's rules, lists its models and asks the first one a short
+  question.
+
+Validation on September 25, 2026: `tests/test_provider_extensions.py` (32
+tests) starts real provider processes. It covers:
+
+- the manifest's rules and version requirements;
+- the template, made with `sdk/new_pack.py`: approved, answering in a real
+  session with a `file_read` tool call, still approved afterwards with no
+  `__pycache__` in the pack, and refused after an edit;
+- packs inside a project never providing models;
+- the template's own tests passing;
+- `lumi extension check` on a working, a failing and a too-new pack;
+- the key and environment the process gets, and no other model keys;
+- failures: an exit code with the key removed from the message, output that
+  isn't JSON, a timeout;
+- Stop ending the process;
+- the events Lumi reads, including usage, cost and unknown types;
+- unfinished and refused answers;
+- the conversation as text, with notices for images;
+- PATH lookup that ignores the current folder and relative entries;
+- the Connections page's data, connection checks, the SDK's `serve` and test
+  kit, and the manifest schema (skipped without jsonschema).
+
+Removing the `PYTHONPYCACHEPREFIX` line made the session test fail: the pack
+turned itself off after its first run.
+
+In the browser pane, with the template installed in an isolated
+`~/.lumi/packs`:
+
+- The pack's review listed the provider's command for each system. It was
+  approved there.
+- Adding a connection of the new type showed only the fields that apply and
+  named the connection after the provider.
+- **Test connection** started the provider through a PATH lookup of
+  `python`: "Connected · 2 models available: echo, remote". Saving put both
+  models in the model menu.
+- With `echo`, the message `call file_read {"path": "README.md"}` made the
+  provider call the tool; Lumi ran it, and the next answer quoted the file.
+  The pack folder had no `__pycache__` afterwards.
+- After `provider.py` was edited, the next message failed with "Approve the
+  Acme models pack in Settings > Capability packs to use its models. It
+  changed since you approved it." The pack showed "Changed since approval ·
+  off" until it was approved again.
+
+Not yet: signed packs, an organization registry, long-running providers,
+images and reasoning levels.
+
 ## September 25 worker transcripts and controls — source only, not released
 
 The Agents pane that held a worker's transcript and its pause, resume, stop,
@@ -306,8 +590,8 @@ their own tool loops), macOS and Linux.
 - "Opening *file*…" showed "â€¦" instead of an ellipsis.
 - The runtime guide and [known issues](known-issues.md) now name the views
   that lost their entry point with the Agents pane: the checkpoint Timeline,
-  traces and the artifact list. (Worker transcripts and controls are back;
-  see "worker transcripts and controls" above.)
+  traces and the artifact list. (Worker transcripts and controls, and the
+  checkpoint Timeline, are back; see their sections above.)
 
 Validation on September 25, 2026:
 

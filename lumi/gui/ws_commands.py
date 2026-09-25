@@ -299,19 +299,57 @@ async def _agent_runtime_control(ctx: CommandContext) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _conversation_checkpoints(ctx: CommandContext, *, required: bool = False) -> Any:
+    """The open conversation's checkpoint store (AppState.bind_conversation_checkpoints)."""
+    bind = getattr(ctx.state, "bind_conversation_checkpoints", None)
+    if callable(bind) and getattr(ctx.state, "session", None) is not None:
+        store = bind(ctx.state.session)
+    else:
+        store = ctx.session_attr("checkpoint_store")
+    if store is None and required:
+        raise RuntimeError("This conversation has no checkpoints.")
+    return store
+
+
+def _timeline_item(checkpoint: Any) -> dict[str, Any]:
+    """One checkpoint as the Timeline shows it.
+
+    A write's arguments hold the whole file, so only what the call acted on
+    (a path, a command, a branch, a commit message) goes to the page.
+    """
+    metadata = checkpoint.metadata if isinstance(checkpoint.metadata, dict) else {}
+    arguments = metadata.get("arguments") if isinstance(metadata.get("arguments"), dict) else {}
+    target = next(
+        (str(arguments[key]) for key in ("path", "command", "branch", "message") if arguments.get(key)),
+        "",
+    )
+    return {
+        "id": checkpoint.id,
+        "sequence": checkpoint.sequence,
+        "created_at": checkpoint.created_at,
+        "reason": checkpoint.reason,
+        "tool_name": checkpoint.tool_name,
+        "target": target.splitlines()[0][:200] if target else "",
+        "snapshot": "git" if checkpoint.workspace_ref else ("archive" if checkpoint.workspace_archive else ""),
+        # A worker's snapshot holds the worker's conversation: files only.
+        "subagent": bool(metadata.get("subagent")),
+    }
+
+
 @command("session_timeline_list")
 async def _session_timeline_list(ctx: CommandContext) -> None:
-    store = ctx.session_attr("checkpoint_store")
-    values = [item.to_dict() for item in store.list()] if store else []
+    store = _conversation_checkpoints(ctx)
+    values = [_timeline_item(item) for item in store.list()] if store else []
     await ctx.send({"event": "session.timeline_list", "checkpoints": values})
 
 
 @command("session_timeline_compare")
 async def _session_timeline_compare(ctx: CommandContext) -> None:
     try:
-        store = ctx.session_attr("checkpoint_store")
-        data = await _in_executor(store.compare, str(ctx.msg.get("checkpoint_id") or ""))
-        await ctx.send({"event": "session.timeline_comparison", "data": data})
+        store = _conversation_checkpoints(ctx, required=True)
+        checkpoint_id = str(ctx.msg.get("checkpoint_id") or "")
+        data = await _in_executor(store.compare, checkpoint_id)
+        await ctx.send({"event": "session.timeline_comparison", "checkpoint_id": checkpoint_id, "data": data})
     except Exception as exc:
         await ctx.send_error(str(exc))
 
@@ -322,43 +360,63 @@ async def _session_timeline_restore(ctx: CommandContext) -> None:
     try:
         if ctx.runs is not None and ctx.runs.busy:
             raise RuntimeError("Stop the active run before restoring a checkpoint")
-        store = ctx.session_attr("checkpoint_store")
+        store = _conversation_checkpoints(ctx, required=True)
         checkpoint_id = str(ctx.msg.get("checkpoint_id") or "")
         mode = str(ctx.msg.get("mode") or "both")
+        item = _timeline_item(store.get(checkpoint_id))
+        if mode in {"conversation", "both"} and item["subagent"]:
+            raise RuntimeError(
+                "A worker's checkpoint holds the worker's conversation, not this one. "
+                "Restore its files only."
+            )
         data = await _in_executor(store.restore, checkpoint_id, mode)
-        if mode in {"conversation", "both"}:
+        restores_conversation = mode in {"conversation", "both"}
+        if restores_conversation:
             state.session.conversation_history = data.get("conversation_history") or []
-            if state.project.current_session:
-                state.project.current_session.conversation_history = list(state.session.conversation_history)
-                state.project.current_session.display_events = list(data.get("display_events") or [])
-                state.project.current_session.save()
+        # The chat marks where it was restored: a restored conversation often
+        # ends in the middle of a turn, which would otherwise replay as a turn
+        # that crashed. Display only; the model's conversation never sees it.
+        marker = {"event": "timeline.restored", "mode": mode, "checkpoint": item}
+        record = state.project.current_session
+        if record and restores_conversation:
+            record.conversation_history = list(state.session.conversation_history)
+            record.display_events = [*(data.get("display_events") or []), marker]
+            record.save()
+        elif record:
+            record.append_display_events([marker])
         if state.session.hook_runner:
             from ..engine.hooks import HookType
             state.session.hook_runner.emit(
                 HookType.CHECKPOINT_RESTORED,
                 {"checkpoint_id": checkpoint_id, "mode": mode, "project_path": ctx.project_path},
             )
-        record = state.project.current_session
         if record:
             snapshot = record.history_snapshot()
             history_page = snapshot["page"]
             display_events = history_page["events"]
             projections = snapshot["projections"]
-        else:
-            display_events = list(data.get("display_events") or [])[-240:]
+        elif restores_conversation:
+            restored_events = [*(data.get("display_events") or []), marker]
+            display_events = restored_events[-240:]
             history_page = {
                 "events": display_events,
                 "start_seq": None,
                 "end_seq": None,
-                "has_more": len(data.get("display_events") or []) > len(display_events),
-                "total_events": len(data.get("display_events") or []),
+                "has_more": len(restored_events) > len(display_events),
+                "total_events": len(restored_events),
                 "as_of_seq": -1,
             }
+            projections = {}
+        else:
+            # Files only, and no saved conversation to redraw: the chat stays.
+            display_events = history_page = None
             projections = {}
         public_data = {
             key: value for key, value in data.items()
             if key not in {"conversation_history", "display_events"}
         }
+        # The page names the checkpoint; a write's full arguments stay here.
+        public_data["checkpoint"] = item
         await ctx.send({
             "event": "session.timeline_restored",
             "data": public_data,
@@ -475,7 +533,7 @@ async def _set_capability_pack_approval(ctx: CommandContext, *, approve: bool) -
     await ctx.send({
         "event": "ui_notice",
         "message": (
-            "Capability pack approved. Its hooks, skills, agents and MCP servers are active."
+            "Capability pack approved. Its hooks, skills, agents, MCP servers and model providers are active."
             if approve else
             "Capability pack approval revoked. Its hooks and MCP servers are off."
         ),
@@ -490,6 +548,34 @@ async def _capability_pack_approve(ctx: CommandContext) -> None:
 @command("capability_pack_revoke")
 async def _capability_pack_revoke(ctx: CommandContext) -> None:
     await _set_capability_pack_approval(ctx, approve=False)
+
+
+async def _pack_publisher_change(ctx: CommandContext, change, notice: str) -> None:
+    from ..engine.capability_packs import CapabilityPackError
+
+    try:
+        payload = await _in_executor(change)
+    except CapabilityPackError as exc:
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+        payload["error"] = str(exc)
+        await ctx.send(payload)
+        return
+    await ctx.send(payload)
+    await ctx.send({"event": "ui_notice", "message": notice})
+
+
+@command("capability_pack_trust_publisher")
+async def _capability_pack_trust_publisher(ctx: CommandContext) -> None:
+    # Trusting a publisher approves nothing: each pack still needs its own approval.
+    await _pack_publisher_change(ctx, lambda: ctx.state.trust_pack_publisher(
+        str(ctx.msg.get("pack_id") or ""), str(ctx.msg.get("path") or "")),
+        "Publisher trusted. Packs signed with its key show as verified; you still approve each one.")
+
+
+@command("capability_pack_forget_publisher")
+async def _capability_pack_forget_publisher(ctx: CommandContext) -> None:
+    await _pack_publisher_change(ctx, lambda: ctx.state.forget_pack_publisher(str(ctx.msg.get("key_id") or "")),
+                                 "Publisher forgotten. Packs it signed show as signed by an unknown publisher.")
 
 
 @command("capability_pack_install")
@@ -510,6 +596,25 @@ async def _capability_pack_install(ctx: CommandContext) -> None:
     await ctx.send({"event": "ui_notice", "message": (
         f"Installed {installed['name']} at {installed['commit'][:12]}. It's off until you review "
         "what it would run and approve it.")})
+
+
+@command("capability_pack_install_registry")
+async def _capability_pack_install_registry(ctx: CommandContext) -> None:
+    """Install a pack from the organization's registry at its pinned commit; approval stays separate."""
+    from ..engine.pack_install import PackInstallError
+
+    try:
+        payload, installed = await _in_executor(
+            lambda: ctx.state.install_registry_pack(str(ctx.msg.get("pack_id") or "")))
+    except PackInstallError as exc:
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+        payload["error"] = str(exc)
+        await ctx.send(payload)
+        return
+    await ctx.send(payload)
+    await ctx.send({"event": "ui_notice", "message": (
+        f"Installed {installed['name']} at {installed['commit'][:12]}, the version your organization pins. "
+        "It's off until you review what it would run and approve it.")})
 
 
 @command("capability_pack_remove")
@@ -3933,13 +4038,20 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
 
 def _connections_payload(state) -> dict:
     from ..connections import AUTH_METHODS, CONNECTION_TYPES, list_connections, secret_setting
+    from ..engine import provider_extensions
 
     items = []
     for connection in list_connections(state.settings):
         key = str(state.settings.get("api_keys", secret_setting(connection["id"]), "") or "")
         items.append({**connection, "has_key": bool(key)})
+    try:
+        extensions = provider_extensions.available(state.settings)
+    except Exception:  # noqa: BLE001 - a broken pack folder mustn't hide the connections
+        logger.warning("Listing extension providers failed", exc_info=True)
+        extensions = []
     return {"event": "connections", "data": {
-        "items": items, "types": CONNECTION_TYPES, "auth_methods": list(AUTH_METHODS)}}
+        "items": items, "types": CONNECTION_TYPES, "auth_methods": list(AUTH_METHODS),
+        "extension_providers": extensions}}
 
 
 def _connection_in_use(ctx: CommandContext, connection_id: str) -> bool:
@@ -4038,14 +4150,17 @@ async def _cmd_connection_test(ctx: CommandContext) -> None:
             token_provider, _tls = sign_in(connection, api_key)
             if token_provider is not None:
                 token_provider()
-            models = discover_models(connection, api_key, timeout=8.0)
+            models = discover_models(connection, api_key, timeout=8.0, settings=ctx.state.settings)
             if connection["type"] in {"openai-compatible"} and not models:
                 raise ValueError(f"{connection['name']} answered, but listed no models. "
                                  "Enter the model ids by hand.")
             probe_model = (models or connection["models"] or [""])[0]
             if connection["type"] != "openai-compatible":
-                backend = create_connection_backend(connection, probe_model, api_key)
+                backend = create_connection_backend(connection, probe_model, api_key, settings=ctx.state.settings)
                 health = backend.health()
+                # An extension's test starts its process; a failure is the result.
+                if connection["type"] == "extension" and not health.get("ok"):
+                    raise ValueError(health.get("error") or "The provider didn't answer.")
                 models = models or health.get("models") or []
             return {"ok": True, "models": models[:200],
                     "message": f"Connected · {len(models)} model{'s' if len(models) != 1 else ''} available"}

@@ -59,6 +59,7 @@ import fnmatch
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -100,6 +101,14 @@ class Policy:
     packs_allowed: tuple[str, ...] | None = None
     # Repository URL patterns packs may be installed from (lumi/engine/pack_install.py).
     sources_allowed: tuple[str, ...] | None = None
+    # Capability pack publishers the organization trusts ({key_id: {name, public_key}},
+    # engine/pack_signing.py), and whether packs they didn't sign stay off.
+    publishers: dict[str, dict] = field(default_factory=dict)
+    require_signed: bool = False
+    # The organization's registry of packs, each pinned to a commit and maybe a
+    # content digest ({pack id: entry}), and whether every other pack stays off.
+    registry: dict[str, dict] = field(default_factory=dict)
+    registry_only: bool = False
     trusted_keys: dict[str, str] = field(default_factory=dict)
     # Negotiated prices (lumi/pricing.py): ordered (pattern, Price) pairs.
     prices: tuple = ()
@@ -186,6 +195,10 @@ class Policy:
             "mcp_allow_stdio": self.mcp_allow_stdio,
             "packs_allowed": list(self.packs_allowed) if self.packs_allowed is not None else None,
             "sources_allowed": list(self.sources_allowed) if self.sources_allowed is not None else None,
+            "pack_publishers": sorted(entry["name"] for entry in self.publishers.values()),
+            "require_signed_packs": self.require_signed,
+            "registry_packs": sorted(self.registry),
+            "registry_only": self.registry_only,
             "prices": [pattern for pattern, _ in self.prices],
             "budgets": len(self.budgets),
             "capability_overrides": [pattern for pattern, _ in self.capability_overrides],
@@ -216,6 +229,40 @@ def _patterns(value: Any, where: str) -> tuple[str, ...]:
 def canonical(document: dict) -> bytes:
     """The bytes a signature covers: sorted keys, no whitespace, UTF-8."""
     return json.dumps(document, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def _pack_publishers(value: Any) -> dict[str, dict]:
+    if value is None:
+        return {}
+    from .engine.pack_signing import PackSigningError, publishers
+
+    try:
+        return publishers(value)
+    except PackSigningError as exc:
+        raise PolicyError(f"extensions.trusted_publishers: {exc}") from exc
+
+
+def _pack_registry(value: Any) -> dict[str, dict]:
+    """The organization's registry of packs by id; PolicyError for an entry Lumi can't pin."""
+    if value is None:
+        return {}
+    if not isinstance(value, list) or len(value) > 500:
+        raise PolicyError("extensions.registry must be a list of up to 500 packs.")
+    registry: dict[str, dict] = {}
+    for entry in value:
+        entry = entry if isinstance(entry, dict) else {}
+        pack_id, url = str(entry.get("id") or ""), str(entry.get("url") or "").strip()
+        commit, digest = str(entry.get("commit") or "").lower(), str(entry.get("digest") or "").lower()
+        subdir = str(entry.get("subdir") or "").strip("/")
+        if not (re.fullmatch(r"[A-Za-z0-9._-]{1,80}", pack_id) and url.startswith("https://")
+                and re.fullmatch(r"[0-9a-f]{40}", commit) and (not digest or re.fullmatch(r"[0-9a-f]{64}", digest))
+                and (not subdir or (re.fullmatch(r"[A-Za-z0-9._/-]{1,200}", subdir)
+                                    and ".." not in subdir.split("/")))):
+            raise PolicyError(f"extensions.registry: {pack_id or 'an entry'} needs an id, an https url, a "
+                              "40-character commit, and optionally a folder and a 64-character digest.")
+        registry[pack_id] = {"id": pack_id, "name": " ".join(str(entry.get("name") or pack_id).split())[:120],
+                             "url": url, "commit": commit, "subdir": subdir, "digest": digest}
+    return registry
 
 
 def verify_signature(document: dict, signature_b64: str, public_key_b64: str) -> bool:
@@ -385,6 +432,10 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
             _patterns(extensions["allowed_sources"], "extensions.allowed_sources")
             if "allowed_sources" in extensions else None
         ),
+        publishers=_pack_publishers(extensions.get("trusted_publishers")),
+        require_signed=extensions.get("require_signed") is True,
+        registry=_pack_registry(extensions.get("registry")),
+        registry_only=extensions.get("registry_only") is True,
         trusted_keys={str(k): str(v) for k, v in raw_keys.items()},
         prices=prices,
         budgets=budgets,

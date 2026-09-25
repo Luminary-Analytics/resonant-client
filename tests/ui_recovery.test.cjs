@@ -860,6 +860,8 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
     const app = setup(() => {});
     const collapsed = [];
     app._collapseTaskActivity = () => collapsed.push('collapsed');
+    // The replayed step's ticking "thinking" row goes before the collapse.
+    app.removeThinking = () => collapsed.push('thinking');
     const card = (classes, connected = true) => {
         const set = new Set(classes);
         return {isConnected: connected, classList: {
@@ -876,7 +878,7 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
     app._activeTask = task(card(['task-card', 'task-card-running']));
     app._settleInterruptedCard('Paused');
     assert.equal(app._activeTask.stateEl.textContent, 'Paused');
-    assert.deepEqual(collapsed, ['collapsed', 'collapsed']);
+    assert.deepEqual(collapsed, ['thinking', 'collapsed', 'thinking', 'collapsed']);
 
     // A finished card, or one no longer on the page, is left alone.
     for (const other of [task(card(['task-card', 'task-card-done'])), task(card(['task-card', 'task-card-running'], false))]) {
@@ -884,7 +886,101 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
         app._settleInterruptedCard();
         assert.equal(other.stateEl.textContent, 'Running');
     }
-    assert.equal(collapsed.length, 2);
+    assert.equal(collapsed.length, 4);
+});
+
+// The Timeline: the open conversation's checkpoints, and what each restores.
+test('a checkpoint is named by what it was saved before', () => {
+    const app = setup(() => {});
+    const label = (tool_name, target = '') => app._timelineLabel({tool_name, target});
+    assert.equal(label('file_write', 'docs/notes.md'), 'Before writing docs/notes.md');
+    assert.equal(label('file_edit', 'notes.txt'), 'Before editing notes.txt');
+    assert.equal(label('bash', 'npm test'), 'Before running npm test');
+    assert.equal(label('bash', 'x'.repeat(80)), `Before running ${'x'.repeat(57)}…`);
+    assert.equal(label('git_commit', 'Fix it'), 'Before committing');
+    assert.equal(label('git_branch_create', 'feature'), 'Before creating branch feature');
+    assert.equal(label('batch'), 'Before a batch of changes');
+    assert.equal(app._timelineLabel({tool_name: 'mystery', reason: 'Before mystery'}), 'Before mystery');
+});
+
+test('the Timeline never promises checkpoints for a CLI connection\'s own changes', () => {
+    const app = setup(() => {});
+    for (const [value, expected] of [['ollama:qwen3', /^Before each change it makes, Lumi saves a checkpoint/],
+        ['codex:gpt-5.3-codex', /^Codex changes files with its own tools, so Lumi saves no checkpoints/],
+        ['claude-code:sonnet', /^Claude Code changes files with its own tools/]]) {
+        app.modelSelector = {value};
+        assert.match(app._timelineIntro(), expected);
+    }
+});
+
+test('a checkpoint restores only what it holds, and says so first', () => {
+    const app = setup(() => {});
+    const modes = (item) => Array.from(app._timelineRestoreModes(item));
+    assert.deepEqual(modes({snapshot: 'git'}), ['files', 'conversation', 'both']);
+    // A worker's checkpoint holds the worker's conversation: files only.
+    assert.deepEqual(modes({snapshot: 'archive', subagent: true}), ['files']);
+    assert.deepEqual(modes({snapshot: ''}), ['conversation']);
+    assert.match(app._timelineRestoreNote({snapshot: 'git'}, 'files'), /kept first, on a lumi-recovery branch\. The conversation doesn't change/);
+    assert.match(app._timelineRestoreNote({snapshot: 'archive'}, 'both'), /recovery archive\. The conversation goes back to this point/);
+    assert.match(app._timelineRestoreNote({snapshot: 'git'}, 'conversation'), /later messages leave it\. Your files don't change/);
+    assert.equal(app._timelineRestoredMessage({mode: 'files', checkpoint: {tool_name: 'file_edit', target: 'notes.txt'},
+        workspace: {recovery_branch: 'lumi-recovery/20260925'}}),
+        'Files restored to before editing notes.txt. Your previous files are on lumi-recovery/20260925.');
+    assert.equal(app._timelineRestoredMessage({mode: 'conversation', checkpoint: {tool_name: 'bash', target: 'make'}}),
+        'Conversation restored to before running make.');
+});
+
+test('restoring asks first, waits for the current run, and recovers from a refusal', () => {
+    // Focus moves within the dialog; the rows under test aren't rendered here.
+    const app = setup(() => {}, {document: {getElementById: () => null, querySelector: () => null},
+        CSS: {escape: (value) => value}});
+    const sent = [], messages = [];
+    app.send = (message) => sent.push(`${message.command}:${message.checkpoint_id || ''}:${message.mode || ''}`);
+    app.showStatusMessage = (text) => messages.push(text);
+    app._renderTimeline = () => {};
+    app.runtimeTimeline = [{id: 'cp_1', tool_name: 'file_edit', target: 'notes.txt', snapshot: 'git'},
+        {id: 'cp_2', tool_name: 'file_write', target: 'w.txt', snapshot: 'archive', subagent: true}];
+    const button = (action, id) => ({dataset: {timelineAction: action}, closest: () => ({dataset: {checkpointId: id}})});
+
+    app._onTimelineAction(button('restore', 'cp_2'));
+    assert.deepEqual({...app._timelineConfirm}, {id: 'cp_2', mode: 'files'});
+    app._onTimelineAction(button('cancel', 'cp_2'));
+    assert.equal(app._timelineConfirm, null);
+    app._onTimelineAction(button('compare', 'cp_1'));
+    app._onTimelineAction(button('restore', 'cp_1'));
+    assert.equal(sent.length, 1);  // choosing isn't restoring
+
+    app.isRunning = true;
+    app._onTimelineAction(button('confirm', 'cp_1'));
+    assert.match(messages.at(-1), /Stop the current run/);
+    app.isRunning = false;
+    app._onTimelineAction(button('confirm', 'cp_1'));
+    assert.deepEqual(sent, ['session_timeline_compare:cp_1:', 'session_timeline_restore:cp_1:files']);
+    assert.equal(app._timelinePending, 'cp_1');
+
+    // A refusal (an error event) lets the user try again; showing the error
+    // itself is handleError's job.
+    app.handleError = () => {};
+    app.handleEvent({event: 'error', message: 'Stop the active run before restoring a checkpoint'});
+    assert.equal(app._timelinePending, '');
+});
+
+test('a restored conversation stops at its checkpoint instead of replaying as a crash', () => {
+    const notes = [];
+    const app = setup(() => {}, {document: {getElementById: () => null, createElement: () => ({})}});
+    app.chatMessages = {appendChild: (el) => notes.push(el)};
+    // Saved before the turn's first change: the turn had only started.
+    const turn = [{event: 'user_message', text: 'write the notes'}, {event: 'step.start', step: 1}];
+    const marker = {event: 'timeline.restored', mode: 'both', checkpoint: {tool_name: 'file_write', target: 'notes.txt'}};
+    assert.equal(app._interruptedReplayRecovery(turn).kind, 'not_started');
+    assert.equal(app._interruptedReplayRecovery([...turn, marker]), null);
+    // A later turn that stopped still offers its Retry.
+    const later = [...turn, marker, {event: 'user_message', text: 'again'}, {event: 'step.start', step: 1}];
+    assert.equal(app._interruptedReplayRecovery(later).kind, 'not_started');
+
+    app._addTimelineRestoredNote(marker);
+    assert.equal(notes[0].className, 'timeline-restored-note');
+    assert.equal(notes[0].textContent, 'Files and conversation restored to before writing notes.txt.');
 });
 
 // ── A refused call says why ───────────────────────────────────────────

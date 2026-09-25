@@ -2682,6 +2682,10 @@ class Session:
 
             # CLI backends (claude-code, codex) handle tool execution internally.
             # We received tool_call events for display only — skip execution.
+            # The shipped CLI backends don't send them (Codex reports its tools
+            # as external.tool observations with results); this keeps one that
+            # does out of native execution. A call without a result is not
+            # evidence: it counts as no successful tool, changed file or check.
             if has_tool_calls and getattr(self.backend, 'handles_tools', False):
                 # Add a synthetic assistant message with tool info for history
                 tool_summary = ", ".join(item.get("name", "") for item in tool_calls)
@@ -2689,16 +2693,6 @@ class Session:
                     "role": "assistant",
                     "content": f"[CLI executed tools: {tool_summary}]"
                 })
-                for cli_item in tool_calls:
-                    cli_name = cli_item.get("name", "")
-                    if cli_name:
-                        turn_successful_tools.append(cli_name)
-                    if cli_name in WRITE_TOOL_NAMES:
-                        cli_args = cli_item.get("_normalized_arguments", {})
-                        cli_path = cli_args.get("path") if isinstance(cli_args, dict) else ""
-                        if cli_path:
-                            turn_changed_files.append(str(cli_path))
-                    # Display-only CLI calls do not supply a verifiable exit result.
                 has_tool_calls = False  # Don't loop — CLI already completed
                 yield make_event(EngineEvent.STATUS,
                                 model=done_model, stats=done_stats,
@@ -4062,6 +4056,10 @@ class Session:
         sub_start = time.time()
         sub_steps = 0
         changed_files: list[str] = []
+        # Write calls by call id, waiting for their results. Only a successful
+        # result counts: a call that was denied, failed, or never answered
+        # (the worker was stopped first) changed nothing.
+        pending_writes: dict[str, str] = {}
         validation: list[str] = []
         errors: list[str] = []
         budget_limits: list[str] = []
@@ -4107,13 +4105,22 @@ class Session:
                 name = str(event.get("name") or "")
                 args = event.get("arguments") or {}
                 if name in WRITE_TOOL_NAMES and isinstance(args, dict) and args.get("path"):
-                    value = str(args["path"])
-                    if value not in changed_files:
-                        changed_files.append(value)
+                    pending_writes[str(event.get("call_id") or "")] = str(args["path"])
             elif etype == EngineEvent.TOOL_RESULT.value:
                 name = str(event.get("name") or "")
+                written = pending_writes.pop(str(event.get("call_id") or ""), None)
+                # A denied call never ran. A denial by the user or a hook is
+                # not an error (is_error=False, denied=True), so check both.
+                ran = not event.get("denied")
+                succeeded = ran and not event.get("is_error")
+                if succeeded:
+                    # A result can name its own changes (a Codex file change).
+                    reported = [path for path in event.get("changed_files") or () if isinstance(path, str)]
+                    for value in ([written] if written else []) + reported:
+                        if value not in changed_files:
+                            changed_files.append(value)
                 if name in VALIDATION_TOOL_NAMES:
-                    outcome = "failed" if event.get("is_error") else "passed"
+                    outcome = "passed" if succeeded else "failed" if ran else "not run"
                     validation.append(f"{name}: {outcome}")
             elif etype == EngineEvent.ERROR.value:
                 message = str(event.get("message") or "Worker error")

@@ -39,8 +39,13 @@ never silently stashed or reset.
 
 `task` creates a durable `AgentRecord` before execution and returns an
 `AgentHandoff` containing outcome, evidence, changed files, validation,
-blockers, artifacts, and the recommended next action. Transcripts remain
-inspectable after completion or failure. A process restart marks nonterminal
+blockers, artifacts, and the recommended next action. Changed files come from
+the worker's tool results, matched to their calls by call id: a write whose
+own result succeeded, files a successful result names (a Codex file change),
+and a worktree's committed changes. A write that was denied, failed or never
+answered is not listed. A denied check is reported as `not run`, which Director
+Mode records as a validation that did not pass. Transcripts remain inspectable
+after completion or failure. A process restart marks nonterminal
 records as `stuck` because their threads cannot survive, while preserving all
 evidence for recovery.
 

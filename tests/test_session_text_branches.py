@@ -258,6 +258,25 @@ class TestHandlesToolsShortcut:
         all_deltas = [e["delta"] for e in events_of_kind(events, "text.delta")]
         assert "never seen" not in all_deltas
 
+    def test_display_only_calls_are_not_evidence(self):
+        # A display-only call has no result, so nothing shows it ran or
+        # succeeded: it is not a successful tool or a changed file.
+        backend = StreamingBackend(
+            handles_tools=True,
+            events=[
+                text_delta("Created x.py."),
+                tool_call("file_write", {"path": "x.py", "content": "x = 1"}, call_id="c1"),
+                done(),
+            ],
+        )
+        session = Session(backend=backend, max_steps=5, auto_approve=True)
+        events = list(session.run("create x.py"))
+
+        end = first_of_kind(events, "session.end")
+        assert end["evidence"]["changed_files"] == []
+        assert end["evidence"]["successful_tools"] == []
+        assert end["outcome"] == "incomplete"
+
 
 # ── Plan-mode return path ──────────────────────────────────────────────
 

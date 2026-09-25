@@ -1485,6 +1485,25 @@ class Session:
             total_steps=total_steps,
         )
 
+    def _step_end_event(self, step: int, elapsed: float, model: Any, stats: Any) -> dict:
+        """``step.end``, with the model and token counts of that step's call.
+
+        The GUI saves ``step.end`` with a conversation but not ``status``, so
+        these are what a replayed turn shows as its model and tokens. Counts
+        use the usage records' names, whichever names the provider reported.
+        """
+        from .. import usage
+
+        counts = usage.token_counts(stats) if isinstance(stats, dict) else {}
+        return make_event(
+            EngineEvent.STEP_END,
+            step=step,
+            elapsed=elapsed,
+            model=str(model or getattr(self.backend, "model", "") or ""),
+            input_tokens=counts.get("input_tokens", 0),
+            output_tokens=counts.get("output_tokens", 0),
+        )
+
     def _run_post_edit_feedback(self, edited_path: str) -> Iterator[dict]:
         """
         After a successful file_edit/file_write, optionally run the project
@@ -2688,11 +2707,7 @@ class Session:
                         max=EMPTY_RESPONSE_RETRY_LIMIT,
                         model=backend_model,
                     )
-                    yield make_event(
-                        EngineEvent.STEP_END,
-                        step=exec_step,
-                        elapsed=step_elapsed,
-                    )
+                    yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
                     # Empty provider responses are retries, not productive
                     # agent steps, so they do not consume max_steps.
                     iteration -= 1
@@ -2712,11 +2727,7 @@ class Session:
                 terminal_error = message
                 logger.warning("%s model=%s", message, backend_model)
                 yield make_event(EngineEvent.ERROR, message=message)
-                yield make_event(
-                    EngineEvent.STEP_END,
-                    step=exec_step,
-                    elapsed=step_elapsed,
-                )
+                yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
                 break
 
             empty_response_retries = 0
@@ -2757,7 +2768,7 @@ class Session:
                                     model=done_model, stats=done_stats,
                                     cognitive_state=cog_state,
                                     elapsed=step_elapsed)
-                    yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+                    yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
                     continue
 
                 # Normal text — add to history
@@ -2785,7 +2796,7 @@ class Session:
                                 model=done_model, stats=done_stats,
                                 cognitive_state=cog_state,
                                 elapsed=step_elapsed)
-                yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+                yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
                 break  # Exit the agentic loop — CLI ran to completion
 
             reasoning_by_call_id = {
@@ -3566,7 +3577,7 @@ class Session:
             # ── Plan mode: ask for approval ──
             if is_planning and full_text:
                 yield make_event(EngineEvent.PLAN_GENERATED, plan=full_text)
-                yield make_event(EngineEvent.STEP_END, step=0, elapsed=step_elapsed)
+                yield self._step_end_event(0, step_elapsed, done_model, done_stats)
 
                 # The TUI handles plan approval flow and sends back
                 # PLAN_APPROVE / PLAN_REJECT / PLAN_EDIT
@@ -3599,7 +3610,7 @@ class Session:
                 )
                 # The post-tool-call block below may inject one recovery hint.
             # ── Continue or stop ──
-            yield make_event(EngineEvent.STEP_END, step=exec_step, elapsed=step_elapsed)
+            yield self._step_end_event(exec_step, step_elapsed, done_model, done_stats)
 
             # A steer that arrived during this inference or tool batch belongs
             # to the same turn. Consume it before normal completion so even a

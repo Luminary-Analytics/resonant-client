@@ -5235,6 +5235,7 @@ class LumiApp {
             totalElapsed: 0,
             totalInputTokens: 0,
             totalOutputTokens: 0,
+            model: '',           // the turn's own model, from its step.end events
             stepCount: 0,
             toolCallCount: 0,    // UX fix #7 — honest tool-call count in run-card
             footerEl: null,      // set lazily on session.end render
@@ -5270,15 +5271,19 @@ class LumiApp {
     handleStepEnd(event) {
         // Accumulate per-step stats into the per-turn aggregate. The single
         // dim footer at session.end uses these instead of repeating a
-        // ▣ model · tokens · elapsed line after every step.
+        // ▣ model · tokens · elapsed line after every step. Each step.end
+        // carries its own call's model and tokens, and is saved with the
+        // turn (status events are not), so a replayed turn shows its own
+        // numbers rather than whatever last ran live in this page. Steps
+        // saved before step.end carried them add time only.
         const t = this._currentTurn;
         if (t) {
             t.totalElapsed += (event.elapsed || 0);
             t.stepCount += 1;
-            if (this.lastStats) {
-                t.totalInputTokens += (this.lastStats.input_tokens || 0);
-                t.totalOutputTokens += (this.lastStats.output_tokens || 0);
-            }
+            t.totalInputTokens += Number(event.input_tokens) || 0;
+            t.totalOutputTokens += Number(event.output_tokens) || 0;
+            // A worker can run another model; the footer names the turn's.
+            if (event.model && !event._subagent) t.model = String(event.model);
         }
 
         if (this.stepIsInlineOnly && this.stepToolCalls.length > 0) {
@@ -5291,8 +5296,6 @@ class LumiApp {
                 toolCalls: [...this.stepToolCalls],
                 toolResults: [...this.stepToolResults],
                 endEvent: event,
-                model: this.lastModel,
-                stats: this.lastStats,
             });
             if (this._liveCollapsedGroup) {
                 this._liveCollapsedGroup.lastStep = event.step ?? this._liveCollapsedGroup.lastStep;
@@ -5317,14 +5320,15 @@ class LumiApp {
      * Render the single dim per-turn footer beneath the assistant's prose.
      * Format: `▣ model · 1234→340 tok · 4.7s`. Called once at session.end
      * (after the last text.done has flushed the assistant message), so it
-     * sits between prose and the run-card.
+     * sits between prose and the run-card. Everything in it comes from the
+     * turn's own step.end events, live or replayed.
      */
     _renderTurnFooter() {
         const t = this._currentTurn;
-        if (!t || (t.stepCount === 0 && !this.lastModel)) return;
+        if (!t || t.stepCount === 0) return;
 
         const parts = [];
-        if (this.lastModel) parts.push(this.lastModel);
+        if (t.model) parts.push(t.model);
         if (t.totalInputTokens || t.totalOutputTokens) {
             parts.push(`${t.totalInputTokens}→${t.totalOutputTokens} tok`);
         }

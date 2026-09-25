@@ -415,11 +415,12 @@
                                 </button>
                             </div>
                             <small id="composer-suggestion-hint" class="composer-suggestion-hint" hidden>Suggested next prompt · Tab to accept · Esc to dismiss</small>
+                            <small id="dictation-status" class="dictation-status" role="status" aria-live="polite"></small>
                             <div class="input-footer">
                                 <div class="input-footer-left">
                                     <button class="add-context-btn" id="add-context-btn" title="Add context (paste/drop image, attach file)" aria-label="Add context">+</button>
                                     <button type="button" class="add-context-btn composer-prompts-btn" id="composer-prompts-btn" title="Team prompts" aria-label="Team prompts" aria-haspopup="dialog" hidden>&#10077;</button>
-                                    <button class="mic-btn" id="mic-btn" title="Hold to dictate &mdash; release to insert transcript" aria-label="Voice input (push-to-talk)">
+                                    <button type="button" class="mic-btn" id="mic-btn" title="Dictate: hold to talk, or press to start and stop (Ctrl+Shift+Space)" aria-label="Dictate" aria-pressed="false" aria-describedby="dictation-status" aria-keyshortcuts="Control+Shift+Space">
                                         <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
                                             <rect x="6" y="2" width="4" height="7" rx="2" stroke="currentColor" stroke-width="1.4"/>
                                             <path d="M3.5 8a4.5 4.5 0 009 0" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
@@ -789,6 +790,7 @@
          missing, rather than failing later at call time. -->
     <script src="/static/autonomous_view.js?v={{ asset_version }}"></script>
     <script src="/static/settings_view.js?v={{ asset_version }}"></script>
+    <script src="/static/voice_input.js?v={{ asset_version }}"></script>
     <script src="/static/run_cards.js?v={{ asset_version }}"></script>
     <script src="/static/employee_tasks.js?v={{ asset_version }}"></script>
     <div class="window-resize-edge window-resize-top" data-resize-edge="top" aria-hidden="true"></div>

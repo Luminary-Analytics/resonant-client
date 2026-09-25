@@ -610,6 +610,91 @@ Not exercised: a packaged build, a live model, an autonomous session's own
 loop in the app (its dispatches and REFLECT pass use the same runner, and its
 tests pass), macOS and Linux.
 
+## September 25 dictation: keyboard, pauses, and a transcription service — source only, not released
+
+Dictation used the webview's speech recognition only, stopped at the first
+pause and needed a mouse held down. The desktop app on Windows usually has
+no working recognizer, so there it couldn't be used at all.
+See [dictation](voice-input.md).
+
+**Using it**
+
+- Hold the microphone button, Space on it or Ctrl+Shift+Space to talk until
+  you let go. A quick press or Enter keeps listening until the next press,
+  and Escape cancels, leaving the message box as it was.
+- It listens through pauses: the recognizer is restarted when it stops by
+  itself, until you stop, five minutes pass, or a long silence.
+- A status line under the message box says what's happening, and screen
+  readers announce it. The button says whether it's on, has a focus ring,
+  and explains what to change when dictation can't run.
+
+**A transcription service (Settings > Voice)**
+
+- Lumi records while you talk and, when you stop, sends the recording to
+  OpenAI (your OpenAI key) or to a connection that speaks OpenAI's
+  `/audio/transcriptions`, such as a Whisper server on your own network.
+  Lumi keeps no copy.
+- In auto, a service you set up wins over the webview's recognizer; you can
+  also pick either one, or off. The model and language are settings too.
+- The request runs on its own task, so Stop and everything else stay live
+  (`voice_transcribe`, answered by `voice.transcript` or `voice.error`).
+
+**Policy, usage and the audit log**
+
+- `voice.engine`, `voice.service`, `voice.model` and `voice.language` can be
+  locked, and an invalid value makes the policy invalid.
+- The service's model must pass `models.allowed` and `models.blocked` (as
+  `openai:whisper-1` or `conn-<id>:<model>`). `require_zero_retention` allows
+  only a service that keeps no data and turns off the webview's recognizer,
+  whose service Lumi can't see.
+- Each transcription is a usage record with the purpose `dictation`, and
+  no cost: dictation is billed per minute, and the `gpt-4o-mini*` chat price
+  would otherwise have valued `gpt-4o-mini-transcribe`'s audio at text rates
+  (`UsageLedger.record(priced=False)`).
+- The audit log's `voice.transcription` records the service, model, size,
+  characters and outcome, never the words.
+- Checking whether a key is saved no longer reads it from the credential
+  store (`SettingsManager.key_present`).
+
+**Also**
+
+- The macOS app declares `NSSpeechRecognitionUsageDescription`, without
+  which WebKit refuses the webview's recognizer.
+- The shortcuts list (Ctrl+/) named Alt+2, Alt+3 and Alt+4 views that don't
+  exist. It now lists Alt+1 (Sessions), Alt+2 (Settings) and dictation.
+
+**Checks**
+
+- `tests/test_voice.py` (23), with `httpx.MockTransport`, covers:
+  - which engines may listen, under settings and policy;
+  - the request (URL, key, multipart fields, language), and failures with
+    what to do;
+  - the unpriced usage record, and the metadata-only audit record;
+  - the socket command.
+- `tests/voice_input.test.cjs` (12) drives the dictation logic with a fake
+  recognizer, microphone and clock: holding, the quick press, restarts, a
+  long silence, errors, Escape, the length limit, and late answers.
+- In a browser, with an isolated home, a generated tone as the microphone and
+  a local fake transcription service:
+  - A click, Enter and Space on the button, and Ctrl+Shift+Space, each
+    started and stopped dictation, and the transcript joined the draft. Tab
+    reached the button with its focus ring, and Escape cancelled with
+    nothing sent.
+  - The service received WebM with `model` and `language=en` (from
+    `en-GB`).
+  - Usage and the audit log gained one unpriced `dictation` record and one
+    `voice.transcription` record per dictation, without the words.
+  - Settings > Voice saved the engine chosen with the keyboard. "english"
+    was refused as a language, and with dictation off the button said so.
+  - With the window's own recognizer chosen, it asked for the microphone,
+    which the test browser blocks, and Lumi said to allow microphone access.
+  - At 375 px, the status line fits with no sideways scrolling.
+- Not checked:
+  - a real microphone and speech;
+  - OpenAI's or a real Whisper server's answers;
+  - WebView2's and WKWebView's recognizers;
+  - the macOS app.
+
 ## September 25 the terminal prints tool and model text as written — source only, not released
 
 **The terminal UI read tool and model text as Rich markup.** `lumi/tui.py`

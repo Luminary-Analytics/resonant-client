@@ -3949,6 +3949,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "updates": frozenset({"mode", "channel", "pin"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),
+    "voice": frozenset({"engine", "service", "model", "language"}),
 }
 
 
@@ -4102,6 +4103,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         if any(len(item) > 253 or any(ch.isspace() for ch in item) for item in hosts):
             raise ValueError("List hosts separated by commas, such as internal.example.com, 10.1.2.3.")
         return ", ".join(item for item in hosts if item)
+    elif section == "voice":
+        from .. import voice
+
+        return voice.validate(key, value)
     return value
 
 
@@ -4168,6 +4173,55 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
 
         await ctx.send({"event": "update_status", "data": await asyncio.to_thread(update_status)})
     await ctx.send(ctx.state.get_init_data(refresh_only=True))
+
+
+# Transcriptions in flight, kept so they aren't collected before they finish.
+_VOICE_TASKS: set[asyncio.Task] = set()
+
+
+@command("voice_transcribe")
+async def _cmd_voice_transcribe(ctx: CommandContext) -> None:
+    """Transcribe one dictation with the service chosen in Settings > Voice.
+
+    Runs as its own task, so Stop and everything else the page sends stay live
+    while the service answers. The reply carries the page's request id; the
+    page drops a transcript it no longer wants (Escape, a new dictation).
+    """
+    import base64
+    import binascii
+
+    from .. import voice
+
+    request_id = str(ctx.msg.get("request_id") or "")[:64]
+    encoded = ctx.msg.get("audio")
+    try:
+        if not isinstance(encoded, str) or len(encoded) > voice.MAX_AUDIO_BYTES * 4 // 3 + 4:
+            raise voice.VoiceError("The recording is too long. Dictate in shorter parts.")
+        audio = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError, voice.VoiceError) as exc:
+        message = str(exc) if isinstance(exc, voice.VoiceError) else "The recording didn't arrive intact. Dictate again."
+        await ctx.send({"event": "voice.error", "request_id": request_id, "message": message})
+        return
+    settings = ctx.state.settings
+    project = getattr(getattr(ctx.state, "project", None), "project_path", "") or ""
+    audio_type = str(ctx.msg.get("media_type") or "")
+
+    async def run() -> None:
+        try:
+            text = await asyncio.to_thread(voice.transcribe, settings, audio, audio_type, project=project)
+        except voice.VoiceError as exc:
+            await ctx.send({"event": "voice.error", "request_id": request_id, "message": str(exc)})
+            return
+        except Exception:
+            logger.exception("Dictation failed")
+            await ctx.send({"event": "voice.error", "request_id": request_id,
+                            "message": "Transcription failed. Try again."})
+            return
+        await ctx.send({"event": "voice.transcript", "request_id": request_id, "text": text})
+
+    task = asyncio.create_task(run())
+    _VOICE_TASKS.add(task)
+    task.add_done_callback(_VOICE_TASKS.discard)
 
 
 @command("sonn_account")

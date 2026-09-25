@@ -140,6 +140,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `DESKTOP_TOOL_NAMES`. A new tool that reaches outside the project must join
   that set. Never write model-supplied text into AppleScript or other script
   source; pass it as an argument (`on run argv`).
+- Dictation (`voice.py`, `static/voice_input.js`) inserts text into the
+  composer and never sends. Audio goes only to the transcription service
+  chosen in Settings > Voice, after the person stops; Lumi keeps no copy.
+  The service's model passes the policy's model rules, and a zero-retention
+  policy turns off the webview's own recognizer. Usage records dictation
+  unpriced (`priced=False`); the audit log records metadata, never the
+  words. Tests use `httpx.MockTransport` and a fake recognizer.
 - Scheduled tasks (`schedules.py`) run `lumi schedule run <id>`, which is a
   `lumi run`; a schedule never passes `--trust-project`. Only `save`,
   `set_enabled` and `remove` touch the OS scheduler (schtasks, launchctl,
@@ -353,7 +360,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs tests/voice_input.test.cjs
 git diff --check
 ```
 

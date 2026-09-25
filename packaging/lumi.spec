@@ -95,6 +95,8 @@ datas = [
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "appearance.js"),
      "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "voice_input.js"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "fonts.css"),
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "styles.css"),
@@ -371,6 +373,8 @@ if sys.platform == "darwin":
             "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
             "NSMicrophoneUsageDescription": "Lumi uses the microphone only while you dictate a message.",
+            # WebKit refuses the page's speech recognition without this.
+            "NSSpeechRecognitionUsageDescription": "Lumi recognizes speech only while you dictate a message.",
             "NSAppleEventsUsageDescription": "Lumi controls other apps only when you let the agent use this computer.",
         },
     )

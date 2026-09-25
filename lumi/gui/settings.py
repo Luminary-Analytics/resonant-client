@@ -201,6 +201,15 @@ DEFAULTS = {
         "channel": "stable",
         "pin": "",
     },
+    # Settings > Voice (lumi/voice.py): dictation in the composer. The engine
+    # is auto, browser (the webview's recognizer), service or off; the
+    # service is "openai" or a connection ("conn-<id>") that transcribes.
+    "voice": {
+        "engine": "auto",
+        "service": "",
+        "model": "",
+        "language": "",
+    },
 }
 
 
@@ -324,7 +333,16 @@ class SettingsManager:
         # Whether the shell sandbox can run here; never waits for the check.
         from ..engine import os_sandbox
         meta["shell_sandbox"] = os_sandbox.status()
+        # Which ways of dictating Settings and the policy allow; reads settings only.
+        from .. import voice
+        meta["voice"] = voice.status(self)
         return data
+
+    def key_present(self, key: str) -> bool:
+        """Whether an API key is saved, without reading it from the credential store."""
+        with self._lock:
+            keys = self._data.get("api_keys")
+            return bool(keys.get(key)) if isinstance(keys, dict) else False
 
     def secret_storage(self) -> dict:
         """Where API keys are kept, for Settings to explain."""

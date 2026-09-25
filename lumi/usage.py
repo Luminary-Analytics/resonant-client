@@ -87,16 +87,25 @@ class UsageLedger:
         self.enabled = settings is None or settings.get("cost_tracking", "enabled", True) is not False
 
     def record(self, *, provider: str, model: str, stats: dict, purpose: str,
-               session: str = "", project: str = "", agent: str = "", elapsed: float = 0.0) -> dict | None:
-        """Price and append one call's usage; returns the record (None when off)."""
+               session: str = "", project: str = "", agent: str = "", elapsed: float = 0.0,
+               priced: bool = True) -> dict | None:
+        """Price and append one call's usage; returns the record (None when off).
+
+        ``priced=False`` records a call billed some other way than tokens
+        (dictation is billed per minute) as unpriced, never at token rates.
+        """
         if not self.enabled or not isinstance(stats, dict):
             return None
         from .pricing import cost
 
         counts = token_counts(stats)
-        priced = cost(provider, model, input_tokens=counts["input_tokens"], output_tokens=counts["output_tokens"],
-                      cached_tokens=counts["cached_tokens"], cache_write_tokens=counts["cache_write_tokens"],
-                      reported_cost=stats.get("cost_usd"))
+        if priced:
+            price = cost(provider, model, input_tokens=counts["input_tokens"], output_tokens=counts["output_tokens"],
+                         cached_tokens=counts["cached_tokens"], cache_write_tokens=counts["cache_write_tokens"],
+                         reported_cost=stats.get("cost_usd"))
+        else:
+            price = {"cost_usd": None, "computed_cost_usd": None, "reported_cost_usd": None,
+                     "price_source": "unpriced"}
         ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
         try:
             elapsed = round(max(0.0, float(elapsed or 0)), 3)
@@ -114,10 +123,10 @@ class UsageLedger:
             "provider": str(provider or ""),
             "model": str(model or ""),
             **counts,
-            "cost_usd": priced["cost_usd"],
-            "computed_cost_usd": priced["computed_cost_usd"],
-            "reported_cost_usd": priced["reported_cost_usd"],
-            "price_source": priced["price_source"],
+            "cost_usd": price["cost_usd"],
+            "computed_cost_usd": price["computed_cost_usd"],
+            "reported_cost_usd": price["reported_cost_usd"],
+            "price_source": price["price_source"],
             "elapsed": elapsed,
         }
         with self._lock, exclusive(self.root / ".lock"):

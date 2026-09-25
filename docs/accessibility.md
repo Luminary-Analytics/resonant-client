@@ -55,6 +55,22 @@
   Settings page") is now the first thing in the app's tab order.
 - **Page titles.** The app's title names the screen: "Settings · Lumi".
 
+**Dictation, September 25, 2026.** The microphone button beside the message
+box worked only while held down with a mouse or a finger. Now:
+
+- Space on the button dictates while held, and Enter (or a quick press)
+  starts and stops it. Ctrl+Shift+Space does the same from anywhere in the
+  conversation, and Escape cancels.
+- The button says whether it's on (`aria-pressed`) and has a focus ring.
+- A status line under the message box announces listening, transcribing and
+  errors.
+
+These were checked with real key presses in a browser, with a generated tone
+as the microphone and a local fake transcription service supplying the
+words. The microphone
+button's shortcut is in the shortcuts list (Ctrl+/). That list named Alt+2,
+Alt+3 and Alt+4 views that don't exist; it now matches the app.
+
 **Correction, September 25, 2026.** The contrast check above skipped colours
 Chrome reports as `color(srgb …)`, which is what `color-mix()` produces. That
 missed the portal's status chips in the light theme: green chips such as

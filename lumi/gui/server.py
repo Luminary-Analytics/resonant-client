@@ -121,6 +121,12 @@ def launch_gui(
     # launch link must reach whoever is waiting for it.
     print(f"  Lumi GUI running at {url}", flush=True)
 
+    # Code editors find this launch through the bridge file (gui/editor_bridge.py).
+    from .app import state as app_state
+    from .editor_bridge import bridge as editor_bridge, enabled as editor_bridge_enabled
+
+    editor_bridge.start(url, enabled=editor_bridge_enabled(app_state.settings))
+
     # An update installs only between agent turns, and then closes Lumi
     # itself so the installer can replace its files (lumi/updater.py).
     def _turn_running() -> bool:

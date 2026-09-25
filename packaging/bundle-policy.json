@@ -34,6 +34,9 @@
     "_internal/lumi/orchestration/bundled_skills/transaction-acceptance.md",
     "_internal/lumi/browser_extension/manifest.json",
     "_internal/lumi/browser_extension/background.js",
+    "_internal/lumi/code_editors/vscode/extension.js",
+    "_internal/lumi/code_editors/vscode/bridge.js",
+    "_internal/lumi/code_editors/vscode/package.json",
     "_internal/keyring-*.dist-info/entry_points.txt",
     "_internal/licenses/THIRD_PARTY_NOTICES.txt"
   ],

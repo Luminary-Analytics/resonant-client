@@ -1,0 +1,87 @@
+{
+  "name": "lumi-vscode",
+  "displayName": "Lumi",
+  "description": "Add your selection or files to your message in Lumi, and see what Lumi changed beside your files.",
+  "version": "0.1.0",
+  "publisher": "luminary-analytics",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Luminary-Analytics/resonant-client"
+  },
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "commands": [
+      {
+        "command": "lumi.sendSelection",
+        "title": "Send Selection to Lumi",
+        "category": "Lumi"
+      },
+      {
+        "command": "lumi.askAboutSelection",
+        "title": "Ask Lumi About Selection...",
+        "category": "Lumi"
+      },
+      {
+        "command": "lumi.sendFile",
+        "title": "Send File to Lumi",
+        "category": "Lumi"
+      },
+      {
+        "command": "lumi.sendOpenFiles",
+        "title": "Send Open Files to Lumi",
+        "category": "Lumi"
+      },
+      {
+        "command": "lumi.reviewChanges",
+        "title": "Review Lumi's Changes",
+        "category": "Lumi"
+      },
+      {
+        "command": "lumi.status",
+        "title": "Check the Connection to Lumi",
+        "category": "Lumi"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "lumi.sendSelection",
+          "when": "editorHasSelection && resourceScheme == file",
+          "group": "lumi@1"
+        },
+        {
+          "command": "lumi.askAboutSelection",
+          "when": "editorHasSelection && resourceScheme == file",
+          "group": "lumi@2"
+        },
+        {
+          "command": "lumi.sendFile",
+          "when": "!editorHasSelection && resourceScheme == file",
+          "group": "lumi@1"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "lumi.sendFile",
+          "when": "resourceScheme == file && !explorerResourceIsFolder",
+          "group": "lumi@1"
+        }
+      ],
+      "editor/title/context": [
+        {
+          "command": "lumi.sendFile",
+          "when": "resourceScheme == file",
+          "group": "lumi@1"
+        }
+      ]
+    }
+  }
+}

@@ -2016,6 +2016,9 @@ class AppState:
                 broker.exclusions = self.session.exclusions
         if section == "security" and self.session is not None:
             self.session.computer_use_enabled = self.computer_use_allowed()
+        if section == "security":
+            from .editor_bridge import bridge as editor_bridge, enabled as editor_bridge_enabled
+            editor_bridge.sync(editor_bridge_enabled(self.settings))
         if (
             section == "security"
             and self.backend_spec
@@ -3750,6 +3753,12 @@ async def access_endpoint(request):
     return JSONResponse({'token': token}, headers=no_store)
 
 
+async def editor_endpoint(request):
+    """Requests from the code editor extensions (gui/editor_bridge.py)."""
+    from .editor_bridge import handle
+    return await handle(request, state)
+
+
 async def ui_state_endpoint(request):
     from starlette.responses import JSONResponse
     from .ui_state import ui_state
@@ -3795,6 +3804,7 @@ app = Starlette(
         Route("/", homepage),
         Route("/api/access", access_endpoint, methods=['GET', 'POST']),
         Route("/api/ui-state", ui_state_endpoint, methods=['GET', 'POST']),
+        Route("/api/editor/{action}", editor_endpoint, methods=['GET', 'POST']),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

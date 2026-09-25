@@ -188,4 +188,5 @@ include = ["lumi*"]
 # here as well as in packaging/lumi.spec: the spec only covers the frozen
 # .exe, and without this a `pip install` silently omits the extension and tabs
 # stop being grouped with no error anywhere.
-"lumi" = ["browser_extension/*"]
+# The VS Code extension that `lumi editor vscode` packs into a .vsix.
+"lumi" = ["browser_extension/*", "code_editors/vscode/*"]

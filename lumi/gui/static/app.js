@@ -3880,6 +3880,9 @@ class LumiApp {
                 this.showStatusMessage('Model evaluation started in the background');
                 this.send({ command: 'evaluation_list' });
                 break;
+            case 'editor_context':
+                this._applyEditorContext(event);
+                break;
             case 'checkpoint_list':
                 this.iterationCheckpoints = event.checkpoints || [];
                 if (this.currentView === 'settings') this.renderSettingsView();
@@ -4007,6 +4010,10 @@ class LumiApp {
                 // A saved form is emptied at once; a run finishing waits until
                 // nobody is typing (renderSettingsView defers for a focused field).
                 if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.saved)});
+                break;
+            case 'code_editors':
+                this.codeEditors = event.data;
+                if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.result)});
                 break;
             case 'model_evals':
                 this.modelEvals = event.data;
@@ -9000,6 +9007,24 @@ class LumiApp {
         } catch (err) {
             console.debug('notification permission request failed', err);
         }
+    }
+
+    /** Files and a question a code editor sent (gui/editor_bridge.py): added to the message, not sent. */
+    _applyEditorContext(event) {
+        const addition = String(event.text || '').trim();
+        if (!addition || !this.userInput) return;
+        const current = this.userInput.value;
+        const joiner = current && !/\s$/.test(current) ? '\n' : '';
+        // The trailing space keeps the @-file picker from opening on the last mention.
+        this.userInput.value = `${current}${joiner}${addition} `;
+        const end = this.userInput.value.length;
+        this.userInput.setSelectionRange(end, end);
+        this.userInput.dispatchEvent(new Event('input', { bubbles: true }));
+        this.userInput.focus();
+        const attached = Array.isArray(event.attached) ? event.attached : [];
+        const names = attached.slice(0, 2).join(', ');
+        const more = attached.length > 2 ? ` and ${attached.length - 2} more` : '';
+        this.showToastMessage(`Added from ${event.source || 'your editor'}: ${names}${more}. Send when you're ready.`);
     }
 
     showToastMessage(message) {

@@ -83,6 +83,8 @@ for their context-handoff and verification boundaries.
 - Built-in Blender, Unity, and Unreal Engine 5 connection setup through community
   MCP bridges ([setup and validation](docs/creative-editors.md))
 - Skills, plugins, LSP status, and project instructions
+- VS Code and JetBrains IDEs: send the selection or files into your message,
+  and open Lumi's changes beside your files ([code editors](docs/code-editors.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
 - Permission modes and a project-root path sandbox

@@ -131,22 +131,25 @@ def take_screenshot_scaled(
             sct_img = sct.grab(monitor)
             img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
 
-            real_w, real_h = img.size
+            pixel_w, pixel_h = img.size
+            # Screen coordinates, the space clicks use: points on a Retina
+            # Mac, where the image has twice as many pixels (computer._finish_capture).
+            real_w, real_h = monitor["width"], monitor["height"]
 
             # Scale down if needed (shared edge + megapixel limits, plus
             # crosshair and capture tracking so clicks map correctly).
             from .computer import _api_scale_ratio, _draw_cursor_crosshair, _remember_capture
 
-            ratio = min(_api_scale_ratio(real_w, real_h), max_edge / max(real_w, real_h))
+            ratio = min(_api_scale_ratio(pixel_w, pixel_h), max_edge / max(pixel_w, pixel_h))
             ratio = min(ratio, 1.0)
             if ratio < 1.0:
-                new_w, new_h = int(real_w * ratio), int(real_h * ratio)
+                new_w, new_h = int(pixel_w * ratio), int(pixel_h * ratio)
                 img = img.resize((new_w, new_h), Image.LANCZOS)
             else:
-                new_w, new_h = real_w, real_h
+                new_w, new_h = pixel_w, pixel_h
 
             if for_model:
-                _draw_cursor_crosshair(img, offset_x, offset_y, ratio)
+                _draw_cursor_crosshair(img, offset_x, offset_y, new_w / real_w)
                 _remember_capture(real_w, real_h, new_w, new_h, offset_x, offset_y)
 
             buf = io.BytesIO()
@@ -418,18 +421,28 @@ def _focus_window_win32(title: str) -> str:
         return f"Error focusing window: {e}"
 
 
+# The title reaches AppleScript as an argument, never as source: a title
+# written into the script could close the string and run `do shell script`,
+# outside the guardrails and the shell sandbox.
+_FOCUS_SCRIPT = '''
+on run argv
+    tell application "System Events"
+        set frontmost of first process whose name contains (item 1 of argv) to true
+    end tell
+end run
+'''
+
+
 def _focus_window_macos(title: str) -> str:
     try:
         import subprocess
-        subprocess.run(
-            ["osascript", "-e", f'''
-                tell application "System Events"
-                    set frontmost of first process whose name contains "{title}" to true
-                end tell
-            '''],
-            capture_output=True, timeout=5,
+        result = subprocess.run(
+            ["osascript", "-e", _FOCUS_SCRIPT, title],
+            capture_output=True, text=True, timeout=5,
         )
-        return f"Focused window: {title}"
+        if result.returncode == 0:
+            return f"Focused window: {title}"
+        return f"Window not found: {title}"
     except Exception as e:
         return f"Error focusing window: {e}"
 

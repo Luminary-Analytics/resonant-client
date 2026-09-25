@@ -103,6 +103,52 @@ Validation on September 25, 2026:
     afterwards, and was checked by rendering `settings_view.js` in Node, not in
     the browser.
 
+## September 25 untrusted text in the Git panel, tool rows and plan graph — source only, not released
+
+The escaping fix below (quotes) covered `escapeHtml`, but some views never
+called it or used an escaper of their own:
+
+- **Git panel:** the branch, changed file names, commit hashes and commit
+  messages came from the repository and went into the page as HTML. A cloned
+  repository's commit message could therefore run script in the app window,
+  which holds the app's authenticated connection. All four are escaped now.
+- **Tool rows:** a tool name the app doesn't know went into the row as HTML;
+  so did desktop click and scroll arguments. MCP servers name their own tools,
+  and a model chooses tool arguments. The CLI providers' activity rows showed
+  raw tool names the same way. These are escaped now.
+- Finding a tool's row by its name built a CSS selector from that name. A
+  quote in the name threw an exception, and the row kept showing "running".
+  These selectors use `CSS.escape` now.
+- **Plan graph:** its own escaper left quotes, so a model-written goal could
+  leave its `title` attribute. It escapes quotes now.
+- Also escaped: hook names and commands under **Settings > Hooks** (commands
+  with `<`, `>` or `&` also displayed wrongly), terminal call ids, the
+  screenshot viewer's source, command palette ids and the backend label.
+
+Validation on September 25, 2026:
+
+- Three new tests in `ui_recovery.test.cjs` failed on main before the fix,
+  one for each area: the Git panel (plus hooks), tool rows (native and CLI),
+  and the plan graph. The plan graph test uses a text serializer that behaves
+  like a browser's. After merging main, all 43 tests in the three Node test
+  files pass, as do `ruff` and `git diff --check`. The full `pytest` run had
+  4,054 passed and 5 skipped; the vendored-asset test skips when the
+  gitignored assets are absent.
+- In the browser pane, with an isolated home and a stub model: the fixture
+  repository's last commit message was
+  `x" onmouseover="window.pwned=1"><img src=x onerror="window.pwned=1">`, and
+  the stub model called a tool with the same name.
+  - The tool row showed the name as text. Its failure status arrived through
+    the escaped selector.
+  - The Git panel, opened from the command palette, showed the commit
+    message and a changed file named `notes & 'quotes'.txt` as text.
+  - Injecting the replaced commit template into the same page ran the
+    image's `onerror` handler; the fixed renderer did not.
+  - The real home and credential store were unchanged.
+- Windows cannot create branch or file names containing `"`, `<` or `>`, so
+  those Git cases are covered only by the unit test. So are the hooks list and
+  the plan graph.
+
 ## September 25 Ask asks before changes — source only, not released
 
 **Ask never asked about writes or shell commands.** The composer describes Ask

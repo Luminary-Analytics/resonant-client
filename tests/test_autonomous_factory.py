@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import threading
 import time
+from unittest.mock import MagicMock, patch
 
 
 from lumi.gui.autonomous_factory import (
@@ -29,6 +30,7 @@ from lumi.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
 )
+from lumi.orchestration import IntentService, NodeStatus, SpecialistResult
 from lumi.orchestration.reflect import ReflectPassResult
 
 
@@ -127,6 +129,38 @@ class TestDispatchTracker:
         # Doesn't raise.
         tracker.feed_event({"event": "intent.complete"})
         tracker.feed_event({})
+
+    def test_a_cancelled_sub_mission_releases_the_wait_before_it_stops(self, tmp_path, monkeypatch):
+        # The stall ceiling cancels a sub-mission that may never stop by
+        # itself (a hung tool) and relies on the cancel to end this wait.
+        monkeypatch.setenv("LUMI_STATE_HOME", str(tmp_path / "state"))
+        tracker = DispatchTracker()
+        service = IntentService(project_path=str(tmp_path), backend=MagicMock(),
+                                all_tools=[], on_event=tracker.feed_event)
+        running, release = threading.Event(), threading.Event()
+
+        def hung(node, graph):
+            running.set()
+            release.wait(timeout=10)
+            return SpecialistResult(status=NodeStatus.ABANDONED, confidence=0.0)
+
+        with patch("lumi.orchestration.intent_service.LocalSpecialistRunner", side_effect=lambda **kw: hung):
+            intent_id = service.start_intent("hang")
+            tracker.watch(intent_id)
+            assert running.wait(timeout=5)
+            assert service.cancel(intent_id) is True
+            # A deadline turns a wait that never ends into a failure, not a hang.
+            give_up = threading.Event()
+            deadline = threading.Timer(3, give_up.set)
+            deadline.start()
+            outcome = tracker.wait(intent_id, stop_event=give_up, poll_seconds=0.05)
+            deadline.cancel()
+            still_running = service._get(intent_id).thread.is_alive()
+            release.set()
+
+        assert outcome.success is False
+        assert outcome.error == "cancelled"
+        assert still_running
 
     def test_forget_drops_state(self):
         tracker = DispatchTracker()

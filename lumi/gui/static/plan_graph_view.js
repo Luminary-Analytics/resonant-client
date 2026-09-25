@@ -103,6 +103,12 @@
             case 'plan.complete':
                 // Just re-render with current data
                 break;
+            case 'plan.stopped':
+                // Stopped: the steps that never ran never will.
+                for (const id of payload.abandoned || []) {
+                    if (_snapshot.nodes[id]) _snapshot.nodes[id].status = 'abandoned';
+                }
+                break;
             default:
                 return;  // unknown event — ignore
         }

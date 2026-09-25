@@ -493,6 +493,25 @@ class LocalSpecialistRunner:
         full_text = "".join(text_chunks).strip() or crash_msg
         duration_ms = (time.time() - started_at) * 1000.0
 
+        if self.cancel_event.is_set():
+            # Stopped: the node is abandoned and nothing more is asked of
+            # the model. Repairing a planner's or verifier's envelope below
+            # would be a model request of its own, after the person pressed
+            # Stop.
+            return SpecialistResult(
+                status=NodeStatus.ABANDONED,
+                confidence=0.0,
+                summary="Stopped before this step finished.",
+                data={
+                    "tool_calls": tool_calls,
+                    "error_count": error_count,
+                    "step_count": step_count,
+                    "hit_step_limit": hit_step_limit,
+                    "duration_ms": round(duration_ms, 1),
+                    "structured_output_repaired": False,
+                },
+            )
+
         # Did the specialist actually produce something? Used to soften the
         # step-limit penalty when the work landed despite running long.
         produced_output = bool(full_text) or tool_calls > 0

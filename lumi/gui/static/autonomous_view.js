@@ -141,6 +141,13 @@ class LumiAutonomousView {
         if (!phase) return;
         // The dispatch went through: its card keeps the dispatched state.
         this._pendingMissionDispatch = null;
+        // Build this roadmap started a plan. Show it, and let the Plan tab's
+        // Pause and Stop reach it as they reach a /plan. (An autonomous
+        // session's intent_id names its daemon, which its badge stops.)
+        if (phase === 'planning_dispatched' && event.intent_id) {
+            this._followIntent(event.intent_id);
+            this.openPlanTab(true);
+        }
         // Find the seed feature from the current session record so the
         // badge can keep showing the original intent text.
         const sess = this._currentSessionSummary();

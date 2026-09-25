@@ -509,8 +509,10 @@ class AppState:
 
         Stateful singleton: the same instance survives across WS commands so
         `start_intent` and a later `cancel(intent_id)` reach the same `_active`
-        dict. Rebuilt whenever the backend or project changes (so a project
-        switch doesn't leak active intents from the prior project).
+        dict. Rebuilt whenever the backend or project changes, and after the
+        MCP tools change (those commands drop it), so new intents use the
+        current ones. Intents still running carry over, so Stop, Pause and
+        Resume keep reaching a plan started before a model switch.
 
         `on_event` is rebound on every call — the WebSocket-scoped emitter
         changes per connection.
@@ -519,7 +521,7 @@ class AppState:
         signature = (id(self.backend), self.project.project_path)
         existing = getattr(self, "_intent_service", None)
         if existing is None or getattr(self, "_intent_service_signature", None) != signature:
-            self._intent_service = IntentService(
+            service = IntentService(
                 project_path=self.project.project_path,
                 backend=self.backend,
                 all_tools=list(AGENT_TOOLS) + self.mcp_manager.get_all_tools(),
@@ -532,6 +534,10 @@ class AppState:
                 mcp_manager=self.mcp_manager,
                 hook_runner_for=self.specialist_hook_runner,
             )
+            # The MCP commands set `_intent_service` to None, so the last
+            # service built is kept apart to hand its running intents on.
+            service.adopt_running(existing or getattr(self, "_intent_service_last", None))
+            self._intent_service = self._intent_service_last = service
             self._intent_service_signature = signature
         elif on_event is not None:
             self._intent_service.on_event = on_event

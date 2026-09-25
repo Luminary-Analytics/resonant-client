@@ -892,12 +892,14 @@ body {
     color: var(--text);
 }
 
+/* Wraps rather than squeezing the plan's name away in a narrow panel. */
 .plan-graph-toolbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 8px;
-    height: 32px;
-    padding: 0 10px;
+    gap: 4px 8px;
+    min-height: 32px;
+    padding: 4px 10px;
     border-bottom: 1px solid var(--border);
     background: var(--bg-sidebar);
     font-size: 12px;
@@ -914,6 +916,25 @@ body {
 
 .plan-graph-spacer { flex: 1; }
 
+.plan-graph-actions {
+    display: flex;
+    flex-shrink: 0;
+    gap: 8px;
+}
+
+/* Running, Paused, Stopping…, Stopped: the followed plan's state. */
+.plan-graph-state {
+    flex-shrink: 0;
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.plan-graph-state:not(:empty) {
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+}
+
 .plan-graph-btn {
     background: var(--bg-elem);
     border: 1px solid var(--border);
@@ -928,6 +949,22 @@ body {
 .plan-graph-btn:hover {
     background: var(--bg-hover);
     color: var(--text);
+}
+
+.plan-graph-btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+/* Pause and Stop with no running plan. aria-disabled rather than disabled
+   keeps them focusable, so focus stays put when a plan stops, and a click
+   says why nothing happens. */
+.plan-graph-btn[aria-disabled="true"],
+.plan-graph-btn[aria-disabled="true"]:hover {
+    background: var(--bg-elem);
+    color: var(--muted);
+    opacity: 0.55;
+    cursor: default;
 }
 
 /* Soft-checkpoint toast */

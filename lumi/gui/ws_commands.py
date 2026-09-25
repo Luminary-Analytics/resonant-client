@@ -3189,6 +3189,11 @@ async def _cmd_pin_session(ctx: CommandContext) -> None:
 # ── Intent / organic-orchestration commands ─────────────
 
 
+_INTENT_COMMANDS = (
+    "intent_start", "intent_cancel", "intent_pause",
+    "intent_resume", "intent_list_snapshots", "intent_restore_snapshot",
+)
+
 
 @command("intent_start")
 @command("intent_cancel")
@@ -3196,9 +3201,18 @@ async def _cmd_pin_session(ctx: CommandContext) -> None:
 @command("intent_resume")
 @command("intent_list_snapshots")
 @command("intent_restore_snapshot")
-async def _cmd_intent_start(ctx: CommandContext) -> None:
+async def _cmd_intent(ctx: CommandContext) -> None:
+    # Six names share this handler, so the name comes from the message. A
+    # bare `command` here would be this module's decorator: comparing the
+    # names to it once made every intent command do nothing, silently. A
+    # call without one of the names is refused out loud for the same reason.
+    name = ctx.msg.get("command")
+    if name not in _INTENT_COMMANDS:
+        await ctx.send_error(f"Unknown intent command: {name!r}")
+        return
+
     # Bridge the intent worker thread back to this WebSocket. The
-    # service ctx.runs on a thread, so we hand it a thread-safe emitter
+    # service runs on a thread, so we hand it a thread-safe emitter
     # that schedules `ctx.ws.send_json` on the asyncio loop.
     loop = asyncio.get_running_loop()
 
@@ -3208,13 +3222,16 @@ async def _cmd_intent_start(ctx: CommandContext) -> None:
         except Exception:
             logger.debug("intent emit raised", exc_info=True)
 
-    if ctx.state.backend is None:
+    if name == "intent_start" and ctx.state.backend is None:
         await ctx.send({"event": "error",
                             "message": "Connect a backend before starting an intent."})
     else:
+        # Only a new plan needs the current backend. A running plan keeps
+        # the one it started with, so Stop, Pause and Resume must still reach
+        # it after opening a conversation whose model can't start.
         intent_service = ctx.state.get_intent_service(on_event=_emit_intent)
 
-        if command == "intent_start":
+        if name == "intent_start":
             text = (ctx.msg.get("text") or "").strip()
             if not text:
                 await ctx.send({"event": "error",
@@ -3231,27 +3248,27 @@ async def _cmd_intent_start(ctx: CommandContext) -> None:
                     logger.exception("intent_start failed")
                     await ctx.send({"event": "error",
                                         "message": f"intent_start failed: {exc}"})
-        elif command == "intent_cancel":
+        elif name == "intent_cancel":
             ok = intent_service.cancel(ctx.msg.get("intent_id", ""))
             await ctx.send({"event": "intent.cancel_ack",
                                 "intent_id": ctx.msg.get("intent_id", ""),
                                 "ok": ok})
-        elif command == "intent_pause":
+        elif name == "intent_pause":
             ok = intent_service.pause(ctx.msg.get("intent_id", ""))
             await ctx.send({"event": "intent.pause_ack",
                                 "intent_id": ctx.msg.get("intent_id", ""),
                                 "ok": ok})
-        elif command == "intent_resume":
+        elif name == "intent_resume":
             ok = intent_service.resume(ctx.msg.get("intent_id", ""))
             await ctx.send({"event": "intent.resume_ack",
                                 "intent_id": ctx.msg.get("intent_id", ""),
                                 "ok": ok})
-        elif command == "intent_list_snapshots":
+        elif name == "intent_list_snapshots":
             snaps = intent_service.list_snapshots(ctx.msg.get("intent_id", ""))
             await ctx.send({"event": "plan.snapshot_list",
                                 "intent_id": ctx.msg.get("intent_id", ""),
                                 "snapshots": snaps})
-        elif command == "intent_restore_snapshot":
+        elif name == "intent_restore_snapshot":
             ok = intent_service.restore_snapshot(
                 ctx.msg.get("intent_id", ""),
                 int(ctx.msg.get("ts_ms") or 0),

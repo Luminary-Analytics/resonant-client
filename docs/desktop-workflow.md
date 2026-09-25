@@ -419,6 +419,36 @@ after Lumi restarts. Codex and Claude Code change files with their own tools,
 so their changes have no checkpoints. **Settings > Checkpoints & recovery**
 also lists a Git project's checkpoints.
 
+## Plans with /plan (Unreleased)
+
+Start a message with `/plan`, for example `/plan add a dark mode toggle`, to
+have specialists work through a goal instead of answering in one turn: a
+planner splits it into steps, and implementers and verifiers take them in
+order. This is separate from the **Plan** permission mode. The preview's
+**Plan** tab opens with the plan and updates as steps start and finish. Its
+toolbar shows the plan's state: Running, Paused, Stopping…, Stopped, Complete
+or Failed.
+
+- **Pause** lets the step already running finish and starts no new one until
+  you press **Resume** (the same button).
+- **Stop** ends the plan. The step that is running makes no further model
+  request or tool call (a command it started is stopped), and no other step
+  starts. The toolbar reads Stopping… until that step has ended, then
+  Stopped; steps that never ran are marked abandoned. A stopped plan can't be
+  resumed: start it again with `/plan`.
+- **History** lists the plan's saved snapshots. A plan can be restored from
+  one once it has stopped.
+
+Pause and Stop are buttons you can reach with Tab and press with Enter or
+Space; focus stays on them while a plan's steps start and end. They act on
+the plan the tab follows: the last one started with `/plan` or with a
+Mission's **Build this roadmap**. An autonomous session's plans are stopped
+from its badge. After the page reloads, the tab no longer follows a plan that
+is still running, so wait for it to finish before reloading.
+
+Specialists run in Full-auto inside the project, with the guardrails that
+apply in every mode. See [Unreleased](unreleased.md).
+
 ## Creative editors
 
 Settings > Creative editors provides guided Blender, Unity, and Unreal Engine 5

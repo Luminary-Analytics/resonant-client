@@ -1674,6 +1674,7 @@ function fakeDom() {
             if (at !== html.length || open.length !== 1) throw new Error(`fake DOM cannot parse ${JSON.stringify(html)}`);
         }
         setAttribute(name, value) { this.attributes.set(name, String(value)); }
+        removeAttribute(name) { this.attributes.delete(name); }
         getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
         hasAttribute(name) { return this.attributes.has(name); }
         addEventListener(type, handler) { this.listeners[type] = handler; }
@@ -2103,4 +2104,207 @@ test('prose in an Evidence step closes its group without drawing the calls again
         assert.deepEqual(app.statuses(), ['✓']);
         assert.equal(app.activity.querySelectorAll('.collapsed-group').length, 1);
     }
+});
+test('the plan-graph Pause button becomes Resume while the plan is paused', () => {
+    const button = {textContent: 'Pause', title: '', setAttribute() {}, removeAttribute() {}};
+    const app = setup(() => {}, {document: {getElementById: (id) => (id === 'plan-graph-pause' ? button : null)}});
+    const notices = [];
+    app.showStatusMessage = (message) => notices.push(message);
+
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    assert.equal(app._currentIntentPaused, true);
+    assert.equal(button.textContent, 'Resume');
+    // Another intent (a Mission's roadmap) finishing leaves this plan's button alone.
+    app.handleEvent({event: 'intent.complete', intent_id: 'mission-2'});
+    assert.equal(button.textContent, 'Resume');
+    app.handleEvent({event: 'intent.resumed', intent_id: 'plan-1'});
+    assert.equal(app._currentIntentPaused, false);
+    assert.equal(button.textContent, 'Pause');
+
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'plan-1'});
+    assert.equal(button.textContent, 'Pause');
+
+    // Accepted controls are reported by the event that follows; refused ones say so.
+    const before = notices.length;
+    app.handleEvent({event: 'intent.pause_ack', intent_id: 'plan-1', ok: true});
+    assert.equal(notices.length, before);
+    app.handleEvent({event: 'intent.resume_ack', intent_id: 'plan-1', ok: false});
+    app.handleEvent({event: 'intent.restore_ack', intent_id: 'plan-1', ok: false});
+    assert.deepEqual(notices.slice(before), [
+        'That plan can no longer be resumed.',
+        'Snapshot not restored. A plan can be restored once it has stopped.',
+    ]);
+});
+
+// The Plan tab's toolbar as index.html draws it, wired by the real
+// _bindPlanGraphToolbar and driven through the real handleEvent. A Mission's
+// roadmap reaches it through autonomous_view.js's handleMissionPhaseChanged.
+function planToolbarApp() {
+    const dom = fakeDom();
+    const page = fs.readFileSync(path.join(__dirname, '../lumi/gui/templates/index.html'), 'utf8');
+    const toolbar = dom.document.createElement('div');
+    toolbar.innerHTML = page.match(/<div class="plan-graph-toolbar">([\s\S]*?)<\/div>/)[1];
+    const byId = id => toolbar.querySelector(`[id="${id}"]`);
+    const document = {...dom.document, getElementById: byId};
+    const context = vm.createContext({console, document, CSS: dom.CSS, window: {}, WebSocket: {OPEN: 1}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/autonomous_view.js'), 'utf8'), context);
+    const app = Object.create(context.App.prototype);
+    Object.assign(app, {
+        ws: {readyState: 1},
+        sent: [], notices: [], planTabOpened: [],
+        send: message => app.sent.push({...message}),
+        showStatusMessage: message => app.notices.push(message),
+        openPlanTab: focus => app.planTabOpened.push(focus),
+        _currentSessionSummary: () => null,
+        _refreshMissionBadge: () => {},
+        handleMissionPhaseChanged: context.window.LumiAutonomousView.prototype.handleMissionPhaseChanged,
+    });
+    app._bindPlanGraphToolbar();
+    app.button = byId;
+    app.press = id => byId(id).listeners.click();
+    app.stateLabel = () => byId('plan-graph-state').textContent;
+    app.unavailable = id => byId(id).getAttribute('aria-disabled') === 'true';
+    return app;
+}
+
+test('the Plan tab\'s Stop stops the plan it follows, shown stopping, then stopped', () => {
+    const app = planToolbarApp();
+    const stop = app.button('plan-graph-stop');
+    assert.equal(stop.getAttribute('aria-label'), 'Stop plan');
+    // No plan yet: Pause and Stop look unavailable, and Stop says why.
+    assert.equal(app.unavailable('plan-graph-stop'), true);
+    assert.equal(app.unavailable('plan-graph-pause'), true);
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, []);
+    assert.equal(app.notices.at(-1), 'No plan is running.');
+
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.unavailable('plan-graph-stop'), false);
+    assert.equal(app.unavailable('plan-graph-pause'), false);
+
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'plan-1'}]);
+    assert.equal(app.stateLabel(), 'Stopping…');
+    // Still focusable (not disabled), but nothing more is sent.
+    assert.equal(stop.hasAttribute('disabled'), false);
+    assert.equal(app.unavailable('plan-graph-stop'), true);
+    assert.equal(app.unavailable('plan-graph-pause'), true);
+    app.press('plan-graph-stop');
+    app.press('plan-graph-pause');
+    assert.equal(app.sent.length, 1);
+    assert.deepEqual(app.notices.slice(-2), ['The plan is already stopping.', 'The plan is already stopping.']);
+
+    // Accepted at once; stopped once the running step has ended.
+    app.handleEvent({event: 'intent.cancel_ack', intent_id: 'plan-1', ok: true});
+    app.handleEvent({event: 'intent.cancelling', intent_id: 'plan-1'});
+    assert.equal(app.notices.at(-1), 'Stopping the plan. No new step will start.');
+    // A late resume doesn't bring the plan back.
+    app.handleEvent({event: 'intent.resumed', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Stopping…');
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Stopped');
+    assert.equal(app.notices.at(-1), 'Plan stopped.');
+    assert.equal(app.unavailable('plan-graph-stop'), true);
+    assert.equal(app.button('plan-graph-pause').textContent, 'Pause');
+    app.press('plan-graph-stop');
+    assert.equal(app.sent.length, 1);
+    assert.equal(app.notices.at(-1), 'That plan has already ended.');
+    // A stopped plan stays stopped.
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Stopped');
+
+    // The next plan gets working controls.
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-2', text: 'add a menu'});
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.unavailable('plan-graph-stop'), false);
+});
+
+test('Stop reaches a paused plan, and a refusal marks the plan ended', () => {
+    const app = planToolbarApp();
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Paused');
+    assert.equal(app.button('plan-graph-pause').textContent, 'Resume');
+
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'plan-1'}]);
+    // The server no longer had it running: nothing was stopped.
+    app.handleEvent({event: 'intent.cancel_ack', intent_id: 'plan-1', ok: false});
+    assert.equal(app.stateLabel(), 'Ended');
+    assert.equal(app.notices.at(-1), 'That plan can no longer be stopped.');
+    assert.equal(app.unavailable('plan-graph-pause'), true);
+});
+
+test('while Lumi reconnects, Stop says so instead of showing a stop that was never sent', () => {
+    const app = planToolbarApp();
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.ws = {readyState: 3};
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, []);
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.notices.at(-1), 'Reconnecting to Lumi. Press Stop again once it’s back.');
+});
+
+test('Build this roadmap points Pause and Stop at the Mission\'s plan; an autonomous session does not', () => {
+    const app = planToolbarApp();
+    // An autonomous session's intent_id names its daemon; its badge stops it.
+    app.handleEvent({event: 'mission_phase_changed', session_id: 's1', phase: 'autonomous_running', intent_id: 'daemon-1'});
+    // Resuming a Mission names no plan.
+    app.handleEvent({event: 'mission_phase_changed', session_id: 's1', phase: 'planning_dispatched'});
+    assert.equal(app.stateLabel(), '');
+    assert.deepEqual(app.planTabOpened, []);
+
+    app.handleEvent({event: 'mission_phase_changed', session_id: 's1', phase: 'planning_dispatched', intent_id: 'roadmap-1'});
+    assert.equal(app.stateLabel(), 'Running');
+    assert.deepEqual(app.planTabOpened, [true]);
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'roadmap-1'}]);
+    // Another plan's end (an autonomous iteration's) leaves the toolbar alone.
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'iteration-7'});
+    assert.equal(app.stateLabel(), 'Stopping…');
+});
+
+test('a plan step ending leaves keyboard focus in the Plan tab', () => {
+    const inPlanTab = {closest: selector => (selector === '#plan-graph-pane' ? {} : null)};
+    const document = {getElementById: () => null, activeElement: inPlanTab};
+    const app = setup(() => {}, {document});
+    let focused = 0;
+    Object.assign(app, {
+        userInput: {focus: () => focused++, closest: () => null, style: {}},
+        sendBtn: {style: {}, setAttribute() {}},
+        stopBtn: {style: {}},
+        _renderAccountMenu() {}, _setSessionActivity() {}, _startLiveRun() {}, _stopLiveRun() {},
+        _clearPromptSuggestion() {},
+    });
+    app.setRunning(false);
+    assert.equal(focused, 0);
+    document.activeElement = {closest: () => null};
+    app.setRunning(false);
+    assert.equal(focused, 1);
+});
+
+test('a stopped plan shows the steps that will never run as abandoned', () => {
+    const canvas = {innerHTML: '', style: {}, querySelectorAll: () => []};
+    const document = {getElementById: id => (id === 'plan-graph-canvas' ? canvas : null)};
+    const window = {};
+    vm.runInContext(
+        fs.readFileSync(path.join(__dirname, '../lumi/gui/static/plan_graph_view.js'), 'utf8'),
+        vm.createContext({window, document, console}),
+    );
+    window.PlanGraphView.render({intent: 'add a toggle', intent_id: 'plan-1', nodes: [
+        {id: 'n1', goal: 'plan it', status: 'done', specialization: 'plan'},
+        {id: 'n2', goal: 'add the toggle', status: 'running', specialization: 'implement', parent_id: 'n1'},
+        {id: 'n3', goal: 'check it', status: 'pending', specialization: 'verify', parent_id: 'n1', depends_on: ['n2']},
+    ]});
+
+    window.PlanGraphView.applyEvent({kind: 'node.done', node_id: 'n2', payload: {status: 'abandoned'}});
+    window.PlanGraphView.applyEvent({kind: 'plan.stopped', payload: {abandoned: ['n3']}});
+
+    const statuses = Object.fromEntries(
+        [...canvas.innerHTML.matchAll(/class="pgn pgn-(\w+)" data-id="(\w+)"/g)].map(([, status, id]) => [id, status]));
+    assert.deepEqual(statuses, {n1: 'done', n2: 'abandoned', n3: 'abandoned'});
 });

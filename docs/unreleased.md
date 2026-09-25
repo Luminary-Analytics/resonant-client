@@ -11,8 +11,8 @@ The dated September 15/18 records below are historical.
 ## September 25 refused tool calls say why — source only, not released
 
 **A refused call's row said only "denied".** When a hook, a policy rule, a
-tool boundary or an approval nobody could answer stops a tool call, the model
-gets the reason as the call's result. The app added a line reading "✗ denied"
+tool boundary, a second approver or an approval nobody could answer stops a
+tool call, the model gets the reason as the call's result. The app added a line reading "✗ denied"
 (and "not run" on a command's row) and dropped the reason. A guard hook that
 timed out looked the same as the user's own Deny.
 
@@ -64,8 +64,8 @@ Validation on September 25, 2026:
 - On the previous `app.js` and `run_cards.js`, all four failed: six rows for
   three calls (the extra "✗ denied" lines), ✓ for the refused Evidence call,
   and no reason in the worker's row.
-- After rebasing on main (with gate hooks failing closed): full `pytest`
-  4,282 passed, 5 skipped. `ruff check .` clean, `node --check` passes for
+- After rebasing on main (with gate hooks failing closed and second
+  approvals): full `pytest` 4,289 passed, 5 skipped. `ruff check .` clean, `node --check` passes for
   `app.js` and `settings_view.js`, the four Node UI test files pass (59
   tests), `git diff --check` clean.
 - In the browser pane, from an isolated home with a scripted Ollama stub, in
@@ -97,7 +97,9 @@ Validation on September 25, 2026:
 
 Not exercised: a live model, a packaged build, Codex or Claude Code, the
 "no approval prompt is available" refusal in the app (a Node test covers its
-text), and the terminal UI, which still prints "✗ denied" without the reason.
+text), a second approver's refusal (it takes the same path, with the
+approval's message as the reason), and the terminal UI, which still prints
+"✗ denied" without the reason.
 
 ## September 25 worker transcripts and controls — source only, not released
 

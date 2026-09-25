@@ -143,9 +143,9 @@ Ask's built-in policy marks file writes and shell commands `prompt` and keeps
 Auto-edit's denies (recursive `rm`, `chmod` on a system path, a download piped
 into a shell), which are checked before a repository's rules. A repository or
 organization `allow` rule can't skip Ask's approval: the tier still asks.
-`lumi run --mode ask`, and so a scheduled task in **Read only (ask)**, uses the
-read-only `suggest` tier instead, whose policy denies file writes and shell
-outright, since nobody can answer a prompt there.
+`lumi run --mode ask`, and so scheduled tasks and model comparisons in **Read
+only (ask)**, use the read-only `suggest` tier instead, whose policy denies file
+writes and shell outright, since nobody can answer a prompt there.
 
 Auto-edit asks before shell, MCP, browser, desktop, REPL, process and git
 actions, and before any newly added tool. Changing the mode updates the live

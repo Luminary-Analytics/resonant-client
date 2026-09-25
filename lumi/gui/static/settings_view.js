@@ -1388,7 +1388,7 @@ class LumiSettingsView {
                     { key: 'default_permission_mode', label: 'Default permission mode', type: 'select',
                       options: [
                           { value: 'bypass', label: 'Full-auto (sandboxed)' },
-                          { value: 'ask', label: 'Suggest (read-only)' },
+                          { value: 'ask', label: 'Ask permissions (ask before every change)' },
                           { value: 'auto-edit', label: 'Auto-edit (file edits OK, other actions ask)' },
                           { value: 'plan', label: 'Plan mode' },
                       ]

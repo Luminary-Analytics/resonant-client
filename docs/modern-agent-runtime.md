@@ -135,9 +135,16 @@ prompt that is no longer waiting.
 
 | Mode | Tier | Runs without asking |
 |---|---|---|
-| Ask | `suggest` | Read-only tools; built-in policy denies file writes and shell |
+| Ask | `ask` | Read-only tools; asks before file writes, shell and everything else |
 | Auto-edit, Plan | `auto-edit` | Read-only and file-editing tools, `await_user`, `task`, `task_batch` |
 | Full-auto | `full-auto` | Everything the policy allows |
+
+Ask's built-in policy marks file writes and shell commands `prompt` and keeps
+Auto-edit's denies (recursive `rm`, `chmod` on a system path, a download piped
+into a shell), which are checked before a repository's rules. A repository or
+organization `allow` rule can't skip Ask's approval: the tier still asks.
+`lumi run --mode ask` uses the read-only `suggest` tier instead, whose policy
+denies file writes and shell outright, since nobody can answer a prompt there.
 
 Auto-edit asks before shell, MCP, browser, desktop, REPL, process and git
 actions, and before any newly added tool. Changing the mode updates the live

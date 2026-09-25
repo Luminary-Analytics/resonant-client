@@ -386,10 +386,11 @@ class AppState:
         return f"project:{digest}"
 
     PERMISSION_MODES = ("ask", "auto-edit", "plan", "bypass")
-    # Native engine tier for each GUI permission mode. Plan keeps its
-    # historical Auto-edit tier for native providers; CLI providers map modes
-    # through their own permission profiles.
-    _MODE_TIERS = {"ask": "suggest", "auto-edit": "auto-edit", "plan": "auto-edit", "bypass": "full-auto"}
+    # Native engine tier for each GUI permission mode. Ask asks before every
+    # change; the read-only suggest tier is for runs nobody can answer
+    # (headless.py). Plan keeps its historical Auto-edit tier for native
+    # providers; CLI providers map modes through their own permission profiles.
+    _MODE_TIERS = {"ask": "ask", "auto-edit": "auto-edit", "plan": "auto-edit", "bypass": "full-auto"}
 
     @classmethod
     def normalize_permission_mode(cls, mode: Any) -> str:

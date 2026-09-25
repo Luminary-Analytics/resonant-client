@@ -8,6 +8,81 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 Ask asks before changes — source only, not released
+
+**Ask never asked about writes or shell commands.** The composer describes Ask
+as "Always ask before making changes". But the app ran it on the read-only
+`suggest` tier, whose built-in policy denies `file_write`, `file_edit`, `bash`
+and `batch`. A deny is final, so no approval appeared: a model's `file_edit`
+came back "Blocked by policy: Write operations blocked in suggest mode". Other
+actions, such as `check_run`, did ask. The defect dates back at least to
+commit 3cd7922.
+
+- **Ask has its own `ask` tier** (`lumi/engine/policies.py`,
+  `default_ask_policy`). Reads run. File writes, edits, shell commands and
+  every other action show the approval prompt, and the answer decides.
+  **Deny** stays final.
+- **Still refused without asking:** a recursive `rm`, `chmod` on a system
+  path, a download piped into a shell, and the guardrails. These are checked
+  before a repository's `lumi-policy.json`, and organization shell rules still
+  come first.
+- **Nothing can switch Ask's approvals off.** Neither a repository's nor an
+  organization's `allow` rule skips the prompt, because the tier asks before
+  anything that isn't read-only. A repository can still forbid a change
+  outright.
+- **Delegated workers** inherit Ask and ask through the conversation's prompt.
+  Work with no approval dialog, such as background sprint roles, still skips
+  changes. As in Auto-edit, a PERMISSION_REQUEST hook can explicitly allow
+  them.
+- **Unchanged:** `lumi run --mode ask` keeps the read-only `suggest` tier,
+  since nobody can answer a prompt there. Codex and Claude Code still only
+  read under Ask; they can't pass an approval request to Lumi.
+- **The edit card is visible while the run waits** (`static/app.js`). Before a
+  file edit or new file, the approval card with its diff went into the running
+  task's activity list. The UI hides that list until the live status is
+  opened, so the turn waited on a card nobody could see. The card now goes in
+  the conversation, like an `await_user` question, including for a worker's
+  edit. The dialog for commands was already visible.
+- **Settings > General > Default permission mode** calls the mode **Ask
+  permissions (ask before every change)** instead of "Suggest (read-only)".
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,983 passed, 5 skipped. `ruff check .` clean, 35 Node UI
+  tests pass, `git diff --check` clean.
+- New tests drive real turns:
+  - `test_permission_decisions.py` runs `Session.run` with an `on_permission`
+    callback. It covers allow and deny for a new file, an edit and a command,
+    reads without asking, a refused recursive `rm`, no prompt (fails closed),
+    a repository's `allow` not skipping the prompt, `suggest` staying read-only,
+    a worker asking through the parent, and the policy layer order.
+  - `test_gui_permission_modes.py` runs the GUI's own run loop and `approve`
+    handler, for allow and deny in Ask and a trusted repository's `allow *`.
+  - `ui_recovery.test.cjs` checks the card's placement.
+- On the unfixed code, 11 of the new and updated cases failed; every GUI case
+  failed because no prompt appeared. Mutations were caught:
+  - dropping the dangerous-command denies from Ask failed 5 tests;
+  - letting the ask tier approve file writes failed 5;
+  - the old card placement failed the UI test.
+- In the browser pane, from an isolated home with the scripted Ollama stub,
+  after choosing **Ask permissions** in the composer's mode menu:
+  - a `file_edit` showed its card in the conversation. **Reject** left the
+    file unchanged, and the model read "Tool execution denied by user.";
+    **Accept** changed it;
+  - `echo ran > ran.txt` opened the command dialog. **Escape** denied it (no
+    file) and **Allow** ran it;
+  - `rm -rf build` was refused without a prompt, and `build/` was intact;
+  - a delegated worker's `file_write` asked through the conversation. Its card
+    showed in the conversation, not inside the worker's block, and **Accept**
+    wrote the file;
+  - at 375 px the card fit with no horizontal scroll. **Shift+Tab** from the
+    composer reached **Accept**, then **Reject**, with a visible focus ring;
+    **Enter** on **Reject** left the file unchanged;
+  - Settings listed **Ask permissions (ask before every change)**.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code, macOS and
+Linux.
+
 ## September 25 an organization's shared model credit — source only, not released
 
 - **Shared credit from Lumi Cloud** (`lumi/budgets.py`,

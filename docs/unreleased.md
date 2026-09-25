@@ -60,6 +60,8 @@ would run.
 
 Validation on September 25, 2026:
 
+- `pytest`: 4391 passed, 5 skipped. `ruff`, `node --check`, the four node
+  test files (78 pass), `git diff --check`.
 - New tests, each failing against the code it covers (20 mutations, one
   change reverted at a time):
   - the walker marks never-run steps abandoned, reports `plan.stopped`, and

@@ -154,6 +154,15 @@ class TestWorkspaceTrust:
         again = WorkspaceTrust(tmp_path / "trust.json", recent_projects=[new])
         assert again.status(new).needs_decision
 
+    def test_reading_decisions_leaves_the_first_run_to_the_app(self, tmp_path):
+        # lumi run, the terminal UI and model comparisons read trust without
+        # knowing Recent projects. Had they written the file, the app's first
+        # run would have found it and trusted none of them.
+        known = _project(tmp_path, "known")
+        assert WorkspaceTrust(tmp_path / "trust.json").status(known).decision == ""
+        assert not (tmp_path / "trust.json").exists()
+        assert WorkspaceTrust(tmp_path / "trust.json", recent_projects=[known]).status(known).trusted
+
     def test_a_recent_projects_allow_rules_wait_for_one_review(self, tmp_path):
         # Allow rules never skipped a prompt before trust existed; honoring
         # them unreviewed would change what Lumi does there without asking.

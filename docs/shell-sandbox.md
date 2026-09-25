@@ -4,7 +4,7 @@ Lumi limits what the agent's commands can do in three layers:
 
 1. **Path checks, always on.** File tools (read, write, edit, search) stay
    inside the project (`lumi/engine/sandbox.py`), and commands start in it.
-   This applies to `lumi run` too.
+   This applies to `lumi run` and the [terminal UI](terminal-ui.md) too.
 2. **Guardrails, always on.** A short list of commands is never run, in any
    permission mode (`lumi/engine/guardrails.py`).
 3. **The shell sandbox, off by default.** On macOS and Linux, commands can

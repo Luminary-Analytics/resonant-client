@@ -18,6 +18,7 @@ import sys
 import argparse
 import logging
 import difflib
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -1039,8 +1040,14 @@ def consume_events(event_stream, on_permission=None):
 #  Banner & UI chrome
 # ══════════════════════════════════════════════════════════════════════
 
-def print_banner(backend=None, health_info: dict = None):
-    """Print a clean, modern startup banner — opencode-inspired."""
+def print_banner(backend=None, health_info: dict = None, session: Session = None, mode: str = "",
+                 notice: str = ""):
+    """Print a clean, modern startup banner — opencode-inspired.
+
+    With ``session`` and ``mode``, it also says what the agent may do without
+    asking (``notice`` follows, such as a mode the policy didn't allow) and
+    whether an untrusted project's own instructions and rules are off.
+    """
     console.print()
 
     # Title with split border accent
@@ -1082,8 +1089,25 @@ def print_banner(backend=None, health_info: dict = None):
     cwd = os.getcwd()
     cwd_display = cwd.replace("\\", "/")  # Normalize for display
     _print(f"    [{C_MUTED}]cwd[/{C_MUTED}]      [{C_FILE}]{_esc(cwd_display)}[/{C_FILE}]")
+    if session is not None and mode:
+        description = MODE_DESCRIPTIONS[mode] + (f" · {notice}" if notice else "")
+        _print(f"    [{C_MUTED}]mode[/{C_MUTED}]     [{C_TEXT}]{mode}[/{C_TEXT}]  "
+               f"[{C_DIM}]{_esc(description)}[/{C_DIM}]")
+        _print_project_trust(session)
     console.print(f"    [{C_MUTED}]help[/{C_MUTED}]     [{C_DIM}]/help · /plan · /model · /backend · /quit[/{C_DIM}]")
     console.print()
+
+
+def _print_project_trust(session: Session) -> None:
+    """Say so when the project brings instructions, notes or a policy that stay off until it's trusted."""
+    if session.project_content_trusted or not session.project_path:
+        return
+    from .gui.workspace_trust import WorkspaceTrust
+
+    if WorkspaceTrust().status(session.project_path).has_content:
+        console.print(f"    [{C_MUTED}]project[/{C_MUTED}]  [{C_WARN}]not trusted[/{C_WARN}]  "
+                      f"[{C_DIM}]its instructions, notes and policy allow rules are off; "
+                      f"trust it in the Lumi app[/{C_DIM}]")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1184,6 +1208,91 @@ def _create_backend_from_available(target: str, available: dict):
 
 
 # ══════════════════════════════════════════════════════════════════════
+#  Session construction
+# ══════════════════════════════════════════════════════════════════════
+
+# The permission modes the terminal runs in, with each one's engine tier, as
+# in the app and the chat gateway. Someone answers here, so Ask asks before
+# changes (in `lumi run`, where nobody can, Ask is read only). The default is
+# Bypass; --approve and `/approve on` choose Ask.
+MODES = {"ask": "ask", "auto-edit": "auto-edit", "bypass": "full-auto"}
+MODE_DESCRIPTIONS = {
+    "ask": "asks before changes and commands",
+    "auto-edit": "edits files, asks before commands",
+    "bypass": "runs tools without asking",
+}
+
+
+def _policy_mode(requested: str, *, chosen: bool) -> str:
+    """``requested`` if the organization's policy allows it (lumi/policy.py).
+
+    A mode the person chose (--approve, /approve) that the policy doesn't
+    allow is refused with ValueError. The default falls back to the first
+    mode the policy allows that the terminal has, as ``lumi run``'s does.
+    """
+    from .policy import current as current_policy
+
+    policy = current_policy()
+    if policy is None or policy.mode_allowed(requested):
+        return requested
+    allowed = [mode for mode in policy.allowed_modes or () if mode in MODES]
+    if chosen or not allowed:
+        usable = f"; here you can use {', '.join(allowed)}" if allowed else ", nor any other mode the terminal has"
+        raise ValueError(f"{policy.organization}'s policy doesn't allow {requested} mode{usable}.")
+    return allowed[0]
+
+
+def _allowed_models(provider: str, models: list) -> list:
+    """The models the organization's policy allows (lumi/policy.py): all of them without a policy."""
+    from .policy import current as current_policy
+
+    policy = current_policy()
+    return [model for model in models if policy is None or policy.model_allowed(provider, model)]
+
+
+def build_session(settings, backend, *, project: str, mode: str, max_tokens: Optional[int] = None,
+                  auto_plan: bool = False) -> Session:
+    """The terminal's session, set up as ``lumi run`` sets up its own (headless.build_session).
+
+    headless.scope_session gives it the project: the path sandbox, file
+    exclusions and an execution policy that starts with the guardrails, the
+    review gate and the organization's shell rules. The repository's
+    instructions, notes and policy allow rules apply only if the project is
+    trusted in the app: the terminal never trusts one itself.
+
+    The person's own hooks (``hooks`` in settings.json) run, as in the app and
+    ``lumi run``: a guard they set up must not be skipped because they typed
+    in a terminal. Unlike in ``lumi run``, someone is at the terminal, so
+    computer use follows Settings, which a policy can lock off. Capability
+    packs aren't loaded here, so neither are their hooks, skills or MCP
+    servers.
+    """
+    from .engine.hooks import HookRunner
+    from .headless import scope_session
+
+    session = Session(backend=backend, max_tokens=max_tokens, auto_plan=auto_plan)
+    scope_session(session, settings, project, tier=MODES[mode], trust_project=False)
+    session.hook_runner = HookRunner(settings)
+    session.computer_use_enabled = settings.get("security", "computer_use", True) is not False
+    # Audit and usage records name the terminal session.
+    session.audit_session_id = f"tui:{uuid.uuid4().hex[:12]}"
+    return session
+
+
+def _switch_mode(session: Session, settings, requested: str) -> str:
+    """Put the session in ``requested`` mode, with that tier's execution policy.
+
+    ValueError if the organization's policy doesn't allow the mode; the
+    session is unchanged then.
+    """
+    from .headless import scope_session
+
+    mode = _policy_mode(requested, chosen=True)
+    scope_session(session, settings, session.project_path, tier=MODES[mode], trust_project=False)
+    return mode
+
+
+# ══════════════════════════════════════════════════════════════════════
 #  Embedded mode runner (Session in-process)
 # ══════════════════════════════════════════════════════════════════════
 
@@ -1205,9 +1314,13 @@ def run_embedded(session: Session, user_msg: str, images: list = None):
         """Prompt user for choice selection."""
         return _render_choices(options)
 
+    # Someone is at the terminal, so there is always a prompt. The tier
+    # decides which calls ask; in Bypass only a "prompt" rule in the
+    # organization's or the project's policy does. Without the prompt, those
+    # calls would be refused as if nobody could answer.
     events = session.run(
         user_msg,
-        on_permission=on_permission if not session.auto_approve else None,
+        on_permission=on_permission,
         on_choice=on_choice,
         images=images,
     )
@@ -1361,7 +1474,7 @@ def _history_path() -> Path:
     return target
 
 
-def main():
+def main(argv: Optional[list] = None):
     parser = argparse.ArgumentParser(
         description="Lumi Code Agent — Agentic Coding TUI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1391,19 +1504,48 @@ Examples:
     parser.add_argument("--ollama-url", type=str, default=None)
     parser.add_argument("--dir", type=str, default=None)
     parser.add_argument("--max-tokens", type=int, default=4096)
-    parser.add_argument("--approve", action="store_true")
+    parser.add_argument("--approve", action="store_true",
+                        help="Ask before changes and commands (Ask mode). Without it the agent runs tools "
+                             "without asking (Bypass), within the guardrails and your organization's policy")
     parser.add_argument("--auto-plan", action="store_true",
                         help="Automatically enable plan mode for complex requests")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.WARNING)
 
     if args.dir:
         os.chdir(args.dir)
 
+    # ── Settings and organization policy ──
+    # First, and applied as `lumi run` applies them (headless._configure):
+    # they decide the Ollama address, which modes and models may be used,
+    # and what the session enforces. The terminal doesn't start without them.
+    requested_mode = "ask" if args.approve else "bypass"
+    try:
+        from .gui.settings import SettingsManager
+        from .headless import _configure, scope_session
+        from .policy import blocked_reason
+        from .policy import current as current_policy
+
+        settings = SettingsManager()
+        _configure(settings)
+        refusal = blocked_reason()
+        if refusal:
+            raise ValueError(refusal)
+        mode = _policy_mode(requested_mode, chosen=args.approve)
+    except ValueError as exc:
+        console.print(f"\n  [{C_ERR}]{G_CROSS} {escape(str(exc))}[/{C_ERR}]\n")
+        return
+    except Exception as exc:  # noqa: BLE001 - never run a session without the rules Settings hold
+        console.print(f"\n  [{C_ERR}]{G_CROSS} Lumi couldn't apply its settings: {escape(str(exc))}[/{C_ERR}]\n")
+        return
+    mode_notice = "" if mode == requested_mode else \
+        f"{current_policy().organization}'s policy doesn't allow {requested_mode}"
+    settings_data = settings.get_all()
+
     # ── Resolve URL and detect Ollama ──
-    ollama_url = resolve_ollama_url(args.ollama_url)
+    ollama_url = resolve_ollama_url(args.ollama_url, settings_data=settings_data)
 
     console.print(f"\n  [{C_DIM}]{G_THINK} Scanning Ollama[/{C_DIM}]")
     available = _detect_backends(None, ollama_url, None)
@@ -1425,8 +1567,8 @@ Examples:
     health_info = None
 
     if args.backend == "auto":
-        preferred_backend = get_default_backend()
-        preferred_model = get_default_model()
+        preferred_backend = get_default_backend(settings_data=settings_data)
+        preferred_model = get_default_model(settings_data=settings_data)
         if preferred_backend and preferred_backend in available:
             chosen = preferred_backend
             args.model = args.model or preferred_model or args.model
@@ -1495,12 +1637,21 @@ Examples:
         health_info = backend.health()
     elif chosen == "ollama":
         ollama_info = available["ollama"]
+        # Only the models the organization's policy allows are offered.
+        models = _allowed_models("ollama", ollama_info["models"])
+        if not models:
+            console.print(f"\n  [{C_ERR}]{G_CROSS} {escape(current_policy().organization)}'s policy allows none "
+                          f"of the models at {escape(ollama_info['url'])}[/{C_ERR}]\n")
+            return
         model = args.model
         if not model:
-            model = _select_model_interactive(ollama_info["models"])
-        elif model not in ollama_info["models"]:
-            _print_model_not_found(model)
-            model = _select_model_interactive(ollama_info["models"])
+            model = _select_model_interactive(models)
+        elif model not in models:
+            problem = (f"isn't allowed by {current_policy().organization}'s policy"
+                       if model in ollama_info["models"] else "not found")
+            notice = f"Model '{model}' {problem}"
+            _print(f"  [{C_WARN}]{G_CROSS} {_esc(notice)}[/{C_WARN}]")
+            model = _select_model_interactive(models)
         backend = create_backend("ollama", ollama_info["url"], model=model)
         health_info = backend.health()
         _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(model)}[/{C_DIM}]")
@@ -1540,30 +1691,14 @@ Examples:
     # ── Embedded mode (the only mode post-v0.5.16) ──
     # `serve` subcommand removed in v0.5.16; `connect` removed in v0.4.4.
     # External clients should use `lumi.gui.server` instead.
-    print_banner(backend=backend, health_info=health_info)
-
-    # The audit log and usage records follow Settings and organization policy here too.
+    # The session is scoped to this folder as `lumi run` scopes its own.
     try:
-        from . import audit, budgets, pricing, usage
-        from .gui.settings import SettingsManager
-
-        settings = SettingsManager()
-        audit.configure(settings)
-        pricing.configure(settings)
-        usage.configure(settings)
-        budgets.configure(settings)
-        from .engine import github_tools
-
-        github_tools.configure(settings)
-    except Exception:
-        logging.getLogger(__name__).debug("Audit settings unavailable", exc_info=True)
-
-    session = Session(
-        backend=backend,
-        max_tokens=args.max_tokens,
-        auto_approve=not args.approve,
-        auto_plan=args.auto_plan,
-    )
+        session = build_session(settings, backend, project=os.getcwd(), mode=mode,
+                                max_tokens=args.max_tokens, auto_plan=args.auto_plan)
+    except Exception as exc:  # noqa: BLE001 - never run a session without its rules
+        console.print(f"\n  [{C_ERR}]{G_CROSS} The session couldn't be set up: {escape(str(exc))}[/{C_ERR}]\n")
+        return
+    print_banner(backend=backend, health_info=health_info, session=session, mode=mode, notice=mode_notice)
 
     history = FileHistory(str(_history_path()))
     plan_mode = False
@@ -1623,18 +1758,26 @@ Examples:
             elif cmd == "/cd":
                 # The error repeats the typed path ("/cd [/]").
                 if rest:
+                    previous = os.getcwd()
                     try:
                         os.chdir(rest)
-                        _print(f"  [{C_FILE}]{G_ARROW} {_esc(os.getcwd())}[/{C_FILE}]")
+                        # The session moves with the folder: the path sandbox,
+                        # exclusions, trust and execution policy become the new
+                        # folder's. scope_session sets nothing if it fails.
+                        scope_session(session, settings, os.getcwd(), tier=MODES[mode], trust_project=False)
                     except Exception as e:
+                        os.chdir(previous)
                         _print(f"  [{C_ERR}]{G_CROSS} {_esc(e)}[/{C_ERR}]")
+                    else:
+                        _print(f"  [{C_FILE}]{G_ARROW} {_esc(os.getcwd())}[/{C_FILE}]")
+                        _print_project_trust(session)
                 else:
                     _print(f"  [{C_FILE}]{_esc(os.getcwd())}[/{C_FILE}]")
 
             elif cmd == "/clear":
                 session.clear()
                 console.clear()
-                print_banner(backend=backend, health_info=health_info)
+                print_banner(backend=backend, health_info=health_info, session=session, mode=mode)
 
             elif cmd == "/status":
                 try:
@@ -1655,8 +1798,13 @@ Examples:
             elif cmd == "/model":
                 be = session.backend
                 if isinstance(be, OllamaBackend):
-                    models = be.list_models()
-                    if models:
+                    listed = be.list_models()
+                    # Only the models the organization's policy allows are offered.
+                    models = _allowed_models("ollama", listed)
+                    if listed and not models:
+                        console.print(f"  [{C_ERR}]{G_CROSS} {escape(current_policy().organization)}'s policy "
+                                      f"allows none of these models[/{C_ERR}]")
+                    elif models:
                         new_model = _select_model_interactive(models, current=be.model)
                         if new_model != be.model:
                             new_be = create_backend("ollama", be.base_url, model=new_model)
@@ -1724,15 +1872,24 @@ Examples:
                     console.print(f"  [{C_OK}]{G_STEP} Auto-plan OFF[/{C_OK}]  [{C_DIM}]plan mode is manual only[/{C_DIM}]")
 
             elif cmd == "/approve":
-                if rest.lower() in ("on", "true", "yes"):
-                    session.auto_approve = False
-                    console.print(f"  [{C_WARN}]{G_DOT} Approval ON[/{C_WARN}]  [{C_DIM}]will ask before each tool[/{C_DIM}]")
-                elif rest.lower() in ("off", "false", "no"):
-                    session.auto_approve = True
-                    console.print(f"  [{C_OK}]{G_DOT} Approval OFF[/{C_OK}]  [{C_DIM}]auto-execute[/{C_DIM}]")
-                else:
+                # On is Ask, off is Bypass: the tier and the execution policy
+                # built for it change together, if the policy allows the mode.
+                wanted = {"on": "ask", "true": "ask", "yes": "ask",
+                          "off": "bypass", "false": "bypass", "no": "bypass"}.get(rest.lower())
+                if wanted is None:
                     state = "ON" if not session.auto_approve else "OFF"
-                    console.print(f"  [{C_DIM}]Approval: {state} · use /approve on|off[/{C_DIM}]")
+                    console.print(f"  [{C_DIM}]Approval: {state} · {mode} mode · use /approve on|off[/{C_DIM}]")
+                else:
+                    try:
+                        mode = _switch_mode(session, settings, wanted)
+                    except ValueError as exc:
+                        console.print(f"  [{C_ERR}]{G_CROSS} {escape(str(exc))}[/{C_ERR}]")
+                    else:
+                        if mode == "bypass":
+                            console.print(f"  [{C_OK}]{G_DOT} Approval OFF[/{C_OK}]  [{C_DIM}]auto-execute[/{C_DIM}]")
+                        else:
+                            console.print(f"  [{C_WARN}]{G_DOT} Approval ON[/{C_WARN}]  "
+                                          f"[{C_DIM}]{MODE_DESCRIPTIONS[mode]}[/{C_DIM}]")
 
             elif cmd == "/help":
                 backend_desc = f"{session.backend.name}"
@@ -1749,10 +1906,10 @@ Examples:
                 console.print(f"    [{C_TEXT}]/autoplan[/{C_TEXT}]         [{C_MUTED}]toggle auto-plan (classify complexity first)[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/model[/{C_TEXT}]            [{C_MUTED}]switch model[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/backend[/{C_TEXT}]          [{C_MUTED}]switch backend (Ollama, Claude, OpenAI, Lumi)[/{C_MUTED}]")
-                console.print(f"    [{C_TEXT}]/cd[/{C_TEXT}] <dir>         [{C_MUTED}]change directory[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]/cd[/{C_TEXT}] <dir>         [{C_MUTED}]change the project folder[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/clear[/{C_TEXT}]            [{C_MUTED}]reset conversation[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/status[/{C_TEXT}]           [{C_MUTED}]backend status[/{C_MUTED}]")
-                console.print(f"    [{C_TEXT}]/approve[/{C_TEXT}] on|off   [{C_MUTED}]tool approval[/{C_MUTED}]")
+                console.print(f"    [{C_TEXT}]/approve[/{C_TEXT}] on|off   [{C_MUTED}]ask before changes (on), or don't ask (off)[/{C_MUTED}]")
                 console.print(f"    [{C_TEXT}]/quit[/{C_TEXT}]             [{C_MUTED}]exit[/{C_MUTED}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Architecture[/{C_BRAND2}]")

@@ -839,6 +839,147 @@ steps take the same path), and a worker in the browser (the tests above cover
 it). The terminal UI still prints each step's footer from `status`,
 unchanged.
 
+## September 25 the terminal UI keeps the rules `lumi run` keeps — source only, not released
+
+**The terminal's session had none of them.** `lumi` with no subcommand
+(`lumi/tui.py` `main`) built a bare `Session`: no project, path sandbox, file
+exclusions, execution policy or hook runner, and project content counted as
+trusted. Driven through the unchanged `main()` with a scripted model, in
+Bypass (its default):
+
+- a command the organization's shell rules deny ran and wrote its file, and
+  `git push nowhere main` ran with agent changes waiting for review: both
+  rules live in the execution policy;
+- `.env` (excluded in Settings), `deploy.pem` (excluded by the organization's
+  policy) and a file outside the project were read into the conversation;
+- the person's own `pre_tool_use` hook in Settings didn't run;
+- a policy allowing only Ask and Auto-edit didn't stop Bypass.
+
+Only the guardrails held, at dispatch (`check_floor`). With `--approve` (the
+read-only suggest tier, without its policy) the terminal asked about all three
+commands, the guardrail one included, and ran the organization-denied command
+and the push once they were approved.
+
+- **One way to scope a session** (`headless.scope_session`): the project, path
+  sandbox, exclusions, trust, instructions and the tier's execution policy
+  (guardrails, review gate and organization shell rules first, the project's
+  `lumi-policy.json` layered on). It works everything out before setting
+  anything, so a failure leaves the session as it was. `lumi run`'s
+  `build_session` uses it; its behavior is unchanged.
+- **The terminal builds its session with it** (`tui.build_session`) and never
+  trusts a project itself. Settings and policy apply as in `lumi run`
+  (`headless._configure`: network, secret scan, audit log, prices, usage,
+  budgets, review gate and code hosts, shell sandbox) before it starts;
+  before, only the audit log, prices, usage, budgets and GitHub were set up.
+  The Ollama address and default model are read through `SettingsManager`,
+  so values a policy locks apply.
+- **Modes.** Bypass, the default, is the full-auto tier. `--approve` and
+  `/approve on` are Ask, which asks before changes and commands as before,
+  and also refuses what Auto-edit refuses (recursive deletes, `curl … | sh`).
+  `/approve` rebuilds the execution policy with the tier; it used to flip
+  only the tier. The organization's `permissions.allowed_modes` applies:
+  without Bypass the terminal starts in the first allowed mode it has (Ask
+  or Auto-edit) and the banner says so, a mode chosen with `--approve` or
+  `/approve` that the policy doesn't allow is refused, and with none of its
+  modes allowed it doesn't start.
+- **Models.** Only the models the policy allows are offered, at start and in
+  `/model`; with none allowed, or an invalid or expired policy
+  (`policy.blocked_reason`), the terminal doesn't start. `Session.run` still
+  refuses a blocked model on each turn.
+- **The approval prompt is always passed** (`run_embedded`), so in Bypass a
+  `prompt` rule in the organization's or the project's policy asks, instead
+  of being refused as if nobody could answer.
+- **Hooks, decided deliberately:** the person's Settings hooks run
+  (`HookRunner(settings)`), as in the app, and as in `lumi run` and the other
+  `build_session` surfaces since "your own hooks run in `lumi run`,
+  schedules, comparisons and chats" below. They are the person's own
+  configuration, not repository content, and a guard they set up shouldn't
+  be skipped because they typed in a terminal. Capability packs, with their
+  hooks, skills and MCP servers, still aren't loaded, as in `lumi run`.
+- **`/cd`** moves the session with the folder: its sandbox, exclusions, trust
+  and execution policy. A folder that can't be opened changes nothing.
+- **The app's first run still trusts Recent projects.** Building a
+  `WorkspaceTrust` created `trusted_projects.json`, so running `lumi run` (or,
+  with this change, the terminal) before the app's first run with trust left
+  an empty file, and the app then trusted none of the Recent projects, against
+  the upgrade promise in "client security" below. Only a caller that passes
+  Recent projects, the app, records that first run now; `lumi run`, the
+  terminal and model comparisons only read decisions.
+- Computer use follows Settings (a policy can lock it off); it was always on.
+  Audit and usage records name the session `tui:<id>`. The banner shows the
+  mode, and whether an untrusted project's instructions and allow rules are
+  off.
+- Guide: [the terminal UI](terminal-ui.md). The README, AGENTS.md,
+  ARCHITECTURE.md and the shell sandbox, audit log, usage and organization
+  policy guides mention the terminal.
+
+This settles the "Not exercised" note of "the terminal says why a tool call
+was refused" below: the terminal's own sessions now have hooks and an
+execution policy.
+
+Validation on September 25, 2026:
+
+- `tests/test_tui_session.py` (15 tests) runs the real `main()` in an isolated
+  state folder, with Ollama, the model (the streaming stub) and the keyboard
+  scripted:
+  - in Bypass, the organization's rule, the review gate, both exclusions, the
+    path sandbox and a Settings hook each refuse their call with the reason
+    the model is told, nothing is asked, and no secret reaches the
+    conversation;
+  - with `--approve`, the guardrail, the organization's rule and `rm -rf`
+    are refused before any prompt, a read runs, a command answered "y" runs
+    and an edit answered "n" doesn't;
+  - an untrusted project's `prompt` rule asks in Bypass;
+  - a policy that locks the shell sandbox on (where it can't run) and
+    computer use off reaches the session;
+  - the policy's modes (fallback, refused `/approve off`, refused
+    `--approve`, none usable), an invalid policy, blocked models at start and
+    in `/model`, and no allowed model;
+  - repository instructions apply only once the project is trusted, and the
+    terminal records no trust decision and leaves no trust file, so the app's
+    first run still trusts the project from Recent projects (also
+    `tests/test_exclusions_and_trust.py`; both tests failed with the file
+    created as before);
+  - `/cd` applies the new folder's `.lumiignore` and sandbox, and a missing
+    folder changes nothing; `/approve on` and `off` switch the tier's rules;
+  - a `scope_session` that fails leaves the session as it was.
+- Each piece of the change undone in turn (13 variants: no scoping, no hooks,
+  the old prompt rule, no shell sandbox setup, computer use always on, `/cd`
+  or `/approve` without re-scoping, mode or model policy ignored, trust
+  granted, the suggest tier for `--approve`, assigning while scoping, an
+  invalid policy ignored) failed at least one of these tests. The files were
+  restored after each.
+- A script driving `main()` in a throwaway home showed the gap above before
+  the change; after it, all seven calls were refused with nothing asked, in
+  both modes, and the policy moved the default to Ask.
+- The related suites (chat gateway, exclusions and trust, guardrails,
+  `lumi run`, model comparisons, shell sandbox, tasks from chat, review gate,
+  scheduled tasks, `test_tui.py`): 208 passed, 1 skipped.
+- Merged with main through #68: full `pytest` 4,409 passed, 5 skipped and 1
+  failed. In `tests/test_repl.py::TestExecWrappers::test_python_round_trip`
+  a fresh Python REPL's first eval (30 s limit) returned an error while about
+  a dozen sessions shared this computer; the file passed alone (22 tests),
+  and `lumi/engine/repl.py` isn't part of this change. `ruff check .` is
+  clean (ruff 0.12.12), `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (70 tests), and
+  `git diff --check` is clean. The real `~/.resonant` was unchanged and no
+  `~/.lumi` was created.
+- Merged with main through #74 (Settings hooks in `build_session`) and #76
+  (computer use): the suites around the changed paths (`lumi run`, the chat
+  gateway, tasks from chat, model comparisons, schedules, hook gates,
+  permission decisions, organization policy, guardrails, review gate, shell
+  sandbox, exclusions and trust, docs links and both terminal UI files) 360
+  passed, 1 skipped. `ruff check .` is clean, both `node --check` runs and
+  the Node UI tests (86) pass, and `git diff --check` is clean. A full local
+  run was skipped: about a dozen sessions were short of memory on this
+  computer, and CI runs it.
+
+Not exercised: a real terminal window and a live model. Ollama wasn't
+reachable (10.0.0.131 timed out, and nothing listens locally), so the
+terminal's Ollama detection, warm-up and model listing ran against stubs.
+The docs site wasn't built locally (MkDocs isn't installed here);
+`tests/test_docs_links.py` passes.
+
 ## September 25 your own hooks run in `lumi run`, schedules, comparisons and chats — source only, not released
 
 **Only the app ran them.** The desktop app gives every session the `hooks`
@@ -903,7 +1044,8 @@ refused it.
   row); organization policy (`prompt` rules); the runtime contract; and
   AGENTS.md.
 - The terminal UI (`lumi` with no subcommand) builds its own session and
-  isn't changed here.
+  isn't changed here; "the terminal UI keeps the rules `lumi run` keeps"
+  above gives it the Settings hooks.
 
 Validation on September 25, 2026:
 
@@ -2095,9 +2237,11 @@ Validation on September 25, 2026:
   created.
 
 Not exercised: the TUI in a terminal window with a live model; the console was
-captured instead. The `lumi` TUI builds its session without hooks or an
-execution policy (`tui.py` `main`), so from it a hook or policy refusal can't
-happen today. The tests give the session they pass to `run_embedded` a hook.
+captured instead. When this landed, the `lumi` TUI built its session without
+hooks or an execution policy (`tui.py` `main`), so from it a hook or policy
+refusal couldn't happen; "the terminal UI keeps the rules `lumi run` keeps"
+above changes that. The tests give the session they pass to `run_embedded` a
+hook.
 
 ## September 25 checkpoint Timeline — source only, not released
 

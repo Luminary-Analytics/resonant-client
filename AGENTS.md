@@ -86,6 +86,8 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Repository-provided instructions, notes, index summaries, policy `allow`
   rules, automatic lint/test runs and language servers require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.
+  Only the app, which knows Recent projects, records trust's first run; other
+  surfaces read decisions without creating `trusted_projects.json`.
 - Language servers (`engine/lsp.py`, the `code_intel` tool) start with
   `secrets_store.child_env()`, pass the guardrails and run in the shell
   sandbox when it's on. Answers never list places in excluded files, show
@@ -128,6 +130,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run
   trust a repository unless it was trusted in the app or `--trust-project` is set.
+- The terminal UI (`tui.py`) scopes its session with the same
+  `headless.scope_session`, at start, on `/cd` and when `/approve` changes the
+  tier; it never trusts a repository itself. It checks `policy.current()` for
+  modes and models, and runs the person's Settings hooks, as the app does.
 - Computer use: `security.computer_use` (and policy) gates every tool in
   `tools.COMPUTER_ACCESS_TOOL_NAMES`: the screen, input, other apps'
   interfaces and the clipboard, not only the screen-driving

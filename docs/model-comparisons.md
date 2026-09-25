@@ -14,7 +14,7 @@ Open **Settings > Model evaluations > Compare models on your tasks**.
 | Project | A git repository with at least one commit. |
 | Models | Two to six models the app knows. |
 | Tasks | Up to 20. Each is a prompt and a one-line check command, such as a test, that passes with exit code 0. |
-| What it may do | The permission mode: **Read only (ask)**, **Edit files (auto-edit)** or **Everything (bypass)**. A task that has to run commands, such as tests, needs **Everything**. |
+| What it may do | The permission mode: **Read only (ask)**, **Edit files (auto-edit)** or **Everything (bypass)**. A task that has to run commands, such as tests, needs **Everything**, or **Edit files** in a trusted project whose `lumi-policy.json` allows those commands ([project trust](desktop-workflow.md#project-trust-and-lumi-policyjson)). |
 | Stop each run after | 1 to 60 minutes (default 10). |
 
 Click **Create comparison**, then **Run**. One comparison runs at a time;
@@ -30,7 +30,9 @@ Every task runs once per model:
 2. The task runs there as an unattended [`lumi run`](headless.md) with that
    model. Nobody is asked anything, your organization's policy and budgets
    apply, and its requests count in **Usage & cost**. Repository
-   instructions apply only if the project is trusted in the app.
+   instructions apply only if the project is trusted in the app. So do the
+   `allow` rules in its `lumi-policy.json`, and only if the last commit's copy
+   is the version you trusted.
 3. The task's check runs in the worktree. Exit code 0 passes. The check is
    your command: it passes the command guardrails and runs in the
    [shell sandbox](shell-sandbox.md) when that's on. It has 10 minutes.

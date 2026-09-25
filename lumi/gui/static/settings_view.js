@@ -717,11 +717,12 @@ class LumiSettingsView {
         const current = data.current || {};
         const brings = [...(current.instructions || [])];
         if (current.notes) brings.push('project notes (.lumi/memory.json)');
-        if (current.policy_file) brings.push(current.policy_allows ? `${current.policy_file} (${current.policy_allows} approval-skipping rule${current.policy_allows === 1 ? '' : 's'})` : current.policy_file);
+        const one = current.policy_allows === 1;
+        if (current.policy_file) brings.push(current.policy_allows ? `${current.policy_file} (${current.policy_allows} rule${one ? '' : 's'} that skip${one ? 's' : ''} approval in Auto-edit)` : current.policy_file);
         // Trust also lets Lumi run the project's code on its own (language
         // servers, automatic lint and tests), so it's offered for every
         // project, not only ones that bring instructions.
-        const state = current.policy_changed ? 'Trusted, but its policy changed since; approval-skipping rules are off until you trust the change.'
+        const state = current.policy_changed ? `Trusted, but you haven’t reviewed this version of its policy.${current.policy_allows ? ' Its rules that skip approval in Auto-edit are off until you trust it.' : ''}`
             : current.decision === 'trusted' ? 'Trusted: Lumi uses what it brings and may run its code for language servers and automatic checks.'
             : current.decision === 'restricted' ? 'Restricted: Lumi ignores what it brings and doesn’t run its code on its own.'
             : 'Not decided yet: Lumi ignores what it brings and doesn’t run its code on its own until you trust it.';
@@ -735,7 +736,7 @@ class LumiSettingsView {
                 <div class="settings-row-hint">${item.decision === 'trusted' ? 'Trusted' : 'Restricted'} since ${esc(item.at)}${item.note ? ` · ${esc(item.note)}` : ''}</div></div>
                 <div class="settings-row-value"><button type="button" class="btn-sm" data-trust-decision="forget" data-trust-path="${esc(item.path)}" aria-label="Forget the decision for ${esc(item.path)}">Forget</button></div>
             </div>`).join('');
-        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the approval-skipping rules in its lumi-policy.json apply only after you trust it, and language servers (code intelligence) and automatic lint and test runs wait for trust because they execute the project’s code. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
+        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the allow rules in its lumi-policy.json, which skip approval in Auto-edit, apply only after you trust it, and language servers (code intelligence) and automatic lint and test runs wait for trust because they execute the project’s code. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
             <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">This project</span>
                 <div class="settings-row-hint">${esc(`${brings.length ? `Brings ${brings.join(', ')}.` : 'Brings no instructions or policy.'} ${state}`)}</div></div></div>
             ${actions}

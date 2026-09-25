@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -122,6 +125,37 @@ def test_each_model_runs_each_task_in_its_own_copy(repo):
     assert all(isinstance(row["median_seconds"], float) for row in rows)
     assert len(updates) == 5  # after each run, and at the end
     assert model_evals.overview()["items"][0]["summary"][0]["passed"] == 2
+
+
+def test_runs_trust_only_the_policy_version_the_user_trusted(repo, tmp_path, monkeypatch):
+    # A run works on the last commit. Its lumi-policy.json allow rules, which
+    # run commands without asking in auto-edit, apply only in the version the
+    # user trusted in the app, and not at all while a change awaits review.
+    from lumi.gui.workspace_trust import WorkspaceTrust
+
+    log = tmp_path / "argv.log"
+    script = tmp_path / "logging_lumi.py"
+    script.write_text(f"import sys\nopen({str(log)!r}, 'a', encoding='utf-8').write('\\t'.join(sys.argv[1:]) + '\\n')\n"
+                      + FAKE_RUN, encoding="utf-8")
+    monkeypatch.setattr(model_evals, "_lumi_command", lambda: ([sys.executable, str(script)], None))
+    policy = pathlib.Path(repo) / "lumi-policy.json"
+    policy.write_text(json.dumps({"rules": [{"tool_pattern": "bash", "action": "allow"}]}), encoding="utf-8")
+    for args in (["add", "."], ["-c", "user.email=t@example.com", "-c", "user.name=T", "commit", "-q", "-m", "policy"]):
+        subprocess.run(["git", "-C", repo, *args], check=True, capture_output=True)
+
+    def digests_passed() -> list:
+        comparison = model_evals.create(_raw(repo, mode="auto-edit"))
+        model_evals.runner.start(comparison.id)
+        model_evals.runner.join(60)
+        runs = [line.split("\t") for line in log.read_text(encoding="utf-8").splitlines()]
+        log.unlink()
+        return [args[args.index("--policy-digest") + 1] if "--trust-project" in args else None for args in runs]
+
+    assert digests_passed() == [None, None]  # not trusted
+    WorkspaceTrust().trust(repo)
+    assert digests_passed() == [hashlib.sha256(policy.read_bytes()).hexdigest()] * 2
+    policy.write_text(json.dumps({"rules": [{"tool_pattern": "*", "action": "allow"}]}), encoding="utf-8")
+    assert digests_passed() == ["", ""]  # trusted, but this version isn't reviewed
 
 
 def test_stopping_ends_the_current_run(repo):

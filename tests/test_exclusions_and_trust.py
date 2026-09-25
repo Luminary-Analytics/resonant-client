@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 
@@ -125,11 +126,29 @@ class TestWorkspaceTrust:
         assert not WorkspaceTrust(tmp_path / "trust.json").status(project).needs_decision
 
     def test_recent_projects_are_trusted_on_first_run(self, tmp_path):
-        known = _project(tmp_path, "known", policy=ALLOW_ALL)
+        known = _project(tmp_path, "known", policy=[{"tool_pattern": "bash", "action": "deny"}])
         new = _project(tmp_path, "new")
         trust = WorkspaceTrust(tmp_path / "trust.json", recent_projects=[known, str(tmp_path / "gone")])
-        assert trust.status(known).honor_policy_allows
+        status = trust.status(known)
+        assert status.load_instructions and status.honor_policy_allows and not status.needs_decision
         assert trust.status(new).needs_decision
         # Only the first run grandfathers.
         again = WorkspaceTrust(tmp_path / "trust.json", recent_projects=[new])
         assert again.status(new).needs_decision
+
+    def test_a_recent_projects_allow_rules_wait_for_one_review(self, tmp_path):
+        # Allow rules never skipped a prompt before trust existed; honoring
+        # them unreviewed would change what Lumi does there without asking.
+        known = _project(tmp_path, "known", policy=ALLOW_ALL)
+        trust = WorkspaceTrust(tmp_path / "trust.json", recent_projects=[known])
+        status = trust.status(known)
+        assert status.load_instructions and status.policy_changed and status.needs_decision
+        assert not status.honor_policy_allows
+        assert trust.trust(known).honor_policy_allows
+
+    def test_status_reports_the_digest_it_read(self, tmp_path):
+        project = _project(tmp_path, policy=ALLOW_ALL)
+        path = os.path.join(project, "lumi-policy.json")
+        with open(path, "rb") as handle:
+            expected = hashlib.sha256(handle.read()).hexdigest()
+        assert WorkspaceTrust(tmp_path / "trust.json").status(project).policy_digest == expected

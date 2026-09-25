@@ -310,9 +310,10 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   output, the codebase index and attachments leave them out. Shell commands
   can still open them.
 - **Project trust:** a newly opened project's instruction files, committed
-  notes, codebase summary and approval-skipping `lumi-policy.json` rules apply
-  only after you choose **Trust this project**. Automatic lint and test runs,
-  which execute the project's code, also wait for trust.
+  notes, codebase summary and `lumi-policy.json` allow rules (which skip
+  approval in Auto-edit) apply only after you choose **Trust this project**.
+  Automatic lint and test runs, which execute the project's code, also wait
+  for trust.
 - **Transcript retention:** set **Delete transcripts after (days)** to remove
   old sessions, drafts, checkpoints, artifacts and logs automatically.
 - **Tool switches:** turn off Codex and Claude Code, computer use or the chat

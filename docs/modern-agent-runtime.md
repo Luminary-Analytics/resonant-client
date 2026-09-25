@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-25 (a session with a tool list refuses tools outside it)
+Last updated: 2026-09-25 (worker transcripts and controls in the conversation)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -85,10 +85,14 @@ guide.
 
 The desktop app shows each worker's handoff under the worker's block in the
 task's activity: its result line, then changed files, checks, blockers and the
-next step. The Agents pane, which listed current and past workers with their
-transcripts and pause, resume, cancel and non-cancelling steering, left the page
-in v0.14.0. The `agent_runtime_*` commands remain on the server; the desktop app
-has no control for them yet.
+next step. The Agents pane that listed workers left the page in v0.14.0; their
+controls now sit with the work. A running worker's Pause, Resume, Stop and
+non-cancelling Steer are in the run details' Sub-tasks list
+(`agent_runtime_control`). A stopped worker's block offers its transcript
+(`agent_runtime_detail`) and, unless it completed, Restart (`agent_restart`).
+A restart is a turn of its own: `Session.restart_agent` wraps the worker's
+events in session.start and a session.end classified from its handoff, so a
+reload replays it as finished rather than interrupted.
 
 ## Checkpoint and rewind semantics
 

@@ -3806,10 +3806,12 @@ class Session:
         `stuck` and readable as evidence rather than being overwritten by its
         own retry; `metadata.resumed_from` links them.
 
-        Yields the worker's events, exactly as a delegated task would.
-        ``on_permission`` is the approval prompt for this dispatch; without it
-        the worker's calls that need approval fail closed. A prompt left over
-        from an earlier turn is never reused: its UI channel may be gone.
+        Yields the worker's events, exactly as a delegated task would, between
+        a session.start and a session.end, so a client shows the restart as a
+        turn of its own. ``on_permission`` is the approval prompt for this
+        dispatch; without it the worker's calls that need approval fail
+        closed. A prompt left over from an earlier turn is never reused: its
+        UI channel may be gone.
         """
         self._permission_prompt = on_permission
         if not self.agent_registry:
@@ -3848,10 +3850,80 @@ class Session:
                 fn_args["worker_id"] = assignment["metadata"]["worker_id"]
 
         call_id = f"restart:{agent_id}:{_uuid.uuid4().hex[:8]}"
-        yield from self._execute_task(
+        # A restart is a turn of its own in the conversation. Its start and end
+        # let a client show it running and replay it as finished: a turn with
+        # no session.end reads as interrupted. Everything above can still
+        # refuse, so the turn starts only now.
+        started = time.time()
+        start_event = make_event(
+            EngineEvent.SESSION_START,
+            plan_mode=False,
+            backend=str(getattr(self.backend, "name", "") or ""),
+            model=str(getattr(self.backend, "model", "") or ""),
+            tool_mode=str(getattr(self.backend, "tool_mode", "") or "native"),
+            restart_of=agent_id,
+        )
+        self._log_event(start_event)
+        yield start_event
+        handoff: dict[str, Any] = {}
+        steps = 0
+        refusal = ""
+        for event in self._execute_task(
             fn_args,
             call_id,
             json.dumps(fn_args, ensure_ascii=False),
+        ):
+            if event.get("call_id") == call_id:
+                if event.get("event") == EngineEvent.SUBAGENT_END.value:
+                    handoff = dict(event.get("handoff") or {})
+                    steps = int(event.get("steps") or 0)
+                elif event.get("event") == EngineEvent.TOOL_RESULT.value and event.get("is_error"):
+                    refusal = str(event.get("output") or "")
+            yield event
+        end_event = self._restart_end_event(
+            assignment["prompt"], handoff, refusal, steps, time.time() - started,
+        )
+        self._log_event(end_event)
+        yield end_event
+
+    def _restart_end_event(
+        self, prompt: str, handoff: dict[str, Any], refusal: str, steps: int, elapsed: float,
+    ) -> dict:
+        """The session.end that closes a restart turn, from its worker's handoff.
+
+        The turn's work is the worker's, so its outcome is classified from the
+        handoff: the files it lists (only successful changes), its summary, and
+        a failure when it didn't complete. A worker's check results are not
+        named checks, so none are claimed.
+        """
+        summary = str(handoff.get("summary") or "").strip()
+        if summary == "(no output)":
+            summary = ""
+        changed = normalized_changed_files(
+            [path for path in handoff.get("changed_files") or [] if isinstance(path, str)],
+            self.project_path,
+        )
+        error = refusal
+        if not error and handoff.get("outcome") != "completed":
+            blockers = [str(item) for item in handoff.get("blockers") or [] if str(item).strip()]
+            error = "; ".join(blockers) or "The restarted worker did not complete."
+        return make_event(
+            EngineEvent.SESSION_END,
+            total_elapsed=elapsed,
+            total_steps=steps,
+            outcome=classify_turn_outcome(
+                user_request=prompt,
+                assistant_text=summary,
+                changed_files=changed,
+                terminal_error=error,
+            ),
+            evidence={
+                "requires_workspace_change": request_requires_workspace_change(prompt),
+                "visible_answer": bool(summary),
+                "output_characters": len(summary),
+                "changed_files": changed,
+                "checks": [],
+            },
         )
 
     @staticmethod

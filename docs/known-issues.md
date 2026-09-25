@@ -11,17 +11,15 @@ from the page. `app.js` still renders into its elements (`agent-activity-tree`,
 `agent-handoff-detail`), which no longer exist, so these have no desktop entry
 point:
 
-- workers' transcripts and their pause, resume, cancel, steer and restart
-  controls (`agent_runtime_*`);
 - the checkpoint Timeline (`session_timeline_*`): restoring the conversation,
   or a non-Git snapshot. **Settings > Checkpoints & recovery** still lists Git
   checkpoints and compares or restores their files;
 - flight-recorder traces and their OTLP export (`flight_recorder_*`);
 - the artifact list (`artifact_list`).
 
-Worker handoffs show in the conversation again (Unreleased), and capability
-packs are in Settings. **Severity:** medium, since conversation restore and
-worker controls can't be reached from the app. **Reproduce:** search the page for
+Worker handoffs, transcripts and controls are back in the conversation
+(Unreleased), and capability packs are in Settings. **Severity:** medium, since
+conversation restore can't be reached from the app. **Reproduce:** search the page for
 `#agent-activity-tree`; nothing matches. **Fix proposal:** give the remaining
 views a place in the conversation layout, or remove the unused rendering code.
 

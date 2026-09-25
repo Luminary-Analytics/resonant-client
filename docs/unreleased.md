@@ -97,6 +97,88 @@ In the browser pane, with the template installed in an isolated
 Not yet: signed packs, an organization registry, long-running providers,
 images and reasoning levels.
 
+## September 25 worker transcripts and controls — source only, not released
+
+The Agents pane that held a worker's transcript and its pause, resume, stop,
+steer and restart controls left the page in v0.14.0. The server commands
+stayed, but nothing in the app reached them. They're back, next to the work
+([desktop workflow](desktop-workflow.md)):
+
+- **While a worker runs** (`static/run_cards.js`, `static/app.js`): the run
+  details' **Sub-tasks** list gives it **Pause** (then **Resume**), **Stop**
+  and **Steer…**. Steer opens a small dialog; the worker reads the direction
+  before its next step and keeps going. A paused worker says "Paused", a
+  stopping one "Stopping…".
+- **Once it stopped**, its block offers **Transcript**: a dialog with its
+  status, steps, model and assignment, then its messages, each tool call with
+  its own result (matched by call id), your steering, and errors. A worker
+  that failed, was stopped or was interrupted when Lumi closed also offers
+  **Restart**, which waits for the current run to finish. The original keeps
+  its record and reads "restarted".
+- **A restart is a turn of its own** (`lumi/engine/session.py`,
+  `restart_agent`). It used to yield only the worker's events, so the page
+  never showed it running, and after a reload it looked interrupted and
+  offered to resume finished work. It now starts with session.start and ends
+  with a session.end whose outcome comes from the worker's handoff: its
+  changed files and summary, or a failure. It claims no named checks. The
+  app shows the turn's message as it starts (`agent.restarted` carries it).
+- **Interrupted turns after a reload** (`static/app.js`): a turn that Lumi
+  closed during kept a running card, which hides its activity until a live
+  dock opens, so its work (including an interrupted worker) couldn't be seen.
+  It now shows as interrupted, or paused next to **Continue**, with its work
+  under **Work details**.
+- Removed the old pane's detail renderer (`showRuntimeAgentDetail`). Its
+  **Restart** also sent a stray `agent_runtime_control` "restart", which the
+  server rejected.
+
+Validation on September 25, 2026:
+
+- Full `pytest` with `main` merged in: 4,294 passed, 5 skipped. `ruff check .`
+  clean, the UI node tests (`ui_recovery`, `appearance`, `autonomous_view`)
+  53 passed, `git diff --check` clean.
+- `test_agent_restart_dispatch.py`: a restart's events sit between
+  session.start and session.end, a changed file ends it `changed_unverified`
+  with that file, a failed worker or refused dispatch ends it `failed`, and a
+  refused restart yields nothing. `test_worker_restart_turn.py` runs a stuck
+  worker's restart through the real `_run_session_streaming`: the file
+  changed, and the recorded display events end with session.end. 5 of these
+  6 fail on the previous `session.py`.
+- Six node tests cover which controls each status gets, the Sub-tasks
+  buttons and their escaping, what each control sends (a restart waits for
+  the current run), transcript entries (call ids, denials, failures, calls
+  with no result, steering, errors), the restart turn's start, and settling
+  an interrupted card. Seven mutants each fail one of them: Restart for a
+  completed worker, a restart during a run, results not matched by call id,
+  steering left out, settling a card no longer on the page, an unescaped
+  worker name, and controls kept while stopping.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model whose parent delegates an edit of `notes.txt` to a
+  build worker, in Full-auto:
+  - With the worker's request held for 25 s: **Pause** showed "Paused" and
+    **Resume**; **Resume** brought back its clock. **Steer…** opened with
+    focus in its text box, and **Enter** sent "Keep the rest of notes.txt
+    unchanged", which reached the worker's next request as `<user_steer>`.
+    **Stop** showed "Stopping…", and the worker ended with blocker
+    "Interrupted", **Transcript** and **Restart**.
+  - **Transcript** listed its status, steps, model and start, the assignment,
+    "Edit file notes.txt — done" with its output, and the interruption.
+    **Escape** closed it and focus returned to the button. At 375 px it fit
+    without horizontal scrolling.
+  - With a worker held mid-request, the app was killed and started again. The
+    turn showed as paused, with its work under **Work details** (before this,
+    its activity stayed hidden). The worker read "Interrupted when Lumi
+    closed" with **Transcript** and **Restart**. **Restart** ran a new turn,
+    "Restarting build agent (interrupted after 0 steps)", which changed
+    `notes.txt` and finished "Changed — verify"; the old block then read
+    "restarted" without **Restart**. After a reload both turns showed the
+    same, the first as "Interrupted", with no resume banner.
+  - The real `~/.resonant/settings.json` was unchanged, no `~/.lumi` was
+    created, and no Lumi credential was stored. Settings > Connections was
+    not opened.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code workers
+(they run their own tools), and `task_batch` workers side by side.
+
 ## September 25 a broken lumi-policy.json can't drop organization rules — source only, not released
 
 **A repository could turn off its organization's shell rules.** Committing a
@@ -217,8 +299,9 @@ their own tool loops), macOS and Linux.
   color.
 - "Opening *file*…" showed "â€¦" instead of an ellipsis.
 - The runtime guide and [known issues](known-issues.md) now name the views
-  that lost their entry point with the Agents pane: worker transcripts and
-  controls, the checkpoint Timeline, traces and the artifact list.
+  that lost their entry point with the Agents pane: the checkpoint Timeline,
+  traces and the artifact list. (Worker transcripts and controls are back;
+  see "worker transcripts and controls" above.)
 
 Validation on September 25, 2026:
 

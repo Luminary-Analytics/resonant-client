@@ -749,3 +749,140 @@ test('model-written plan goals stay inside their attributes', () => {
     assertRenderedAsText(canvas.innerHTML, 'plan node');
     assert.equal(canvas.innerHTML.split(UNTRUSTED_AS_TEXT).length - 1, 2, 'goal title and text');
 });
+
+// Worker transcripts and controls: the runtime pane that offered them left in
+// v0.14.0. A running worker's controls sit in the run's Sub-tasks list; a
+// stopped worker's block offers its transcript and, unless it completed, a restart.
+const WORKER = 'agt_0123456789ab';
+
+test('a worker offers only the controls its status allows', () => {
+    const app = setup(() => {});
+    assert.deepEqual(Array.from(app._workerLiveActions('running')), ['pause', 'cancel', 'steer']);
+    assert.deepEqual(Array.from(app._workerLiveActions('paused')), ['resume', 'cancel', 'steer']);
+    assert.deepEqual(Array.from(app._workerLiveActions('stuck')), []);
+    // A stopped worker has no live thread to pause or steer.
+    assert.deepEqual(Array.from(app._workerBlockActions('completed')), ['transcript']);
+    for (const status of ['failed', 'cancelled', 'stuck']) {
+        assert.deepEqual(Array.from(app._workerBlockActions(status)), ['transcript', 'restart'], status);
+    }
+    assert.deepEqual(Array.from(app._workerBlockActions('running')), []);
+    assert.equal(app._workerStatusNote({status: 'stuck', steps: 1}), 'Interrupted when Lumi closed after 1 step');
+    assert.equal(app._workerStatusNote({status: 'cancelled', steps: 3}), 'Stopped after 3 steps');
+    assert.equal(app._workerStatusNote({status: 'completed', steps: 3}), '');
+    // Only the agent registry's workers can be controlled.
+    assert.equal(app._isRegistryWorker(WORKER), true);
+    assert.equal(app._isRegistryWorker('task:call_1'), false);
+});
+
+test('a running worker\'s Sub-tasks row carries its controls', () => {
+    const app = setup(() => {});
+    const html = app._workerLiveControlsHtml({agentId: WORKER, status: 'running', label: 'build "x"'});
+    for (const action of ['pause', 'cancel', 'steer']) assert.match(html, new RegExp(`data-worker-action="${action}"`));
+    assert.match(html, /aria-label="Stop the build &quot;x&quot; worker"/);
+    const paused = app._workerLiveControlsHtml({agentId: WORKER, status: 'running', paused: true, label: 'build'});
+    assert.match(paused, /data-worker-action="resume"/);
+    assert.doesNotMatch(paused, /data-worker-action="pause"/);
+    // Nothing once it finished or is stopping, and nothing without a registry id.
+    assert.equal(app._workerLiveControlsHtml({agentId: WORKER, status: 'done', label: 'build'}), '');
+    assert.equal(app._workerLiveControlsHtml({agentId: WORKER, status: 'running', stopping: true}), '');
+    assert.equal(app._workerLiveControlsHtml({agentId: 'task:call_1', status: 'running'}), '');
+});
+
+test('a worker control sends its command, and a restart waits for the current run', () => {
+    const app = setup(() => {}, {setTimeout: () => 0});
+    const sent = [], messages = [], opened = [], marked = [];
+    app.send = (message) => sent.push(`${message.command}:${message.action || message.agent_id}`);
+    app.showStatusMessage = (text) => messages.push(text);
+    app.openWorkerTranscript = (id) => opened.push(`transcript:${id}`);
+    app.openWorkerSteer = (id, label) => opened.push(`steer:${id}:${label}`);
+    app._markLiveWorker = (id, patch) => marked.push(`${id}:${patch.stopping}`);
+    const button = (action, agentId = WORKER) => ({
+        dataset: {workerAction: action, agentId, workerLabel: 'build'}, disabled: false, textContent: action,
+    });
+
+    for (const action of ['pause', 'resume', 'cancel', 'transcript', 'steer']) app._onWorkerAction(button(action));
+    app._onWorkerAction(button('pause', 'task:call_1'));  // not the registry's: ignored
+    assert.deepEqual(sent, ['agent_runtime_control:pause', 'agent_runtime_control:resume', 'agent_runtime_control:cancel']);
+    assert.deepEqual(marked, [`${WORKER}:true`]);
+    assert.deepEqual(opened, [`transcript:${WORKER}`, `steer:${WORKER}:build`]);
+
+    app.isRunning = true;
+    const blocked = button('restart');
+    app._onWorkerAction(blocked);
+    assert.equal(sent.length, 3);
+    assert.match(messages.at(-1), /Finish or stop the current run/);
+    assert.equal(blocked.disabled, false);
+
+    app.isRunning = false;
+    const restart = button('restart');
+    app._onWorkerAction(restart);
+    assert.equal(sent.at(-1), `agent_restart:${WORKER}`);
+    assert.equal(restart.disabled, true);
+});
+
+test('a worker transcript pairs each call with its own result', () => {
+    const app = setup(() => {});
+    const call = (id, name, label, location, args = {}) => ({
+        event: 'tool.call', name, call_id: id, arguments: args, presentation: {label, locations: location ? [location] : []},
+    });
+    const entries = app._workerTranscriptEntries([
+        {event: 'text.delta', delta: 'Look'},
+        call('c1', 'file_edit', 'Edit file', 'notes.txt'),
+        call('c2', 'bash', 'Run command', '', {command: 'pytest -q'}),
+        {event: 'tool.result', name: 'bash', call_id: 'c2', output: '1 failed', is_error: true, denied: false},
+        {event: 'tool.result', name: 'file_edit', call_id: 'c1', output: 'Tool execution denied by user.', is_error: false, denied: true},
+        {event: 'steer.applied', text: 'Keep the rest unchanged'},
+        call('c3', 'file_write', 'Write file', 'new.txt'),
+        {event: 'text.done', text: 'Done here.'},
+        {event: 'error', message: 'Interrupted'},
+    ]);
+    assert.deepEqual(Array.from(entries, (e) => [e.kind, e.label || e.text, e.target || '', e.outcome || ''].join('|')), [
+        'tool|Edit file|notes.txt|denied',
+        'tool|Run command|pytest -q|failed',
+        'steer|Keep the rest unchanged||',
+        'tool|Write file|new.txt|no result',
+        'text|Done here.||',
+        'error|Interrupted||',
+    ]);
+});
+
+test('a restart shows as a turn of its own', () => {
+    const app = setup(() => {});
+    const calls = [];
+    app._prepareTurnUI = (text) => calls.push(`turn:${text}`);
+    app.setRunning = (running) => calls.push(`running:${running}`);
+    app.handleEvent({event: 'agent.restarted', source_agent_id: WORKER,
+        display_text: 'Restarting build agent (interrupted after 2 steps)'});
+    assert.deepEqual(calls, ['turn:Restarting build agent (interrupted after 2 steps)', 'running:true']);
+});
+
+test('a replayed turn that never ended is shown stopped, with its work reachable', () => {
+    const app = setup(() => {});
+    const collapsed = [];
+    app._collapseTaskActivity = () => collapsed.push('collapsed');
+    const card = (classes, connected = true) => {
+        const set = new Set(classes);
+        return {isConnected: connected, classList: {
+            contains: (name) => set.has(name), remove: (...names) => names.forEach((n) => set.delete(n)),
+            add: (...names) => names.forEach((n) => set.add(n)), list: () => Array.from(set).sort().join(' ')}};
+    };
+    const task = (c) => ({card: c, stateEl: {className: '', textContent: 'Running'}});
+
+    const running = task(card(['task-card', 'task-card-running']));
+    app._activeTask = running;
+    app._settleInterruptedCard();
+    assert.equal(running.card.classList.list(), 'task-card task-card-stopped');
+    assert.equal(running.stateEl.textContent, 'Interrupted');
+    app._activeTask = task(card(['task-card', 'task-card-running']));
+    app._settleInterruptedCard('Paused');
+    assert.equal(app._activeTask.stateEl.textContent, 'Paused');
+    assert.deepEqual(collapsed, ['collapsed', 'collapsed']);
+
+    // A finished card, or one no longer on the page, is left alone.
+    for (const other of [task(card(['task-card', 'task-card-done'])), task(card(['task-card', 'task-card-running'], false))]) {
+        app._activeTask = other;
+        app._settleInterruptedCard();
+        assert.equal(other.stateEl.textContent, 'Running');
+    }
+    assert.equal(collapsed.length, 2);
+});

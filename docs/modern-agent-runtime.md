@@ -183,7 +183,10 @@ from a matching PERMISSION_REQUEST hook settle the call. No answer fails
 closed. Arguments that such a hook rewrites are checked against the policy
 again. Delegated workers ask through the parent's prompt, one question at a
 time. The GUI binds every prompt to a request id and ignores answers for a
-prompt that is no longer waiting.
+prompt that is no longer waiting. A refused call's result is the reason it
+didn't run (a hook, a policy rule, a tool boundary, an approval nobody could
+answer). The GUI shows that reason under the call's row, as text. The user's
+own Deny reads just "denied".
 
 | Mode | Tier | Runs without asking |
 |---|---|---|

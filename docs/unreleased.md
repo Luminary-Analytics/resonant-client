@@ -49,7 +49,7 @@ commit 3cd7922.
 
 Validation on September 25, 2026:
 
-- Full `pytest` after merging main: 4,019 passed, 5 skipped. `ruff check .`
+- Full `pytest` after merging main: 4,033 passed, 5 skipped. `ruff check .`
   clean, 35 Node UI tests pass, `git diff --check` clean.
 - New tests drive real turns:
   - `test_permission_decisions.py` runs `Session.run` with an `on_permission`

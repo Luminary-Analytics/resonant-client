@@ -893,6 +893,11 @@ class AppState:
                       for key_id, entry in sorted(mine.items()) if isinstance(entry, dict)]
         publishers += [{"key_id": key_id, "name": entry["name"], "source": policy.organization}
                        for key_id, entry in sorted((policy.publishers if policy else {}).items())]
+        # The organization's registry, and which of its packs are here at the pinned version.
+        personal = {pack.id: pack for pack in packs if pack.scope == "user"}
+        registry = [{**entry, "installed": entry["id"] in personal,
+                     "matches": bool(personal[entry["id"]].registry.get("matches")) if entry["id"] in personal else False}
+                    for entry in sorted((policy.registry if policy else {}).values(), key=lambda e: e["name"].casefold())]
         return {
             "event": "capability.pack_list",
             "project_path": str(manager.project_path),
@@ -901,6 +906,9 @@ class AppState:
             "catalog": manager.context_catalog(),
             "publishers": publishers,
             "require_signed": bool(policy and policy.require_signed),
+            "organization": policy.organization if policy else "",
+            "registry": registry,
+            "registry_only": bool(policy and policy.registry_only),
         }
 
     def trust_pack_publisher(self, pack_id: str, path: str) -> dict:
@@ -942,7 +950,6 @@ class AppState:
 
     def install_capability_pack(self, url: str, ref: str, subdir: str = "") -> tuple[dict, dict]:
         """Install a pack from a git repository at one commit; it still needs approval."""
-        from .. import audit
         from ..engine import pack_install
         from ..policy import current as current_policy
 
@@ -950,19 +957,39 @@ class AppState:
         allowed = policy.sources_allowed if policy else None
         commit = pack_install.resolve(url, ref)
         installed = pack_install.install_from_git(url, commit, subdir=subdir, allowed_sources=allowed)
+        return self._record_pack_install(installed, pack_install.source_record(installed))
+
+    def install_registry_pack(self, pack_id: str) -> tuple[dict, dict]:
+        """Install a pack from the organization's registry at its pinned version; it still needs approval."""
+        from ..engine import pack_install
+        from ..policy import current as current_policy
+
+        policy = current_policy()
+        entry = (policy.registry if policy else {}).get(pack_id)
+        if entry is None:
+            raise pack_install.PackInstallError("That pack isn't in your organization's registry.")
+        # The registry is the organization's own list, so its repositories need no allowed_sources.
+        installed = pack_install.install_from_git(entry["url"], entry["commit"], subdir=entry["subdir"],
+                                                  expect_id=entry["id"], expect_digest=entry["digest"])
+        source = {**pack_install.source_record(installed), "url": entry["url"], "registry": policy.organization}
+        return self._record_pack_install(installed, source)
+
+    def _record_pack_install(self, installed, source: dict) -> tuple[dict, dict]:
+        from .. import audit
+
         plugins = dict(self.settings.get("plugins") or {})
         entry = dict(plugins.get(installed.id) or {}) if isinstance(plugins.get(installed.id), dict) else {}
         # A reinstall is new content: drop old approvals so it must be reviewed.
         for key in ("approvals", "trust", "sha256", "enabled"):
             entry.pop(key, None)
-        entry["source"] = pack_install.source_record(installed)
+        entry["source"] = source
         plugins[installed.id] = entry
         self.settings.set("plugins", None, plugins)
         audit.record("extension.install", pack=installed.id, version=installed.version,
-                     url=installed.url, commit=installed.commit)
+                     url=source["url"], commit=installed.commit, registry=bool(source.get("registry")))
         self.refresh_capability_packs()
         return self.capability_pack_payload(), {"id": installed.id, "name": installed.name,
-                                                 "commit": installed.commit, "url": installed.url}
+                                                 "commit": installed.commit, "url": source["url"]}
 
     def remove_capability_pack(self, pack_id: str) -> dict:
         """Delete a pack installed from git, with its approvals."""

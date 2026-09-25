@@ -287,6 +287,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `extensions.trusted_publishers` satisfy `extensions.require_signed`, never
   keys a person trusted. `pack_publishers` in settings changes only through
   the trust and forget commands, never `update_settings`.
+- An organization's registry (`extensions.registry`) pins packs to a commit
+  and maybe a content digest (`pack_signing.signed_digest`, which ignores
+  text line endings). `registry_only` turns every other pack off, and a
+  registry install checks the id and digest before replacing anything. A
+  registry listing never approves a pack.
 - Model comparisons (`model_evals.py`) run each task as a `lumi run`
   subprocess in a detached git worktree of `HEAD` under the project's state
   folder, never in the user's checkout; the user's check command passes the

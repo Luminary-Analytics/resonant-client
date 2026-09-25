@@ -64,13 +64,16 @@ def generate_key() -> tuple[bytes, str]:
 
 
 def signed_digest(directory: str | Path) -> str:
-    """The SHA-256 a signature covers: every file in the pack except its signature."""
+    """The SHA-256 a signature or registry pin covers: every file in the pack but its signature.
+
+    Text files count CRLF as LF, so the same commit checked out on any system matches.
+    """
     from .capability_packs import _file_sha256, _pack_files
 
     digest = hashlib.sha256(_DIGEST_PREFIX)
     for relative, path in _pack_files(Path(directory)):
         if relative != SIGNATURE_FILE:
-            digest.update(f"pack\0{relative}\0{_file_sha256(path)}\n".encode("utf-8"))
+            digest.update(f"pack\0{relative}\0{_file_sha256(path, text_endings=True)}\n".encode("utf-8"))
     return digest.hexdigest()
 
 

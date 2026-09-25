@@ -112,6 +112,9 @@ class CapabilityPack:
     # The publisher's signature as engine/pack_signing.check reads it:
     # status (verified, unknown_publisher, invalid, unsigned), key_id, publisher, claimed, reason.
     signature: dict[str, Any] = field(default_factory=dict)
+    # The organization's registry entry for this pack, when it lists one:
+    # organization, commit, and whether the files on disk are that version.
+    registry: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -216,18 +219,28 @@ def _is_link(path: str | Path) -> bool:
     return bool(isjunction and isjunction(path))
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(path: Path, *, text_endings: bool = False) -> str:
+    """The file's SHA-256, byte for byte.
+
+    With ``text_endings`` (signatures and registry pins, which compare files
+    across computers), CRLF counts as LF in files without a NUL byte, so a
+    Windows checkout matches a macOS or Linux one. Binaries stay byte for byte.
+    """
     stat = path.stat()
     signature = (stat.st_size, stat.st_mtime_ns, int(getattr(stat, "st_ino", 0) or 0), stat.st_ctime_ns)
-    key = str(path)
+    key = f"{'text' if text_endings else 'bytes'}:{path}"
     with _FILE_DIGESTS_LOCK:
         cached = _FILE_DIGESTS.get(key)
     if cached and cached[0] == signature:
         return cached[1]
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    if text_endings:
+        data = path.read_bytes()  # packs are bounded by MAX_PACK_BYTES
+        digest.update(data if b"\0" in data else data.replace(b"\r\n", b"\n"))
+    else:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
     value = digest.hexdigest()
     if time.time_ns() - stat.st_mtime_ns > _STABLE_MTIME_NS:
         with _FILE_DIGESTS_LOCK:
@@ -602,6 +615,18 @@ class CapabilityPackManager:
         if not problem and org_policy and org_policy.require_signed and not (
                 signature["status"] == "verified" and signature["key_id"] in org_policy.publishers):
             problem = f"{org_policy.organization}'s policy turns off packs that a publisher it trusts didn't sign."
+        listed = org_policy.registry.get(pack_id) if org_policy else None
+        registry: dict[str, Any] = {}
+        if listed:
+            registry = {"organization": org_policy.organization, "commit": listed["commit"],
+                        "matches": self._matches_registry(listed, directory,
+                                                          configured if isinstance(configured, dict) else {})}
+        if not problem and org_policy and org_policy.registry_only:
+            if not listed:
+                problem = f"{org_policy.organization}'s policy allows only packs from its registry."
+            elif not registry["matches"]:
+                problem = (f"{org_policy.organization}'s registry pins this pack at commit {listed['commit'][:12]}. "
+                           "Install that version from the registry.")
         trusted, enabled, status = self._trust(
             configured if isinstance(configured, dict) else {},
             directory, digest, scope, problem,
@@ -632,8 +657,36 @@ class CapabilityPackManager:
             manifest_version=manifest_version,
             providers=providers,
             signature=signature,
+            registry=registry,
         )
         return pack, data
+
+    @staticmethod
+    def _matches_registry(entry: dict[str, Any], directory: Path, configured: dict[str, Any]) -> bool:
+        """Whether the pack on disk is the version the organization's registry pins.
+
+        A pinned content digest decides by the files themselves. Without one,
+        the pack must have been installed from that repository, commit and folder.
+        """
+        if entry.get("digest"):
+            from .pack_signing import signed_digest
+
+            try:
+                return signed_digest(directory) == entry["digest"]
+            except (CapabilityPackError, OSError):
+                return False
+        source = configured.get("source")
+        if not isinstance(source, dict):
+            return False
+        from .pack_install import PackInstallError, normalize_url
+
+        try:
+            same = (normalize_url(str(source.get("url") or "")).removesuffix(".git")
+                    == normalize_url(entry["url"]).removesuffix(".git"))
+        except PackInstallError:
+            return False
+        return (same and source.get("commit") == entry["commit"]
+                and str(source.get("subdir") or "").strip("/") == entry.get("subdir", ""))
 
     def _inside_project(self, directory: Path) -> bool:
         return directory == self.project_path or self.project_path in directory.parents

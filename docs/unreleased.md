@@ -100,6 +100,209 @@ Validation on September 25, 2026:
 
 Not exercised: macOS, a packaged build, Codex or Claude Code, a live model.
 
+## September 25 worker handoffs report only what happened — source only, not released
+
+**A worker's handoff listed files it never changed.** The handoff a delegated
+worker (`task`, `task_batch`) returns named every file its `file_edit`,
+`file_write` or `file_replace` calls asked for. An edit the user rejected, a
+hook or policy blocked, that failed (`old_text` not found) or that a stop cut
+off before it ran still reached the parent model, the agent registry and the
+app as a changed file. The same handoff called every `check_run` without an
+error "passed". So a check the user or a hook denied, which never ran, was
+reported as passing, and Director Mode recorded it as passing validation.
+
+- **Changed files come from results** (`lumi/engine/session.py`,
+  `_execute_task`). A write call's path waits under its call id and counts
+  only when that call's own result succeeds, as the audit log already did. A
+  denial by the user or a hook isn't an error, so both `denied` and
+  `is_error` are checked. A call with no result doesn't count. Files a
+  successful result names itself, such as a Codex file change, now count
+  too. A worktree's committed changes are still added.
+- **A denied check is `not run`**, not "passed" (a policy block used to say
+  "failed"). Director Mode records it as a validation that didn't pass, so it
+  no longer satisfies the acceptance gate.
+- **CLI tool calls without results** (`Session.run`): the branch for a CLI
+  backend's `tool_call` events counted each call as a successful tool and a
+  write's path as a changed file. No shipped backend reaches it: Claude Code
+  sends only text, and Codex reports its tools as `external.tool`
+  observations with results. The branch stays, so such a call never runs
+  natively, but it no longer counts as evidence.
+
+Validation on September 25, 2026:
+
+- Full `pytest` with `main` merged in: 4,103 passed, 5 skipped. `ruff check .`
+  clean, the UI node tests (`ui_recovery`, `appearance`, `autonomous_view`)
+  46 passed, `git diff --check` clean.
+- `test_worker_handoff.py` (10 tests) delegates through `Session.run` with a
+  scripted backend. It reads the handoff from the `subagent.end` event, the
+  parent's `task` result and the agent record:
+  - an accepted edit is listed, and the file changed;
+  - an edit rejected by the user, blocked by a hook or by policy, or failed
+    is not listed, and the file is unchanged;
+  - a worker stopped after its call, before the edit ran, lists nothing;
+  - a Codex worker's file change counts only when its result succeeds;
+  - a denied check is `not run`. In a Director run it's recorded as not
+    passing, and the gate refuses the task.
+- `test_session_text_branches.py`: a display-only CLI write is no changed
+  file or successful tool.
+- Against the previous `session.py`, 9 of the 11 new tests failed. The
+  accepted edit and the failed Codex change pass on both.
+- In the browser pane, before merging `main`, with an isolated home and a
+  scripted Ollama-compatible model whose parent delegates an edit of
+  `notes.txt` to a build worker, in Ask mode, allowing the task:
+  - **Reject** left `notes.txt` unchanged. The handoff the page received in
+    `subagent.end`, and the worker's agent record, listed no changed files.
+    **Accept** changed the file and listed `notes.txt`.
+  - On the previous `session.py`, the same **Reject** listed `notes.txt` in
+    both.
+  - This build has no element for the Agents panel that used to show the
+    handoff (`agent-activity-tree`), so the handoff was read from the page's
+    state. The conversation showed the worker's edit as denied.
+  - The real `~/.resonant/settings.json` was unchanged, no `~/.lumi` was
+    created, and no Lumi credential was stored. Settings > Connections was
+    not opened.
+
+Not exercised: a live model, a packaged build, a real Codex or Claude Code
+worker, and `task_batch`, which runs each worker through the same code.
+
+## September 25 repository allow rules — source only, not released
+
+The trust banner, Settings and docs said a trusted repository's
+`lumi-policy.json` `allow` rules skip approval, but the engine never did that.
+It read a policy `allow` only as "not denied", as the policy design had since
+April, so Auto-edit still asked. Now they skip Auto-edit's prompt:
+
+- **Auto-edit and Plan** (`engine/session.py` `_repository_preapproves`,
+  `engine/policies.py` `ExecutionPolicy.repository_allows`): a call the tier
+  would ask about runs without asking when the policy as a whole allows it
+  and the first matching rule in the project's own policy is `allow`. Rules
+  now record where they came from (`PolicyRule.source`). So an organization
+  `allow` that matches first neither skips the prompt itself nor hides the
+  repository's answer.
+- **Still decided first:** the guardrails, organization deny and ask rules,
+  and Auto-edit's built-in denies. **Ask never skips** its prompt, and
+  Full-auto doesn't ask anyway. Delegated workers inherit the same rules.
+- **Chained commands still ask.** A rule's glob matches the whole command
+  text, so `npm test*` also matched `npm test && …`. A `bash` or `check_run`
+  command containing `;`, `&`, `|`, `<`, `>`, backquotes, `$(` or a line break
+  isn't pre-approved, nor is a `job_start` or `preview_start` word containing
+  one.
+- **Unattended runs:** in `lumi run --trust-project --mode auto-edit`, and in a
+  scheduled task set to **Edit files** on a trusted project, commands an allow
+  rule matches now run instead of being refused.
+- **Model comparisons** (`lumi/model_evals.py`) run the last commit with
+  `--trust-project` when the project is trusted. They now also pass the new
+  `lumi run --policy-digest`: the commit's allow rules apply only if its
+  `lumi-policy.json` is the version the user trusted, and not at all while a
+  change awaits review.
+- **Trust binds to the file it read.** `TrustStatus.policy_digest` is the
+  SHA-256 the trust check read. `project_execution_policy(policy_digest=…)`
+  honors the allow rules only if the bytes it parses match that digest, so an
+  edit made between the two reads doesn't slip through. A policy that isn't
+  valid UTF-8 is now skipped with a warning, like invalid JSON.
+- **Upgrades:** projects trusted on first run because they were in Recent
+  projects keep their instructions, but a policy with allow rules waits for one
+  review. Those rules never skipped a prompt before, so honoring them
+  unreviewed would change what Lumi does there without asking.
+- **Audit log:** such a call is an `approval` with `by: "project_policy"`.
+- **Wording** (`static/app.js`, `static/settings_view.js`): "N rules that skip
+  approval in Auto-edit". A policy that isn't the trusted version reads "You
+  haven't reviewed this version of lumi-policy.json".
+- Docs: [desktop workflow](desktop-workflow.md#project-trust-and-lumi-policyjson)
+  (new section), [agent runtime](modern-agent-runtime.md#tool-approvals),
+  [`lumi run`](headless.md), [scheduled tasks](scheduled-tasks.md),
+  [model comparisons](model-comparisons.md),
+  [organization policy](enterprise-policy.md) and [audit log](audit-log.md).
+
+Validation on September 25, 2026:
+
+- `tests/test_repository_allow_rules.py` (30 tests): each runs `Session.run`
+  with a scripted model and an approval callback, and checks the folder the
+  command creates. It covers the skip, what still asks (no match, chaining,
+  untrusted), the repository's own rule order, guardrails and built-in denies,
+  organization deny, ask and allow rules, Auto-edit versus Ask and suggest,
+  unattended runs, delegated workers, the digest check and the audit record.
+- GUI (`tests/test_gui_permission_modes.py`, through the real
+  `_run_session_streaming` loop and `approve` handler): Auto-edit and Plan run
+  a trusted rule's command without a prompt. Ask asks, and the Deny holds.
+  Before trust and after a policy edit, Auto-edit asks.
+- `tests/test_headless.py`: `lumi run` refuses the command without
+  `--trust-project` or with a `--policy-digest` that doesn't match, and runs
+  it with a matching digest or the flag alone.
+- `tests/test_model_evals.py`: comparison runs pass no trust for an untrusted
+  project, the trusted digest once it's trusted, and an empty digest after an
+  unreviewed policy edit. `tests/test_exclusions_and_trust.py` covers the one
+  review after upgrade and the reported digest.
+- Nine mutants each switch off one part: the skip, the chaining check, the
+  tier check, per-layer matching (twice), the digest, the upgrade review, and
+  the digest in `lumi run` and in comparisons. Each fails at least one of
+  these tests. The tier-check mutant also fails the GUI Ask case and
+  `test_a_trusted_repositorys_allow_rules_do_not_skip_asks_approval` from the
+  Ask change below.
+- Full suite after merging main: 4092 passed, 5 skipped. Ruff, `node --check`
+  and the node UI tests (42) pass.
+- Browser, isolated fixture (temporary home and state, `LUMI_KEYCHAIN=off`, a
+  scripted Ollama-compatible model, CLI adapters off). This ran before main
+  (with the Ask change below) was merged into this branch:
+  - The banner listed "lumi-policy.json with 2 rules that skip approval in
+    Auto-edit".
+  - Untrusted, `mkdir made` showed Command Review; after **Trust this
+    project**, it ran with no dialog.
+  - `mkdir other`, which no rule matches, still asked, and keyboard **Deny**
+    kept it from running.
+  - After an on-disk edit to the policy, the banner read "You haven't reviewed
+    this version…" and the command asked again. **Trust the change**, reached
+    with Shift+Tab, restored the skip.
+  - Settings > Privacy & security > Project trust showed the new wording for a
+    trusted project, the banner wrapped at 375 px, and the fixture's audit log
+    recorded `project_policy` approvals.
+  - Settings' text for a policy that isn't the trusted version was changed
+    afterwards, and was checked by rendering `settings_view.js` in Node, not in
+    the browser.
+
+## September 25 changed files count only edits that happened — source only, not released
+
+- A task's **Changed files** and the "Review these changes" next-prompt
+  suggestion count a file change only when that call's own result succeeds,
+  matched by call id (`lumi/gui/static/app.js`). They used to count the
+  model's `file_edit` or `file_write` call, so an edit the user rejected, a
+  policy blocked, that failed (`old_text` not found) or that a cancel stopped
+  before it ran still counted: the suggestion offered to review changes that
+  never happened, and a card finished without the server's evidence (a turn
+  ending in an error, or a replayed interrupted turn) listed the file.
+- Replay rebuilds the list from the saved results the same way. A Codex file
+  change counts when its result succeeds. A worker's tool events never count
+  for the parent turn and can't complete a parent call that has the same id.
+  The line and diff counts shown beside each file are unchanged.
+- A worker's handoff is built by the engine, which now also lists only
+  changes whose results succeeded ("worker handoffs report only what
+  happened", above).
+
+Validation on September 25, 2026:
+
+- With `main` merged in: full `pytest` 4,054 passed, 5 skipped (before
+  "untrusted text in the Git panel" landed); `ruff check` clean; the UI node
+  tests (`ui_recovery`, `appearance`, `autonomous_view`) 46 passed.
+- Three new tests drive the real `handleToolCall`, `handleToolResult` and
+  `replayDisplayEvents` with rejected, policy-blocked, failed, unanswered,
+  accepted, id-less, Codex and worker events. All three fail against the
+  previous `app.js`, and they also catch counting a worker's result for the
+  parent or ignoring `denied`.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model:
+  - Before the change, Ask still refused edits by policy, so Auto-edit with
+    a project `lumi-policy.json` `prompt` rule for `file_edit` gave the
+    Accept/Reject card. Reject left `notes.txt` unchanged, yet the next
+    prompt suggested reviewing the changes, and after a provider error the
+    Failed card listed `notes.txt` under **Changed files**.
+  - After the change, the same setup, and an Ask policy block, listed no
+    changed files and suggested no review.
+  - Merged with "Ask asks before changes" below, in Ask mode: Reject, and
+    Reject followed by a provider error, listed no changed files and
+    suggested no review. Accept changed the file, listed `notes.txt` and
+    suggested reviewing it. After a reload, only the accepted turn listed a
+    file.
+
 ## September 25 untrusted text in the Git panel, tool rows and plan graph — source only, not released
 
 The escaping fix below (quotes) covered `escapeHtml`, but some views never
@@ -1429,14 +1632,17 @@ Cloud (not built yet), and the packaged app.
   - its instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), including
     in a Mission's first message;
   - its committed notes (`.lumi/memory.json`) and codebase summary;
-  - the `allow` rules in its `lumi-policy.json`, which previously let a cloned
-    repository skip approval prompts (its deny and ask rules still apply);
+  - the `allow` rules in its `lumi-policy.json` (its deny and ask rules still
+    apply). This entry first said those rules let a cloned repository skip
+    approval prompts; they didn't until "September 25 repository allow rules"
+    above;
   - automatic lint and test runs, which execute the repository's own code.
 
   A banner in the chat offers **Trust this project** or **Keep restricted**.
   A policy file that changes after trust needs review again. Projects already in
   Recent projects are trusted on first run, so upgrading changes nothing for
-  existing work.
+  existing work (their policy's allow rules wait for one review; see
+  "September 25 repository allow rules").
 - **Transcript retention** (`lumi/gui/retention.py`): "Delete transcripts after
   (days)" deletes everything holding conversation content that was last touched
   before then, at startup and daily:

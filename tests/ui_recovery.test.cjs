@@ -213,6 +213,90 @@ test('completion suggestions preserve drafts and skip replay, errors, and queued
     assert.equal(app.userInput.value, '');
 });
 
+// Tool events drive the run's changed files; rendering is not under test.
+function toolEventApp(fields = {}) {
+    const app = setup(() => {});
+    const noop = () => {};
+    Object.assign(app, {
+        removeThinking: noop, _setLiveRunPhase: noop, _finalizeLiveCollapsedGroup: noop,
+        ensureStepRendered: noop, renderToolCall: noop, renderToolResult: noop,
+        addToToolActivityGroup: noop, flushCollapsedGroup: noop, clearTerminals: noop,
+        setRunning: noop, scrollToBottom: noop,
+        _liveRunToolActivity: () => ({active: 'Editing', completed: 'Edited'}),
+        activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(),
+        handlesTools: false, _agentRunSummary: {title: '', fileChanges: [], todos: null},
+    }, fields);
+    app.play = (...events) => events.forEach(e => e.event === 'tool.call' ? app.handleToolCall(e) : app.handleToolResult(e));
+    app.changes = () => Array.from(app._agentRunSummary.fileChanges, change => `${change.path}: ${change.detail}`);
+    return app;
+}
+// As the server sends them: file_edit calls carry the diff of old_text to new_text.
+const editCall = (callId, path) => ({event: 'tool.call', name: 'file_edit', call_id: callId,
+    arguments: {path, old_text: 'alpha', new_text: 'beta'}, presentation: {kind: 'edit', locations: [path]},
+    diff_lines: ['--- ', '+++ ', '@@ -1 +1 @@', '-alpha', '+beta']});
+const toolResult = (call, fields = {}) => ({event: 'tool.result', name: call.name, call_id: call.call_id,
+    output: 'ok', is_error: false, denied: false, ...fields});
+
+test('a file change counts only when its own call succeeds', () => {
+    const app = toolEventApp();
+    const answer = text => ({resultEl: {querySelectorAll: () => [{innerText: text}]}});
+    const rejected = editCall('call_1', 'notes.txt');
+    const blocked = editCall('call_2', 'notes.txt');
+    const failed = editCall('call_3', 'notes.txt');
+    app.play(rejected, toolResult(rejected, {output: 'Tool execution denied by user.', denied: true}),
+        blocked, toolResult(blocked, {output: 'Blocked by policy: denied', is_error: true, denied: true}),
+        failed, toolResult(failed, {output: 'Error: old_text not found', is_error: true}),
+        editCall('call_4', 'stopped.txt'));  // cancelled before it ran: no result
+    assert.deepEqual(app.changes(), []);
+    app._offerPromptSuggestion({outcome: 'incomplete'}, answer('The edit was rejected.'));
+    assert.doesNotMatch(app._promptSuggestion.text, /these changes/);
+
+    const accepted = editCall('call_5', 'notes.txt');
+    const write = {event: 'tool.call', name: 'file_write', call_id: 'call_6',
+        arguments: {path: 'docs/new.md', content: 'one\ntwo'}, presentation: {kind: 'write', locations: ['docs/new.md']}};
+    app.play(accepted, write, toolResult(accepted), toolResult(write));
+    assert.deepEqual(app.changes(), ['notes.txt: Diff +1 −1', 'docs/new.md: Wrote 2 lines']);
+    app._offerPromptSuggestion({outcome: 'changed_unverified'}, answer('Updated the file.'));
+    assert.match(app._promptSuggestion.text, /Review these changes/);
+
+    // Without call ids, results answer calls in order.
+    const idless = toolEventApp();
+    const first = editCall('', 'first.txt'), second = editCall('', 'second.txt');
+    idless.play(first, second, toolResult(first, {denied: true}), toolResult(second));
+    assert.deepEqual(idless.changes(), ['second.txt: Diff +1 −1']);
+});
+
+test('CLI and worker tool events count only the run\'s own successful changes', () => {
+    const cli = toolEventApp({handlesTools: true});
+    const codex = (callId, path) => ({event: 'tool.call', name: 'codex_file_change', call_id: callId, external: true,
+        arguments: {paths: [path]}, presentation: {kind: 'edit', locations: [path]}});
+    const failed = codex('codex_1', 'src/a.py'), applied = codex('codex_2', 'src/b.py');
+    cli.play(failed, toolResult(failed, {is_error: true}), applied, toolResult(applied, {changed_files: ['src/b.py']}));
+    assert.deepEqual(cli.changes(), ['src/b.py: Edited']);
+
+    // A worker's events can reuse the parent's call id; they settle nothing.
+    const app = toolEventApp();
+    const parent = editCall('call_1', 'parent.txt');
+    const worker = {...editCall('call_1', 'worker.txt'), _subagent: true, _agent_id: 'w1'};
+    app.play(parent, worker, {...toolResult(worker), _subagent: true, _agent_id: 'w1'});
+    assert.deepEqual(app.changes(), []);
+    app.play(toolResult(parent, {denied: true}));
+    assert.deepEqual(app.changes(), []);
+    const retry = editCall('call_1', 'parent.txt');  // same arguments, same id
+    app.play(retry, toolResult(retry));
+    assert.deepEqual(app.changes(), ['parent.txt: Diff +1 −1']);
+});
+
+test('replay rebuilds changed files from saved results, not saved calls', () => {
+    const app = toolEventApp();
+    const rejected = editCall('call_1', 'notes.txt'), accepted = editCall('call_2', 'notes.txt');
+    const interrupted = editCall('call_3', 'late.txt');
+    app.replayDisplayEvents([rejected, toolResult(rejected, {denied: true}), interrupted]);
+    assert.deepEqual(app.changes(), []);
+    app.replayDisplayEvents([rejected, toolResult(rejected, {denied: true}), accepted, toolResult(accepted)]);
+    assert.deepEqual(app.changes(), ['notes.txt: Diff +1 −1']);
+});
+
 // The application account must never inherit another provider's identity.
 function accountView(settings = {}, sonnAccount, document = {}) {
     const context = vm.createContext({window: {}, document});

@@ -5520,9 +5520,11 @@ class LumiApp {
             this.trackTerminalStart(callId, name, event.arguments || {});
         }
 
+        // A call is not a change: it counts once its own result succeeds
+        // (handleToolResult). Sub-agent calls returned above and never count.
         const renderKind = event.presentation?.kind || '';
         if (renderKind === 'edit' || renderKind === 'write' || name === 'file_edit' || name === 'file_write') {
-            this._recordAgentFileChange(name, event.arguments || {}, event);
+            this._rememberFileChangeCall(event);
         }
 
         // CLI backends: group ALL tool calls into a collapsible activity panel
@@ -5611,6 +5613,8 @@ class LumiApp {
             this.renderToolResult(event);
             return;
         }
+
+        this._settleFileChangeCall(event);
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
         if (hasImage && this.stepIsInlineOnly) {
@@ -7125,6 +7129,35 @@ class LumiApp {
         if (!t) return '';
         if (t.length <= 72) return t;
         return t.slice(0, 69) + '…';
+    }
+
+    /**
+     * Hold a file-changing call until its result arrives. "Changed files" and
+     * the "review these changes" suggestion describe edits that happened: a
+     * call the user rejects, a policy blocks, that fails, or that a cancel
+     * stops before it runs leaves the file as it was.
+     */
+    _rememberFileChangeCall(event) {
+        if (!this._agentRunSummary) {
+            this._agentRunSummary = { title: '', fileChanges: [], todos: null };
+        }
+        (this._agentRunSummary.pendingFileChanges ||= []).push(event);
+    }
+
+    /** Count a remembered call's change only when its own result succeeded. */
+    _settleFileChangeCall(result) {
+        const pending = this._agentRunSummary?.pendingFileChanges;
+        if (!pending?.length) return;
+        const callId = result.call_id || '';
+        // Match by call id. Calls run in order, so a backend that sends no id
+        // is answered by its oldest id-less call of the same tool.
+        const index = pending.findIndex((call) => (callId
+            ? call.call_id === callId
+            : !call.call_id && call.name === result.name));
+        if (index < 0) return;
+        const [call] = pending.splice(index, 1);
+        if (result.is_error || result.denied) return;
+        this._recordAgentFileChange(call.name || '', call.arguments || {}, call);
     }
 
     _recordAgentFileChange(name, args, event) {
@@ -9047,14 +9080,16 @@ class LumiApp {
             const parts = [];
             if ((trust.instructions || []).length) parts.push(`instructions (${trust.instructions.join(', ')})`);
             if (trust.notes) parts.push('project notes (.lumi/memory.json)');
-            if (trust.policy_file) {
-                const one = trust.policy_allows === 1;
-                parts.push(trust.policy_allows
-                    ? `${trust.policy_file} with ${trust.policy_allows} rule${one ? '' : 's'} that skip${one ? 's' : ''} approval`
-                    : trust.policy_file);
-            }
+            // Allow rules let Auto-edit (and Plan) run the calls they match
+            // without asking; Ask always asks (engine/policies.py).
+            const one = trust.policy_allows === 1;
+            const allowRules = `${trust.policy_allows} rule${one ? '' : 's'} that skip${one ? 's' : ''} approval in Auto-edit`;
+            if (trust.policy_file) parts.push(trust.policy_allows ? `${trust.policy_file} with ${allowRules}` : trust.policy_file);
+            // Changed since the user trusted it, added after, or never
+            // reviewed (a project trusted on upgrade).
             trustNote = trust.policy_changed
-                ? `${trust.policy_file} changed since you trusted this project. Its approval-skipping rules are off until you review it.`
+                ? `You haven't reviewed this version of ${trust.policy_file}.`
+                    + (trust.policy_allows ? ` Its ${allowRules} ${one ? 'is' : 'are'} off until you trust it.` : '')
                 : `This project brings ${parts.join(' and ')}. Lumi isn't using them until you trust the project.`;
         }
 

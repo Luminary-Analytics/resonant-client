@@ -8,6 +8,7 @@ Inspired by Codex CLI's Starlark rule system, simplified to JSON.
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import logging
 import os
@@ -19,11 +20,40 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+# The source of rules read from a project's lumi-policy.json. A trusted
+# repository's allow rule is the only allow that lets Auto-edit run a call
+# without asking (ExecutionPolicy.repository_allows).
+REPOSITORY = "repository"
+
 
 class PolicyAction(str, Enum):
     ALLOW = "allow"
     PROMPT = "prompt"
     DENY = "deny"
+
+
+# What chains, substitutes or redirects commands in sh and cmd.exe. A rule's
+# glob or pattern matches the whole command text, so "npm test*" also matches
+# "npm test && curl … | sh"; commands like that keep asking.
+_SHELL_JOINERS = re.compile(r"[;&|<>`\r\n]|\$\(")
+
+
+def _single_command(tool_name: str, tool_args: dict) -> bool:
+    """Whether a call runs one command, with nothing chained, substituted or redirected.
+
+    Shell tools (``bash``, ``check_run``) are checked as text, and program
+    tools (``job_start``, ``preview_start``) word by word, since
+    ``["sh", "-c", ...]`` carries a whole command. Other tools run no command.
+    """
+    from .guardrails import ARGV_TOOLS, SHELL_TOOLS
+
+    command = tool_args.get("command", "")
+    if tool_name in SHELL_TOOLS:
+        return not _SHELL_JOINERS.search(str(command))
+    if tool_name in ARGV_TOOLS:
+        words = command if isinstance(command, list) else [command]
+        return not any(_SHELL_JOINERS.search(str(word)) for word in words)
+    return True
 
 
 @dataclass
@@ -35,6 +65,10 @@ class PolicyRule:
     arg_patterns: dict[str, str] = field(default_factory=dict)  # Regex patterns for args
     arg_globs: dict[str, str | list[str]] = field(default_factory=dict)
     reason: str = ""  # Human-readable explanation
+    # REPOSITORY for a project's own rules, "" for built-in and organization
+    # rules. Set by whoever loads the rule, never read from the rule itself,
+    # so a policy file can't claim another layer's standing.
+    source: str = ""
 
     def matches(self, tool_name: str, tool_args: dict) -> bool:
         """Check if this rule matches a tool call."""
@@ -66,14 +100,23 @@ class PolicyRule:
         return True
 
     @classmethod
-    def from_dict(cls, data: dict) -> "PolicyRule":
+    def from_dict(cls, data: dict, *, source: str = "") -> "PolicyRule":
         return cls(
             tool_pattern=data.get("tool_pattern", "*"),
             action=data.get("action", "allow"),
             arg_patterns=data.get("arg_patterns", {}),
             arg_globs=data.get("arg_globs", {}),
             reason=data.get("reason", ""),
+            source=source,
         )
+
+    def decides(self) -> bool:
+        """Whether the rule's action is one the policy acts on; others are skipped."""
+        try:
+            PolicyAction(self.action)
+        except ValueError:
+            return False
+        return True
 
 
 class ExecutionPolicy:
@@ -85,16 +128,42 @@ class ExecutionPolicy:
 
     def __init__(self, rules: Optional[list[PolicyRule]] = None):
         self.rules = rules or []
+        # SHA-256 of the file the rules were read from (from_file), else "".
+        self.digest = ""
+
+    def first_match(self, tool_name: str, tool_args: dict, *, source: Optional[str] = None) -> Optional[PolicyRule]:
+        """The rule that decides a tool call, or None; with ``source``, among that layer's rules only."""
+        for rule in self.rules:
+            if source is not None and rule.source != source:
+                continue
+            if rule.matches(tool_name, tool_args) and rule.decides():
+                return rule
+        return None
 
     def evaluate(self, tool_name: str, tool_args: dict) -> PolicyAction:
         """Evaluate a tool call against the policy. Returns the action to take."""
-        for rule in self.rules:
-            if rule.matches(tool_name, tool_args):
-                try:
-                    return PolicyAction(rule.action)
-                except ValueError:
-                    continue
-        return PolicyAction.ALLOW  # Default: permissive
+        rule = self.first_match(tool_name, tool_args)
+        return PolicyAction(rule.action) if rule else PolicyAction.ALLOW  # Default: permissive
+
+    def repository_allows(self, tool_name: str, tool_args: dict) -> bool:
+        """Whether a repository's own rules let a call run without asking.
+
+        This is what lets Auto-edit skip its prompt
+        (Session._resolve_tool_permission). The policy as a whole must allow
+        the call, so the guardrails, organization rules and the tier's
+        denies decide first. Then the repository's first matching rule must
+        be ``allow``: an organization ``allow`` that matches first neither
+        skips the prompt itself nor hides the repository's answer. A command
+        must be a single command (_single_command). A repository's allow
+        rules are only in the policy while the user trusts the project
+        (project_execution_policy).
+        """
+        if not _single_command(tool_name, tool_args):
+            return False
+        if self.evaluate(tool_name, tool_args) != PolicyAction.ALLOW:
+            return False
+        rule = self.first_match(tool_name, tool_args, source=REPOSITORY)
+        return rule is not None and rule.action == PolicyAction.ALLOW.value
 
     def get_reason(self, tool_name: str, tool_args: dict) -> str:
         """Get the reason string for the matching rule, if any."""
@@ -104,22 +173,29 @@ class ExecutionPolicy:
         return ""
 
     @classmethod
-    def from_rules(cls, rules: list[dict]) -> "ExecutionPolicy":
-        return cls([PolicyRule.from_dict(r) for r in rules])
+    def from_rules(cls, rules: list[dict], *, source: str = "") -> "ExecutionPolicy":
+        return cls([PolicyRule.from_dict(r, source=source) for r in rules])
 
     @classmethod
-    def from_file(cls, path: str | Path) -> Optional["ExecutionPolicy"]:
-        """Load policy from a lumi-policy.json (or legacy resonant-policy.json) file."""
+    def from_file(cls, path: str | Path, *, source: str = "") -> Optional["ExecutionPolicy"]:
+        """Load policy from a lumi-policy.json (or legacy resonant-policy.json) file.
+
+        The file is read once, and ``digest`` is the SHA-256 of exactly the
+        bytes the rules came from.
+        """
         p = Path(path)
         if not p.exists():
             return None
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            raw = p.read_bytes()
+            data = json.loads(raw.decode("utf-8"))
             rules = data.get("rules", [])
-            return cls.from_rules(rules)
-        except (json.JSONDecodeError, OSError) as e:
+            policy = cls.from_rules(rules, source=source)
+        except (ValueError, OSError) as e:  # ValueError covers bad JSON and bad UTF-8
             logger.warning("Failed to load policy from %s: %s", path, e)
             return None
+        policy.digest = hashlib.sha256(raw).hexdigest()
+        return policy
 
     def merge(self, other: "ExecutionPolicy") -> "ExecutionPolicy":
         """Layer another policy, such as a repository's lumi-policy.json, over this one.
@@ -244,13 +320,19 @@ def policy_for_tier(tier: str) -> ExecutionPolicy:
     return ExecutionPolicy(guardrail_rules() + factory().rules)
 
 
-def project_execution_policy(tier: str, project_root: str, *, honor_allows: bool = True) -> ExecutionPolicy:
+def project_execution_policy(
+    tier: str, project_root: str, *, honor_allows: bool = True, policy_digest: Optional[str] = None,
+) -> ExecutionPolicy:
     """The tier's built-in policy with the project's lumi-policy.json layered on.
 
     The project policy can tighten or refine the built-in rules; it cannot
-    override built-in denies (see ExecutionPolicy.merge). Its ``allow`` rules
-    skip approval prompts, so they apply only while the user trusts the
-    project and its policy hasn't changed since (gui/workspace_trust.py).
+    override built-in denies (see ExecutionPolicy.merge). In Auto-edit its
+    ``allow`` rules also run the calls they match without asking
+    (ExecutionPolicy.repository_allows), so they apply only while the user
+    trusts the project and its policy hasn't changed since
+    (gui/workspace_trust.py). ``policy_digest`` is the SHA-256 of the file
+    that trust check read: allow rules apply only if the file read here is
+    the same, so an edit in between can't slip past the check.
     Organization shell rules (lumi/policy.py) come next: neither a repository
     nor a tier can loosen them. The guardrails (engine/guardrails.py) come
     before everything, so an organization's ``allow`` can't reach them either.
@@ -261,8 +343,10 @@ def project_execution_policy(tier: str, project_root: str, *, honor_allows: bool
     for name in ("lumi-policy.json", "resonant-policy.json"):
         candidate = os.path.join(project_root, name)
         if os.path.isfile(candidate):
-            project_policy = ExecutionPolicy.from_file(candidate)
+            project_policy = ExecutionPolicy.from_file(candidate, source=REPOSITORY)
             break
+    if project_policy and policy_digest is not None and project_policy.digest != policy_digest:
+        honor_allows = False
     if project_policy and not honor_allows:
         project_policy = ExecutionPolicy(
             [rule for rule in project_policy.rules if rule.action != PolicyAction.ALLOW.value]

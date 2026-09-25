@@ -128,6 +128,9 @@ does:
 - budgets, [usage records](usage-and-costs.md) and the
   [audit log](audit-log.md) apply, with the chat recorded as
   `gateway:<chat id>`;
+- your own [hooks](packs.md#hooks) in `settings.json` run, as in the app. A
+  guard that refuses a call refuses it before anything is asked in the chat.
+  The gateway reads them when it starts, so restart it after changing them;
 - the saved key values are removed from approval requests before they're
   sent.
 

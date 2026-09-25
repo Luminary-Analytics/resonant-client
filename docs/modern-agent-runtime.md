@@ -186,15 +186,20 @@ such a call as an `approval` by `project_policy`.
 When approval is required, the user's answer is final and only an explicit
 `true` approves. A PERMISSION_REQUEST hook can neither run a call the user
 denied nor block one they allowed. Only when no prompt is available (background
-runs, or delegated work without a parent prompt) does an explicit allow or deny
-from a matching PERMISSION_REQUEST hook settle the call. No answer fails
-closed. Arguments that such a hook rewrites are checked against the policy
-again. Delegated workers ask through the parent's prompt, one question at a
-time. The GUI binds every prompt to a request id and ignores answers for a
-prompt that is no longer waiting. A refused call's result is the reason it
-didn't run (a hook, a policy rule, a tool boundary, a second approver, an
-approval nobody could answer). The GUI shows that reason under the call's
-row, as text. The user's own Deny reads just "denied".
+runs, delegated work without a parent prompt, or `lumi run`, whose sessions
+carry the person's Settings hooks) does an explicit allow or deny from a
+matching PERMISSION_REQUEST hook settle the call. No answer fails closed. The
+hook answers for the person, so it is not asked in the read-only `suggest`
+tier (or an unknown tier) or about a call an organization `prompt` rule
+(`PolicyRule.source` `organization`) asks a person about: those calls are
+refused (`Session._permission_hook_decision`). Arguments that such a hook
+rewrites are checked against the policy again, and refused if they reach a
+deny or an organization prompt. Delegated workers ask through the parent's
+prompt, one question at a time. The GUI binds every prompt to a request id and
+ignores answers for a prompt that is no longer waiting. A refused call's
+result is the reason it didn't run (a hook, a policy rule, a tool boundary, a
+second approver, an approval nobody could answer). The GUI shows that reason
+under the call's row, as text. The user's own Deny reads just "denied".
 
 | Mode | Tier | Runs without asking |
 |---|---|---|

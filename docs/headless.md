@@ -9,7 +9,8 @@ jobs. It uses the same engine as the desktop app. These all apply:
 - the [audit log](audit-log.md);
 - file exclusions and the secret scan;
 - the path checks, command guardrails and, when it's on, the
-  [shell sandbox](shell-sandbox.md).
+  [shell sandbox](shell-sandbox.md);
+- your own [hooks](#hooks).
 
 The code is `lumi/headless.py`.
 
@@ -25,7 +26,7 @@ lumi run "Fix the failing test in tests/test_api.py" --provider anthropic --mode
 | `--handoff FILE_OR_ID` | Continue work handed off in the app ([hand-offs](hand-offs.md)): a hand-off file such as `.lumi/handoffs/<name>.json` (relative to the current folder or the project), or the id of one you picked up. The task defaults to "Continue the work in this hand-off." |
 | `--project DIR` | The project folder (default: the current folder) |
 | `--provider`, `--model` | `anthropic`, `openai`, `openrouter`, `sonn`, `kimi`, `exo`, `ollama`, `codex`, `claude-code` or a connection (`conn-<id>`). `LUMI_PROVIDER` and `LUMI_MODEL` work too; otherwise the desktop defaults apply |
-| `--mode` | What the agent may do without asking: `ask` (read only), `auto-edit` (the default: edit files; other actions refused unless a trusted repository's `lumi-policy.json` allows them) or `bypass` (everything) |
+| `--mode` | What the agent may do without asking: `ask` (read only), `auto-edit` (the default: edit files; other actions refused unless a trusted repository's `lumi-policy.json` or your own `permission_request` [hook](#hooks) allows them) or `bypass` (everything) |
 | `--trust-project` | Apply the repository's instructions (`AGENTS.md` and others), notes and `lumi-policy.json` allow rules for this run. In `auto-edit`, the allow rules run the commands they match ([project trust](desktop-workflow.md#project-trust-and-lumi-policyjson)) |
 | `--policy-digest SHA256` | With `--trust-project`, apply the allow rules only if `lumi-policy.json` has this SHA-256 (model comparisons pass the version trusted in the app) |
 | `--max-requests N` | Stop after N model requests |
@@ -41,6 +42,34 @@ Nobody is asked anything during a run:
 Keys come from Settings or the environment: `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `SONN_API_KEY`, `MOONSHOT_API_KEY` or
 `EXO_API_KEY`. A connection's key must be saved in Settings.
+
+## Hooks
+
+The [hooks](packs.md#hooks) in the `hooks` list of your `settings.json` run
+as they do in the app. They are your own configuration, not the repository's,
+so they apply whether or not the project is trusted. No option leaves them
+out, so a guard you set up can't be skipped by starting the agent another way.
+
+- A **gate hook**, such as a `pre_tool_use` guard, that refuses a call makes
+  it one of the run's `denied_calls`. As with any refused call, the run then
+  reports `needs_attention` (exit 3) unless it verified its changes or
+  failed. A gate hook that can't run where `lumi run` runs, or runs past its
+  `timeout_seconds`, refuses what it guards too. The model is told the reason.
+- A hook that is running finishes, or reaches its `timeout_seconds`, before
+  `--timeout` stops the run.
+- A **`permission_request`** hook answers the approvals nobody is there to
+  give. In `auto-edit` it can allow a command the mode would ask about. It
+  can't make `--mode ask` change anything, and it can't answer for a `prompt`
+  rule in your organization's [policy](enterprise-policy.md): those calls are
+  refused.
+- The settings are the ones in the state folder `lumi run` uses (`~/.lumi`,
+  or `LUMI_STATE_HOME`). A CI runner or container with a fresh state folder
+  has no hooks. Give it its own `settings.json` rather than copying one whose
+  hooks name programs it doesn't have.
+
+Capability packs aren't loaded in a headless run, so their hooks don't run.
+With `--provider codex` or `claude-code`, the CLI runs its own tools, so tool
+hooks such as `pre_tool_use` don't see those calls, as in the app.
 
 ## The result
 
@@ -143,8 +172,8 @@ To run a task at set times on this computer, even with the app closed, use a
 
 ## Not covered yet
 
-- MCP servers, capability packs, hooks and the codebase index aren't
-  connected in a headless run.
+- MCP servers, capability packs (with their hooks) and the codebase index
+  aren't connected in a headless run.
 - The conversation isn't saved for the desktop app to open. The usage records
   and the audit log keep what happened.
 - The image isn't published to a registry.

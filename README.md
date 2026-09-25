@@ -122,6 +122,10 @@ Download the latest `lumi-setup-X.Y.Z.exe` from the
   the stable or beta channel, pins a release line, or checks only when asked or
   never; see [Updates](docs/updates.md)
 
+IT departments can deploy the MSI package (`lumi-X.Y.Z.msi`) silently per
+machine through Intune, Configuration Manager or Group Policy; see
+[Deploying on Windows](docs/deploy-windows.md).
+
 Windows SmartScreen may show "Unrecognized publisher" for the v0.x line. Code
 signing is planned for v1.0.
 

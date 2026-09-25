@@ -15,6 +15,11 @@ Each channel and release line has its own feed beside the installers on the
 update site; ``packaging/update_appcast.py`` writes them. WinSparkle takes a
 feed URL, not a filter, so choosing the feed is how the choice is enforced.
 
+A copy installed from the MSI package (packaging/lumi.wxs) never updates
+itself: the device management that installed it does, and the two
+installers would otherwise fight over the same Program Files folder. The package puts
+``lumi-install.json`` beside ``lumi.exe`` to say so; it wins over everything.
+
 Like the policy, these are read once at startup (``read``): a change applies
 the next time Lumi starts. ``read`` parses settings.json itself rather than
 constructing a ``SettingsManager``, which would write the file and move keys
@@ -25,6 +30,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -70,6 +76,19 @@ def validate_policy_settings(settings: dict[str, Any]) -> None:
             normalize(name.split(".", 1)[1], value)
 
 
+def installed_by(executable: str | None = None) -> str:
+    """``"msi"`` when this copy came from the MSI package, else ``""``."""
+    if executable is None:
+        if not getattr(sys, "frozen", False):
+            return ""
+        executable = sys.executable
+    try:
+        data = json.loads(Path(executable).with_name("lumi-install.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    return str(data.get("installer") or "") if isinstance(data, dict) else ""
+
+
 def feed_name(channel: str, pin: str) -> str:
     if pin:
         return f"appcast-{pin}.xml"
@@ -86,6 +105,7 @@ class UpdatePreferences:
     managed_by: str = ""  # the organization whose policy sets any of these
     locked: tuple[str, ...] = ()  # which keys the policy sets
     problems: tuple[str, ...] = field(default=())  # stored values that were ignored, and why
+    installed_by: str = ""  # "msi": device management updates this copy
 
     @property
     def feed_url(self) -> str:
@@ -100,14 +120,16 @@ class UpdatePreferences:
     def as_dict(self) -> dict[str, Any]:
         return {"mode": self.mode, "channel": self.channel, "pin": self.pin, "feed": self.feed_url,
                 "describe": self.describe(), "managed_by": self.managed_by, "locked": list(self.locked),
-                "problems": list(self.problems)}
+                "problems": list(self.problems), "installed_by": self.installed_by}
 
 
-def read(settings_path: Path | None = None, policy_state: Any = None) -> UpdatePreferences:
+def read(settings_path: Path | None = None, policy_state: Any = None,
+         installer: str | None = None) -> UpdatePreferences:
     """The update settings in effect: the policy's, else settings.json's, else the defaults.
 
     An invalid policy pauses automatic updates (``manual``): the administrator
     may have meant to turn them off, and a person can still check by hand.
+    An MSI installation turns them off whatever the settings say.
     """
     from . import policy as policy_module
     from .paths import state_home
@@ -135,6 +157,24 @@ def read(settings_path: Path | None = None, policy_state: Any = None) -> UpdateP
     if getattr(state, "error", "") and values["mode"] == "automatic":
         values["mode"] = "manual"
         problems.append("The organization policy is invalid, so automatic updates are paused.")
+    source = installed_by() if installer is None else installer
+    if source == "msi":
+        values["mode"] = "off"
     return UpdatePreferences(mode=values["mode"], channel=values["channel"], pin=values["pin"],
                              managed_by=policy.organization if (policy and locked) else "",
-                             locked=tuple(sorted(locked)), problems=tuple(problems))
+                             locked=tuple(sorted(locked)), problems=tuple(problems), installed_by=source)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """``lumi updates``: print the update settings in effect as JSON.
+
+    For administrators and detection scripts; it reads settings, the policy
+    and the install marker, and never checks for updates.
+    """
+    from . import __version__
+
+    if argv:
+        print("usage: lumi updates", file=sys.stderr)
+        return 2
+    print(json.dumps({"version": __version__, **read().as_dict()}, indent=2))
+    return 0

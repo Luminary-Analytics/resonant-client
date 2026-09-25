@@ -17,13 +17,16 @@ name: Build check
 #   - Writes the third-party notices (license gate included) and the CycloneDX
 #     SBOM, and uploads both, so they are exercised before any release
 #   - Runs `lumi.exe --version` to confirm the frozen exe boots
+#   - Builds the MSI (packaging/lumi.wxs), installs it silently on the runner,
+#     checks the installed app, the policy file property and that updates are
+#     left to device management, then uninstalls it
 #
 # What this does NOT do:
 #   - Sign the bundle (no Authenticode or EdDSA, no secrets needed)
 #   - Wrap it into an Inno Setup installer (saves ~40 sec)
 #   - Publish anywhere
 #
-# Runtime budget: ~2-3 min. Worth it on every PR.
+# Runtime budget: ~4-5 min. Worth it on every PR.
 
 on:
   pull_request:
@@ -45,7 +48,7 @@ on:
 jobs:
   smoke-build:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -204,3 +207,62 @@ jobs:
                   Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
               }
           }
+
+      # The .NET WiX tool, pinned; NuGet verifies the package signature.
+      - name: Install WiX
+        run: dotnet tool install --global wix --version 5.0.2
+
+      - name: Build the MSI
+        shell: pwsh
+        run: ./packaging/build_msi.ps1
+
+      # The runner is an administrator without UAC prompts, like a device
+      # management agent, so this is the silent per-machine install IT runs.
+      - name: Install, check and remove the MSI
+        shell: pwsh
+        run: |
+          $msi = (Get-ChildItem "dist/installer/*.msi" | Select-Object -First 1).FullName
+          if (-not $msi) { throw "No MSI was built" }
+          $policyDir = Join-Path $env:ProgramData "LumiMsiCheck"
+          New-Item -ItemType Directory -Force -Path $policyDir | Out-Null
+          $policy = Join-Path $policyDir "policy.json"
+          '{"schema": "lumi.policy/v1", "organization": "CI", "settings": {"updates.channel": "beta"}}' |
+              Set-Content -Encoding utf8 $policy
+          $log = Join-Path $env:RUNNER_TEMP "msi-install.log"
+          $install = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @(
+              "/i", "`"$msi`"", "/qn", "/norestart", "/l*v", "`"$log`"", "POLICYFILE=`"$policy`"")
+          if ($install.ExitCode -ne 0) {
+              Get-Content $log -Tail 60
+              throw "msiexec /i exited $($install.ExitCode)"
+          }
+          $folder = Join-Path $env:ProgramFiles "Lumi"
+          $exe = Join-Path $folder "lumi.exe"
+          if (-not (Test-Path $exe)) { throw "lumi.exe wasn't installed to $folder" }
+          if (-not (Test-Path (Join-Path $folder "lumi-install.json"))) { throw "The MSI marker is missing" }
+          if (-not (Test-Path (Join-Path $folder "_internal"))) { throw "The bundle's _internal folder is missing" }
+          $shortcut = Join-Path $env:ProgramData "Microsoft\Windows\Start Menu\Programs\Lumi.lnk"
+          if (-not (Test-Path $shortcut)) { throw "No Start menu shortcut at $shortcut" }
+          $policyKey = "HKLM:\SOFTWARE\Policies\Luminary Analytics\Lumi"
+          $value = (Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile
+          if ($value -ne $policy) { throw "PolicyFile is '$value', expected '$policy'" }
+          Write-Host "✓ Installed per machine with the marker, shortcut and PolicyFile"
+
+          # The installed app reads the marker and the policy the MSI pointed at.
+          $out = Join-Path $env:RUNNER_TEMP "lumi-updates.json"
+          $err = Join-Path $env:RUNNER_TEMP "lumi-updates.err"
+          $run = Start-Process -FilePath $exe -ArgumentList "updates" -Wait -PassThru `
+              -RedirectStandardOutput $out -RedirectStandardError $err
+          if ($run.ExitCode -ne 0) { throw "lumi updates exited $($run.ExitCode): $(Get-Content $err -Raw)" }
+          $status = Get-Content $out -Raw | ConvertFrom-Json
+          Write-Host "lumi updates: mode=$($status.mode) installed_by=$($status.installed_by) channel=$($status.channel) managed_by=$($status.managed_by)"
+          if ($status.mode -ne "off" -or $status.installed_by -ne "msi") { throw "An MSI install must leave updates to device management" }
+          if ($status.channel -ne "beta" -or $status.managed_by -ne "CI") { throw "The policy file named by POLICYFILE wasn't applied" }
+          Write-Host "✓ The installed app leaves updates to device management and applies the policy"
+
+          $remove = Start-Process msiexec.exe -Wait -PassThru -ArgumentList @("/x", "`"$msi`"", "/qn", "/norestart")
+          if ($remove.ExitCode -ne 0) { throw "msiexec /x exited $($remove.ExitCode)" }
+          if (Test-Path $exe) { throw "lumi.exe is still there after uninstalling" }
+          if ((Get-ItemProperty $policyKey -ErrorAction SilentlyContinue).PolicyFile) { throw "The PolicyFile value was left behind" }
+          if (Test-Path $shortcut) { throw "The Start menu shortcut was left behind" }
+          Write-Host "✓ Uninstalled cleanly"
+          Remove-Item -Recurse -Force $policyDir

@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Lumi MSI for device management: Intune (line-of-business app),
+  Configuration Manager and Group Policy software installation.
+
+  Built by packaging/build_msi.ps1 with WiX v5 from the same PyInstaller
+  bundle (dist/lumi) as the EXE installer. Per-machine, into
+  Program Files\Lumi, silent with `msiexec /i lumi-X.Y.Z.msi /qn`.
+
+  - The UpgradeCode below never changes: every Lumi MSI replaces the one
+    before it (MajorUpgrade), including a rebuild of the same version.
+  - lumi-install.json tells the app it came from this package, so it never
+    updates itself; the device management that installed it does
+    (lumi/update_channels.py).
+  - POLICYFILE="\\server\share\lumi-policy.json" writes the machine policy's
+    PolicyFile registry value (docs/enterprise-policy.md), removed again on
+    uninstall.
+  - The EXE installer and this package would share Program Files\Lumi, so
+    this package refuses to install over an EXE installation.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Lumi"
+           Manufacturer="Luminary Analytics"
+           Version="$(var.Version)"
+           UpgradeCode="{144A302C-54FB-441F-B742-7B597A6A3F4A}"
+           Scope="perMachine"
+           Compressed="yes">
+    <SummaryInformation Description="Lumi, the coding agent by Luminary Analytics" />
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer version of Lumi is already installed." />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="LumiIcon" SourceFile="!(bindpath.brand)\lumi.ico" />
+    <Property Id="ARPPRODUCTICON" Value="LumiIcon" />
+    <Property Id="ARPURLINFOABOUT" Value="https://luminary-analytics.github.io/resonant-client/" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <!-- The EXE installer's uninstall entry (Inno Setup AppId in packaging/installer.iss). -->
+    <Property Id="EXEINSTALL">
+      <RegistrySearch Id="ExeInstall" Root="HKLM" Bitness="always64" Type="raw"
+                      Key="SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{F324242E-23A7-45B0-BEB9-0961AAD3745A}_is1"
+                      Name="UninstallString" />
+    </Property>
+    <Launch Condition="Installed OR NOT EXEINSTALL"
+            Message="Lumi is already installed from its EXE installer. Uninstall that copy first (Apps &amp; features, or unins000.exe /VERYSILENT in its folder), then install this package." />
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Lumi">
+        <Component Id="InstallMarker">
+          <File Id="InstallMarkerFile" Source="!(bindpath.extra)\lumi-install.json" KeyPath="yes" />
+        </Component>
+        <Component Id="PolicyFileValue" Condition="POLICYFILE">
+          <RegistryValue Root="HKLM" Key="SOFTWARE\Policies\Luminary Analytics\Lumi"
+                         Name="PolicyFile" Type="string" Value="[POLICYFILE]" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut Id="LumiShortcut" Name="Lumi" Target="[INSTALLFOLDER]lumi.exe" Arguments="gui"
+                  WorkingDirectory="INSTALLFOLDER" Icon="LumiIcon" />
+        <RegistryValue Root="HKLM" Key="SOFTWARE\Luminary Analytics\Lumi\Msi"
+                       Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="Main" Title="Lumi">
+      <Files Directory="INSTALLFOLDER" Include="!(bindpath.bundle)\**" />
+      <ComponentRef Id="InstallMarker" />
+      <ComponentRef Id="PolicyFileValue" />
+      <ComponentRef Id="StartMenuShortcut" />
+    </Feature>
+  </Package>
+</Wix>

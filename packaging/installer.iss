@@ -149,6 +149,24 @@ begin
   Log('Pre-rebrand uninstaller exit code: ' + IntToStr(resultCode));
 end;
 
+{ -----------------------------------------------------------------------------
+  Leave an MSI installation to device management.
+
+  The MSI package (packaging/lumi.wxs) installs into the same folder and puts
+  lumi-install.json beside lumi.exe. Installing this EXE over it would give
+  two installers one folder, so refuse; the organization updates that copy.
+  ----------------------------------------------------------------------------- }
+function InitializeSetup(): Boolean;
+begin
+  Result := True;
+  if FileExists(ExpandConstant('{commonpf64}\Lumi\lumi-install.json')) then
+  begin
+    SuppressibleMsgBox('Lumi on this computer was installed by your organization''s device management (the MSI package). Ask your administrator to update it.',
+                       mbError, MB_OK, IDOK);
+    Result := False;
+  end;
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 begin
   if CurStep = ssInstall then

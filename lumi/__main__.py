@@ -77,6 +77,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "run":
         from lumi.headless import main as run_main
         raise SystemExit(run_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "updates":
+        from lumi.update_channels import main as updates_main
+        raise SystemExit(updates_main(sys.argv[2:]))
 
     # Kick off the WinSparkle background updater. No-op on non-Windows or
     # when the DLL isn't bundled (dev runs from source). Fire-and-forget;

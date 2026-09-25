@@ -154,11 +154,14 @@ class TestNotices:
         ]
 
     def test_gpl_helpers_are_kept_out_of_the_bundle(self):
-        # PyAutoGUI imports both optionally; the spec reads this list into
-        # PyInstaller's excludes and the notices skip them.
-        assert set(notices.not_shipped()) == {"mouseinfo", "pymsgbox"}
+        # PyAutoGUI imports the first two optionally, and python3-xlib (Linux
+        # only) for X11. The spec reads this list into PyInstaller's excludes,
+        # plus Xlib, python3-xlib's import name; the notices skip them.
+        assert set(notices.not_shipped()) == {"mouseinfo", "pymsgbox", "python3-xlib"}
         spec = (PACKAGING / "lumi.spec").read_text(encoding="utf-8")
-        assert '["not_shipped"]' in spec and "excludes +=" in spec
+        assert '["not_shipped"]' in spec and "excludes +=" in spec and 'excludes += ["Xlib"]' in spec
+        linux = json.loads((PACKAGING / "bundle-policy-linux.json").read_text(encoding="utf-8"))
+        assert {"Xlib", "mouseinfo", "pymsgbox"} <= set(linux["forbidden_path_components"])
 
     def test_cli_writes_the_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(notices.metadata, "distributions", _some_distributions)

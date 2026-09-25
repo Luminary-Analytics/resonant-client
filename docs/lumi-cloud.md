@@ -52,7 +52,9 @@ A check-in sends:
   crashed.
 
 A check-in never sends prompts, responses, code, file names, project paths or
-session titles.
+session titles. Its answer can carry the organization's shared model credit
+and the month's spend so far; Lumi stops model requests when it's used up
+([shared credit](usage-and-costs.md#an-organizations-shared-credit)).
 
 ### The organization's policy
 

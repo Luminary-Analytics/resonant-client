@@ -31,6 +31,24 @@ Validation on September 25, 2026:
   The first try stored `false`: the form's save payload lists its fields and
   didn't include the new one, which this check caught and which is fixed.
 
+## September 25 an organization's shared model credit — source only, not released
+
+- **Shared credit from Lumi Cloud** (`lumi/budgets.py`,
+  [guide](usage-and-costs.md#an-organizations-shared-credit)): a check-in's
+  answer can carry the organization's monthly credit and its spend so far.
+  Lumi turns it into an `organization` budget that stops model requests
+  when the month's spend across every computer, plus this computer's spend
+  since the check-in, reaches the credit.
+- It's kept across restarts, removed when a check-in no longer carries it,
+  and ignored once its month has passed. Usage & cost lists it with the
+  other budgets.
+
+Validation on September 25, 2026: full `pytest` 3,960 passed, 4 skipped;
+`test_cloud.py` (a check-in setting the
+credit, a stop at $51 of $50 with this computer's spend since the check-in,
+surviving a restart, removal, and last month's credit) passed with the
+budget tests.
+
 ## September 25 cost per verified task and activity counts — source only, not released
 
 - **Turn outcomes on this computer** (`lumi/activity.py`). Each finished

@@ -159,11 +159,22 @@ Subscription and local models are still allowed. Alerts, answers and stops
 go to the [audit log](audit-log.md) as `budget.warning`, `budget.approval`
 and `budget.block`.
 
+### An organization's shared credit
+
+An organization in [Lumi Cloud](lumi-cloud.md) can set one monthly model
+credit for everyone. Each check-in brings back the credit and the month's
+spend across every computer, and Lumi adds this computer's spend since then.
+When that reaches the credit, model requests stop ("This month's spend
+across Acme is $51.00, which reaches Acme's $50.00 shared model credit.")
+until next month or a higher amount. Usage & cost lists it with the other
+budgets. Check-ins are hourly, so the organization can pass the credit by
+up to an hour of use across its computers.
+
 ## Not covered yet
 
-- Budgets are enforced on each machine from its own records. A team budget
-  across people and machines, and approval by someone other than the person
-  running Lumi, need Lumi Cloud.
+- Budgets are enforced on each machine from its own records, except an
+  organization's shared credit, which Lumi Cloud totals hourly. Approval by
+  someone other than the person running Lumi isn't built yet.
 - The quick "should this turn plan first?" classification some backends run,
   and skill-mission extraction, are not recorded.
 - Autonomous mission budgets (`general.budget_usd_max`) count priced calls

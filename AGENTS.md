@@ -63,6 +63,14 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - ChatGPT/Codex and OpenRouter are separate connections. Codex owns its login
   credentials; OpenRouter uses a separately billed API key. Never expose secrets
   in UI responses, diagnostics, fixtures, or serialized `BackendSpec` values.
+- API keys live in the OS credential store; `settings.json` keeps `__keychain__`.
+  Read keys only through `settings.get("api_keys", name)`. Never enable the store
+  for the legacy `~/.resonant` folder. Children that run code Lumi doesn't
+  control (the agent's shell, hooks, MCP servers, jobs, previews, checks) get
+  `secrets_store.child_env()`; the CLI backends keep their environment.
+  `secret_scan` removes saved key values from tool output before each request.
+  Tests and fixtures use `LUMI_KEYCHAIN=off` or an in-memory keyring, never the
+  real credential store.
 
 ## Working in the codebase
 

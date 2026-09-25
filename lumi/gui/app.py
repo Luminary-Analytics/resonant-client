@@ -58,6 +58,7 @@ from ..connections import (
 from ..sonn import SonnBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
+from .. import net, secret_scan
 from . import ws_commands
 from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
@@ -1906,6 +1907,10 @@ class AppState:
         settings_data = self.settings.get_all()
         self.ollama_url = resolve_ollama_url(settings_data=settings_data)
         self.exo_url = resolve_exo_url(settings_data=settings_data)
+        # Proxy and certificate choices apply process-wide (lumi/net.py).
+        self.network_state = net.configure(self.settings)
+        # So do the secret scan and the saved key values it removes.
+        secret_scan.configure(self.settings)
 
     def update_setting_value(
         self,

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from lumi.processes import background_process_kwargs
+from lumi.secrets_store import child_env
 
 
 def find_test_target(project_path: Path | str, edited_file: Path | str) -> Optional[Path]:
@@ -129,6 +130,7 @@ def run_tests_for_edit(
         proc = subprocess.run(
             argv,
             cwd=str(project),
+            env=child_env(),
             capture_output=True,
             text=True,
             timeout=max(0.5, timeout),

@@ -2728,13 +2728,19 @@ async def _cmd_save_diagnostics(ctx: CommandContext) -> None:
     try:
         from . import diagnostics
         from .. import __version__ as _ver
+        from .. import secret_scan
         from ..paths import state_home
         state_dir = state_home()
         output_dir = diagnostics.default_output_dir()
+        # Actual key values (including keys in the OS credential store) are
+        # removed wherever they appear, whatever their format.
+        known = secret_scan.secret_values(
+            ctx.state.settings, min_length=diagnostics.MIN_KNOWN_SECRET_LENGTH,
+        )
         zip_path = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: diagnostics.build_diagnostics_zip(
-                state_dir, output_dir, version=_ver
+                state_dir, output_dir, version=_ver, known_secrets=known,
             ),
         )
         size_bytes = zip_path.stat().st_size if zip_path.exists() else 0
@@ -2941,10 +2947,11 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     }),
     "appearance": frozenset({"theme", "density", "font_size"}),
     "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
-    "network": frozenset({"ollama_url", "exo_url", "sonn_url"}),
+    "network": frozenset({"ollama_url", "exo_url", "sonn_url", "proxy_url", "no_proxy", "system_certificates"}),
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd"}),
+    "privacy": frozenset({"secret_scan"}),
     "model_favorites": frozenset({"models"}),
 }
 
@@ -2994,6 +3001,17 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         not isinstance(value, str) or value not in PERMISSION_MODES
     ):
         raise ValueError("Choose a permission mode: ask, auto-edit, plan or bypass.")
+    if (section, key) in {("network", "system_certificates"), ("privacy", "secret_scan")}:
+        if not isinstance(value, bool):
+            raise ValueError(f"{section}.{key} must be on or off.")
+    elif (section, key) == ("network", "proxy_url"):
+        from .. import net
+        return net.validate_proxy_url(value if isinstance(value, str) else "")
+    elif (section, key) == ("network", "no_proxy"):
+        hosts = [item.strip() for item in str(value or "").replace("\n", ",").split(",")]
+        if any(len(item) > 253 or any(ch.isspace() for ch in item) for item in hosts):
+            raise ValueError("List hosts separated by commas, such as internal.example.com, 10.1.2.3.")
+        return ", ".join(item for item in hosts if item)
     return value
 
 

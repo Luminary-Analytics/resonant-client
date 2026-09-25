@@ -20,6 +20,7 @@ from enum import Enum
 from typing import Callable, Iterable, Optional
 
 from lumi.processes import background_process_kwargs
+from lumi.secrets_store import child_env
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,8 @@ class HookRunner:
                         hook.name or hook.command,
                     )
                     continue
-            env = os.environ.copy()
+            # Hooks run user scripts; they never need Lumi's model keys.
+            env = child_env()
             env["LUMI_HOOK_TYPE"] = hook_type.value
             env["LUMI_TOOL_NAME"] = tool_name or ""
             env["LUMI_TOOL_ARGS"] = str(context.get("tool_args", ""))

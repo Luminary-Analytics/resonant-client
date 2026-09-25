@@ -29,6 +29,12 @@ dependencies = [
     "rich>=13.9.0",
     "prompt-toolkit>=3.0.0",
     "httpx>=0.27.0",
+    # TLS verification with the operating system's certificate store, so a
+    # company root certificate works behind TLS inspection (lumi/net.py).
+    "truststore>=0.10",
+    # API keys in Windows Credential Manager, the macOS Keychain or the
+    # Secret Service instead of settings.json (lumi/secrets_store.py).
+    "keyring>=25",
 ]
 
 # Kimi uses the existing httpx dependency directly; no provider SDK is needed.

@@ -8,7 +8,8 @@ import logging
 import threading
 from pathlib import Path
 from typing import Any
-from ..paths import state_home
+from ..paths import LEGACY_HOME_DIR_NAME, state_home
+from ..secrets_store import PLACEHOLDER, SecretStore, credential_store_name
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,12 @@ DEFAULTS = {
         "exo_url": "",
         # SONN requires an explicitly configured workspace/project API base URL.
         "sonn_url": "",
+        # Corporate networks (lumi/net.py): an outbound proxy, hosts that bypass
+        # it (local addresses always do), and TLS verification with the
+        # operating system's certificate store rather than a bundled list.
+        "proxy_url": "",
+        "no_proxy": "",
+        "system_certificates": True,
         # v0.4.4 (T1.4) — `resonant_api_url` and `remote_engine_ws_url`
         # were dropped here. Pre-v0.4.0 settings.json files that still
         # carry those keys load fine — Python dict tolerance ignores
@@ -87,6 +94,12 @@ DEFAULTS = {
         "inline_text_limit": 8000,
     },
     "keyboard_shortcuts": {},
+    # Settings > Privacy. The scan removes well-known credential formats from
+    # tool output and messages before a model request (lumi/secret_scan.py);
+    # saved key values are removed from tool output either way.
+    "privacy": {
+        "secret_scan": False,
+    },
     "cost_tracking": {
         "enabled": True,
         "budget_alert_usd": None,
@@ -101,10 +114,16 @@ DEFAULTS = {
 class SettingsManager:
     """Thread-safe settings manager with JSON persistence."""
 
-    def __init__(self, path: str | Path | None = None):
+    def __init__(self, path: str | Path | None = None, secrets: SecretStore | None = None):
         self._path = Path(path) if path else state_home() / "settings.json"
         self._lock = threading.Lock()
         self._data: dict = {}
+        # API keys live in the OS credential store when one exists; settings.json
+        # then keeps only a placeholder (see lumi/secrets_store.py). Never in the
+        # pre-rebrand ~/.resonant folder: while it is still in use, an older SONN
+        # Client may share it, and that version would read the placeholder as its key.
+        self._secrets = secrets if secrets is not None else SecretStore()
+        self._keychain = self._secrets.available and self._path.parent.name != LEGACY_HOME_DIR_NAME
         self._load()
 
     def get(self, section: str, key: str | None = None, default: Any = None) -> Any:
@@ -114,17 +133,24 @@ class SettingsManager:
             if key is None:
                 return sect
             if isinstance(sect, dict):
-                return sect.get(key, default)
+                value = sect.get(key, default)
+                if section == "api_keys" and value == PLACEHOLDER:
+                    return self._secrets.get(key) or default
+                return value
             return default
 
     def set(self, section: str, key: str | None, value: Any) -> None:
         """Set a value and persist. set('general', 'theme', 'light') or set('hooks', None, [...])."""
         with self._lock:
             if key is None:
+                if section == "api_keys" and isinstance(value, dict):
+                    value = {k: self._store_secret_locked(k, v) for k, v in value.items()}
                 self._data[section] = value
             else:
                 if section not in self._data:
                     self._data[section] = {}
+                if section == "api_keys":
+                    value = self._store_secret_locked(key, value)
                 self._data[section][key] = value
             self._save_locked()
 
@@ -138,6 +164,8 @@ class SettingsManager:
         with self._lock:
             if section not in self._data:
                 self._data[section] = {}
+            if section == "api_keys" and isinstance(updates, dict):
+                updates = {k: self._store_secret_locked(k, v) for k, v in updates.items()}
             if isinstance(self._data[section], dict):
                 self._data[section].update(updates)
             else:
@@ -154,7 +182,33 @@ class SettingsManager:
                 present[key] = bool(value)
                 data["api_keys"][key] = ""
             meta["api_keys_present"] = present
+        meta["secret_storage"] = self.secret_storage()
         return data
+
+    def secret_storage(self) -> dict:
+        """Where API keys are kept, for Settings to explain."""
+        reason = self._secrets.reason
+        if self._secrets.available and not self._keychain:
+            reason = "Keys stay in settings.json until your data moves from ~/.resonant to ~/.lumi."
+        return {"keychain": self._keychain, "reason": reason, "store": credential_store_name()}
+
+    def _store_secret_locked(self, key: str, value: Any) -> Any:
+        """Put one API key in the credential store; return what settings.json keeps."""
+        if not self._keychain or not isinstance(value, str) or value == PLACEHOLDER:
+            return value
+        if not value:
+            self._secrets.delete(key)
+            return ""
+        return PLACEHOLDER if self._secrets.set(key, value) else value
+
+    def _secure_api_keys_locked(self) -> None:
+        """Move plaintext keys from settings.json into the credential store."""
+        keys = self._data.get("api_keys")
+        if not self._keychain or not isinstance(keys, dict):
+            return
+        for key, value in list(keys.items()):
+            if isinstance(value, str) and value and value != PLACEHOLDER:
+                keys[key] = self._store_secret_locked(key, value)
 
     def _load(self) -> None:
         """Load from disk, merging with defaults for any missing keys."""
@@ -169,6 +223,7 @@ class SettingsManager:
                 self._data = {}
             self._apply_defaults()
             self._migrate()
+            self._secure_api_keys_locked()
             self._save_locked()
 
     def _migrate(self) -> None:

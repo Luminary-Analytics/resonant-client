@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Optional
 
 from lumi.processes import background_process_kwargs
+from lumi.secrets_store import child_env
 
 from .tools import ToolResult
 
@@ -71,6 +72,7 @@ class ReplProcess:
             self.proc = subprocess.Popen(
                 cmd,
                 cwd=str(self.cwd),
+                env=child_env(),
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,

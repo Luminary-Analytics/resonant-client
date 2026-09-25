@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import queue
 import subprocess
 import sys
@@ -21,6 +20,7 @@ import httpx
 
 from lumi import __version__
 from lumi.processes import background_process_kwargs
+from lumi.secrets_store import child_env
 
 logger = logging.getLogger(__name__)
 
@@ -177,7 +177,9 @@ class MCPConnection:
             else:
                 if not self.config.command:
                     raise ValueError("stdio MCP server requires a command")
-                env = {**dict(os.environ), **self.config.env}
+                # Lumi's provider keys are removed; the server's own env entries
+                # (including a key it is configured with) still apply.
+                env = {**child_env(), **self.config.env}
                 self._process = subprocess.Popen(
                     [self.config.command, *self.config.args],
                     stdin=subprocess.PIPE,

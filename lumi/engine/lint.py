@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Optional
 
 from lumi.processes import background_process_kwargs
+from lumi.secrets_store import child_env
 
 
 # (linter_name, base_argv). The file path is appended at lint time.
@@ -128,6 +129,7 @@ def lint_file(
         proc = subprocess.run(
             cmd,
             cwd=str(p),
+            env=child_env(),
             capture_output=True,
             text=True,
             timeout=max(0.5, timeout),

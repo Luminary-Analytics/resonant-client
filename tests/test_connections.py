@@ -193,10 +193,10 @@ def test_testing_a_draft_reports_models_or_a_fix(tmp_path, monkeypatch):
     from lumi import connections
 
     settings = SettingsManager(tmp_path / "settings.json")
-    monkeypatch.setattr(connections, "discover_models", lambda c, key, timeout=5.0: ["m1", "m2"])
+    monkeypatch.setattr(connections, "discover_models", lambda c, key, timeout=5.0, **_: ["m1", "m2"])
     ok = _command(settings, "connection_test", connection={**GATEWAY, "models": []}, api_key="sk")
     assert ok[0]["data"] == {"ok": True, "models": ["m1", "m2"], "message": "Connected · 2 models available"}
 
-    monkeypatch.setattr(connections, "discover_models", lambda c, key, timeout=5.0: [])
+    monkeypatch.setattr(connections, "discover_models", lambda c, key, timeout=5.0, **_: [])
     empty = _command(settings, "connection_test", connection={**GATEWAY, "models": []}, api_key="sk")
     assert empty[0]["data"]["ok"] is False and "listed no models" in empty[0]["data"]["message"]

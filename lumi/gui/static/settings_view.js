@@ -197,11 +197,27 @@ class LumiSettingsView {
                 </div>
                 <div class="editor-actions"><button type="submit" class="btn-sm"${this._packInstalling ? ' disabled' : ''}>${this._packInstalling ? 'Installing…' : 'Install'}</button></div>
             </form>`;
-        const intro = '<p class="editor-help">A capability pack can add lifecycle hooks (shell commands), MCP servers, skills and agents. Nothing in a pack runs until you approve it here; a pack cannot approve itself. An approval covers this pack at this location with exactly the files it has now. If any of them change, the pack turns off until you review it again.</p>'
+        const intro = '<p class="editor-help">A capability pack can add lifecycle hooks (shell commands), MCP servers, model providers, skills and agents. Nothing in a pack runs until you approve it here; a pack cannot approve itself. An approval covers this pack at this location with exactly the files it has now. If any of them change, the pack turns off until you review it again.</p>'
             + (data.error ? `<p class="editor-error" role="alert">${esc(data.error)}</p>` : '') + install;
         const packs = Array.isArray(data.packs) ? data.packs : [];
+        const keyId = id => esc(String(id || '').replace(/(.{4})(?=.)/g, '$1 '));
+        const publisherRows = (data.publishers || []).map(p => `<li><strong>${esc(p.name)}</strong> · key <code>${keyId(p.key_id)}</code> · ${p.source
+            ? `from ${esc(p.source)}’s policy`
+            : `<button type="button" class="btn-sm" data-pack-action="forget-publisher" data-key-id="${esc(p.key_id)}" aria-label="Stop trusting ${esc(p.name)}">Forget</button>`}</li>`).join('');
+        const org = esc(data.organization || 'Your organization');
+        const registryRows = (data.registry || []).map(entry => {
+            const state = !entry.installed ? 'Not installed' : entry.matches ? 'Installed at this version' : 'Installed, but not this version';
+            const action = entry.installed && entry.matches ? '' : `<button type="button" class="btn-sm" data-pack-action="install-registry" data-pack-id="${esc(entry.id)}" aria-label="${entry.installed ? 'Install the pinned version of' : 'Install'} ${esc(entry.name)}">${entry.installed ? 'Install this version' : 'Install'}</button>`;
+            return `<li><strong>${esc(entry.name)}</strong> · <code>${esc(entry.url)}</code>${entry.subdir ? ` (<code>${esc(entry.subdir)}</code>)` : ''} at <code>${esc(entry.commit.slice(0, 12))}</code>${entry.digest ? ' · content pinned' : ''} · ${state} ${action}</li>`;
+        }).join('');
+        const registry = registryRows || data.registry_only ? `<h4 class="settings-subheading">${org}’s registry</h4>
+            <p class="editor-help">Packs your organization approves, each at one version. Installing one still asks you to review and approve it.${data.registry_only ? ' Your organization turns off packs that aren’t here, or aren’t at the version it pins.' : ''}</p>
+            ${registryRows ? `<ul class="pack-publishers">${registryRows}</ul>` : '<p class="editor-help">It lists no packs yet.</p>'}` : '';
+        const publishers = `${registry}<h4 class="settings-subheading">Trusted publishers</h4>
+            <p class="editor-help">Packs signed with these keys show who made them. Trusting a publisher approves nothing; you still review each pack.${data.require_signed ? ' Your organization turns off packs its own trusted publishers didn’t sign.' : ''}</p>
+            ${publisherRows ? `<ul class="pack-publishers">${publisherRows}</ul>` : '<p class="editor-help">None yet. A signed pack offers to trust its publisher.</p>'}`;
         if (!packs.length) {
-            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .lumi/packs or in ~/.lumi/packs.</span></div>`;
+            return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .lumi/packs or in ~/.lumi/packs.</span></div>${publishers}`;
         }
         const statusText = {
             approved: 'Approved · active',
@@ -221,6 +237,25 @@ class LumiSettingsView {
                 return `<li><code>${esc(name)}</code><pre class="pack-command">${esc(endpoint)}</pre></li>`;
             }).join('');
             const pinned = (pack.pinned_files || []).map(file => `<li><code>${esc(file)}</code></li>`).join('');
+            // A provider's command runs for every request to its models (docs/extensions.md).
+            const providers = (pack.providers || []).map(provider => {
+                const command = provider.command;
+                const lines = Array.isArray(command) ? [command.join(' ')]
+                    : Object.entries(command || {}).map(([system, words]) => `${system}: ${(words || []).join(' ')}`);
+                const models = (provider.models || []).map(model => model.id).join(', ');
+                return `<li><code>${esc(provider.name)}</code>${models ? ` · ${esc(models)}` : ''}<pre class="pack-command">${esc(lines.join('\n'))}</pre></li>`;
+            }).join('');
+            const providerNote = pack.scope === 'project'
+                ? '<p class="editor-help">Lumi uses model providers only from personal packs (in ~/.lumi/packs), so these stay off here.</p>' : '';
+            const signature = pack.signature || {};
+            const signed = {
+                verified: `Signed by ${esc(signature.publisher)} · key <code>${keyId(signature.key_id)}</code> · verified`,
+                unknown_publisher: `Signed as “${esc(signature.claimed)}” with key <code>${keyId(signature.key_id)}</code>, which you haven’t trusted. Compare the key with the one its publisher gives before trusting it.`,
+                invalid: `Its signature is invalid: ${esc(signature.reason)}.`,
+            }[signature.status] || 'Not signed.';
+            // Under a policy that requires its own publishers, a key the person trusts turns nothing on.
+            const trustPublisher = signature.status === 'unknown_publisher' && !data.require_signed
+                ? `<button type="button" class="btn-sm" data-pack-action="trust-publisher" data-pack-id="${esc(pack.id)}" data-pack-path="${esc(pack.path)}" aria-label="Trust “${esc(signature.claimed)}”, key ${keyId(signature.key_id)}, which signed ${esc(pack.name)}">Trust “${esc(signature.claimed)}”</button>` : '';
             const canApprove = Boolean(pack.digest) && ['needs_approval', 'changed', 'disabled'].includes(pack.status);
             const canRevoke = ['approved', 'disabled', 'changed'].includes(pack.status);
             const target = `data-pack-id="${esc(pack.id)}" data-pack-path="${esc(pack.path)}"`;
@@ -228,11 +263,14 @@ class LumiSettingsView {
                 <div class="pack-card-head"><h3>${esc(pack.name)} <small>v${esc(pack.version)}</small></h3><span class="pack-status" role="status">${esc(statusText[pack.status] || pack.status)}</span></div>
                 ${pack.description ? `<p class="editor-help">${esc(pack.description)}</p>` : ''}
                 <p class="pack-meta">${pack.scope === 'project' ? 'From this repository' : 'Personal pack'} · <code>${esc(pack.path)}</code></p>
+                ${pack.registry?.commit ? `<p class="pack-meta">In ${esc(pack.registry.organization)}’s registry at <code>${esc(pack.registry.commit.slice(0, 12))}</code> · ${pack.registry.matches ? 'this is that version' : 'this isn’t that version'}</p>` : ''}
+                ${signature.status === 'invalid' && pack.problem ? '' : `<p class="pack-meta pack-signature signature-${esc(signature.status || 'unsigned')}">${signed}</p>`}
                 ${pack.source?.type === 'git' ? `<p class="pack-meta">Installed from <code>${esc(pack.source.url)}</code>${pack.source.subdir ? ` (<code>${esc(pack.source.subdir)}</code>)` : ''} at commit <code>${esc(String(pack.source.commit || '').slice(0, 12))}</code></p>` : ''}
                 ${pack.problem ? `<p class="editor-error">${esc(pack.problem)}</p>` : ''}
                 <details ${pack.status === 'approved' ? '' : 'open'}><summary>What this pack would run</summary>
                     ${hooks ? `<h4>Hooks (shell commands)</h4><ul>${hooks}</ul>` : '<p class="editor-help">No hooks.</p>'}
                     ${servers ? `<h4>MCP servers</h4><ul>${servers}</ul>` : '<p class="editor-help">No MCP servers.</p>'}
+                    ${providers ? `<h4>Model providers (run for each request to their models)</h4>${providerNote}<ul>${providers}</ul>` : ''}
                     ${pinned ? `<h4>Repository files its commands run</h4><ul>${pinned}</ul>` : ''}
                     <p class="editor-help">${(pack.agents || []).length} agents · ${(pack.skills || []).length} skills · content digest <code>${esc((pack.digest || '').slice(0, 12))}</code></p>
                 </details>
@@ -240,9 +278,10 @@ class LumiSettingsView {
                     ${canApprove ? `<button type="button" class="btn-sm" data-pack-action="approve" ${target} data-pack-digest="${esc(pack.digest)}">Approve and enable</button>` : ''}
                     ${canRevoke ? `<button type="button" class="btn-sm" data-pack-action="revoke" ${target}>Revoke approval</button>` : ''}
                     ${pack.source?.type === 'git' ? `<button type="button" class="btn-sm" data-pack-action="remove" ${target}>Remove</button>` : ''}
+                    ${trustPublisher}
                 </div>
             </article>`;
-        }).join('')}</div>`;
+        }).join('')}</div>${publishers}`;
     }
 
     _renderAuditStatus() {
@@ -823,6 +862,7 @@ class LumiSettingsView {
             'anthropic': 'Leave the URL blank for api.anthropic.com, or point at a proxy that speaks the Messages API.',
             'anthropic-bedrock': 'Uses your AWS credentials (environment, profile or SSO) or a Bedrock API key. List model or inference-profile ids.',
             'anthropic-vertex': 'Uses Google Application Default Credentials. Set the project and region, and list model ids.',
+            'extension': 'A model provider from a capability pack you installed and approved. Lumi starts it for each request.',
         };
     }
 
@@ -834,9 +874,10 @@ class LumiSettingsView {
             'anthropic': ['header', 'bearer', 'oauth', 'none'],
             'anthropic-bedrock': ['aws', 'bearer'],
             'anthropic-vertex': ['google'],
+            'extension': ['bearer', 'none'],
         };
-        const labels = { bearer: 'Bearer token', header: 'Key in a header', none: 'No key', aws: 'AWS credentials', google: 'Google credentials',
-                         entra: 'Microsoft Entra ID', oauth: 'OAuth client credentials' };
+        const labels = { bearer: type === 'extension' ? 'A key for the provider' : 'Bearer token', header: 'Key in a header', none: 'No key',
+                         aws: 'AWS credentials', google: 'Google credentials', entra: 'Microsoft Entra ID', oauth: 'OAuth client credentials' };
         return (byType[type] || ['bearer']).map(value => ({ value, label: labels[value] }));
     }
 
@@ -844,7 +885,18 @@ class LumiSettingsView {
         return { name: '', type: 'openai-compatible', base_url: '', auth: 'bearer', auth_header: '', models: '',
                  region: '', project: '', api_version: '', aws_profile: '', context_window: '', vision: false,
                  headers: '', max_tokens_param: 'max_tokens', reasoning_effort: '', api_key: '', zero_retention: false,
-                 tenant_id: '', client_id: '', token_url: '', scope: '', audience: '', client_cert: '', client_key: '' };
+                 tenant_id: '', client_id: '', token_url: '', scope: '', audience: '', client_cert: '', client_key: '',
+                 extension: '' };
+    }
+
+    _extensionProviders() {
+        return (this.connectionsData || {}).extension_providers || [];
+    }
+
+    _extensionLabel(provider) {
+        // A pack with one provider usually gives both the same name.
+        const name = provider.name === provider.pack_name ? provider.name : `${provider.pack_name}: ${provider.name}`;
+        return `${name}${provider.ready ? '' : ' (waiting for approval)'}`;
     }
 
     _connectionDraftFrom(item) {
@@ -852,7 +904,8 @@ class LumiSettingsView {
                  models: (item.models || []).join(', '),
                  headers: Object.entries(item.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n'),
                  context_window: item.context_window || '', vision: Boolean(item.vision),
-                 zero_retention: Boolean(item.zero_retention), api_key: '' };
+                 zero_retention: Boolean(item.zero_retention), api_key: '',
+                 extension: item.type === 'extension' ? `${item.pack}/${item.provider}` : '' };
     }
 
     _connectionSecret(draft) {
@@ -875,11 +928,26 @@ class LumiSettingsView {
                           reasoning_effort: draft.reasoning_effort, tenant_id: draft.tenant_id,
                           client_id: draft.client_id, token_url: draft.token_url, scope: draft.scope,
                           audience: draft.audience, client_cert: draft.client_cert, client_key: draft.client_key };
+        if (draft.type === 'extension') {
+            // Pack ids and provider ids never contain a slash.
+            const [pack = '', provider = ''] = String(draft.extension || '').split('/');
+            Object.assign(payload, { pack, provider, base_url: '', headers: {} });
+        }
         if (this._connectionEdit?.originalId) payload.id = this._connectionEdit.originalId;
         if (String(draft.context_window || '').trim()) payload.context_window = Number(draft.context_window);
         if (draft.vision) payload.vision = true;
         payload.zero_retention = Boolean(draft.zero_retention);
         return payload;
+    }
+
+    _chooseExtension(draft, value) {
+        draft.extension = value;
+        // A new connection is named after its provider until the person names it.
+        const provider = this._extensionProviders().find(p => `${p.pack}/${p.provider}` === value);
+        if (provider && (!String(draft.name || '').trim() || draft._autoName)) {
+            draft.name = provider.name;
+            draft._autoName = true;
+        }
     }
 
     _renderCustomConnections() {
@@ -888,12 +956,17 @@ class LumiSettingsView {
         const edit = this._connectionEdit;
         const status = this._connectionStatus;
         const statusHtml = status ? `<p class="connection-status ${status.ok ? 'ok' : 'err'}" role="status">${this.escapeHtml(status.message)}</p>` : '';
+        const extensions = this._extensionProviders();
         const rows = (data.items || []).map(item => {
             const confirm = this._connectionDeleteId === item.id;
+            const ext = item.type === 'extension' ? extensions.find(p => p.pack === item.pack && p.provider === item.provider) : null;
+            const where = item.type === 'extension'
+                ? ' · ' + this.escapeHtml(ext ? this._extensionLabel(ext) : `${item.pack}/${item.provider} (not installed)`)
+                : item.base_url ? ' · ' + this.escapeHtml(item.base_url) : '';
             return `<li class="connection-row">
                 <div class="connection-row-main"><strong>${this.escapeHtml(item.name)}</strong>${item.zero_retention ? ' <span class="connection-badge">Zero retention</span>' : ''}
-                <span class="connection-meta">${this.escapeHtml(types[item.type] || item.type)}${item.base_url ? ' · ' + this.escapeHtml(item.base_url) : ''}</span>
-                <span class="connection-meta">${item.models?.length ? this.escapeHtml(item.models.slice(0, 4).join(', ')) + (item.models.length > 4 ? ` +${item.models.length - 4}` : '') : 'Models discovered from the endpoint'}${item.auth === 'none' || item.auth === 'aws' || item.auth === 'google' || (item.auth === 'entra' && !item.client_id) ? '' : item.has_key ? ` · ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} stored` : ` · no ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} yet`}</span></div>
+                <span class="connection-meta">${this.escapeHtml(types[item.type] || item.type)}${where}</span>
+                <span class="connection-meta">${item.models?.length ? this.escapeHtml(item.models.slice(0, 4).join(', ')) + (item.models.length > 4 ? ` +${item.models.length - 4}` : '') : item.type === 'extension' ? 'Models the provider lists' : 'Models discovered from the endpoint'}${item.auth === 'none' || item.auth === 'aws' || item.auth === 'google' || (item.auth === 'entra' && !item.client_id) ? '' : item.has_key ? ` · ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} stored` : ` · no ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} yet`}</span></div>
                 <div class="connection-row-actions">${confirm
                     ? `<span class="connection-confirm">Remove ${this.escapeHtml(item.name)}?</span><button class="btn-sm" data-conn-action="delete-confirm" data-conn-id="${this.escapeHtml(item.id)}">Remove</button><button class="btn-sm" data-conn-action="delete-cancel">Keep</button>`
                     : `<button class="btn-sm" data-conn-action="edit" data-conn-id="${this.escapeHtml(item.id)}" aria-label="Edit ${this.escapeHtml(item.name)}">Edit</button><button class="btn-sm" data-conn-action="delete" data-conn-id="${this.escapeHtml(item.id)}" aria-label="Remove ${this.escapeHtml(item.name)}">Remove</button>`}</div>
@@ -918,7 +991,14 @@ class LumiSettingsView {
                 ${field('client_id', 'Client id', text('client_id', d.client_id, 'spellcheck="false"'))}
                 ${field('scope', 'Scope (optional)', text('scope', d.scope, 'spellcheck="false"'))}
                 ${field('audience', 'Audience (optional)', text('audience', d.audience, 'spellcheck="false"'))}` : '';
-            const clientCert = ['anthropic-bedrock', 'anthropic-vertex'].includes(d.type) ? '' : `
+            const isExtension = d.type === 'extension';
+            const choices = extensions.map(p => ({ value: `${p.pack}/${p.provider}`, label: this._extensionLabel(p) }));
+            if (d.extension && !choices.some(c => c.value === d.extension)) choices.unshift({ value: d.extension, label: `${d.extension} (not installed)` });
+            const extensionField = !isExtension ? '' : choices.length
+                ? field('extension', 'Provider', `<select class="settings-select" id="conn-f-extension" data-conn-field="extension">${choices.map(c => `<option value="${this.escapeHtml(c.value)}" ${d.extension === c.value ? 'selected' : ''}>${this.escapeHtml(c.label)}</option>`).join('')}</select>`,
+                    'Approve its pack in Capability packs first. It runs on this computer with your permissions and gets the key as LUMI_PROVIDER_API_KEY.')
+                : `<p class="connection-field editor-help">No installed capability pack offers a model provider yet. Install one in Capability packs, approve it, then come back.</p>`;
+            const clientCert = ['anthropic-bedrock', 'anthropic-vertex', 'extension'].includes(d.type) ? '' : `
                 ${field('client_cert', 'Client certificate (optional)', text('client_cert', d.client_cert, 'placeholder="Path to a PEM file" spellcheck="false"'), 'For gateways that require mutual TLS. The file stays where it is.')}
                 ${field('client_key', 'Client key (optional)', text('client_key', d.client_key, 'placeholder="Path, if not in the certificate file" spellcheck="false"'))}`;
             const secretWord = secretLabel === 'Key' ? 'key' : 'client secret';
@@ -928,12 +1008,13 @@ class LumiSettingsView {
                 <div class="connection-grid">
                 ${field('name', 'Name', text('name', d.name, 'maxlength="60" placeholder="Company gateway" autocomplete="off"'))}
                 ${field('type', 'Type', `<select class="settings-select" id="conn-f-type" data-conn-field="type">${typeOptions}</select>`, this.escapeHtml(this._connectionTypeHints()[d.type] || ''))}
-                ${['anthropic-bedrock', 'anthropic-vertex'].includes(d.type) ? '' : field('base_url', 'Endpoint URL', text('base_url', d.base_url, 'placeholder="https://" autocomplete="off" spellcheck="false"'))}
+                ${extensionField}
+                ${['anthropic-bedrock', 'anthropic-vertex', 'extension'].includes(d.type) ? '' : field('base_url', 'Endpoint URL', text('base_url', d.base_url, 'placeholder="https://" autocomplete="off" spellcheck="false"'))}
                 ${field('auth', 'Authentication', `<select class="settings-select" id="conn-f-auth" data-conn-field="auth">${authOptions}</select>`)}
                 ${d.auth === 'header' ? field('auth_header', 'Key header', text('auth_header', d.auth_header, 'placeholder="api-key" spellcheck="false"')) : ''}
                 ${signIn}
                 ${showKey || d.auth === 'entra' ? field('api_key', secretLabel, `<input class="settings-input" type="password" id="conn-f-api_key" data-conn-field="api_key" value="${this.escapeHtml(d.api_key || '')}" placeholder="${storedKey}" autocomplete="off">`, 'Stored locally with your other API keys; never shown again.', showKey ? '' : 'hidden') : ''}
-                ${field('models', d.type === 'azure-openai' ? 'Deployments' : 'Models', text('models', d.models, 'placeholder="Comma-separated ids" spellcheck="false"'), d.type === 'openai-compatible' || d.type === 'openai' || d.type === 'anthropic' ? 'Leave blank to list the models the endpoint reports.' : '')}
+                ${field('models', d.type === 'azure-openai' ? 'Deployments' : 'Models', text('models', d.models, 'placeholder="Comma-separated ids" spellcheck="false"'), d.type === 'openai-compatible' || d.type === 'openai' || d.type === 'anthropic' ? 'Leave blank to list the models the endpoint reports.' : isExtension ? 'Leave blank to use the models the provider lists.' : '')}
                 ${['anthropic-bedrock', 'anthropic-vertex'].includes(d.type) ? field('region', 'Region', text('region', d.region, 'placeholder="us-east-1" spellcheck="false"')) : ''}
                 ${d.type === 'anthropic-vertex' ? field('project', 'Google Cloud project', text('project', d.project, 'spellcheck="false"')) : ''}
                 ${d.type === 'anthropic-bedrock' && d.auth === 'aws' ? field('aws_profile', 'AWS profile (optional)', text('aws_profile', d.aws_profile, 'placeholder="default" spellcheck="false"')) : ''}
@@ -942,8 +1023,8 @@ class LumiSettingsView {
                 ${field('context_window', 'Context window (optional)', text('context_window', d.context_window, 'inputmode="numeric" placeholder="Tokens, e.g. 128000"'))}
                 ${d.type === 'openai-compatible' ? field('max_tokens_param', 'Output limit parameter', `<select class="settings-select" id="conn-f-max_tokens_param" data-conn-field="max_tokens_param"><option value="max_tokens" ${d.max_tokens_param !== 'max_completion_tokens' ? 'selected' : ''}>max_tokens</option><option value="max_completion_tokens" ${d.max_tokens_param === 'max_completion_tokens' ? 'selected' : ''}>max_completion_tokens</option></select>`) : ''}
                 ${d.type === 'openai-compatible' ? field('reasoning_effort', 'Reasoning effort', `<select class="settings-select" id="conn-f-reasoning_effort" data-conn-field="reasoning_effort">${['', 'low', 'medium', 'high'].map(v => `<option value="${v}" ${d.reasoning_effort === v ? 'selected' : ''}>${v || 'Don\u2019t send'}</option>`).join('')}</select>`) : ''}
-                ${field('headers', 'Extra headers (optional)', `<textarea class="settings-input" id="conn-f-headers" data-conn-field="headers" rows="3" placeholder="Header-Name: value" spellcheck="false">${this.escapeHtml(d.headers || '')}</textarea>`, 'One per line. Put secrets in the key field instead.')}
-                <label class="connection-check"><input type="checkbox" id="conn-f-vision" data-conn-field="vision" ${d.vision ? 'checked' : ''}> Models accept images</label>
+                ${isExtension ? '' : field('headers', 'Extra headers (optional)', `<textarea class="settings-input" id="conn-f-headers" data-conn-field="headers" rows="3" placeholder="Header-Name: value" spellcheck="false">${this.escapeHtml(d.headers || '')}</textarea>`, 'One per line. Put secrets in the key field instead.')}
+                ${isExtension ? '' : `<label class="connection-check"><input type="checkbox" id="conn-f-vision" data-conn-field="vision" ${d.vision ? 'checked' : ''}> Models accept images</label>`}
                 <label class="connection-check"><input type="checkbox" id="conn-f-zero_retention" data-conn-field="zero_retention" ${d.zero_retention ? 'checked' : ''}> This endpoint keeps no prompts or responses (a zero data retention agreement)</label>
                 </div>
                 <div class="provider-actions"><button class="btn-sm" type="button" data-conn-action="test">Test connection</button>
@@ -952,7 +1033,7 @@ class LumiSettingsView {
             </form>`;
         }
         return `<div class="provider-connection custom-connections"><strong>Custom connections</strong>
-            <p>Gateways such as LiteLLM or vLLM, Azure OpenAI, Claude on Amazon Bedrock or Google Vertex AI, or any OpenAI-compatible endpoint. Each appears in the model menu under its name.</p>
+            <p>Gateways such as LiteLLM or vLLM, Azure OpenAI, Claude on Amazon Bedrock or Google Vertex AI, any OpenAI-compatible endpoint, or a model provider from a capability pack. Each appears in the model menu under its name.</p>
             ${rows ? `<ul class="connection-list">${rows}</ul>` : ''}
             ${statusHtml}
             ${form || '<button class="btn-sm" type="button" data-conn-action="add">Add connection</button>'}
@@ -968,12 +1049,21 @@ class LumiSettingsView {
                 if (!draft) return;
                 const field = input.dataset.connField;
                 draft[field] = input.type === 'checkbox' ? input.checked : input.value;
+                if (field === 'name') draft._autoName = false;
                 // Type and authentication decide which fields exist. The form
                 // re-renders from the draft, so forcing past the edit guard
                 // loses nothing and keeps focus on this control.
                 if (field === 'type') {
                     const allowed = this._connectionAuthOptions(draft.type).map(o => o.value);
                     if (!allowed.includes(draft.auth)) draft.auth = allowed[0];
+                    if (draft.type === 'extension' && !draft.extension) {
+                        const providers = this._extensionProviders();
+                        const first = providers.find(p => p.ready) || providers[0];
+                        if (first) this._chooseExtension(draft, `${first.pack}/${first.provider}`);
+                    }
+                    this.renderSettingsView({force: true});
+                } else if (field === 'extension') {
+                    this._chooseExtension(draft, input.value);
                     this.renderSettingsView({force: true});
                 } else if (field === 'auth') {
                     this.renderSettingsView({force: true});
@@ -2389,6 +2479,20 @@ class LumiSettingsView {
                     this.send({command: 'capability_pack_remove', pack_id: btn.dataset.packId});
                     btn.disabled = true;
                     btn.textContent = 'Removing…';
+                    return;
+                }
+                if (action === 'install-registry') {
+                    this.send({command: 'capability_pack_install_registry', pack_id: btn.dataset.packId});
+                    btn.disabled = true;
+                    btn.textContent = 'Installing…';
+                    return;
+                }
+                if (action === 'trust-publisher' || action === 'forget-publisher') {
+                    this.send(action === 'trust-publisher'
+                        ? {command: 'capability_pack_trust_publisher', pack_id: btn.dataset.packId, path: btn.dataset.packPath}
+                        : {command: 'capability_pack_forget_publisher', key_id: btn.dataset.keyId});
+                    btn.disabled = true;
+                    btn.textContent = action === 'trust-publisher' ? 'Trusting…' : 'Forgetting…';
                     return;
                 }
                 const approve = action === 'approve';

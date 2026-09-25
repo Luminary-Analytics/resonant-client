@@ -795,6 +795,7 @@ class AppState:
         manager = CapabilityPackManager(
             project_path or self.project.project_path,
             configured=self.settings.get("plugins") or {},
+            publishers=self.settings.get("pack_publishers") or {},
         )
         try:
             manager.discover()
@@ -813,7 +814,8 @@ class AppState:
         # and agents. MCP servers are connected only for the open project.
         from ..engine.capability_packs import CapabilityPackManager
 
-        other = CapabilityPackManager(project_path, configured=self.settings.get("plugins") or {})
+        other = CapabilityPackManager(project_path, configured=self.settings.get("plugins") or {},
+                                      publishers=self.settings.get("pack_publishers") or {})
         try:
             other.discover()
         except Exception:
@@ -883,17 +885,71 @@ class AppState:
             entry["source"] = source if isinstance(source, dict) and pack.scope == "user" else None
             return entry
 
+        from ..policy import current as current_policy
+
+        policy = current_policy()
+        mine = self.settings.get("pack_publishers") or {}
+        publishers = [{"key_id": key_id, "name": str(entry.get("name") or ""), "source": ""}
+                      for key_id, entry in sorted(mine.items()) if isinstance(entry, dict)]
+        publishers += [{"key_id": key_id, "name": entry["name"], "source": policy.organization}
+                       for key_id, entry in sorted((policy.publishers if policy else {}).items())]
+        # The organization's registry, and which of its packs are here at the pinned version.
+        personal = {pack.id: pack for pack in packs if pack.scope == "user"}
+        registry = [{**entry, "installed": entry["id"] in personal,
+                     "matches": bool(personal[entry["id"]].registry.get("matches")) if entry["id"] in personal else False}
+                    for entry in sorted((policy.registry if policy else {}).values(), key=lambda e: e["name"].casefold())]
         return {
             "event": "capability.pack_list",
             "project_path": str(manager.project_path),
             "packs": [described(pack) for pack in packs],
             "pending": self.capability_packs_pending(),
             "catalog": manager.context_catalog(),
+            "publishers": publishers,
+            "require_signed": bool(policy and policy.require_signed),
+            "organization": policy.organization if policy else "",
+            "registry": registry,
+            "registry_only": bool(policy and policy.registry_only),
         }
+
+    def trust_pack_publisher(self, pack_id: str, path: str) -> dict:
+        """Trust the key that signed a pack, under the name its signature gives; it approves nothing."""
+        from .. import audit
+        from ..engine import pack_signing
+        from ..engine.capability_packs import CapabilityPackError, pack_location_key
+
+        manager = self.capability_packs or self.refresh_capability_packs()
+        target = pack_location_key(path) if path else ""
+        pack = next((p for p in manager.discover() if p.id == pack_id and pack_location_key(p.path) == target), None)
+        if pack is None:
+            raise CapabilityPackError("That pack isn't there any more. Reload Settings and try again.")
+        # Read the signature again now: what the person saw may have changed since.
+        signature = pack_signing.check(pack.path, {})
+        if signature["status"] != "unknown_publisher":
+            raise CapabilityPackError(f"The signature on {pack.name} can't be trusted: "
+                                      + (signature["reason"] or "it isn't signed."))
+        publishers = dict(self.settings.get("pack_publishers") or {})
+        publishers[signature["key_id"]] = {"name": signature["claimed"], "public_key": signature["public_key"],
+                                           "trusted_at": int(time.time())}
+        self.settings.set("pack_publishers", None, publishers)
+        audit.record("extension.publisher_trust", key_id=signature["key_id"], publisher=signature["claimed"],
+                     pack=pack.id)
+        self.refresh_capability_packs()
+        return self.capability_pack_payload()
+
+    def forget_pack_publisher(self, key_id: str) -> dict:
+        """Stop trusting a publisher's key; packs it signed show as unknown again."""
+        from .. import audit
+
+        publishers = dict(self.settings.get("pack_publishers") or {})
+        removed = publishers.pop(str(key_id), None)
+        if removed is not None:
+            self.settings.set("pack_publishers", None, publishers)
+            audit.record("extension.publisher_forget", key_id=str(key_id))
+            self.refresh_capability_packs()
+        return self.capability_pack_payload()
 
     def install_capability_pack(self, url: str, ref: str, subdir: str = "") -> tuple[dict, dict]:
         """Install a pack from a git repository at one commit; it still needs approval."""
-        from .. import audit
         from ..engine import pack_install
         from ..policy import current as current_policy
 
@@ -901,19 +957,39 @@ class AppState:
         allowed = policy.sources_allowed if policy else None
         commit = pack_install.resolve(url, ref)
         installed = pack_install.install_from_git(url, commit, subdir=subdir, allowed_sources=allowed)
+        return self._record_pack_install(installed, pack_install.source_record(installed))
+
+    def install_registry_pack(self, pack_id: str) -> tuple[dict, dict]:
+        """Install a pack from the organization's registry at its pinned version; it still needs approval."""
+        from ..engine import pack_install
+        from ..policy import current as current_policy
+
+        policy = current_policy()
+        entry = (policy.registry if policy else {}).get(pack_id)
+        if entry is None:
+            raise pack_install.PackInstallError("That pack isn't in your organization's registry.")
+        # The registry is the organization's own list, so its repositories need no allowed_sources.
+        installed = pack_install.install_from_git(entry["url"], entry["commit"], subdir=entry["subdir"],
+                                                  expect_id=entry["id"], expect_digest=entry["digest"])
+        source = {**pack_install.source_record(installed), "url": entry["url"], "registry": policy.organization}
+        return self._record_pack_install(installed, source)
+
+    def _record_pack_install(self, installed, source: dict) -> tuple[dict, dict]:
+        from .. import audit
+
         plugins = dict(self.settings.get("plugins") or {})
         entry = dict(plugins.get(installed.id) or {}) if isinstance(plugins.get(installed.id), dict) else {}
         # A reinstall is new content: drop old approvals so it must be reviewed.
         for key in ("approvals", "trust", "sha256", "enabled"):
             entry.pop(key, None)
-        entry["source"] = pack_install.source_record(installed)
+        entry["source"] = source
         plugins[installed.id] = entry
         self.settings.set("plugins", None, plugins)
         audit.record("extension.install", pack=installed.id, version=installed.version,
-                     url=installed.url, commit=installed.commit)
+                     url=source["url"], commit=installed.commit, registry=bool(source.get("registry")))
         self.refresh_capability_packs()
         return self.capability_pack_payload(), {"id": installed.id, "name": installed.name,
-                                                 "commit": installed.commit, "url": installed.url}
+                                                 "commit": installed.commit, "url": source["url"]}
 
     def remove_capability_pack(self, pack_id: str) -> dict:
         """Delete a pack installed from git, with its approvals."""
@@ -1072,7 +1148,7 @@ class AppState:
         def _probe_connection(connection):
             key = str(self.settings.get("api_keys", connection_secret_setting(connection["id"]), "") or "")
             try:
-                return discover_connection_models(connection, key, timeout=4.0)
+                return discover_connection_models(connection, key, timeout=4.0, settings=self.settings)
             except Exception:
                 return list(connection.get("models") or [])
 
@@ -1889,6 +1965,30 @@ class AppState:
             self._first_message_sent = False
             self.costs.reset_session()
             return True
+
+    def bind_conversation_checkpoints(self, session=None):
+        """Point the chat session's checkpoints at its saved conversation.
+
+        A session gets a store keyed by a per-build id when it's wired, often
+        before its conversation is saved (a draft is saved on its first
+        message). Keying the store by the conversation keeps its Timeline
+        across restarts and rebuilt sessions. Runs of the chat session and the
+        Timeline commands call this; other sessions keep their own stores.
+        Returns the session's store.
+        """
+        session = session if session is not None else self.session
+        store = getattr(session, "checkpoint_store", None)
+        record = self.project.current_session
+        if store is None or record is None or store.session_id == record.id:
+            return store
+        from ..engine.checkpoint_timeline import SessionCheckpointStore
+
+        bound = SessionCheckpointStore(store.project_path, session_id=record.id)
+        session.checkpoint_store = bound
+        broker = getattr(session, "context_broker", None)
+        if broker is not None:
+            broker.checkpoint_store = bound
+        return bound
 
     def ensure_persisted_current_session(self, *, session_role: str = "generator"):
         """Create the on-disk session record lazily on first user message."""
@@ -3348,6 +3448,8 @@ async def _run_session_streaming(
     active_record = getattr(state.project, "current_session", None)
     # Audit records of this run name the saved conversation.
     session.audit_session_id = str(getattr(active_record, "id", "") or "")
+    # So do its checkpoints, which its Timeline lists.
+    state.bind_conversation_checkpoints(session)
     if event_source is None:
         bind_sonn_conversation(
             session.backend,

@@ -105,6 +105,9 @@ DEFAULTS = {
     },
     "lsp_servers": {},
     "plugins": {},
+    # Capability pack publishers the person trusts, by key id (engine/pack_signing.py).
+    # Changed only through Settings > Capability packs' trust and forget actions.
+    "pack_publishers": {},
     "model_roles": {},
     "agent_runtime": {
         "persist": True,

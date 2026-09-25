@@ -138,7 +138,7 @@ class BackendSpec:
             if connection is None:
                 raise ValueError("This session's connection was removed. Choose another model.")
             return create_connection_backend(connection, self.model, self.resolve_api_key(settings),
-                                             thinking=self.thinking_mode or None)
+                                             thinking=self.thinking_mode or None, settings=settings)
         if backend_type == "openrouter":
             return create_backend("openrouter", model=self.model,
                                   api_key=self.resolve_api_key(settings), thinking=self.thinking_mode or None)

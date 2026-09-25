@@ -1,8 +1,10 @@
 # Writing a capability pack
 
-A capability pack bundles things Lumi can use: agents, skills, lifecycle hooks
-and MCP servers, plus metadata. It is a folder with a `lumi-pack.json`
-manifest. Code: `lumi/engine/capability_packs.py`.
+A capability pack bundles things Lumi can use: agents, skills, lifecycle hooks,
+MCP servers and model providers, plus metadata. It is a folder with a
+`lumi-pack.json` manifest. Code: `lumi/engine/capability_packs.py`. To add a
+model provider, start from [Extensions](extensions.md), which has a
+template, an SDK and a checker.
 
 Nothing in a pack runs until a person approves it, and a manifest can't
 approve itself. See [how trust works](#trust) below.
@@ -46,6 +48,8 @@ approve itself. See [how trust works](#trust) below.
 | `hooks` | Commands run at lifecycle events, described below. |
 | `mcp_servers` | Named MCP servers, `{"command", "args", "env"}` or `{"url"}`. They are registered as `<pack id>-<name>`. |
 | `permissions`, `commands`, `recipes`, `ui_panels`, `metadata` | Shown for review and listed in the pack catalog. They grant nothing by themselves. |
+| `manifest_version`, `lumi` | The Extension SDK's manifest version (1) and the Lumi versions the pack works with. A pack without `manifest_version` is read as version 0. See [Extensions](extensions.md#the-manifest). |
+| `providers` | Model providers Lumi starts for requests to their models. Only personal packs provide them. See [Extensions](extensions.md). |
 
 A pack's files may not reach outside its folder. Agents and skills are read
 only from inside the pack, and symbolic links make it unverifiable.
@@ -119,16 +123,26 @@ hook then blocks it. A `json` hook reads the arguments from standard input, and
 ## Trust
 
 - **Approval pins content.** Settings > Capability packs shows what a pack would
-  run: its hooks, its MCP servers, and repository files its commands name.
+  run: its hooks, its MCP servers, its model providers, and repository files
+  its commands name.
   Approving it records a digest of every file in the pack plus those files.
-- **Any change turns it off.** Before each hook runs and before the pack
-  contributes skills, agents or servers, Lumi checks the digest again. A
-  changed pack stays off until it is reviewed again.
+- **Any change turns it off.** Before each hook runs, before each request to
+  one of its model providers, and before the pack contributes skills, agents
+  or servers, Lumi checks the digest again. A changed pack stays off until it
+  is reviewed again.
 - **Location-bound.** An approval covers the pack at that folder only. Copying a
   pack elsewhere needs a new approval.
+- **Signatures say who made it.** A publisher can sign a pack
+  (`lumi-pack.sig`). Settings shows the signer when you trust their key, and
+  a signature that doesn't match the files turns the pack off. A signature
+  never approves a pack. See [Signing a pack](extensions.md#signing-a-pack).
 - **Organization limits.** A policy can limit packs by id
   (`extensions.allowed_packs`) and Git sources by URL
-  (`extensions.allowed_sources`). See [Organization policy](enterprise-policy.md).
+  (`extensions.allowed_sources`), and turn off packs its trusted publishers
+  didn't sign (`extensions.require_signed`) or that aren't in its registry
+  at the pinned version (`extensions.registry_only`). See
+  [Organization policy](enterprise-policy.md) and
+  [the registry](extensions.md#your-organizations-registry).
 
 ## Sharing a pack
 

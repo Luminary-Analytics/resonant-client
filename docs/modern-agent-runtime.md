@@ -105,11 +105,19 @@ the model conversation, replayable display events, and workspace state.
 - Restoring files first preserves the replaced state as a Git recovery branch
   or recovery archive.
 - A restore can be files-only, conversation-only, or both
-  (`session_timeline_restore`). The Timeline view that offered it left the
-  desktop page with the Agents pane in v0.14.0. **Settings > Checkpoints &
-  recovery** still lists Git checkpoints, including these, and compares or
-  restores their files. Restoring the conversation, or a non-Git snapshot, has
-  no desktop control yet.
+  (`session_timeline_restore`), from the conversation's **Timeline** (chat
+  header, command palette, or the session's menu). **Settings > Checkpoints &
+  recovery** also lists Git checkpoints and compares or restores their files.
+- Checkpoints belong to the saved conversation
+  (`AppState.bind_conversation_checkpoints`), so its Timeline outlives an app
+  restart or a rebuilt session. The list names what each checkpoint was saved
+  before (a path, a command's first line); a call's full arguments, such as a
+  write's contents, stay on the server.
+- A worker's checkpoint (`metadata.subagent`) holds the worker's conversation,
+  so it restores files only; the server refuses the other modes.
+- Each restore adds a display-only `timeline.restored` event to the chat, so a
+  conversation restored mid-turn replays as stopped there rather than as a
+  crashed turn. The model's conversation never contains it.
 - Compare reports the checkpoint-to-current Git delta where available.
 
 Restores are refused while an agent is running. Every restore is a lifecycle

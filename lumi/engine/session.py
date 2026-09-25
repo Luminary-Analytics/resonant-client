@@ -3011,7 +3011,14 @@ class Session:
                             reason=f"Before {fn_name}",
                             agent_id=self.agent_id,
                             tool_name=fn_name,
-                            metadata={"call_id": call_id, "arguments": fn_args},
+                            # A worker's snapshot holds the worker's own
+                            # conversation, so it can restore files but must
+                            # never replace the conversation that started it.
+                            metadata={
+                                "call_id": call_id,
+                                "arguments": fn_args,
+                                "subagent": bool(self.is_subagent),
+                            },
                         )
                         self._last_checkpoint_tool_call = call_id
                         checkpoint_event = make_event(

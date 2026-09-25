@@ -272,6 +272,26 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   replayed history or instructions. Lumi never switches branches, fetches or
   pulls for the person who continues. A file for CI names the sender without
   an email address.
+- Provider extensions (`engine/provider_extensions.py`, docs/extensions.md)
+  run only from approved, enabled personal packs, and resolve the pack again
+  before every start, so a changed or revoked pack stops at once. Their
+  processes get `secrets_store.child_env()` plus the connection's key, a data
+  folder outside the pack and `PYTHONPYCACHEPREFIX`: nothing may write inside
+  an approved pack. Bare program names come from absolute PATH entries only.
+  Keep the SDK (`sdk/python/lumi_extension`) standard-library only and the
+  protocol backward compatible; a breaking change needs a new
+  `manifest_version`. Tests start real providers with `sys.executable`.
+- Pack signatures (`engine/pack_signing.py`, `lumi-pack.sig`) are checked
+  whenever a pack loads. They name a pack's publisher and never approve it.
+  An invalid signature makes the pack unverifiable. Only the organization's
+  `extensions.trusted_publishers` satisfy `extensions.require_signed`, never
+  keys a person trusted. `pack_publishers` in settings changes only through
+  the trust and forget commands, never `update_settings`.
+- An organization's registry (`extensions.registry`) pins packs to a commit
+  and maybe a content digest (`pack_signing.signed_digest`, which ignores
+  text line endings). `registry_only` turns every other pack off, and a
+  registry install checks the id and digest before replacing anything. A
+  registry listing never approves a pack.
 - Model comparisons (`model_evals.py`) run each task as a `lumi run`
   subprocess in a detached git worktree of `HEAD` under the project's state
   folder, never in the user's checkout; the user's check command passes the

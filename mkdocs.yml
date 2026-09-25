@@ -91,6 +91,7 @@ nav:
       - Pull requests (GitHub, GitLab, Bitbucket, Azure DevOps): github.md
   - Extending Lumi:
       - Writing a capability pack: packs.md
+      - "Extensions: add a model provider": extensions.md
       - Skills: skills.md
       - Creative editors: creative-editors.md
   - Project records:

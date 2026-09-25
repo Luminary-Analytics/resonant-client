@@ -25,6 +25,11 @@ pack directory plus the repository files that the pack's hook and MCP commands
 name. Any change to those files withdraws trust until the pack is approved
 again. Trusted packs are re-verified before their hooks run and before they
 contribute skills, agents or MCP servers.
+
+A publisher's signature (``lumi-pack.sig``, engine/pack_signing.py) says who
+made a pack; it never approves one. A signature that doesn't match the files
+makes the pack unverifiable, and an organization's policy can turn off packs
+its trusted publishers didn't sign (``extensions.require_signed``).
 """
 
 from __future__ import annotations
@@ -99,9 +104,26 @@ class CapabilityPack:
     problem: str = ""
     # Repository files outside the pack that its commands run; in the digest.
     pinned_files: list[str] = field(default_factory=list)
+    # The Extension SDK's manifest version (docs/extensions.md): 0 for packs
+    # from before it, 1 for v1. Model providers the pack runs as processes
+    # (engine/provider_extensions.py).
+    manifest_version: int = 0
+    providers: list[dict[str, Any]] = field(default_factory=list)
+    # The publisher's signature as engine/pack_signing.check reads it:
+    # status (verified, unknown_publisher, invalid, unsigned), key_id, publisher, claimed, reason.
+    signature: dict[str, Any] = field(default_factory=dict)
+    # The organization's registry entry for this pack, when it lists one:
+    # organization, commit, and whether the files on disk are that version.
+    registry: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def _lumi_version() -> str:
+    from .. import __version__
+
+    return __version__
 
 
 def _manifest_path(directory: Path) -> Path | None:
@@ -197,18 +219,28 @@ def _is_link(path: str | Path) -> bool:
     return bool(isjunction and isjunction(path))
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(path: Path, *, text_endings: bool = False) -> str:
+    """The file's SHA-256, byte for byte.
+
+    With ``text_endings`` (signatures and registry pins, which compare files
+    across computers), CRLF counts as LF in files without a NUL byte, so a
+    Windows checkout matches a macOS or Linux one. Binaries stay byte for byte.
+    """
     stat = path.stat()
     signature = (stat.st_size, stat.st_mtime_ns, int(getattr(stat, "st_ino", 0) or 0), stat.st_ctime_ns)
-    key = str(path)
+    key = f"{'text' if text_endings else 'bytes'}:{path}"
     with _FILE_DIGESTS_LOCK:
         cached = _FILE_DIGESTS.get(key)
     if cached and cached[0] == signature:
         return cached[1]
     digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
+    if text_endings:
+        data = path.read_bytes()  # packs are bounded by MAX_PACK_BYTES
+        digest.update(data if b"\0" in data else data.replace(b"\r\n", b"\n"))
+    else:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
     value = digest.hexdigest()
     if time.time_ns() - stat.st_mtime_ns > _STABLE_MTIME_NS:
         with _FILE_DIGESTS_LOCK:
@@ -255,6 +287,83 @@ def _command_tokens(command: str) -> list[str]:
 # ── Manifest parsing helpers ───────────────────────────────────────────
 
 
+MANIFEST_VERSION = 1
+_PROVIDER_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,39}$")
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    parts = []
+    for piece in str(text).split("."):
+        digits = re.match(r"\d+", piece)
+        if not digits:
+            break
+        parts.append(int(digits.group()))
+    return tuple(parts) or (0,)
+
+
+def version_satisfies(version: str, requirement: str) -> bool:
+    """Whether ``version`` meets ``requirement``: comma-separated ``>=``, ``>``, ``<=``, ``<``, ``==`` clauses."""
+    current = _version_tuple(version)
+    for clause in str(requirement or "").split(","):
+        match = re.fullmatch(r"\s*(>=|<=|==|>|<)\s*([0-9][0-9.]*)\s*", clause)
+        if not match:
+            raise CapabilityPackError(f"'lumi' must be a version requirement such as >=0.19, not {requirement!r}")
+        op, wanted = match.group(1), _version_tuple(match.group(2))
+        width = max(len(current), len(wanted))
+        have, need = current + (0,) * (width - len(current)), wanted + (0,) * (width - len(wanted))
+        if not {">=": have >= need, "<=": have <= need, "==": have == need, ">": have > need,
+                "<": have < need}[op]:
+            return False
+    return True
+
+
+_SYSTEM_NAMES = ("windows", "macos", "linux", "default")
+
+
+def _provider_command(value: Any, provider_id: str) -> list[str] | dict[str, list[str]]:
+    """A program and its arguments, or one such list per system (windows, macos, linux, default)."""
+    def words(command: Any) -> list[str] | None:
+        if isinstance(command, list) and 0 < len(command) <= 20 and all(isinstance(w, str) and w for w in command):
+            return list(command)
+        return None
+
+    if isinstance(value, dict):
+        commands = {system: words(value[system]) for system in _SYSTEM_NAMES if system in value}
+        if commands and set(value) <= set(_SYSTEM_NAMES) and all(commands.values()):
+            return commands
+    elif words(value):
+        return list(value)
+    raise CapabilityPackError(f"provider {provider_id} needs a command: a program and its arguments, "
+                              "or one per system (windows, macos, linux)")
+
+
+def _providers(value: Any) -> list[dict[str, Any]]:
+    """The manifest's model providers, checked; CapabilityPackError for a bad entry."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 10:
+        raise CapabilityPackError("'providers' must be a list of up to 10 providers")
+    providers = []
+    for entry in value:
+        if not isinstance(entry, dict) or not _PROVIDER_ID.match(str(entry.get("id") or "")):
+            raise CapabilityPackError("each provider needs an id of lowercase letters, digits and dashes")
+        if any(p["id"] == entry["id"] for p in providers):
+            raise CapabilityPackError(f"two providers are called {entry['id']}")
+        models = []
+        for model in entry.get("models") or []:
+            if not isinstance(model, dict) or not isinstance(model.get("id"), str) or not model["id"].strip():
+                raise CapabilityPackError(f"each of provider {entry['id']}'s models needs an id")
+            window = model.get("context_window")
+            if window is not None and (not isinstance(window, int) or isinstance(window, bool) or window < 1024):
+                raise CapabilityPackError(f"{model['id']}'s context_window must be a number of tokens")
+            models.append({"id": model["id"].strip()[:200], "context_window": window,
+                           "tools": model.get("tools", True) is not False})
+        providers.append({"id": entry["id"], "name": str(entry.get("name") or entry["id"])[:80],
+                          "command": _provider_command(entry.get("command"), entry["id"]),
+                          "models": models[:100]})
+    return providers
+
+
 def _strings(value: Any) -> list[str]:
     return [str(item) for item in value if isinstance(item, (str, int, float))] if isinstance(value, list) else []
 
@@ -278,9 +387,13 @@ class CapabilityPackManager:
         *,
         configured: dict[str, Any] | None = None,
         roots: Iterable[str | Path] = (),
+        publishers: dict[str, Any] | None = None,
     ):
         self.project_path = Path(project_path).expanduser().resolve()
         self.configured = configured if isinstance(configured, dict) else {}
+        # Publishers the person trusts (settings' pack_publishers); the
+        # organization's policy adds its own when a pack loads.
+        self.publishers = publishers if isinstance(publishers, dict) else {}
         default_roots = [
             *(folder / "packs" for folder in project_dirs(self.project_path)),
             state_home() / "packs",
@@ -474,13 +587,46 @@ class CapabilityPackManager:
         except (CapabilityPackError, OSError) as exc:
             digest, pinned_files = "", []
             problem = f"The pack cannot be verified because {exc}."
+        manifest_version = data.get("manifest_version", 0)
+        providers: list[dict[str, Any]] = []
+        if not isinstance(manifest_version, int) or isinstance(manifest_version, bool) or manifest_version < 0:
+            problem = problem or "Its manifest_version must be a whole number."
+            manifest_version = 0
+        elif manifest_version > MANIFEST_VERSION:
+            problem = problem or f"It's for a newer Lumi (manifest version {manifest_version})."
+        try:
+            if data.get("lumi") and not version_satisfies(_lumi_version(), str(data["lumi"])):
+                problem = problem or f"It needs Lumi {data['lumi']}; this is {_lumi_version()}."
+            providers = _providers(data.get("providers"))
+        except CapabilityPackError as exc:
+            problem = problem or f"Its manifest is invalid: {exc}."
         configured = self.configured.get(pack_id)
         from ..policy import current as current_policy
+        from .pack_signing import check as check_signature
 
         org_policy = current_policy()
+        # The organization's names for its publishers win over the person's.
+        signature = check_signature(directory, {**self.publishers, **(org_policy.publishers if org_policy else {})})
+        if signature["status"] == "invalid":
+            problem = problem or f"Its signature is invalid: {signature['reason']}."
         if not problem and org_policy and not org_policy.pack_allowed(pack_id):
             # Blocked whatever the user approved; the approval itself is kept.
             problem = f"{org_policy.organization}'s policy doesn't allow this pack."
+        if not problem and org_policy and org_policy.require_signed and not (
+                signature["status"] == "verified" and signature["key_id"] in org_policy.publishers):
+            problem = f"{org_policy.organization}'s policy turns off packs that a publisher it trusts didn't sign."
+        listed = org_policy.registry.get(pack_id) if org_policy else None
+        registry: dict[str, Any] = {}
+        if listed:
+            registry = {"organization": org_policy.organization, "commit": listed["commit"],
+                        "matches": self._matches_registry(listed, directory,
+                                                          configured if isinstance(configured, dict) else {})}
+        if not problem and org_policy and org_policy.registry_only:
+            if not listed:
+                problem = f"{org_policy.organization}'s policy allows only packs from its registry."
+            elif not registry["matches"]:
+                problem = (f"{org_policy.organization}'s registry pins this pack at commit {listed['commit'][:12]}. "
+                           "Install that version from the registry.")
         trusted, enabled, status = self._trust(
             configured if isinstance(configured, dict) else {},
             directory, digest, scope, problem,
@@ -508,8 +654,39 @@ class CapabilityPackManager:
             status=status,
             problem=problem,
             pinned_files=pinned_files,
+            manifest_version=manifest_version,
+            providers=providers,
+            signature=signature,
+            registry=registry,
         )
         return pack, data
+
+    @staticmethod
+    def _matches_registry(entry: dict[str, Any], directory: Path, configured: dict[str, Any]) -> bool:
+        """Whether the pack on disk is the version the organization's registry pins.
+
+        A pinned content digest decides by the files themselves. Without one,
+        the pack must have been installed from that repository, commit and folder.
+        """
+        if entry.get("digest"):
+            from .pack_signing import signed_digest
+
+            try:
+                return signed_digest(directory) == entry["digest"]
+            except (CapabilityPackError, OSError):
+                return False
+        source = configured.get("source")
+        if not isinstance(source, dict):
+            return False
+        from .pack_install import PackInstallError, normalize_url
+
+        try:
+            same = (normalize_url(str(source.get("url") or "")).removesuffix(".git")
+                    == normalize_url(entry["url"]).removesuffix(".git"))
+        except PackInstallError:
+            return False
+        return (same and source.get("commit") == entry["commit"]
+                and str(source.get("subdir") or "").strip("/") == entry.get("subdir", ""))
 
     def _inside_project(self, directory: Path) -> bool:
         return directory == self.project_path or self.project_path in directory.parents

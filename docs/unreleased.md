@@ -69,7 +69,9 @@ Validation on September 25, 2026:
       "2 actions" (1.9s);
     - at #68, a request and then `!echo fourth` said "4" and "2 actions"
       (3.4s, 1.7s).
-  - Not repeated after merging `main` at #76.
+  - After merging `main` at #76, the conversation replayed with each turn's
+    own count. A request and then `!echo fifth` said "4" and "2 actions"
+    (3.0s, 1.5s), live and after a reload.
 
 ## September 25 a plan's specialists report under its card — source only, not released
 

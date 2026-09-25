@@ -1494,6 +1494,17 @@ DESKTOP_TOOL_NAMES = frozenset({
     "window_list", "window_focus", "monitors_list",
     "screen_ocr", "open_application",
 })
+# Everything that reaches the computer beyond the project: the screen, input,
+# other apps' interfaces and the clipboard. security.computer_use, and an
+# organization's policy, turns all of these off (Session._prepare_workspace_tool_args).
+# DESKTOP_TOOL_NAMES, which drive the screen from screenshots, also need a
+# model that can see; the rest work without.
+COMPUTER_ACCESS_TOOL_NAMES = DESKTOP_TOOL_NAMES | frozenset({
+    "clipboard_read", "clipboard_write", "screen_record_start", "screen_record_stop", "screen_diff",
+    "accessibility_tree", "accessibility_click",
+})
+# Tools that act on the screen show the on-screen indicator while they run.
+INDICATOR_TOOL_NAMES = DESKTOP_TOOL_NAMES | frozenset({"accessibility_click", "screen_record_start"})
 
 
 def _computer_use_indicator_enabled(settings: object) -> bool:
@@ -1559,7 +1570,17 @@ def execute_tool(
     # machine is being driven *while* it happens. The overlay lingers for a few
     # seconds so a burst of clicks and screenshots keeps it lit rather than
     # strobing, and it is taken down automatically for screen captures.
-    if name in DESKTOP_TOOL_NAMES:
+    if name in COMPUTER_ACCESS_TOOL_NAMES:
+        # macOS drops clicks and blanks screenshots without its permissions,
+        # and the tool would look like it worked (engine/macos_permissions.py).
+        from .macos_permissions import missing_permission
+
+        problem = missing_permission(name)
+        if problem:
+            return ToolResult(problem, is_error=True, elapsed=time.time() - start,
+                              metadata={"missing_permission": True})
+
+    if name in INDICATOR_TOOL_NAMES:
         try:
             from .screen_overlay import monitor_index_for_args, note_activity
 

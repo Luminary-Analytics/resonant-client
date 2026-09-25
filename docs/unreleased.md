@@ -65,6 +65,484 @@ Not changed: a replayed turn's footer shows the model of the page's last
 live turn, or none after a reload, because saved turns keep no model or
 token counts.
 
+## September 25 a plan's specialists report under its card — source only, not released
+
+**A plan's specialists showed up as turns of the conversation.** A plan
+(`/plan`, or a Mission's **Build this roadmap**) runs its planner,
+implementers and verifiers in sessions of their own
+(`lumi/orchestration/intent_service.py`), which forwards their engine events
+tagged `_source: "intent"`. The app handled those events as the
+conversation's own turn:
+
+- after each step, the turn's verdict: "Needs attention: The request asked
+  for a workspace change, but no successful edit was recorded", with Retry,
+  Retry another model and Continue, then a suggested next prompt;
+- "Worked for 0s · N actions" counts that grew across steps and plans, on
+  "Lumi · Task" cards made for them;
+- the conversation's "Working for …" progress, started by the plan;
+- each step's end called `setRunning(false)`, which moves keyboard focus to
+  the message box. Someone who paused a plan from the keyboard and pressed
+  Space to resume typed a space into the message box instead;
+- a step that ended while a turn of the conversation ran also finished that
+  turn's card and cleared its running state (`handleSessionEnd`), and the
+  header's model and token counts and the Context tab showed the
+  specialist's.
+
+**Now a plan reports under its own card** (`lumi/gui/static/app.js`,
+"Plan activity"; `styles.css`).
+
+- The `/plan` message is the plan's card. A plan started elsewhere (a
+  Mission's roadmap) gets a "Plan" card named from its text: for a Mission,
+  the spec's refined intent.
+- One line per specialist: Planner, Implementer, Verifier, Repair and so on,
+  with its goal and how it went ("done · 2 actions · 1s", "passed", "asked
+  for a repair", "blocked", "stopped"). A running step is open and shows its
+  commands, edits and prose as they come, drawn by the conversation's own row
+  renderers. A finished step folds to its line; one that didn't finish, or
+  whose check asked for a repair, stays open, and so does one the keyboard is
+  in.
+- A status line for the whole plan: starting, running (with its current
+  step), paused, complete ("3 steps · 3 actions · 49s"), finished with steps
+  that didn't finish, cancelled, failed, or not started. A `/plan` the server
+  refuses, with no model connected for example, says so on its own card.
+- Nothing from a plan reaches the conversation's turn: its task card and
+  progress, `isRunning`, the verdict and Retry, the suggestion, the header's
+  model and token counts, the Context tab, or focus. Counts are the plan's
+  own. A plan's rows keep their own lookup, so a specialist's call id never
+  settles a row of the turn.
+- The plan's card isn't a message of the session, so forking from a later
+  message no longer counts it.
+- Specialists no longer go into `agentActivities`, which fed the Agents pane
+  that left in v0.14.0.
+
+Plan activity isn't saved with the conversation, since the server doesn't
+record a plan's events in the session: a reload shows the conversation
+without it. The Plan tab's History keeps the plan's snapshots. On `main`,
+`/plan` itself starts nothing until PR #69 lands; a Mission's roadmap already
+runs (with `general.autonomous_sessions` on).
+
+Validation on September 25, 2026:
+
+- `tests/ui_recovery.test.cjs` adds 5 tests that drive the real handlers and
+  row renderers into a fake conversation: a whole `/plan` run, a roadmap
+  running beside a turn of the conversation with a repeated call id, counts
+  per plan, pause, cancel, a blocked step, a failed walker, a refused
+  `/plan`, and streamed prose above its calls with a step kept open while
+  focused. Each fails against the change it covers (checked by mutation: no
+  routing, a shared row lookup, rows drawn in the conversation, steps that
+  never fold or fold under focus, shared counts, an unclaimed refusal, cancel
+  stopping the step early, text.done adding a second block, the `/plan` task
+  card).
+- `tests/test_intent_service.py`: forwarded specialist events carry the tag
+  and the intent id without changing the session's own event, and fall
+  between their node's node.start and node.done. It fails without the tag or
+  the copy.
+- Full `pytest` on the branch rebased over `main`: 4,410 passed, 5
+  skipped. The four UI node suites: 86 passed. `ruff check` and
+  `git diff --check` clean.
+- In the browser pane, with an isolated home (temporary USERPROFILE, HOME and
+  LUMI_STATE_HOME, `LUMI_KEYCHAIN=off`) and a scripted Ollama-compatible
+  model answering as planner, implementer and verifier:
+  - `/plan add a dark mode toggle`, on this change merged with PR #69 (which
+    makes `/plan` and Pause work). While the planner ran, Pause was focused
+    and pressed with Space. When the planner finished, focus stayed on
+    Resume, the message box stayed empty with its usual placeholder, and
+    nothing called `setRunning`. Space resumed the plan, whose implementer
+    started 26 s after the planner's end. The card ended "Plan complete · 3
+    steps · 3 actions · 49s", with no verdict, Retry, suggestion or "Worked
+    for". Enter and Space opened a step's line, and Tab moved between steps.
+  - The same run on that tree without this change showed the reported
+    behavior: the "Needs attention" verdict with Retry after the planner, a
+    suggestion, "Working for …" in the chat, and focus in the message box,
+    where Space typed a space. Then came two "Lumi · Task" cards, "Worked for
+    1s · 2 actions" and "3 actions".
+  - A plan that finished while the conversation's own turn ran left that turn
+    running ("Working for …", Stop), and the turn then finished with its own
+    answer.
+  - A Mission's Build this roadmap, on this change alone: a "Plan" card named
+    "Refined intent: Add a dark mode toggle to the settings page." with the
+    three steps, from 52 specialist events, with no change to the turn.
+  - At 375 px (Plan tab closed) and 768 px (Plan tab open), step lines end in
+    an ellipsis before their status, and nothing scrolls sideways.
+  - The real home was unchanged afterwards.
+
+Not in this change:
+
+- The autonomous daemon's REFLECT pass (`make_reflect_runner`) forwards its
+  specialist's events without the tag, so they still arrive as turns.
+- After a reload during a plan, its events reach the page again only once
+  another plan command is sent from it (`get_intent_service` rebinds the
+  socket then).
+- Nodes the planner adds show in the Plan tab's graph as implement nodes
+  named by their ids until they start.
+
+## September 25 computer use: one switch for every desktop tool, and macOS fixes — source only, not released
+
+- **Turning computer use off now turns off all of it.** This covers
+  `security.computer_use` in Settings and an organization's policy.
+  - `clipboard_read`, `clipboard_write`, `screen_record_start`,
+    `screen_record_stop`, `screen_diff`, `accessibility_tree` and
+    `accessibility_click` were outside the switch. They were offered to the
+    model and ran, even when policy turned computer use off.
+  - They're now in `tools.COMPUTER_ACCESS_TOOL_NAMES`. Session refuses them
+    and leaves them out of what it offers.
+  - Models that can't see still get the ones that need no screenshots.
+- **A window title can't run AppleScript.** `window_focus` on macOS wrote the
+  title into the script's source. A title with a quote could end the string
+  and run `do shell script`, outside the guardrails and the shell sandbox.
+  The title is an argument now (`on run argv`), and a failure says the
+  window wasn't found. The clipboard's image script passes its path the
+  same way.
+- **Clicks land on Retina Macs.** Screenshots there have twice as many pixels
+  as the screen has points, and pyautogui clicks in points.
+  - Mapping the model's coordinates through the pixel size put every click
+    twice as far from the corner as meant.
+  - Capture geometry now uses the screen's size in points
+    (`computer._finish_capture`, `computer_use.take_screenshot_scaled`), and
+    the cursor crosshair follows.
+- **macOS permissions are checked before each desktop tool**
+  (`engine/macos_permissions.py`).
+  - Without Accessibility or Screen Recording, macOS drops clicks or returns
+    blank screenshots, and the tool looked like it worked.
+  - Now it fails and says where to allow the permission. The checks are the
+    system's own, called through ctypes; they never prompt, and an unknown
+    answer doesn't block.
+- **The on-screen indicator** now also shows for `accessibility_click` and
+  `screen_record_start`. It's still Windows-only.
+
+Validation on September 25, 2026:
+
+- `tests/test_client_security.py` covers:
+  - every computer-access tool refused and hidden when the switch is off;
+  - the no-screenshot tools kept for models that can't see;
+  - a hostile window title passed as an AppleScript argument.
+- `tests/test_computer_retina.py` covers:
+  - a 2880 x 1800 capture of a 1440 x 900 point screen: a click at the
+    image's centre maps to (720, 450) in points, and the crosshair is drawn at
+    the centre;
+  - screens where pixels are the coordinates, unchanged.
+- `tests/test_macos_permissions.py` covers the permission messages, other
+  systems never asked, and `execute_tool` refusing before anything is
+  clicked.
+- The macOS CI job checks that both permission checks answer on a real Mac.
+- Not verified on a Mac with a screen: real clicks on a Retina display, or
+  the permission prompts. CI has no screen to drive.
+
+## September 25 Linux packages — source only, not released
+
+- **A .deb, an .rpm, an AppImage and a tarball** for x86_64
+  ([guide](deploy-linux.md)).
+  - `packaging/build_linux.sh` builds the bundle with PyInstaller, from the
+    hash-pinned release lock, behind a Linux bundle policy.
+  - `packaging/linux_packages.py` makes the packages:
+    - the .deb, written in Python;
+    - the .rpm, through rpmbuild with stripping off;
+    - the AppImage folder, packed by appimagetool 1.9.1 with the type2
+      runtime 20251108, both pinned by the SHA-256 digests GitHub published;
+    - the tarball.
+  - Built on Ubuntu 22.04, the packages need glibc 2.35 or later. RHEL 9
+    (2.34) isn't supported yet.
+- **The .deb and .rpm install in `/opt/lumi`**, with `/usr/bin/lumi`, a
+  desktop entry and an icon.
+  - `lumi-install.json` marks their copy: Lumi leaves updates to the package
+    manager, and `lumi updates` and Settings say so
+    (`update_channels.MANAGED_INSTALLERS` gains `deb` and `rpm`).
+  - The same bundle gives byte-identical packages (`SOURCE_DATE_EPOCH`).
+- **The desktop app opens in the browser on Linux.** The packages bundle no
+  GTK or Qt window.
+  - `lumi gui` used to print only a one-time link when pywebview couldn't
+    open a window, so the menu entry showed nothing. It now opens the page in
+    the default browser where there's a display. It also forgets the window
+    that never opened, so the folder picker doesn't wait 20 seconds on it
+    (`gui/server.py`).
+  - Without a display, it still prints the link and opens nothing, so no
+    console browser takes over the terminal.
+- **Kept out of the Linux bundle:** python3-xlib, which is GPL-2.0, is
+  PyAutoGUI's X11 backend (`not_shipped`, and `Xlib` in the spec's
+  excludes). So the Linux packages have no computer use.
+- **Servers.** The guide covers `lumi run`, cron for scheduled tasks, a
+  systemd unit for the chat gateway, and `/etc/lumi/policy.json`.
+
+Validation on September 25, 2026:
+
+- `tests/test_linux_packages.py` (9 tests) covers:
+  - version mapping;
+  - the .deb's structure: control fields, modes, root ownership, the
+    `/usr/bin/lumi` symlink, md5sums and identical rebuilds;
+  - the .rpm spec with stripping off, the AppImage folder and the tarball;
+  - the browser fallback, with and without a display.
+  `tests/test_release_supply_chain.py` checks the not-shipped list and the
+  Linux policy.
+- The .deb writer was run in WSL's Ubuntu 20.04 on a test bundle. dpkg-deb
+  read its fields and listed and extracted its contents, and the launcher
+  ran. `dpkg --compare-versions` put `0.19.2~dev11` before `0.19.2`, and a
+  rebuild was identical.
+- The Linux CI job (`build-linux.yml`, new) builds everything on Ubuntu 22.04.
+  Then:
+  - it smoke-tests the bundle, including the GUI server checks and the
+    fallback;
+  - it installs the .deb with apt, checks updates and `/etc/lumi` policy,
+    and removes it;
+  - it installs the .rpm with dnf in a Fedora 41 container;
+  - it runs the AppImage without FUSE.
+
+  See the pull request for its result.
+
+## September 25 an installer package and profiles for managed Macs — source only, not released
+
+- **`lumi-X.Y.Z.pkg`** for Jamf Pro, Intune and other device management
+  ([guide](deploy-macos.md)). `packaging/build_macos.sh` makes it after the
+  DMG, with Apple's pkgbuild and productbuild and `packaging/macos_pkg.py`.
+  - It installs `/Applications/Lumi.app` for every user.
+  - It has no choices and no scripts.
+  - It refuses Intel Macs and macOS before 12.
+  - Every version has the package id `com.luminaryanalytics.lumi` and upgrades
+    in place: the app isn't relocatable.
+  - With `MACOS_INSTALLER_IDENTITY`, it's signed, notarized and stapled.
+- **A PKG copy never updates itself**, like an MSI copy.
+  - `Lumi.app/Contents/Resources/lumi-install.json` marks it, inside what the
+    signature covers. The build signs the staged copy again: with the
+    Developer ID, or ad hoc.
+  - `lumi updates` reports `"installed_by": "pkg"`.
+  - Settings > Updates, About and Check for Updates say it came from the
+    installer package (`update_channels.MANAGED_INSTALLERS`).
+- **`packaging/policy/make_mobileconfig.py`** turns a policy file into a
+  configuration profile.
+  - It checks the policy with the app's parser first, and with `--keys` also
+    a signed policy's signature.
+  - UUIDs come from the contents.
+  - `--plist` writes the bare preferences, for Jamf's Custom Settings or an
+    Intune preference file.
+- **Profiles can carry trusted signing keys** (`PolicyKeys`), as the registry
+  does on Windows (`policy.machine_keys`). A signed policy and its keys then
+  deploy together.
+- **A profile that can't be used fails closed.** Lumi refuses model requests,
+  as for any invalid machine policy, when:
+  - its plist can't be read;
+  - its `Policy` is empty;
+  - its `Policy` is neither text nor a dictionary.
+
+  Before, each of these read as "no policy" (`policy.managed_preferences_policy`).
+
+Validation on September 25, 2026:
+
+- `tests/test_macos_pkg.py` (9 tests) covers:
+  - the marker and the installed-by check on an app bundle's layout;
+  - the non-relocatable component list, and the distribution file against
+    `lumi.spec`'s bundle id and minimum macOS;
+  - the command line;
+  - generated profiles read back by the app's reader;
+  - the generator refusing an invalid policy, a bad signature and a keys file
+    that isn't an object;
+  - a signed policy and its keys applying through managed preferences;
+  - the reader failing closed.
+- The policy, MSI and Lumi Cloud tests pass.
+- Not run locally: pkgbuild, productbuild and installer need a Mac. The macOS
+  CI job builds the PKG, installs it with `sudo installer`, and checks the
+  installed copy. It checks updates left to the MDM, a policy from managed
+  preferences made by the generator, and an empty `Policy` failing closed.
+  See the pull request for its result.
+
+## September 25 a run's trace and saved files — source only, not released
+
+- **Trace** (`lumi/gui/static/app.js`, `openRunTrace`;
+  [guide](desktop-workflow.md#conversation-progress-suggestions-and-titles)).
+  - A run card's work details now end with **Trace**. It lists what the turn
+    did and when: each step, tool call and result (how long it took, how long
+    its output was), model call with its tokens, checkpoint and worker. The
+    dialog also names the model and duration.
+  - **Save for OpenTelemetry** saves the turn's OTLP JSON among the saved
+    files, and shows where.
+  - The Traces tab left with the Agents pane in v0.14.0. It listed runs and
+    showed a session's whole trace as raw JSON.
+- **Saved files** (`openArtifact`).
+  - Under **Saved** are the files the turn kept: an output over 50,000
+    characters, or a screenshot.
+  - The viewer shows text a page at a time, or an image, with the file's path.
+  - It reads a file by its id, never by a path from the page
+    (`artifact_view`).
+- **Each turn is its own slice of the session's trace**
+  (`lumi/engine/flight_recorder.py`).
+  - A session's recorder spans its turns. Each top-level turn now begins a
+    slice (`begin_turn`).
+  - The turn's session.end names the slice (`trace: {run_id, turn_id}`), so a
+    card can open it after a reload.
+  - A worker's events belong to the turn that started it.
+- Trace fixes:
+  - The app records every event it streams. Events the engine had already
+    recorded as it yielded them (session.start, checkpoints, attached files)
+    were in the trace twice.
+  - An event's own fields replaced the trace's: a checkpoint's `sequence` was
+    recorded as the event's sequence number.
+  - Reading a trace rewrote the run's manifest, which a session may still be
+    writing. Reading a turn now reads only the events file.
+
+Validation on September 25, 2026:
+
+- `tests/test_run_trace.py` (6 tests) covers:
+  - each turn's slice, with engine-recorded events kept once;
+  - a worker's events in its parent's turn;
+  - the rows the dialog gets, without a call's contents or a result's text;
+  - an unknown trace, and a run id outside the traces folder;
+  - a turn's export, leaving the run's manifest untouched;
+  - the viewer's pages, image and refusals.
+- `tests/ui_recovery.test.cjs` adds 5 tests: row wording, a run's saved
+  files, errors in their dialogs, paging, and the export flow. The four UI
+  node suites: 80 passed after merging `main`. `ruff check` clean.
+- Full `pytest` after merging `main`: 4,400 passed, 5 skipped.
+- In the browser pane, with an isolated home and a scripted local model whose
+  turn printed about 70,000 characters:
+  - The card's work details showed Trace and "Saved: bash result · 50 KB",
+    after a reload too.
+  - Trace listed 12 rows, from "Started with stub:latest" to "Finished:
+    answered". They included the command, the checkpoint, "bash finished in
+    556 ms · 51,164 characters · saved “bash result”" and each model call's
+    tokens. session.start appeared once.
+  - Save for OpenTelemetry saved the JSON in the home's artifacts folder.
+    Open showed it, and Show more added the next 16,000 characters.
+  - The saved output opened as "terminal · 50 KB". A plain answer got no work
+    details.
+  - With the run's trace folder moved away, Trace said "This run's trace is
+    no longer saved.", with no error in the chat.
+  - By keyboard: Enter opened Trace with focus on Close. Saving kept focus on
+    its button, then moved it to Open. Escape closed only the file viewer, then
+    Trace, returning focus each time. At 375px nothing scrolled sideways.
+  - Fixes from this run:
+    - A shared style pushed the records' buttons apart.
+    - Re-rendering a dialog dropped keyboard focus to the page.
+    - A row said "1 tokens".
+  - After merging the accessibility review: text contrast in both dialogs,
+    both themes, an error row and the striped rows included. The lowest was
+    5.89:1. [The accessibility report](accessibility.md) lists both dialogs.
+
+Not exercised: a stopped turn's Trace, a screenshot artifact (it needs a
+browser tool), a worker's rows in the app (pytest only), a packaged build.
+
+## September 25 Evidence results after their group closed — source only, not released
+
+**Reads and searches could keep a pulsing "…" for good.** The engine
+announces every tool call of a model response before it runs any of them.
+When a command, an edit or a write followed a read, a search or a check
+command in the same response, the command's row closed the collapsed Evidence
+group, and the earlier calls' results arrived after that. They found no row, so their
+items kept "…" with no count or output. A refused one got a "✗ not run" line
+of its own at the end of the activity, and the header never counted it.
+
+- **A result settles its own item after the group closed**
+  (`lumi/gui/static/run_cards.js` `_finalizeLiveCollapsedGroup`,
+  `lumi/gui/static/app.js` `_settleClosedEvidenceItem`). A group that closes
+  while calls in it still wait to run is kept for the rest of the turn. Their
+  results update their items as they would have in the open group: status,
+  count, output, a refusal's reason (open), and the header's "N failed" and
+  "N not run". A group with a failure or a refusal opens again.
+- **A screenshot's item settles too.** An image in its result closes the group
+  so the picture can show; the screenshot's own item kept "…".
+- **Only in its own card and lane.** A closed group answers only results drawn
+  where it is. An earlier turn's card and a worker's lane never take a result,
+  even when a backend that derives call ids from the call (Ollama) gives a
+  repeated call the same id.
+- **Fixed along the way:** a late Evidence command (`pytest`, `git status`) put
+  its status, exit code and output on the last command row instead, such as
+  the command after it that hadn't run yet.
+
+Validation on September 25, 2026:
+
+- Five tests in `tests/ui_recovery.test.cjs` drive the real handlers through
+  step start and end, with the Evidence group from `run_cards.js`:
+  - a search answered after a command closed a group spanning two steps (the
+    header keeps "steps 1–2 · 2 calls" and no failure count);
+  - a failing `pytest` answered after `make deploy` closed its group: its item
+    opens with the output and the header counts "1 failed", while the waiting
+    `make deploy` row and an earlier `npm install` row keep their own results;
+  - a policy's refusal and the user's own Deny answered after the group
+    closed: reasons on their items, "2 not run", no lines of their own;
+  - a screenshot whose image closes its group, and one whose group a later
+    `browser_js` closed;
+  - a closed group from an earlier turn doesn't take a later turn's result with
+    the same call id.
+- On the previous `app.js` and `run_cards.js`, the first four failed: items
+  still "…", `pytest`'s result on the waiting `make deploy` row, and four rows
+  for a group and one command. The fifth passed there; without the fix's
+  card-and-lane check it fails. Taking out any other part of the fix (keeping
+  closed groups, the check in `renderToolResult`, a closed group's header
+  counts, the screenshot's image) fails at least one of the others.
+- Full `pytest` 4,294 passed, 5 skipped. `ruff check .` clean, `node --check`
+  passes for `app.js` and `settings_view.js`, the four Node UI test files pass
+  (70 tests), `git diff --check` clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub, in
+  Full-auto: one response called `git status --short`, grep `TODO`, grep
+  `FORBIDDEN` (refused by the project's `lumi-policy.json`) and
+  `echo built> build.txt`.
+  - Before the fix, all three Evidence items kept "…" with no output, the
+    refusal read "✗ not run" with its reason on a line after the build
+    command, and the header read "Evidence · Searching codebase".
+  - After the fix, a reload replayed the same saved turn with ✓ and output on
+    `git status --short` and `TODO` ("1 matches"), ✗ "not run" with the
+    policy's reason open on `FORBIDDEN`, "Evidence · Searching codebase ·
+    1 not run", and no line of its own.
+  - A live run, recorded after each event: the build call closed the group
+    with three waiting items, each result then settled its own item while the
+    build row still waited, and the refusal opened the group again. Its calls
+    had the first turn's ids (the adapter derives them from the call); the
+    first turn's items kept one output each.
+  - Enter and Space opened and closed a late item's output and a refusal's
+    reason, with `aria-expanded` following. At 375 px there was no horizontal
+    scroll. A response with only a search still settled it in the open group.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+    credential was stored. `~/.codex` changed during the run, as it had before
+    it started; the fixture pointed `CODEX_HOME` at its own home and never
+    started Codex, so those writes are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code (their
+tools use the activity panel, not Evidence groups), a real screenshot in the
+app (a Node test covers the image path) and a worker's lane in the app (worker
+calls are never grouped). Unchanged: a call that never ran because the turn
+was stopped first still reads "…".
+
+## September 25 accessibility review and conformance report — source only, not released
+
+- **[`docs/accessibility.md`](accessibility.md)** reports conformance with
+  WCAG 2.1 A and AA in the VPAT 2.5 format, for the app and Lumi Cloud's
+  portal.
+  - It's a self-assessed draft, not independently verified.
+  - It says what was checked and how. Screen readers haven't been tried.
+- **Fixed during the review:**
+  - **Contrast.** The dark theme's secondary text (`--dim`) reached 3.0:1 on
+    some surfaces, and the light theme's 3.7:1. The light theme's `--muted`
+    reached 4.34:1. Every text token now reaches 4.5:1 on every surface in
+    both themes, hover included (`styles.css`).
+  - **The permission-mode menu couldn't be used from the keyboard.** Its
+    options were plain elements. It's now a menu of radio items: Enter,
+    Space or the arrows open it on the current mode, the arrows, Home and
+    End move, and Escape closes it and returns focus. `aria-expanded` and
+    `aria-checked` report its state.
+  - **A skip control**, "Skip to the message box" (or "Skip to the Settings
+    page"), is the first thing in the tab order. It's a button because the
+    launch code travels in the URL fragment.
+  - **Window titles** name the screen: "Settings · Lumi".
+  - **Focus rings** on the command-palette button, which showed only hover's
+    faint border, and on the composer's model and reasoning menus, which
+    showed only a text color change.
+  - **The daily budget field** in Usage & cost has a label.
+
+Validation on September 25, 2026, in the browser pane. A checker ran on
+rendered pages in each theme, rendered from load. It covered names, labels,
+duplicate ids, headings, language, landmarks and composited text contrast:
+
+- The app: the main view and all 25 Settings pages, clean after the fixes.
+- The portal: 21 pages as an owner, clean.
+- With real key presses: the Tab order, focus rings, the permission menu
+  (open, move, choose, Escape), the command palette and model picker
+  returning focus, and the skip control.
+- After merging the checkpoint Timeline: the Timeline dialog (opened from the
+  command palette, with no checkpoints in it) in both themes, focus moving to
+  Close and returning on Escape, the permission menu again, and the model
+  menu's focus ring in both themes.
+- Switching themes in place left CSS transitions half-done in the hidden
+  pane and gave false contrast results, so each theme was rendered from load.
+
+The full suite and the node UI tests pass.
+
 ## September 25 refused tool calls say why — source only, not released
 
 **A refused call's row said only "denied".** When a hook, a policy rule, a
@@ -789,8 +1267,8 @@ their own tool loops), macOS and Linux.
 - "Opening *file*…" showed "â€¦" instead of an ellipsis.
 - The runtime guide and [known issues](known-issues.md) now name the views
   that lost their entry point with the Agents pane: the checkpoint Timeline,
-  traces and the artifact list. (Worker transcripts and controls, and the
-  checkpoint Timeline, are back; see their sections above.)
+  traces and the artifact list. (Each is back; see worker transcripts and
+  controls, the checkpoint Timeline, and a run's trace and saved files above.)
 
 Validation on September 25, 2026:
 

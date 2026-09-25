@@ -17,6 +17,15 @@
  * Load order matters: this file must load BEFORE app.js.
  */
 
+// Packages that update the copy they installed: where it came from, and what
+// updates it (update_channels.MANAGED_INSTALLERS).
+const MANAGED_INSTALLERS = Object.freeze({
+    msi: ['the MSI package', 'your organization’s device management'],
+    pkg: ['the macOS installer package', 'your organization’s device management'],
+    deb: ['the Debian package', 'your package manager'],
+    rpm: ['the RPM package', 'your package manager'],
+});
+
 class LumiSettingsView {
     _accountSummary() {
         const account = this.sonnAccount;
@@ -309,8 +318,9 @@ class LumiSettingsView {
         const info = this.aboutInfo;
         if (!info) return '<p class="editor-help">Loading…</p>';
         const esc = value => this.escapeHtml(String(value ?? ''));
-        const managed = info.installed_by === 'msi'
-            ? 'Installed by your organization’s device management.'
+        const installer = MANAGED_INSTALLERS[info.installed_by];
+        const managed = installer
+            ? `Installed from ${installer[0]}; ${installer[1]} updates it.`
             : info.organization ? `Managed by ${esc(info.organization)}.` : '';
         const row = (label, body) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${body}</div></div></div>`;
         return [
@@ -478,8 +488,9 @@ class LumiSettingsView {
         const esc = value => this.escapeHtml(String(value ?? ''));
         const modes = { automatic: 'Automatic', manual: 'Only when you check', off: 'Off' };
         const describe = s => `${esc(modes[s.mode] || s.mode)}${s.mode === 'off' ? '' : `, from ${esc(s.describe)}`}`;
-        const managed = status.installed_by === 'msi'
-            ? ' · installed from the MSI package, so your organization’s device management updates it'
+        const installer = MANAGED_INSTALLERS[status.installed_by];
+        const managed = installer
+            ? ` · installed from ${installer[0]}, so ${installer[1]} updates it`
             : status.managed_by ? ` · managed by ${esc(status.managed_by)}` : '';
         const checking = status.mode !== 'off' && status.available;
         const hints = [

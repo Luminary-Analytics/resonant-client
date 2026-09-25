@@ -70,7 +70,7 @@ nav:
       - Code editors (VS Code, JetBrains): code-editors.md
       - Issue trackers (Jira, Linear, GitHub, GitLab): issue-trackers.md
       - Hand-offs to a teammate or CI: hand-offs.md
-      - Team skills and prompts: team-library.md
+      - Team skills, prompts and project notes: team-library.md
       - Autonomous sessions (experimental): autonomous-sessions.md
       - Signing in to enterprise endpoints: connection-sign-in.md
       - Usage, prices and budgets: usage-and-costs.md

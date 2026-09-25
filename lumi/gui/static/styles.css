@@ -5816,6 +5816,25 @@ body {
     outline: none;
 }
 
+/* Multi-line settings, such as file exclusion patterns (one per line). */
+.settings-textarea {
+    display: block;
+    width: 100%;
+    min-height: 120px;
+    margin: 8px 0;
+    padding: 8px 10px;
+    box-sizing: border-box;
+    line-height: 1.5;
+    resize: vertical;
+}
+
+.settings-subheading {
+    margin: 14px 0 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+}
+
 .settings-input:focus {
     border-color: var(--brand);
 }
@@ -11086,7 +11105,8 @@ body {
     margin-top: 4px;
     color: var(--muted);
 }
-.runtime-banner-packs {
+.runtime-banner-packs,
+.runtime-banner-trust {
     margin-top: 4px;
 }
 .runtime-banner-action {

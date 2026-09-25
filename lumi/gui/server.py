@@ -340,6 +340,18 @@ def main():
     except Exception:
         logger.exception("Updater init failed (non-fatal)")
 
+    # Transcript retention runs at startup and then daily, off the UI path.
+    def _retention_loop():
+        from .app import state as app_state
+        while True:
+            try:
+                app_state.enforce_retention()
+            except Exception:
+                logger.exception("Transcript retention failed (non-fatal)")
+            time.sleep(24 * 3600)
+
+    threading.Thread(target=_retention_loop, daemon=True, name="lumi-retention").start()
+
     launch_gui(
         host=args.host,
         port=args.port,

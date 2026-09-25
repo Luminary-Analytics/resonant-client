@@ -287,6 +287,19 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   need a user name and password aren't supported yet.
 - **Save diagnostics** removes your actual key values and masks secrets in the
   bundled `settings.json` before anything is written.
+- **Files Lumi never reads:** gitignore-style patterns under **Settings >
+  Privacy & security** (for example `.env`, `*.pem`, `secrets/**`), plus a
+  project's own `.lumiignore`. The file tools refuse them, and searches, git
+  output, the codebase index and attachments leave them out. Shell commands
+  can still open them.
+- **Project trust:** a newly opened project's instruction files, committed
+  notes, codebase summary and approval-skipping `lumi-policy.json` rules apply
+  only after you choose **Trust this project**. Automatic lint and test runs,
+  which execute the project's code, also wait for trust.
+- **Transcript retention:** set **Delete transcripts after (days)** to remove
+  old sessions, drafts, checkpoints, artifacts and logs automatically.
+- **Tool switches:** turn off Codex and Claude Code, computer use or the chat
+  gateway under **Settings > Privacy & security**.
 
 ## Browser Tools
 

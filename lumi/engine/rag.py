@@ -118,8 +118,11 @@ class CodebaseIndex:
         self._indexing = False
         self._last_full_index: float = 0.0
         self._index_file = project_dir(self.project_path) / "index.json"
-        self._repo_map_cache: dict[int, str] = {}
+        self._repo_map_cache: dict[tuple, str] = {}
         self._repo_map_generation = 0
+        # engine/exclusions.ExclusionRules, set by the app: excluded files are
+        # neither indexed nor returned, even from an older cached index.
+        self.exclusions = None
 
         # Try loading cached index
         self._load_cache()
@@ -154,7 +157,12 @@ class CodebaseIndex:
         try:
             for dirpath, dirnames, filenames in os.walk(self.project_path):
                 # Skip excluded directories
-                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS and not d.startswith(".")]
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d not in SKIP_DIRS and not d.startswith(".")
+                    # A directory rule excludes everything inside it.
+                    and not self._excluded_path(os.path.join(dirpath, d, "_"))
+                ]
 
                 for filename in filenames:
                     stats["files_scanned"] += 1
@@ -174,6 +182,9 @@ class CodebaseIndex:
                         continue
 
                     full_path = os.path.join(dirpath, filename)
+                    if self._excluded_path(full_path):
+                        stats["files_skipped"] += 1
+                        continue
 
                     # Skip large files
                     try:
@@ -280,6 +291,7 @@ class CodebaseIndex:
                 else:
                     results.append(sr)
 
+        results = [r for r in results if not self._excluded_rel(r.path)]
         # Sort by score descending
         results.sort(key=lambda r: r.score, reverse=True)
         return results[:max_results]
@@ -306,12 +318,15 @@ class CodebaseIndex:
         lightweight rather than a full AST renderer.  Files referenced by many
         peers rank first, followed by shallow entrypoints and symbol-rich files.
         """
-        cache_key = max(100, int(max_tokens))
+        # The active exclusion rules are part of the key: adding one must not
+        # leave its files in a map built before.
+        rules = tuple(r.pattern for r in self.exclusions.rules) if self.exclusions else ()
+        cache_key = (max(100, int(max_tokens)), rules)
         with self._lock:
             cached = self._repo_map_cache.get(cache_key)
             if cached is not None:
                 return cached
-            entries = list(self._entries.values())
+            entries = [e for e in self._entries.values() if not self._excluded_rel(e.path)]
             generation = self._repo_map_generation
         if not entries:
             return ""
@@ -388,6 +403,12 @@ class CodebaseIndex:
             if generation == self._repo_map_generation:
                 self._repo_map_cache[cache_key] = result
         return result
+
+    def _excluded_path(self, full_path: str) -> bool:
+        return bool(self.exclusions) and self.exclusions.is_excluded(full_path)
+
+    def _excluded_rel(self, rel_path: str) -> bool:
+        return self._excluded_path(os.path.join(str(self.project_path), rel_path))
 
     def get_stats(self) -> dict:
         """Return index statistics."""

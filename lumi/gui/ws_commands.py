@@ -493,6 +493,32 @@ async def _capability_pack_revoke(ctx: CommandContext) -> None:
     await _set_capability_pack_approval(ctx, approve=False)
 
 
+@command("project_trust_list")
+async def _project_trust_list(ctx: CommandContext) -> None:
+    # The open project's status plus every remembered decision, for Settings.
+    await ctx.send(await _in_executor(ctx.state.project_trust_payload))
+
+
+@command("project_trust_set")
+async def _project_trust_set(ctx: CommandContext) -> None:
+    # Trust, restrict or forget a project. Only the user's own click reaches
+    # this: repository content cannot trust itself.
+    decision = str(ctx.msg.get("decision") or "")
+    if decision not in {"trusted", "restricted", "forget"}:
+        await ctx.send_error("Choose to trust or restrict the project.")
+        return
+    if ctx.runs.busy:
+        await ctx.send_error("Finish or stop the current run before changing project trust.")
+        return
+    path = str(ctx.msg.get("project_path") or "")
+    try:
+        payload = await _in_executor(lambda: ctx.state.set_project_trust(decision, path))
+    except ValueError as exc:
+        await ctx.send_error(str(exc))
+        return
+    await ctx.send(payload)
+
+
 @command("context_catalog")
 async def _context_catalog(ctx: CommandContext) -> None:
     broker = ctx.session_attr("context_broker")
@@ -2951,7 +2977,8 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd"}),
-    "privacy": frozenset({"secret_scan"}),
+    "privacy": frozenset({"secret_scan", "excluded_paths", "transcript_retention_days"}),
+    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway"}),
     "model_favorites": frozenset({"models"}),
 }
 
@@ -3001,9 +3028,26 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         not isinstance(value, str) or value not in PERMISSION_MODES
     ):
         raise ValueError("Choose a permission mode: ask, auto-edit, plan or bypass.")
-    if (section, key) in {("network", "system_certificates"), ("privacy", "secret_scan")}:
+    if (section, key) in {("network", "system_certificates"), ("privacy", "secret_scan")} or section == "security":
         if not isinstance(value, bool):
             raise ValueError(f"{section}.{key} must be on or off.")
+    elif (section, key) == ("privacy", "excluded_paths"):
+        items = value.splitlines() if isinstance(value, str) else value
+        if not isinstance(items, list) or len(items) > 500:
+            raise ValueError("Enter up to 500 patterns, one per line.")
+        patterns = []
+        for item in items:
+            text = str(item or "").strip()
+            if len(text) > 300:
+                raise ValueError("A pattern can be at most 300 characters.")
+            if text and not text.startswith("#") and text not in patterns:
+                patterns.append(text)
+        return patterns
+    elif (section, key) == ("privacy", "transcript_retention_days"):
+        value = 0 if value is None else value  # an emptied field keeps transcripts
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 3650:
+            raise ValueError("Enter a number of days from 0 (keep) to 3650.")
+        return int(value)
     elif (section, key) == ("network", "proxy_url"):
         from .. import net
         return net.validate_proxy_url(value if isinstance(value, str) else "")
@@ -3037,6 +3081,9 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         (section == "api_keys" and k == "sonn") or (section == "network" and k == "sonn_url")
         for k, _ in writes
     )
+    if ctx.runs.busy and section == "security" and any(k == "cli_adapters" for k, _ in writes):
+        await ctx.send({"event": "error", "message": "Finish or stop the current run before changing which providers are allowed."})
+        return
     if ctx.runs.busy and sonn_change:
         await ctx.send({"event": "error", "message": "Finish or stop the current run before changing SONN settings."})
         return

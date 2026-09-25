@@ -3947,6 +3947,13 @@ class LumiApp {
                 if (event.artifact) this.runtimeArtifacts.unshift(event.artifact);
                 this.renderRuntimeView();
                 break;
+            case 'project_trust':
+                this.projectTrust = event;
+                if (this._runtimeBannerState) {
+                    this._applyRuntimeError({...this._runtimeBannerState, project_trust: event.current});
+                }
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
             case 'capability.pack_list':
                 this.runtimePacks = event.packs || [];
                 this.capabilityPacks = event;
@@ -8783,7 +8790,26 @@ class LumiApp {
                 + 'Nothing in a pack runs until you approve it.'
             : '';
 
-        if (!reason && !mcpNote && !packNote) {
+        // Instructions and approval rules a repository brings are not used
+        // until the user trusts the project (gui/workspace_trust.py).
+        const trust = (event && event.project_trust) || null;
+        let trustNote = '';
+        if (trust && trust.needs_decision) {
+            const parts = [];
+            if ((trust.instructions || []).length) parts.push(`instructions (${trust.instructions.join(', ')})`);
+            if (trust.notes) parts.push('project notes (.lumi/memory.json)');
+            if (trust.policy_file) {
+                const one = trust.policy_allows === 1;
+                parts.push(trust.policy_allows
+                    ? `${trust.policy_file} with ${trust.policy_allows} rule${one ? '' : 's'} that skip${one ? 's' : ''} approval`
+                    : trust.policy_file);
+            }
+            trustNote = trust.policy_changed
+                ? `${trust.policy_file} changed since you trusted this project. Its approval-skipping rules are off until you review it.`
+                : `This project brings ${parts.join(' and ')}. Lumi isn't using them until you trust the project.`;
+        }
+
+        if (!reason && !mcpNote && !packNote && !trustNote) {
             el.hidden = true;
             el.textContent = '';
             this._dismissedRuntimeNotice = '';
@@ -8794,7 +8820,7 @@ class LumiApp {
         // with no way to close it is just noise once the user has read it —
         // but silencing it forever would hide a *different*, later problem, so
         // a changed message brings it back.
-        const signature = `${reason}||${mcpNote}||${packNote}`;
+        const signature = `${reason}||${mcpNote}||${packNote}||${trustNote}`;
         if (this._dismissedRuntimeNotice === signature) {
             el.hidden = true;
             return;
@@ -8823,6 +8849,24 @@ class LumiApp {
             review.textContent = 'Review packs';
             review.addEventListener('click', () => this.openSettingsPage?.('capability_packs'));
             line.appendChild(review);
+            el.appendChild(line);
+        }
+        if (trustNote) {
+            const line = document.createElement('div');
+            line.className = 'runtime-banner-trust';
+            line.textContent = trustNote;
+            const choices = [['trusted', trust.policy_changed ? 'Trust the change' : 'Trust this project'], ['restricted', 'Keep restricted']];
+            for (const [decision, label] of choices) {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'runtime-banner-action';
+                button.textContent = label;
+                button.addEventListener('click', () => {
+                    button.disabled = true;
+                    this.send({command: 'project_trust_set', decision, project_path: trust.project_path});
+                });
+                line.appendChild(button);
+            }
             el.appendChild(line);
         }
 

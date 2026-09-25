@@ -75,6 +75,7 @@ from .ws_commands import (  # noqa: F401  (re-exported public surface)
 )
 from .sessions import ProjectManager
 from .settings import SettingsManager
+from .workspace_trust import WorkspaceTrust
 from .costs import CostTracker
 from .project_instructions import (
     get_instruction_info,
@@ -226,6 +227,13 @@ class AppState:
         self._default_session_lock = threading.Lock()
         # Settings & cost tracking
         self.settings = SettingsManager()
+        # Instructions and execution rules a repository brings apply only once
+        # the user trusts it; projects already in Recent are trusted on first run.
+        self.workspace_trust = WorkspaceTrust(recent_projects=[
+            str(entry.get("path") or "")
+            for entry in self.project.get_recent_projects(limit=1000)
+            if isinstance(entry, dict)
+        ])
         self._migrate_stale_defaults()
         self._apply_big_context_preset()
         self.permission_mode = self.normalize_permission_mode(
@@ -394,13 +402,15 @@ class AppState:
         return cls._MODE_TIERS.get(cls.normalize_permission_mode(mode), "suggest")
 
     @staticmethod
-    def _execution_policy_for(tier: str, project_root: str):
+    def _execution_policy_for(tier: str, project_root: str, *, honor_allows: bool = True):
         """The tier's built-in policy with the project's lumi-policy.json layered on.
 
         The project policy can tighten or refine the built-in rules; it cannot
-        override built-in denies (see ExecutionPolicy.merge).
+        override built-in denies (see ExecutionPolicy.merge). Its ``allow``
+        rules skip approval prompts, so they apply only while the user trusts
+        the project and its policy hasn't changed since (workspace_trust.py).
         """
-        from ..engine.policies import ExecutionPolicy, policy_for_tier
+        from ..engine.policies import ExecutionPolicy, PolicyAction, policy_for_tier
 
         policy = policy_for_tier(tier)
         # lumi-policy.json; repositories from before the rebrand keep resonant-policy.json.
@@ -410,14 +420,79 @@ class AppState:
             if os.path.isfile(candidate):
                 project_policy = ExecutionPolicy.from_file(candidate)
                 break
+        if project_policy and not honor_allows:
+            project_policy = ExecutionPolicy(
+                [rule for rule in project_policy.rules if rule.action != PolicyAction.ALLOW.value]
+            )
         return policy.merge(project_policy) if project_policy else policy
+
+    def cli_adapters_allowed(self) -> bool:
+        return self.settings.get("security", "cli_adapters", True) is not False
+
+    def computer_use_allowed(self) -> bool:
+        return self.settings.get("security", "computer_use", True) is not False
+
+    def exclusions_for(self, project_path: str):
+        """Files the agent may never read or send in this project (engine/exclusions.py)."""
+        from ..engine.exclusions import ExclusionRules
+
+        # A live source: a Settings change applies to every holder at once.
+        return ExclusionRules.for_project(
+            project_path or "",
+            settings_patterns=lambda: self.settings.get("privacy", "excluded_paths", []) or [],
+        )
+
+    def _trusted_project_instructions(self, project_path: str) -> str | None:
+        """The project's instruction file, only once the user trusts the project."""
+        if not self.project_trust(project_path).load_instructions:
+            return None
+        return load_project_instructions(project_path)
+
+    def project_trust(self, project_path: str | None = None):
+        """What the project brings and whether Lumi uses it (workspace_trust.py)."""
+        return self.workspace_trust.status(project_path or self.project.project_path)
+
+    def project_trust_payload(self) -> dict:
+        return {
+            "event": "project_trust",
+            "current": self.project_trust().to_dict(),
+            "decisions": self.workspace_trust.decisions(),
+        }
+
+    def set_project_trust(self, decision: str, project_path: str = "") -> dict:
+        """Record the user's decision and apply it to the open session."""
+        path = project_path or self.project.project_path
+        if not path or not os.path.isdir(path):
+            raise ValueError("That project folder no longer exists.")
+        if decision == "trusted":
+            self.workspace_trust.trust(path)
+        elif decision == "restricted":
+            self.workspace_trust.restrict(path)
+        else:
+            self.workspace_trust.forget(path)
+        if self._normalize_path(path) == self._normalize_path(self.project.project_path):
+            # Instructions are read into each turn's prompt; the policy is
+            # rebuilt here so allow rules start or stop applying at once.
+            self._project_instructions = self._trusted_project_instructions(path)
+            if self.session is not None:
+                self.session.project_instructions = self._project_instructions
+                self._apply_session_permissions(self.session, self.permission_mode)
+            intents = getattr(self, "_intent_service", None)
+            if intents is not None:
+                # Updated in place: rebuilding would drop missions in flight.
+                intents.project_instructions = self._project_instructions or ""
+            if self.session is not None:
+                self.session.project_content_trusted = self.project_trust(path).trusted
+        return self.project_trust_payload()
 
     def _apply_session_permissions(self, session: Session, mode: str) -> None:
         """Make a native session's tier and policy match a permission mode."""
         session.autonomy_tier = self.autonomy_tier_for_mode(mode)
         root = getattr(session, "project_path", None) or self.project.project_path
         try:
-            session.execution_policy = self._execution_policy_for(session.autonomy_tier, root)
+            session.execution_policy = self._execution_policy_for(
+                session.autonomy_tier, root, honor_allows=self.project_trust(root).honor_policy_allows,
+            )
         except Exception:
             # Never leave the session without the tier's built-in denies.
             from ..engine.policies import policy_for_tier
@@ -519,7 +594,7 @@ class AppState:
             self.project._ensure_storage()
             self.project._save_recent_project()
 
-        self._project_instructions = load_project_instructions(project_path)
+        self._project_instructions = self._trusted_project_instructions(project_path)
         self.engram = self.base_engram.clone(namespace=self._project_namespace(project_path))
         self.engram.set_mcp_manager(self.mcp_manager)
         self.harness = HarnessWorkspace(project_path)
@@ -548,6 +623,7 @@ class AppState:
         )
         if refresh_index or not self.codebase_index or current_index_path != self._normalize_path(project_path):
             self.codebase_index = CodebaseIndex(project_path, engram=self.engram)
+            self.codebase_index.exclusions = self.exclusions_for(project_path)
         else:
             self.codebase_index._engram = self.engram
 
@@ -605,8 +681,11 @@ class AppState:
         session.project_instructions = (
             project_instructions
             if project_instructions is not None
-            else load_project_instructions(target_path)
+            else self._trusted_project_instructions(target_path)
         )
+        session.exclusions = self.exclusions_for(target_path)
+        session.computer_use_enabled = self.computer_use_allowed()
+        session.project_content_trusted = self.project_trust(target_path).trusted
         session._mcp_manager = self.mcp_manager
         session._engram = engram or self.engram
         session._codebase_index = codebase_index or self.codebase_index
@@ -664,6 +743,7 @@ class AppState:
             checkpoint_store=checkpoint_store,
             artifact_store=artifact_store,
             codebase_index=session._codebase_index,
+            exclusions=session.exclusions,
         )
         # Approved packs only; their MCP servers were connected (or dropped)
         # by refresh_capability_packs when the project was opened.
@@ -993,7 +1073,10 @@ class AppState:
                 },
             }
 
-        codex_cli = resolve_codex_cli_path()
+        # Codex and Claude Code run their own tool loops, outside Lumi's
+        # approvals, exclusions and secret scan; Settings or policy can hide them.
+        cli_allowed = self.cli_adapters_allowed()
+        codex_cli = resolve_codex_cli_path() if cli_allowed else None
         if codex_cli:
             available["codex"] = {
                 "models": CodexCliBackend.list_available_models(),
@@ -1001,7 +1084,7 @@ class AppState:
                 "cli_path": codex_cli,
             }
 
-        claude_cli = resolve_claude_cli_path()
+        claude_cli = resolve_claude_cli_path() if cli_allowed else None
         if claude_cli:
             available["claude-code"] = {
                 "models": ClaudeCodeCliBackend.list_available_models(),
@@ -1072,6 +1155,11 @@ class AppState:
         model: str | None = None,
         project_path: str | None = None,
     ) -> BackendSpec:
+        if backend_type in self.CLI_WRAPPED_BACKENDS and not self.cli_adapters_allowed():
+            raise ValueError(
+                "Codex and Claude Code are turned off (Settings > Privacy & security, "
+                "or your organization's policy)."
+            )
         project_path = os.path.normpath(project_path or self.project.project_path)
 
         if (
@@ -1378,14 +1466,15 @@ class AppState:
         record = self.project.current_session
 
         if self._normalize_path(effective_root) == self._normalize_path(self.project.project_path):
-            project_instructions = self._project_instructions or load_project_instructions(effective_root)
+            project_instructions = self._project_instructions or self._trusted_project_instructions(effective_root)
             engram = self.engram
             codebase_index = self.codebase_index
         else:
-            project_instructions = load_project_instructions(effective_root)
+            project_instructions = self._trusted_project_instructions(effective_root)
             engram = self.base_engram.clone(namespace=self._project_namespace(effective_root))
             engram.set_mcp_manager(self.mcp_manager)
             codebase_index = CodebaseIndex(effective_root, engram=engram)
+            codebase_index.exclusions = self.exclusions_for(effective_root)
 
         harness_instructions = self.harness_prompts.build_harness_instructions(
             project_path=effective_root,
@@ -1499,7 +1588,7 @@ class AppState:
             # unauthorized provider is the most common way this fails, and its
             # reason is exactly what the user needs to see.
             backend = spec.create_backend(self.settings)
-            self._project_instructions = load_project_instructions(self.project.project_path)
+            self._project_instructions = self._trusted_project_instructions(self.project.project_path)
             session = self.build_session(
                 backend=backend,
                 backend_spec=spec,
@@ -1850,6 +1939,33 @@ class AppState:
         elif self.session:
             self.apply_permission_mode(self.permission_mode, session=self.session)
 
+        if section == "privacy" and self.codebase_index is not None:
+            self.codebase_index.exclusions = self.exclusions_for(self.project.project_path)
+        if section == "privacy" and self.session is not None:
+            # Exclusions apply to the open session's next tool call.
+            self.session.exclusions = self.exclusions_for(
+                getattr(self.session, "project_path", "") or self.project.project_path
+            )
+            broker = getattr(self.session, "context_broker", None)
+            if broker is not None:
+                broker.exclusions = self.session.exclusions
+        if section == "security" and self.session is not None:
+            self.session.computer_use_enabled = self.computer_use_allowed()
+        if (
+            section == "security"
+            and self.backend_spec
+            and self.backend_spec.backend_type in self.CLI_WRAPPED_BACKENDS
+            and not self.cli_adapters_allowed()
+        ):
+            # The CLI adapters were just turned off while one was selected.
+            fallback_type, fallback_model = self.default_chat_backend_choice()
+            if fallback_type and fallback_model and fallback_type not in self.CLI_WRAPPED_BACKENDS:
+                self.swap_backend(fallback_type, fallback_model)
+            else:
+                self.backend = None
+                self.backend_spec = None
+                self.session = None
+
         if self.backend_spec and self.backend_spec.backend_type == "kimi":
             kimi_key, _, _, _ = self._api_key_details("kimi", "MOONSHOT_API_KEY")
             if not kimi_key:
@@ -1911,6 +2027,15 @@ class AppState:
         self.network_state = net.configure(self.settings)
         # So do the secret scan and the saved key values it removes.
         secret_scan.configure(self.settings)
+
+    def enforce_retention(self) -> dict:
+        """Delete transcripts older than the retention setting (gui/retention.py)."""
+        from ..paths import state_home
+        from .retention import purge_expired
+
+        days = int(self.settings.get("privacy", "transcript_retention_days", 0) or 0)
+        current = getattr(self.project, "current_session", None)
+        return purge_expired(days, state_home(), keep_session_ids=[getattr(current, "id", "")])
 
     def update_setting_value(
         self,
@@ -1990,6 +2115,8 @@ class AppState:
             "mcp_unavailable": self.mcp_unavailable_servers(),
             # Repository packs that stay off until the user reviews them.
             "capability_packs_pending": self.capability_packs_pending(),
+            # Instructions and policy the project brings, and whether Lumi uses them.
+            "project_trust": self.project_trust().to_dict(),
             "sessions": self.project.list_sessions(),
             "all_sessions": self.project.list_all_sessions(),
             "current_session_id": self.project.current_session.id if self.project.current_session else "",
@@ -2345,6 +2472,7 @@ async def websocket_endpoint(ws: WebSocket):
     # Initialize codebase index if not already set
     if not state.codebase_index and state.project:
         state.codebase_index = CodebaseIndex(state.project.project_path, engram=state.engram)
+        state.codebase_index.exclusions = state.exclusions_for(state.project.project_path)
 
     try:
         while True:
@@ -2532,7 +2660,12 @@ async def websocket_endpoint(ws: WebSocket):
                 from ..orchestration.grill_me import format_grill_first_message
                 fed_text = format_grill_first_message(
                     feature,
-                    project_path=state.project.project_path,
+                    # The project's instruction files feed the first message
+                    # only once the user trusts the project.
+                    project_path=(
+                        state.project.project_path
+                        if state.project_trust().load_instructions else None
+                    ),
                     autonomous=autonomous_flag,
                     # v0.5.0a7 — pessimistic default. We don't probe
                     # Ollama for the configured vision model here (the

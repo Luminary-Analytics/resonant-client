@@ -1501,9 +1501,13 @@ def execute_tool(
     project_path: str = "",
     settings: object = None,
     session_name: str = "",
+    exclusions=None,
 ) -> ToolResult:
     """
     Execute a tool and return structured result.
+
+    ``exclusions`` (engine/exclusions.ExclusionRules) removes excluded files
+    from glob and grep results; Session refuses direct access before this.
 
     This is the pure execution layer — no display logic, no approval prompts.
     The engine handles permission; the TUI handles display.
@@ -1625,9 +1629,9 @@ def execute_tool(
         elif name == "file_edit":
             return _exec_file_edit(arguments, start)
         elif name == "glob":
-            return _exec_glob(arguments, start)
+            return _exec_glob(arguments, start, exclusions=exclusions)
         elif name == "grep":
-            return _exec_grep(arguments, start, cancel_event=cancel_event)
+            return _exec_grep(arguments, start, cancel_event=cancel_event, exclusions=exclusions)
         elif name == "skill_view":
             if str(arguments.get('skill_id', '')).startswith('pack:'):
                 from .capability_packs import CapabilityPackManager
@@ -1642,6 +1646,7 @@ def execute_tool(
                 cancel_event=cancel_event,
                 project_path=project_path,
                 settings=settings,
+                exclusions=exclusions,
             )
         elif name == "task":
             # Task tool requires session context — handled by Session, not here
@@ -1727,10 +1732,10 @@ def execute_tool(
         # Git tools
         elif name == "git_status":
             from .git_tools import exec_git_status
-            return exec_git_status(arguments, start)
+            return exec_git_status(arguments, start, exclusions=exclusions)
         elif name == "git_diff":
             from .git_tools import exec_git_diff
-            return exec_git_diff(arguments, start)
+            return exec_git_diff(arguments, start, exclusions=exclusions)
         elif name == "git_commit":
             from .git_tools import exec_git_commit
             return exec_git_commit(arguments, start)
@@ -2193,7 +2198,7 @@ def _exec_file_edit(args: dict, start: float) -> ToolResult:
     )
 
 
-def _exec_glob(args: dict, start: float) -> ToolResult:
+def _exec_glob(args: dict, start: float, *, exclusions=None) -> ToolResult:
     pattern = args.get("pattern", "")
     base = args.get("path", ".")
     offset = max(0, int(args.get("offset", 0) or 0))
@@ -2231,6 +2236,10 @@ def _exec_glob(args: dict, start: float) -> ToolResult:
             is_error=True,
             elapsed=time.time() - start,
         )
+    hidden = 0
+    if exclusions:
+        kept, hidden = exclusions.filter_paths(str(m) for m in all_matches)
+        all_matches = [Path(p) for p in kept]
     total = len(all_matches)
     matches = all_matches[offset:offset + limit]
     result = "\n".join(str(m) for m in matches)
@@ -2242,6 +2251,10 @@ def _exec_glob(args: dict, start: float) -> ToolResult:
             f"\"path\": {json.dumps(str(base))}, \"offset\": {next_offset}, "
             f"\"limit\": {limit}}}]"
         )
+    if hidden:
+        result = (result or "(no matches)") + (
+            f"\n[{hidden} excluded path{'s' if hidden != 1 else ''} not shown (file exclusion rules)]"
+        )
     elapsed = time.time() - start
     return ToolResult(
         result or "(no matches)",
@@ -2249,6 +2262,7 @@ def _exec_glob(args: dict, start: float) -> ToolResult:
         metadata={
             "pattern": pattern,
             "count": total,
+            "excluded": hidden,
             "shown": len(matches),
             "offset": offset,
             "limit": limit,
@@ -2299,6 +2313,9 @@ def _ripgrep_executable() -> Optional[str]:
     return shutil.which("rg")
 
 
+_GREP_LINE_PATH = re.compile(r"^((?:[A-Za-z]:)?[^:]*):\d+:")
+
+
 def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
     """Argv for a recursive content search, best available tool first.
 
@@ -2346,7 +2363,13 @@ def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
     return cmd
 
 
-def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
+def _exec_grep(
+    args: dict,
+    start: float,
+    cancel_event: Optional[threading.Event] = None,
+    *,
+    exclusions=None,
+) -> ToolResult:
     pattern = args.get("pattern", "")
     path = args.get("path", ".")
     file_glob = args.get("glob", "")
@@ -2389,6 +2412,19 @@ def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event]
             output = str(stdout).strip()
 
     lines = output.split("\n") if output else []
+    hidden = 0
+    if exclusions and lines:
+        # Every backend prints path:line:content; a Windows path starts
+        # with a drive letter and colon.
+        kept_lines = []
+        excluded = exclusions.checker()
+        for line in lines:
+            match = _GREP_LINE_PATH.match(line)
+            if match and excluded(match.group(1)):
+                hidden += 1
+            else:
+                kept_lines.append(line)
+        lines = kept_lines
     count = len(lines)
     # Cap each match line at 500 chars so a single minified-JS hit can't
     # dominate the result list. Then head-truncate the overall match set.
@@ -2414,6 +2450,8 @@ def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event]
             )
         if any_line_truncated:
             output += "\n[note: some match lines were individually truncated]"
+        if hidden:
+            output += f"\n[{hidden} match{'es' if hidden != 1 else ''} in excluded files not shown (file exclusion rules)]"
     else:
         shown = 0
         next_offset = offset
@@ -2519,6 +2557,7 @@ def _exec_batch(
     *,
     project_path: str = "",
     settings: object = None,
+    exclusions=None,
 ) -> ToolResult:
     """
     Execute approved read-only tool calls in parallel using ThreadPoolExecutor.
@@ -2571,6 +2610,7 @@ def _exec_batch(
                 cancel_event,
                 project_path=project_path,
                 settings=settings,
+                exclusions=exclusions,
             )
             futures[future] = (i, name)
 

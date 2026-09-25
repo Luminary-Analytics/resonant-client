@@ -38,7 +38,13 @@ class RunManifest:
 
 
 class FlightRecorder:
-    """Append-only trajectory recorder separate from display-event replay."""
+    """Append-only trajectory recorder separate from display-event replay.
+
+    One recorder serves a session for as long as it lives, across its turns.
+    Each top-level turn begins a slice of the trace (``begin_turn``); the
+    events recorded until the next one carry its ``turn_id``, a delegated
+    worker's included, so a turn's trace can be read and exported by itself.
+    """
 
     def __init__(
         self,
@@ -66,7 +72,18 @@ class FlightRecorder:
         self._events_path = self.run_dir / "events.jsonl"
         self._lock = threading.RLock()
         self._sequence = 0
+        self.turn_id = ""
+        # Events the engine records as it yields them, by identity, so a
+        # client that records every event it streams adds them only once.
+        self._recorded_once: dict[int, tuple[dict[str, Any], dict[str, Any]]] = {}
         self._save_manifest()
+
+    def begin_turn(self) -> str:
+        """Start a turn's slice of the trace and return its id."""
+        with self._lock:
+            self.turn_id = f"turn_{uuid.uuid4().hex[:12]}"
+            self._recorded_once.clear()
+            return self.turn_id
 
     def configure(
         self,
@@ -94,17 +111,33 @@ class FlightRecorder:
         self.manifest.updated_at = time.time()
         self._save_manifest()
 
-    def record(self, event: dict[str, Any], *, agent_id: str = "") -> dict[str, Any]:
+    def record(
+        self, event: dict[str, Any], *, agent_id: str = "", once: bool = False,
+    ) -> dict[str, Any]:
+        """Append one event.
+
+        ``once`` marks an event the engine records as it yields it: recording
+        the same event object again in this turn returns the first record.
+        The trace's own fields win over an event's (a checkpoint event carries
+        the checkpoint's ``sequence``); an event's ``agent_id`` names its agent.
+        """
         with self._lock:
+            earlier = self._recorded_once.get(id(event))
+            if earlier is not None and earlier[0] is event:
+                return earlier[1]
             self._sequence += 1
             enriched = {
+                "agent_id": agent_id,
+                **event,
                 "sequence": self._sequence,
                 "timestamp": time.time(),
                 "run_id": self.run_id,
-                "agent_id": agent_id,
-                **event,
             }
+            if self.turn_id:
+                enriched["turn_id"] = self.turn_id
             enriched["fingerprint"] = self.event_fingerprint(enriched)
+            if once:
+                self._recorded_once[id(event)] = (event, enriched)
             with self._events_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(enriched, ensure_ascii=False, default=str) + "\n")
             self.manifest.updated_at = enriched["timestamp"]
@@ -123,30 +156,52 @@ class FlightRecorder:
         self._save_manifest()
 
     def events(self) -> list[dict[str, Any]]:
-        if not self._events_path.exists():
-            return []
-        values = []
-        for line in self._events_path.read_text(encoding="utf-8").splitlines():
-            try:
-                values.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-        return values
+        return self._read_events(self._events_path)
 
-    def export_otel(self, destination: str | Path | None = None) -> dict[str, Any]:
+    def turn_events(self, turn_id: str) -> list[dict[str, Any]]:
+        """The events of one turn's slice (``begin_turn``), in order."""
+        return self._turn_slice(self.events(), turn_id)
+
+    @classmethod
+    def read_turn(cls, project_path: str | Path, run_id: str, turn_id: str) -> list[dict[str, Any]]:
+        """One turn's events, read without opening the run.
+
+        ``open_run`` rewrites the run's manifest, which a session still
+        recording into it may be writing too; reading a turn writes nothing.
+        """
+        events_path = cls._run_dir(project_path, run_id) / "events.jsonl"
+        return cls._turn_slice(cls._read_events(events_path), turn_id)
+
+    def export_otel(
+        self, destination: str | Path | None = None, *, turn_id: str = "",
+    ) -> dict[str, Any]:
         """Export a dependency-free OTLP-compatible JSON envelope.
 
         This intentionally emits JSON rather than importing an SDK. Operators
         can POST it to a collector or translate it with their existing stack.
+        With ``turn_id``, only that turn's events are exported, as a trace of
+        their own.
         """
-        trace_id = hashlib.sha256(self.run_id.encode()).hexdigest()[:32]
+        events = self.turn_events(turn_id) if turn_id else self.events()
+        payload = self.otel_payload(self.run_id, events, turn_id=turn_id)
+        if destination:
+            Path(destination).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return payload
+
+    @staticmethod
+    def otel_payload(
+        run_id: str, events: Iterable[dict[str, Any]], *, turn_id: str = "",
+    ) -> dict[str, Any]:
+        """The OTLP JSON envelope for these events (``export_otel``)."""
+        trace_key = f"{run_id}:{turn_id}" if turn_id else run_id
+        trace_id = hashlib.sha256(trace_key.encode()).hexdigest()[:32]
         spans = []
-        for event in self.events():
+        for event in events:
             timestamp_ns = int(float(event.get("timestamp") or 0) * 1_000_000_000)
             spans.append({
                 "traceId": trace_id,
                 "spanId": hashlib.sha256(
-                    f"{self.run_id}:{event.get('sequence')}".encode()
+                    f"{run_id}:{event.get('sequence')}".encode()
                 ).hexdigest()[:16],
                 "name": str(event.get("event") or "event"),
                 "startTimeUnixNano": str(timestamp_ns),
@@ -157,18 +212,34 @@ class FlightRecorder:
                     if key not in {"timestamp", "run_id"} and value is not None
                 ],
             })
-        payload = {
+        resource = [
+            {"key": "service.name", "value": {"stringValue": "resonant-client"}},
+            {"key": "lumi.run_id", "value": {"stringValue": run_id}},
+        ]
+        if turn_id:
+            resource.append({"key": "lumi.turn_id", "value": {"stringValue": turn_id}})
+        return {
             "resourceSpans": [{
-                "resource": {"attributes": [
-                    {"key": "service.name", "value": {"stringValue": "resonant-client"}},
-                    {"key": "lumi.run_id", "value": {"stringValue": self.run_id}},
-                ]},
+                "resource": {"attributes": resource},
                 "scopeSpans": [{"scope": {"name": "lumi.flight-recorder"}, "spans": spans}],
             }]
         }
-        if destination:
-            Path(destination).write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        return payload
+
+    @staticmethod
+    def _read_events(path: Path) -> list[dict[str, Any]]:
+        if not path.exists():
+            return []
+        values = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                values.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return values
+
+    @staticmethod
+    def _turn_slice(events: list[dict[str, Any]], turn_id: str) -> list[dict[str, Any]]:
+        return [event for event in events if turn_id and event.get("turn_id") == turn_id]
 
     @classmethod
     def list_runs(cls, project_path: str | Path) -> list[dict[str, Any]]:
@@ -189,13 +260,18 @@ class FlightRecorder:
 
     @classmethod
     def open_run(cls, project_path: str | Path, run_id: str) -> "FlightRecorder":
+        return cls.load(cls._run_dir(project_path, run_id))
+
+    @staticmethod
+    def _run_dir(project_path: str | Path, run_id: str) -> Path:
+        """A run's folder under the project's traces, never outside them."""
         root = project_state_dir(project_path) / "traces"
         candidate = (root / run_id).resolve()
         if root.resolve() not in candidate.parents:
             raise KeyError(f"Invalid run id: {run_id}")
         if not (candidate / "manifest.json").is_file():
             raise KeyError(f"Unknown run: {run_id}")
-        return cls.load(candidate)
+        return candidate
 
     @classmethod
     def load(cls, run_dir: str | Path) -> "FlightRecorder":
@@ -250,7 +326,7 @@ class FlightRecorder:
             for key, value in event.items()
             if key not in {
                 "timestamp", "sequence", "run_id", "elapsed", "elapsed_seconds",
-                "total_elapsed", "fingerprint",
+                "total_elapsed", "fingerprint", "turn_id", "trace",
             }
         }
         return hashlib.sha256(

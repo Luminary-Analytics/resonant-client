@@ -29,6 +29,13 @@
   titlebar, sidebar and composer; visible focus; opening, moving through and
   closing the command palette, model picker, permission menu and Timeline;
   focus returning to what opened them; the skip control.
+- **Added later the same day**: a run's Trace dialog and saved-file viewer
+  (opened from a run's work details).
+  - Text contrast was measured in both themes, including an error row and
+    the striped rows. The lowest was 5.89:1, in the light theme.
+  - They were used from the keyboard. Saving and "Show more" keep focus on
+    their button, and Escape closes the viewer, then Trace, returning focus
+    each time.
 
 ## Fixed during this review
 

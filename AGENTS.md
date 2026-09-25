@@ -239,6 +239,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   with `headless.build_session`. Their approvals go through Lumi Cloud to the
   chat, and no answer refuses the action. Tests use the fake Lumi Cloud in
   `tests/test_cloud.py`, never a real one.
+- Sharing a conversation (`share.py`) sends Lumi Cloud people's messages,
+  Lumi's replies and one line per action, never tool results, after
+  `secret_scan` removes saved keys and secret patterns. Keep new event kinds
+  out of the copy unless they carry only what the person or Lumi said.
 - Model comparisons (`model_evals.py`) run each task as a `lumi run`
   subprocess in a detached git worktree of `HEAD` under the project's state
   folder, never in the user's checkout; the user's check command passes the

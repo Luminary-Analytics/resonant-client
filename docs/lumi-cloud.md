@@ -101,6 +101,32 @@ Only your own computer takes your requests: never a managed computer, and
 never a colleague's. Your organization can turn this off with
 `cloud.remote_tasks` in its policy.
 
+## Sharing a conversation
+
+To show a colleague how you got somewhere, right-click a conversation in the
+sidebar (or use its **⋯** button) and choose **Share…**. Sign in to your
+organization's Lumi Cloud first; you don't need to enroll this computer.
+
+Lumi Cloud keeps a read-only copy at a link:
+
+- **What's in it**: your messages, Lumi's replies, and a line for each action
+  ("Read src/auth.py", "Ran `pytest -q`"), marked when it failed. It never
+  holds what tools returned: file contents, command output and pages stay on
+  this computer. Saved keys, and anything that looks like a token or
+  password, are removed first. The project appears by its folder's name
+  only.
+- **Who can open it**: people in your organization, after signing in to
+  Lumi Cloud (the default). An owner or admin can also let people share
+  with **anyone who has the link**, under **Shared sessions** in Lumi Cloud;
+  turning that off again closes those links.
+- **It doesn't change** when the conversation does. To share a newer
+  version, stop sharing and share again.
+
+**Share…** shows the link again later, with **Copy link** and **Stop
+sharing**. Stopping makes the link show nothing. In Lumi Cloud, **Shared
+sessions** lists what you've shared, and an organization's owners and admins
+see and can stop everything shared in it.
+
 ## For administrators: enrolling managed computers
 
 To enroll computers without anyone signing in:

@@ -13665,3 +13665,15 @@ body.is-window-dragging * {
 .eval-model-group { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; margin: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; max-height: 160px; overflow: auto; }
 .eval-model-group label { display: inline-flex; align-items: center; gap: 4px; }
 .eval-task-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+
+/* Share a conversation (app.js, openShareDialog). */
+.share-dialog { width: 480px; }
+.share-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.share-dialog .dialog-actions { padding: 12px 0 0; }
+.share-note { margin: 0 0 12px; color: var(--muted); line-height: 1.5; }
+.share-note strong { color: var(--text); }
+.share-label { display: block; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text); }
+.share-link-row { display: flex; gap: 8px; margin-bottom: 10px; }
+.share-link-row input { flex: 1; min-width: 0; }
+.share-who { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; border: 0; }
+.share-who label { display: flex; align-items: center; gap: 8px; }

@@ -102,8 +102,10 @@ the model conversation, replayable display events, and workspace state.
   or recovery archive.
 - A restore can be files-only, conversation-only, or both
   (`session_timeline_restore`). The Timeline view that offered it left the
-  desktop page with the Agents pane in v0.14.0, so the app has no restore
-  control yet.
+  desktop page with the Agents pane in v0.14.0. **Settings > Checkpoints &
+  recovery** still lists Git checkpoints, including these, and compares or
+  restores their files. Restoring the conversation, or a non-Git snapshot, has
+  no desktop control yet.
 - Compare reports the checkpoint-to-current Git delta where available.
 
 Restores are refused while an agent is running. Every restore is a lifecycle

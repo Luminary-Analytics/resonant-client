@@ -1040,6 +1040,91 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
     assert.equal(collapsed.length, 4);
 });
 
+// A turn's `▣ model · tokens · time` footer shows that turn's own model and
+// tokens, which each of its step.end events carries. Status events are never
+// saved, so what last ran live in the page must not reach a replayed footer.
+// The real event, step, turn-end and replay handlers run; rows, cards, the
+// live run and the server are stubbed.
+function footerApp() {
+    const noop = () => {};
+    const app = setup(noop, {document: {getElementById: () => null,
+        createElement: () => ({className: '', innerHTML: '', hidden: false})}});
+    Object.assign(app, {
+        chatMessages: {children: [], appendChild(child) { this.children.push(child); return child; }},
+        tokenInfo: {textContent: ''}, activeTerminals: new Map(),
+        subagentContainers: new Map(), subagentStreams: new Map(),
+        addUserMessage: noop, removeThinking: noop, addThinking: noop, clearTerminals: noop, handleError: noop,
+        setRunning: noop, scrollToBottom: noop, requestGitStatus: noop, _offerPromptSuggestion: noop,
+        // run_cards.js
+        _setLiveRunPhase: noop, _resetAgentRunSummary: noop, flushCollapsedGroup: noop, finalizeToolActivityGroup: noop,
+    });
+    app.footers = () => app.chatMessages.children.map(el => el.innerHTML.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim());
+    return app;
+}
+
+// One turn as a conversation saves it: each argument is one step's step.end fields.
+const footerTurn = (text, ...steps) => [{event: 'user_message', text},
+    ...steps.flatMap((fields, index) => [{event: 'step.start', step: index + 1}, {event: 'step.end', step: index + 1, ...fields}]),
+    {event: 'session.end', total_steps: steps.length, outcome: 'changed_unverified'}];
+
+test('a replayed turn\'s footer shows its own model and tokens, never the last live run\'s', () => {
+    const app = footerApp();
+    // A live turn in this page. Its second call reported no counts: that
+    // step's status has no stats, and its step.end counts none.
+    app._currentTurn = app._freshTurnAggregate();  // as _prepareTurnUI starts a turn
+    [
+        {event: 'step.start', step: 1},
+        {event: 'status', model: 'live-model', stats: {input_tokens: 900, output_tokens: 90}},
+        {event: 'step.end', step: 1, elapsed: 1, model: 'live-model', input_tokens: 900, output_tokens: 90},
+        {event: 'step.start', step: 2},
+        {event: 'status', model: 'live-model', stats: null},
+        {event: 'step.end', step: 2, elapsed: 0.5, model: 'live-model', input_tokens: 0, output_tokens: 0},
+        {event: 'session.end', total_steps: 2, outcome: 'changed_unverified'},
+    ].forEach(event => app.handleEvent(event));
+    assert.deepEqual(app.footers(), ['▣ live-model · 900→90 tok · 1.5s']);
+
+    // The same page then opens saved conversations (switch_session replays
+    // them). One saved before step.end carried a model and tokens: time only.
+    app.chatMessages.children.length = 0;
+    app.replayDisplayEvents(footerTurn('older', {elapsed: 2}, {elapsed: 1}));
+    assert.deepEqual(app.footers(), ['▣ 3.0s']);
+
+    app.chatMessages.children.length = 0;
+    app.replayDisplayEvents([
+        ...footerTurn('first', {elapsed: 1.5, model: 'saved-model', input_tokens: 100, output_tokens: 10},
+            {elapsed: 0.5, model: 'saved-model', input_tokens: 150, output_tokens: 20}),
+        // The conversation changed models before its next request.
+        ...footerTurn('second', {elapsed: 1, model: 'other-model', input_tokens: 300, output_tokens: 30}),
+    ]);
+    assert.deepEqual(app.footers(), ['▣ saved-model · 250→30 tok · 2.0s', '▣ other-model · 300→30 tok · 1.0s']);
+});
+
+test('a turn replayed mid-run counts its saved steps, then its live ones', () => {
+    const app = footerApp();
+    const turn = footerTurn('running', {elapsed: 1, model: 'turn-model', input_tokens: 100, output_tokens: 10},
+        {elapsed: 2, model: 'turn-model', input_tokens: 200, output_tokens: 20});
+    // A refresh during the run replays its first step; the rest arrives live.
+    app.replayDisplayEvents(turn.slice(0, 3), {activeRun: true});
+    turn.slice(3).forEach(event => app.handleEvent(event));
+    assert.deepEqual(app.footers(), ['▣ turn-model · 300→30 tok · 3.0s']);
+});
+
+test('a worker\'s steps add their own tokens but never name the turn\'s model', () => {
+    const app = footerApp();
+    const worker = {_subagent: true, _agent_id: WORKER, _agent_type: 'build'};
+    const workerStep = [{event: 'step.start', step: 1, ...worker},
+        {event: 'step.end', step: 1, elapsed: 2, model: 'worker-model', input_tokens: 40, output_tokens: 4, ...worker}];
+    app.replayDisplayEvents([
+        {event: 'user_message', text: 'delegate'}, {event: 'step.start', step: 1}, ...workerStep,
+        {event: 'step.end', step: 1, elapsed: 1, model: 'turn-model', input_tokens: 500, output_tokens: 50},
+        {event: 'session.end', total_steps: 1, outcome: 'answered'},
+        // Stopped while its worker ran: the turn's own step never ended.
+        {event: 'user_message', text: 'delegate again'}, {event: 'step.start', step: 1}, ...workerStep,
+        {event: 'error', message: 'Interrupted'}, {event: 'session.end', total_elapsed: 2.5, total_steps: 1},
+    ]);
+    assert.deepEqual(app.footers(), ['▣ turn-model · 540→54 tok · 3.0s', '▣ 40→4 tok · 2.0s']);
+});
+
 // The Timeline: the open conversation's checkpoints, and what each restores.
 test('a checkpoint is named by what it was saved before', () => {
     const app = setup(() => {});

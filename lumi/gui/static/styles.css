@@ -5780,6 +5780,8 @@ body {
 .cost-refresh-btn:hover { border-color: color-mix(in srgb, var(--brand) 36%, transparent); background: color-mix(in srgb, var(--brand) 12%, transparent); }
 .cost-refresh-btn:disabled { cursor: wait; opacity: .6; }
 .cost-stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+/* This month's tasks and cost per verified task (lumi/activity.py). */
+.cost-outcomes { margin-top: 12px; }
 .cost-stat-card {
     min-width: 0;
     padding: 11px 12px;

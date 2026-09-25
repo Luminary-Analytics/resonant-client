@@ -304,14 +304,22 @@ def test_check_ins_report_usage_totals_not_content(fake):
                       purpose="turn", session="s1", project="/secret/project")
     # Windows are half-open (since <= ts < until): a record from the same
     # millisecond as a check-in goes into the next one, never lost or doubled.
+    from lumi import activity
+
+    activity.record_turn([{"event": "tool.result", "name": "check_run", "is_error": False,
+                           "output": "secret test output"}, {"event": "text.done", "text": "secret answer"}])
+    activity.record_turn([{"event": "error", "message": "secret failure"}])
     time.sleep(0.01)
     client.check_in()
     report = fake.checkins[-1]["usage"]
     assert report["models"][0]["model"] == "anthropic:claude-sonnet-4-5"
     assert report["models"][0]["requests"] == 2 and report["models"][0]["input_tokens"] == 2000
-    assert "secret" not in json.dumps(fake.checkins[-1])  # no projects, sessions or paths
+    done = fake.checkins[-1]["activity"]
+    assert (done["turns"], done["completed"], done["errors"], done["verified"]) == (2, 1, 1, 1)
+    assert "secret" not in json.dumps(fake.checkins[-1])  # no projects, sessions, paths or content
     client.check_in()
     assert fake.checkins[-1]["usage"]["models"] == []  # nothing new since the last check-in
+    assert fake.checkins[-1]["activity"]["turns"] == 0
 
 
 def test_no_seat_means_no_enrollment(fake):

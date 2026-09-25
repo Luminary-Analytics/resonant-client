@@ -8,6 +8,33 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 cost per verified task and activity counts — source only, not released
+
+- **Turn outcomes on this computer** (`lumi/activity.py`). Each finished
+  turn, in the app or `lumi run`, adds a line to `~/.lumi/activity.jsonl`:
+  its outcome (finished, error or stopped), whether a check the agent ran
+  (`check_run`) passed, and how many files it changed. App crashes are
+  counted too. No prompts, answers, file names or paths; lines are kept 90
+  days.
+- **Settings > Usage & cost** shows this month's tasks, verified tasks and
+  the cost per verified task ([guide](usage-and-costs.md#cost-per-verified-task)).
+- **Lumi Cloud check-ins** carry the same counts since the last check-in,
+  for an organization's fleet health and adoption pages
+  ([what a check-in sends](lumi-cloud.md)).
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,959 passed, 4 skipped. `ruff check .` clean.
+- `test_activity.py`: classifying turns (a failed or denied check verifies
+  nothing), counts for a period, half-open windows, pruning old and broken
+  lines, and counting crashes before the usual handlers.
+- `test_cloud.py`: a check-in carries the counts, no content, and nothing
+  twice.
+- In the browser pane, from an isolated home with the scripted Ollama stub:
+  a turn whose `check_run` passed and a turn with a plain command were
+  recorded as two lines with no content, and Usage & cost showed 2 tasks,
+  2 finished, 1 verified, and $0.00 per verified task (the stub is free).
+
 ## September 25 shell sandbox and command guardrails — source only, not released
 
 See [shell sandbox and command guardrails](shell-sandbox.md).

@@ -6625,7 +6625,16 @@ class LumiApp {
                 <strong>${costOf(item)}</strong>
             </div>`).join('');
         const unpriced = Number(month.unpriced_calls || 0);
+        const done = month.activity || {};
+        const perTask = month.cost_per_verified_task;
+        const outcomes = done.turns ? `
+            <div class="cost-stat-grid cost-outcomes">
+                <article class="cost-stat-card"><span class="cost-stat-label">Tasks this month</span><strong>${esc(done.turns)}</strong><small>${esc(done.completed)} finished &middot; ${esc(done.errors)} ended in an error</small></article>
+                <article class="cost-stat-card"><span class="cost-stat-label">Verified tasks</span><strong>${esc(done.verified)}</strong><small>A check the agent ran passed</small></article>
+                <article class="cost-stat-card"><span class="cost-stat-label">Cost per verified task</span><strong>${perTask === null || perTask === undefined ? '&mdash;' : this._formatUsageCost(perTask)}</strong><small>${unpriced ? 'Leaves out unpriced models' : 'This month&rsquo;s spend &divide; verified tasks'}</small></article>
+            </div>` : '';
         return `
+            ${outcomes}
             <div class="cost-history">
                 <div class="cost-history-title"><strong>This month by model</strong><span>Calls</span><span>Tokens</span><span>Cost</span></div>
                 ${rows || '<div class="cost-history-empty">No model calls recorded this month.</div>'}

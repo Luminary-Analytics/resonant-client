@@ -499,7 +499,8 @@ class CloudClient:
         since = str(section.get("usage_since") or "")
         until = _iso(_now())
         payload = {"app_version": _app_version(), "platform": _platform_name(),
-                   "policy_version": section.get("policy_version"), "usage": usage_summary(since, until)}
+                   "policy_version": section.get("policy_version"), "usage": usage_summary(since, until),
+                   "activity": activity_summary(since, until)}
         try:
             answer = self._call("POST", f"{self.url}/api/v1/devices/checkin", json=payload,
                                 headers={"Authorization": f"Bearer {self._device_token()}"})
@@ -624,6 +625,15 @@ def usage_summary(since: str, until: str) -> dict | None:
     if not since:
         return None
     return {"period_start": since, "period_end": until, "models": list(by_model.values())}
+
+
+def activity_summary(since: str, until: str) -> dict | None:
+    """Turn outcomes and crashes since the last check-in: counts only (lumi/activity.py)."""
+    from . import activity
+
+    if not since:
+        return None
+    return {"period_start": since, "period_end": until, **activity.summary(since, until)}
 
 
 def _b64url(data: bytes) -> str:

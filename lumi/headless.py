@@ -359,6 +359,9 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
 
     result = summarize(events, run_id=run_id, provider=provider, model=model, project=project, mode=mode,
                        started=started, timed_out=timed_out.is_set())
+    from . import activity
+
+    activity.record_turn(events, cancelled=timed_out.is_set())
     if args.output == "json":
         stdout.write(json.dumps(result, indent=2) + "\n")
     elif args.output == "jsonl":

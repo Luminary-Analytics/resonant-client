@@ -45,7 +45,11 @@ A check-in sends:
 - the Lumi version and the operating system;
 - the organization policy version in force;
 - usage totals per model since the last check-in: requests, input and output
-  tokens, and cost.
+  tokens, and cost;
+- turn counts since the last check-in (`lumi/activity.py`): how many turns
+  finished, ended in an error or were stopped, how many had a passing check
+  (`check_run`), how many files they changed, and how many times the app
+  crashed.
 
 A check-in never sends prompts, responses, code, file names, project paths or
 session titles.

@@ -2602,6 +2602,10 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     })
     if first_turn and not state.cancel_requested.is_set():
         schedule_title_refinement(state, ws, title_record, text)
+    # What the turn got done (counts only; lumi/activity.py).
+    from .. import activity
+
+    await asyncio.to_thread(activity.record_turn, display_events, cancelled=state.cancel_requested.is_set())
     # The first finished task completes the first-run checklist.
     from .onboarding import turn_finished
 

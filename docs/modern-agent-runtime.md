@@ -107,9 +107,10 @@ hook boundary so policy or audit integrations can observe it.
 
 Legacy environment-variable hooks remain supported. New hooks may set
 `input_format: "json"`; Resonant writes a structured event to stdin and reads a
-JSON decision from stdout. Supported output fields include `decision`,
-`reason`, `additional_context`, `modified_args`, `retry`, `continue`, and
-`metadata`.
+JSON decision from stdout. The event is ASCII-only JSON (other characters are
+`\u` escapes), so it can be written in any locale's encoding. Supported output
+fields include `decision`, `reason`, `additional_context`, `modified_args`,
+`retry`, `continue`, and `metadata`.
 
 Hook points cover session, model, tool, tool-batch, permission, sub-agent, task,
 compaction, checkpoint, validation, user-input, worktree, and error boundaries.
@@ -117,8 +118,19 @@ Hooks can deny before side effects, repair arguments, inject deterministic
 context, or reject an unsupported completion claim.
 
 A missing or unknown `decision` is no decision; it is never read as consent.
-When several hooks answer, `deny` outranks `ask`, which outranks `allow`, and a
-gate hook that exits non-zero is a `deny`.
+When several hooks answer, `deny` outranks `ask`, which outranks `allow`.
+
+Gate hooks fail closed (`GATE_HOOK_TYPES` in `engine/hooks.py`: pre-tool,
+pre-tool-batch, before-model, permission, task-completed, sub-agent-stop and
+validation-complete). A gate hook that exits non-zero, runs past its
+`timeout_seconds` or cannot be started is a `deny`, whose reason names the
+hook. A block's reason is the blocking hook's own, or an earlier hook's deny
+reason, never an allow's. At the timeout the hook's whole process tree is
+stopped: a job object on Windows, the process group elsewhere. A refused tool
+call or batch records the reason as its result, so the model reads it. A
+completion gate that gave no answer ends the turn with an error instead of
+asking the model to retry, since the model can't repair the hook. Failures of
+other hook types are logged and ignored.
 
 ## Tool approvals
 

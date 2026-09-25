@@ -1084,6 +1084,264 @@ test('a turn\'s trace is saved for OpenTelemetry once, from its own dialog', () 
     assert.equal(app._runTrace.exporting, false);
 });
 
+// ── A plan's specialists report under the plan's card ─────────────────
+// A plan (/plan, a Mission's roadmap) runs specialists in sessions of their
+// own. IntentService forwards their engine events tagged `_source: "intent"`;
+// they draw under the plan's card and never act as the conversation's turn.
+
+const PLAN = 'intent-1';
+const planEvent = (kind, nodeId, payload = {}, ts = 0, intentId = PLAN) =>
+    ({event: 'plan.event', intent_id: intentId, event_payload: {kind, node_id: nodeId, payload, ts}});
+const fromSpecialist = (intentId, ...events) => events.map(event => ({...event, intent_id: intentId, _source: 'intent'}));
+
+// The real handlers and plan cards, drawing into a fake conversation. Every
+// call into the conversation's own turn is recorded instead of run.
+function planApp() {
+    const dom = fakeDom();
+    const timers = [];
+    const context = vm.createContext({console, document: dom.document, CSS: dom.CSS, window: {},
+        setTimeout: fn => timers.push(fn), clearTimeout: () => {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/run_cards.js'), 'utf8'), context);
+    const app = Object.create(context.App.prototype);
+    const turnCalls = [];
+    for (const name of ['setRunning', 'handleSessionStart', 'handleSessionEnd', 'handleStepStart', 'handleStepEnd',
+        'handleTextDelta', 'handleTextDone', 'handleToolCall', 'handleToolResult', 'handleError', 'handleStatus',
+        '_offerPromptSuggestion', '_startLiveRun', '_setLiveRunPhase']) {
+        app[name] = () => turnCalls.push(name);
+    }
+    const chatActivity = dom.document.createElement('div');
+    Object.assign(app, {
+        chatMessages: dom.document.createElement('div'),
+        userInput: {value: '', style: {}, focus: () => turnCalls.push('focus')},
+        isRunning: false,
+        _formatRunDuration: context.window.LumiRunCards.prototype._formatRunDuration,
+        _ensureTaskCard: () => ({activityEl: chatActivity}),
+        scrollToBottom: () => {}, showStatusMessage: () => {}, openPlanTab: () => {}, pushPreviewConsole: () => {},
+        send: () => {},
+        activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(), _blockToolRows: new Map(),
+    });
+    Object.assign(app, {
+        dom, turnCalls, chatActivity,
+        play: (...events) => events.flat().forEach(event => app.handleEvent(event)),
+        flushText: () => timers.splice(0).forEach(fn => fn()),
+        card: (intentId = PLAN) => app.chatMessages.children.find(card => card.getAttribute('data-intent-id') === intentId),
+        steps: (intentId = PLAN) => app.card(intentId).querySelectorAll('.plan-step'),
+    });
+    return app;
+}
+
+test('a plan\'s specialists report under its card, never as the conversation\'s turn', () => {
+    const app = planApp();
+    const sent = [];
+    app.send = message => sent.push(message.command);
+    app.startIntent('add a dark mode toggle');
+    assert.deepEqual(sent, ['intent_start']);
+    const [card] = app.chatMessages.children;
+    assert.equal(card.querySelector('.task-request-text').textContent, '/plan add a dark mode toggle');
+    assert.equal(card.querySelector('.task-run-label').textContent, 'Starting plan');
+
+    const edit = editCall('call_1', 'settings.css');
+    app.play({event: 'intent.accepted', intent_id: PLAN, text: 'add a dark mode toggle'},
+        {event: 'plan.snapshot', intent_id: PLAN, snapshot: {intent_id: PLAN, intent: 'add a dark mode toggle', nodes: []}},
+        {event: 'intent.started', intent_id: PLAN, text: 'add a dark mode toggle'},
+        planEvent('node.start', 'n1', {goal: 'add a dark mode toggle', specialization: 'plan'}, 100),
+        fromSpecialist(PLAN, {event: 'session.start', model: 'stub'}, {event: 'step.start', step: 1},
+            {event: 'text.delta', delta: 'Two steps: '}, {event: 'text.delta', delta: 'add the toggle, then check it.'},
+            {event: 'text.done', text: 'Two steps: add the toggle, then check it.'},
+            {event: 'status', model: 'stub', stats: {input_tokens: 10, output_tokens: 5}},
+            {event: 'step.end', step: 1, elapsed: 2},
+            // The planner edits nothing, so its own session calls itself incomplete.
+            {event: 'session.end', outcome: 'incomplete', evidence: {requires_workspace_change: true}}),
+        planEvent('node.done', 'n1', {status: 'done', confidence: 0.9, summary: 'Two steps'}, 102),
+        planEvent('node.start', 'n2', {goal: 'Add a toggle to the settings page', specialization: 'implement'}, 103),
+        fromSpecialist(PLAN, {event: 'session.start'}, {event: 'step.start', step: 1}, edit,
+            {event: 'text.done', text: ''}, toolResult(edit), {event: 'step.end', step: 1},
+            {event: 'step.start', step: 2}, {event: 'text.delta', delta: 'Added the toggle.'},
+            {event: 'text.done', text: 'Added the toggle.'}, {event: 'step.end', step: 2},
+            {event: 'session.end', outcome: 'changed_unverified'}),
+        planEvent('node.done', 'n2', {status: 'done', confidence: 0.95}, 110),
+        planEvent('plan.complete', null, {all_done: true, node_count: 2}, 110),
+        {event: 'intent.complete', intent_id: PLAN, extracted_skill_id: null});
+
+    // Not a turn: no verdict, Retry or suggestion, no run state, no focus change.
+    assert.deepEqual(app.turnCalls, []);
+    assert.equal(app.isRunning, false);
+    assert.equal(app._activeTask, undefined);
+    assert.equal(app.chatMessages.children.length, 1, 'no card of the conversation\'s own');
+    assert.equal(card.getAttribute('data-intent-id'), PLAN);
+    assert.equal(card.getAttribute('data-user-message'), 'plan', 'forks count only the session\'s messages');
+    assert.equal(card.querySelectorAll('[data-recovery]').length, 0);
+
+    // One step per specialist, each folded to its line once done.
+    const [planner, implementer] = app.steps();
+    assert.equal(planner.querySelector('.task-activity-title').textContent, 'Planner');
+    assert.equal(planner.querySelector('.plan-step-goal').textContent, 'add a dark mode toggle');
+    assert.equal(planner.querySelector('.task-activity-meta').textContent, 'done · 2s');
+    assert.equal(planner.querySelector('.message-content').textContent, 'Two steps: add the toggle, then check it.');
+    assert.equal(implementer.querySelector('.task-activity-title').textContent, 'Implementer');
+    assert.equal(implementer.querySelector('.task-activity-meta').textContent, 'done · 1 action · 7s');
+    const row = implementer.querySelector('.tool-row');
+    assert.equal(row.getAttribute('data-tool'), 'file_edit');
+    assert.equal(row.querySelector('[data-status]').textContent, '✓');
+    assert.equal(row.querySelector('[data-meta]').textContent, '+1 −1');
+    assert.equal(implementer.querySelector('.message-content').textContent, 'Added the toggle.');
+    assert.deepEqual([planner.open, implementer.open], [false, false]);
+
+    assert.equal(card.querySelector('.task-run-label').textContent, 'Plan complete');
+    assert.equal(card.querySelector('.task-run-detail').textContent, '2 steps · 1 action · 10s');
+});
+
+test('a plan beside a running turn leaves the turn\'s rows, progress and state alone', () => {
+    const app = planApp();
+    // The conversation's own turn runs a command that is still waiting.
+    app.isRunning = true;
+    app._liveRun = {active: true, lastEventAt: 1};
+    app.renderToolCall({event: 'tool.call', name: 'bash', call_id: 'call_1', arguments: {command: 'npm test'}});
+    const turnRows = app._blockToolRows;
+
+    // A Mission's roadmap runs meanwhile, and its specialist reuses the call id.
+    const build = {event: 'tool.call', name: 'bash', call_id: 'call_1', arguments: {command: 'npm run build'}};
+    const spec = '## Final spec\n\n**Refined intent:** Add a dark mode toggle.\n\n**In scope:** settings';
+    app.play({event: 'plan.snapshot', intent_id: 'roadmap', snapshot: {intent: spec, nodes: []}},
+        {event: 'intent.started', intent_id: 'roadmap', text: spec},
+        planEvent('node.start', 'n1', {goal: spec, specialization: 'plan'}, 5, 'roadmap'),
+        fromSpecialist('roadmap', {event: 'session.start'}, {event: 'step.start', step: 1}, build,
+            toolResult(build, {output: 'built', metadata: {exit_code: 0}}), {event: 'step.end', step: 1},
+            {event: 'error', message: 'Step limit reached'}, {event: 'session.end', outcome: 'failed'}));
+
+    assert.deepEqual(app.turnCalls, []);
+    assert.equal(app.isRunning, true);
+    assert.equal(app._liveRun.lastEventAt, 1, 'the turn\'s progress heard nothing');
+    assert.equal(app._blockToolRows, turnRows);
+    const [turnRow] = app.chatActivity.children;
+    assert.ok(turnRow.querySelector('[data-status]').classList.contains('pending'), 'the turn\'s command still waits');
+    assert.ok(turnRows.has('call_1'));
+
+    // The roadmap's card is named from its spec, and holds its own rows.
+    const card = app.card('roadmap');
+    assert.equal(card.querySelector('.task-card-label').textContent, 'Plan');
+    assert.equal(card.querySelector('.task-request-text').textContent, 'Refined intent: Add a dark mode toggle.');
+    const [step] = app.steps('roadmap');
+    assert.equal(step.querySelector('.plan-step-goal').textContent, 'Refined intent: Add a dark mode toggle.');
+    assert.equal(step.querySelector('.tool-row').querySelector('[data-status]').textContent, '✓');
+    assert.equal(step.querySelector('.error-block').textContent, '✗ Step limit reached');
+    assert.equal(card.querySelector('.task-run-label').textContent, 'Plan running');
+});
+
+test('each plan counts only its own steps and actions', () => {
+    const app = planApp();
+    const runPlan = (intentId, text, calls) => {
+        app.startIntent(text);
+        app.play({event: 'intent.accepted', intent_id: intentId, text},
+            planEvent('node.start', `${intentId}-1`, {goal: text, specialization: 'implement'}, 1, intentId),
+            fromSpecialist(intentId, ...calls.flatMap(call => [call, toolResult(call)])),
+            planEvent('node.done', `${intentId}-1`, {status: 'done'}, 2, intentId),
+            planEvent('plan.complete', null, {all_done: true}, 2, intentId),
+            {event: 'intent.complete', intent_id: intentId});
+    };
+    runPlan('first', 'add a toggle', [editCall('c1', 'a.css'), editCall('c2', 'b.css'), editCall('c3', 'c.css')]);
+    runPlan('second', 'add a footer', [editCall('c1', 'd.css')]);
+    assert.equal(app.card('first').querySelector('.task-run-detail').textContent, '1 step · 3 actions · 1s');
+    assert.equal(app.card('second').querySelector('.task-run-detail').textContent, '1 step · 1 action · 1s');
+    assert.equal(app.card('second').querySelector('.task-request-text').textContent, '/plan add a footer');
+    assert.deepEqual(app.turnCalls, []);
+});
+
+test('a plan\'s card says when it pauses, stops, fails or can\'t start, and keeps unfinished steps open', () => {
+    const app = planApp();
+    const label = intentId => app.card(intentId).querySelector('.task-run-label').textContent;
+    const detail = intentId => app.card(intentId).querySelector('.task-run-detail').textContent;
+    const meta = step => step.querySelector('.task-activity-meta').textContent;
+
+    app.startIntent('add a toggle');
+    app.play({event: 'intent.accepted', intent_id: 'p1', text: 'add a toggle'},
+        planEvent('node.start', 'n1', {goal: 'Add it', specialization: 'implement'}, 1, 'p1'),
+        {event: 'intent.paused', intent_id: 'p1'});
+    assert.equal(label('p1'), 'Plan paused');
+    assert.match(detail('p1'), /resume it in the Plan tab/);
+    app.play({event: 'intent.resumed', intent_id: 'p1'});
+    assert.equal(label('p1'), 'Plan running');
+    assert.equal(detail('p1'), 'Implementer: Add it');
+    // A cancel is announced at once; the running specialist reports until it stops.
+    app.play({event: 'intent.cancelled', intent_id: 'p1'},
+        fromSpecialist('p1', {event: 'error', message: 'Interrupted'}, {event: 'session.end', outcome: 'interrupted'}),
+        planEvent('node.done', 'n1', {status: 'abandoned'}, 3, 'p1'),
+        {event: 'intent.cancelled', intent_id: 'p1'});
+    assert.equal(label('p1'), 'Plan cancelled');
+    const [stopped] = app.steps('p1');
+    assert.equal(app.steps('p1').length, 1);
+    assert.equal(meta(stopped), 'stopped · 2s');
+    assert.equal(stopped.open, true);
+    assert.equal(stopped.querySelector('.error-block').textContent, '✗ Interrupted');
+
+    // A blocked step, or a check that asked for a repair, stays open.
+    app.play({event: 'intent.started', intent_id: 'p2', text: 'check the toggle'},
+        planEvent('node.start', 'n1', {goal: 'Verify the result of: Add it', specialization: 'verify'}, 1, 'p2'),
+        planEvent('node.done', 'n1', {status: 'done', verdict: 'revise'}, 2, 'p2'),
+        planEvent('node.start', 'n2', {goal: 'Fix the issues flagged by verification', specialization: 'repair'}, 2, 'p2'),
+        planEvent('node.done', 'n2', {status: 'blocked', error: 'runner exception: boom'}, 3, 'p2'),
+        {event: 'intent.complete', intent_id: 'p2'});
+    const [verifier, repair] = app.steps('p2');
+    assert.deepEqual([meta(verifier), verifier.open], ['asked for a repair · 1s', true]);
+    assert.deepEqual([meta(repair), repair.open], ['blocked · 1s', true]);
+    assert.equal(repair.querySelector('.error-block').textContent, '✗ runner exception: boom');
+    assert.equal(label('p2'), 'Plan finished');
+    assert.equal(detail('p2'), 'Not every step finished · 2 steps · 2s');
+
+    // A plan whose walker failed: the step it was running never finished.
+    app.play({event: 'intent.started', intent_id: 'p3', text: 'rename the setting'},
+        planEvent('node.start', 'n1', {goal: 'Rename it', specialization: 'implement'}, 1, 'p3'),
+        {event: 'intent.failed', intent_id: 'p3', error: 'walker crashed'});
+    assert.deepEqual([label('p3'), detail('p3')], ['Plan failed', 'walker crashed']);
+    assert.equal(meta(app.steps('p3')[0]), 'stopped');
+
+    // A /plan the server refuses says so on its own card.
+    app.startIntent('add a footer');
+    app.play({event: 'error', message: 'Connect a backend before starting an intent.'});
+    const refused = app.chatMessages.children.at(-1);
+    assert.equal(refused.querySelector('.task-request-text').textContent, '/plan add a footer');
+    assert.equal(refused.querySelector('.task-run-label').textContent, 'Plan not started');
+    assert.equal(refused.querySelector('.task-run-detail').textContent, 'Connect a backend before starting an intent.');
+    assert.deepEqual(app.turnCalls, []);
+    // Other errors are still the conversation's.
+    app.play({event: 'error', message: 'Could not fork the session.'});
+    assert.deepEqual(app.turnCalls, ['handleError']);
+});
+
+test('a step\'s prose stays above its calls, and a finished step stays open while the keyboard is in it', () => {
+    const app = planApp();
+    app.play({event: 'intent.started', intent_id: PLAN, text: 'tidy the styles'},
+        planEvent('node.start', 'n1', {goal: 'tidy the styles', specialization: 'implement'}, 1));
+    // Live, a response streams its prose, announces its calls, then ends its text.
+    app.play(fromSpecialist(PLAN, {event: 'text.delta', delta: 'Reading the '}, {event: 'text.delta', delta: 'styles first.'}));
+    app.flushText();
+    const [step] = app.steps();
+    const body = step.querySelector('.plan-step-body');
+    assert.equal(body.querySelector('.message-content').textContent, 'Reading the styles first.');
+    const read = {event: 'tool.call', name: 'file_read', call_id: 'r1', arguments: {path: 'app.css'}};
+    app.play(fromSpecialist(PLAN, read, {event: 'text.done', text: 'Reading the styles first.'},
+        {event: 'tool.result', name: 'file_read', call_id: 'r1', output: 'body {}', is_error: false, denied: false,
+         metadata: {lines: 1}}));
+    const [prose, readRow] = body.children;
+    assert.equal(body.children.length, 2);
+    assert.ok(prose.classList.contains('plan-step-text'));
+    assert.equal(prose.querySelector('.message-content').textContent, 'Reading the styles first.');
+    assert.equal(readRow.getAttribute('data-tool'), 'file_read');
+    assert.equal(readRow.querySelector('.tool-status').textContent, '1 lines');
+
+    // Someone tabbed into the step's rows before it finished: it stays open.
+    Object.getPrototypeOf(body).contains = function (node) {
+        for (let at = node; at; at = at.parentNode) if (at === this) return true;
+        return false;
+    };
+    app.dom.document.activeElement = readRow;
+    app.play(planEvent('node.done', 'n1', {status: 'done'}, 2));
+    assert.equal(step.open, true);
+    assert.equal(step.querySelector('.task-activity-meta').textContent, 'done · 1 action · 1s');
+    assert.deepEqual(app.turnCalls, []);
+});
+
 // ── A refused call says why ───────────────────────────────────────────
 // Its row shows the reason the model was told: a hook's message, a policy
 // rule, an approval nobody could answer. The person's own Deny needs none.

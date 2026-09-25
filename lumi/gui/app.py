@@ -1072,7 +1072,7 @@ class AppState:
         def _probe_connection(connection):
             key = str(self.settings.get("api_keys", connection_secret_setting(connection["id"]), "") or "")
             try:
-                return discover_connection_models(connection, key, timeout=4.0)
+                return discover_connection_models(connection, key, timeout=4.0, settings=self.settings)
             except Exception:
                 return list(connection.get("models") or [])
 

@@ -48,6 +48,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
+- [Extensions: add a model provider with the Extension SDK (manifest, protocol, template, checker)](extensions.md)
 - [Blender, Unity, and Unreal Engine 5 setup](creative-editors.md)
 - [Known limitations and historical bug ledger](known-issues.md)
 

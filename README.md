@@ -37,6 +37,9 @@ sidebar with focused pages for preferences, connections, and integrations.
 - **Custom connections:** any OpenAI-compatible endpoint (LiteLLM, vLLM, an
   internal gateway), Azure OpenAI, or Claude on Bedrock or Vertex, defined in
   **Settings > Connections** without code.
+- **Provider extensions:** a capability pack can add any other model provider
+  as a separate program, written against the Extension SDK without Lumi's
+  source. See [Extensions](docs/extensions.md).
 - **Ollama:** the zero-credential local-first default. Models are discovered
   from the configured endpoint.
 - **EXO:** distributed inference through its OpenAI-compatible endpoint, with
@@ -190,6 +193,9 @@ Codex and is billed to the API account.
 - **Claude on Google Vertex AI:** a project, region and model ids, using Google
   Application Default Credentials (google-auth or the gcloud CLI).
 - **Anthropic or OpenAI Responses proxies:** the same APIs at another URL.
+- **A provider from a capability pack:** a model provider an approved personal
+  pack runs as a program ([Extensions](docs/extensions.md)). Lumi starts it for
+  each request and passes the connection's key to it.
 
 Instead of a key, a connection can sign in with OAuth client credentials (a
 gateway behind Okta, Auth0, Keycloak or Entra ID) or, for Azure OpenAI, with

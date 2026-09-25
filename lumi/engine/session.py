@@ -119,6 +119,16 @@ _CORE_TOOL_DESCRIPTIONS = {
 }
 
 
+def _message_text(message: dict) -> str:
+    """The text of a history message, whether its content is a string or a list of parts."""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(str(part.get("text") or "") for part in content if isinstance(part, dict))
+    return ""
+
+
 def _compact_provider_tool(tool: dict) -> dict:
     """Return a concise provider schema without mutating the canonical tool."""
     compact = copy.deepcopy(tool)
@@ -2221,6 +2231,14 @@ class Session:
                 logger.warning(f"Interactive skill lookup failed: {e}")
         if self.context_broker:
             try:
+                if not getattr(self, "_mentions_recalled", False):
+                    # A conversation continued from a hand-off keeps it after
+                    # it's reopened (engine/context_broker.py, STICKY).
+                    self._mentions_recalled = True
+                    self.context_broker.recall([
+                        _message_text(message) for message in self.conversation_history
+                        if isinstance(message, dict) and message.get("role") == "user"
+                    ])
                 explicit_items = self.context_broker.resolve_mentions(user_msg)
                 explicit_context = self.context_broker.render(explicit_items)
                 turn_context += explicit_context

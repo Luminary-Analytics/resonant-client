@@ -22,6 +22,7 @@ lumi run "Fix the failing test in tests/test_api.py" --provider anthropic --mode
 | Option | Meaning |
 |---|---|
 | `PROMPT` | The task. `-` reads it from stdin; `--prompt-file FILE` reads (more of) it from a file |
+| `--handoff FILE_OR_ID` | Continue work handed off in the app ([hand-offs](hand-offs.md)): a hand-off file such as `.lumi/handoffs/<name>.json` (relative to the current folder or the project), or the id of one you picked up. The task defaults to "Continue the work in this hand-off." |
 | `--project DIR` | The project folder (default: the current folder) |
 | `--provider`, `--model` | `anthropic`, `openai`, `openrouter`, `sonn`, `kimi`, `exo`, `ollama`, `codex`, `claude-code` or a connection (`conn-<id>`). `LUMI_PROVIDER` and `LUMI_MODEL` work too; otherwise the desktop defaults apply |
 | `--mode` | What the agent may do without asking: `ask` (read only), `auto-edit` (the default: edit files; other actions refused unless a trusted repository's `lumi-policy.json` allows them) or `bypass` (everything) |

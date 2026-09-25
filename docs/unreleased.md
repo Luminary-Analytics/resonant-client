@@ -8,6 +8,117 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 a plan's specialists report under its card — source only, not released
+
+**A plan's specialists showed up as turns of the conversation.** A plan
+(`/plan`, or a Mission's **Build this roadmap**) runs its planner,
+implementers and verifiers in sessions of their own
+(`lumi/orchestration/intent_service.py`), which forwards their engine events
+tagged `_source: "intent"`. The app handled those events as the
+conversation's own turn:
+
+- after each step, the turn's verdict: "Needs attention: The request asked
+  for a workspace change, but no successful edit was recorded", with Retry,
+  Retry another model and Continue, then a suggested next prompt;
+- "Worked for 0s · N actions" counts that grew across steps and plans, on
+  "Lumi · Task" cards made for them;
+- the conversation's "Working for …" progress, started by the plan;
+- each step's end called `setRunning(false)`, which moves keyboard focus to
+  the message box. Someone who paused a plan from the keyboard and pressed
+  Space to resume typed a space into the message box instead;
+- a step that ended while a turn of the conversation ran also finished that
+  turn's card and cleared its running state (`handleSessionEnd`), and the
+  header's model and token counts and the Context tab showed the
+  specialist's.
+
+**Now a plan reports under its own card** (`lumi/gui/static/app.js`,
+"Plan activity"; `styles.css`).
+
+- The `/plan` message is the plan's card. A plan started elsewhere (a
+  Mission's roadmap) gets a "Plan" card named from its text: for a Mission,
+  the spec's refined intent.
+- One line per specialist: Planner, Implementer, Verifier, Repair and so on,
+  with its goal and how it went ("done · 2 actions · 1s", "passed", "asked
+  for a repair", "blocked", "stopped"). A running step is open and shows its
+  commands, edits and prose as they come, drawn by the conversation's own row
+  renderers. A finished step folds to its line; one that didn't finish, or
+  whose check asked for a repair, stays open, and so does one the keyboard is
+  in.
+- A status line for the whole plan: starting, running (with its current
+  step), paused, complete ("3 steps · 3 actions · 49s"), finished with steps
+  that didn't finish, cancelled, failed, or not started. A `/plan` the server
+  refuses, with no model connected for example, says so on its own card.
+- Nothing from a plan reaches the conversation's turn: its task card and
+  progress, `isRunning`, the verdict and Retry, the suggestion, the header's
+  model and token counts, the Context tab, or focus. Counts are the plan's
+  own. A plan's rows keep their own lookup, so a specialist's call id never
+  settles a row of the turn.
+- The plan's card isn't a message of the session, so forking from a later
+  message no longer counts it.
+- Specialists no longer go into `agentActivities`, which fed the Agents pane
+  that left in v0.14.0.
+
+Plan activity isn't saved with the conversation, since the server doesn't
+record a plan's events in the session: a reload shows the conversation
+without it. The Plan tab's History keeps the plan's snapshots. On `main`,
+`/plan` itself starts nothing until PR #69 lands; a Mission's roadmap already
+runs (with `general.autonomous_sessions` on).
+
+Validation on September 25, 2026:
+
+- `tests/ui_recovery.test.cjs` adds 5 tests that drive the real handlers and
+  row renderers into a fake conversation: a whole `/plan` run, a roadmap
+  running beside a turn of the conversation with a repeated call id, counts
+  per plan, pause, cancel, a blocked step, a failed walker, a refused
+  `/plan`, and streamed prose above its calls with a step kept open while
+  focused. Each fails against the change it covers (checked by mutation: no
+  routing, a shared row lookup, rows drawn in the conversation, steps that
+  never fold or fold under focus, shared counts, an unclaimed refusal, cancel
+  stopping the step early, text.done adding a second block, the `/plan` task
+  card).
+- `tests/test_intent_service.py`: forwarded specialist events carry the tag
+  and the intent id without changing the session's own event, and fall
+  between their node's node.start and node.done. It fails without the tag or
+  the copy.
+- Full `pytest` on the branch rebased over `main`: 4,410 passed, 5
+  skipped. The four UI node suites: 86 passed. `ruff check` and
+  `git diff --check` clean.
+- In the browser pane, with an isolated home (temporary USERPROFILE, HOME and
+  LUMI_STATE_HOME, `LUMI_KEYCHAIN=off`) and a scripted Ollama-compatible
+  model answering as planner, implementer and verifier:
+  - `/plan add a dark mode toggle`, on this change merged with PR #69 (which
+    makes `/plan` and Pause work). While the planner ran, Pause was focused
+    and pressed with Space. When the planner finished, focus stayed on
+    Resume, the message box stayed empty with its usual placeholder, and
+    nothing called `setRunning`. Space resumed the plan, whose implementer
+    started 26 s after the planner's end. The card ended "Plan complete · 3
+    steps · 3 actions · 49s", with no verdict, Retry, suggestion or "Worked
+    for". Enter and Space opened a step's line, and Tab moved between steps.
+  - The same run on that tree without this change showed the reported
+    behavior: the "Needs attention" verdict with Retry after the planner, a
+    suggestion, "Working for …" in the chat, and focus in the message box,
+    where Space typed a space. Then came two "Lumi · Task" cards, "Worked for
+    1s · 2 actions" and "3 actions".
+  - A plan that finished while the conversation's own turn ran left that turn
+    running ("Working for …", Stop), and the turn then finished with its own
+    answer.
+  - A Mission's Build this roadmap, on this change alone: a "Plan" card named
+    "Refined intent: Add a dark mode toggle to the settings page." with the
+    three steps, from 52 specialist events, with no change to the turn.
+  - At 375 px (Plan tab closed) and 768 px (Plan tab open), step lines end in
+    an ellipsis before their status, and nothing scrolls sideways.
+  - The real home was unchanged afterwards.
+
+Not in this change:
+
+- The autonomous daemon's REFLECT pass (`make_reflect_runner`) forwards its
+  specialist's events without the tag, so they still arrive as turns.
+- After a reload during a plan, its events reach the page again only once
+  another plan command is sent from it (`get_intent_service` rebinds the
+  socket then).
+- Nodes the planner adds show in the Plan tab's graph as implement nodes
+  named by their ids until they start.
+
 ## September 25 an installer package and profiles for managed Macs — source only, not released
 
 - **`lumi-X.Y.Z.pkg`** for Jamf Pro, Intune and other device management

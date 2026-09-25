@@ -89,6 +89,10 @@ for their context-handoff and verification boundaries.
   and open Lumi's changes beside your files ([code editors](docs/code-editors.md))
 - Jira, Linear, GitHub and GitLab issues: attach one with `@issue:ENG-12`, and
   have the agent comment on it ([issue trackers](docs/issue-trackers.md))
+- Hand work to a teammate through Lumi Cloud, or to a CI run with
+  `lumi run --handoff` ([hand-offs](docs/hand-offs.md))
+- Your organization's skills and prompts, published and versioned in Lumi
+  Cloud ([team library](docs/team-library.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
 - Permission modes and a project-root path sandbox

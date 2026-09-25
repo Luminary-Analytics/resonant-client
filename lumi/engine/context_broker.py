@@ -79,9 +79,24 @@ class ContextBroker:
         self.register("terminal", self._terminal)
         self.register("plan", self._plan)
         self.register("issue", self._issue)
+        self.register("handoff", self._handoff)
 
     def register(self, name: str, provider: Provider) -> None:
         self._providers[str(name).strip().lower()] = provider
+
+    # Attachments that stay for the rest of the conversation once mentioned.
+    STICKY = frozenset({"handoff"})
+
+    def recall(self, texts: list[str]) -> None:
+        """Attach sticky mentions from earlier messages again, as when a conversation is reopened."""
+        for text in texts:
+            for match in self.MENTION_RE.finditer(text or ""):
+                name = match.group("provider").lower()
+                if name in self.STICKY and name in self._providers:
+                    try:
+                        self._providers[name](match.group("selector").strip("\"'"))
+                    except Exception:
+                        continue
 
     def resolve_mentions(self, text: str) -> list[ContextItem]:
         items = list(self._pinned.values())
@@ -276,6 +291,19 @@ class ContextBroker:
         except IssueError as exc:
             return self._item("issue", selector, f"Couldn't read issue {selector}: {exc}", "error")
         return self._item("issue", metadata["issue"], text, metadata.get("url") or metadata["tracker"])
+
+    def _handoff(self, selector: str) -> ContextItem | None:
+        """Work a teammate handed off, or saved for CI (lumi/handoff.py); it stays for the conversation."""
+        from .. import handoff
+
+        try:
+            data, source = handoff.load(selector, str(self.project_path), exclusions=self.exclusions)
+        except handoff.HandoffError as exc:
+            return self._item("handoff", selector, f"Couldn't read hand-off {selector}: {exc}", "error")
+        item = self._item("handoff", data["title"], handoff.render(data), source)
+        item.id = self._item("handoff", selector, "", "").id  # two hand-offs can share a title
+        self.pin(item)
+        return item
 
     @staticmethod
     def _item(provider: str, label: str, content: str, provenance: str) -> ContextItem:

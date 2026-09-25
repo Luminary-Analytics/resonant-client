@@ -13730,6 +13730,37 @@ body.is-window-dragging * {
 .eval-model-group label { display: inline-flex; align-items: center; gap: 4px; }
 .eval-task-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
 
+/* Team prompts from the organization's library (app.js, openTeamPrompts). */
+.composer-prompts-btn[hidden] { display: none; }
+.team-prompts-dialog { width: 520px; max-height: 80vh; display: flex; flex-direction: column; }
+.team-prompts-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.team-prompts-dialog .dialog-body { overflow: auto; }
+.team-prompts-dialog .settings-input { display: block; width: 100%; box-sizing: border-box; }
+.team-prompts-list { display: grid; gap: 6px; margin: 10px 0; }
+.team-prompt { display: grid; gap: 2px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.team-prompt:hover, .team-prompt:focus-visible { background: var(--bg-hover); outline: 1px solid var(--brand2); }
+.team-prompt-name { font-weight: 600; }
+.team-prompt-meta { color: var(--muted); font-size: 12px; }
+
+/* Hand off a conversation, and hand-offs for you (app.js, openHandoffDialog and openHandoffsInbox). */
+.handoff-dialog { width: 520px; }
+.handoffs-dialog { width: 560px; max-height: 85vh; display: flex; flex-direction: column; }
+.handoffs-dialog .dialog-body { overflow: auto; }
+.handoff-dialog .dialog-header, .handoffs-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.handoff-dialog .dialog-actions, .handoffs-dialog .dialog-actions { padding: 12px 0 0; gap: 8px; }
+.handoff-note { display: block; width: 100%; box-sizing: border-box; min-height: 84px; resize: vertical; font: inherit; }
+.handoff-choice { margin: 0 0 4px 24px; }
+.handoff-choice select { max-width: 100%; }
+.handoff-item { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin: 0 0 12px; }
+.handoff-title { margin: 0 0 4px; font-size: 14px; color: var(--text); }
+.handoff-note-text { margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); }
+.handoff-project { width: 100%; }
+.handoff-check { margin: 8px 0 0; }
+.handoff-check:empty { display: none; }
+.handoff-check.is-warning { color: var(--warn); }
+.sidebar-handoffs[hidden] { display: none; }
+.sidebar-handoffs .sns-icon { font-size: 15px; line-height: 1; }
+
 /* Share a conversation (app.js, openShareDialog). */
 .share-dialog { width: 480px; }
 .share-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

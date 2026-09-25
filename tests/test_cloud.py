@@ -17,7 +17,6 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
-import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
@@ -31,6 +30,10 @@ URL = "https://cloud.example.test"
 
 def _b64(raw: bytes) -> str:
     return base64.b64encode(raw).decode()
+
+
+def _unb64url(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
 class FakeCloud:
@@ -114,14 +117,18 @@ class FakeCloud:
                                              "organization": {"id": "org_acme", "name": "Acme"},
                                              "trusted_keys": {self.key_id: self.public}})
         if path == "/api/v1/devices/token":
-            assertion = json.loads(request.content)["assertion"]
-            device_id = jwt.decode(assertion, options={"verify_signature": False})["iss"]
-            device = self.devices.get(device_id)
+            header, payload, signature = json.loads(request.content)["assertion"].split(".")
+            claims = json.loads(_unb64url(payload))
+            device = self.devices.get(claims.get("iss", ""))
             if device is None or device["revoked"]:
                 return httpx.Response(401, json={"error": "device_revoked" if device else "invalid_client"})
+            # As Lumi Cloud checks it: an EdDSA signature by the enrolled key, for this audience.
+            assert json.loads(_unb64url(header))["alg"] == "EdDSA"
             key = Ed25519PublicKey.from_public_bytes(base64.b64decode(device["public_key"]))
-            jwt.decode(assertion, key=key, algorithms=["EdDSA"], audience=f"{URL}/api/v1/devices/token",
-                       issuer=device_id)
+            key.verify(_unb64url(signature), f"{header}.{payload}".encode())
+            assert claims["aud"] == f"{URL}/api/v1/devices/token" and claims["sub"] == claims["iss"]
+            assert claims["exp"] - claims["iat"] <= 300
+            device_id = claims["iss"]
             token = self._token("devtok")
             self.device_tokens[token] = device_id
             return httpx.Response(200, json={"access_token": token, "token_type": "Bearer", "expires_in": 3600})

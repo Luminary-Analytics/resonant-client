@@ -474,7 +474,6 @@ class CloudClient:
     def _device_token(self) -> str:
         if self._device_access and self._device_access[1] > time.monotonic():
             return self._device_access[0]
-        import jwt
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
         device = self.device()
@@ -484,8 +483,8 @@ class CloudClient:
         key = Ed25519PrivateKey.from_private_bytes(base64.b64decode(secret))
         now = int(time.time())
         audience = f"{self.url}/api/v1/devices/token"
-        assertion = jwt.encode({"iss": device["id"], "sub": device["id"], "aud": audience, "iat": now,
-                                "exp": now + 120, "jti": uuid.uuid4().hex}, key, algorithm="EdDSA")
+        assertion = eddsa_jwt({"iss": device["id"], "sub": device["id"], "aud": audience, "iat": now,
+                               "exp": now + 120, "jti": uuid.uuid4().hex}, key)
         answer = self._call("POST", audience, json={"assertion": assertion})
         token = str(answer.get("access_token") or "")
         self._device_access = (token, time.monotonic() + max(60, int(answer.get("expires_in") or 3600)) - 60)
@@ -625,6 +624,24 @@ def usage_summary(since: str, until: str) -> dict | None:
     if not since:
         return None
     return {"period_start": since, "period_end": until, "models": list(by_model.values())}
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
+
+
+def eddsa_jwt(claims: dict, key: Any) -> str:
+    """A compact JWS (RFC 7515) signed with Ed25519, ``alg: EdDSA`` (RFC 8037).
+
+    Written here rather than with a JWT library: it is the one token this
+    app signs, and cryptography is already a dependency.
+    """
+    import json
+
+    header = _b64url(json.dumps({"alg": "EdDSA", "typ": "JWT"}, separators=(",", ":")).encode("utf-8"))
+    payload = _b64url(json.dumps(claims, separators=(",", ":")).encode("utf-8"))
+    signature = key.sign(f"{header}.{payload}".encode("ascii"))
+    return f"{header}.{payload}.{_b64url(signature)}"
 
 
 def _app_version() -> str:

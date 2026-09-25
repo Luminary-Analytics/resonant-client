@@ -14034,3 +14034,19 @@ body.is-window-dragging * {
 .share-link-row input { flex: 1; min-width: 0; }
 .share-who { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; border: 0; }
 .share-who label { display: flex; align-items: center; gap: 8px; }
+
+/* A plan's specialists under its card, one step each (app.js, "Plan activity").
+   A step's line spans the card, so a long goal ends in an ellipsis before its status. */
+.plan-step > summary { display: flex; min-width: 0; }
+.plan-step > summary:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; border-radius: 6px; }
+.plan-step-goal { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.plan-step > summary .task-activity-meta { flex-shrink: 0; margin-left: 0; white-space: nowrap; }
+.plan-step.is-running > summary .task-activity-meta { color: var(--brand-text); }
+.plan-step.is-attention > summary .task-activity-meta { color: var(--warn-soft-text); }
+.plan-step-body { display: flex; flex-direction: column; gap: 6px; }
+.plan-step-body .msg-assistant { margin: 0; }
+.plan-step-body .message-content { font-size: 13px; }
+.plan-run-status .task-run-detail { white-space: normal; overflow-wrap: anywhere; }
+.plan-run-status.is-running .task-run-mark { background: transparent; }
+.plan-run-status.is-running .task-run-mark::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); animation: live-run-pulse 1.8s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .plan-run-status.is-running .task-run-mark::before { animation: none; } }

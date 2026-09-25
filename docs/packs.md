@@ -87,7 +87,17 @@ first, and the rest loads on demand.
 | `input_format` | `env` (default; event values in environment variables) or `json` (the event on standard input). |
 | `timeout_seconds` | How long the hook may run, in seconds. Default 30. At the limit Lumi stops the command and everything it started. |
 
-Hooks in the `hooks` list of `settings.json` take the same fields.
+Hooks in the `hooks` list of `settings.json` take the same fields. They are
+your own, so they need no approval, and they run wherever Lumi works with your
+Settings:
+
+- the app;
+- [`lumi run`](headless.md), and so [scheduled tasks](scheduled-tasks.md)
+  and the runs of [model comparisons](model-comparisons.md);
+- the [chat gateway](chat-gateway.md);
+- [tasks from Slack and Teams](lumi-cloud.md#tasks-from-slack-and-teams).
+
+A pack's hooks run only in the app, where approved packs are loaded.
 
 With `json`, a hook may answer with JSON on standard output: `decision`
 (`allow`, `ask` or `deny`), `reason`, and `additional_context` for the model.
@@ -102,7 +112,7 @@ blocks it, and the reason names the hook:
 |---|---|
 | `pre_tool_use` | The tool call doesn't run. The model reads the reason as the call's result. |
 | `pre_tool_batch` | The `task_batch` call doesn't run, as above. |
-| `permission_request` | The call is denied. These hooks are asked only when nobody can answer an approval. |
+| `permission_request` | The call is denied. These hooks are asked only when nobody can answer an approval, such as in `lumi run`. They aren't asked in `lumi run --mode ask`, which only reads, or about a call your organization's policy asks a person about: those calls are refused. |
 | `before_model` | The model request isn't made, and the turn ends with an error. |
 | `task_completed` | The result isn't accepted. After a non-zero exit or a `deny`, the model is asked to address the reason. After a timeout or a failure to start, the turn ends with an error instead, since the model can't fix the hook. |
 | `subagent_stop` | The worker's handoff is marked failed. |

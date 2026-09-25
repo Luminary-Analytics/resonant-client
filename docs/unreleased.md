@@ -8,6 +8,29 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 zero data retention — source only, not released
+
+- **Connections that keep no data**: a custom connection can be marked
+  **This endpoint keeps no prompts or responses** (`zero_retention`), shown
+  as a "Zero retention" badge.
+- **Policies can require it** (`models.require_zero_retention`,
+  [organization policy](enterprise-policy.md)): only local Ollama and EXO
+  models (Ollama's `-cloud` models run on ollama.com, so they don't count),
+  marked connections, and providers the policy names in
+  `models.zero_retention_providers` stay in the model menu; others are
+  refused. The check is part of `Policy.model_allowed`, so every place that
+  already checks models enforces it.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,963 passed, 4 skipped. `test_zero_retention.py`: the
+  flag, each kind of provider under the requirement, Ollama cloud models,
+  other rules still applying, invalid fields, an unreadable connection.
+- In the browser pane, a custom connection saved with the box ticked showed
+  the "Zero retention" badge and was stored with `zero_retention: true`.
+  The first try stored `false`: the form's save payload lists its fields and
+  didn't include the new one, which this check caught and which is fixed.
+
 ## September 25 cost per verified task and activity counts — source only, not released
 
 - **Turn outcomes on this computer** (`lumi/activity.py`). Each finished

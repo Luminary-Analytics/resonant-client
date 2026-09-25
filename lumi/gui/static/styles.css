@@ -13631,3 +13631,6 @@ body.is-window-dragging * {
 .connection-status { margin: 8px 0; font-size: 12.5px; }
 .connection-status.ok { color: var(--ok); }
 .connection-status.err { color: var(--err); }
+
+/* A connection marked zero retention (lumi/connections.py). */
+.connection-badge { display: inline-block; align-self: flex-start; width: fit-content; margin: 2px 0; padding: 1px 6px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); color: var(--text-secondary, inherit); }

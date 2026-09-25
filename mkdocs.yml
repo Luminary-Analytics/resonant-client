@@ -66,6 +66,7 @@ nav:
       - Getting started, projects and sessions: desktop-workflow.md
       - Models, fallbacks and image descriptions: models.md
       - Code intelligence (language servers): code-intelligence.md
+      - Autonomous sessions (experimental): autonomous-sessions.md
       - Signing in to enterprise endpoints: connection-sign-in.md
       - Usage, prices and budgets: usage-and-costs.md
       - Updates: updates.md

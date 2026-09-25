@@ -38,6 +38,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
 - [Code intelligence: language servers for definitions, references and diagnostics](code-intelligence.md)
+- [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
 - [Blender, Unity, and Unreal Engine 5 setup](creative-editors.md)

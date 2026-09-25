@@ -9,6 +9,7 @@ and runs the REFLECT pass every K iterations. It stops when:
 
   1. The user clicked Stop                       → "user_stop"
   2. Wall-clock time budget elapsed              → "time_budget_exhausted"
+     Model spending reached the mission's limit   → "spend_limit_reached"
   3. MAX_ITERATIONS=100 hit (defensive backstop) → "iteration_cap"
   4. Full-reflect verdict was "satisfied"        → "satisfied"
   5. Full-reflect verdict was "blocked" enough   → "blocked"
@@ -195,6 +196,9 @@ class DaemonHooks:
     extract_skill_hook: Optional[Callable[..., Any]] = None
     queue_curation_hook: Optional[Callable[[str], None]] = None
     checkpoint_hook: Optional[Callable[..., dict]] = None
+    # What the mission's model requests have cost so far, in USD (priced
+    # requests only), for `spend_limit_usd`. None: spending isn't tracked.
+    spent_usd: Optional[Callable[[], float]] = None
 
 
 # ── Waiting policy ──────────────────────────────────────────────────────
@@ -280,6 +284,11 @@ class AutonomousMissionConfig:
     roadmap_path: Path
     # None means full-auto (no time ceiling; iteration cap still applies).
     time_budget_seconds: Optional[float] = None
+    # Stop once the mission's model requests have cost this much (USD). Checked
+    # before each iteration and while a sub-mission runs (at the heartbeat),
+    # so a run can pass it by what one heartbeat's worth of requests cost.
+    # None: no limit (organization budgets still apply to every request).
+    spend_limit_usd: Optional[float] = None
     # Defensive backstop. A user who legitimately needs >100 iterations
     # should run a follow-up mission against the same project.
     max_iterations: int = 100
@@ -613,6 +622,8 @@ class AutonomousMissionDaemon:
                 "iter_count": self._iter_count,
                 "elapsed_seconds": elapsed,
                 "time_budget_seconds": self.config.time_budget_seconds,
+                "spend_limit_usd": self.config.spend_limit_usd,
+                "spent_usd": self._spent(),
                 "verdict": self._verdict,
                 "blocked_streak": self._blocked_streak,
                 "check_failed_streak": self._check_failed_streak,
@@ -676,6 +687,7 @@ class AutonomousMissionDaemon:
         self._emit("autonomous_mission_started", {
             "started_iso": _now_iso(),
             "time_budget_seconds": self.config.time_budget_seconds,
+            "spend_limit_usd": self.config.spend_limit_usd,
             "max_iterations": self.config.max_iterations,
         })
 
@@ -858,6 +870,11 @@ class AutonomousMissionDaemon:
                     f"{self.config.time_budget_seconds:.1f}s",
                 )
 
+        # 2b. Spending limit. None means no limit.
+        exceeded = self._spend_exceeded()
+        if exceeded is not None:
+            return exceeded
+
         # 3. Iteration cap (defensive backstop, always applies).
         if self._iter_count >= self.config.max_iterations:
             return (
@@ -876,6 +893,25 @@ class AutonomousMissionDaemon:
                 return ("user_pause", self._pause_message or "user paused")
 
         return None
+
+    def _spent(self) -> Optional[float]:
+        """The mission's spending so far, or None when it isn't tracked."""
+        if self.hooks.spent_usd is None:
+            return None
+        try:
+            return float(self.hooks.spent_usd())
+        except Exception:
+            logger.debug("spent_usd hook raised", exc_info=True)
+            return None
+
+    def _spend_exceeded(self) -> Optional[tuple[str, str]]:
+        limit = self.config.spend_limit_usd
+        if limit is None:
+            return None
+        spent = self._spent()
+        if spent is None or spent < limit:
+            return None
+        return ("spend_limit_reached", f"spent ${spent:.2f} of the ${limit:.2f} limit")
 
     # ── One iteration: dispatch + mark item ───────────────────────
 
@@ -1022,6 +1058,9 @@ class AutonomousMissionDaemon:
             commit_sha=sha or "",
             kind="shipped",
         )
+        spent = self._spent()
+        if spent is not None:
+            rm.spent_label = f"${spent:.2f}"
         try:
             roadmap_module.save(rm, self.config.roadmap_path)
         except Exception:
@@ -1061,6 +1100,7 @@ class AutonomousMissionDaemon:
         monitor_stop = threading.Event()
         hb = self.config.heartbeat_seconds or 0.0
         ceiling = self.config.wait_policy.dispatch_seconds
+        watch_spend = self.config.spend_limit_usd is not None
 
         def _monitor() -> None:
             # Tick at the heartbeat cadence (fall back to 30s when only
@@ -1076,6 +1116,17 @@ class AutonomousMissionDaemon:
                         "phase": "waiting_dispatch",
                         "elapsed_seconds": round(elapsed, 1),
                     })
+                exceeded = self._spend_exceeded() if watch_spend else None
+                if exceeded is not None:
+                    self._emit("autonomous_spend_limit", {
+                        "iter_count": self._iter_count,
+                        "item_id": item.id,
+                        "spent_usd": self._spent(),
+                        "spend_limit_usd": self.config.spend_limit_usd,
+                    })
+                    # Cancels the sub-mission and stops at the next safe point.
+                    self.stop(*exceeded)
+                    return
                 if (ceiling and ceiling > 0 and elapsed >= ceiling
                         and not timed_out["flag"]):
                     timed_out["flag"] = True
@@ -1108,7 +1159,7 @@ class AutonomousMissionDaemon:
                     return  # ceiling hit; the cancel unblocks the wait
 
         monitor: Optional[threading.Thread] = None
-        if hb > 0 or (ceiling and ceiling > 0):
+        if hb > 0 or (ceiling and ceiling > 0) or watch_spend:
             monitor = threading.Thread(
                 target=_monitor, name="autonomous-wait-monitor", daemon=True,
             )
@@ -1675,6 +1726,8 @@ class AutonomousMissionDaemon:
             "iter_count": self._iter_count,
             "stop_reason": reason,
             "stop_message": message,
+            "spent_usd": self._spent(),
+            "spend_limit_usd": self.config.spend_limit_usd,
             "elapsed_seconds": time.time() - self._started_at,
             "final_verdict": self._verdict,
             "new_phase": new_phase,
@@ -1707,9 +1760,13 @@ class AutonomousMissionDaemon:
         """
         try:
             rm = self._load_roadmap()
-            if rm.status == new_status:
+            # The spending so far, including REFLECT and a stopped
+            # iteration, so a resumed mission counts on from here.
+            spent = self._spent()
+            spent_label = f"${spent:.2f}" if spent is not None else rm.spent_label
+            if rm.status == new_status and rm.spent_label == spent_label:
                 return  # idempotent — already at target state
-            rm.status = new_status
+            rm.status, rm.spent_label = new_status, spent_label
             roadmap_module.save(rm, self.config.roadmap_path)
         except Exception:
             logger.exception(

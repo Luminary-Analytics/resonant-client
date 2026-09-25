@@ -662,6 +662,11 @@ class LumiApp {
         this.ws.send(JSON.stringify({ command: 'mcp_list' }));
     }
 
+    /** Autonomous sessions are experimental: their button and views show only when turned on. */
+    _syncAutonomousSwitch() {
+        document.body.dataset.autonomousSessions = this.settings?.general?.autonomous_sessions === true ? '1' : '0';
+    }
+
     requestLspList() {
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
         this.ws.send(JSON.stringify({ command: 'lsp_list' }));
@@ -1034,6 +1039,10 @@ class LumiApp {
         if (missionToggle) {
             missionToggle.addEventListener('click', () => this.openMissionComposer());
         }
+        // The composer's entry to autonomous sessions (shown when Settings
+        // turns them on); the header toggle above is hidden in this layout.
+        document.getElementById('composer-autonomous-btn')
+            ?.addEventListener('click', () => this.openMissionComposer());
         this.userInput.addEventListener('keydown', (e) => {
             // Fuzzy file picker hijacks navigation/select keys when open so
             // it can act like a real autocomplete instead of moving the
@@ -3836,6 +3845,7 @@ class LumiApp {
                 break;
             case 'settings':
                 this.settings = event.data || {};
+                this._syncAutonomousSwitch();
                 this.settingsError = '';
                 this._settingsDrafts = {};
                 // A save succeeded: an earlier refusal no longer applies, even
@@ -4196,6 +4206,7 @@ class LumiApp {
         // Store settings
         if (event.settings) {
             this.settings = event.settings;
+            this._syncAutonomousSwitch();
             this._renderAccountMenu();
         }
         // An organization policy can limit the permission modes (lumi/policy.py).

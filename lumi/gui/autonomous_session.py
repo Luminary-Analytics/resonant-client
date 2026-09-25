@@ -79,6 +79,24 @@ _BUDGET_TABLE = {
 }
 
 
+def parse_spend_limit(label: str) -> Optional[float]:
+    """A mission's spending limit in USD from ``"$25"`` or ``"25"``; None for none."""
+    text = (label or "").strip().lstrip("$").replace(",", "").strip()
+    if not text:
+        return None
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    return value if 0 < value < 1_000_000 else None
+
+
+def _spend_label(label: str) -> str:
+    """``"$25.00"`` for a valid limit, or empty."""
+    value = parse_spend_limit(label)
+    return f"${value:.2f}" if value is not None else ""
+
+
 def parse_time_budget(label: str) -> Optional[float]:
     """Convert a rigorous-grill budget label (`"4h"`, `"full auto"`,
     `"24h"`) to seconds. Returns None for full-auto / unrecognized
@@ -113,6 +131,7 @@ def build_roadmap_from_spec(
     project_path: str,
     started_iso: str = "",
     decision_timeout_label: str = "",
+    spend_limit_label: str = "",
 ) -> tuple[Roadmap, Path]:
     """Parse a rigorous-grill spec into a Roadmap + persist to
     `<project>/.lumi/roadmap-<intent_id>.md`.
@@ -152,6 +171,7 @@ def build_roadmap_from_spec(
         started_iso=started_iso,
         time_budget_label=parsed.time_budget,
         decision_timeout_label=(decision_timeout_label or "").strip(),
+        spend_limit_label=_spend_label(spend_limit_label),
         status="running",
         goal_spec_block=parsed.raw,
         acceptance_criteria=list(parsed.acceptance_criteria),
@@ -280,6 +300,7 @@ def start_autonomous_mission(
     started_iso: str = "",
     image_provider: Optional[Callable[[], Optional[bytes]]] = None,
     decision_timeout_label: str = "",
+    spend_limit_label: str = "",
 ) -> AutonomousMissionDaemon:
     """Top-level entry point used by the `mission_dispatch_autonomous`
     WS handler.
@@ -308,6 +329,7 @@ def start_autonomous_mission(
         project_path=state.project.project_path,
         started_iso=started_iso,
         decision_timeout_label=decision_timeout_label,
+        spend_limit_label=spend_limit_label,
     )
     return _spawn_autonomous_daemon(
         state=state,
@@ -769,7 +791,13 @@ def _spawn_autonomous_daemon(
         # wait-forever. Shares the budget vocabulary ("20m" / "2h"); an empty
         # label parses to None, which is the historical behaviour.
         decision_timeout_seconds=parse_time_budget(roadmap.decision_timeout_label),
+        # Also from the roadmap, with what was spent before a restart.
+        spend_limit_usd=parse_spend_limit(roadmap.spend_limit_label),
     )
+    spent_before = parse_spend_limit(roadmap.spent_label) or 0.0
+    cost_tracker = getattr(state, "iter_cost_tracker", None)
+    if cost_tracker is not None:
+        hooks.spent_usd = lambda: spent_before + cost_tracker.mission_total(intent_id)
     daemon = AutonomousMissionDaemon(
         config=config,
         hooks=hooks,

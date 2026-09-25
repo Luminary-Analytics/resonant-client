@@ -3222,7 +3222,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "display_name", "show_companion", "default_backend", "default_model",
         "default_permission_mode", "auto_lint_after_edits", "auto_test_after_edits",
         "auto_test_command", "max_model_requests", "big_context_profile",
-        "harness_enabled", "fallback_models", "role_models",
+        "harness_enabled", "autonomous_sessions", "fallback_models", "role_models",
     }),
     "appearance": frozenset({"theme", "density", "font_size"}),
     "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),

@@ -138,6 +138,20 @@ in a pack runs until you approve it there; a pack's own manifest cannot approve
 it. Editing an approved pack turns it off until you review it again. When the
 open project has packs waiting for review, the banner above the composer links
 to that page.
+
+**Install from Git** on the same page adds a pack from a repository:
+
+- It takes a public https repository with a `lumi-pack.json`, a commit, tag
+  or branch, and optionally a folder.
+- A tag or branch is resolved to the commit it names now, and only that
+  commit is fetched: depth 1, no submodules, no stored credentials.
+- The pack lands in `~/.lumi/packs/<id>`, turned off. Review what it would
+  run, then approve it.
+- Installing a newer commit drops the old approval.
+- **Remove** deletes a pack installed this way.
+- The audit log records `extension.install` and `extension.remove` with the
+  commit.
+- Symbolic links are refused, and the pack's manifest must have its own `id`.
 Settings follows the app theme: dark, light or match system.
 
 ## Anthropic, OpenAI and custom connections

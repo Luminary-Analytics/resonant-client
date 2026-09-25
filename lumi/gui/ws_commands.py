@@ -493,6 +493,41 @@ async def _capability_pack_revoke(ctx: CommandContext) -> None:
     await _set_capability_pack_approval(ctx, approve=False)
 
 
+@command("capability_pack_install")
+async def _capability_pack_install(ctx: CommandContext) -> None:
+    """Install a pack from a git repository pinned to one commit; approval stays separate."""
+    from ..engine.pack_install import PackInstallError
+
+    msg = ctx.msg
+    try:
+        payload, installed = await _in_executor(lambda: ctx.state.install_capability_pack(
+            str(msg.get("url") or ""), str(msg.get("ref") or ""), str(msg.get("subdir") or "")))
+    except PackInstallError as exc:
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+        payload["error"] = str(exc)
+        await ctx.send(payload)
+        return
+    await ctx.send(payload)
+    await ctx.send({"event": "ui_notice", "message": (
+        f"Installed {installed['name']} at {installed['commit'][:12]}. It's off until you review "
+        "what it would run and approve it.")})
+
+
+@command("capability_pack_remove")
+async def _capability_pack_remove(ctx: CommandContext) -> None:
+    from ..engine.pack_install import PackInstallError
+
+    try:
+        payload = await _in_executor(lambda: ctx.state.remove_capability_pack(str(ctx.msg.get("pack_id") or "")))
+    except PackInstallError as exc:
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+        payload["error"] = str(exc)
+        await ctx.send(payload)
+        return
+    await ctx.send(payload)
+    await ctx.send({"event": "ui_notice", "message": "Capability pack removed."})
+
+
 @command("audit_status")
 async def _audit_status(ctx: CommandContext) -> None:
     # Where the audit log is, whether its hash chain verifies, and export health.

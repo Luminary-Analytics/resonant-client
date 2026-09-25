@@ -8,6 +8,47 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 capability packs from Git — source only, not released
+
+- **Settings > Capability packs > Install from Git** (`lumi/engine/pack_install.py`, [guide](desktop-workflow.md)):
+  - installs a pack from a public https repository, pinned to one commit;
+  - a tag or branch is resolved to the commit it names now;
+  - only that commit is fetched (depth 1, no submodules, no credential
+    helper or prompt, links checked out as plain files);
+  - the pack arrives turned off in `~/.lumi/packs/<id>` and runs only after
+    the usual review and approval;
+  - reinstalling at another commit drops the earlier approval, and **Remove**
+    deletes a pack installed this way;
+  - `plugins[<id>].source` records the URL, commit and folder.
+- **Policy:** `extensions.allowed_sources` limits the repositories packs may
+  come from.
+- **Audit:** `extension.install` and `extension.remove`, with the commit.
+- Refused: non-https addresses, credentials in the URL, folders with `..`,
+  manifests without an `id`, and symbolic links.
+
+Validation on September 25, 2026:
+
+- 18 tests in `test_pack_install.py` (one is skipped on Windows), against
+  local git repositories:
+  - addresses and allowed sources;
+  - lightweight and annotated tags, branches and commits resolving;
+  - a pinned install that ignores newer commits, leaves no `.git` or scratch
+    folders, and is discovered untrusted;
+  - refusals;
+  - a pack in a subfolder;
+  - the Settings flow through the socket: install, approve, reinstall (back
+    to needing approval), remove, and the audit records.
+- In the browser pane (isolated home; a local repository stood in for the
+  https remote, allowed only by the fixture):
+  - an `http://` address was refused on the page, with the typed values
+    kept;
+  - the local repository at tag `v1` installed as "Not approved · off", with
+    "Installed from … at commit 15d389f6ff93" and its hook listed;
+  - **Approve and enable** made it "Approved · active";
+  - **Remove** deleted it from `~/.lumi/packs` and from the settings.
+  - This check found that a refusal wasn't shown while the form kept focus;
+    install results now always redraw the page.
+
 ## September 25 macOS app and DMG — source only, not released
 
 - **`Lumi.app` in `lumi-X.Y.Z.dmg`** for Apple silicon ([guide](macos.md)):
@@ -30,9 +71,19 @@ The dated September 15/18 records below are historical.
   alternation, `+` and groups mean what they do in ripgrep.
 - Third-party notices list ripgrep and WinSparkle only in Windows builds.
 
-Validation on September 25, 2026: see this PR's macOS build job. No Mac was
-available locally, so the native window, dictation, computer use and the
-Keychain are untested.
+Validation on September 25, 2026, from PR #23's macOS build (`macos-latest`,
+Apple silicon):
+
+- The bundle was 85.4 MiB (232 files) and passed its policy. The DMG was
+  32 MB, unsigned, with the expected warning.
+- `lumi --version` and `lumi updates` ran.
+- The GUI server served the page (52 KB), redeemed the launch code, refused
+  the WebSocket without the token (403) and accepted it with the token (101),
+  and its log was clean.
+- The first run found that the launch link stayed in a frozen app's stdout
+  buffer; those lines are now flushed.
+- No Mac was available locally, so the native window, dictation, computer use
+  and the Keychain are untested.
 
 ## September 25 updates that wait for running turns — source only, not released
 

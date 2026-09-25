@@ -186,8 +186,19 @@ class LumiSettingsView {
         // everything is escaped for attribute and text contexts alike.
         const entities = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
         const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => entities[ch]);
+        const draft = this._packInstallDraft || {};
+        const install = `<form class="pack-install" id="pack-install-form" novalidate>
+                <h4>Install from Git</h4>
+                <p class="editor-help">A public https repository with a lumi-pack.json, pinned to one commit. A tag or branch is resolved to the commit it names now. The pack installs turned off; review what it would run below, then approve it.</p>
+                <div class="pack-install-grid">
+                    <label for="pack-install-url"><span>Repository</span><input class="settings-input" id="pack-install-url" data-pack-install="url" value="${esc(draft.url || '')}" placeholder="https://github.com/owner/repo" spellcheck="false" autocomplete="off"></label>
+                    <label for="pack-install-ref"><span>Commit, tag or branch</span><input class="settings-input" id="pack-install-ref" data-pack-install="ref" value="${esc(draft.ref || '')}" placeholder="v1.2.0" spellcheck="false" autocomplete="off"></label>
+                    <label for="pack-install-subdir"><span>Folder (optional)</span><input class="settings-input" id="pack-install-subdir" data-pack-install="subdir" value="${esc(draft.subdir || '')}" placeholder="packs/review" spellcheck="false" autocomplete="off"></label>
+                </div>
+                <div class="editor-actions"><button type="submit" class="btn-sm"${this._packInstalling ? ' disabled' : ''}>${this._packInstalling ? 'Installing…' : 'Install'}</button></div>
+            </form>`;
         const intro = '<p class="editor-help">A capability pack can add lifecycle hooks (shell commands), MCP servers, skills and agents. Nothing in a pack runs until you approve it here; a pack cannot approve itself. An approval covers this pack at this location with exactly the files it has now. If any of them change, the pack turns off until you review it again.</p>'
-            + (data.error ? `<p class="editor-error" role="alert">${esc(data.error)}</p>` : '');
+            + (data.error ? `<p class="editor-error" role="alert">${esc(data.error)}</p>` : '') + install;
         const packs = Array.isArray(data.packs) ? data.packs : [];
         if (!packs.length) {
             return `${intro}<div class="settings-row"><span class="settings-row-label" style="color:var(--dim)">No capability packs in this project's .lumi/packs or in ~/.lumi/packs.</span></div>`;
@@ -217,6 +228,7 @@ class LumiSettingsView {
                 <div class="pack-card-head"><h3>${esc(pack.name)} <small>v${esc(pack.version)}</small></h3><span class="pack-status" role="status">${esc(statusText[pack.status] || pack.status)}</span></div>
                 ${pack.description ? `<p class="editor-help">${esc(pack.description)}</p>` : ''}
                 <p class="pack-meta">${pack.scope === 'project' ? 'From this repository' : 'Personal pack'} · <code>${esc(pack.path)}</code></p>
+                ${pack.source?.type === 'git' ? `<p class="pack-meta">Installed from <code>${esc(pack.source.url)}</code>${pack.source.subdir ? ` (<code>${esc(pack.source.subdir)}</code>)` : ''} at commit <code>${esc(String(pack.source.commit || '').slice(0, 12))}</code></p>` : ''}
                 ${pack.problem ? `<p class="editor-error">${esc(pack.problem)}</p>` : ''}
                 <details ${pack.status === 'approved' ? '' : 'open'}><summary>What this pack would run</summary>
                     ${hooks ? `<h4>Hooks (shell commands)</h4><ul>${hooks}</ul>` : '<p class="editor-help">No hooks.</p>'}
@@ -227,6 +239,7 @@ class LumiSettingsView {
                 <div class="editor-actions">
                     ${canApprove ? `<button type="button" class="btn-sm" data-pack-action="approve" ${target} data-pack-digest="${esc(pack.digest)}">Approve and enable</button>` : ''}
                     ${canRevoke ? `<button type="button" class="btn-sm" data-pack-action="revoke" ${target}>Revoke approval</button>` : ''}
+                    ${pack.source?.type === 'git' ? `<button type="button" class="btn-sm" data-pack-action="remove" ${target}>Remove</button>` : ''}
                 </div>
             </article>`;
         }).join('')}</div>`;
@@ -1869,7 +1882,14 @@ class LumiSettingsView {
         });
         this.settingsBody.querySelectorAll('[data-pack-action]').forEach(btn => {
             btn.addEventListener('click', () => {
-                const approve = btn.dataset.packAction === 'approve';
+                const action = btn.dataset.packAction;
+                if (action === 'remove') {
+                    this.send({command: 'capability_pack_remove', pack_id: btn.dataset.packId});
+                    btn.disabled = true;
+                    btn.textContent = 'Removing…';
+                    return;
+                }
+                const approve = action === 'approve';
                 this.send({
                     command: approve ? 'capability_pack_approve' : 'capability_pack_revoke',
                     pack_id: btn.dataset.packId,
@@ -1881,6 +1901,23 @@ class LumiSettingsView {
                 btn.disabled = true;
                 btn.textContent = approve ? 'Approving…' : 'Revoking…';
             });
+        });
+        // Install from Git: typed values survive the redraws that follow.
+        this.settingsBody.querySelectorAll('[data-pack-install]').forEach(input => {
+            input.addEventListener('input', () => {
+                this._packInstallDraft = {...(this._packInstallDraft || {}), [input.dataset.packInstall]: input.value};
+            });
+        });
+        this.settingsBody.querySelector('#pack-install-form')?.addEventListener('submit', event => {
+            event.preventDefault();
+            const draft = this._packInstallDraft || {};
+            if (!String(draft.url || '').trim() || !String(draft.ref || '').trim()) {
+                this.showStatusMessage('Enter the repository and a commit, tag or branch.');
+                return;
+            }
+            this._packInstalling = true;
+            this.send({command: 'capability_pack_install', url: draft.url, ref: draft.ref, subdir: draft.subdir || ''});
+            this.renderSettingsView({force: true});
         });
         this.settingsBody.querySelectorAll('[data-editor-input]').forEach(input => {
             input.addEventListener('input', () => {

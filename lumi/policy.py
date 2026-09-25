@@ -91,6 +91,8 @@ class Policy:
     mcp_allowed: tuple[str, ...] | None = None
     mcp_allow_stdio: bool = True
     packs_allowed: tuple[str, ...] | None = None
+    # Repository URL patterns packs may be installed from (lumi/engine/pack_install.py).
+    sources_allowed: tuple[str, ...] | None = None
     trusted_keys: dict[str, str] = field(default_factory=dict)
     # Negotiated prices (lumi/pricing.py): ordered (pattern, Price) pairs.
     prices: tuple = ()
@@ -154,6 +156,7 @@ class Policy:
             "mcp_allowed": list(self.mcp_allowed) if self.mcp_allowed is not None else None,
             "mcp_allow_stdio": self.mcp_allow_stdio,
             "packs_allowed": list(self.packs_allowed) if self.packs_allowed is not None else None,
+            "sources_allowed": list(self.sources_allowed) if self.sources_allowed is not None else None,
             "prices": [pattern for pattern, _ in self.prices],
             "budgets": len(self.budgets),
             "capability_overrides": [pattern for pattern, _ in self.capability_overrides],
@@ -285,6 +288,10 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         packs_allowed=(
             _patterns(extensions["allowed_packs"], "extensions.allowed_packs")
             if "allowed_packs" in extensions else None
+        ),
+        sources_allowed=(
+            _patterns(extensions["allowed_sources"], "extensions.allowed_sources")
+            if "allowed_sources" in extensions else None
         ),
         trusted_keys={str(k): str(v) for k, v in raw_keys.items()},
         prices=prices,

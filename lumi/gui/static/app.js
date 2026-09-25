@@ -3982,15 +3982,23 @@ class LumiApp {
                 }
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
-            case 'capability.pack_list':
+            case 'capability.pack_list': {
                 this.runtimePacks = event.packs || [];
                 this.capabilityPacks = event;
+                // An install finished: keep what was typed only if it failed,
+                // and show the result even while the form keeps focus.
+                const installed = Boolean(this._packInstalling);
+                if (installed) {
+                    this._packInstalling = false;
+                    if (!event.error) this._packInstallDraft = {};
+                }
                 this.renderRuntimeView();
-                if (this.currentView === 'settings') this.renderSettingsView();
+                if (this.currentView === 'settings') this.renderSettingsView(installed ? {force: true} : undefined);
                 if (Array.isArray(event.pending) && this._runtimeBannerState) {
                     this._applyRuntimeError({...this._runtimeBannerState, capability_packs_pending: event.pending});
                 }
                 break;
+            }
             case 'mcp_list':
                 this.mcpServers = event.servers || [];
                 this.mcpHealth = event.health || {};

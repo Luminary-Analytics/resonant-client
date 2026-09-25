@@ -459,6 +459,15 @@ class MCPManager:
         if not config.enabled:
             logger.info("MCP server '%s' is disabled", server_name)
             return False
+        from ..policy import current as current_policy
+
+        org_policy = current_policy()
+        if org_policy and not org_policy.mcp_server_allowed(server_name, stdio=not config.is_http):
+            # Recorded like a failed connection, so Settings says why it's off.
+            with self._lock:
+                self._errors[server_name] = f"Not allowed by {org_policy.organization}'s policy"
+            logger.info("MCP server '%s' is blocked by organization policy", server_name)
+            return False
 
         with self._lock:
             old = self._connections.pop(server_name, None)

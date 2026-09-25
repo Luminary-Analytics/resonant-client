@@ -232,10 +232,46 @@ class LumiSettingsView {
         }).join('')}</div>`;
     }
 
+    _renderOrgPolicy() {
+        const meta = this.settings?._meta?.policy || {};
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        if (meta.error) {
+            return `<p class="editor-error" role="alert">${esc(meta.error)} Lumi won’t send model requests until it’s fixed.</p>`;
+        }
+        const policy = meta.summary;
+        if (!policy) {
+            return '<p class="editor-help">No organization policy is installed on this computer. An administrator can set one with Group Policy, a configuration profile or a policy file; see docs/enterprise-policy.md.</p>';
+        }
+        const list = (items, none) => items === null || items === undefined ? none
+            : items.length ? items.map(item => `<code>${esc(item)}</code>`).join(', ') : 'none';
+        const expiry = !policy.expires_at ? 'Doesn’t expire'
+            : policy.expiry === 'grace' ? `Expired ${esc(policy.expires_at)}; still enforced during the offline grace period`
+            : `Valid until ${esc(policy.expires_at)}`;
+        const rows = [
+            ['Managed by', `${esc(policy.organization)}${policy.signed ? ' · signed' : ''}`],
+            ['Source', esc(policy.source)],
+            ['Validity', expiry],
+            ['Locked settings', list(policy.locked_settings, 'none')],
+            ['Permission modes', list(policy.allowed_modes, 'all')],
+            ['Models allowed', list(policy.models_allowed, 'all')],
+            ['Models blocked', list(policy.models_blocked, 'none')],
+            ['Files never read', list(policy.exclude, 'none')],
+            ['Shell rules', String(policy.shell_rules || 0)],
+            ['MCP servers', `${list(policy.mcp_allowed, 'all')}${policy.mcp_allow_stdio ? '' : ' · command-based servers off'}`],
+            ['Capability packs', list(policy.packs_allowed, 'all')],
+        ];
+        return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
+    }
+
     _renderFileExclusions() {
         const saved = this.settings?.privacy?.excluded_paths || [];
+        const managed = this.settings?._meta?.policy?.summary?.exclude || [];
+        const org = this.settings?._meta?.policy?.summary?.organization || '';
+        const managedHtml = managed.length
+            ? `<p class="editor-help settings-managed">Managed by ${this.escapeHtml(org)}: ${managed.map(item => `<code>${this.escapeHtml(item)}</code>`).join(', ')}</p>`
+            : '';
         const draft = this._exclusionDraft ?? saved.join('\n');
-        return `<p class="editor-help">Gitignore-style patterns, one per line, for every project: <code>.env</code> matches that name in any folder, and <code>secrets/**</code> is anchored at the project root. Lumi won’t read or change these files and leaves them out of searches, git diffs, the codebase index and attachments. A project’s <code>.lumiignore</code> adds its own patterns. Shell commands can still open excluded files, so keep command approval on for sensitive work.</p>
+        return `${managedHtml}<p class="editor-help">Gitignore-style patterns, one per line, for every project: <code>.env</code> matches that name in any folder, and <code>secrets/**</code> is anchored at the project root. Lumi won’t read or change these files and leaves them out of searches, git diffs, the codebase index and attachments. A project’s <code>.lumiignore</code> adds its own patterns. Shell commands can still open excluded files, so keep command approval on for sensitive work.</p>
             <textarea id="settings-exclusions" class="settings-input settings-textarea" rows="6" spellcheck="false" aria-label="Excluded files, one pattern per line" placeholder=".env&#10;*.pem&#10;secrets/**">${this.escapeHtml(draft)}</textarea>
             <div class="editor-actions">
                 <button type="button" class="btn-sm" id="settings-exclusions-save">Save exclusions</button>
@@ -990,7 +1026,7 @@ class LumiSettingsView {
             {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
             {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
-            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['privacy','file_exclusions','transcripts','security','project_trust'], keywords:'secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway'},
+            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','security','project_trust'], keywords:'secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
@@ -1228,6 +1264,7 @@ class LumiSettingsView {
                       hint: 'MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
                 ]
             },
+            { id: 'org_policy', title: 'Organization policy', custom: true },
             {
                 id: 'privacy', title: 'Before each model request',
                 note: 'Commands the agent runs, hooks and MCP servers never receive Lumi’s model keys, and your saved keys are removed from tool output before it reaches a model.',
@@ -1319,6 +1356,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderProviderConnections();
             } else if (section.id === 'creative_editors') {
                 bodyHtml = this._renderEditorIntegrations();
+            } else if (section.id === 'org_policy') {
+                bodyHtml = this._renderOrgPolicy();
             } else if (section.id === 'file_exclusions') {
                 bodyHtml = this._renderFileExclusions();
             } else if (section.id === 'project_trust') {
@@ -1497,32 +1536,37 @@ class LumiSettingsView {
                 if (section.note) bodyHtml += `<div class="settings-row settings-section-note"><div class="settings-row-copy"><span class="settings-row-hint">${this.escapeHtml(section.note)}</span></div></div>`;
                 for (const field of section.fields) {
                     const val = data[field.key] ?? field.default ?? '';
+                    // An organization policy can lock a field (lumi/policy.py); it
+                    // then shows the managed value and can't be changed here.
+                    const lockedBy = this.settings?._meta?.locked?.[`${store}.${field.key}`] || '';
+                    const lock = lockedBy ? ' disabled' : '';
                     let input = '';
                     if (field.type === 'select') {
                         const opts = field.options.map(o =>
                             `<option value="${o.value}" ${val === o.value ? 'selected' : ''}>${o.label}</option>`
                         ).join('');
-                        input = `<select class="settings-select" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}">${opts}</select>`;
+                        input = `<select class="settings-select" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${lock}>${opts}</select>`;
                     } else if (field.type === 'toggle') {
                         const checked = val ? 'checked' : '';
-                        input = `<label class="settings-toggle"><input type="checkbox" ${checked} data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" /><span class="settings-toggle-track" aria-hidden="true"></span></label>`;
+                        input = `<label class="settings-toggle"><input type="checkbox" ${checked} data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${lock} /><span class="settings-toggle-track" aria-hidden="true"></span></label>`;
                     } else if (field.type === 'password') {
                         const hasSecret = Boolean(this.settings._meta?.api_keys_present?.[field.key]);
                         input = `
                             <div style="display:flex;align-items:center;gap:8px;">
-                                <input class="settings-input" type="password" value="" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}" style="flex:1" />
+                                <input class="settings-input" type="password" value="" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}" style="flex:1"${lock} />
                                 <span style="color:var(--muted);font-size:11px;white-space:nowrap">${hasSecret ? 'Stored' : 'Not set'}</span>
-                                ${hasSecret ? `<button class="btn-sm settings-clear-secret" data-section="${store}" data-key="${field.key}" aria-label="Clear ${this.escapeHtml(field.label)}" style="font-size:11px">Clear</button>` : ''}
+                                ${hasSecret && !lockedBy ? `<button class="btn-sm settings-clear-secret" data-section="${store}" data-key="${field.key}" aria-label="Clear ${this.escapeHtml(field.label)}" style="font-size:11px">Clear</button>` : ''}
                             </div>
                         `;
                     } else if (field.type === 'number') {
-                        input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None" style="width:80px" />`;
+                        input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None" style="width:80px"${lock} />`;
                     } else {
                         const ph = field.placeholder ? ` placeholder="${this.escapeHtml(field.placeholder)}"` : '';
-                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph} />`;
+                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph}${lock} />`;
                     }
+                    const managed = lockedBy ? `<div class="settings-row-hint settings-managed">Managed by ${this.escapeHtml(lockedBy)}</div>` : '';
                     const hint = field.hint ? `<div class="settings-row-hint">${this.escapeHtml(field.hint)}</div>` : '';
-                    bodyHtml += `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${this.escapeHtml(field.label)}</span>${hint}</div><div class="settings-row-value">${input}</div></div>`;
+                    bodyHtml += `<div class="settings-row${lockedBy ? ' is-managed' : ''}"><div class="settings-row-copy"><span class="settings-row-label">${this.escapeHtml(field.label)}</span>${managed}${hint}</div><div class="settings-row-value">${input}</div></div>`;
                 }
             }
 

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<policyDefinitionResources xmlns:xsd="http://www.w3.org/2001/XMLSchema"
+                           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                           revision="1.0" schemaVersion="1.0"
+                           xmlns="http://schemas.microsoft.com/GroupPolicy/2006/07/PolicyDefinitions">
+  <displayName>Lumi</displayName>
+  <description>Organization policy for the Lumi coding agent.</description>
+  <resources>
+    <stringTable>
+      <string id="Lumi">Lumi</string>
+      <string id="SUPPORTED_Lumi">Lumi with organization policy support</string>
+      <string id="Policy">Organization policy</string>
+      <string id="Policy_Help">The organization policy as a lumi.policy/v1 JSON document: settings to lock (for example privacy.secret_scan or security.cli_adapters), allowed permission modes, allowed and blocked models, files the agent must never read, shell rules, and MCP server and capability pack allowlists.
+
+Lumi applies it when it starts. Locked settings show "Managed by" and the organization name in Settings, and people can't change them. If the document is invalid, Lumi refuses model requests until it is fixed.
+
+See docs/enterprise-policy.md in the Lumi repository for the full format.</string>
+      <string id="PolicyFile">Organization policy file</string>
+      <string id="PolicyFile_Help">A path to a lumi.policy/v1 JSON file, for example on a managed share or in %ProgramData%. Environment variables are expanded. Ignored when "Organization policy" is also set.</string>
+      <string id="PolicyKeys">Trusted policy signing keys</string>
+      <string id="PolicyKeys_Help">A JSON object mapping key ids to base64 Ed25519 public keys, for example {"acme-2026": "MCowBQ..."}. Lumi accepts a signed policy only when it verifies against one of these keys.</string>
+    </stringTable>
+    <presentationTable>
+      <presentation id="Policy">
+        <multiTextBox refId="Policy">Policy document (JSON):</multiTextBox>
+      </presentation>
+      <presentation id="PolicyFile">
+        <textBox refId="PolicyFile">
+          <label>Path to policy.json:</label>
+        </textBox>
+      </presentation>
+      <presentation id="PolicyKeys">
+        <textBox refId="PolicyKeys">
+          <label>Trusted keys (JSON):</label>
+        </textBox>
+      </presentation>
+    </presentationTable>
+  </resources>
+</policyDefinitionResources>

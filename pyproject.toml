@@ -35,6 +35,8 @@ dependencies = [
     # API keys in Windows Credential Manager, the macOS Keychain or the
     # Secret Service instead of settings.json (lumi/secrets_store.py).
     "keyring>=25",
+    # Ed25519 signatures on organization policy (lumi/policy.py).
+    "cryptography>=42",
 ]
 
 # Kimi uses the existing httpx dependency directly; no provider SDK is needed.

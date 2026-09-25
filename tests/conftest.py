@@ -26,6 +26,21 @@ if str(PROJECT_ROOT) not in sys.path:
 # in-memory keyring explicitly.
 os.environ["LUMI_KEYCHAIN"] = "off"
 
+# Nor may an organization policy installed on the machine (registry, managed
+# preferences, ProgramData) change what the tests see. Policy tests install
+# their own through lumi.policy.set_for_tests.
+os.environ.pop("LUMI_POLICY_FILE", None)
+import lumi.policy as _lumi_policy  # noqa: E402
+
+_lumi_policy.set_for_tests(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_organization_policy():
+    _lumi_policy.set_for_tests(None)
+    yield
+    _lumi_policy.set_for_tests(None)
+
 
 # ── Home isolation (process-wide) ──────────────────────────────────
 # Importing lumi.gui.app constructs the module-level

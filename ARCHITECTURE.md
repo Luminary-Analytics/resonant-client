@@ -33,6 +33,7 @@ these services; it is not required for ordinary chat-based coding.
 | Saved work | `gui/sessions.py`, `gui/session_ledger.py`, `gui/ui_state.py` | Projects, session metadata, transcript ledger, composer drafts |
 | Configuration | `gui/settings.py`, `network_defaults.py`, `gui/project_instructions.py` | Settings, endpoint resolution, layered repository instructions |
 | Client security | `engine/exclusions.py`, `gui/workspace_trust.py`, `gui/retention.py` | File exclusion rules, trust for repository content, transcript retention |
+| Organization policy | `policy.py`, `packaging/policy/` | Machine policy sources, signatures, locked settings and allowlists |
 | Network and secrets | `net.py`, `secrets_store.py`, `secret_scan.py` | Proxy and OS certificate store, keys in the OS credential store, clean child environments, secrets removed before model requests |
 | Desktop UI | `gui/templates/index.html`, `gui/static/app.js`, `gui/static/styles.css` | Sidebar, composer, model picker, command palette, shell |
 | Settings UI | `gui/static/settings_view.js` | Connection flows, API keys, preferences |

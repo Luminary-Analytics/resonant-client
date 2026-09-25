@@ -9,9 +9,12 @@ the task defaults to continuing it, and the hand-off (their conversation,
 note and where the work is) comes with it.
 
 The run uses the same engine as the desktop app: organization policy,
-budgets, usage records, the audit log, file exclusions and the secret scan all
-apply. Nothing asks a person: a tool call the permission mode doesn't allow is
-refused, and a budget that needs approval stops the run.
+budgets, usage records, the audit log, file exclusions, the secret scan and
+the person's own hooks (``hooks`` in settings.json) all apply. Nothing asks a
+person: a tool call the permission mode doesn't allow is refused, and a
+budget that needs approval stops the run. The person's ``permission_request``
+hook may approve a call the mode would ask about, but nothing in ``--mode
+ask`` and no call the organization's policy asks a person about.
 
 A repository's own instructions, notes and ``lumi-policy.json`` allow rules
 apply only to trusted projects: ones trusted in the desktop app, or this run
@@ -160,6 +163,17 @@ def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_pr
     # Nobody is watching the screen of an unattended run.
     session.computer_use_enabled = False
     session.audit_session_id = f"headless:{run_id}"
+    from .engine.hooks import HookRunner
+
+    # The person's own hooks (``hooks`` in settings.json) run as in the app
+    # (gui/app.py) in every session built here: `lumi run`, scheduled tasks,
+    # model comparisons' runs, the chat gateway and tasks from chat. They are
+    # the person's configuration, not repository content, so they need no
+    # trust. Nothing a run passes leaves them out, so a guard can't be skipped
+    # by starting the agent another way. A gate hook that can't run here, or
+    # runs past its timeout_seconds, blocks what it guards (engine/hooks.py).
+    # Capability packs aren't loaded here, so neither are their hooks.
+    session.hook_runner = HookRunner(settings)
     return session
 
 

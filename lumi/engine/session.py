@@ -625,6 +625,8 @@ class Session:
         # the repository itself; they join the prompt only for trusted
         # projects (gui/workspace_trust.py).
         self.project_content_trusted = True
+        # The saved conversation's id, for the audit log (set by the app).
+        self.audit_session_id = ""
         self.event_logger = None  # EventLogger, set externally for JSONL logging
         self.agent_registry: Optional[AgentRegistry] = None
         self.agent_id: str = ""
@@ -758,6 +760,7 @@ class Session:
         self.exclusions = parent.exclusions
         self.computer_use_enabled = parent.computer_use_enabled
         self.project_content_trusted = parent.project_content_trusted
+        self.audit_session_id = parent.audit_session_id
         self.project_instructions = parent.project_instructions
         self.autonomy_tier = parent.autonomy_tier
         self.execution_policy = parent.execution_policy
@@ -1168,11 +1171,19 @@ class Session:
         """
         if not policy_prompt and self._should_auto_approve(tool_name):
             return True, "", tool_args
+        from .. import audit
+
         if on_permission is not None:
-            if on_permission(tool_name, tool_args) is True:
+            approved = on_permission(tool_name, tool_args) is True
+            audit.record("approval", **self._audit_fields(), tool=tool_name, call_id=call_id, by="user",
+                         decision="approved" if approved else "denied", policy_prompt=policy_prompt)
+            if approved:
                 return True, "", tool_args
             return False, "Tool execution denied by user.", tool_args
-        return self._permission_hook_decision(tool_name, tool_args, call_id)
+        approved, denial, prepared = self._permission_hook_decision(tool_name, tool_args, call_id)
+        audit.record("approval", **self._audit_fields(), tool=tool_name, call_id=call_id, by="hook",
+                     decision="approved" if approved else "denied", policy_prompt=policy_prompt)
+        return approved, denial, prepared
 
     def _permission_hook_decision(
         self, tool_name: str, tool_args: dict, call_id: str,
@@ -1528,6 +1539,108 @@ class Session:
         return tokens
 
     def run(
+        self,
+        user_msg: str,
+        on_permission: Optional[Callable] = None,
+        on_choice: Optional[Callable] = None,
+        on_user_input: Optional[Callable] = None,
+        images: Optional[list[tuple[bytes, str]]] = None,
+    ) -> Iterator[dict]:
+        """Run one turn (see ``_run_turn``) and record it in the audit log.
+
+        Every event the loop yields passes through here, so the audit log
+        (lumi/audit.py) sees model usage, tool calls and results, file
+        changes, redactions and errors from GUI, gateway and worker turns alike.
+        """
+        from .. import audit
+
+        started = time.time()
+        common = self._audit_fields()
+        audit.record(
+            "turn.start",
+            **common,
+            subagent=bool(self.is_subagent),
+            provider=str(getattr(self.backend, "name", "") or ""),
+            model=str(getattr(self.backend, "model", "") or ""),
+            mode=self.autonomy_tier,
+            prompt=audit.content(user_msg),
+            images=len(images or ()),
+        )
+        outcome = "completed"
+        written_paths: dict[str, str] = {}
+        turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images)
+        try:
+            for event in turn:
+                if event.get("event") == EngineEvent.ERROR.value:
+                    outcome = "error"
+                self._audit_event(event, common, written_paths)
+                yield event
+        except GeneratorExit:
+            outcome = "stopped"
+            raise
+        except BaseException:
+            outcome = "error"
+            raise
+        finally:
+            # Close the loop now, so its cleanup runs before this returns.
+            turn.close()
+            if self.cancel_requested:
+                outcome = "cancelled"
+            audit.record("turn.end", **common, outcome=outcome, elapsed=round(time.time() - started, 3))
+
+    def _audit_fields(self) -> dict:
+        return {
+            "session": self.audit_session_id,
+            "project": self.project_path or "",
+            "agent": self.agent_id,
+        }
+
+    def _audit_event(self, event: dict, common: dict, written_paths: dict[str, str]) -> None:
+        """One engine event in the audit log, content per the capture level."""
+        from .. import audit
+
+        kind = event.get("event")
+        call_id = str(event.get("call_id") or "")
+        if kind == EngineEvent.TOOL_CALL.value:
+            name = str(event.get("name") or "")
+            arguments = event.get("arguments") if isinstance(event.get("arguments"), dict) else {}
+            if name in WRITE_TOOL_NAMES and isinstance(arguments.get("path"), str):
+                written_paths[call_id] = arguments["path"]
+            audit.record("tool.call", **common, tool=name, call_id=call_id,
+                         external=bool(event.get("external")), **audit.summarize_args(arguments))
+        elif kind == EngineEvent.TOOL_RESULT.value:
+            name = str(event.get("name") or "")
+            error = bool(event.get("is_error"))
+            denied = bool(event.get("denied"))
+            try:
+                elapsed = round(float(event.get("elapsed") or 0), 3)
+            except (TypeError, ValueError):
+                elapsed = 0.0
+            audit.record("tool.result", **common, tool=name, call_id=call_id, error=error,
+                         denied=denied, elapsed=elapsed, output=audit.content(event.get("output")))
+            if error or denied:
+                written_paths.pop(call_id, None)
+                return
+            changed = [written_paths.pop(call_id)] if call_id in written_paths else []
+            changed += [path for path in event.get("changed_files") or () if isinstance(path, str)]
+            for path in changed:
+                audit.record("file.change", **common, tool=name, call_id=call_id, path=audit.name(path))
+        elif kind == EngineEvent.STATUS.value and isinstance(event.get("stats"), dict):
+            try:
+                elapsed = round(float(event.get("elapsed") or 0), 3)
+            except (TypeError, ValueError):
+                elapsed = 0.0
+            audit.record("model.usage", **common,
+                         provider=str(getattr(self.backend, "name", "") or ""),
+                         model=str(event.get("model") or getattr(self.backend, "model", "") or ""),
+                         elapsed=elapsed, **audit.usage_counts(event["stats"]))
+        elif kind == EngineEvent.BACKEND_STATUS.value and event.get("kind") == "secrets_redacted":
+            audit.record("privacy.redaction", **common, kinds=dict(event.get("kinds") or {}))
+        elif kind == EngineEvent.ERROR.value:
+            audit.record("error", **common, code=str(event.get("code") or ""),
+                         message=audit.content(event.get("message")))
+
+    def _run_turn(
         self,
         user_msg: str,
         on_permission: Optional[Callable] = None,
@@ -2145,13 +2258,13 @@ class Session:
                         else:
                             started, fingerprints = cli_tool_starts.pop(call_id, (time.time(), {}))
                             metadata = dict(data.get('metadata') or {})
+                            changed: list[str] = []
                             if data.get('is_error'):
                                 turn_failed_tools.append(name)
                             else:
                                 turn_successful_tools.append(name)
                                 # Do not fingerprint paths outside the session workspace.
                                 root = Path(self.project_path or getattr(self.backend, 'cwd', os.getcwd())).resolve()
-                                changed = []
                                 for value in data.get('changed_files') or []:
                                     path = (root / value).resolve()
                                     if path.is_relative_to(root):
@@ -2167,7 +2280,8 @@ class Session:
                             yield make_event(EngineEvent.TOOL_RESULT, name=name, call_id=call_id,
                                              output=data.get('output', ''), is_error=bool(data.get('is_error')),
                                              elapsed=time.time() - started, metadata=metadata,
-                                             denied=False, external=True, source='codex')
+                                             denied=False, external=True, source='codex',
+                                             changed_files=changed)
 
                     elif event_type == EVENT_DONE:
                         cog_state = data.get("cognitive_state")

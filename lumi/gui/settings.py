@@ -59,7 +59,7 @@ DEFAULTS = {
         # unknown keys; nothing reads them anymore.
     },
     # Secrets are masked before settings are sent to the frontend.
-    "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": ""},
+    "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": "", "otlp": ""},
     # Custom model connections (gateways, Azure, Bedrock, Vertex); see lumi/connections.py.
     # Each one's key is stored in api_keys as conn_<id>.
     "connections": [],
@@ -105,6 +105,17 @@ DEFAULTS = {
         # Delete local transcripts and session logs this many days after
         # their last activity; 0 keeps them (lumi/gui/retention.py).
         "transcript_retention_days": 0,
+        # The local audit log (lumi/audit.py): metadata only unless the capture
+        # level is "redacted" or "full"; kept this many days.
+        "audit_log": True,
+        "audit_capture": "metadata",
+        "audit_retention_days": 365,
+    },
+    # Live OpenTelemetry export of the audit records (OTLP/HTTP JSON). The
+    # collector token, if any, is api_keys.otlp.
+    "audit": {
+        "otlp_endpoint": "",
+        "otlp_auth_header": "Authorization",
     },
     # Tools that act outside Lumi's own tool loop. Organization policy can
     # turn them off for everyone; these are the local switches.

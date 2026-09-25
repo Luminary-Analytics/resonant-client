@@ -304,6 +304,11 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   modes and models, and allowlist MCP servers and capability packs with Group
   Policy, a configuration profile or a policy file. See
   [Organization policy for administrators](docs/enterprise-policy.md).
+- **Audit log:** a local, hash-chained record of turns, model usage, tool
+  calls, file changes, approvals and settings changes. It keeps metadata
+  only unless you choose a content level, can be verified under **Settings >
+  Privacy & security**, and can stream to an OpenTelemetry collector. See
+  [Audit log](docs/audit-log.md).
 
 ## Browser Tools
 

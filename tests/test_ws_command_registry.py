@@ -247,12 +247,16 @@ def test_set_permission_mode_requires_an_explicit_known_mode():
 
 def _settings_ctx(msg):
     writes = []
+    stored: dict = {}
 
     def update_setting_value(section, key, value, *, clear_secret=False):
         writes.append((section, key, value))
+        stored[(section, key)] = value
         return {"saved": True}
 
     state = SimpleNamespace(
+        # The handler compares values before and after to audit what changed.
+        settings=SimpleNamespace(get=lambda section, key=None, default=None: stored.get((section, key), default)),
         update_setting_value=update_setting_value,
         get_init_data=lambda refresh_only=False: {"event": "init"},
     )

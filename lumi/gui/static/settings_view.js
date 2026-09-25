@@ -232,6 +232,27 @@ class LumiSettingsView {
         }).join('')}</div>`;
     }
 
+    _renderAuditStatus() {
+        const status = this.auditStatus;
+        if (!status) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const chain = !status.verified
+            ? `Verification failed: ${esc(status.problem)}`
+            : status.records
+                ? `Verified: ${esc(status.records)} records, none changed or out of order.`
+                : 'No records yet.';
+        const exported = status.export
+            ? `${esc(status.export.sent)} sent, ${esc(status.export.queued)} waiting, ${esc(status.export.dropped)} dropped${status.export.last_error ? ` · last error ${esc(status.export.last_error)}` : ''}`
+            : 'Not exporting';
+        const where = status.enabled === false
+            ? `The audit log is off. Records already in <code>${esc(status.path)}</code> stay until their retention ends.`
+            : `<code>${esc(status.path)}</code>`;
+        return `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Records</span><div class="settings-row-hint">${where}</div></div></div>
+            <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">Hash chain</span><div class="settings-row-hint${status.verified ? '' : ' editor-error'}" role="status">${chain}</div></div>
+                <div class="settings-row-value"><button type="button" class="btn-sm" id="audit-verify">Verify again</button></div></div>
+            <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">OpenTelemetry export</span><div class="settings-row-hint">${exported}</div></div></div>`;
+    }
+
     _renderOrgPolicy() {
         const meta = this.settings?._meta?.policy || {};
         const esc = value => this.escapeHtml(String(value ?? ''));
@@ -1026,7 +1047,7 @@ class LumiSettingsView {
             {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
             {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
-            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','security','project_trust'], keywords:'secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM'},
+            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
@@ -1119,7 +1140,10 @@ class LumiSettingsView {
         if (page === 'sonn_account' && !this.sonnAccount) this._requestSonnAccount();
         if (page === 'provider_connections' && !this.providerConnections?.codex) this.send({command:'provider_connection', provider:'codex', action:'status'});
         if (page === 'provider_connections') this.send({command: 'connections_list'});
-        if (page === 'privacy') this.send({command: 'project_trust_list'});
+        if (page === 'privacy') {
+            this.send({command: 'project_trust_list'});
+            this.send({command: 'audit_status'});
+        }
         const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list'}[page];
         if (command) this.send({command});
     }
@@ -1262,6 +1286,8 @@ class LumiSettingsView {
                       hint: 'OPENROUTER_API_KEY is also supported. API calls use your OpenRouter credits.' },
                     { key: 'kimi', label: 'Moonshot API key', type: 'password',
                       hint: 'MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
+                    { key: 'otlp', label: 'OpenTelemetry collector token', type: 'password',
+                      hint: 'Sent in the header set under Privacy & security when audit records are exported.' },
                 ]
             },
             { id: 'org_policy', title: 'Organization policy', custom: true },
@@ -1292,6 +1318,31 @@ class LumiSettingsView {
                       hint: 'Lets `lumi gateway` answer messages from Telegram. Off makes it refuse to start.' },
                 ]
             },
+            {
+                id: 'audit_log', title: 'Audit log', store: 'privacy',
+                note: 'Lumi keeps a local, tamper-evident record of what the agent did: turns, model usage, tool calls and results, file changes, approvals and settings changes. Each record carries a hash of the one before, so an edited or removed record is detected.',
+                fields: [
+                    { key: 'audit_log', label: 'Keep an audit log', type: 'toggle', default: true },
+                    { key: 'audit_capture', label: 'What the audit log captures', type: 'select', default: 'metadata',
+                      options: [
+                          { value: 'metadata', label: 'Metadata only' },
+                          { value: 'redacted', label: 'Content, secrets removed' },
+                          { value: 'full', label: 'Full content' },
+                      ],
+                      hint: 'Metadata keeps tool names, outcomes, file paths, sizes and digests, never prompts, file contents, commands or output. Content levels are truncated; saved keys are always removed.' },
+                    { key: 'audit_retention_days', label: 'Keep audit records for (days)', type: 'number',
+                      hint: 'Empty or 0 keeps them. Separate from transcript retention.' },
+                ]
+            },
+            {
+                id: 'audit', title: 'Send audit records to OpenTelemetry',
+                fields: [
+                    { key: 'otlp_endpoint', label: 'Collector (OTLP/HTTP)', type: 'text', placeholder: 'https://collector.example.com:4318',
+                      hint: 'Records are exported as spans with the OpenTelemetry GenAI conventions. Put a collector token under Connections > API keys.' },
+                    { key: 'otlp_auth_header', label: 'Token header', type: 'text', placeholder: 'Authorization' },
+                ]
+            },
+            { id: 'audit_status', title: 'Audit log status', custom: true },
             { id: 'project_trust', title: 'Project trust', custom: true },
             {
                 id: 'engram', title: 'Memory (Engram)',
@@ -1356,6 +1407,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderProviderConnections();
             } else if (section.id === 'creative_editors') {
                 bodyHtml = this._renderEditorIntegrations();
+            } else if (section.id === 'audit_status') {
+                bodyHtml = this._renderAuditStatus();
             } else if (section.id === 'org_policy') {
                 bodyHtml = this._renderOrgPolicy();
             } else if (section.id === 'file_exclusions') {
@@ -1595,6 +1648,7 @@ class LumiSettingsView {
             this._exclusionDraft = exclusions.value;
             exclusions.focus();
         });
+        document.getElementById('audit-verify')?.addEventListener('click', () => this.send({command: 'audit_status'}));
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {
                 button.disabled = true;

@@ -133,5 +133,7 @@ class GatewayService:
                 auto_approve=True,
                 project_instructions=self._project_instructions,
             )
+            # Audit records of this chat's turns name the chat.
+            session.audit_session_id = f"gateway:{chat_id}"
             self._sessions[chat_id] = session
         return session

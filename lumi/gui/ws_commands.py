@@ -493,6 +493,12 @@ async def _capability_pack_revoke(ctx: CommandContext) -> None:
     await _set_capability_pack_approval(ctx, approve=False)
 
 
+@command("audit_status")
+async def _audit_status(ctx: CommandContext) -> None:
+    # Where the audit log is, whether its hash chain verifies, and export health.
+    await ctx.send(await _in_executor(ctx.state.audit_status))
+
+
 @command("project_trust_list")
 async def _project_trust_list(ctx: CommandContext) -> None:
     # The open project's status plus every remembered decision, for Settings.
@@ -2980,10 +2986,14 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "appearance": frozenset({"theme", "density", "font_size"}),
     "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
     "network": frozenset({"ollama_url", "exo_url", "sonn_url", "proxy_url", "no_proxy", "system_certificates"}),
-    "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai"}),
+    "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd"}),
-    "privacy": frozenset({"secret_scan", "excluded_paths", "transcript_retention_days"}),
+    "privacy": frozenset({
+        "secret_scan", "excluded_paths", "transcript_retention_days",
+        "audit_log", "audit_capture", "audit_retention_days",
+    }),
+    "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
     "security": frozenset({"cli_adapters", "computer_use", "chat_gateway"}),
     "model_favorites": frozenset({"models"}),
 }
@@ -3034,7 +3044,9 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
         not isinstance(value, str) or value not in PERMISSION_MODES
     ):
         raise ValueError("Choose a permission mode: ask, auto-edit, plan or bypass.")
-    if (section, key) in {("network", "system_certificates"), ("privacy", "secret_scan")} or section == "security":
+    if (section, key) in {
+        ("network", "system_certificates"), ("privacy", "secret_scan"), ("privacy", "audit_log"),
+    } or section == "security":
         if not isinstance(value, bool):
             raise ValueError(f"{section}.{key} must be on or off.")
     elif (section, key) == ("privacy", "excluded_paths"):
@@ -3049,6 +3061,33 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
             if text and not text.startswith("#") and text not in patterns:
                 patterns.append(text)
         return patterns
+    elif (section, key) == ("privacy", "audit_capture"):
+        from ..audit import CAPTURE_LEVELS
+
+        if value not in CAPTURE_LEVELS:
+            raise ValueError("Choose what the audit log captures: metadata, redacted or full.")
+    elif (section, key) == ("privacy", "audit_retention_days"):
+        value = 0 if value is None else value
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 3650:
+            raise ValueError("Enter a number of days from 0 (keep) to 3650.")
+        return int(value)
+    elif (section, key) == ("audit", "otlp_endpoint"):
+        from urllib.parse import urlsplit
+
+        text = str(value or "").strip()
+        parts = urlsplit(text)
+        if text and (parts.scheme not in {"http", "https"} or not parts.hostname):
+            raise ValueError("Enter the collector as http(s)://host:4318.")
+        if parts.username or parts.password:
+            raise ValueError("Put the collector token under API keys, not in the URL.")
+        return text.rstrip("/")
+    elif (section, key) == ("audit", "otlp_auth_header"):
+        import re
+
+        text = str(value or "").strip() or "Authorization"
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", text):
+            raise ValueError("Enter a header name such as Authorization or x-honeycomb-team.")
+        return text
     elif (section, key) == ("privacy", "transcript_retention_days"):
         value = 0 if value is None else value  # an emptied field keeps transcripts
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 3650:
@@ -3083,6 +3122,7 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
     except ValueError as exc:
         await ctx.send_error(str(exc))
         return
+    from .. import audit
     from ..policy import current as current_policy
 
     policy = current_policy()
@@ -3100,8 +3140,19 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
     if ctx.runs.busy and sonn_change:
         await ctx.send({"event": "error", "message": "Finish or stop the current run before changing SONN settings."})
         return
+    def current_values() -> dict:
+        # Off the event loop: API keys come from the OS credential store.
+        return {k: ctx.state.settings.get(section, k) for k, _ in writes}
+
+    before = await asyncio.to_thread(current_values)
     for k, v in writes:
         data = await asyncio.to_thread(ctx.state.update_setting_value, section, k, v, clear_secret=clear_secret)
+    # Which settings changed, never their values. Leaving a field unchanged
+    # (Settings saves on blur) isn't a change.
+    after = await asyncio.to_thread(current_values)
+    changed = [str(k) for k, _ in writes if after[k] != before[k]]
+    if changed:
+        audit.record("settings.change", section=str(section), keys=changed)
     if sonn_change:
         ctx.state.sonn_account_revision = getattr(ctx.state, "sonn_account_revision", 0) + 1
         await ctx.send({"event": "sonn_account", "data": None})

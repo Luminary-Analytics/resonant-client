@@ -13,7 +13,7 @@ import argparse
 import logging
 import sys
 
-from .. import net, secret_scan
+from .. import audit, net, secret_scan
 from ..backends import create_backend
 from ..gui.settings import SettingsManager
 from ..network_defaults import resolve_ollama_url
@@ -82,6 +82,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit(1)
     net.configure(settings)
     secret_scan.configure(settings)
+    audit.configure(settings)
     token = args.token or str(settings.get("api_keys", "telegram_bot", "") or "")
     allowed = args.allow or list(settings.get("gateway", "allowed_chat_ids", []) or [])
 

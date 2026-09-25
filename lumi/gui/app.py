@@ -58,7 +58,7 @@ from ..connections import (
 from ..sonn import SonnBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
-from .. import net, secret_scan
+from .. import audit, net, secret_scan
 from . import ws_commands
 from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
@@ -481,7 +481,9 @@ class AppState:
         elif decision == "restricted":
             self.workspace_trust.restrict(path)
         else:
+            decision = "forgotten"
             self.workspace_trust.forget(path)
+        audit.record("trust.decision", project=path, decision=decision)
         if self._normalize_path(path) == self._normalize_path(self.project.project_path):
             # Instructions are read into each turn's prompt; the policy is
             # rebuilt here so allow rules start or stop applying at once.
@@ -2055,6 +2057,8 @@ class AppState:
         self.network_state = net.configure(self.settings)
         # So do the secret scan and the saved key values it removes.
         secret_scan.configure(self.settings)
+        # And the audit log's capture level and OpenTelemetry export.
+        audit.configure(self.settings)
 
     def enforce_retention(self) -> dict:
         """Delete transcripts older than the retention setting (gui/retention.py)."""
@@ -2063,7 +2067,14 @@ class AppState:
 
         days = int(self.settings.get("privacy", "transcript_retention_days", 0) or 0)
         current = getattr(self.project, "current_session", None)
-        return purge_expired(days, state_home(), keep_session_ids=[getattr(current, "id", "")])
+        removed = purge_expired(days, state_home(), keep_session_ids=[getattr(current, "id", "")])
+        # The audit log has its own, longer retention.
+        removed["audit_days"] = audit.audit_log().purge()
+        return removed
+
+    def audit_status(self) -> dict:
+        """The audit log's location, chain verification and export health."""
+        return {"event": "audit_status", **audit.audit_log().status()}
 
     def update_setting_value(
         self,
@@ -3172,6 +3183,8 @@ async def _run_session_streaming(
     }
     display_events.append(user_display_event)
     active_record = getattr(state.project, "current_session", None)
+    # Audit records of this run name the saved conversation.
+    session.audit_session_id = str(getattr(active_record, "id", "") or "")
     if event_source is None:
         bind_sonn_conversation(
             session.backend,

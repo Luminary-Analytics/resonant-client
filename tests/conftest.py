@@ -37,9 +37,16 @@ _lumi_policy.set_for_tests(None)
 
 @pytest.fixture(autouse=True)
 def _no_organization_policy():
+    # Process-wide configuration must not leak between tests: a test whose
+    # AppState turns the secret scan on (a policy can lock it) would otherwise
+    # mark every later test's history in the same worker.
+    from lumi import secret_scan
+
     _lumi_policy.set_for_tests(None)
+    secret_scan.reset()
     yield
     _lumi_policy.set_for_tests(None)
+    secret_scan.reset()
 
 
 # ── Home isolation (process-wide) ──────────────────────────────────

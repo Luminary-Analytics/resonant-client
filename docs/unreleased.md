@@ -8,6 +8,71 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 the terminal says why a tool call was refused — source only, not released
+
+**A refused call printed only "✗ denied".** When a hook, a policy rule, a tool
+boundary, the session's allowlist, malformed arguments or an approval nobody
+could answer stops a tool call, the model gets the reason as the call's result.
+The terminal UI (`lumi/tui.py`) dropped it, so a guard hook that timed out
+looked the same as the person's own Deny.
+
+- **The reason prints under the call** (`_render_tool_result`), which now reads
+  "✗ not run". The reason is dimmed, and wrapped to the terminal's width inside
+  the call's gutter. It can come from a hook, a policy, a repository or the
+  model, so it is escaped (`rich.markup.escape`) and printed without emoji
+  codes or highlighting: `[bold]`, `[/]` or `:x:` in it print as written.
+- The person's own Deny ("Tool execution denied by user.") still reads just
+  "✗ denied".
+- **A refused read or search no longer looks like a result.** The terminal
+  collapses a step of only reads and searches to one line per call. There, a
+  refused `grep` read "0 matches", a `glob` "0 files", and a `file_read`
+  showed nothing. They read "✗ not run", with the reason under them.
+
+Validation on September 25, 2026:
+
+- `tests/test_tui.py` (14 tests) captures the TUI's console as plain text, 72
+  columns wide:
+  - each refusal text the engine gives (a hook that timed out, a policy rule,
+    a tool boundary, the allowlist, malformed arguments, no approval prompt, a
+    task batch hook) prints "✗ not run" and the reason word for word, every
+    line inside the gutter and the width;
+  - the person's Deny, and an empty result, print "✗ denied" alone;
+  - a reason with `[/]`, `[bold red]…[/bold red]`, a link tag, `:x:` and a
+    trailing backslash prints exactly as written;
+  - a reason with a 164-character path folds inside the gutter, nothing lost;
+  - two real sessions (the streaming stub) run through `run_embedded`, as the
+    TUI runs each message. A `pre_tool_use` hook that exits 1 with a bracketed
+    message refuses a `grep` in a collapsed step and a command: both read
+    "✗ not run" with the message the model was given, and the command didn't
+    run. With approvals on (`--approve`), the TUI's own "Allow bash? [Y/n]"
+    prompt, answered "n" through prompt_toolkit's pipe input, reads "✗ denied"
+    alone and the command didn't run; answered "y" in a throwaway copy, it ran.
+- On the previous `tui.py`, 10 of the 14 failed. The four Deny tests passed, as
+  they should.
+- On main at 1d1ffbe: full `pytest` 4,353 passed, 5 skipped. `ruff check .`
+  clean (ruff 0.12.12; `pyproject.toml` pins the rule set), `node --check`
+  passes for `app.js` and `settings_view.js`, the four Node UI test files pass
+  (61 tests), and `git diff --check` is clean. `tests/test_tui.py` also passes
+  with Rich 15.0.0, the release lock's version (14.0.0 is installed here).
+  A first full run ended at 22% with exit code 127 and no failure reported,
+  in `tests/test_computer_use_upgrades.py`; that file passed alone (25 tests),
+  and the full rerun passed.
+- Rebased on main at 3e74b97 (the organization's pack registry): full `pytest`
+  4,359 passed, 5 skipped. `ruff check .`, both `node --check` runs, the four
+  Node UI test files (61 tests) and `git diff --check` passed again.
+- Real sessions from an isolated home, rendered through `consume_events` into a
+  recorded Rich console at 80 and 52 columns: a refused `grep` under one that
+  found "2 matches", a `pre_tool_use` hook that timed out after 2 s on
+  `git push origin main`, and `npm publish` denied by the approval callback.
+  The reasons wrapped inside the gutter at both widths, and the Deny read
+  "✗ denied". The real `~/.resonant` was unchanged and no `~/.lumi` was
+  created.
+
+Not exercised: the TUI in a terminal window with a live model; the console was
+captured instead. The `lumi` TUI builds its session without hooks or an
+execution policy (`tui.py` `main`), so from it a hook or policy refusal can't
+happen today. The tests give the session they pass to `run_embedded` a hook.
+
 ## September 25 checkpoint Timeline — source only, not released
 
 - **The Timeline is back** (`lumi/gui/static/app.js`, `openTimeline`;

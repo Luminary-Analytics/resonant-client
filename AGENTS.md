@@ -148,6 +148,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   approved packs. A `permission_request` hook settles only approvals the
   person could give: never in the read-only `suggest` tier, and never for an
   organization `prompt` rule (`policies.ORGANIZATION`), which needs a person.
+- Orchestration specialists (`orchestration/runner.py`: `/plan`, Missions,
+  autonomous sessions) get their hooks as each starts from `hook_runner_for`,
+  which the app sets to `AppState.specialist_hook_runner`: the shared runner
+  scoped with the project's approved pack hooks, as a chat session gets. A
+  runner built without it loads `HookRunner(settings)`. A new place that
+  builds a Session for the person must attach their hooks too.
 
 ## Working in the codebase
 

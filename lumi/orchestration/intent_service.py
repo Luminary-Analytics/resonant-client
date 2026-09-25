@@ -84,6 +84,7 @@ class IntentService:
         on_event: Optional[Callable[[dict], None]] = None,
         specialist_backend_resolver: Optional[Callable[[str], Any]] = None,
         mcp_manager: Any = None,
+        hook_runner_for: Optional[Callable[[str], Any]] = None,
     ):
         self.project_path = project_path
         self.backend = backend
@@ -95,6 +96,8 @@ class IntentService:
         # LocalSpecialistRunner.__init__ for the resolver contract.
         self.specialist_backend_resolver = specialist_backend_resolver
         self.mcp_manager = mcp_manager
+        # The person's hooks for each specialist (LocalSpecialistRunner._hook_runner).
+        self.hook_runner_for = hook_runner_for
         self._active: dict[str, _ActiveIntent] = {}
         self._lock = threading.Lock()
 
@@ -161,6 +164,7 @@ class IntentService:
             audit_logger=self._make_audit_logger(graph.intent_id),
             specialist_backend_resolver=self.specialist_backend_resolver,
             mcp_manager=self.mcp_manager,
+            hook_runner_for=self.hook_runner_for,
         )
         walker = GraphWalker(
             runner=runner,

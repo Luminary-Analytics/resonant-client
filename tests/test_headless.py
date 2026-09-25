@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sys
 import threading
 from types import SimpleNamespace
 
@@ -56,6 +57,29 @@ def scripted(*scripts):
 
 def call(dollars=0.1, *events):
     return [*events, done(model=MODEL, stats={"input_tokens": int(dollars * 1_000_000)})]
+
+
+def hook_script(tmp_path, name, body):
+    """A hook command that runs ``body`` with this Python, kept outside the project."""
+    folder = tmp_path.parent / f"{tmp_path.name}-hooks"
+    folder.mkdir(exist_ok=True)
+    script = folder / f"{name}.py"
+    script.write_text(body, encoding="utf-8")
+    return f'"{sys.executable}" "{script}"'
+
+
+def approving_hook(tmp_path, marker):
+    """A permission_request hook that allows every call it's asked about, and notes each one."""
+    return {"hook_type": "permission_request", "input_format": "json", "command": hook_script(tmp_path, "approve", (
+        "import json, os, sys\n"
+        "sys.stdin.read()\n"
+        f"open({str(marker)!r}, 'a').write(os.environ['LUMI_TOOL_NAME'] + '\\n')\n"
+        "print(json.dumps({'decision': 'allow'}))\n"))}
+
+
+def results(out):
+    lines = [json.loads(line) for line in out.splitlines()]
+    return [line for line in lines if line.get("event") == "tool.result"], lines[-1]
 
 
 class TestSpec:
@@ -228,3 +252,101 @@ class TestRefusals:
         with pytest.raises(SandboxViolation):
             trusted._prepare_workspace_tool_args("file_write", {"path": str(tmp_path.parent / "x.txt"),
                                                                 "content": "x"})
+
+
+class TestHooks:
+    """The person's own hooks (``hooks`` in settings.json) run in `lumi run`, as in
+    the app. `lumi run` used to build its session without them, so a Settings
+    guard that refused a call in the app let it run here."""
+
+    def test_a_settings_hook_guards_the_run(self, monkeypatch, tmp_path, ledger):
+        from lumi.gui.settings import SettingsManager
+
+        seen = tmp_path.parent / f"{tmp_path.name}-seen.txt"
+        record = ("import os\n"
+                  f"open({str(seen)!r}, 'a').write(os.environ['LUMI_HOOK_TYPE'] + ' ' + os.environ['LUMI_TOOL_NAME'] + '\\n')\n")
+        guard = hook_script(tmp_path, "guard", record + "import sys\nsys.stderr.write('no writes from unattended runs')\n"
+                                                        "sys.exit(1)\n")
+        recorder = hook_script(tmp_path, "record", record)
+        SettingsManager().set("hooks", None, [
+            {"hook_type": "pre_tool_use", "matcher": "file_write", "name": "no writes", "command": guard},
+            {"hook_type": "session_start", "command": recorder},
+            {"hook_type": "session_end", "command": recorder},
+        ])
+        backend = scripted(call(0.01, tool_call("file_write", {"path": "notes.txt", "content": "hi"})),
+                           call(0.01, text_delta("A hook refused the write.")))
+
+        code, out, err = run(monkeypatch, tmp_path, backend, "Write a note", "--mode", "bypass", "--output", "jsonl")
+
+        calls, result = results(out)
+        assert calls[0]["denied"] is True, (out, err)
+        assert calls[0]["output"] == "Blocked by hook: no writes from unattended runs"
+        assert not (tmp_path / "notes.txt").exists()
+        assert (code, result["status"], result["denied_calls"]) == (3, "needs_attention", 1)
+        assert seen.read_text(encoding="utf-8").splitlines() == [
+            "session_start ", "pre_tool_use file_write", "session_end "]
+
+    def test_a_permission_hook_answers_what_the_mode_would_ask_about(self, monkeypatch, tmp_path, ledger):
+        from lumi.gui.settings import SettingsManager
+
+        # Auto-edit asks before commands, and nobody can answer in a run; the
+        # person's own permission_request hook can, as in the app's background work.
+        marker = tmp_path.parent / f"{tmp_path.name}-asked.txt"
+        SettingsManager().set("hooks", None, [approving_hook(tmp_path, marker)])
+        backend = scripted(call(0.01, tool_call("bash", {"command": "mkdir made"})), call(0.01, text_delta("Done.")))
+
+        code, out, err = run(monkeypatch, tmp_path, backend, "Make the folder", "--mode", "auto-edit",
+                             "--output", "jsonl")
+
+        calls, result = results(out)
+        assert calls[0]["denied"] is False, (out, err)
+        assert (code, result["status"], result["denied_calls"]) == (0, "completed", 0)
+        assert (tmp_path / "made").is_dir() and marker.read_text(encoding="utf-8") == "bash\n"
+
+    def test_ask_stays_read_only_whatever_a_permission_hook_says(self, monkeypatch, tmp_path, ledger):
+        from lumi.gui.settings import SettingsManager
+
+        # The read-only tier's own policy refuses writes and commands; check_run
+        # is left to the approval nobody can give. The hook isn't asked.
+        marker = tmp_path.parent / f"{tmp_path.name}-asked.txt"
+        SettingsManager().set("hooks", None, [approving_hook(tmp_path, marker)])
+        backend = scripted(call(0.01, tool_call("check_run", {"command": "mkdir made", "requirement": "it runs"})),
+                           call(0.01, text_delta("I only read.")))
+
+        code, out, err = run(monkeypatch, tmp_path, backend, "Check it", "--mode", "ask", "--output", "jsonl")
+
+        calls, result = results(out)
+        assert calls[0]["denied"] is True, (out, err)
+        assert "no approval prompt is available" in calls[0]["output"]
+        assert (code, result["status"], result["denied_calls"]) == (3, "needs_attention", 1)
+        assert not (tmp_path / "made").exists() and not marker.exists()
+
+    def test_a_permission_hook_does_not_answer_for_the_organization(self, monkeypatch, tmp_path, ledger):
+        from lumi.gui.settings import SettingsManager
+
+        lumi_policy.set_for_tests(parse({
+            "schema": "lumi.policy/v1", "organization": "Acme",
+            "shell": {"rules": [{"tool_pattern": "bash", "action": "prompt", "arg_globs": {"command": "mkdir made*"},
+                                 "reason": "Acme: a person approves new folders"}]},
+        }, source="t"))
+        marker = tmp_path.parent / f"{tmp_path.name}-asked.txt"
+        SettingsManager().set("hooks", None, [approving_hook(tmp_path, marker)])
+        backend = scripted(call(0.01, tool_call("bash", {"command": "mkdir made"})),
+                           call(0.01, tool_call("bash", {"command": "mkdir other"}, call_id="c2")),
+                           call(0.01, text_delta("Made one of them.")))
+
+        code, out, err = run(monkeypatch, tmp_path, backend, "Make the folders", "--mode", "auto-edit",
+                             "--output", "jsonl")
+
+        calls, result = results(out)
+        # Acme's prompt needs a person, whatever the person's own hook would say.
+        assert calls[0]["denied"] is True, (out, err)
+        assert calls[0]["output"] == (
+            "The organization's policy requires a person to approve this call (Acme: a person approves new "
+            "folders), but no approval prompt is available for this run, so bash was not executed. "
+            "Continue without it.")
+        assert not (tmp_path / "made").exists()
+        # Auto-edit's own question about the other command is the person's to answer, and their hook does.
+        assert calls[1]["denied"] is False and (tmp_path / "other").is_dir()
+        assert marker.read_text(encoding="utf-8") == "bash\n"
+        assert (code, result["denied_calls"]) == (3, 1)

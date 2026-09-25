@@ -2641,10 +2641,13 @@ async def _cmd_previews(ctx: CommandContext) -> None:
 @command("memory_list")
 @command("memory_save")
 @command("memory_delete")
+@command("memory_share")
 async def _cmd_project_memory(ctx: CommandContext) -> None:
+    from .. import team_library
     from ..engine.project_memory import ProjectMemory
     project = ctx.state.project.project_path
     memory = ProjectMemory(project)
+    shared = ''
     try:
         if ctx.msg.get('command') == 'memory_save':
             memory.save(ctx.msg.get('text', ''), source=ctx.msg.get('source', ''),
@@ -2652,8 +2655,23 @@ async def _cmd_project_memory(ctx: CommandContext) -> None:
                         memory_id=ctx.msg.get('id', ''), author='user')
         elif ctx.msg.get('command') == 'memory_delete':
             memory.delete(ctx.msg.get('id', ''))
-        await ctx.send({'event': 'project_memory_updated', 'project': project, 'memories': memory.list()})
-    except (OSError, ValueError) as exc:
+        elif ctx.msg.get('command') == 'memory_share':
+            note = next((n for n in memory.list() if n['id'] == ctx.msg.get('id')), None)
+            if note is None:
+                raise ValueError('That note no longer exists.')
+            answer = await asyncio.to_thread(team_library.share_note, ctx.state.cloud, project, note,
+                                             str(ctx.msg.get('organization_id') or ''))
+            organization = (answer.get('organization') or {}).get('name') or 'your organization'
+            shared = (f'Already shared with {organization}.' if answer.get('status') == 'approved'
+                      else f'Sent to {organization} for review. The team gets it once an owner or admin approves it.')
+        status = await asyncio.to_thread(ctx.state.cloud.status)
+        share_to = ([{'id': org.get('id'), 'name': org.get('name')}
+                     for org in (status.get('account') or {}).get('organizations') or []]
+                    if status.get('signed_in') and await asyncio.to_thread(team_library.repository_of, project) else [])
+        await ctx.send({'event': 'project_memory_updated', 'project': project, 'memories': memory.list(),
+                        'team_notes': await asyncio.to_thread(team_library.notes_for, project),
+                        'share_to': share_to, **({'shared': shared} if shared else {})})
+    except (OSError, ValueError, team_library.LibraryError) as exc:
         await ctx.send({'event': 'error', 'message': str(exc)})
 
 

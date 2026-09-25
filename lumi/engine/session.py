@@ -2204,6 +2204,17 @@ class Session:
                     turn_sources['project_memory'] = notes
             except (OSError, ValueError) as exc:
                 logger.warning('Project memory unavailable: %s', exc)
+        if self.project_path:
+            # Notes the organization approved (lumi/team_library.py); they come
+            # from Lumi Cloud, not the repository, so project trust doesn't gate them.
+            try:
+                from ..team_library import team_notes_context
+                team_notes = team_notes_context(self.project_path, user_msg)
+                if team_notes:
+                    turn_context += '\n\n--- TEAM PROJECT NOTES ---\n' + team_notes + '\n--- END TEAM PROJECT NOTES ---'
+                    turn_sources['team_notes'] = team_notes
+            except (OSError, ValueError) as exc:
+                logger.warning('Team project notes unavailable: %s', exc)
         if self._engram and self._engram.enabled:
             try:
                 memory_context = self._engram.get_context_for_prompt(user_msg) or ""

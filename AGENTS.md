@@ -247,7 +247,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   skills and prompts, synced from Lumi Cloud into `team/library.json` and
   deleted on sign-out. Team skills are listed for the agent like pack skills
   and read with `skill_view team:<org>/<slug>`; prompts only fill the
-  composer and are never sent without the person.
+  composer and are never sent without the person. Approved team project
+  notes are recalled only in clones of their repository and only while their
+  files' line-ending-normalized hashes match (`team_library.fingerprint`);
+  never mix them into the project's own `.lumi/memory.json`.
 - Hand-offs (`handoff.py`) carry that same copy, the note and the
   repository's address (without credentials), branch and commit. A picked-up
   hand-off is context (`@handoff:`, sticky in `ContextBroker.STICKY`), never

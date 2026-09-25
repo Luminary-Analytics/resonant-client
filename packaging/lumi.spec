@@ -123,6 +123,10 @@ datas = [
      "lumi/browser_extension"),
 ]
 
+# The VS Code extension, packed into a .vsix at install time (lumi/code_editors).
+for name in ("package.json", "extension.js", "bridge.js", "README.md", "LICENSE.txt"):
+    datas.append((str(PKG_ROOT / "code_editors" / "vscode" / name), "lumi/code_editors/vscode"))
+
 # Include data files for libraries that ship their own (jinja2 has none, but
 # starlette ships some HTML defaults for error pages).
 datas += collect_data_files("starlette")

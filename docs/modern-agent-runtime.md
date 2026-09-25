@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-24 (capability-pack trust and tool approvals)
+Last updated: 2026-09-25 (repository allow rules answer Auto-edit's prompt)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -39,8 +39,13 @@ never silently stashed or reset.
 
 `task` creates a durable `AgentRecord` before execution and returns an
 `AgentHandoff` containing outcome, evidence, changed files, validation,
-blockers, artifacts, and the recommended next action. Transcripts remain
-inspectable after completion or failure. A process restart marks nonterminal
+blockers, artifacts, and the recommended next action. Changed files come from
+the worker's tool results, matched to their calls by call id: a write whose
+own result succeeded, files a successful result names (a Codex file change),
+and a worktree's committed changes. A write that was denied, failed or never
+answered is not listed. A denied check is reported as `not run`, which Director
+Mode records as a validation that did not pass. Transcripts remain inspectable
+after completion or failure. A process restart marks nonterminal
 records as `stuck` because their threads cannot survive, while preserving all
 evidence for recovery.
 
@@ -128,6 +133,20 @@ rules and logs a warning (`repository_rules`). The policy the app and
 does the app's fallback when the project's policy can't be built
 (`with_organization_rules`).
 
+A trusted project's `allow` rules answer Auto-edit's prompt (Plan uses the
+same tier). A call the tier would ask about runs without asking when the policy
+as a whole allows it and the first matching rule in the project's own
+`lumi-policy.json` is `allow` (`ExecutionPolicy.repository_allows`). The
+guardrails, organization rules and built-in denies still decide first, and an
+organization `allow` alone never skips a prompt. A command that chains, pipes,
+substitutes or redirects (`;`, `&`, `|`, `<`, `>`, backquotes, `$(` or a line
+break) still asks, because a rule's glob matches the whole command text. Ask
+never lets a repository answer. The project's `allow` rules are in the policy
+only while the user trusts the project and the file is the version they
+trusted: `project_execution_policy` compares the digest the trust check read
+(`gui/workspace_trust.py`) with the bytes it parses. The audit log records
+such a call as an `approval` by `project_policy`.
+
 When approval is required, the user's answer is final and only an explicit
 `true` approves. A PERMISSION_REQUEST hook can neither run a call the user
 denied nor block one they allowed. Only when no prompt is available (background
@@ -141,7 +160,7 @@ prompt that is no longer waiting.
 | Mode | Tier | Runs without asking |
 |---|---|---|
 | Ask | `ask` | Read-only tools; asks before file writes, shell and everything else |
-| Auto-edit, Plan | `auto-edit` | Read-only and file-editing tools, `await_user`, `task`, `task_batch` |
+| Auto-edit, Plan | `auto-edit` | Read-only and file-editing tools, `await_user`, `task`, `task_batch`, and calls a trusted project's `allow` rule matches |
 | Full-auto | `full-auto` | Everything the policy allows |
 
 Ask's built-in policy marks file writes and shell commands `prompt` and keeps
@@ -153,8 +172,9 @@ only (ask)**, use the read-only `suggest` tier instead, whose policy denies file
 writes and shell outright, since nobody can answer a prompt there.
 
 Auto-edit asks before shell, MCP, browser, desktop, REPL, process and git
-actions, and before any newly added tool. Changing the mode updates the live
-session's tier and policy, including a run in progress.
+actions, and before any newly added tool, unless a trusted project's `allow`
+rule matches (above). Changing the mode updates the live session's tier and
+policy, including a run in progress.
 
 ## Flight recorder and evaluation
 
@@ -174,6 +194,7 @@ Explicit attachments are inserted in chat with:
 
 ```text
 @file:path/to/file.py
+@file:path/to/file.py#L10-24
 @symbol:ClassName
 @diff:working
 @checkpoint:cp_00001_abcd1234
@@ -182,10 +203,13 @@ Explicit attachments are inserted in chat with:
 @test-failure:last
 @terminal:last
 @plan:current
+@issue:ENG-12
 ```
 
-Every resolved item carries a provider, label, provenance, freshness metadata,
-and estimated size. The Context cockpit lists available providers. Repository
+`#L10-24` (or `#L10`) attaches only those lines; the [code editor
+extensions](code-editors.md) send selections this way. Quote a path with
+spaces: `@file:"docs/my notes.md#L3-8"`. Every resolved item carries a
+provider, label, provenance, freshness metadata, and estimated size. The Context cockpit lists available providers. Repository
 maps use Python ASTs and optional `tree-sitter-language-pack` grammars before
 falling back to conservative regex extraction.
 

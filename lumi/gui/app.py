@@ -407,11 +407,12 @@ class AppState:
         return cls._MODE_TIERS.get(cls.normalize_permission_mode(mode), "suggest")
 
     @staticmethod
-    def _execution_policy_for(tier: str, project_root: str, *, honor_allows: bool = True):
+    def _execution_policy_for(tier: str, project_root: str, *, honor_allows: bool = True,
+                              policy_digest: Optional[str] = None):
         """The tier's rules with the project's and the organization's (engine/policies.py)."""
         from ..engine.policies import project_execution_policy
 
-        return project_execution_policy(tier, project_root, honor_allows=honor_allows)
+        return project_execution_policy(tier, project_root, honor_allows=honor_allows, policy_digest=policy_digest)
 
     def cli_adapters_allowed(self) -> bool:
         return self.settings.get("security", "cli_adapters", True) is not False
@@ -482,8 +483,10 @@ class AppState:
         session.autonomy_tier = self.autonomy_tier_for_mode(mode)
         root = getattr(session, "project_path", None) or self.project.project_path
         try:
+            trust = self.project_trust(root)
+            # The digest ties the allow rules to the file content trust saw.
             session.execution_policy = self._execution_policy_for(
-                session.autonomy_tier, root, honor_allows=self.project_trust(root).honor_policy_allows,
+                session.autonomy_tier, root, honor_allows=trust.honor_policy_allows, policy_digest=trust.policy_digest,
             )
         except Exception:
             # Never leave the session without the tier's built-in denies or the
@@ -2014,6 +2017,9 @@ class AppState:
                 broker.exclusions = self.session.exclusions
         if section == "security" and self.session is not None:
             self.session.computer_use_enabled = self.computer_use_allowed()
+        if section == "security":
+            from .editor_bridge import bridge as editor_bridge, enabled as editor_bridge_enabled
+            editor_bridge.sync(editor_bridge_enabled(self.settings))
         if (
             section == "security"
             and self.backend_spec
@@ -3748,6 +3754,12 @@ async def access_endpoint(request):
     return JSONResponse({'token': token}, headers=no_store)
 
 
+async def editor_endpoint(request):
+    """Requests from the code editor extensions (gui/editor_bridge.py)."""
+    from .editor_bridge import handle
+    return await handle(request, state)
+
+
 async def ui_state_endpoint(request):
     from starlette.responses import JSONResponse
     from .ui_state import ui_state
@@ -3793,6 +3805,7 @@ app = Starlette(
         Route("/", homepage),
         Route("/api/access", access_endpoint, methods=['GET', 'POST']),
         Route("/api/ui-state", ui_state_endpoint, methods=['GET', 'POST']),
+        Route("/api/editor/{action}", editor_endpoint, methods=['GET', 'POST']),
         WebSocketRoute("/ws", websocket_endpoint),
         Mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static"),
     ],

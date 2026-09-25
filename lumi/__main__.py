@@ -80,6 +80,9 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "schedule":
         from lumi.schedules import main as schedule_main
         raise SystemExit(schedule_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "editor":
+        from lumi.code_editors.cli import main as editor_main
+        raise SystemExit(editor_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "updates":
         from lumi.update_channels import main as updates_main
         raise SystemExit(updates_main(sys.argv[2:]))

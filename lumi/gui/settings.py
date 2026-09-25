@@ -67,18 +67,31 @@ DEFAULTS = {
     },
     # Secrets are masked before settings are sent to the frontend.
     "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": "", "otlp": "",
-                 "github": "", "gitlab": "", "bitbucket": "", "azure_devops": ""},
+                 "github": "", "gitlab": "", "bitbucket": "", "azure_devops": "", "jira": "", "linear": "", "slack_bot": "", "slack_app": ""},
+    # Issue trackers (engine/issue_trackers.py). Jira's token is api_keys.jira;
+    # with an email it's a Jira Cloud API token, without one a personal access
+    # token for Jira Server or Data Center. Linear's key is api_keys.linear.
+    "issue_trackers": {"jira_url": "", "jira_email": ""},
     # Custom model connections (gateways, Azure, Bedrock, Vertex); see lumi/connections.py.
     # Each one's key is stored in api_keys as conn_<id>.
     "connections": [],
     "project_models": {},
     "model_favorites": {"models": []},
-    # Chat-channel gateway (`lumi gateway`): drive the agent from
-    # Telegram. Only allowlisted chat IDs are served.
+    # Chat-channel gateway (`lumi gateway`, docs/chat-gateway.md): work with
+    # the agent from Telegram or Slack. Only allowlisted chats are served.
+    # It grants remote control, so this section and its tokens (api_keys
+    # telegram_bot, slack_bot, slack_app) are edited in the file, never from
+    # the Settings page (gui/ws_commands.py).
     "gateway": {
+        "channel": "",            # "telegram" (default) or "slack"
+        "project": "",            # default: the folder the gateway starts in
+        "mode": "",               # "ask" (default), "auto-edit" or "bypass"
         "backend": "",
         "model": "",
-        "allowed_chat_ids": [],
+        "allowed_chat_ids": [],   # Telegram chat IDs
+        "slack_allowed": [],      # Slack channel or user IDs
+        "approval_minutes": 10,
+        "telegram_api_url": "",   # a self-hosted Bot API server; default api.telegram.org
     },
     "hooks": [],
     "mcp_servers": {
@@ -132,6 +145,7 @@ DEFAULTS = {
         "computer_use": True,     # screenshots, mouse and keyboard control
         "chat_gateway": True,     # `lumi gateway` (Telegram)
         "scheduled_tasks": True,  # `lumi schedule`: unattended runs at set times
+        "editor_bridge": True,    # VS Code and JetBrains reach Lumi (gui/editor_bridge.py)
         # "project": the agent's commands, jobs and previews run in an OS
         # sandbox that writes only to the project and temporary folders
         # (lumi/engine/os_sandbox.py, macOS and Linux).
@@ -168,6 +182,11 @@ DEFAULTS = {
         "last_checkin": "",
         "policy_version": None,
         "usage_since": "",
+        # Tasks from Slack and Teams (lumi/remote_tasks.py): off until the
+        # person turns it on; an organization's policy can lock it off.
+        "remote_tasks": False,
+        "remote_tasks_project": "",
+        "remote_tasks_mode": "ask",
     },
     # Settings > Updates (lumi/update_channels.py): automatic, manual or off;
     # the stable or beta channel; and a release line ("0.20") to stay on.

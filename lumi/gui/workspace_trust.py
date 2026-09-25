@@ -3,8 +3,9 @@
 A repository can carry instruction files (AGENTS.md, LUMI.md, CLAUDE.md and
 the others in ``project_instructions.INSTRUCTION_FILES``) and project notes
 (``.lumi/memory.json``) that go into the model's prompt, and a
-``lumi-policy.json`` whose ``allow`` rules skip approval prompts. Cloning a
-repository shouldn't hand it any of these. Until the user trusts a project:
+``lumi-policy.json`` whose ``allow`` rules let Auto-edit run the calls they
+match without asking (engine/policies.py). Cloning a repository shouldn't
+hand it any of these. Until the user trusts a project:
 
 * its instruction files and notes are not loaded, nor is a codebase index
   summary (a committed ``.lumi/index.json`` would otherwise count as built);
@@ -17,7 +18,10 @@ user trusted the project, its ``allow`` rules are ignored again until the
 user reviews the change. Capability packs keep their own per-pack approval.
 
 On first run, projects already in Recent projects are trusted, so upgrading
-changes nothing for folders the user had already chosen to work in.
+changes nothing for folders the user had already chosen to work in. Their
+policy's ``allow`` rules still wait for one review: before trust existed they
+never skipped a prompt, so honoring them unreviewed would change what Lumi
+does in those folders without asking.
 """
 
 from __future__ import annotations
@@ -51,7 +55,8 @@ class TrustStatus:
     notes: bool = False             # .lumi/memory.json in the repository
     policy_file: str = ""
     policy_allows: int = 0          # allow rules the policy file contains
-    policy_changed: bool = False    # the policy file changed after trust
+    policy_changed: bool = False    # the policy file isn't the version the user trusted
+    policy_digest: str = ""         # SHA-256 of the policy file this status read
 
     @property
     def trusted(self) -> bool:
@@ -133,7 +138,7 @@ class WorkspaceTrust:
             # First run with trust: keep every project the user already works in.
             for project in recent_projects:
                 if project and os.path.isdir(project):
-                    self._record(project, "trusted", note="already in Recent projects")
+                    self._record(project, "trusted", note="already in Recent projects", review_allows=True)
             self._save()
 
     def status(self, project_path: str) -> TrustStatus:
@@ -159,6 +164,7 @@ class WorkspaceTrust:
             policy_file=os.path.basename(policy),
             policy_allows=allows,
             policy_changed=changed,
+            policy_digest=digest,
         )
 
     def trust(self, project_path: str) -> TrustStatus:
@@ -182,8 +188,12 @@ class WorkspaceTrust:
             items = [dict(entry, key=key) for key, entry in self._projects.items()]
         return sorted(items, key=lambda item: item.get("path", "").lower())
 
-    def _record(self, project_path: str, decision: str, *, note: str = "") -> None:
-        digest, _ = _policy_facts(policy_file(project_path))
+    def _record(self, project_path: str, decision: str, *, note: str = "", review_allows: bool = False) -> None:
+        digest, allows = _policy_facts(policy_file(project_path))
+        if review_allows and allows:
+            # No trusted version yet, so status() reports the policy as
+            # changed and its allow rules stay off until the user trusts it.
+            digest = ""
         with self._lock:
             self._projects[_key(project_path)] = {
                 "path": os.path.abspath(project_path),

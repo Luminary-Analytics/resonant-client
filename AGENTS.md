@@ -223,6 +223,30 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   every priced request while the mission runs (`iter_cost_tracker`), is
   checked at each heartbeat as well as between iterations, and is kept in the
   roadmap with the spend so far, so a resumed mission counts on.
+- The chat gateway (`gateway/`) builds each chat's session with
+  `headless.build_session`, as `lumi run` does, and never trusts a project
+  itself. Approvals, stop and status are handled on the adapter's thread as
+  they arrive, never queued behind the turn they concern; an unanswered
+  approval is refused. Adapters are transport only and check their allowlist
+  for messages and button presses alike. Tests use mock transports, never
+  real Telegram or Slack.
+- Code editors reach the app only through `gui/editor_bridge.py`: a per-launch
+  bearer token in the user-only `editor-bridge.json`, no `Origin` (web pages
+  are refused), files inside the open project and not excluded. The bridge
+  only adds `@file:` attachments to the composer and reads changed files; it
+  never sends a message, starts a turn or changes settings.
+  `security.editor_bridge` turns it off. The VS Code extension
+  (`code_editors/vscode/`) stays plain JavaScript without dependencies, so
+  Lumi packs its .vsix; tests never start or install into a real editor.
+- Tasks from Slack and Teams (`remote_tasks.py`) are off until the person
+  turns them on, never run on a managed computer, and build their sessions
+  with `headless.build_session`. Their approvals go through Lumi Cloud to the
+  chat, and no answer refuses the action. Tests use the fake Lumi Cloud in
+  `tests/test_cloud.py`, never a real one.
+- Sharing a conversation (`share.py`) sends Lumi Cloud people's messages,
+  Lumi's replies and one line per action, never tool results, after
+  `secret_scan` removes saved keys and secret patterns. Keep new event kinds
+  out of the copy unless they carry only what the person or Lumi said.
 - Model comparisons (`model_evals.py`) run each task as a `lumi run`
   subprocess in a detached git worktree of `HEAD` under the project's state
   folder, never in the user's checkout; the user's check command passes the
@@ -253,7 +277,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs tests/vscode_extension.test.cjs
 git diff --check
 ```
 

@@ -32,9 +32,10 @@ def configure(settings: Any) -> None:
     """Read the token from Settings at use, so a changed key applies at once."""
     global _token_source
     _token_source = (lambda: str(settings.get("api_keys", "github", "") or "")) if settings is not None else (lambda: "")
-    from . import code_hosts  # the other hosts' tokens, from the same Settings
+    from . import code_hosts, issue_trackers  # the other hosts' and trackers' keys, from the same Settings
 
     code_hosts.configure(settings)
+    issue_trackers.configure(settings)
 
 
 def set_transport_for_tests(transport: Any) -> None:

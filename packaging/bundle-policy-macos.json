@@ -25,6 +25,7 @@
     "_internal/lumi/gui/static/lumi-app-icon.svg",
     "_internal/lumi/orchestration/bundled_skills/browser-acceptance.md",
     "_internal/lumi/browser_extension/manifest.json",
+    "_internal/lumi/code_editors/vscode/extension.js",
     "_internal/keyring-*.dist-info/entry_points.txt",
     "_internal/licenses/THIRD_PARTY_NOTICES.txt"
   ],

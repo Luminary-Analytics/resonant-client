@@ -2954,7 +2954,7 @@ class LumiApp {
         this.activeTerminals.delete(callId);
 
         // Update the list entry to show done state
-        const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"]`);
+        const el = document.querySelector(`.terminal-entry[data-call-id="${CSS.escape(callId)}"]`);
         if (el) {
             const spinner = el.querySelector('.terminal-entry-spinner');
             if (spinner) {
@@ -3001,7 +3001,7 @@ class LumiApp {
                 </div>
                 <div style="display:flex;align-items:center;gap:6px;">
                     <span class="terminal-entry-elapsed">${elapsed}s</span>
-                    <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${callId}">
+                    <button class="terminal-entry-stop" title="Cancel current run" data-call-id="${this.escapeHtml(callId)}">
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                             <rect x="1.5" y="1.5" width="7" height="7" rx="1" fill="currentColor"/>
                         </svg>
@@ -3032,7 +3032,7 @@ class LumiApp {
             }
             // Update elapsed times in the list
             for (const [callId, info] of this.activeTerminals) {
-                const el = document.querySelector(`.terminal-entry[data-call-id="${callId}"] .terminal-entry-elapsed`);
+                const el = document.querySelector(`.terminal-entry[data-call-id="${CSS.escape(callId)}"] .terminal-entry-elapsed`);
                 if (el) {
                     el.textContent = ((Date.now() - info.startTime) / 1000).toFixed(1) + 's';
                 }
@@ -3880,6 +3880,9 @@ class LumiApp {
                 this.showStatusMessage('Model evaluation started in the background');
                 this.send({ command: 'evaluation_list' });
                 break;
+            case 'editor_context':
+                this._applyEditorContext(event);
+                break;
             case 'checkpoint_list':
                 this.iterationCheckpoints = event.checkpoints || [];
                 if (this.currentView === 'settings') this.renderSettingsView();
@@ -4007,6 +4010,13 @@ class LumiApp {
                 // A saved form is emptied at once; a run finishing waits until
                 // nobody is typing (renderSettingsView defers for a focused field).
                 if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.saved)});
+                break;
+            case 'code_editors':
+                this.codeEditors = event.data;
+                if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.result)});
+                break;
+            case 'session_share':
+                this._renderShareDialog(event);
                 break;
             case 'model_evals':
                 this.modelEvals = event.data;
@@ -4436,7 +4446,7 @@ class LumiApp {
                         <div class="backend-card-info">
                             <div class="backend-card-name">${this.escapeHtml(item.model)}</div>
                             <div class="backend-card-detail">${this.escapeHtml(detail)}</div>
-                            <div class="backend-card-pills"><span class="backend-pill backend-pill-ok">${provider}</span></div>
+                            <div class="backend-card-pills"><span class="backend-pill backend-pill-ok">${this.escapeHtml(provider)}</span></div>
                         </div>
                         <div class="backend-card-dot"></div>`;
                     row.addEventListener('click', () => this.selectBackend(item.backend, item.model));
@@ -5520,9 +5530,11 @@ class LumiApp {
             this.trackTerminalStart(callId, name, event.arguments || {});
         }
 
+        // A call is not a change: it counts once its own result succeeds
+        // (handleToolResult). Sub-agent calls returned above and never count.
         const renderKind = event.presentation?.kind || '';
         if (renderKind === 'edit' || renderKind === 'write' || name === 'file_edit' || name === 'file_write') {
-            this._recordAgentFileChange(name, event.arguments || {}, event);
+            this._rememberFileChangeCall(event);
         }
 
         // CLI backends: group ALL tool calls into a collapsible activity panel
@@ -5611,6 +5623,8 @@ class LumiApp {
             this.renderToolResult(event);
             return;
         }
+
+        this._settleFileChangeCall(event);
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
         if (hasImage && this.stepIsInlineOnly) {
@@ -5709,7 +5723,7 @@ class LumiApp {
                 break;
             case 'computer_click':
                 const ct = args.clicks === 2 ? 'Double-click' : 'Click';
-                desc = `${ct} (${args.x}, ${args.y})`;
+                desc = `${ct} (${this.escapeHtml(args.x)}, ${this.escapeHtml(args.y)})`;
                 meta = args.button || 'left';
                 break;
             case 'computer_type':
@@ -5722,10 +5736,10 @@ class LumiApp {
                 }
                 break;
             case 'computer_scroll':
-                desc = `Scroll ${args.direction || 'down'} ×${args.amount || 3}`;
+                desc = `Scroll ${this.escapeHtml(args.direction || 'down')} ×${this.escapeHtml(args.amount || 3)}`;
                 break;
             default:
-                desc = info.label;
+                desc = this.escapeHtml(info.label);
         }
 
         const el = document.createElement('div');
@@ -5929,7 +5943,7 @@ class LumiApp {
     renderInlineToolResult(name, output, isError, elapsed, meta) {
         // Find the last matching inline tool and add status
         const target = this.getRenderTarget();
-        const tools = target.querySelectorAll(`.tool-inline[data-tool="${name}"]`);
+        const tools = target.querySelectorAll(`.tool-inline[data-tool="${CSS.escape(name)}"]`);
         const last = tools[tools.length - 1];
         if (!last) return;
 
@@ -5994,7 +6008,7 @@ class LumiApp {
             row = this._blockToolRows.get(callId);
             this._blockToolRows.delete(callId);
         } else {
-            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${name}"]`);
+            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
         if (!row) return;
@@ -6077,7 +6091,7 @@ class LumiApp {
             row = this._blockToolRows.get(callId);
             this._blockToolRows.delete(callId);
         } else {
-            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${name}"]`);
+            const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
         if (!row) return;
@@ -6157,7 +6171,7 @@ class LumiApp {
         const overlay = document.createElement('div');
         overlay.className = 'lightbox-overlay';
         overlay.innerHTML = `
-            <img class="lightbox-img" src="${src}" alt="Screenshot">
+            <img class="lightbox-img" src="${this.escapeHtml(src)}" alt="Screenshot">
             <button class="lightbox-close">&times;</button>
         `;
         overlay.addEventListener('click', (e) => {
@@ -7023,7 +7037,7 @@ class LumiApp {
             return;
         }
         container.innerHTML = cmds.map((c, i) => `
-            <div class="cmd-palette-item${i === 0 ? ' active' : ''}" data-cmd-id="${c.id}">
+            <div class="cmd-palette-item${i === 0 ? ' active' : ''}" data-cmd-id="${this.escapeHtml(c.id)}">
                 <span class="cmd-palette-item-icon">${this.escapeHtml(c.icon)}</span>
                 <span class="cmd-palette-item-label">${this.escapeHtml(c.label)}</span>
                 ${c.hint ? `<span class="cmd-palette-item-hint">${this.escapeHtml(c.hint)}</span>` : ''}
@@ -7125,6 +7139,35 @@ class LumiApp {
         if (!t) return '';
         if (t.length <= 72) return t;
         return t.slice(0, 69) + '…';
+    }
+
+    /**
+     * Hold a file-changing call until its result arrives. "Changed files" and
+     * the "review these changes" suggestion describe edits that happened: a
+     * call the user rejects, a policy blocks, that fails, or that a cancel
+     * stops before it runs leaves the file as it was.
+     */
+    _rememberFileChangeCall(event) {
+        if (!this._agentRunSummary) {
+            this._agentRunSummary = { title: '', fileChanges: [], todos: null };
+        }
+        (this._agentRunSummary.pendingFileChanges ||= []).push(event);
+    }
+
+    /** Count a remembered call's change only when its own result succeeded. */
+    _settleFileChangeCall(result) {
+        const pending = this._agentRunSummary?.pendingFileChanges;
+        if (!pending?.length) return;
+        const callId = result.call_id || '';
+        // Match by call id. Calls run in order, so a backend that sends no id
+        // is answered by its oldest id-less call of the same tool.
+        const index = pending.findIndex((call) => (callId
+            ? call.call_id === callId
+            : !call.call_id && call.name === result.name));
+        if (index < 0) return;
+        const [call] = pending.splice(index, 1);
+        if (result.is_error || result.denied) return;
+        this._recordAgentFileChange(call.name || '', call.arguments || {}, call);
     }
 
     _recordAgentFileChange(name, args, event) {
@@ -8969,6 +9012,24 @@ class LumiApp {
         }
     }
 
+    /** Files and a question a code editor sent (gui/editor_bridge.py): added to the message, not sent. */
+    _applyEditorContext(event) {
+        const addition = String(event.text || '').trim();
+        if (!addition || !this.userInput) return;
+        const current = this.userInput.value;
+        const joiner = current && !/\s$/.test(current) ? '\n' : '';
+        // The trailing space keeps the @-file picker from opening on the last mention.
+        this.userInput.value = `${current}${joiner}${addition} `;
+        const end = this.userInput.value.length;
+        this.userInput.setSelectionRange(end, end);
+        this.userInput.dispatchEvent(new Event('input', { bubbles: true }));
+        this.userInput.focus();
+        const attached = Array.isArray(event.attached) ? event.attached : [];
+        const names = attached.slice(0, 2).join(', ');
+        const more = attached.length > 2 ? ` and ${attached.length - 2} more` : '';
+        this.showToastMessage(`Added from ${event.source || 'your editor'}: ${names}${more}. Send when you're ready.`);
+    }
+
     showToastMessage(message) {
         if (!message) return;
         let el = document.getElementById('ui-toast-message');
@@ -9047,14 +9108,16 @@ class LumiApp {
             const parts = [];
             if ((trust.instructions || []).length) parts.push(`instructions (${trust.instructions.join(', ')})`);
             if (trust.notes) parts.push('project notes (.lumi/memory.json)');
-            if (trust.policy_file) {
-                const one = trust.policy_allows === 1;
-                parts.push(trust.policy_allows
-                    ? `${trust.policy_file} with ${trust.policy_allows} rule${one ? '' : 's'} that skip${one ? 's' : ''} approval`
-                    : trust.policy_file);
-            }
+            // Allow rules let Auto-edit (and Plan) run the calls they match
+            // without asking; Ask always asks (engine/policies.py).
+            const one = trust.policy_allows === 1;
+            const allowRules = `${trust.policy_allows} rule${one ? '' : 's'} that skip${one ? 's' : ''} approval in Auto-edit`;
+            if (trust.policy_file) parts.push(trust.policy_allows ? `${trust.policy_file} with ${allowRules}` : trust.policy_file);
+            // Changed since the user trusted it, added after, or never
+            // reviewed (a project trusted on upgrade).
             trustNote = trust.policy_changed
-                ? `${trust.policy_file} changed since you trusted this project. Its approval-skipping rules are off until you review it.`
+                ? `You haven't reviewed this version of ${trust.policy_file}.`
+                    + (trust.policy_allows ? ` Its ${allowRules} ${one ? 'is' : 'are'} off until you trust it.` : '')
                 : `This project brings ${parts.join(' and ')}. Lumi isn't using them until you trust the project.`;
         }
 
@@ -10245,7 +10308,7 @@ class LumiApp {
             };
             el.addEventListener('click', switchToSession);
             el.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchToSession(); }
+                if (e.target === el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); switchToSession(); }
             });
 
             // Context menu button (three dots)
@@ -10431,7 +10494,7 @@ class LumiApp {
         };
         el.addEventListener('click', switchToSession);
         el.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); switchToSession(); }
+            if (e.target === el && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); switchToSession(); }
         });
 
         el.querySelector('.agent-menu-btn').addEventListener('click', (e) => {
@@ -10494,23 +10557,42 @@ class LumiApp {
 
         const menu = document.createElement('div');
         menu.className = 'agent-context-menu';
+        menu.setAttribute('role', 'menu');
+        // Focus goes back to the row (or its ⋯ button) after the menu; the menu's own buttons disappear with it.
+        const row = e.target?.closest?.('.agent-row');
+        const active = document.activeElement;
+        const returnFocus = row && active && row.contains(active) ? active : (row || active);
 
         const pinLabel = session.pinned ? '📌 Unpin' : '📌 Pin to top';
         menu.innerHTML = `
-            <div class="ctx-item" data-action="pin">${pinLabel}</div>
-            <div class="ctx-item" data-action="rename">&#9998; Rename</div>
-            <div class="ctx-item" data-action="replay">&#9654; Replay</div>
+            <button type="button" role="menuitem" class="ctx-item" data-action="pin">${pinLabel}</button>
+            <button type="button" role="menuitem" class="ctx-item" data-action="rename">&#9998; Rename</button>
+            <button type="button" role="menuitem" class="ctx-item" data-action="share">&#128279; Share…</button>
+            <button type="button" role="menuitem" class="ctx-item" data-action="replay">&#9654; Replay</button>
             <div class="ctx-separator"></div>
-            <div class="ctx-item danger" data-action="delete">&#128465; Delete</div>
+            <button type="button" role="menuitem" class="ctx-item danger" data-action="delete">&#128465; Delete</button>
         `;
 
         // Position near the click
         menu.style.left = `${e.clientX}px`;
         menu.style.top = `${e.clientY}px`;
+        menu.addEventListener('keydown', ev => {
+            if (ev.key === 'Escape' || ev.key === 'Tab') {
+                ev.preventDefault();
+                menu.remove();
+                returnFocus?.focus?.();
+            } else if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                const items = [...menu.querySelectorAll('button:not(:disabled)')];
+                const direction = ev.key === 'ArrowDown' ? 1 : -1;
+                items[(items.indexOf(document.activeElement) + direction + items.length) % items.length]?.focus();
+            }
+        });
 
         // Handle actions
         menu.addEventListener('click', (ev) => {
             const action = ev.target.closest('.ctx-item')?.dataset.action;
+            if (!action) return;
             if (action === 'pin') {
                 this.send({ command: 'pin_session', session_id: session.id });
             } else if (action === 'delete') {
@@ -10520,6 +10602,10 @@ class LumiApp {
                 if (newTitle && newTitle.trim()) {
                     this.send({ command: 'rename_session', session_id: session.id, title: newTitle.trim() });
                 }
+            } else if (action === 'share') {
+                menu.remove();
+                this.openShareDialog(session, returnFocus);
+                return;
             } else if (action === 'replay') {
                 this.send({
                     command: 'get_session_replay_events',
@@ -10528,6 +10614,7 @@ class LumiApp {
                 });
             }
             menu.remove();
+            if (document.activeElement === document.body) returnFocus?.focus?.();
         });
 
         document.body.appendChild(menu);
@@ -10540,6 +10627,90 @@ class LumiApp {
         if (rect.bottom > window.innerHeight) {
             menu.style.top = `${window.innerHeight - rect.height - 8}px`;
         }
+        menu.querySelector('button')?.focus();
+        return menu;
+    }
+
+    /** Share a read-only copy of a conversation in Lumi Cloud (lumi/share.py). */
+    openShareDialog(session, returnFocus = null) {
+        const dialog = document.getElementById('share-dialog');
+        if (!dialog || !session) return;
+        this._shareSession = session;
+        this._shareReturnFocus = returnFocus || document.activeElement;
+        document.getElementById('share-dialog-body').innerHTML = '<p class="share-note">Loading…</p>';
+        dialog.style.display = 'flex';
+        if (!this._shareWired) {
+            document.getElementById('share-dialog-close').addEventListener('click', () => this.closeShareDialog());
+            dialog.addEventListener('keydown', event => {
+                if (event.key === 'Escape') { event.stopPropagation(); this.closeShareDialog(); }
+            });
+            dialog.addEventListener('click', event => { if (event.target === dialog) this.closeShareDialog(); });
+            this._shareWired = true;
+        }
+        document.getElementById('share-dialog-close').focus();
+        this.send({ command: 'session_share_status', session_id: session.id });
+    }
+
+    closeShareDialog() {
+        const dialog = document.getElementById('share-dialog');
+        if (dialog) dialog.style.display = 'none';
+        this._shareSession = null;
+        this._shareReturnFocus?.focus?.();
+    }
+
+    _renderShareDialog(event) {
+        const session = this._shareSession;
+        const body = document.getElementById('share-dialog-body');
+        if (!session || !body || event.session_id !== session.id) return;
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const shared = event.share && event.share.url ? event.share : null;
+        const orgs = Array.isArray(event.organizations) ? event.organizations : [];
+        const parts = [];
+        if (event.error) parts.push(`<p class="editor-error" role="alert">${esc(event.error)}</p>`);
+        parts.push(`<p class="share-note"><strong>${esc(session.title || 'This conversation')}</strong>: Lumi Cloud keeps a read-only copy with your messages, Lumi’s replies and a line for each action. What tools returned stays on this computer, and saved keys are removed.</p>`);
+        if (shared) {
+            const who = shared.visibility === 'link' ? 'Anyone with the link can open it.'
+                : 'People in your organization can open it after signing in to Lumi Cloud.';
+            parts.push(`<label class="share-label" for="share-link">Link</label>
+                <div class="share-link-row"><input id="share-link" class="settings-input" readonly value="${esc(shared.url)}"><button type="button" class="dialog-btn allow" id="share-copy">Copy link</button></div>
+                <p class="share-note">${who} The copy doesn’t change when this conversation does: stop sharing, then share again for a newer one.</p>
+                <div class="dialog-actions"><button type="button" class="dialog-btn deny" id="share-stop">Stop sharing</button></div>`);
+        } else if (!event.signed_in) {
+            parts.push(`<p class="share-note">Sign in to your organization’s Lumi Cloud first.</p>
+                <div class="dialog-actions"><button type="button" class="dialog-btn allow" id="share-sign-in">Open Lumi account</button></div>`);
+        } else if (!orgs.length) {
+            parts.push('<p class="share-note">You aren’t in a Lumi Cloud organization yet.</p>');
+        } else {
+            const choices = orgs.map((org, index) => `<option value="${esc(org.id)}"${index === 0 ? ' selected' : ''}>${esc(org.name)}</option>`).join('');
+            parts.push(`${orgs.length > 1 ? `<label class="share-label" for="share-org">Organization</label><select id="share-org" class="settings-select">${choices}</select>` : `<input type="hidden" id="share-org" value="${esc(orgs[0].id)}">`}
+                <fieldset class="share-who"><legend class="share-label">Who can open it</legend>
+                    <label><input type="radio" name="share-visibility" value="organization" checked> People in ${esc(orgs.length > 1 ? 'the organization' : orgs[0].name)}</label>
+                    <label><input type="radio" name="share-visibility" value="link"> Anyone with the link, if your organization allows it</label>
+                </fieldset>
+                <div class="dialog-actions"><button type="button" class="dialog-btn allow" id="share-create">Create link</button></div>`);
+        }
+        body.innerHTML = parts.join('');
+        body.querySelector('#share-copy')?.addEventListener('click', () => {
+            const link = body.querySelector('#share-link');
+            navigator.clipboard?.writeText(link.value).then(() => this.showToastMessage('Link copied.'),
+                () => { link.select(); this.showToastMessage('Select the link and copy it.'); });
+        });
+        body.querySelector('#share-stop')?.addEventListener('click', event => {
+            event.target.disabled = true;
+            this.send({ command: 'session_share_stop', session_id: session.id });
+        });
+        body.querySelector('#share-sign-in')?.addEventListener('click', () => {
+            this.closeShareDialog();
+            this.openSettingsPage?.('lumi_account');
+        });
+        body.querySelector('#share-create')?.addEventListener('click', event => {
+            event.target.disabled = true;
+            event.target.textContent = 'Sharing…';
+            this.send({ command: 'session_share', session_id: session.id, project_path: session.project_path || '',
+                        organization_id: body.querySelector('#share-org')?.value || '',
+                        visibility: body.querySelector('input[name="share-visibility"]:checked')?.value || 'organization' });
+        });
+        (body.querySelector('#share-copy') || body.querySelector('#share-create') || body.querySelector('#share-sign-in'))?.focus();
     }
 
     formatRelativeTime(date) {

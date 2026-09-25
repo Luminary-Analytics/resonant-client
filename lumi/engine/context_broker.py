@@ -78,6 +78,7 @@ class ContextBroker:
         self.register("test-failure", self._test_failure)
         self.register("terminal", self._terminal)
         self.register("plan", self._plan)
+        self.register("issue", self._issue)
 
     def register(self, name: str, provider: Provider) -> None:
         self._providers[str(name).strip().lower()] = provider
@@ -127,8 +128,14 @@ class ContextBroker:
             for name in sorted(self._providers)
         ]
 
+    # ``@file:src/app.py#L10-20`` (or ``#L10``) attaches only those lines; the
+    # editor extensions send selections this way (gui/editor_bridge.py).
+    LINES_RE = re.compile(r"#L(?P<start>\d{1,7})(?:-L?(?P<end>\d{1,7}))?$")
+
     def _file(self, selector: str) -> ContextItem | None:
-        path = (self.project_path / selector).resolve()
+        lines = self.LINES_RE.search(selector)
+        relative = selector[:lines.start()] if lines else selector
+        path = (self.project_path / relative).resolve()
         if self.project_path not in path.parents and path != self.project_path:
             return None
         if not path.is_file():
@@ -138,6 +145,15 @@ class ContextBroker:
             # Say why instead of dropping the mention silently.
             return self._item("file", selector, self.exclusions.refusal(str(path), rule), "excluded")
         content = path.read_text(encoding="utf-8", errors="replace")
+        if lines:
+            start = max(1, int(lines.group("start")))
+            end = max(start, int(lines.group("end") or start))
+            all_lines = content.splitlines(keepends=True)
+            if start > len(all_lines):
+                return self._item("file", selector, f"{relative} has only {len(all_lines)} lines.", str(path))
+            content = "".join(all_lines[start - 1:end])
+            label = f"{relative} lines {start}-{min(end, len(all_lines))}"
+            return self._item("file", label, content, f"{path}#L{start}-{min(end, len(all_lines))}")
         return self._item("file", selector, content, str(path))
 
     def _symbol(self, selector: str) -> list[ContextItem]:
@@ -250,6 +266,16 @@ class ContextBroker:
             "plan", selector,
             path.read_text(encoding="utf-8", errors="replace"), str(path),
         )
+
+    def _issue(self, selector: str) -> ContextItem | None:
+        """A Jira, Linear, GitHub or GitLab issue (engine/issue_trackers.py); a failure says why."""
+        from .issue_trackers import IssueError, view
+
+        try:
+            text, metadata = view(selector, str(self.project_path))
+        except IssueError as exc:
+            return self._item("issue", selector, f"Couldn't read issue {selector}: {exc}", "error")
+        return self._item("issue", metadata["issue"], text, metadata.get("url") or metadata["tracker"])
 
     @staticmethod
     def _item(provider: str, label: str, content: str, provenance: str) -> ContextItem:

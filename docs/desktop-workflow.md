@@ -146,7 +146,9 @@ refuses the commands Auto-edit refuses (a recursive `rm`, `chmod` on a system
 path, a download piped into a shell) without asking, and a project's
 `lumi-policy.json` can't turn its approvals off.
 **Auto-edit** also accepts file edits and asks before shell, MCP, browser,
-desktop and git actions. **Plan** uses Auto-edit approvals for native providers.
+desktop and git actions, except the ones a trusted project's
+`lumi-policy.json` allows ([project trust](#project-trust-and-lumi-policyjson)).
+**Plan** uses Auto-edit approvals for native providers.
 **Full-auto** runs everything inside the project sandbox. A project's
 `lumi-policy.json` can require more approval but cannot lift a built-in
 block. If the file has a mistake, Lumi still applies its valid deny and ask
@@ -184,6 +186,42 @@ to that page.
   commit.
 - Symbolic links are refused, and the pack's manifest must have its own `id`.
 Settings follows the app theme: dark, light or match system.
+
+## Project trust and lumi-policy.json
+
+A project can bring instruction files (AGENTS.md, LUMI.md, CLAUDE.md and
+similar), notes, a codebase summary and a `lumi-policy.json` (or a legacy
+`resonant-policy.json`). Lumi uses them only after you choose **Trust this
+project** in the banner or in **Settings > Project trust**.
+
+Each rule in the policy names a tool and, optionally, patterns for its
+arguments. The first rule that matches a call decides:
+
+- `deny` refuses the call and `prompt` asks before it, in every mode and even
+  before you trust the project, since they only make Lumi more careful.
+- `allow` runs the call without asking in **Auto-edit** and **Plan**, once you
+  trust the project. **Ask** still asks, and **Full-auto** doesn't ask anyway.
+
+```json
+{"rules": [
+  {"tool_pattern": "bash", "action": "prompt", "arg_globs": {"command": "npm run deploy*"}},
+  {"tool_pattern": "bash", "action": "allow", "arg_globs": {"command": ["npm test", "npm run lint*"]}}
+]}
+```
+
+Some things come before a project's rules, so no `allow` reaches them: the
+command guardrails, your organization's rules, and Auto-edit's own refusals
+(a recursive `rm`, `chmod` on a system path, a download piped into a shell).
+An allowed shell command still asks when it chains, pipes, substitutes or
+redirects anything (`;`, `&`, `|`, `<`, `>`, backquotes, `$(` or a line
+break), because a pattern like `npm run lint*` would match whatever follows.
+
+If the file changes after you trusted the project, including an edit the
+agent makes, its `allow` rules are off until you trust the new version.
+Projects that were already in Recent projects when trust arrived are trusted,
+but their `allow` rules wait for your review once. Each call an `allow` rule
+runs is recorded in the [audit log](audit-log.md) as an approval by
+`project_policy`.
 
 ## Anthropic, OpenAI and custom connections
 
@@ -297,7 +335,10 @@ like any other draft.
 
 Suggestions are chosen locally from the last reply's explicit next step, change
 summary, or recommendation. They do not use an additional model request and are
-not a claim that a model has planned or authorized the next action.
+not a claim that a model has planned or authorized the next action. Offering to
+review changes, like the task card's **Changed files**, counts only edits whose
+own result succeeded: an edit you reject, that a policy blocks, that fails or
+that never ran doesn't count.
 
 New sessions also get a short task title from the first prompt. A local title
 appears immediately. With native model connections, a small tool-free request

@@ -77,6 +77,56 @@ When the organization publishes a policy, the next check-in downloads it:
 An organization you join yourself doesn't override anything your computer's
 administrator set. With a machine policy in place, its rules apply instead.
 
+## Tasks from Slack and Teams
+
+When your organization connects Slack or Microsoft Teams in Lumi Cloud, you
+can message Lumi there and have one of your own computers do the work. On
+this computer, open **Settings > Lumi account**, turn on **Tasks from Slack and
+Teams**, and choose:
+
+- **Project folder**: where requests run. Pick a project you aren't editing
+  at the same time, or a separate checkout.
+- **Permission mode**: **Ask before changes** (the default), **Edit files,
+  ask about the rest**, or **Ask about nothing**.
+
+While Lumi is open, it checks for your requests every 20 seconds and runs
+them one at a time, with your default model and a session built like
+[`lumi run`](headless.md)'s. The project's exclusions and your organization's
+policy apply, and the project's own instructions apply only if you trust it.
+When the agent wants to do something the mode doesn't allow, Lumi asks you in
+the chat with **Approve** and **Deny** buttons. No answer within 10 minutes,
+or **stop** in the chat, refuses it. The reply goes back to the chat.
+
+Only your own computer takes your requests: never a managed computer, and
+never a colleague's. Your organization can turn this off with
+`cloud.remote_tasks` in its policy.
+
+## Sharing a conversation
+
+To show a colleague how you got somewhere, right-click a conversation in the
+sidebar (or use its **⋯** button) and choose **Share…**. Sign in to your
+organization's Lumi Cloud first; you don't need to enroll this computer.
+
+Lumi Cloud keeps a read-only copy at a link:
+
+- **What's in it**: your messages, Lumi's replies, and a line for each action
+  ("Read src/auth.py", "Ran `pytest -q`"), marked when it failed. It never
+  holds what tools returned: file contents, command output and pages stay on
+  this computer. Saved keys, and anything that looks like a token or
+  password, are removed first. The project appears by its folder's name
+  only.
+- **Who can open it**: people in your organization, after signing in to
+  Lumi Cloud (the default). An owner or admin can also let people share
+  with **anyone who has the link**, under **Shared sessions** in Lumi Cloud;
+  turning that off again closes those links.
+- **It doesn't change** when the conversation does. To share a newer
+  version, stop sharing and share again.
+
+**Share…** shows the link again later, with **Copy link** and **Stop
+sharing**. Stopping makes the link show nothing. In Lumi Cloud, **Shared
+sessions** lists what you've shared, and an organization's owners and admins
+see and can stop everything shared in it.
+
 ## For administrators: enrolling managed computers
 
 To enroll computers without anyone signing in:

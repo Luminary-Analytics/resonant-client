@@ -83,6 +83,12 @@ for their context-handoff and verification boundaries.
 - Built-in Blender, Unity, and Unreal Engine 5 connection setup through community
   MCP bridges ([setup and validation](docs/creative-editors.md))
 - Skills, plugins, LSP status, and project instructions
+- Telegram and Slack: send requests, approve actions and stop work from the
+  chat ([chat gateway](docs/chat-gateway.md))
+- VS Code and JetBrains IDEs: send the selection or files into your message,
+  and open Lumi's changes beside your files ([code editors](docs/code-editors.md))
+- Jira, Linear, GitHub and GitLab issues: attach one with `@issue:ENG-12`, and
+  have the agent comment on it ([issue trackers](docs/issue-trackers.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
 - Permission modes and a project-root path sandbox
@@ -308,9 +314,10 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   output, the codebase index and attachments leave them out. Shell commands
   can still open them.
 - **Project trust:** a newly opened project's instruction files, committed
-  notes, codebase summary and approval-skipping `lumi-policy.json` rules apply
-  only after you choose **Trust this project**. Automatic lint and test runs,
-  which execute the project's code, also wait for trust.
+  notes, codebase summary and `lumi-policy.json` allow rules (which skip
+  approval in Auto-edit) apply only after you choose **Trust this project**.
+  Automatic lint and test runs, which execute the project's code, also wait
+  for trust.
 - **Transcript retention:** set **Delete transcripts after (days)** to remove
   old sessions, drafts, checkpoints, artifacts and logs automatically.
 - **Tool switches:** turn off Codex and Claude Code, computer use or the chat

@@ -404,37 +404,10 @@ class AppState:
 
     @staticmethod
     def _execution_policy_for(tier: str, project_root: str, *, honor_allows: bool = True):
-        """The tier's built-in policy with the project's lumi-policy.json layered on.
+        """The tier's rules with the project's and the organization's (engine/policies.py)."""
+        from ..engine.policies import project_execution_policy
 
-        The project policy can tighten or refine the built-in rules; it cannot
-        override built-in denies (see ExecutionPolicy.merge). Its ``allow``
-        rules skip approval prompts, so they apply only while the user trusts
-        the project and its policy hasn't changed since (workspace_trust.py).
-        """
-        from ..engine.policies import ExecutionPolicy, PolicyAction, policy_for_tier
-
-        policy = policy_for_tier(tier)
-        # lumi-policy.json; repositories from before the rebrand keep resonant-policy.json.
-        project_policy = None
-        for name in ("lumi-policy.json", "resonant-policy.json"):
-            candidate = os.path.join(project_root, name)
-            if os.path.isfile(candidate):
-                project_policy = ExecutionPolicy.from_file(candidate)
-                break
-        if project_policy and not honor_allows:
-            project_policy = ExecutionPolicy(
-                [rule for rule in project_policy.rules if rule.action != PolicyAction.ALLOW.value]
-            )
-        merged = policy.merge(project_policy) if project_policy else policy
-        # Organization shell rules (lumi/policy.py) are checked before
-        # everything else: neither a repository nor a tier can loosen them.
-        from ..policy import current as current_policy
-
-        org_policy = current_policy()
-        if org_policy and org_policy.shell_rules:
-            org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
-            merged = ExecutionPolicy(org_rules + merged.rules)
-        return merged
+        return project_execution_policy(tier, project_root, honor_allows=honor_allows)
 
     def cli_adapters_allowed(self) -> bool:
         return self.settings.get("security", "cli_adapters", True) is not False

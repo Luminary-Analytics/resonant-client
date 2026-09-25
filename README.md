@@ -400,6 +400,16 @@ lumi --ollama-url http://192.168.1.20:11434 --model your-model
 From the desktop window, use **File > Open in Browser**. The local server refuses
 pages that were not opened from such a link.
 
+For servers, containers and CI, `lumi run` runs one task without a UI and
+prints a JSON result with an exit code a job can act on:
+
+```bash
+lumi run "Fix the failing test" --provider anthropic --model claude-sonnet-5 --mode bypass
+```
+
+See [Running Lumi without a UI](docs/headless.md), including a GitHub
+Actions example and `packaging/docker/Dockerfile`.
+
 ## Develop
 
 Read [AGENTS.md](AGENTS.md) for shared contributor instructions. `CLAUDE.md`

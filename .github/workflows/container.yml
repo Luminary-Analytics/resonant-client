@@ -1,0 +1,55 @@
+name: Container build
+
+# Builds the headless image (packaging/docker/Dockerfile) and checks that
+# `lumi run` starts inside it. Nothing is pushed to a registry.
+
+on:
+  pull_request:
+    paths:
+      - 'packaging/docker/**'
+      - '.dockerignore'
+      - 'lumi/headless.py'
+      - 'lumi/__main__.py'
+      - 'pyproject.toml'
+      - '.github/workflows/container.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'packaging/docker/**'
+      - '.dockerignore'
+      - 'lumi/headless.py'
+      - 'lumi/__main__.py'
+      - 'pyproject.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the image
+        run: docker build -f packaging/docker/Dockerfile -t lumi:ci .
+
+      - name: Version and help
+        run: |
+          docker run --rm lumi:ci --version
+          docker run --rm lumi:ci run --help
+
+      - name: A run without a provider explains itself and exits 2
+        run: |
+          set +e
+          docker run --rm -v "$PWD:/work" lumi:ci run "Say hello" > out.txt 2> err.txt
+          code=$?
+          set -e
+          cat err.txt
+          test "$code" = "2"
+          grep -q "Choose a provider" err.txt
+
+      - name: Usage summary works on an empty state
+        run: docker run --rm lumi:ci usage

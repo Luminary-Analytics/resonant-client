@@ -35,6 +35,7 @@ these services; it is not required for ordinary chat-based coding.
 | Client security | `engine/exclusions.py`, `gui/workspace_trust.py`, `gui/retention.py` | File exclusion rules, trust for repository content, transcript retention |
 | Organization policy | `policy.py`, `packaging/policy/` | Machine policy sources, signatures, locked settings and allowlists |
 | Audit log | `audit.py`, `file_lock.py` | Hash-chained local records of every turn's events (recorded by `Session.run`), capture levels, OTLP export |
+| Headless runs | `headless.py`, `packaging/docker/` | `lumi run`: a session built as the desktop app builds it (`engine/policies.project_execution_policy`, exclusions, trust), no prompts, JSON result and exit codes |
 | Usage and prices | `usage.py`, `pricing.py`, `budgets.py`, `gui/costs.py`, `engine/request_purpose.py` | One record per model call (turns in `Session.run`, auxiliary requests in `auxiliary_stream`), price resolution, budgets checked before each model request, daily totals, `lumi usage` |
 | Network and secrets | `net.py`, `secrets_store.py`, `secret_scan.py` | Proxy and OS certificate store, keys in the OS credential store, clean child environments, secrets removed before model requests |
 | Desktop UI | `gui/templates/index.html`, `gui/static/app.js`, `gui/static/styles.css` | Sidebar, composer, model picker, command palette, shell |

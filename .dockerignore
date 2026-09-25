@@ -1,0 +1,9 @@
+# packaging/docker/Dockerfile copies only pyproject.toml, README.md, LICENSE and
+# lumi/; keep everything else out of the build context.
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!lumi/
+lumi/**/__pycache__
+lumi/gui/static/vendor/

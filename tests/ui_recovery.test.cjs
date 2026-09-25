@@ -494,6 +494,38 @@ test('a prompt keeps amounts and version numbers in its question', () => {
     assert.equal(app._conciseAwaitUserQuestion('The tests pass. Upgrade to Python 3.12 now?'), 'Upgrade to Python 3.12 now?');
 });
 
+test('an edit approval goes in the conversation, where a running turn cannot hide it', () => {
+    // A running task hides its activity rows, and a worker's block with them,
+    // until the user opens the live status (styles.css), so an approval the
+    // run waits on must not render there.
+    const element = () => ({
+        children: [], listeners: {}, buttons: {},
+        appendChild(child) { this.children.push(child); return child; },
+        addEventListener(type, handler) { this.listeners[type] = handler; },
+        querySelector(selector) { return (this.buttons[selector] ||= element()); },
+        querySelectorAll() { return Object.values(this.buttons); },
+        replaceWith(next) { this.replacement = next; },
+    });
+    const app = setup(() => Promise.resolve({ok: true}), {document: {getElementById: () => null, createElement: element}});
+    const sent = [];
+    app.send = message => sent.push({...message});
+    app.scrollToBottom = () => {};
+    app._setSessionActivity = () => {};
+    app.chatMessages = element();
+    app._activeTask = {card: {isConnected: true}, activityEl: element()};
+    app.subagentContainer = element();
+    const review = {file_path: 'notes.txt', hunks: [{old_start: 1, old_count: 1, new_start: 1, new_count: 1,
+                                                     lines: ['-old line', '+new line']}]};
+
+    app._renderInlineDiffPermission('file_edit', {path: 'notes.txt'}, review, 'request-1');
+
+    assert.equal(app.chatMessages.children.length, 1);
+    assert.equal(app._activeTask.activityEl.children.length, 0);
+    assert.equal(app.subagentContainer.children.length, 0);
+    app.chatMessages.children[0].querySelector('[data-action="accept"]').listeners.click();
+    assert.deepEqual(sent, [{command: 'approve', approved: true, request_id: 'request-1'}]);
+});
+
 test('escaped text is safe inside attribute values', () => {
     const app = setup(() => Promise.resolve({ok: true}));
     // A check command with quotes used to end value="..." early on re-render.

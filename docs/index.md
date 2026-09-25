@@ -21,7 +21,7 @@ through Ollama or EXO, SONN, or your company's own gateway.
 - [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
 - [The audit log and OpenTelemetry export](audit-log.md)
 - [Running Lumi without a UI: CI and containers](headless.md)
-- [GitHub pull requests](github.md)
+- [Pull requests: GitHub, GitLab, Bitbucket and Azure DevOps](github.md)
 
 ## Extending Lumi
 

@@ -8137,8 +8137,11 @@ class LumiApp {
         block.querySelector('[data-action="accept"]').addEventListener('click', () => onDecide(true));
         block.querySelector('[data-action="reject"]').addEventListener('click', () => onDecide(false));
 
-        const target = this.getRenderTarget ? this.getRenderTarget() : this.chatMessages;
-        target.appendChild(block);
+        // The run waits for this answer, so the card goes in the conversation
+        // itself, like an await_user question. A running task hides its
+        // activity rows, and a worker's block with them, until the user opens
+        // the live status.
+        this.chatMessages.appendChild(block);
         this.scrollToBottom();
     }
 

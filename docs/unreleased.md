@@ -234,6 +234,45 @@ into a temporary extensions folder and user-data folder, where it was listed
 as `luminary-analytics.lumi-vscode` 0.1.0. The extension was not run inside
 VS Code, and no JetBrains IDE was run.
 
+## September 25 tasks from Slack and Teams — source only, not released
+
+- **Settings > Lumi account > Tasks from Slack and Teams**
+  (`lumi/remote_tasks.py`, [guide](lumi-cloud.md#tasks-from-slack-and-teams)):
+  on a computer enrolled with its person's own account, Lumi picks up the
+  requests that person sends to Lumi in their organization's Slack or
+  Microsoft Teams. Lumi Cloud relays these (Luminary-Analytics/lumi-cloud#18).
+- Lumi checks every 20 seconds while it's open and runs requests one at a
+  time in the chosen project and mode, with the default model, in a session
+  built like `lumi run`'s. It asks in the chat, with Approve and Deny
+  buttons, before actions the mode doesn't allow; no answer within 10 minutes
+  or **stop** refuses them. The reply goes back to the chat.
+- It is off until turned on, never runs on a managed computer, and an
+  organization can lock `cloud.remote_tasks`. `CloudClient.device_call`
+  reaches Lumi Cloud's device API with the device's token.
+
+Validation on September 25, 2026: `test_remote_tasks.py` (6 tests) runs
+against the fake Lumi Cloud of `test_cloud.py` extended with the task
+endpoints:
+
+- a real engine session in Ask mode writes a file only after the approval;
+- denials, an unanswered approval and a stop from the chat;
+- failures that still reach the chat;
+- what keeps it from running;
+- the Settings command, including an organization's lock.
+
+A cross-check ran the real Lumi Cloud of that branch and this app together in
+one process, with Slack faked at the HTTP layer. The app signed in through
+the consent page and enrolled. A Slack message was queued, claimed ("Working
+on it on <computer>."), asked about with buttons, approved and done. The file
+was written and the reply posted. No real Slack or Teams was used.
+
+In the browser pane, with an isolated fixture enrolled in a Lumi Cloud that
+doesn't answer, Settings > Lumi account showed the section (found by
+searching "slack"), with the open project filled in. The switch, pressed from
+the keyboard, saved it on ("On. Checks for your requests every 20 seconds
+while Lumi is open."). A folder that doesn't exist was refused with the
+message, and the typed folder stayed in the field.
+
 ## September 25 issue trackers: Jira, Linear, GitHub and GitLab — source only, not released
 
 - **Start from an issue** ([guide](issue-trackers.md),

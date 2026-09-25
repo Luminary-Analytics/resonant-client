@@ -77,6 +77,30 @@ When the organization publishes a policy, the next check-in downloads it:
 An organization you join yourself doesn't override anything your computer's
 administrator set. With a machine policy in place, its rules apply instead.
 
+## Tasks from Slack and Teams
+
+When your organization connects Slack or Microsoft Teams in Lumi Cloud, you
+can message Lumi there and have one of your own computers do the work. On
+this computer, open **Settings > Lumi account**, turn on **Tasks from Slack and
+Teams**, and choose:
+
+- **Project folder**: where requests run. Pick a project you aren't editing
+  at the same time, or a separate checkout.
+- **Permission mode**: **Ask before changes** (the default), **Edit files,
+  ask about the rest**, or **Ask about nothing**.
+
+While Lumi is open, it checks for your requests every 20 seconds and runs
+them one at a time, with your default model and a session built like
+[`lumi run`](headless.md)'s. The project's exclusions and your organization's
+policy apply, and the project's own instructions apply only if you trust it.
+When the agent wants to do something the mode doesn't allow, Lumi asks you in
+the chat with **Approve** and **Deny** buttons. No answer within 10 minutes,
+or **stop** in the chat, refuses it. The reply goes back to the chat.
+
+Only your own computer takes your requests: never a managed computer, and
+never a colleague's. Your organization can turn this off with
+`cloud.remote_tasks` in its policy.
+
 ## For administrators: enrolling managed computers
 
 To enroll computers without anyone signing in:

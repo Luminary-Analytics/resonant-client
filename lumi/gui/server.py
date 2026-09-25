@@ -391,6 +391,12 @@ def main():
 
         from .app import state as app_state
         start_background(app_state.cloud)
+        # Requests from Slack and Teams, once someone turns them on.
+        from lumi.remote_tasks import RemoteTasks
+        from lumi.remote_tasks import start as start_remote_tasks
+
+        app_state.cloud.remote_tasks = RemoteTasks(app_state.settings, app_state.cloud)
+        start_remote_tasks(app_state.cloud.remote_tasks)
     except Exception:
         logger.exception("Lumi Cloud check-ins failed to start (non-fatal)")
 

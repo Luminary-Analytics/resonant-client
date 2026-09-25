@@ -182,6 +182,11 @@ DEFAULTS = {
         "last_checkin": "",
         "policy_version": None,
         "usage_since": "",
+        # Tasks from Slack and Teams (lumi/remote_tasks.py): off until the
+        # person turns it on; an organization's policy can lock it off.
+        "remote_tasks": False,
+        "remote_tasks_project": "",
+        "remote_tasks_mode": "ask",
     },
     # Settings > Updates (lumi/update_channels.py): automatic, manual or off;
     # the stable or beta channel; and a release line ("0.20") to stay on.

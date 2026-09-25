@@ -327,6 +327,27 @@ class LumiSettingsView {
         } else if (s.managed_organization) {
             parts.push(row('This computer', 'Your organization’s policy enrolls this computer in Lumi Cloud automatically.'));
         }
+        const remote = s.remote_tasks;
+        if (device && device.how !== 'managed' && remote) {
+            const draft = this._remoteTasksDraft || {project: remote.project || this.currentCwd || '', mode: remote.mode || 'ask'};
+            const modes = {ask: 'Ask before changes', 'auto-edit': 'Edit files, ask about the rest', bypass: 'Ask about nothing'};
+            const state = !remote.enabled ? 'Off.'
+                : remote.blocked ? esc(remote.blocked)
+                : remote.running ? 'On. Running a request now.'
+                : 'On. Checks for your requests every 20 seconds while Lumi is open.';
+            const last = remote.last && remote.last.status
+                ? ` Last request: ${esc(remote.last.status)}, ${esc(new Date(remote.last.at * 1000).toLocaleString())}.` : '';
+            const options = Object.entries(modes).map(([value, label]) =>
+                `<option value="${value}"${draft.mode === value ? ' selected' : ''}>${label}</option>`).join('');
+            parts.push(`<div class="settings-row" data-remote-tasks><div class="settings-row-copy"><span class="settings-row-label" id="remote-tasks-label">Tasks from Slack and Teams</span>
+                <div class="settings-row-hint">Requests you send to Lumi in your organization’s Slack or Microsoft Teams run here, one at a time, in this project with your default model. Lumi asks you in the chat before any action the mode doesn’t allow.</div>
+                <div class="settings-row-hint" role="status">${state}${last}</div></div>
+                <div class="settings-row-value"><label class="settings-toggle"><input type="checkbox" id="remote-tasks-enabled" aria-labelledby="remote-tasks-label"${remote.enabled ? ' checked' : ''}><span class="settings-toggle-track" aria-hidden="true"></span></label></div></div>
+                <div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="remote-tasks-project">Project folder</label></div>
+                <div class="settings-row-value"><input id="remote-tasks-project" class="settings-input" value="${esc(draft.project)}" spellcheck="false"></div></div>
+                <div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="remote-tasks-mode">Permission mode</label></div>
+                <div class="settings-row-value"><select id="remote-tasks-mode" class="settings-select">${options}</select> ${button('remote_tasks', 'Save')}</div></div>`);
+        }
         parts.push('<p class="editor-help">An enrolled computer checks in hourly with its Lumi version, the policy in force and usage totals per model (requests, tokens and cost). Prompts, code and file names never go to Lumi Cloud.</p>');
         return parts.join('');
     }
@@ -338,6 +359,16 @@ class LumiSettingsView {
         section.querySelector('#cloud-url')?.addEventListener('keydown', event => {
             if (event.key === 'Enter') section.querySelector('[data-cloud-action="sign_in"]')?.click();
         });
+        const remoteDraft = () => {
+            this._remoteTasksDraft = {project: section.querySelector('#remote-tasks-project')?.value || '',
+                                      mode: section.querySelector('#remote-tasks-mode')?.value || 'ask'};
+        };
+        section.querySelector('#remote-tasks-project')?.addEventListener('input', remoteDraft);
+        section.querySelector('#remote-tasks-mode')?.addEventListener('change', remoteDraft);
+        // The switch saves at once, with the folder and mode as they stand.
+        section.querySelector('#remote-tasks-enabled')?.addEventListener('change', () => {
+            section.querySelector('[data-cloud-action="remote_tasks"]')?.click();
+        });
         section.querySelectorAll('[data-cloud-action]').forEach(control => control.addEventListener('click', () => {
             const action = control.dataset.cloudAction;
             const organization = this.cloudStatus?.device?.organization_name || 'the organization';
@@ -346,6 +377,13 @@ class LumiSettingsView {
             const message = {command: `cloud_${action}`};
             if (action === 'sign_in') message.url = (section.querySelector('#cloud-url')?.value || '').trim();
             if (action === 'enroll') message.organization_id = control.dataset.org;
+            if (action === 'remote_tasks') {
+                message.enabled = Boolean(section.querySelector('#remote-tasks-enabled')?.checked);
+                message.project = (section.querySelector('#remote-tasks-project')?.value || '').trim();
+                message.mode = section.querySelector('#remote-tasks-mode')?.value || 'ask';
+                // Kept, so a refused folder stays in the field beside the error.
+                this._remoteTasksDraft = {project: message.project, mode: message.mode};
+            }
             this.send(message);
         }));
     }
@@ -359,6 +397,8 @@ class LumiSettingsView {
         const s = this.cloudStatus || {};
         const addressStays = !s.signing_in && !(s.signed_in && s.account?.email);
         if (addressStays && document.activeElement?.id === 'cloud-url') return true;
+        // Nor the task folder or mode while they're being edited (the draft is kept either way).
+        if (['remote-tasks-project', 'remote-tasks-mode'].includes(document.activeElement?.id)) return true;
         body.innerHTML = this._renderLumiAccount();
         this._bindLumiAccount();
         return true;
@@ -1518,7 +1558,7 @@ class LumiSettingsView {
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Compare models on your own tasks, and review model quality and runtime diagnostics.', sections:['model_comparisons', 'model_evaluations'], keywords:'compare comparison benchmark evaluate models tasks switch pass rate'},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
-            {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat'},
+            {id:'lumi_account', title:'Lumi account', group:'Personal', icon:'person', description:'Sign in to Lumi Cloud and use your organization’s policy on this computer.', sections:['lumi_account'], keywords:'lumi cloud organization team company sign in enroll device computer managed policy seat slack teams microsoft chat tasks remote requests'},
             {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status'], keywords:'update upgrade version release beta channel pin stable automatic manual off'},
         ];

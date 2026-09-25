@@ -3052,6 +3052,33 @@ async def _cmd_cloud_check_in(ctx: CommandContext) -> None:
     await _cloud_run(ctx, lambda client: client.check_in())
 
 
+@command("cloud_remote_tasks")
+async def _cmd_cloud_remote_tasks(ctx: CommandContext) -> None:
+    """Settings > Lumi account: tasks from Slack and Teams on or off, and where and how they run."""
+    from ..cloud import CloudError
+    from ..policy import current as current_policy
+    from ..remote_tasks import MODES
+
+    enabled = ctx.msg.get("enabled") is True
+    project = os.path.abspath(os.path.expanduser(str(ctx.msg.get("project") or "").strip())) \
+        if str(ctx.msg.get("project") or "").strip() else ""
+    mode = str(ctx.msg.get("mode") or "ask")
+
+    def save(client) -> None:
+        policy = current_policy()
+        if policy and policy.locked("cloud", "remote_tasks"):
+            raise CloudError(f"{policy.organization} manages tasks from Slack and Teams on this computer.")
+        if mode not in MODES:
+            raise CloudError("Choose Ask, Auto-edit or Bypass.")
+        if enabled and not os.path.isdir(project):
+            raise CloudError("Choose the folder requests run in: it must exist on this computer.")
+        client.last_error = ""
+        ctx.state.settings.update_section("cloud", {"remote_tasks": enabled, "remote_tasks_project": project,
+                                                    "remote_tasks_mode": mode})
+
+    await _cloud_run(ctx, save)
+
+
 @command("about_info")
 async def _cmd_about_info(ctx: CommandContext) -> None:
     """Settings > About Lumi: version, license and who manages this copy."""

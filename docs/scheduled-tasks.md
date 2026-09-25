@@ -27,10 +27,14 @@ applies to one applies here:
   you'd let run without watching.
 - Your organization's policy, budgets, file exclusions, the audit log, the
   command guardrails and the [shell sandbox](shell-sandbox.md) apply.
+- Your own [hooks](headless.md#hooks) in `settings.json` run, as in the app.
+  A guard hook that refuses a call, or can't run or runs out of time, stops
+  that call, and the result counts it as a refused call.
 - A repository's own instructions, notes and policy allow rules apply only if
   the project is trusted in the app (**Settings > Project trust**). A schedule
   never trusts a project itself. In **Edit files**, those allow rules run the
-  commands they match; other commands are refused.
+  commands they match. Your own `permission_request` hook can allow others.
+  Other commands are refused.
 - Model requests are counted in **Usage & cost** like any other.
 
 A schedule never runs twice at once. If a run is still going when the next

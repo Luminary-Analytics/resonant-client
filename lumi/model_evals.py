@@ -11,10 +11,13 @@ started from (``start_commit``), including anything the run committed, is kept
 with the result.
 
 Runs are ``lumi run`` processes, so the organization policy, budgets, the
-audit log, file exclusions and the sandboxes apply, nothing asks a person, and
-their model requests appear in Usage & cost. Repository instructions apply
-only if the project is trusted in the app. The check is your own command: it
-passes the command guardrails and runs in the shell sandbox when that's on.
+audit log, file exclusions, the sandboxes and your Settings hooks apply,
+nothing asks a person, and their model requests appear in Usage & cost.
+Hooks aren't left out: runs try models you don't rely on yet, unattended and
+often in Bypass, which is where a guard of yours matters most. Repository
+instructions apply only if the project is trusted in the app. The check is
+your own command: it passes the command guardrails and runs in the shell
+sandbox when that's on.
 
 Comparisons are kept in ``~/.lumi/model_evals/<id>.json``, diffs next to them.
 One comparison runs at a time.

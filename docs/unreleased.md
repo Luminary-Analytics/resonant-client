@@ -83,7 +83,7 @@ Validation on September 25, 2026:
   `test_a_trusted_repositorys_allow_rules_do_not_skip_asks_approval` from the
   Ask change below.
 - Full suite after merging main: 4092 passed, 5 skipped. Ruff, `node --check`
-  and the node UI tests (39) pass.
+  and the node UI tests (42) pass.
 - Browser, isolated fixture (temporary home and state, `LUMI_KEYCHAIN=off`, a
   scripted Ollama-compatible model, CLI adapters off). This ran before main
   (with the Ask change below) was merged into this branch:

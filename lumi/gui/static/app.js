@@ -4008,6 +4008,15 @@ class LumiApp {
                 // nobody is typing (renderSettingsView defers for a focused field).
                 if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.saved)});
                 break;
+            case 'model_evals':
+                this.modelEvals = event.data;
+                if (event.data?.saved) { this._evalDraft = null; this.modelEvalError = ''; }
+                if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.saved)});
+                break;
+            case 'model_eval_error':
+                this.modelEvalError = event.message || 'That did not work.';
+                if (this.modelEvals && this.currentView === 'settings') this.renderSettingsView({force: true});
+                break;
             case 'schedule_error':
                 this.scheduleError = event.message || 'That did not work.';
                 if (this.schedules && this.currentView === 'settings') this.renderSettingsView({force: true});
@@ -11285,9 +11294,11 @@ class LumiApp {
     }
 
     escapeHtml(str) {
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        // Quotes too: pages put the result in attribute values (value="…",
+        // aria-label="…") as well as text, and an unescaped quote there cut
+        // a saved form field short at the next re-render.
+        const entities = {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'};
+        return String(str ?? '').replace(/[&<>"']/g, ch => entities[ch]);
     }
 
     shortenPath(path) {

@@ -525,3 +525,12 @@ test('an edit approval goes in the conversation, where a running turn cannot hid
     app.chatMessages.children[0].querySelector('[data-action="accept"]').listeners.click();
     assert.deepEqual(sent, [{command: 'approve', approved: true, request_id: 'request-1'}]);
 });
+
+test('escaped text is safe inside attribute values', () => {
+    const app = setup(() => Promise.resolve({ok: true}));
+    // A check command with quotes used to end value="..." early on re-render.
+    assert.equal(app.escapeHtml(`python -c "print('x')" <&>`), 'python -c &quot;print(&#39;x&#39;)&quot; &lt;&amp;&gt;');
+    assert.equal(app.escapeHtml(null), '');
+    assert.equal(app.escapeHtml(undefined), '');
+    assert.equal(app.escapeHtml(3), '3');
+});

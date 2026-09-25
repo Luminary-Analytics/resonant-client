@@ -84,6 +84,38 @@ Validation on September 25, 2026:
 Not exercised: a live model, a packaged build, Codex or Claude Code, macOS and
 Linux.
 
+## September 25 comparing models on your own tasks — source only, not released
+
+- **Settings > Model evaluations > Compare models on your tasks**
+  ([guide](model-comparisons.md), `lumi/model_evals.py`): up to 20 tasks,
+  each a prompt and a check command, run once per model (two to six) as an
+  unattended `lumi run` in a detached git worktree of the project's last
+  commit. The check decides pass or fail. The page shows passes, cost of
+  priced requests and median time per model, and each run's status, cost,
+  changed files and check output; diffs are kept. Runs never touch your
+  checkout, and one comparison runs at a time, with **Stop**.
+- **Fixed:** the app's HTML escaping didn't escape quotes, so text with a
+  double quote put in an attribute (a form field's saved value, a button's
+  label) was cut short or could add attributes. It escapes `"` and `'` now.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 4,015 passed, 4 skipped. `test_model_evals.py` (5 tests)
+  with a real temporary git repository and a
+  fake `lumi run`: validation (including the guardrails and policy), each
+  model running each task in its own worktree with the checkout untouched
+  and no worktree left, results and summary, stopping a run, an interrupted
+  comparison, and the Settings commands. A new escaping test in
+  `ui_recovery.test.cjs`.
+- In the browser pane, with an isolated home and the stub model listing two
+  models, one of which writes the file the check looks for: the form (with
+  **Add task** and **Remove task**) created a comparison; **Run** showed
+  progress as each run finished, then `stub:latest` passed 1/1 and
+  `stub-b:latest` 0/1 with their check output; the project had no changes
+  or leftover worktrees. The first attempt stored the check as `python -c`:
+  re-rendering the form cut the quoted value, which is the escaping fix
+  above.
+
 ## September 25 autonomous sessions: spending limit and an opt-in — source only, not released
 
 - **Spending limit** ([guide](autonomous-sessions.md#the-spending-limit)):

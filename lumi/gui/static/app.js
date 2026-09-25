@@ -3946,9 +3946,20 @@ class LumiApp {
                 this._renderAccountMenu();
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'voice.transcript':
+            case 'voice.error': {
+                const request = this._voiceRequests?.get(event.request_id);
+                if (!request) break;
+                this._voiceRequests.delete(event.request_id);
+                clearTimeout(request.timer);
+                if (type === 'voice.transcript') request.resolve(event.text || '');
+                else request.reject(new Error(event.message || 'Transcription failed.'));
+                break;
+            }
             case 'settings':
                 this.settings = event.data || {};
                 this._syncAutonomousSwitch();
+                this._syncDictationButton();
                 this.settingsError = '';
                 this._settingsDrafts = {};
                 // A save succeeded: an earlier refusal no longer applies, even
@@ -4371,6 +4382,7 @@ class LumiApp {
         // Store settings
         if (event.settings) {
             this.settings = event.settings;
+            this._syncDictationButton?.();
             this._syncAutonomousSwitch();
             this._renderAccountMenu();
         }
@@ -5069,103 +5081,158 @@ class LumiApp {
     }
 
     /**
-     * Push-to-talk voice input via the browser SpeechRecognition API.
+     * Dictation in the composer: voice_input.js decides, this wires it to the
+     * page (docs/voice-input.md).
      *
-     * Hold the mic button → start recognition; show interim results in
-     * the textarea (greyed); release → final transcript replaces the
-     * grey text. User can edit before submitting.
-     *
-     * Falls back gracefully when SpeechRecognition isn't available
-     * (e.g. desktop pywebview without WebView2 speech support).
+     * Hold the microphone button (or Space on it, or Ctrl+Shift+Space
+     * anywhere) to dictate until release; a quick press or Enter keeps
+     * listening until the next press. Escape cancels and leaves the composer
+     * as it was. Settings > Voice and the organization's policy decide
+     * whether the webview's recognizer or a transcription service listens
+     * (settings._meta.voice); pressing the button says why when neither can.
      */
     _setupVoiceInput() {
         const btn = document.getElementById('mic-btn');
-        if (!btn) return;
-
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            btn.disabled = true;
-            btn.title = 'Voice input not supported (try a Chromium browser, or wire whisper.cpp on the desktop)';
-            btn.style.opacity = 0.4;
-            return;
-        }
-
-        let recognition = null;
-        let active = false;
-        let baseText = '';
-        let interim = '';
-
-        const start = (e) => {
-            e.preventDefault();
-            if (active) return;
-            active = true;
-            btn.classList.add('recording');
-            baseText = this.userInput.value;
-            interim = '';
-
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = true;
-            recognition.lang = navigator.language || 'en-US';
-
-            recognition.addEventListener('result', (event) => {
-                let finalT = '';
-                let interimT = '';
-                for (let i = event.resultIndex; i < event.results.length; i++) {
-                    const res = event.results[i];
-                    if (res.isFinal) finalT += res[0].transcript;
-                    else interimT += res[0].transcript;
-                }
-                if (finalT) {
-                    baseText = (baseText + (baseText && !baseText.endsWith(' ') ? ' ' : '') + finalT).trimStart();
-                }
-                interim = interimT;
-                this.userInput.value = baseText + (interim ? (baseText && !baseText.endsWith(' ') ? ' ' : '') + interim : '');
-                this.userInput.style.height = 'auto';
-                this.userInput.style.height = Math.min(this.userInput.scrollHeight, 200) + 'px';
-            });
-
-            recognition.addEventListener('error', (event) => {
-                this.showStatusMessage(`Speech: ${event.error || 'error'}`);
-                stop();
-            });
-
-            recognition.addEventListener('end', () => {
-                // Browser may end on its own (silence). Settle final text.
-                if (interim) {
-                    baseText = (baseText + (baseText && !baseText.endsWith(' ') ? ' ' : '') + interim).trimStart();
-                    interim = '';
-                    this.userInput.value = baseText;
-                }
-                stop();
-            });
-
-            try {
-                recognition.start();
-            } catch (err) {
-                this.showStatusMessage(`Speech start failed: ${err}`);
-                stop();
-            }
+        const status = document.getElementById('dictation-status');
+        if (!btn || !window.LumiDictation) return;
+        const composer = this.userInput;
+        this._voiceRequests = new Map();
+        let clearStatus = null;
+        let errored = false;
+        const say = (text, linger = false) => {
+            if (!status) return;
+            clearTimeout(clearStatus);
+            status.textContent = text || '';
+            if (linger) clearStatus = setTimeout(() => { status.textContent = ''; }, 6000);
         };
+        const dictation = window.LumiDictation.create({
+            env: {
+                SpeechRecognition: window.SpeechRecognition || window.webkitSpeechRecognition,
+                mediaDevices: navigator.mediaDevices,
+                MediaRecorder: window.MediaRecorder,
+                Blob: window.Blob,
+            },
+            getStatus: () => this.settings?._meta?.voice,
+            getText: () => composer.value,
+            setText: text => {
+                composer.value = text;
+                // Saves the draft, resizes the composer and drops a suggestion, as typing does.
+                composer.dispatchEvent(new Event('input', {bubbles: true}));
+            },
+            language: () => this.settings?.voice?.language || navigator.language || 'en-US',
+            transcribe: (blob, type) => this._transcribeRecording(blob, type),
+            onState: (state, detail) => {
+                btn.classList.toggle('recording', state === 'starting' || state === 'listening');
+                btn.classList.toggle('transcribing', state === 'stopping' || state === 'transcribing');
+                btn.setAttribute('aria-pressed', String(state !== 'idle'));
+                if (state === 'starting' || state === 'listening') errored = false;
+                if (state === 'starting') say('Opening the microphone…');
+                else if (state === 'listening') say(detail.latched
+                    ? 'Listening. Press the microphone or Ctrl+Shift+Space again to stop, or Escape to cancel.'
+                    : 'Listening. Release to stop, or press Escape to cancel.');
+                else if (state === 'stopping') say('Finishing…');
+                else if (state === 'transcribing') say(`Transcribing with ${this.settings?._meta?.voice?.service_name || 'the transcription service'}…`);
+                else {
+                    if (detail.cancelled) say('Dictation cancelled.', true);
+                    else if (detail.inserted) say('Dictation added to your message.', true);
+                    else if (!errored) say('');
+                    composer.focus();
+                    composer.setSelectionRange(composer.value.length, composer.value.length);
+                }
+            },
+            onError: message => {
+                errored = true;
+                say(message, true);
+                this.showStatusMessage(message);
+            },
+        });
+        this._dictation = dictation;
 
-        const stop = () => {
-            if (!active) return;
-            active = false;
-            btn.classList.remove('recording');
-            if (recognition) {
-                try { recognition.stop(); } catch (_) {}
-                recognition = null;
+        // The pointer: hold to talk, or a quick press to keep listening.
+        btn.addEventListener('pointerdown', event => {
+            if (event.button !== 0) return;
+            event.preventDefault();  // the composer keeps focus
+            try { btn.setPointerCapture(event.pointerId); } catch (_) { /* released already */ }
+            dictation.press();
+        });
+        btn.addEventListener('pointerup', () => dictation.release());
+        btn.addEventListener('pointercancel', () => dictation.release());
+        btn.addEventListener('contextmenu', event => event.preventDefault());  // a long touch
+        // Keys on the button: Space held like the mouse; Enter or a quick press toggles.
+        btn.addEventListener('keydown', event => {
+            if ((event.key !== ' ' && event.key !== 'Enter') || event.ctrlKey || event.altKey || event.metaKey) return;
+            event.preventDefault();
+            if (!event.repeat) dictation.press();
+        });
+        btn.addEventListener('keyup', event => {
+            if (event.key !== ' ' && event.key !== 'Enter') return;
+            event.preventDefault();
+            dictation.release();
+        });
+        btn.addEventListener('click', event => event.preventDefault());
+
+        // Ctrl+Shift+Space from anywhere in the conversation, and Escape to cancel.
+        let shortcutHeld = false;
+        document.addEventListener('keydown', event => {
+            if (event.code === 'Space' && event.ctrlKey && event.shiftKey && !event.altKey && !event.metaKey) {
+                if (this.currentView === 'settings') return;
+                event.preventDefault();
+                if (!event.repeat && !shortcutHeld) {
+                    shortcutHeld = true;
+                    dictation.press();
+                }
+            } else if (event.key === 'Escape' && dictation.state !== 'idle') {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+                dictation.cancel();
             }
-            this.userInput.focus();
+        }, true);
+        const releaseShortcut = () => {
+            if (!shortcutHeld) return;
+            shortcutHeld = false;
+            dictation.release();
         };
+        document.addEventListener('keyup', event => {
+            if (event.code === 'Space' || event.key === 'Control' || event.key === 'Shift') releaseShortcut();
+        }, true);
+        window.addEventListener('blur', releaseShortcut);
+        this._syncDictationButton();
+    }
 
-        // Push-to-talk: mousedown / touchstart starts; mouseup / leave / touchend stops.
-        btn.addEventListener('mousedown', start);
-        btn.addEventListener('touchstart', start, { passive: false });
-        btn.addEventListener('mouseup', stop);
-        btn.addEventListener('mouseleave', stop);
-        btn.addEventListener('touchend', stop);
-        btn.addEventListener('touchcancel', stop);
+    /** The microphone button says whether dictation can run here, and why not. */
+    _syncDictationButton() {
+        const btn = document.getElementById('mic-btn');
+        if (!btn || !this._dictation) return;
+        const choice = this._dictation.available();
+        // Not disabled: pressing it explains what to change.
+        btn.classList.toggle('unavailable', !choice.engine);
+        const service = this.settings?._meta?.voice?.service_name;
+        btn.title = !choice.engine ? choice.reason
+            : `Dictate: hold to talk, or press to start and stop (Ctrl+Shift+Space)${choice.engine === 'service' && service ? ` · ${service}` : ''}`;
+    }
+
+    /** Send a dictation's recording to Lumi to transcribe; resolves with the text. */
+    _transcribeRecording(blob, type) {
+        return new Promise((resolve, reject) => {
+            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+                reject(new Error('Lumi isn’t connected. Dictate again once it reconnects.'));
+                return;
+            }
+            const reader = new FileReader();
+            reader.onerror = () => reject(new Error('The recording couldn’t be read. Dictate again.'));
+            reader.onload = () => {
+                const url = String(reader.result || '');
+                const requestId = `voice-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+                const timer = setTimeout(() => {
+                    this._voiceRequests.delete(requestId);
+                    reject(new Error('Transcription took too long. Try again.'));
+                }, 150000);
+                this._voiceRequests.set(requestId, {resolve, reject, timer});
+                this.send({command: 'voice_transcribe', request_id: requestId, media_type: type,
+                           audio: url.slice(url.indexOf(',') + 1)});
+            };
+            reader.readAsDataURL(blob);
+        });
     }
 
     /** Sync the thinking-mode selector with server state (called from init/session_loaded). */

@@ -49,6 +49,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)
 - [Extensions: add a model provider with the Extension SDK (manifest, protocol, template, checker)](extensions.md)
+- [Dictation: talking instead of typing, and the transcription service it uses](voice-input.md)
 - [Accessibility conformance report (draft, self-assessed WCAG 2.1 AA)](accessibility.md)
 - [Blender, Unity, and Unreal Engine 5 setup](creative-editors.md)
 - [Known limitations and historical bug ledger](known-issues.md)

@@ -4906,6 +4906,15 @@ body {
     50%      { box-shadow: 0 0 0 6px rgba(248, 113, 113, 0); }
 }
 
+/* Dictation (voice_input.js). A quick press keeps listening, so the state shows. */
+.mic-btn { touch-action: none; }
+.mic-btn[aria-pressed="true"] { color: var(--err); }
+.mic-btn.transcribing { color: var(--accent); animation: none; }
+.mic-btn.unavailable { opacity: 0.55; }
+.add-context-btn:focus-visible,
+.mic-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+@media (prefers-reduced-motion: reduce) { .mic-btn.recording { animation: none; } }
+
 .diff-header {
     padding: 8px 12px;
     font-size: 12px;
@@ -13569,6 +13578,9 @@ body.is-window-dragging * {
 /* The suggested prompt is a placeholder, never an unsent draft. */
 .composer-suggestion-hint { display: block; margin: 0 16px 4px; color: var(--muted); font-size: 11px; }
 .composer-suggestion-hint[hidden] { display: none; }
+/* Always rendered, so screen readers hear each change; empty takes no room. */
+.dictation-status { display: block; margin: 0 16px 4px; color: var(--muted); font-size: 11px; }
+.dictation-status:empty { margin: 0; }
 :root .editor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 16px; }
 .editor-card { padding: 16px; border: 1px solid var(--border); border-radius: 12px; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
 .editor-card h3, .editor-card p { margin: 0; }

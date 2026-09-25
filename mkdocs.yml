@@ -68,6 +68,7 @@ nav:
       - Comparing models on your tasks: model-comparisons.md
       - Code intelligence (language servers): code-intelligence.md
       - Code editors (VS Code, JetBrains): code-editors.md
+      - Dictation: voice-input.md
       - Issue trackers (Jira, Linear, GitHub, GitLab): issue-trackers.md
       - Hand-offs to a teammate or CI: hand-offs.md
       - Team skills, prompts and project notes: team-library.md

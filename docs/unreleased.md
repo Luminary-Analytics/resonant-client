@@ -8,6 +8,57 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 the unused run-complete card is removed — source only, not released
+
+- **Removed `_renderAgentRunCompleteCard`** (`lumi/gui/static/run_cards.js`,
+  175 lines): the compact "Build · title" run card with **Review** and a
+  disabled **Create branch & commit** button. Nothing has called it since
+  v0.18.1. Completed turns are summarized on the task card instead
+  (`_renderTaskCompletionSummary`, `_collapseTaskActivity`,
+  `_renderTurnFooter`), whose own **Review** opens the Git popover.
+- **Removed the styles only that card used** (`lumi/gui/static/styles.css`):
+  `.agent-run-card` with its compact and stopped variants, banner, detail
+  panel, kicker, title, to-do strip, blurb, changes list, file path, Preview
+  button and action buttons. `.error-block` keeps its entrance animation and
+  `.task-change-path` its link style; each shared a rule with the card. The
+  live to-do strip (`.agent-live-todo-*`) is unchanged.
+- Nothing changes on the page.
+
+Validation on September 25, 2026:
+
+- Before removing it: nothing in `app.js`, the other static scripts or
+  `lumi/gui/templates/index.html` called it, and `LUMI_EVENT_DELEGATES` doesn't
+  name it. The page's only other `this[...]` lookup reads sidebar state.
+  v0.18.0 was the last release that called it. The card's 23 classes, its
+  `data-agent-run-*` attributes and `data-preview-path` appeared nowhere else
+  in the repository, including as names built from strings.
+- In Node, `app.js`'s own `applyMixin` applies the four mixins without a
+  collision. `_renderAgentRunCompleteCard` is gone from the prototype, and the
+  three summary methods remain.
+- Full `pytest` passed on main at 1c42562 and again after rebasing on
+  a2e2e7a: 4,365 passed, 5 skipped. Rebased on e004b5a, the 16 test files
+  that read the static scripts, styles, template or docs pass (444 passed,
+  1 skipped). `ruff check .` is clean, `node --check` passes for the eight
+  static scripts, the four Node UI test files pass (86 tests) and
+  `git diff --check` is clean.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model, in Full-auto:
+  - A turn that wrote `greeting.txt` ended "Changed — verify" with its
+    recovery buttons, "Worked for 1s · 1 action" and **Changed files**.
+    **Review** opened the Git popover listing the new file. The file's path
+    kept its link style and hover color.
+  - A search turn ended "Answered", and a provider HTTP 400 ended "Failed"
+    with its recovery buttons.
+  - After a reload onto a2e2e7a, and again on e004b5a, the saved turns
+    replayed the same and a new turn rendered its summary. The console
+    stayed empty, and no `.agent-run-card` appeared.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created and no
+    Lumi credential was stored. `~/.codex` log and model-cache files changed
+    during the run while the fixture's own `CODEX_HOME` stayed unused; those
+    writes are unattributed.
+
+Not exercised: a packaged build, a live model, Codex or Claude Code turns.
+
 ## September 25 a `!command` turn counts only its own work — source only, not released
 
 - **A `!command` turn counts only its own work.** When a command's output

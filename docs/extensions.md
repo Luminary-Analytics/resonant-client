@@ -194,7 +194,9 @@ else { say({type: 'text', text: 'Hello from Node'}); say({type: 'done', usage: {
 ## Signing a pack
 
 A signature tells the people who install your pack that it came from you
-and hasn't changed since. It never approves a pack: each person still
+and hasn't changed since. Line endings in text files don't count, so a
+Windows checkout matches a Linux or macOS one; binary files count byte for
+byte. It never approves a pack: each person still
 reviews and approves it.
 
 1. Make a key once, and keep the private key file secret:
@@ -232,6 +234,27 @@ sign: `extensions.trusted_publishers` and `extensions.require_signed` in its
 [policy](enterprise-policy.md), or Lumi Cloud's Policy page. Only the
 organization's own publishers meet that requirement, not ones a person
 trusted.
+
+## Your organization's registry
+
+An organization can list the packs it approves in Lumi Cloud's
+**Extensions** page. Each entry gives the pack's id, its public https
+repository, a full commit, an optional folder, and optionally a content
+digest. The policy sends the list to every computer as
+`extensions.registry`.
+
+- Settings > Capability packs shows the registry under your
+  organization's name. **Install** fetches exactly the pinned commit. When a digest
+  is pinned, the files must match it before anything already installed is
+  replaced. You still review and approve each pack.
+- **Content digest.** `lumi extension check` prints a pack's content digest.
+  Line endings in text files don't change it, so the same commit checked out
+  on Windows, macOS or Linux gives the same digest.
+- **Only the registry's packs.** With `extensions.registry_only`, every
+  other pack is off, and so is a registry pack at another version. Install
+  the pinned version to turn it back on. A registry pack matches when its
+  files match the pinned digest, or, without one, when it was installed from
+  that repository, commit and folder.
 
 ## Trust
 

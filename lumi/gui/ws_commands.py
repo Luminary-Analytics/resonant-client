@@ -540,6 +540,25 @@ async def _capability_pack_install(ctx: CommandContext) -> None:
         "what it would run and approve it.")})
 
 
+@command("capability_pack_install_registry")
+async def _capability_pack_install_registry(ctx: CommandContext) -> None:
+    """Install a pack from the organization's registry at its pinned commit; approval stays separate."""
+    from ..engine.pack_install import PackInstallError
+
+    try:
+        payload, installed = await _in_executor(
+            lambda: ctx.state.install_registry_pack(str(ctx.msg.get("pack_id") or "")))
+    except PackInstallError as exc:
+        payload = await _in_executor(ctx.state.capability_pack_payload)
+        payload["error"] = str(exc)
+        await ctx.send(payload)
+        return
+    await ctx.send(payload)
+    await ctx.send({"event": "ui_notice", "message": (
+        f"Installed {installed['name']} at {installed['commit'][:12]}, the version your organization pins. "
+        "It's off until you review what it would run and approve it.")})
+
+
 @command("capability_pack_remove")
 async def _capability_pack_remove(ctx: CommandContext) -> None:
     from ..engine.pack_install import PackInstallError

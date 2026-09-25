@@ -139,8 +139,10 @@ hook then blocks it. A `json` hook reads the arguments from standard input, and
 - **Organization limits.** A policy can limit packs by id
   (`extensions.allowed_packs`) and Git sources by URL
   (`extensions.allowed_sources`), and turn off packs its trusted publishers
-  didn't sign (`extensions.require_signed`). See
-  [Organization policy](enterprise-policy.md).
+  didn't sign (`extensions.require_signed`) or that aren't in its registry
+  at the pinned version (`extensions.registry_only`). See
+  [Organization policy](enterprise-policy.md) and
+  [the registry](extensions.md#your-organizations-registry).
 
 ## Sharing a pack
 

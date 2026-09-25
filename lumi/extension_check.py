@@ -39,6 +39,10 @@ def check(folder: str | Path, *, prompt: str = DEFAULT_PROMPT, api_key: str = ""
         findings.append(("problem", pack.problem))
     else:
         findings.append(("ok", f"{pack.name} {pack.version} loads (manifest version {pack.manifest_version})."))
+    from .engine.pack_signing import signed_digest
+
+    # What an organization's registry pins to accept exactly these files.
+    findings.append(("ok", f"Content digest: {signed_digest(folder)}"))
     signature = pack.signature or {}
     key = " ".join(signature.get("key_id", "")[i:i + 4] for i in range(0, 16, 4))
     if signature.get("status") == "verified":

@@ -1155,6 +1155,23 @@ class Session:
             )
         return PathSandbox.is_read_only_tool(tool_name)
 
+    def _repository_preapproves(self, tool_name: str, tool_args: dict) -> bool:
+        """Whether Auto-edit runs this call without asking because the project's policy allows it.
+
+        The project's lumi-policy.json allow rules are in the execution policy
+        only while the user trusts the project (gui/workspace_trust.py), and
+        guardrails, organization rules and built-in denies decide before them
+        (ExecutionPolicy.repository_allows). Only Auto-edit, which Plan also
+        uses, lets them answer: Ask and the read-only suggest tier never skip
+        a prompt, and Full-auto doesn't ask.
+        """
+        policy = self.execution_policy
+        return (
+            self.autonomy_tier == "auto-edit"
+            and policy is not None
+            and policy.repository_allows(tool_name, tool_args)
+        )
+
     def _resolve_tool_permission(
         self,
         tool_name: str,
@@ -1167,10 +1184,12 @@ class Session:
         """Decide whether one tool call may run: ``(approved, denial, args)``.
 
         Calls the tier allows (and the policy does not mark ``prompt``) run
-        without asking. Otherwise the user decides through ``on_permission``
-        and that answer is final: a hook can neither run a call the user
-        denied nor block one they allowed (PRE_TOOL_USE hooks gate every call
-        earlier). Only an explicit ``True`` counts as consent.
+        without asking, and so, in Auto-edit, do calls a trusted repository's
+        allow rule matches (_repository_preapproves). Otherwise the user
+        decides through ``on_permission`` and that answer is final: a hook can
+        neither run a call the user denied nor block one they allowed
+        (PRE_TOOL_USE hooks gate every call earlier). Only an explicit
+        ``True`` counts as consent.
 
         With no prompt available (background runs, delegated work without a
         parent prompt) the outcome is undecided. Only an explicit allow or deny
@@ -1181,6 +1200,10 @@ class Session:
             return True, "", tool_args
         from .. import audit
 
+        if not policy_prompt and self._repository_preapproves(tool_name, tool_args):
+            audit.record("approval", **self._audit_fields(), tool=tool_name, call_id=call_id,
+                         by="project_policy", decision="approved", policy_prompt=False)
+            return True, "", tool_args
         if on_permission is not None:
             approved = on_permission(tool_name, tool_args) is True
             audit.record("approval", **self._audit_fields(), tool=tool_name, call_id=call_id, by="user",

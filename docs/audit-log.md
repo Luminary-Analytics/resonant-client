@@ -32,7 +32,7 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `tool.call` | The model asks for a tool | tool, call id, argument names, `path`, and `command`/`pattern`/`query`/`url` by capture level |
 | `tool.result` | A tool finishes or is refused | error, denied, elapsed, output by capture level |
 | `file.change` | A successful `file_write`, `file_edit` or `file_replace`, or a Codex file change | path |
-| `approval` | You or a permission hook decides a prompted call | tool, `by` (`user` or `hook`), `decision` |
+| `approval` | You or a permission hook decides a prompted call, or a trusted project's `lumi-policy.json` `allow` rule runs a call Auto-edit would ask about | tool, `by` (`user`, `hook` or `project_policy`), `decision` |
 | `privacy.redaction` | The secret scan removed credentials before a request | counts by kind |
 | `settings.change` | Settings saves a change | section and key names, never values |
 | `trust.decision` | A project is trusted, restricted or forgotten | project, decision |

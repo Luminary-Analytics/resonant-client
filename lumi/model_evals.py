@@ -35,9 +35,12 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from .paths import state_home
+
+if TYPE_CHECKING:
+    from .gui.workspace_trust import TrustStatus
 
 logger = logging.getLogger(__name__)
 
@@ -290,13 +293,13 @@ class Runner:
         from .gui.workspace_trust import WorkspaceTrust
 
         try:
-            trusted = WorkspaceTrust().status(comparison.project).trusted
+            trust = WorkspaceTrust().status(comparison.project)
             work = _work_folder(comparison)
             for task_index, task in enumerate(comparison.tasks):
                 for model in comparison.models:
                     if self._stop.is_set():
                         break
-                    result = self._one(comparison, task_index, task, model, work, trusted)
+                    result = self._one(comparison, task_index, task, model, work, trust)
                     comparison.results.append(result)
                     _save(comparison)
                     _notify(on_update)
@@ -313,7 +316,7 @@ class Runner:
             _notify(on_update)
 
     def _one(self, comparison: Comparison, task_index: int, task: dict, model: str, work: Path,
-             trusted: bool) -> dict:
+             trust: TrustStatus) -> dict:
         provider, _, model_name = model.partition(":")
         result: dict[str, Any] = {"task": task_index, "model": model, "status": "", "passed": False,
                                   "exit_code": None, "cost_usd": None, "requests": 0, "elapsed": None,
@@ -328,8 +331,12 @@ class Runner:
             argv = [*command, "run", "--project", str(worktree), "--provider", provider, "--model", model_name,
                     "--mode", comparison.mode, "--timeout", str(comparison.max_minutes * 60),
                     "--output", "json"]
-            if trusted:
-                argv.append("--trust-project")
+            if trust.trusted:
+                # The run works on the last commit, whose lumi-policy.json may not
+                # be the version the user trusted: its allow rules, which run
+                # commands without asking in auto-edit, apply only if it is.
+                argv += ["--trust-project", "--policy-digest",
+                         trust.policy_digest if trust.honor_policy_allows else ""]
             started = time.monotonic()
             summary_json, error, code = self._lumi_run([*argv, task["prompt"]], cwd, comparison.max_minutes)
             result.update(exit_code=code, elapsed=round(time.monotonic() - started, 1), error=error)

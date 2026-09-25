@@ -219,6 +219,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   every priced request while the mission runs (`iter_cost_tracker`), is
   checked at each heartbeat as well as between iterations, and is kept in the
   roadmap with the spend so far, so a resumed mission counts on.
+- Model comparisons (`model_evals.py`) run each task as a `lumi run`
+  subprocess in a detached git worktree of `HEAD` under the project's state
+  folder, never in the user's checkout; the user's check command passes the
+  guardrails and the shell sandbox. Test them with a fake `lumi run`, never
+  real providers.
 - Keep cancellation and user input live. Report completion only after work and
   relevant checks finish. Use enforced execution limits for qualification; a
   prompt-only tool-call limit is not enforcement. Preserve observed overruns and

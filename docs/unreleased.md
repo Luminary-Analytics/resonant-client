@@ -34,9 +34,10 @@ commit 3cd7922.
   Work with no approval dialog, such as background sprint roles, still skips
   changes. As in Auto-edit, a PERMISSION_REQUEST hook can explicitly allow
   them.
-- **Unchanged:** `lumi run --mode ask` keeps the read-only `suggest` tier,
-  since nobody can answer a prompt there. Codex and Claude Code still only
-  read under Ask; they can't pass an approval request to Lumi.
+- **Unchanged:** `lumi run --mode ask`, and so a scheduled task set to **Read
+  only (ask)**, keeps the read-only `suggest` tier, since nobody can answer a
+  prompt there. Codex and Claude Code still only read under Ask; they can't
+  pass an approval request to Lumi.
 - **The edit card is visible while the run waits** (`static/app.js`). Before a
   file edit or new file, the approval card with its diff went into the running
   task's activity list. The UI hides that list until the live status is
@@ -48,8 +49,8 @@ commit 3cd7922.
 
 Validation on September 25, 2026:
 
-- Full `pytest`: 3,983 passed, 5 skipped. `ruff check .` clean, 35 Node UI
-  tests pass, `git diff --check` clean.
+- Full `pytest` after merging main: 4,019 passed, 5 skipped. `ruff check .`
+  clean, 35 Node UI tests pass, `git diff --check` clean.
 - New tests drive real turns:
   - `test_permission_decisions.py` runs `Session.run` with an `on_permission`
     callback. It covers allow and deny for a new file, an edit and a command,

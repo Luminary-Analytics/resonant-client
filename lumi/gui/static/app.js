@@ -3970,6 +3970,10 @@ class LumiApp {
                 this.auditStatus = event;
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'about_info':
+                this.aboutInfo = event.data;
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
             case 'onboarding_progress':
                 this.settings = {...(this.settings || {}), onboarding: {...(this.settings?.onboarding || {}), first_task_done: Boolean(event.first_task_done)}};
                 break;
@@ -6742,7 +6746,7 @@ class LumiApp {
                         this.showStatusMessage('Bundling diagnostics…');
                         this.send({ command: 'save_diagnostics' });
                         break;
-                    case 'about': this.showStatusMessage('Lumi - local-first multimodal coding agent'); break;
+                    case 'about': this._settingsActivePage = 'about'; this.switchView('settings'); break;
                 }
                 closeAppMenu();
             });

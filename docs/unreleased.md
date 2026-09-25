@@ -57,12 +57,16 @@ Validation on September 25, 2026:
   A first full run ended at 22% with exit code 127 and no failure reported,
   in `tests/test_computer_use_upgrades.py`; that file passed alone (25 tests),
   and the full rerun passed.
+- Rebased on main at 3e74b97 (the organization's pack registry): full `pytest`
+  4,359 passed, 5 skipped. `ruff check .`, both `node --check` runs, the four
+  Node UI test files (61 tests) and `git diff --check` passed again.
 - Real sessions from an isolated home, rendered through `consume_events` into a
   recorded Rich console at 80 and 52 columns: a refused `grep` under one that
   found "2 matches", a `pre_tool_use` hook that timed out after 2 s on
-  `git push origin main`, and `npm publish` denied at the prompt. The reasons
-  wrapped inside the gutter at both widths, and the Deny read "✗ denied". The
-  real `~/.resonant` was unchanged and no `~/.lumi` was created.
+  `git push origin main`, and `npm publish` denied by the approval callback.
+  The reasons wrapped inside the gutter at both widths, and the Deny read
+  "✗ denied". The real `~/.resonant` was unchanged and no `~/.lumi` was
+  created.
 
 Not exercised: the TUI in a terminal window with a live model; the console was
 captured instead. The `lumi` TUI builds its session without hooks or an

@@ -1,0 +1,4 @@
+# Tools CI uses to audit the release lock and write the SBOM
+# (see scripts/lock_release.py). Not part of the installer.
+pip-audit>=2.9
+cyclonedx-bom>=7

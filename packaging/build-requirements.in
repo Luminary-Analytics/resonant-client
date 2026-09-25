@@ -1,0 +1,4 @@
+# Build tools pinned into packaging/requirements-release.txt with the app's own
+# dependencies (see scripts/lock_release.py). PyInstaller's bootloader ships in
+# the installer; the rest is build-only.
+pyinstaller>=6.10

@@ -8,6 +8,51 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 24 supply chain: pinned dependencies, audit, notices, SBOM and signing — source only, not released
+
+- **Pinned, hash-checked release builds:** `scripts/build_clean.ps1` installs
+  `packaging/requirements-release.txt` with `--require-hashes` instead of resolving
+  `.[gui,desktop]` at build time. `python scripts/lock_release.py` (uv) regenerates
+  it and the CI tools lock for every supported platform and Python version, and a
+  test fails when `pyproject.toml` declares a dependency the lock does not pin.
+- **Vulnerability audit:** a **Dependency audit** workflow runs pip-audit on every
+  pin when the locks change and weekly. `packaging/audit_locks.py` removes platform
+  markers first; otherwise pip-audit silently skips packages for other operating
+  systems.
+- **Third-party notices:** `THIRD_PARTY_NOTICES.txt` is generated from the build
+  environment with each package's license texts, plus ripgrep, WinSparkle, the web
+  assets and fonts, the Python runtime and PyInstaller's bootloader. It ships in
+  the bundle (required by the bundle policy) and with each release.
+- **License gate:** the build fails if a shipped Python package is GPL, AGPL or
+  LGPL without a recorded review. The first run found two, both optional
+  PyAutoGUI helpers that Lumi never calls: **MouseInfo** and **PyMsgBox** (GPL-3.0).
+  They are now excluded from the bundle.
+- **CycloneDX SBOM:** `build_clean.ps1 -SbomPath` writes a CycloneDX 1.6 SBOM of
+  the build environment plus the bundled non-Python components, validated against
+  the schema. The build check uploads it with the notices; releases attach both.
+- **Authenticode:** the release workflow signs `lumi.exe` and the installer
+  through `packaging/sign_windows.ps1` when a PFX or a cloud/hardware signing
+  command is configured. The installer is signed before its EdDSA update
+  signature. Without credentials the release continues unsigned with a warning.
+  No certificate is configured yet, and macOS notarization waits for a macOS
+  build pipeline.
+
+Validation on September 24, 2026:
+
+- 14 new tests in `test_release_supply_chain.py`: lock coverage and hashes,
+  component versions against the fetch scripts, notices, the license gate, SBOM
+  additions, marker stripping, and signing without credentials.
+- A local `build_clean.ps1 -SbomPath` run from the locks built a 61.6 MiB bundle.
+  - The notices listed 44 packages and 8 other components.
+  - MouseInfo and PyMsgBox were absent from PyInstaller's module list.
+  - The SBOM had 59 components and passed schema validation.
+  - A scratch copy of `lumi.exe` reported its version.
+- pip-audit on every pin of both locks: no known vulnerabilities.
+
+Not exercised: Authenticode signing with a real certificate (none exists), the
+release workflow itself (it runs only on a tag), and the new CI jobs until this
+PR's checks run.
+
 ## September 24 network trust, credential store and secret hygiene — source only, not released
 
 - **Corporate networks** (`lumi/net.py`, **Settings > Connections > Network**):

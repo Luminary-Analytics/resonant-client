@@ -104,6 +104,47 @@ Not exercised: a live model, a packaged build, orchestration specialists and
 harness evaluators in the app (their existing tests pass), and Codex or Claude
 Code, which run their own tools.
 
+## September 25 project notes for the team — source only, not released
+
+- **Share with the team** on a note in **Project notes**
+  (`team_library.share_note`, [guide](team-library.md#project-notes-for-the-team))
+  proposes it to the organization in Lumi Cloud (Luminary-Analytics/lumi-cloud#22).
+  - It carries its text, kind and source, the repository from the origin
+    remote, and a line-ending-normalized hash of each source file.
+  - A stale note can't be shared.
+- **Recall**: the library's publishers approve notes in Lumi Cloud. Lumi syncs
+  approved ones with the library and recalls up to six per turn, constraints
+  first, as **Team project notes**.
+  - Only in clones of the note's repository, and only while each source file's
+    hash matches.
+  - Each note carries who wrote it and who approved it.
+  - They come from the organization, so project trust doesn't gate them.
+- **Project notes lists them under From your team** with their provenance, and
+  whether they're recalled here. **Settings > Lumi account > Team library**
+  counts them.
+
+Validation on September 25, 2026: `test_team_library.py` gained 3 tests
+against a real temporary repository:
+
+- recall for the same repository only, with a Windows-line-ending Makefile
+  matching a note's hash, and an edited file excluding it;
+- sharing, with its repository and hashes, and what sharing refuses;
+- the notes dialog's commands, and a turn's instructions carrying the block.
+
+In the browser pane, Lumi Cloud of that branch and an isolated app signed in
+as Ada ran together, with a stub model recording its requests:
+
+- Bob, from his own sign-in, proposed a note resting on the Makefile, and Ada
+  approved it on the Library page.
+- **Sync now** brought it to the app, and Project notes showed it under **From
+  your team** as recalled. The fixture's Makefile had Windows line endings.
+- "How do I run the tests?" gave the model the note with "by bob, approved by
+  ada".
+- Ada saved a note and chose **Share with the team**. The toast said it went
+  to Acme for review, and the portal listed it as waiting.
+- **Fixed along the way**: the Share button's title had replaced its visible
+  text as its accessible name. The explanation is now a line in the dialog.
+
 ## September 25 team skills and prompts — source only, not released
 
 - **Your organization's library** (`lumi/team_library.py`,

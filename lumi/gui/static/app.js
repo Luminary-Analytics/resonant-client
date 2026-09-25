@@ -3341,7 +3341,10 @@ class LumiApp {
             case 'project_memory_updated':
                 if (this._normalizeProjectPath(event.project) !== this._normalizeProjectPath(this.currentCwd)) break;
                 this._projectNotes = event.memories || [];
+                this._teamNotes = event.team_notes || [];
+                this._noteShareTargets = event.share_to || [];
                 this._renderProjectResources('notes');
+                if (event.shared) this.showToastMessage(event.shared);
                 break;
             case 'error':
                 // A refused settings change belongs on the Settings page being edited.
@@ -11768,9 +11771,22 @@ class LumiApp {
             refresh.onclick = () => this.send({command: 'preview_list'}); dialog.appendChild(refresh);
         } else {
             dialog.innerHTML += '<p>Keep build commands, project conventions, and recurring fixes here. Lumi recalls at most six relevant notes. Changed source files exclude a note until you review it; an unchanged file does not prove a command succeeded.</p>';
+            const targets = this._noteShareTargets || [];
+            if (targets.length > 1) {
+                dialog.innerHTML += `<p><label>Share notes with <select data-share-org>${targets.map(org => `<option value="${esc(org.id)}">${esc(org.name)}</option>`).join('')}</select></label></p>`;
+            }
+            if (targets.length) {
+                dialog.innerHTML += `<p><small>Share with the team proposes a note to ${esc(targets.length > 1 ? 'your organization' : targets[0].name)} in Lumi Cloud. An owner or admin approves it before it reaches others working on this repository.</small></p>`;
+            }
             for (const note of this._projectNotes || []) {
                 const section = document.createElement('section');
-                section.innerHTML = `<p>${esc(note.text)}</p><small>${esc(note.kind)} · ${esc(note.confidence)} · ${note.stale ? 'Needs review: source changed' : note.sources?.length ? 'Source files unchanged' : 'No source files tracked'} · ${esc(note.source)}</small><p><button data-edit>Edit</button> <button data-delete>Delete</button></p>`;
+                const share = targets.length && !note.stale ? ' <button data-share>Share with the team</button>' : '';
+                section.innerHTML = `<p>${esc(note.text)}</p><small>${esc(note.kind)} · ${esc(note.confidence)} · ${note.stale ? 'Needs review: source changed' : note.sources?.length ? 'Source files unchanged' : 'No source files tracked'} · ${esc(note.source)}</small><p><button data-edit>Edit</button> <button data-delete>Delete</button>${share}</p>`;
+                section.querySelector('[data-share]')?.addEventListener('click', event => {
+                    event.target.disabled = true;
+                    const organization = dialog.querySelector('[data-share-org]')?.value || targets[0].id;
+                    this.send({command: 'memory_share', id: note.id, organization_id: organization});
+                });
                 section.querySelector('[data-edit]').onclick = () => {
                     const form = dialog.querySelector('form');
                     form.elements.id.value = note.id; form.elements.text.value = note.text;
@@ -11779,6 +11795,13 @@ class LumiApp {
                 };
                 section.querySelector('[data-delete]').onclick = () => this.send({command: 'memory_delete', id: note.id});
                 dialog.appendChild(section);
+            }
+            if ((this._teamNotes || []).length) {
+                const team = document.createElement('section');
+                team.className = 'team-notes';
+                team.innerHTML = '<h3>From your team</h3><p>Notes about this repository your organization approved in Lumi Cloud. They change there, not here.</p>'
+                    + this._teamNotes.map(note => `<div class="team-note"><p>${esc(note.text)}</p><small>${esc(note.kind)} · by ${esc(note.author || 'a teammate')}, approved by ${esc(note.approved_by || 'an administrator')} · ${esc(note.organization?.name)} · ${note.stale ? 'Not recalled: its files differ here' : 'Recalled when relevant'} · ${esc(note.source)}</small></div>`).join('');
+                dialog.appendChild(team);
             }
             const form = document.createElement('form');
             form.innerHTML = '<input type="hidden" name="id"><p><label>Note <textarea name="text" required maxlength="1000" rows="3" style="width:100%"></textarea></label></p><p><label>Source <input name="source" required maxlength="300" placeholder="Decision in this task, or file and line"></label></p><p><label>Kind <select name="kind"><option value="decision">Decision</option><option value="fact">Fact</option><option value="constraint">Constraint</option><option value="procedure">Procedure</option><option value="build_command">Build or test command</option><option value="convention">Project convention</option><option value="fix">Recurring fix</option></select></label></p><p><label>Source files <input name="sources" placeholder="Relative paths, separated by commas"></label></p><button type="submit">Save note</button>';

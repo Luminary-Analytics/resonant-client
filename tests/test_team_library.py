@@ -1,8 +1,11 @@
-"""The organization's library (lumi/team_library.py): syncing it, offering its skills, and its prompts."""
+"""The organization's library (lumi/team_library.py): syncing it, offering its skills, its prompts,
+and project notes shared with the team."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -49,7 +52,7 @@ class FakeCloud:
 def test_syncing_offering_skills_and_reading_them():
     cloud = FakeCloud()
     assert team_library.sync(cloud)["organizations"] == [{"id": "org_acme", "name": "Acme", "skills": 2,
-                                                          "prompts": 1}]
+                                                          "prompts": 1, "notes": 0}]
     assert [item["ref"] for item in team_library.items()] == [
         "team:org_acme/cut-a-release", "team:org_acme/database-migrations", "team:org_acme/review-checklist"]
 
@@ -106,3 +109,103 @@ def test_the_apps_command_syncs_when_old_or_asked_and_sign_out_forgets(monkeypat
 
 async def _call(work, cloud):
     work(cloud)
+
+
+# ── Project notes ────────────────────────────────────────────────────────────
+
+
+def _git(folder, *args):
+    subprocess.run(["git", "-C", str(folder), "-c", "user.email=f@example.com", "-c", "user.name=F", *args],
+                   check=True, capture_output=True)
+
+
+@pytest.fixture
+def clone(tmp_path):
+    """A project whose origin is github.com/acme/web, with a Makefile written with Windows line endings."""
+    folder = tmp_path / "web"
+    folder.mkdir()
+    _git(folder, "init", "-q")
+    _git(folder, "remote", "add", "origin", "git@github.com:Acme/web.git")
+    (folder / "Makefile").write_bytes(b"check:\r\n\tpytest -m 'not slow'\r\n")
+    team_library._repositories.clear()
+    return folder
+
+
+def _synced_note(cloud, **overrides):
+    note = {"id": "tnt_1", "repository": "github.com/acme/web", "kind": "build_command",
+            "text": "Run the tests with make check; plain pytest skips the slow suite.",
+            "source": "Makefile, check target", "author": "Bob", "approved_by": "Ada",
+            # The hash of the Makefile with Unix line endings: a Windows checkout agrees.
+            "fingerprints": {"Makefile": hashlib.sha256(b"check:\n\tpytest -m 'not slow'\n").hexdigest()},
+            **overrides}
+    cloud.library[0]["notes"] = [note, {**note, "id": "tnt_2", "repository": "github.com/acme/api",
+                                        "text": "Another repository's note."}, {"kind": "rumor", "text": "x"}]
+    team_library.sync(cloud)
+
+
+def test_team_notes_are_recalled_for_the_same_repository_while_their_files_hold(clone):
+    cloud = FakeCloud()
+    _synced_note(cloud)
+    assert team_library.repository_of(str(clone)) == "github.com/acme/web"
+    [note] = team_library.notes_for(str(clone))
+    assert note["stale"] is False and note["organization"]["name"] == "Acme"
+    context = team_library.team_notes_context(str(clone), "How do I run the tests?")
+    assert "[team; build_command; by Bob, approved by Ada; source: Makefile, check target]" in context
+    assert "Another repository" not in context
+    assert team_library.team_notes_context(str(clone), "Rename the login page") == ""  # nothing relevant
+
+    (clone / "Makefile").write_bytes(b"check:\n\tpytest\n")
+    assert team_library.notes_for(str(clone))[0]["stale"] is True
+    assert team_library.team_notes_context(str(clone), "How do I run the tests?") == ""
+
+
+def test_sharing_a_note_sends_its_provenance(clone, tmp_path):
+    cloud = FakeCloud()
+    sent = []
+    cloud.account_call = lambda method, path, **kwargs: sent.append((method, path, kwargs["json"])) or {
+        "id": "tnt_9", "status": "pending", "organization": {"id": "org_acme", "name": "Acme"}}
+    note = {"text": "Run the tests with make check", "kind": "build_command", "source": "Makefile",
+            "sources": ["Makefile"], "stale": False}
+    team_library.share_note(cloud, str(clone), note, "org_acme")
+    method, path, body = sent[-1]
+    assert (method, path, body["repository"], body["organization_id"]) == (
+        "POST", "/api/v1/library/notes", "github.com/acme/web", "org_acme")
+    assert body["fingerprints"] == {"Makefile": team_library.fingerprint(clone / "Makefile")}
+
+    with pytest.raises(team_library.LibraryError, match="changed since it was saved"):
+        team_library.share_note(cloud, str(clone), {**note, "stale": True}, "org_acme")
+    with pytest.raises(team_library.LibraryError, match="isn't a file"):
+        team_library.share_note(cloud, str(clone), {**note, "sources": ["../outside.txt"]}, "org_acme")
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    with pytest.raises(team_library.LibraryError, match="origin remote"):
+        team_library.share_note(cloud, str(plain), note, "org_acme")
+
+
+def test_the_notes_dialog_and_a_turn_get_team_notes(clone):
+    cloud = FakeCloud()
+    _synced_note(cloud)
+    cloud.status = lambda: {"signed_in": True, "account": {"organizations": [{"id": "org_acme", "name": "Acme"}]}}
+    shared = []
+    cloud.account_call = lambda method, path, **kwargs: shared.append(kwargs["json"]) or {
+        "id": "tnt_9", "status": "pending", "organization": {"id": "org_acme", "name": "Acme"}}
+    state = SimpleNamespace(cloud=cloud, project=SimpleNamespace(project_path=str(clone)))
+    [saved] = _run(state, "memory_save", text="Deploys go through the release workflow", source="docs/deploy.md",
+                   kind="constraint", sources=[])
+    assert saved["share_to"] == [{"id": "org_acme", "name": "Acme"}] and saved["team_notes"][0]["id"] == "tnt_1"
+    [after] = _run(state, "memory_share", id=saved["memories"][0]["id"], organization_id="org_acme")
+    assert after["shared"].startswith("Sent to Acme for review.") and shared[0]["kind"] == "constraint"
+
+    from lumi.engine.session import Session
+    from tests.streaming_stub import StreamingBackend, done, text_delta
+
+    class Recorder(StreamingBackend):
+        def stream(self, **kwargs):
+            self.instructions = kwargs["instructions"]
+            yield from super().stream(**kwargs)
+
+    backend = Recorder(scripts=[[text_delta("Use make check."), done()]])
+    session = Session(backend, max_steps=2, auto_approve=True)
+    session.project_path = str(clone)
+    list(session.run("How do I run the tests?"))
+    assert "--- TEAM PROJECT NOTES ---" in backend.instructions and "by Bob, approved by Ada" in backend.instructions

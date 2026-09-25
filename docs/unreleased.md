@@ -57,7 +57,8 @@ tool calls checked against it.
 Validation on September 25, 2026, after merging main (including the
 repository allow rules change):
 
-- Full `pytest`: 4,204 passed, 5 skipped. `ruff check .` clean, the 54 Node
+- Full `pytest`: 4,223 passed, 5 skipped, after merging main again (worker
+  tool lists, hand-offs, team skills). `ruff check .` clean, the 54 Node
   tests in AGENTS.md pass, `git diff --check` clean.
 - New tests check that the refused command's file wasn't written:
   - `test_permission_decisions.py` covers 11 malformed files, from `[]` to

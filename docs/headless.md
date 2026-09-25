@@ -107,6 +107,9 @@ jobs:
           path: lumi-result.json
 ```
 
+To have the agent read a pull request's reviews and failing checks, and
+reply, give the job a GitHub token; see [GitHub pull requests](github.md#from-ci).
+
 Review a diff without changing anything:
 
 ```bash

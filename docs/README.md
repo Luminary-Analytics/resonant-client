@@ -42,6 +42,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 - [Audit log and OpenTelemetry export](audit-log.md)
 - [Usage records and prices](usage-and-costs.md)
 - [Running Lumi without a UI (`lumi run`, CI, containers)](headless.md)
+- [GitHub pull requests (reviews, checks, opening and commenting)](github.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

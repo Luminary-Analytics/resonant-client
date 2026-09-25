@@ -408,7 +408,9 @@ lumi run "Fix the failing test" --provider anthropic --model claude-sonnet-5 --m
 ```
 
 See [Running Lumi without a UI](docs/headless.md), including a GitHub
-Actions example and `packaging/docker/Dockerfile`.
+Actions example and `packaging/docker/Dockerfile`. With a GitHub token, the
+agent can read a pull request's reviews and failing checks, open pull
+requests, and reply to reviews; see [GitHub pull requests](docs/github.md).
 
 ## Develop
 

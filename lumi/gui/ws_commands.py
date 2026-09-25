@@ -3004,7 +3004,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "appearance": frozenset({"theme", "density", "font_size"}),
     "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
     "network": frozenset({"ollama_url", "exo_url", "sonn_url", "proxy_url", "no_proxy", "system_certificates"}),
-    "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp"}),
+    "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp", "github"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd", "daily_limit_usd", "turn_limit_usd",
                                 "price_overrides"}),

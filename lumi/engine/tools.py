@@ -1280,6 +1280,11 @@ AGENT_TOOLS.extend([
     ]
 ])
 
+# GitHub pull requests (engine/github_tools.py), loaded through search_tools.
+from .github_tools import GITHUB_TOOLS  # noqa: E402
+
+AGENT_TOOLS.extend(GITHUB_TOOLS)
+
 DIRECTOR_TOOLS = [
     {
         "type": "function",
@@ -1418,6 +1423,12 @@ TOOL_ICONS = {
     "git_commit":          "✓",
     "git_branch_create":   "⎇",
     "git_log":             "☷",
+    # GitHub tools
+    "github_pr_view":      "⇄",
+    "github_check_log":    "☷",
+    "github_pr_create":    "⇪",
+    "github_pr_comment":   "✎",
+    "github_pr_update":    "✎",
     # REPL tools
     "repl_python_start":   "🐍",
     "repl_python_eval":    "▶",
@@ -1745,6 +1756,14 @@ def execute_tool(
         elif name == "git_log":
             from .git_tools import exec_git_log
             return exec_git_log(arguments, start)
+        # GitHub tools
+        elif name.startswith("github_"):
+            from . import github_tools
+
+            handler = getattr(github_tools, f"exec_{name}", None)
+            if handler is None:
+                return ToolResult(f"Unknown tool: {name}", is_error=True)
+            return handler(arguments, start)
         # REPL tools
         elif name == "repl_python_start":
             from .repl import exec_repl_python_start

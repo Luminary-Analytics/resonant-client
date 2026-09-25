@@ -1425,6 +1425,9 @@ Examples:
         pricing.configure(settings)
         usage.configure(settings)
         budgets.configure(settings)
+        from .engine import github_tools
+
+        github_tools.configure(settings)
     except Exception:
         logging.getLogger(__name__).debug("Audit settings unavailable", exc_info=True)
 

@@ -2038,6 +2038,10 @@ class AppState:
         usage.configure(self.settings)
         # And the spending alerts and limits (lumi/budgets.py).
         budgets.configure(self.settings)
+        # And the GitHub token the pull request tools use.
+        from ..engine import github_tools
+
+        github_tools.configure(self.settings)
 
     def enforce_retention(self) -> dict:
         """Delete transcripts older than the retention setting (gui/retention.py)."""

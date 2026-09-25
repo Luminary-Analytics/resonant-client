@@ -8,6 +8,46 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 GitHub pull requests — source only, not released
+
+- **GitHub tools** (`lumi/engine/github_tools.py`, [guide](github.md)), loaded
+  on demand through `search_tools`:
+  - `github_pr_view`: the branch's pull request, with reviews, review comments
+    (ids, file:line, outdated), the conversation and every check with its job
+    id;
+  - `github_check_log`: the end of a GitHub Actions job's log, plus earlier
+    error lines;
+  - `github_pr_create`: pushes the branch, never forced, and opens the PR;
+  - `github_pr_comment`: a comment, or a reply in a review thread;
+  - `github_pr_update`: the title, the description, or ready for review.
+- The two reading tools are approved like `git_log`. The three that change
+  things ask first under Auto accept edits and Ask permissions.
+- Works with github.com and GitHub Enterprise Server (`/api/v3`, or
+  `GITHUB_API_URL`), with the repository taken from `origin`.
+- The token is **Settings > API keys > GitHub token** (credential store), or
+  `GITHUB_TOKEN`/`GH_TOKEN`. It goes only into request headers. Job-log
+  downloads that redirect to other hosts don't carry it, and error messages
+  never echo credentials from a remote URL.
+
+Validation on September 25, 2026:
+
+- 12 new tests in `test_github_tools.py`, against a mocked GitHub API and a
+  temporary repository:
+  - remote parsing, Enterprise hosts, and a foreign remote refused without
+    echoing its password;
+  - the PR view and a job log, where the token isn't sent to the log
+    redirect's host;
+  - a missing token;
+  - opening, commenting, replying, updating and marking ready;
+  - a real `Session.run` in auto-edit: the view ran unasked, the comment asked
+    and was refused.
+- Full `pytest`: 3,741 passed, 2 skipped.
+- In the browser pane: searching Settings for "GitHub" found the new
+  **GitHub token** field, and a typed token was saved (shown as Stored, the
+  value never sent back to the page).
+
+Not exercised: the real GitHub API.
+
 ## September 25 headless runs — source only, not released
 
 - **`lumi run`** (`lumi/headless.py`, [guide](headless.md)) runs one task

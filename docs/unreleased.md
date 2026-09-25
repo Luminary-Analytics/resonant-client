@@ -58,6 +58,94 @@ Validation on September 25, 2026:
   `test_model_evals.py` (9 tests) and `test_headless.py` (18) pass, as do
   ruff, `node --check` and the node UI tests (86).
 
+## September 25 each turn's footer holds its own model and tokens — source only, not released
+
+**A replayed turn's footer showed the last live run's model and tokens.** A
+turn's `▣ model · tokens · time` footer (`lumi/gui/static/app.js`,
+`_renderTurnFooter`) took its model and tokens from the page's last live
+`status` event (`lastModel`, `lastStats`). Status events are never saved.
+After a live turn, opening a saved conversation in the same page put the live
+run's model on every replayed footer, and added the live run's last per-step
+token counts once for every replayed step; after a reload the same footers
+had neither. Live, a step whose call reported no counts added the previous
+step's again, and each of a worker's steps added the parent's last counts.
+
+- **Each `step.end` carries its own call's model and token counts**
+  (`lumi/engine/session.py`, `_step_end_event`): `model`, `input_tokens` and
+  `output_tokens`. `step.end` is saved with the conversation, so a replay has
+  them; `status` still isn't saved. `lumi run --output jsonl` prints the same
+  fields on its `step.end` lines.
+  - Counts use the usage records' names (`usage.token_counts`), whatever the
+    provider calls them. Ollama's (`prompt_eval_count`, `eval_count`) now
+    show, and input includes cached tokens, as Settings > Usage counts it.
+  - A call that named no model gets the connection's, as its usage record
+    does.
+- **The footer reads only its own turn's `step.end` events**
+  (`handleStepEnd`), live or replayed. `lastModel` and `lastStats` now feed
+  only live displays: the header, and a running turn's card. A turn saved
+  before this change shows its time only, as it already did after a reload.
+  A turn that ended before any step did (its first request failed) has no
+  footer; it used to name the page's last model.
+- **Workers:** a worker's steps add their own time (as before) and their own
+  tokens to the turn's footer. A worker's model never names the turn: a worker
+  can run another model.
+- The stylesheet hides the footer in every finished card (done, warning and
+  error, since v0.8.1), so the wrong values were in the page but not on
+  screen. That is unchanged.
+
+Validation on September 25, 2026:
+
+- `tests/test_saved_step_usage.py` (2 tests, real engine loop, scripted model):
+  - A two-step turn through the real `_run_session_streaming`, read back from
+    the saved ledger: step 1 keeps its Ollama counts (1200→80) and reported
+    model; step 2, whose call reported nothing, has 0→0 and the connection's
+    model, not step 1's. No `status` was saved, and the page got the same
+    numbers live.
+  - A real `task` worker: its `step.end` carries the worker's model and
+    counts, and the parent's steps carry their own.
+- Three tests in `tests/ui_recovery.test.cjs` drive the real `handleEvent`,
+  `replayDisplayEvents`, step and turn-end handlers and `_renderTurnFooter`:
+  - a live turn, then saved conversations replayed in the same page: a turn
+    saved before this change reads "▣ 3.0s", and saved turns their own model
+    and summed tokens, including a conversation that changed models;
+  - a turn replayed mid-run counts its saved steps, then its live ones;
+  - a worker adds its tokens but never names the turn's model, including in a
+    turn stopped while its worker ran.
+- On the previous `app.js` all three failed. The live footer read 1800→180
+  for 900→90, and with that assertion skipped, the turn saved before this
+  change read "▣ live-model · 1800→180 tok · 3.0s" instead of "▣ 3.0s".
+  Without the worker check, only the worker test failed.
+- On main at 18b5b10: full `pytest` 4,420 passed, 5 skipped. `ruff check .`
+  clean (ruff 0.12.12), `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (84 tests), and
+  `git diff --check` is clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub that
+  reports Ollama's counts for two models (footers as the page's text reads
+  them). This ran on the branch over a2e2e7a; the later rebases (#64, #65,
+  #68, #70–#72) changed none of the footer's code:
+  - On main at a2e2e7a, a turn that wrote a file read "▣ stub:latest·3.0s"
+    live, and was saved without a model or counts.
+  - On this branch, against the same home: a live turn on `stub-b` read
+    "▣ stub-b:latest·4500→150 tok·2.8s", then one on `stub:latest` read
+    "▣ stub:latest·2700→120 tok·2.9s".
+  - Sidebar clicks in the same page then showed the `stub-b` turn's own
+    footer, and "▣ 3.0s" for the earlier save, where the bug showed
+    "▣ stub:latest·3.0s".
+  - After a reload, all three were the same. A new turn in the earlier
+    conversation read "▣ stub:latest·2700→120 tok·2.4s" under the old turn's
+    "▣ 3.0s", live and after a reload.
+  - The saved ledgers had the model and counts on each `step.end`, and no
+    `status`. No errors were logged during the switches.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no
+    Lumi credential was stored. `~/.codex` changed during the run; the
+    fixture turned off the CLI connections and never started Codex, so those
+    writes are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code (their
+steps take the same path), and a worker in the browser (the tests above cover
+it). The terminal UI still prints each step's footer from `status`,
+unchanged.
+
 ## September 25 your own hooks run in `lumi run`, schedules, comparisons and chats — source only, not released
 
 **Only the app ran them.** The desktop app gives every session the `hooks`

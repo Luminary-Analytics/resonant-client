@@ -350,10 +350,11 @@ class LumiSettingsView {
         }
         const library = this.teamLibrary;
         if (s.signed_in && library) {
+            const plural = (count, word) => `${count} ${word}${count === 1 ? '' : 's'}`;
             const counts = (library.organizations || []).map(org =>
-                `${esc(org.name)}: ${org.skills} skill${org.skills === 1 ? '' : 's'} and ${org.prompts} prompt${org.prompts === 1 ? '' : 's'}`).join('; ');
+                `${esc(org.name)}: ${plural(org.skills, 'skill')}, ${plural(org.prompts, 'prompt')} and ${plural(org.notes || 0, 'project note')}`).join('; ');
             const when = library.synced_at ? `Synced ${esc(new Date(library.synced_at * 1000).toLocaleString())}.` : 'Not synced yet.';
-            parts.push(row('Team library', `Skills and prompts your organization publishes in Lumi Cloud. The agent is offered matching skills, and the ❝ button beside the message box inserts prompts. ${counts ? `${counts}.` : 'Nothing is published yet.'} ${when}`
+            parts.push(row('Team library', `Skills, prompts and project notes your organization publishes in Lumi Cloud. The agent is offered matching skills and recalls project notes for their repository, and the ❝ button beside the message box inserts prompts. ${counts ? `${counts}.` : 'Nothing is published yet.'} ${when}`
                 + (library.error ? `<div class="editor-error" role="alert">${esc(library.error)}</div>` : ''), button('library_sync', 'Sync now')));
         }
         parts.push('<p class="editor-help">An enrolled computer checks in hourly with its Lumi version, the policy in force and usage totals per model (requests, tokens and cost). Prompts, code and file names never go to Lumi Cloud.</p>');

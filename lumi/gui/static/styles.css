@@ -13666,6 +13666,12 @@ body.is-window-dragging * {
 .eval-model-group label { display: inline-flex; align-items: center; gap: 4px; }
 .eval-task-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
 
+/* Team project notes in the Project notes dialog (app.js, _renderProjectResources). */
+#project-resources-dialog .team-notes { border-top: 1px solid var(--border); margin-top: 12px; padding-top: 8px; }
+#project-resources-dialog .team-notes h3 { margin: 0 0 4px; font-size: 14px; }
+#project-resources-dialog .team-note { margin: 8px 0; }
+#project-resources-dialog .team-note p { margin: 0 0 2px; }
+
 /* Team prompts from the organization's library (app.js, openTeamPrompts). */
 .composer-prompts-btn[hidden] { display: none; }
 .team-prompts-dialog { width: 520px; max-height: 80vh; display: flex; flex-direction: column; }

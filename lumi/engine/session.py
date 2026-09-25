@@ -2960,6 +2960,40 @@ class Session:
                     })
                     continue
 
+                # Commands the organization's policy lists also need a second
+                # person's approval in Lumi Cloud (engine/second_approval.py).
+                from . import second_approval
+                approval_pattern = second_approval.needed(fn_name, fn_args)
+                if approval_pattern:
+                    # Don't ask people to approve what the irreversibility floor
+                    # refuses anyway (a force-push to main, say): it reports that itself.
+                    from ..orchestration.autonomy import check_floor
+                    if check_floor(tool_name=fn_name, args=fn_args, project_path=self.project_path or "",
+                                   settings=getattr(self, "_settings_ref", None)) is not None:
+                        approval_pattern = ""
+                if approval_pattern:
+                    approval = second_approval.ask(fn_name, fn_args, approval_pattern,
+                                                   project=os.path.basename(self.project_path or ""))
+                    if approval.state == "waiting":
+                        yield make_event(EngineEvent.APPROVAL_WAIT, name=fn_name, call_id=call_id,
+                                         **approval.event())
+                    approval = second_approval.await_decision(approval, cancel_event=self._cancel_event)
+                    yield make_event(EngineEvent.APPROVAL_WAIT, name=fn_name, call_id=call_id, **approval.event())
+                    if approval.state != "approved":
+                        turn_failed_tools.append(fn_name)
+                        yield make_event(EngineEvent.TOOL_RESULT, name=fn_name, call_id=call_id,
+                                         output=approval.message, is_error=False, denied=True, elapsed=0.0)
+                        self.conversation_history.append({
+                            "role": "tool_call", "name": fn_name,
+                            "arguments": fn_args_str, "call_id": call_id,
+                            "content": f"Called {fn_name}",
+                        })
+                        self.conversation_history.append({
+                            "role": "tool_result", "call_id": call_id,
+                            "content": approval.message,
+                        })
+                        continue
+
                 # Universal recovery boundary. This is tied to the conversation
                 # cursor and created before any tool likely to mutate files.
                 if (

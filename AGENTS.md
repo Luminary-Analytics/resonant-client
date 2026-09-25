@@ -261,6 +261,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `github_pr_create` names the reviewers and reports to Lumi Cloud's review
   queue. A new tool that merges or pushes for the model must check
   `review_gate.blocked` too.
+- Commands an organization's policy lists under `approvals` wait for a
+  second person (`engine/second_approval.py`): after the person's own
+  approval and after the irreversibility floor, the session asks Lumi Cloud
+  and waits, cancellably; only an approval runs the command, and no Lumi
+  Cloud means it doesn't run. Tests reset the requester (`tests/conftest.py`).
 - Hand-offs (`handoff.py`) carry that same copy, the note and the
   repository's address (without credentials), branch and commit. A picked-up
   hand-off is context (`@handoff:`, sticky in `ContextBroker.STICKY`), never

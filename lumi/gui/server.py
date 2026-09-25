@@ -402,6 +402,11 @@ def main():
         from lumi.review_queue import ReviewQueue
 
         review_gate.set_registrar(ReviewQueue(app_state.cloud))
+        # Commands the organization's policy lists wait for a second person (engine/second_approval.py).
+        from lumi.approvals import ApprovalRequester
+        from lumi.engine import second_approval
+
+        second_approval.set_requester(ApprovalRequester(app_state.cloud))
     except Exception:
         logger.exception("Lumi Cloud check-ins failed to start (non-fatal)")
 

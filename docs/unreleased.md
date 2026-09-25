@@ -302,6 +302,56 @@ Not exercised: a live model, a packaged build, orchestration specialists and
 harness evaluators in the app (their existing tests pass), and Codex or Claude
 Code, which run their own tools.
 
+## September 25 a second person approves risky commands — source only, not released
+
+- **`approvals` in organization policy** (`lumi/policy.py`,
+  `lumi/engine/second_approval.py`, [guide](second-approval.md)) lists
+  commands, as `fnmatch` patterns over the whole command, that someone else
+  in the organization approves before they run. Lumi Cloud's Policy page
+  writes it (Luminary-Analytics/lumi-cloud#24).
+- **The session**: after the person's own approval, and only for commands the
+  irreversibility floor doesn't refuse anyway, it asks Lumi Cloud through
+  `lumi/approvals.py`. Saved keys and secret patterns are removed from the
+  command first.
+  - It emits `approval.wait` (waiting, then approved, denied, expired,
+    cancelled or unavailable) and waits, cancellably, up to the policy's
+    `wait_minutes`.
+  - Only an approval runs the command. Otherwise the model is told why.
+- **The conversation** shows a note with the command, who can approve and the
+  outcome.
+
+Validation on September 25, 2026: `test_second_approval.py` (8 tests) covers:
+
+- which commands match;
+- approved, denied, expired, stopped and unavailable, with a dropped
+  connection while polling;
+- secrets removed from the request;
+- a real session running a command only once approved;
+- nobody being asked about a force-push to main the floor refuses;
+- which organization the requester uses.
+
+`tests/conftest.py` resets the requester between tests.
+
+A cross-check with the real Lumi Cloud of that branch in one process:
+
+- The owner saved and published `git push --force*`, and the app's parser read
+  it.
+- Bob's app asked, and Ada got the email.
+- Ada approved on the Approvals page, and the app's wait ended "approved by
+  ada".
+
+In the browser pane, Lumi Cloud and an isolated app signed in as Bob ran
+together with a policy holding `git push*`, and a stub model asked to run
+`git push origin main`:
+
+- The conversation showed the waiting note naming Ada.
+- Ada approved in the portal, the note changed to "Approved by ada. Running
+  it.", and the push reached the fixture's remote.
+- An earlier run with `git push --force origin main` showed approval being
+  asked for a force-push the floor then refused. That led to the floor check
+  before asking. The portal also capitalized commands' first letter, which is
+  fixed there.
+
 ## September 25 agent changes wait for a reviewer — source only, not released
 
 - **Settings > Code review > Agent changes wait for a reviewer**

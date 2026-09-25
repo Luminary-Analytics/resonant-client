@@ -76,6 +76,15 @@ optional.
 
 Patterns use `*` and `?` wildcards.
 
+
+## Commands a second person approves
+
+`"approvals": {"commands": ["git push --force*", "terraform apply*"], "wait_minutes": 30}`
+holds those commands until someone else in the organization approves them in
+Lumi Cloud ([second-person approval](second-approval.md)). Patterns match the
+whole command (`fnmatch`); `wait_minutes` is 1 to 240. Lumi Cloud's Policy
+page writes this section.
+
 ## Lumi Cloud
 
 A machine policy with a `cloud` section enrolls the computer in your

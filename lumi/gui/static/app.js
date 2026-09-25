@@ -131,6 +131,7 @@ function inferActionLabel(toolCounts) {
 // Cases with inline logic deliberately stay in the switch below — hoisting
 // those mechanically would produce a hundred badly-named methods.
 const LUMI_EVENT_DELEGATES = {
+    'approval.wait': 'handleApprovalWait',
     'autonomous_heartbeat': 'handleAutonomousHeartbeat',
     'autonomous_human_decision_received': 'handleAutonomousHumanDecisionReceived',
     'autonomous_human_decision_required': 'handleAutonomousHumanDecisionRequired',
@@ -1732,6 +1733,36 @@ class LumiApp {
             : `Queued ${event.position || ''}`.trim();
         queued.el.classList.add('is-acknowledged');
         queued.el.classList.toggle('is-steering', !!event.steering);
+    }
+
+    /** A command waiting for a second person's approval in Lumi Cloud (engine/second_approval.py). */
+    handleApprovalWait(event) {
+        const id = String(event.request_id || event.call_id || '');
+        let note = this.chatMessages.querySelector(`[data-approval-id="${CSS.escape(id)}"]`);
+        if (!note) {
+            note = document.createElement('div');
+            note.className = 'approval-wait-note';
+            note.dataset.approvalId = id;
+            note.setAttribute('role', 'status');
+            this.chatMessages.appendChild(note);
+        }
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const organization = esc(event.organization || 'your organization');
+        const approvers = (event.approvers || []).length ? ` (${esc(event.approvers.join(', '))})` : '';
+        const states = {
+            waiting: `Waiting for a second person in ${organization} to approve${approvers}. Lumi Cloud emailed them; Lumi waits up to ${esc(event.wait_minutes)} minutes.`,
+            approved: `Approved by ${esc(event.approver || 'a second person')}. Running it.`,
+            denied: `Denied by ${esc(event.approver || 'an approver')}. It didn’t run.`,
+            expired: `Nobody approved it within ${esc(event.wait_minutes)} minutes. It didn’t run.`,
+            cancelled: 'Stopped while waiting for approval. It didn’t run.',
+            unavailable: esc(event.message || 'It needs a second person’s approval in Lumi Cloud, so it didn’t run.'),
+        };
+        note.classList.toggle('is-waiting', event.state === 'waiting');
+        note.innerHTML = `<span><small>Needs a second person’s approval</small><code>${esc(event.command)}</code></span><strong>${states[event.state] || esc(event.state)}</strong>`;
+        if (this._liveRun) {
+            this._liveRun.statusNote = event.state === 'waiting' ? 'Waiting for a second person to approve a command' : '';
+            this._renderLiveRun?.();
+        }
     }
 
     handleSteerApplied(event) {

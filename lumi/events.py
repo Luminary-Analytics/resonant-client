@@ -87,6 +87,11 @@ class EngineEvent(str, Enum):
     # next safe step boundary. Unlike CANCEL, this preserves the active turn.
     STEER_APPLIED = "steer.applied"
 
+    # A command waiting for a second person's approval in Lumi Cloud
+    # (engine/second_approval.py): state waiting, then approved, denied,
+    # expired, cancelled or unavailable.
+    APPROVAL_WAIT = "approval.wait"
+
 
 # ── Client → Engine commands ───────────────────────────────────────────
 

@@ -8,6 +8,32 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 macOS app and DMG — source only, not released
+
+- **`Lumi.app` in `lumi-X.Y.Z.dmg`** for Apple silicon ([guide](macos.md)):
+  - `packaging/build_macos.sh` builds it from the same hash-pinned lock (with
+    its macOS PyObjC wheels) and `packaging/lumi.spec`, then checks it against
+    `packaging/bundle-policy-macos.json`;
+  - the spec now picks pywebview's WebKit backend on macOS and leaves out the
+    Windows-only WinSparkle;
+  - the app carries its version, a minimum of macOS 12, and usage strings for
+    the microphone and automation.
+- **Signing and notarization** (hardened runtime,
+  `packaging/macos/entitlements.plist`, `notarytool`, stapling) run when a
+  Developer ID and Apple credentials are configured as secrets; otherwise the
+  build is unsigned and says so.
+- **CI:** `.github/workflows/build-macos.yml` builds on `macos-latest` and
+  starts the app: `--version`, `lumi updates`, and the GUI server with the
+  page, the launch code and the WebSocket token check. It keeps the DMG as an
+  artifact. Nothing is published.
+- **Search without ripgrep** (macOS and Linux) now uses `grep -E`, so
+  alternation, `+` and groups mean what they do in ripgrep.
+- Third-party notices list ripgrep and WinSparkle only in Windows builds.
+
+Validation on September 25, 2026: see this PR's macOS build job. No Mac was
+available locally, so the native window, dictation, computer use and the
+Keychain are untested.
+
 ## September 25 updates that wait for running turns — source only, not released
 
 - **An update never cuts off an agent turn** (`lumi/updater.py`, [guide](updates.md#installing-an-update)):

@@ -47,6 +47,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 - [Signing in to enterprise model endpoints (OAuth, Entra ID, client certificates)](connection-sign-in.md)
 - [Updates: channels, pins and turning them off](updates.md)
 - [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
+- [Lumi on macOS: building, signing and notarizing the app](macos.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

@@ -30,7 +30,8 @@
       "license": "MIT OR Unlicense",
       "url": "https://github.com/BurntSushi/ripgrep",
       "purl": "pkg:github/BurntSushi/ripgrep@15.2.0",
-      "license_files": ["packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE"]
+      "license_files": ["packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE"],
+      "platforms": ["win32"]
     },
     {
       "name": "WinSparkle",
@@ -42,7 +43,8 @@
         "packaging/winsparkle/WinSparkle-0.9.2/COPYING",
         "packaging/winsparkle/WinSparkle-0.9.2/COPYING.expat"
       ],
-      "note": "Windows update checks. Includes the Expat XML parser (MIT)."
+      "note": "Windows update checks. Includes the Expat XML parser (MIT).",
+      "platforms": ["win32"]
     },
     {
       "name": "marked",

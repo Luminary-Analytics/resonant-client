@@ -56,6 +56,7 @@ NOT bundled (runtime-optional):
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -191,12 +192,6 @@ hiddenimports = [
     # pywebview (bundled v0.2.2+) — native desktop frame.
     # webview is the import name; the package is "pywebview" on PyPI.
     "webview",
-    "webview.platforms.edgechromium",
-    "webview.platforms.winforms",
-    # Windows-specific: pywebview uses pythonnet to host Edge/WinForms.
-    "clr",
-    "clr_loader",
-    "pythonnet",
 
     # Corporate TLS and the OS credential store (lumi/net.py,
     # lumi/secrets_store.py) are imported lazily. PyInstaller's keyring hook
@@ -206,6 +201,14 @@ hiddenimports = [
     "truststore",
     "keyring",
 ]
+
+# pywebview's platform backend: Edge through pythonnet/WinForms on Windows,
+# WebKit through PyObjC on macOS.
+if sys.platform == "darwin":
+    hiddenimports += ["webview.platforms.cocoa"]
+else:
+    hiddenimports += ["webview.platforms.edgechromium", "webview.platforms.winforms",
+                      "clr", "clr_loader", "pythonnet"]
 
 # Pull in all submodules of lumi itself so dynamic imports inside
 # the engine (e.g. `importlib.import_module(f"lumi.engine.{tool}")`)
@@ -246,7 +249,7 @@ excludes += [
 WINSPARKLE_DLL = PROJECT_ROOT / "packaging" / "winsparkle" / "WinSparkle-0.9.2" / "x64" / "Release" / "WinSparkle.dll"
 
 binaries = []
-if WINSPARKLE_DLL.exists():
+if sys.platform == "win32" and WINSPARKLE_DLL.exists():
     # ('source', 'destination_dir_in_bundle')  — empty dest means top of bundle.
     binaries.append((str(WINSPARKLE_DLL), "."))
 
@@ -314,9 +317,12 @@ exe = EXE(
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    # On macOS, packaging/build_macos.sh signs the finished Lumi.app when a
+    # Developer ID is configured, so PyInstaller leaves signing alone.
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(PKG_ROOT / "gui" / "static" / "lumi.ico"),
+    icon=str(PROJECT_ROOT / "packaging" / "macos" / "lumi.icns") if sys.platform == "darwin"
+    else str(PKG_ROOT / "gui" / "static" / "lumi.ico"),
 )
 
 # ---- Collect (one-folder bundle) --------------------------------------------
@@ -334,19 +340,27 @@ coll = COLLECT(
 
 # ---- macOS app bundle ---------------------------------------------------------
 #
-# Gives a macOS build its name, Dock icon and bundle identity. Only the
-# branding is in place: no macOS build has been made or tested yet, and the
-# Windows-only pieces above (WinSparkle, rg.exe, the WebView2 backend) still
-# need macOS counterparts before one can ship.
+# Built by packaging/build_macos.sh, which also makes the DMG and, when a
+# Developer ID is configured, signs and notarizes it (docs/macos.md). The
+# usage strings are what macOS shows when the agent asks for the microphone
+# (dictation) or to automate other apps (computer use).
 if sys.platform == "darwin":
+    _version = re.search(r'__version__\s*=\s*"([^"]+)"',
+                         (PKG_ROOT / "__init__.py").read_text(encoding="utf-8")).group(1)
     app = BUNDLE(
         coll,
         name="Lumi.app",
         icon=str(PROJECT_ROOT / "packaging" / "macos" / "lumi.icns"),
         bundle_identifier="com.luminaryanalytics.lumi",
+        version=_version,
         info_plist={
             "CFBundleName": "Lumi",
             "CFBundleDisplayName": "Lumi",
+            "CFBundleShortVersionString": _version,
+            "CFBundleVersion": _version,
+            "LSMinimumSystemVersion": "12.0",
             "NSHighResolutionCapable": True,
+            "NSMicrophoneUsageDescription": "Lumi uses the microphone only while you dictate a message.",
+            "NSAppleEventsUsageDescription": "Lumi controls other apps only when you let the agent use this computer.",
         },
     )

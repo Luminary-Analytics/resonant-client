@@ -71,7 +71,9 @@ the final bytes. It verifies each signature afterwards. It uses one of:
   - SSL.com eSigner.
 
 Without either, the release continues unsigned and the run shows a warning.
-macOS notarization is not wired: there is no macOS build pipeline yet.
+macOS signing and notarization live in `packaging/build_macos.sh`, used by the
+macOS build workflow; the release workflow doesn't publish macOS builds yet
+(see [Lumi on macOS](macos.md)).
 
 ## Signing and publication
 

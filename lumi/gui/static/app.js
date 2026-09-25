@@ -6588,6 +6588,7 @@ class LumiApp {
         const rows = rules.map(rule => {
             const owner = rule.owner ? esc(rule.owner) : 'You';
             const scope = rule.scope === 'turn' ? 'each turn'
+                : rule.scope === 'organization' ? 'shared credit this month, across every computer'
                 : `${rule.period === 'month' ? 'this month' : 'today'}${rule.scope === 'project' ? `, projects matching <code>${esc(rule.match)}</code>` : ''}`;
             const steps = [
                 rule.warn_usd != null ? `alert at ${money(rule.warn_usd)}` : '',

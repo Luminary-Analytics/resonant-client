@@ -140,9 +140,11 @@ class FakeCloud:
             return httpx.Response(401, json={"error": "device_revoked"})
         if path == "/api/v1/devices/checkin":
             self.checkins.append(json.loads(request.content))
-            return httpx.Response(200, json={"organization": {"id": "org_acme", "name": "Acme"},
-                                             "policy_version": self.policy_version, "next_checkin_seconds": 3600,
-                                             "trusted_keys": {self.key_id: self.public}})
+            answer = {"organization": {"id": "org_acme", "name": "Acme"}, "policy_version": self.policy_version,
+                      "next_checkin_seconds": 3600, "trusted_keys": {self.key_id: self.public}}
+            if getattr(self, "budget", None):
+                answer["budget"] = self.budget
+            return httpx.Response(200, json=answer)
         if path == "/api/v1/devices/policy":
             if self.policy_version is None:
                 return httpx.Response(404, json={"error": "no_policy"})
@@ -443,3 +445,37 @@ def test_the_settings_page_gets_status_and_errors_without_secrets(fake):
     assert "trusted_keys" not in status["device"]
     [reply] = _run(client, "cloud_unenroll")
     assert reply["data"]["device"] == {}
+
+
+def test_the_organizations_shared_credit_stops_model_requests(fake):
+    from lumi import budgets
+
+    budgets.reset()
+    client = _client(fake)
+    _sign_in(client, fake)
+    client.enroll("org_acme")
+    month = datetime.now(timezone.utc).strftime("%Y-%m")
+    fake.budget = {"organization": "Acme", "period": month, "credit_usd": 50.0, "spent_usd": 45.0}
+    client.check_in()
+    rule = next(r for r in budgets.rules() if r.scope == "organization")
+    assert (rule.owner, rule.block_usd, rule.base_usd) == ("Acme", 50.0, 45.0)
+    assert budgets.evaluate(rows=[]) == []  # $45 of $50
+    # This computer's spend since the check-in counts too; earlier spend was in Lumi Cloud's $45.
+    rows = [{"ts": "2000-01-01T00:00:00.000Z", "cost_usd": 100.0},
+            {"ts": rule.since, "cost_usd": 6.0}]
+    rows[0]["ts"] = month + "-01T00:00:00.000Z"
+    verdict = budgets.evaluate(rows=rows)[0]
+    assert verdict.level == "block"
+    assert verdict.message == ("This month's spend across Acme is $51.00, which reaches Acme's $50.00 "
+                               "shared model credit.")
+    # It survives a restart, and a check-in without it removes it.
+    budgets.reset()
+    _client(fake)
+    assert any(r.scope == "organization" for r in budgets.rules())
+    fake.budget = None
+    client.check_in()
+    assert not any(r.scope == "organization" for r in budgets.rules())
+    # Last month's credit doesn't count this month.
+    budgets.set_shared_credit({"organization": "Acme", "period": "2000-01", "credit_usd": 1.0, "spent_usd": 5.0})
+    assert not any(r.scope == "organization" for r in budgets.rules())
+    budgets.reset()

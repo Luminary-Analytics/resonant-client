@@ -264,6 +264,55 @@ def test_cancel_event_stops_walker_between_nodes():
     assert g.nodes[b.id].status == NodeStatus.PENDING
 
 
+def test_pause_holds_the_next_node_until_resumed():
+    g = PlanGraph.new("intent")
+    a = _node(g, goal="a")
+    b = _node(g, goal="b", deps=[a.id])
+    pause = threading.Event()
+    ran: list[str] = []
+
+    def runner(node: PlanNode, graph: PlanGraph) -> SpecialistResult:
+        ran.append(node.id)
+        if node.id == a.id:
+            # Paused while a runs: a finishes, b waits.
+            pause.set()
+        return SpecialistResult(status=NodeStatus.DONE, confidence=1.0)
+
+    walker = GraphWalker(runner=runner, pause_event=pause)
+    worker = threading.Thread(target=walker.run, args=(g,), daemon=True)
+    worker.start()
+    worker.join(timeout=0.5)
+
+    assert worker.is_alive()
+    assert ran == [a.id]
+    assert g.nodes[a.id].status == NodeStatus.DONE
+    assert g.nodes[b.id].status == NodeStatus.PENDING
+
+    pause.clear()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert ran == [a.id, b.id]
+
+
+def test_cancel_releases_a_paused_walker_without_running_another_node():
+    g = PlanGraph.new("intent")
+    a = _node(g, goal="a")
+    pause, cancel = threading.Event(), threading.Event()
+    pause.set()
+    runner = RecordingRunner()
+
+    walker = GraphWalker(runner=runner, cancel_event=cancel, pause_event=pause)
+    worker = threading.Thread(target=walker.run, args=(g,), daemon=True)
+    worker.start()
+    cancel.set()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert runner.calls == []
+    assert g.nodes[a.id].status == NodeStatus.PENDING
+
+
 def test_runner_exception_blocks_node_does_not_crash_walker():
     g = PlanGraph.new("intent")
     a = _node(g, goal="will fail")

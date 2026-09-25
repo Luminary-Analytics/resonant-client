@@ -10,9 +10,10 @@ Cancellation: each active intent owns a `threading.Event`. `cancel()` sets it;
 the walker checks it between nodes and the runner checks it before each
 specialist Session.
 
-Pause: each active intent owns a `pause_event`. `pause()` sets it; the worker
-loops on a short sleep while the flag is up, between node executions. `resume()`
-clears it.
+Pause: each active intent owns a `pause_event`. `pause()` sets it; the walker
+starts no new node while the flag is up (the specialist already running
+finishes first). `resume()` clears it. Cancel, pause and resume apply only
+while the intent's worker runs: a finished intent reports False.
 """
 
 from __future__ import annotations
@@ -157,11 +158,12 @@ class IntentService:
             runner=runner,
             on_event=lambda ev: self._on_walker_event(graph, ev),
             cancel_event=cancel_event,
+            pause_event=pause_event,
         )
 
         thread = threading.Thread(
             target=self._run_walker,
-            args=(graph, walker, cancel_event, pause_event),
+            args=(graph, walker, cancel_event),
             name=f"intent-{graph.intent_id[:8]}",
             daemon=True,
         )
@@ -191,7 +193,7 @@ class IntentService:
         return graph.intent_id
 
     def cancel(self, intent_id: str) -> bool:
-        active = self._get(intent_id)
+        active = self._get_running(intent_id)
         if not active:
             return False
         active.cancel_event.set()
@@ -201,7 +203,7 @@ class IntentService:
         return True
 
     def pause(self, intent_id: str) -> bool:
-        active = self._get(intent_id)
+        active = self._get_running(intent_id)
         if not active:
             return False
         active.pause_event.set()
@@ -211,7 +213,7 @@ class IntentService:
         return True
 
     def resume(self, intent_id: str) -> bool:
-        active = self._get(intent_id)
+        active = self._get_running(intent_id)
         if not active:
             return False
         active.pause_event.clear()
@@ -267,6 +269,13 @@ class IntentService:
     def _get(self, intent_id: str) -> Optional[_ActiveIntent]:
         with self._lock:
             return self._active.get(intent_id)
+
+    def _get_running(self, intent_id: str) -> Optional[_ActiveIntent]:
+        # Finished intents stay in `_active` for get_graph; pausing or
+        # cancelling one would only relabel it and announce a change that
+        # never happens.
+        active = self._get(intent_id)
+        return active if active and active.thread.is_alive() else None
 
     def _emit(self, payload: dict) -> None:
         try:
@@ -375,12 +384,9 @@ class IntentService:
         graph: PlanGraph,
         walker: GraphWalker,
         cancel_event: threading.Event,
-        pause_event: threading.Event,
     ) -> None:
-        """Worker-thread entry point. Honors pause via a poll loop."""
+        """Worker-thread entry point. The walker honors pause before each node."""
         try:
-            # If paused before we even started, wait it out (with cancel-priority).
-            self._wait_while_paused(pause_event, cancel_event)
             walker.run(graph)
         except Exception as exc:
             logger.exception("Walker crashed for intent %s", graph.intent_id)
@@ -430,9 +436,3 @@ class IntentService:
             "intent_id": graph.intent_id,
             "extracted_skill_id": skill_id,
         })
-
-    @staticmethod
-    def _wait_while_paused(pause_event: threading.Event, cancel_event: threading.Event) -> None:
-        # Cheap poll loop — pause is a low-frequency event so a 0.1s tick is fine.
-        while pause_event.is_set() and not cancel_event.is_set():
-            time.sleep(0.1)

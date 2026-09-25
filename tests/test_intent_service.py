@@ -189,8 +189,52 @@ def test_cancel_unknown_intent_returns_false(state_home, project_dir):
 # ── Pause / resume ─────────────────────────────────────────────────────
 
 
-def test_pause_then_resume(state_home, project_dir):
-    service = _make_service(project_dir)
+def test_pause_holds_the_next_node_until_resume(state_home, project_dir):
+    events: list = []
+    service = _make_service(project_dir, on_event=events.append)
+    started: list = []
+    planning, release_planner = threading.Event(), threading.Event()
+
+    def runner(node, graph):
+        started.append(node.specialization)
+        if node.specialization == NodeSpecialization.PLAN:
+            planning.set()
+            release_planner.wait(timeout=5)
+            return SpecialistResult(
+                status=NodeStatus.DONE, confidence=0.9,
+                subgoals=[{"goal": "do thing", "specialization": "implement"}],
+            )
+        return SpecialistResult(status=NodeStatus.DONE, confidence=0.95, summary="done")
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: runner,
+    ):
+        intent_id = service.start_intent("test")
+        assert planning.wait(timeout=5)
+        assert service.pause(intent_id) is True
+        release_planner.set()
+        # The running planner finishes; the implementer it planned must wait.
+        deadline = time.time() + 5
+        while not any(e.get("event") == "plan.event" and e["event_payload"]["kind"] == "node.done" for e in events):
+            assert time.time() < deadline, "the planner never finished"
+            time.sleep(0.02)
+        time.sleep(0.4)
+        assert started == [NodeSpecialization.PLAN]
+        assert service._get(intent_id).status == "paused"
+
+        assert service.resume(intent_id) is True
+        _wait_for_completion(service, intent_id)
+
+    assert NodeSpecialization.IMPLEMENT in started
+    kinds = [e.get("event") for e in events]
+    assert kinds.index("intent.paused") < kinds.index("intent.resumed") < kinds.index("intent.complete")
+
+
+def test_a_finished_intent_cannot_be_paused_resumed_or_cancelled(state_home, project_dir):
+    """Otherwise the plan-graph would announce "Intent paused." for work that is over."""
+    events: list = []
+    service = _make_service(project_dir, on_event=events.append)
     runner_results = {
         NodeSpecialization.PLAN: SpecialistResult(status=NodeStatus.DONE, confidence=0.9),
     }
@@ -199,12 +243,14 @@ def test_pause_then_resume(state_home, project_dir):
         side_effect=lambda **kw: _scripted_runner(runner_results),
     ):
         intent_id = service.start_intent("test")
-        # Pause + resume don't have to land at any particular moment for the test,
-        # we just want to exercise the API. The intent likely completes before
-        # the pause arrives — that's fine, the methods are still valid.
-        service.pause(intent_id)
-        service.resume(intent_id)
         _wait_for_completion(service, intent_id)
+    events.clear()
+
+    assert service.pause(intent_id) is False
+    assert service.resume(intent_id) is False
+    assert service.cancel(intent_id) is False
+    assert events == []
+    assert service._get(intent_id).status == "completed"
 
 
 # ── Audit log integration ──────────────────────────────────────────────

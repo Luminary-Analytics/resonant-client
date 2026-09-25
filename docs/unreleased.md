@@ -8,6 +8,77 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 /plan and the Plan tab's controls work again — source only, not released
+
+- **`/plan <goal>` starts a plan again** (`lumi/gui/ws_commands.py`,
+  [guide](desktop-workflow.md#plans-with-plan-unreleased)).
+  - Since the WebSocket commands moved out of `websocket_endpoint` (8d0b2c8,
+    July 27), the handler for the six intent commands compared each name with
+    the module's `command` decorator instead of the message's command. Every
+    one did nothing and sent nothing: `/plan` said "Intent dispatched" and no
+    plan ran, and the Plan tab's Pause, History and Restore had no effect.
+  - The handler reads the name from the message. A name it doesn't serve gets
+    an error instead of silence.
+  - A Mission's **Build this roadmap** wasn't affected: it starts its plan
+    directly.
+- **Pause holds a plan** (`lumi/orchestration/walker.py`).
+  - Pause used to take effect only before a plan's first step. Now no new
+    step starts while a plan is paused; the step already running finishes.
+  - The Plan tab's **Pause** button becomes **Resume**.
+  - A finished plan can't be paused, resumed or stopped
+    (`lumi/orchestration/intent_service.py`). It used to be relabelled and
+    announced as paused. The Plan tab now says when a control was refused,
+    including a snapshot that can't be restored while its plan runs.
+- **Specialists' rules.** Specialists started by `/plan` run in Full-auto
+  with the guardrails and the review gate, as a Mission's roadmap does. They
+  don't yet apply the organization's shell rules or the project's
+  `lumi-policy.json` (`LocalSpecialistRunner` builds
+  `policy_for_tier("full-auto")`). In the browser check below, a specialist
+  ran a command the organization's policy denies; a normal turn refused it.
+
+Validation on September 25, 2026:
+
+- `tests/test_ws_command_registry.py` drives each of the six commands through
+  the registry, with the message's `command` as the endpoint passes it:
+  - `intent_start` (the goal trimmed, `intent.accepted`), the other five
+    acknowledgements, a missing goal, no backend, and names the handler
+    doesn't serve;
+  - `/plan` through the app's real `/ws` socket and the app's own
+    `get_intent_service`, with a scripted specialist: `intent.accepted`,
+    `plan.snapshot`, `intent.started`, `plan.event` and `intent.complete`
+    all arrive.
+- `test_graph_walker.py` and `test_intent_service.py`: a paused walk starts
+  no node until resumed; cancel ends a paused walk without running another;
+  a paused intent's implementer waits for resume; a finished intent refuses
+  pause, resume and cancel.
+- `tests/ui_recovery.test.cjs`: the button's Resume state and the refusal
+  messages.
+- Each new test fails against the bug it covers: the old name comparison,
+  a walker without the pause check, a service that doesn't pass its pause
+  flag, or finished intents accepted again. The socket test fails rather
+  than hangs.
+
+In the browser pane, against an isolated fixture (temporary home and state,
+keychain off, a scripted Ollama-compatible model, and an organization policy
+that denies `forbidden-by-acme`):
+
+- `/plan add a dark mode toggle` opened the Plan tab, and the planner and
+  implementer ran to completion.
+- Pause, pressed while the planner ran: the button read Resume, the planner
+  finished, and the implementer's first model request came only after
+  Resume, 54 s later. A second plan, paused and resumed from the keyboard
+  (Enter, then Space), waited 65 s.
+- History listed the snapshots. Restore while the plan was paused said
+  "Snapshot not restored…"; once it finished, Restore put the graph back.
+- Pause on a finished plan said "That plan can no longer be paused."
+- The implementer's `echo forbidden-by-acme > ran.txt` ran and wrote the
+  file. The same command in a normal turn was "Blocked by policy: Acme: no".
+
+Not yet: a Stop control for plans (nothing sends `intent_cancel`). A plan's
+steps also show in the conversation as ordinary turns, with "Needs
+attention", Retry and a suggested next prompt, and each step's end moves
+keyboard focus to the composer.
+
 ## September 25 the organization's pack registry — source only, not released
 
 - **The registry in policy** (`lumi/policy.py`, `lumi/engine/capability_packs.py`,

@@ -886,3 +886,36 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
     }
     assert.equal(collapsed.length, 2);
 });
+
+test('the plan-graph Pause button becomes Resume while the plan is paused', () => {
+    const button = {textContent: 'Pause', title: ''};
+    const app = setup(() => {}, {document: {getElementById: (id) => (id === 'plan-graph-pause' ? button : null)}});
+    const notices = [];
+    app.showStatusMessage = (message) => notices.push(message);
+
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    assert.equal(app._currentIntentPaused, true);
+    assert.equal(button.textContent, 'Resume');
+    // Another intent (a Mission's roadmap) finishing leaves this plan's button alone.
+    app.handleEvent({event: 'intent.complete', intent_id: 'mission-2'});
+    assert.equal(button.textContent, 'Resume');
+    app.handleEvent({event: 'intent.resumed', intent_id: 'plan-1'});
+    assert.equal(app._currentIntentPaused, false);
+    assert.equal(button.textContent, 'Pause');
+
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'plan-1'});
+    assert.equal(button.textContent, 'Pause');
+
+    // Accepted controls are reported by the event that follows; refused ones say so.
+    const before = notices.length;
+    app.handleEvent({event: 'intent.pause_ack', intent_id: 'plan-1', ok: true});
+    assert.equal(notices.length, before);
+    app.handleEvent({event: 'intent.resume_ack', intent_id: 'plan-1', ok: false});
+    app.handleEvent({event: 'intent.restore_ack', intent_id: 'plan-1', ok: false});
+    assert.deepEqual(notices.slice(before), [
+        'That plan can no longer be resumed.',
+        'Snapshot not restored. A plan can be restored once it has stopped.',
+    ]);
+});

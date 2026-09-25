@@ -1395,7 +1395,8 @@ class LumiApp {
         document.getElementById('plan-graph-pause')?.addEventListener('click', () => {
             const id = this._currentIntentId;
             if (!id) { this.showStatusMessage('No active intent to pause.'); return; }
-            this.send({ command: 'intent_pause', intent_id: id });
+            // The button reads Resume while the intent is paused.
+            this.send({ command: this._currentIntentPaused ? 'intent_resume' : 'intent_pause', intent_id: id });
         });
         document.getElementById('plan-graph-history')?.addEventListener('click', () => {
             const id = this._currentIntentId;
@@ -2076,6 +2077,20 @@ class LumiApp {
         this.addUserMessage('/plan ' + text);
         this.showStatusMessage('Intent dispatched — plan-graph populating in the preview panel.');
         this.openPlanTab(true);
+    }
+
+    /**
+     * Track whether the plan-graph's intent is paused and label its Pause
+     * button to match, since the same button resumes it. Events for another
+     * intent (a Mission's roadmap, say) leave it alone.
+     */
+    _setIntentPaused(paused, intentId) {
+        if (intentId && intentId !== this._currentIntentId) return;
+        this._currentIntentPaused = paused;
+        const button = document.getElementById('plan-graph-pause');
+        if (!button) return;
+        button.textContent = paused ? 'Resume' : 'Pause';
+        button.title = paused ? 'Resume starting new nodes' : 'Pause new node spawns';
     }
 
     /**
@@ -3686,11 +3701,13 @@ class LumiApp {
                 break;
             case 'intent.accepted':
                 this._currentIntentId = event.intent_id;
+                this._setIntentPaused(false);
                 break;
             case 'intent.started':
                 this.showStatusMessage(`Intent started: ${event.text || ''}`);
                 break;
             case 'intent.complete':
+                this._setIntentPaused(false, event.intent_id);
                 this.showStatusMessage(
                     event.extracted_skill_id
                         ? `Intent complete \u00B7 skill saved: ${event.extracted_skill_id}`
@@ -3698,22 +3715,36 @@ class LumiApp {
                 );
                 break;
             case 'intent.cancelled':
+                this._setIntentPaused(false, event.intent_id);
                 this.showStatusMessage('Intent cancelled.');
                 break;
             case 'intent.failed':
+                this._setIntentPaused(false, event.intent_id);
                 this.showStatusMessage(`Intent failed: ${event.error || 'unknown error'}`);
                 break;
             case 'intent.paused':
-                this.showStatusMessage('Intent paused.');
+                this._setIntentPaused(true, event.intent_id);
+                this.showStatusMessage('Intent paused. The running step finishes first.');
                 break;
             case 'intent.resumed':
+                this._setIntentPaused(false, event.intent_id);
                 this.showStatusMessage('Intent resumed.');
                 break;
             case 'intent.cancel_ack':
             case 'intent.pause_ack':
             case 'intent.resume_ack':
             case 'intent.restore_ack':
-                // Acks are silent — the followup intent.* event surfaces the user-visible message.
+                // A successful ack is followed by the event that reports it
+                // (intent.paused, plan.snapshot, ...). A refused one is not,
+                // so say why nothing changed.
+                if (event.ok === false) {
+                    this.showStatusMessage({
+                        'intent.cancel_ack': 'That plan can no longer be stopped.',
+                        'intent.pause_ack': 'That plan can no longer be paused.',
+                        'intent.resume_ack': 'That plan can no longer be resumed.',
+                        'intent.restore_ack': 'Snapshot not restored. A plan can be restored once it has stopped.',
+                    }[event.event]);
+                }
                 break;
             case 'harness_cycle_started':
                 this.showStatusMessage(`Started ${event.run?.name || 'harness cycle'}`);

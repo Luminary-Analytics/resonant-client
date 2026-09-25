@@ -141,7 +141,8 @@ def _strip_retry_prefix(goal: str) -> str:
 class GraphWalker:
     """Drives a plan-graph to completion by dispatching specialists.
 
-    Stateless aside from the cancel_event. Construct one per intent / run.
+    Stateless aside from the cancel and pause events. Construct one per
+    intent / run.
     """
 
     def __init__(
@@ -150,6 +151,7 @@ class GraphWalker:
         runner: SpecialistRunner,
         on_event: Optional[Callable[[WalkerEvent], None]] = None,
         cancel_event: Optional[threading.Event] = None,
+        pause_event: Optional[threading.Event] = None,
         max_total_nodes: int = 200,
         max_repair_attempts: int = 2,
         max_planner_retries: int = 1,
@@ -157,6 +159,8 @@ class GraphWalker:
         self.runner = runner
         self.on_event = on_event or (lambda ev: None)
         self.cancel_event = cancel_event or threading.Event()
+        # While set, no new node starts; the one running finishes first.
+        self.pause_event = pause_event or threading.Event()
         self.max_total_nodes = max_total_nodes
         self.max_repair_attempts = max_repair_attempts
         # v0.5.1a3 — when a PLAN / PLAN_DEEP node returns no
@@ -200,6 +204,11 @@ class GraphWalker:
                 if node.id in seen_node_ids:
                     # Defensive: prevent infinite loops if a node somehow reappears as runnable.
                     continue
+                self._hold_while_paused()
+                if self.cancel_event.is_set():
+                    # Cancelled during a pause or the previous node: the
+                    # loop's check above ends the walk.
+                    break
                 seen_node_ids.add(node.id)
                 self._run_one(graph, node)
 
@@ -210,6 +219,12 @@ class GraphWalker:
                 "all_done": all(n.status == NodeStatus.DONE for n in graph.nodes.values()),
             }))
         return graph
+
+    def _hold_while_paused(self) -> None:
+        # Pause is rare and user-driven, so a short poll is enough. Cancel
+        # wins: a paused walk that is cancelled stops without resuming.
+        while self.pause_event.is_set() and not self.cancel_event.is_set():
+            time.sleep(0.1)
 
     # ── Per-node execution ─────────────────────────────────────────────
 

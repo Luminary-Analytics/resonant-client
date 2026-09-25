@@ -369,6 +369,24 @@ refines it after the first turn; slow or failed requests keep the local title.
 This uses the chosen model and can incur provider usage. Codex and Claude Code
 use the local title without starting a separate CLI run. You can rename any
 session yourself; automatic naming never overrides a manual title.
+
+## Plans with /plan (Unreleased)
+
+Start a message with `/plan`, for example `/plan add a dark mode toggle`, to
+have specialists work through a goal instead of answering in one turn: a
+planner splits it into steps, and implementers and verifiers take them in
+order. This is separate from the **Plan** permission mode. The preview's
+**Plan** tab opens with the plan and updates as steps start and finish.
+
+- **Pause** lets the step already running finish and starts no new one until
+  you press **Resume** (the same button).
+- **History** lists the plan's saved snapshots. A plan can be restored from
+  one once it has stopped.
+
+Specialists run in Full-auto inside the project, with the guardrails that
+apply in every mode. The Plan tab has no Stop control yet. See
+[Unreleased](unreleased.md).
+
 ## Creative editors
 
 Settings > Creative editors provides guided Blender, Unity, and Unreal Engine 5

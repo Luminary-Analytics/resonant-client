@@ -40,14 +40,14 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 import queue
 import threading
 import time
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
+
+from .file_lock import exclusive
 
 logger = logging.getLogger(__name__)
 
@@ -70,53 +70,6 @@ def _line(body: dict) -> str:
     # ASCII escapes keep any text (even lone surrogates from decoded output)
     # writable and byte-for-byte reproducible when verifying.
     return json.dumps(body, ensure_ascii=True, sort_keys=True, default=str)
-
-
-@contextmanager
-def _exclusive(path: Path) -> Iterator[None]:
-    """Hold an OS lock that every Lumi process writing this log respects.
-
-    If the lock can't be taken the record is still written: a forked chain
-    shows up in ``verify``, a lost record wouldn't.
-    """
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(path, "a+b")
-    except OSError:
-        logger.warning("Could not open the audit lock", exc_info=True)
-        yield
-        return
-    with handle:
-        locked = False
-        try:
-            if os.name == "nt":
-                import msvcrt
-
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            locked = True
-        except OSError:
-            logger.warning("Could not lock the audit log", exc_info=True)
-        try:
-            yield
-        finally:
-            if locked:
-                try:
-                    if os.name == "nt":
-                        import msvcrt
-
-                        handle.seek(0)
-                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                    else:
-                        import fcntl
-
-                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
 
 
 def _last_record(path: Path) -> dict | None:
@@ -231,7 +184,7 @@ class AuditLog:
         """Append one record; returns it (None when the log is off)."""
         if not self.enabled:
             return None
-        with self._lock, _exclusive(self.root / ".lock"):
+        with self._lock, exclusive(self.root / ".lock"):
             ts = _now_iso()
             path = self.root / f"{ts[:10]}.jsonl"
             # Another process may have written since this one did: continue
@@ -289,7 +242,7 @@ class AuditLog:
         today = datetime.fromtimestamp(now if now is not None else time.time(), timezone.utc).date()
         cutoff = today - timedelta(days=self.retention_days)
         removed = 0
-        with self._lock, _exclusive(self.root / ".lock"):
+        with self._lock, exclusive(self.root / ".lock"):
             for path in self._files():
                 try:
                     if datetime.strptime(path.stem, "%Y-%m-%d").date() < cutoff:
@@ -568,26 +521,3 @@ def summarize_args(arguments: Any) -> dict:
         if key in arguments:
             summary[key] = content(arguments[key])
     return summary
-
-
-def usage_counts(stats: dict) -> dict:
-    """Token counts from a model call's stats, whichever names the provider uses."""
-    def first(*keys: str) -> int:
-        for key in keys:
-            try:
-                value = int(stats.get(key) or 0)
-            except (TypeError, ValueError):
-                continue
-            if value:
-                return value
-        return 0
-
-    counts = {
-        "input_tokens": first("input_tokens", "prompt_eval_count", "tokens_in", "prompt_tokens"),
-        "output_tokens": first("output_tokens", "eval_count", "tokens_out", "completion_tokens"),
-        "cached_tokens": first("cached_tokens", "cache_read_tokens"),
-    }
-    if isinstance(stats.get("cost_usd"), (int, float)) and not isinstance(stats.get("cost_usd"), bool):
-        counts["reported_cost_usd"] = float(stats["cost_usd"])
-    return counts
-

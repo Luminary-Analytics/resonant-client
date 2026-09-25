@@ -8,6 +8,76 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 usage records and prices — source only, not released
+
+- **Usage records** (`lumi/usage.py`, [guide](usage-and-costs.md)): one JSON
+  line per model call in `~/.lumi/usage/YYYY-MM.jsonl`. Each record has:
+  - the user, project, conversation and worker;
+  - the purpose: `turn`, `subagent`, `title` or `compression`;
+  - provider and model;
+  - tokens, with cache reads and writes, normalized across providers
+    (Ollama's `prompt_eval_count`, Claude Code's separate cache counts,
+    Codex's `cached_input_tokens`);
+  - the reported and computed cost, and the price source.
+
+  Turns are recorded in `Session.run`, and auxiliary requests in
+  `auxiliary_stream`, so titles and compaction are counted now.
+- **Prices** (`lumi/pricing.py`) resolve in this order:
+  - the provider's reported cost;
+  - an organization policy's new `pricing.prices`;
+  - the user's prices;
+  - local models at $0;
+  - subscriptions (Codex, Claude Code, Ollama cloud);
+  - a bundled list, checked on September 25, 2026 against Anthropic's and
+    OpenAI's published pages.
+
+  The list corrects stale entries: `o3` was $10/$40 and is now $2/$8;
+  `gpt-5.4` was $5/$20 and is now $2.50/$15; bare `opus` matched Opus 4's
+  $15/$75. Cache writes are priced.
+- **Unknown models are unpriced, never $0.** They used to fall back to free.
+  Settings counts them separately, and the model table labels them.
+- **Settings > Usage & cost** adds this month's calls by model and a **Prices**
+  editor. Lines have the form `pattern input output [cached] [write]`, and
+  prices an organization sets are listed there too.
+- **`lumi usage`** prints a monthly summary by model, provider, project,
+  purpose, user or session, or exports CSV or JSONL.
+- **Audit fix:** a delegated worker's tool calls and errors, which the parent
+  passes on for display, were recorded a second time under the parent. A
+  worker's error also marked the parent turn as failed. The worker's own turn
+  now records them once. `model.usage` audit records carry the cost and price
+  source.
+- **One set of totals:** Settings' Today, session and total figures now come
+  from the usage records, so titles and compaction count too. Subscription
+  calls are counted apart from unpriced ones.
+- **Settings errors are visible:** a refused settings change (a bad price
+  line, an invalid collector URL, a setting the organization manages) used to
+  go to the hidden chat stream. It now shows as an alert on the Settings page,
+  and the typed prices stay in place to fix.
+
+Validation on September 25, 2026:
+
+- 22 new tests in `test_pricing_usage.py`:
+  - price order and cache pricing;
+  - organization, user, local and subscription prices;
+  - price lines, and a policy with bad prices;
+  - token normalization;
+  - the ledger with a second writer;
+  - priced session turns, and a recorded title request;
+  - worker events recorded once;
+  - the costs command, the settings validation and the export;
+  - the app counting every recorded call.
+- Full `pytest`: 3,707 passed, 2 skipped.
+- In the browser pane, with an isolated home and the stub serving an
+  Anthropic-format connection (`claude-sonnet-5`), an OpenAI-compatible
+  connection (`house-model`) and Ollama (`stub:latest`):
+  - the records were priced from the catalog with cache reads at the cache
+    rate, as unpriced, and as local $0, and the title request was recorded
+    with purpose `title`;
+  - Usage & cost showed matching totals ($0.0004 for 154 tokens) and the
+    unpriced call;
+  - a bad price line showed an alert and kept the text. After the fix, the
+    next `house-model` calls were priced from the override.
+
 ## September 25 audit log — source only, not released
 
 - **Audit log** (`lumi/audit.py`, [guide](audit-log.md)): hash-chained JSON

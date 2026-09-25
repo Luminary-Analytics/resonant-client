@@ -173,13 +173,6 @@ def test_retention_deletes_old_days(log):
     assert log.purge(now=time.time() + 10 * 365 * 86400) == 0
 
 
-def test_usage_counts_read_each_providers_names():
-    assert audit.usage_counts({"input_tokens": 10, "output_tokens": 2, "cached_tokens": 4, "cost_usd": 0.01}) == {
-        "input_tokens": 10, "output_tokens": 2, "cached_tokens": 4, "reported_cost_usd": 0.01}
-    assert audit.usage_counts({"prompt_eval_count": 7, "eval_count": 3}) == {
-        "input_tokens": 7, "output_tokens": 3, "cached_tokens": 0}
-
-
 class TestOtlp:
     def test_spans_use_genai_conventions(self, log):
         usage = log.record("model.usage", session="s1", provider="anthropic", model="claude-x",

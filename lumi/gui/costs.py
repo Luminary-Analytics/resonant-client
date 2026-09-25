@@ -1,6 +1,10 @@
 """
 Cost tracking for Lumi.
-Tracks token usage per session/day with model-specific pricing.
+Tracks token usage per session/day; prices come from lumi/pricing.py.
+
+A call without a known price adds its tokens and counts as unpriced: it is
+never valued at $0. The per-call records behind these totals are
+lumi/usage.py's.
 """
 
 import json
@@ -8,47 +12,15 @@ import logging
 import threading
 from datetime import date
 from pathlib import Path
+
 from ..paths import state_home
 
 logger = logging.getLogger(__name__)
 
-# Pricing per million tokens (USD)
-MODEL_PRICING: dict[str, dict[str, float]] = {
-    # Claude models
-    "claude-opus-4-20250514":       {"input": 15.0,  "output": 75.0},
-    "claude-sonnet-4-20250514":     {"input": 3.0,   "output": 15.0},
-    "claude-haiku-4-20250514":      {"input": 0.80,  "output": 4.0},
-    "opus":                          {"input": 15.0,  "output": 75.0},
-    "sonnet":                        {"input": 3.0,   "output": 15.0},
-    "haiku":                         {"input": 0.80,  "output": 4.0},
-    # OpenAI models
-    "gpt-4o":                        {"input": 2.50,  "output": 10.0},
-    "gpt-4o-mini":                   {"input": 0.15,  "output": 0.60},
-    "gpt-4.1":                       {"input": 2.0,   "output": 8.0},
-    "gpt-4.1-mini":                  {"input": 0.40,  "output": 1.60},
-    "gpt-4.1-nano":                  {"input": 0.10,  "output": 0.40},
-    "gpt-5.4":                       {"input": 5.0,   "output": 20.0},
-    "o3":                            {"input": 10.0,  "output": 40.0},
-    "o4-mini":                       {"input": 1.10,  "output": 4.40},
-    # Moonshot AI reports cached input separately, so use its lower cache rate.
-    "kimi-k3":                       {"input": 3.0,   "cached_input": 0.30, "output": 15.0},
-    # Local models (free)
-    "local":                         {"input": 0.0,   "output": 0.0},
-}
 
-
-def _match_pricing(model: str) -> dict[str, float]:
-    """Find best matching pricing for a model name."""
-    model_lower = model.lower()
-    # Exact match
-    if model_lower in MODEL_PRICING:
-        return MODEL_PRICING[model_lower]
-    # Substring match
-    for key, pricing in MODEL_PRICING.items():
-        if key in model_lower or model_lower in key:
-            return pricing
-    # Ollama / LM Studio → free
-    return MODEL_PRICING["local"]
+def _empty() -> dict:
+    return {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "unpriced_calls": 0,
+            "subscription_calls": 0}
 
 
 class CostTracker:
@@ -57,10 +29,8 @@ class CostTracker:
     def __init__(self, path: str | Path | None = None):
         self._path = Path(path) if path else state_home() / "costs.json"
         self._lock = threading.Lock()
-        self._daily: dict = {}  # { "2025-03-20": { "input_tokens": N, "output_tokens": N, "cost_usd": X } }
-        self._session_input = 0
-        self._session_output = 0
-        self._session_cost = 0.0
+        self._daily: dict = {}  # { "2025-03-20": { "input_tokens": N, "output_tokens": N, "cost_usd": X, "unpriced_calls": N } }
+        self._session = _empty()
         self._load()
 
     def record_usage(
@@ -70,87 +40,66 @@ class CostTracker:
         output_tokens: int,
         cached_tokens: int = 0,
         actual_cost: float | None = None,
-    ) -> float:
-        """Record token usage, returns cost in USD for this call."""
-        pricing = _match_pricing(model)
-        cached = min(max(0, int(cached_tokens or 0)), max(0, int(input_tokens or 0)))
-        uncached = max(0, int(input_tokens or 0) - cached)
-        cached_rate = pricing.get("cached_input", pricing["input"])
-        cost = (
-            uncached * pricing["input"]
-            + cached * cached_rate
-            + output_tokens * pricing["output"]
-        ) / 1_000_000
-        if actual_cost is not None:
-            import math
-            amount = float(actual_cost)
-            if math.isfinite(amount) and amount >= 0:
-                cost = amount
+        *,
+        provider: str = "",
+    ) -> float | None:
+        """Price and record one call; returns its cost in USD, or None when unpriced."""
+        from ..pricing import cost as price_call
+
+        priced = price_call(provider, model, input_tokens=input_tokens, output_tokens=output_tokens,
+                            cached_tokens=cached_tokens, reported_cost=actual_cost)
+        self.add(input_tokens, output_tokens, priced["cost_usd"], source=priced["price_source"])
+        return priced["cost_usd"]
+
+    def add(self, input_tokens: int, output_tokens: int, cost_usd: float | None, *, source: str = "") -> None:
+        """Add one already-priced call (``None``: no per-call price; ``source`` says why)."""
+        input_tokens, output_tokens = int(input_tokens or 0), int(output_tokens or 0)
         today = date.today().isoformat()
-
         with self._lock:
-            self._session_input += input_tokens
-            self._session_output += output_tokens
-            self._session_cost += cost
-
-            if today not in self._daily:
-                self._daily[today] = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
-            self._daily[today]["input_tokens"] += input_tokens
-            self._daily[today]["output_tokens"] += output_tokens
-            self._daily[today]["cost_usd"] += cost
+            day = self._daily.setdefault(today, _empty())
+            for bucket in (self._session, day):
+                bucket["input_tokens"] = int(bucket.get("input_tokens", 0)) + input_tokens
+                bucket["output_tokens"] = int(bucket.get("output_tokens", 0)) + output_tokens
+                if cost_usd is None:
+                    counter = "subscription_calls" if source == "subscription" else "unpriced_calls"
+                    bucket[counter] = int(bucket.get(counter, 0)) + 1
+                else:
+                    bucket["cost_usd"] = float(bucket.get("cost_usd", 0.0)) + float(cost_usd)
             self._save_locked()
-
-        return cost
 
     def get_session_cost(self) -> dict:
         """Return current session cost info."""
         with self._lock:
-            return {
-                "input_tokens": self._session_input,
-                "output_tokens": self._session_output,
-                "cost_usd": round(self._session_cost, 4),
-            }
+            return {**self._session, "cost_usd": round(self._session["cost_usd"], 4)}
 
     def get_daily_cost(self, day: str | None = None) -> dict:
         """Return cost info for a specific day (default: today)."""
         day = day or date.today().isoformat()
         with self._lock:
-            return self._daily.get(day, {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
-
-    def _get_daily_cost_unlocked(self, day: str | None = None) -> dict:
-        """Return cost info without acquiring lock (for internal use when lock is already held)."""
-        day = day or date.today().isoformat()
-        return self._daily.get(day, {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0})
+            return {**_empty(), **self._daily.get(day, {})}
 
     def reset_session(self) -> None:
         """Reset session counters (called on new session)."""
         with self._lock:
-            self._session_input = 0
-            self._session_output = 0
-            self._session_cost = 0.0
+            self._session = _empty()
 
     def get_all_costs(self) -> dict:
         """Return full cost data for display."""
         with self._lock:
             daily = {
-                key: {**value, "cost_usd": round(float(value.get("cost_usd", 0.0)), 4)}
+                key: {**_empty(), **value, "cost_usd": round(float(value.get("cost_usd", 0.0)), 4)}
                 for key, value in self._daily.items()
             }
             total = {
                 "input_tokens": sum(int(value.get("input_tokens", 0)) for value in self._daily.values()),
                 "output_tokens": sum(int(value.get("output_tokens", 0)) for value in self._daily.values()),
                 "cost_usd": round(sum(float(value.get("cost_usd", 0.0)) for value in self._daily.values()), 4),
+                "unpriced_calls": sum(int(value.get("unpriced_calls", 0)) for value in self._daily.values()),
+                "subscription_calls": sum(int(value.get("subscription_calls", 0)) for value in self._daily.values()),
             }
             return {
-                "session": {
-                    "input_tokens": self._session_input,
-                    "output_tokens": self._session_output,
-                    "cost_usd": round(self._session_cost, 4),
-                },
-                "today": daily.get(
-                    date.today().isoformat(),
-                    {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0},
-                ),
+                "session": {**self._session, "cost_usd": round(self._session["cost_usd"], 4)},
+                "today": daily.get(date.today().isoformat(), _empty()),
                 "total": total,
                 "daily": daily,
             }

@@ -1415,12 +1415,15 @@ Examples:
     # External clients should use `lumi.gui.server` instead.
     print_banner(backend=backend, health_info=health_info)
 
-    # The audit log follows Settings and organization policy here too.
+    # The audit log and usage records follow Settings and organization policy here too.
     try:
-        from . import audit
+        from . import audit, pricing, usage
         from .gui.settings import SettingsManager
 
-        audit.configure(SettingsManager())
+        settings = SettingsManager()
+        audit.configure(settings)
+        pricing.configure(settings)
+        usage.configure(settings)
     except Exception:
         logging.getLogger(__name__).debug("Audit settings unavailable", exc_info=True)
 

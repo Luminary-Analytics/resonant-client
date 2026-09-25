@@ -3335,6 +3335,13 @@ class LumiApp {
                 this._renderProjectResources('notes');
                 break;
             case 'error':
+                // A refused settings change belongs on the Settings page being edited.
+                if (event.source === 'settings' && this.currentView === 'settings') {
+                    this.settingsError = event.message || 'That setting could not be saved.';
+                    this._pricePending = false;
+                    this.renderSettingsView({force: true});
+                    break;
+                }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
                 if (
                     projectSwitchId
@@ -3829,6 +3836,11 @@ class LumiApp {
                 break;
             case 'settings':
                 this.settings = event.data || {};
+                this.settingsError = '';
+                if (this._pricePending) {
+                    this._pricePending = false;
+                    this._priceDraft = null;
+                }
                 this._renderAccountMenu();
                 if (!this.isRunning) {
                     this.setPermissionMode(
@@ -6428,14 +6440,20 @@ class LumiApp {
             cost_usd: sum.cost_usd + Number(value.cost_usd || 0),
         }), { ...emptyUsage });
         const totalTokens = item => Number(item.input_tokens || 0) + Number(item.output_tokens || 0);
-        const statCard = (label, item, detail) => `
+        // Calls without a known price are counted, never valued at $0 (lumi/pricing.py).
+        const unpricedNote = item => Number(item.unpriced_calls || 0)
+            ? `${Number(item.unpriced_calls)} unpriced call${Number(item.unpriced_calls) === 1 ? '' : 's'}` : '';
+        const statCard = (label, item, detail) => {
+            const notes = [detail, unpricedNote(item)].filter(Boolean).join(' &middot; ');
+            return `
             <article class="cost-stat-card">
                 <span class="cost-stat-label">${label}</span>
                 <strong>${this._formatUsageCost(item.cost_usd)}</strong>
                 <span class="cost-stat-tokens">${this._formatUsageTokens(totalTokens(item))} tokens</span>
-                <small>${this._formatUsageTokens(item.input_tokens)} in &middot; ${this._formatUsageTokens(item.output_tokens)} out${detail ? ` &middot; ${detail}` : ''}</small>
+                <small>${this._formatUsageTokens(item.input_tokens)} in &middot; ${this._formatUsageTokens(item.output_tokens)} out${notes ? ` &middot; ${notes}` : ''}</small>
             </article>
         `;
+        };
         const budgetPercent = budget > 0 ? Math.min(100, (Number(today.cost_usd || 0) / budget) * 100) : 0;
         const budgetHtml = budget > 0 ? `
             <div class="cost-budget" aria-label="Daily budget usage">
@@ -6469,9 +6487,59 @@ class LumiApp {
                     <div class="cost-history-title"><strong>Recent daily usage</strong><span>Input</span><span>Output</span><span>Cost</span></div>
                     ${historyRows || '<div class="cost-history-empty">No token usage has been recorded yet.</div>'}
                 </div>
-                <p class="cost-dashboard-note">Local and Ollama-hosted models still report tokens when available, but show $0 unless a per-token price is configured.</p>
+                ${this._renderUsageByModel(costs.month)}
+                ${this._renderPrices(data, costs.pricing)}
+                <p class="cost-dashboard-note">Local and Ollama-hosted models still report tokens when available. Local models count as $0; Codex, Claude Code and Ollama cloud models are covered by their subscriptions; other models without a price are counted as unpriced, never as $0.</p>
             </div>
         `;
+    }
+
+    _renderUsageByModel(month) {
+        if (!month) return '';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const entries = Object.entries(month.by_model || {})
+            .sort(([, a], [, b]) => (Number(b.cost_usd) || 0) - (Number(a.cost_usd) || 0) || Number(b.calls) - Number(a.calls));
+        const costOf = item => {
+            const priced = Number(item.calls || 0) - Number(item.unpriced_calls || 0) - Number(item.subscription_calls || 0);
+            if (priced > 0) return this._formatUsageCost(item.cost_usd);
+            return Number(item.subscription_calls || 0) >= Number(item.unpriced_calls || 0) ? 'Subscription' : 'Unpriced';
+        };
+        const rows = entries.map(([model, item]) => `
+            <div class="cost-history-row">
+                <span class="cost-model-name" title="${esc(model)}">${esc(model || 'Unknown model')}</span>
+                <span>${esc(item.calls)}</span>
+                <span>${this._formatUsageTokens(Number(item.input_tokens || 0) + Number(item.output_tokens || 0))}</span>
+                <strong>${costOf(item)}</strong>
+            </div>`).join('');
+        const unpriced = Number(month.unpriced_calls || 0);
+        return `
+            <div class="cost-history">
+                <div class="cost-history-title"><strong>This month by model</strong><span>Calls</span><span>Tokens</span><span>Cost</span></div>
+                ${rows || '<div class="cost-history-empty">No model calls recorded this month.</div>'}
+            </div>
+            ${unpriced ? `<p class="cost-dashboard-note">${unpriced} call${unpriced === 1 ? '' : 's'} this month used models without a price, so the totals above leave them out. Add their prices below.</p>` : ''}`;
+    }
+
+    _renderPrices(data, pricing) {
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const saved = Object.entries(data.price_overrides || {})
+            .map(([pattern, price]) => [pattern, price.input, price.output, price.cached_input ?? '', price.cache_write ?? ''].join(' ').trim())
+            .join('\n');
+        const draft = this._priceDraft ?? saved;
+        const lockedBy = this.settings?._meta?.locked?.['cost_tracking.price_overrides'] || '';
+        const organization = (pricing?.organization || [])
+            .map(price => `<li><code>${esc(price.pattern)}</code> ${esc(price.input)} in &middot; ${esc(price.output)} out</li>`).join('');
+        return `
+            <div class="cost-prices">
+                <div class="cost-history-title"><strong>Prices</strong></div>
+                <p class="editor-help">Built-in prices were checked on ${esc(pricing?.as_of || '')} against Anthropic’s and OpenAI’s published price pages. When a provider reports a call’s cost (OpenRouter), that cost is used.</p>
+                ${organization ? `<p class="editor-help settings-managed">Set by your organization:</p><ul class="cost-price-list">${organization}</ul>` : ''}
+                <label class="settings-row-label" for="cost-price-overrides">Your prices, in USD per million tokens</label>
+                <p class="editor-help">One model per line: a pattern, the input and output prices, then optionally cached input and cache writes. For example <code>openai:gpt-5.5 5 30 0.5</code> or <code>conn-*:llama-* 0.2 0.6</code>.</p>
+                ${lockedBy ? `<p class="editor-help settings-managed">Managed by ${esc(lockedBy)}</p>` : ''}
+                <textarea id="cost-price-overrides" class="settings-input settings-textarea" rows="4" spellcheck="false" aria-label="Your model prices, one per line"${lockedBy ? ' disabled' : ''}>${esc(draft)}</textarea>
+                <div class="editor-actions"><button type="button" class="btn-sm" id="cost-price-save"${lockedBy ? ' disabled' : ''}>Save prices</button></div>
+            </div>`;
     }
 
     // ── Menu Bar ──────────────────────────────────────────────

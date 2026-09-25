@@ -28,7 +28,7 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 |---|---|---|
 | `turn.start` | A turn begins (GUI, gateway, terminal UI or a worker) | provider, model, permission mode, subagent, prompt, image count |
 | `turn.end` | It ends | `outcome` (`completed`, `error`, `cancelled`, `stopped`), elapsed seconds |
-| `model.usage` | Each model response | provider, model, input/output/cached tokens, provider-reported cost when given |
+| `model.usage` | Each model response | provider, model, purpose, input/output/cached tokens, cost and where its price came from ([usage records](usage-and-costs.md)) |
 | `tool.call` | The model asks for a tool | tool, call id, argument names, `path`, and `command`/`pattern`/`query`/`url` by capture level |
 | `tool.result` | A tool finishes or is refused | error, denied, elapsed, output by capture level |
 | `file.change` | A successful `file_write`, `file_edit` or `file_replace`, or a Codex file change | path |
@@ -38,7 +38,9 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `trust.decision` | A project is trusted, restricted or forgotten | project, decision |
 | `error` | A turn reports an error | code, message by capture level |
 
-Turns from the chat gateway name their chat as `gateway:<chat id>`.
+Turns from the chat gateway name their chat as `gateway:<chat id>`. A
+delegated worker's events are recorded once, by the worker's own turn, with
+its `agent` id.
 
 ## Capture levels
 
@@ -96,8 +98,9 @@ records stay until their retention ends.
 Each record becomes a span. Model usage spans follow the OpenTelemetry GenAI
 semantic conventions (`gen_ai.operation.name` `chat`, `gen_ai.provider.name`
 and the older `gen_ai.system`, `gen_ai.request.model`,
-`gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`). Tool spans use
-`execute_tool`, `gen_ai.tool.name` and `gen_ai.tool.call.id`. Other fields
+`gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`). A tool's result is
+an `execute_tool` span with `gen_ai.tool.name` and `gen_ai.tool.call.id`; the
+model's request for it is a `tool.call` span. Other fields
 appear as `lumi.*` attributes; content fields contribute a digest, plus their
 text at the content levels. A session's records share one trace id.
 

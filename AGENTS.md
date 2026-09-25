@@ -86,6 +86,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   the audit log (`audit.py`); run new entry points through it rather than
   `_run_turn`. Record content only through `audit.content` (capture levels)
   and paths through `audit.name`; never record setting or key values.
+- Model calls outside a turn go through `engine/request_purpose.auxiliary_stream`
+  with a purpose, so `usage.py` records them. Prices come from `pricing.py`;
+  a model without a known price is unpriced (`None`), never $0.
 
 ## Working in the codebase
 

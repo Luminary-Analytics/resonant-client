@@ -36,7 +36,8 @@ What a policy can do (every section is optional)::
       "shell": {"rules": [{"tool_pattern": "bash", "action": "deny",
                            "arg_patterns": {"command": "curl"}}]},
       "mcp": {"allowed_servers": ["github"], "allow_stdio": false},
-      "extensions": {"allowed_packs": ["team-*"]}
+      "extensions": {"allowed_packs": ["team-*"]},
+      "pricing": {"prices": {"anthropic:claude-opus-*": {"input": 3.2, "output": 16}}}
     }
 
 Locked settings override the user's value and can't be changed in Settings,
@@ -90,6 +91,8 @@ class Policy:
     mcp_allow_stdio: bool = True
     packs_allowed: tuple[str, ...] | None = None
     trusted_keys: dict[str, str] = field(default_factory=dict)
+    # Negotiated prices (lumi/pricing.py): ordered (pattern, Price) pairs.
+    prices: tuple = ()
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -146,6 +149,7 @@ class Policy:
             "mcp_allowed": list(self.mcp_allowed) if self.mcp_allowed is not None else None,
             "mcp_allow_stdio": self.mcp_allow_stdio,
             "packs_allowed": list(self.packs_allowed) if self.packs_allowed is not None else None,
+            "prices": [pattern for pattern, _ in self.prices],
         }
 
 
@@ -227,6 +231,12 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     expires_at = str(document.get("expires_at") or "")
     if expires_at:
         _parse_time(expires_at)
+    from .pricing import parse_prices
+
+    try:
+        prices = parse_prices((document.get("pricing") or {}).get("prices") or {})
+    except ValueError as exc:
+        raise PolicyError(f"pricing.prices: {exc}") from exc
     raw_keys = document.get("trusted_keys") or {}
     if not isinstance(raw_keys, dict):
         raise PolicyError("trusted_keys must map key ids to base64 Ed25519 public keys.")
@@ -251,6 +261,7 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
             if "allowed_packs" in extensions else None
         ),
         trusted_keys={str(k): str(v) for k, v in raw_keys.items()},
+        prices=prices,
         raw=document,
     )
 

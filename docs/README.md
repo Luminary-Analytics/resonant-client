@@ -40,6 +40,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 - [Architecture and module ownership](../ARCHITECTURE.md)
 - [Organization policy for administrators](enterprise-policy.md)
 - [Audit log and OpenTelemetry export](audit-log.md)
+- [Usage records and prices](usage-and-costs.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

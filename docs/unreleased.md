@@ -12,9 +12,11 @@ The dated September 15/18 records below are historical.
 
 - **Fixed:** when a model comparison run committed its work, those changes
   were missing from its kept diff and its count of changed files. A model
-  with **Everything** can run `git commit`. Both compared the worktree's HEAD
-  at the end, which the commits had moved. The check runs on the final files,
-  so pass or fail was right.
+  with **Everything** can run `git commit`, and a hook of yours can commit
+  each edit, now that hooks run in comparisons ("your own hooks run in
+  `lumi run`, schedules, comparisons and chats"). Both compared the
+  worktree's HEAD at the end, which the commits had moved. The check runs on
+  the final files, so pass or fail was right.
 - **Each run records the commit it starts from**: the project's HEAD, which
   its worktree is made from. The result keeps it as `start_commit`. The diff
   and the changed files are taken against it, committed or not: `git add -A`,
@@ -24,7 +26,7 @@ The dated September 15/18 records below are historical.
 
 Validation on September 25, 2026:
 
-- `tests/test_model_evals.py` (8 tests, 2 new). The fake `lumi run` gains two
+- `tests/test_model_evals.py` (2 new tests). The fake `lumi run` gains two
   models that commit:
   - one commits a new file, then an edit, in two commits, and leaves a file
     uncommitted;
@@ -39,16 +41,22 @@ Validation on September 25, 2026:
 - A file named like the start commit doesn't empty the diff. git refuses an
   argument that names both a revision and a file, so the diff passes `--`.
 - A real `lumi run` with **Everything** and a scripted model, no provider
-  (a scratch test, not kept): its bash tool ran `git add` and `git commit`,
-  and the check confirmed the commit. With main's `_keep_diff`, both runs
-  passed and kept 0 changed files and an empty diff; with the fix, 1 file
-  and its lines.
+  (scratch tests, not kept), committed in two ways:
+  - its bash tool ran `git add` and `git commit`;
+  - after merging main, a `post_tool_use` Settings hook committed after each
+    `file_write`.
+
+  The check confirmed each commit. With main's `_keep_diff`, every run passed
+  and kept 0 changed files and an empty diff; with the fix, 1 file and its
+  lines.
 - Seven mutants each switch off one part: the start commit for the names,
   for the diff, for both (the old code), `HEAD~1` in its place, the `--`,
   reading the start after the run, and the 200 KB limit. Each fails at least
   one of these tests.
 - Full suite before merging main: 4420 passed, 5 skipped. Ruff, `node --check`
-  and the node UI tests (81) pass.
+  and the node UI tests (81) pass. After merging main with the hooks change,
+  `test_model_evals.py` (9 tests) and `test_headless.py` (18) pass, as do
+  ruff, `node --check` and the node UI tests (86).
 
 ## September 25 your own hooks run in `lumi run`, schedules, comparisons and chats — source only, not released
 

@@ -54,9 +54,10 @@ output. Diffs are kept in `~/.lumi/model_evals/<id>/`, up to 200 KB each.
 Lumi keeps the 30 newest comparisons.
 
 A run's diff and its count of changed files cover everything it changed since
-the commit it started from, including work it committed: a model can run
-`git commit`, for example with **Everything**. Each result in
-`~/.lumi/model_evals/<id>.json` names that commit as `start_commit`.
+the commit it started from, including work it committed. A model can run
+`git commit`, for example with **Everything**, and a [hook](headless.md#hooks)
+of yours can commit each edit. Each result in `~/.lumi/model_evals/<id>.json`
+names that commit as `start_commit`.
 
 A comparison that was running when Lumi closed is shown as interrupted; run
 it again.

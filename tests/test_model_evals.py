@@ -156,9 +156,9 @@ def test_each_model_runs_each_task_in_its_own_copy(repo):
 
 
 def test_the_kept_diff_includes_what_a_run_committed(repo):
-    # A run can commit its work: a model in bypass can run git commit. Its diff
-    # and changed files are taken against the commit it started from, not the
-    # worktree's HEAD at the end.
+    # A run can commit its work: a model in bypass can run git commit, and a
+    # hook of yours can commit each edit. Its diff and changed files are taken
+    # against the commit it started from, not the worktree's HEAD at the end.
     def head() -> str:
         return subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
 

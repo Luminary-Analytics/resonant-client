@@ -19,9 +19,10 @@ isn't UTF-8 text did the same, such as the UTF-16 that Windows PowerShell
 first caller was the updater, which logged the error as its own and carried
 on. Every later call then saw no policy and no error: nothing was enforced,
 model requests weren't refused, and a command the organization's shell rules
-deny ran. Two values also loosened what they control when written as text:
-`"allow_stdio": "no"` allowed command-based MCP servers, and
-`"require_signed": "true"` stopped requiring signed capability packs.
+deny ran. Some values also loosened what they control when written as text:
+`"allow_stdio": "no"` allowed command-based MCP servers,
+`"require_signed": "true"` stopped requiring signed capability packs, and
+`"registry_only": "true"` let packs outside the organization's registry run.
 
 - **`load()` never raises** (`lumi/policy.py`). A policy that exists but
   can't be read or used is an error state on the first call and every later
@@ -32,8 +33,8 @@ deny ran. Two values also loosened what they control when written as text:
   `cloud` must be objects. `trusted_keys` must map key ids to text.
   `grace_days` must be a whole number; text such as `"3"` still works. A
   missing or `null` section counts as empty.
-- **True-or-false values must be `true` or `false`:** `mcp.allow_stdio` and
-  `extensions.require_signed`.
+- **True-or-false values must be `true` or `false`:** `mcp.allow_stdio`,
+  `extensions.require_signed` and `extensions.registry_only`.
 - **A policy file may start with a UTF-8 byte order mark.** Windows PowerShell
   5.1 writes one for `-Encoding utf8`, and it used to make the policy
   invalid. This covers the machine policy file, `LUMI_POLICY_FILE`, Group
@@ -49,8 +50,9 @@ deny ran. Two values also loosened what they control when written as text:
 
 Validation on September 25, 2026:
 
-- Full `pytest`: 4,367 passed, 5 skipped. `ruff check .` clean, the 61 Node
-  tests in AGENTS.md pass, `git diff --check` clean.
+- Full `pytest` after merging main (the pack registry and checkpoint
+  Timeline): 4,380 passed, 5 skipped. `ruff check .` clean, the 66 Node tests
+  in AGENTS.md pass, `git diff --check` clean.
 - New tests in `test_policy.py` and `test_cloud.py`:
   - each mistyped section and value, and null sections still parsing;
   - a machine policy with a mistyped section, a UTF-16 file, `trusted_keys`
@@ -63,7 +65,7 @@ Validation on September 25, 2026:
   - a file with a UTF-8 byte order mark applies;
   - a downloaded Lumi Cloud policy with a mistyped section isn't applied,
     and a stored one is reported, not raised.
-- Against main before this change, 25 of the 27 new cases fail. The other two
+- Against main before this change, 27 of the 29 new cases fail. The other two
   pass there too: `parse()` already refused a list for `trusted_keys` (it was
   `load()` that crashed first), and null sections already parsed.
 - In the browser pane, from an isolated home with the scripted Ollama stub.

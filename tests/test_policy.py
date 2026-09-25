@@ -100,6 +100,7 @@ class TestParse:
         # Values that loosened what they control when written as text.
         ({**BASE, "mcp": {"allow_stdio": "no"}}, "mcp.allow_stdio must be true or false"),
         ({**BASE, "extensions": {"require_signed": "true"}}, "extensions.require_signed must be true or false"),
+        ({**BASE, "extensions": {"registry_only": "true"}}, "extensions.registry_only must be true or false"),
     ])
     def test_invalid_documents(self, document, message):
         with pytest.raises(PolicyError, match=message):

@@ -28,17 +28,17 @@ from tests.test_autonomous_loop import (
     _make_hooks,
     _run_daemon_to_completion,
     _StubCallTracker,
+    _tracked_daemon,
 )
 from tests.test_autonomous_session import _SPEC_MD, _StubAppState, _StubProject
 
 
 def _daemon(path: Path, hooks: DaemonHooks, **config) -> tuple[AutonomousMissionDaemon, list[dict]]:
-    events: list[dict] = []
+    # Tracked, so the runs below end on the daemon's terminal event rather
+    # than a wall-clock budget (see tests/test_autonomous_loop.py).
     settings = {"tick_pause_seconds": 0.0, "full_reflect_cadence": 999, **config}
-    daemon = AutonomousMissionDaemon(
-        AutonomousMissionConfig(intent_id="test-intent", roadmap_path=path, **settings),
-        hooks, on_event=events.append)
-    return daemon, events
+    return _tracked_daemon(
+        AutonomousMissionConfig(intent_id="test-intent", roadmap_path=path, **settings), hooks)
 
 
 def test_the_limit_and_the_spend_are_kept_in_the_roadmap(tmp_path):
@@ -70,7 +70,7 @@ def test_the_mission_stops_before_an_iteration_past_the_limit(tmp_path):
     # Each sub-mission costs $2.
     base.spent_usd = lambda: 2.0 * len(calls.waited_handles)
     daemon, events = _daemon(path, base, spend_limit_usd=3.0)
-    _run_daemon_to_completion(daemon, timeout=5.0)
+    _run_daemon_to_completion(daemon)
 
     assert len(calls.dispatched_items) == 2  # $2 after the first, $4 after the second
     paused = _events_of_kind(events, "autonomous_mission_paused")
@@ -104,7 +104,7 @@ def test_a_running_sub_mission_is_stopped_at_the_limit(tmp_path):
         run_full_reflect=base.run_full_reflect, check_context_factory=base.check_context_factory,
         spent_usd=lambda: spent["usd"])
     daemon, events = _daemon(path, hooks, spend_limit_usd=10.0, heartbeat_seconds=0.05)
-    _run_daemon_to_completion(daemon, timeout=5.0)
+    _run_daemon_to_completion(daemon)
 
     assert calls.cancelled_handles  # stopped mid-run, not at the next iteration
     assert _events_of_kind(events, "autonomous_spend_limit")[0]["spent_usd"] == 12.5
@@ -117,7 +117,7 @@ def test_without_a_limit_spending_doesnt_stop_the_mission(tmp_path):
     hooks = _make_hooks(calls)
     hooks.spent_usd = lambda: 1_000.0
     daemon, events = _daemon(path, hooks, max_iterations=2)
-    _run_daemon_to_completion(daemon, timeout=5.0)
+    _run_daemon_to_completion(daemon)
     assert len(calls.dispatched_items) == 2
     assert _events_of_kind(events, "autonomous_mission_paused")[0]["stop_reason"] == "iteration_cap"
     snapshot = daemon.state_snapshot()

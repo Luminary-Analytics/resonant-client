@@ -194,6 +194,8 @@ def test_grep_falls_back_to_posix_grep_without_ripgrep():
         command = _build_grep_command("needle", "src", "*.py")
 
     assert command[0] == "grep"
+    # Extended syntax: `a|b`, `x+` and groups mean what they do in ripgrep.
+    assert command[1] == "-rnE"
     assert "--include=*.py" in command
     assert command[-2:] == ["needle", "src"]
 

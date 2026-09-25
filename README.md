@@ -126,6 +126,9 @@ IT departments can deploy the MSI package (`lumi-X.Y.Z.msi`) silently per
 machine through Intune, Configuration Manager or Group Policy; see
 [Deploying on Windows](docs/deploy-windows.md).
 
+A macOS build (`Lumi.app` in a DMG, Apple silicon) is built in CI but not yet
+released; see [Lumi on macOS](docs/macos.md).
+
 Windows SmartScreen may show "Unrecognized publisher" for the v0.x line. Code
 signing is planned for v1.0.
 

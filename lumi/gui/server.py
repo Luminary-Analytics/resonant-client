@@ -117,7 +117,9 @@ def launch_gui(
         print(f"Error: Server failed to start on {url}")
         sys.exit(1)
 
-    print(f"  Lumi GUI running at {url}")
+    # Flushed: a frozen app writing to a pipe or file buffers stdout, and the
+    # launch link must reach whoever is waiting for it.
+    print(f"  Lumi GUI running at {url}", flush=True)
 
     # An update installs only between agent turns, and then closes Lumi
     # itself so the installer can replace its files (lumi/updater.py).
@@ -144,8 +146,8 @@ def launch_gui(
         # by redeeming the code in the link's fragment. Browsers never send
         # fragments to the server, and the code works once, so a copy left in
         # the terminal or a log opens nothing after the page has loaded.
-        print(f"  Open in browser (one-time link): {local_access.launch_url(url)}")
-        print("  Press Ctrl+C to stop.")
+        print(f"  Open in browser (one-time link): {local_access.launch_url(url)}", flush=True)
+        print("  Press Ctrl+C to stop.", flush=True)
         try:
             server_thread.join()
         except KeyboardInterrupt:

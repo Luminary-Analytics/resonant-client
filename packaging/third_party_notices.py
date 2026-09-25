@@ -121,9 +121,10 @@ def python_packages(distributions=None, *, skip: set[str] = frozenset()) -> list
     return sorted(seen.values(), key=lambda item: normalize(item["name"]))
 
 
-def load_components(path: Path = COMPONENTS) -> list[dict]:
+def load_components(path: Path = COMPONENTS, platform: str = sys.platform) -> list[dict]:
+    """The bundled non-Python components; ``platforms`` limits one to some builds."""
     data = json.loads(path.read_text(encoding="utf-8"))
-    return data["components"]
+    return [item for item in data["components"] if platform in item.get("platforms", [platform])]
 
 
 def _named(path: Path, key: str) -> dict[str, str]:

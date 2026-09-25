@@ -2375,7 +2375,9 @@ def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
         target = os.path.join(path, file_glob or "*") if os.path.isdir(path) else path
         return ["findstr", "/s", "/n", "/r", f"/c:{pattern}", target]
 
-    cmd = ["grep", "-rn"]
+    # Extended syntax, so the alternation, `+` and groups models write mean
+    # what they do in ripgrep (basic grep treats them as literal characters).
+    cmd = ["grep", "-rnE"]
     if file_glob:
         cmd.extend([f"--include={file_glob}"])
     cmd.extend(["--", pattern, path])

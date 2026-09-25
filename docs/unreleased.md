@@ -8,6 +8,97 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 the terminal prints tool and model text as written — source only, not released
+
+**The terminal UI read tool and model text as Rich markup.** `lumi/tui.py`
+put tool arguments and output, the model's words and model names into Rich
+markup unescaped. A grep pattern's `[a-z_]` class vanished as an unknown
+style (`'[a-z_]+\('` printed `'+\('`), an edit's diff lost the `[str]` of
+`list[str]`, a selector `a[href="/login"]` printed `a`, and `:a:` became an
+emoji. `[/]` or `[/something]` in a path, command, output or error raised
+`MarkupError` out of `consume_events`, which ended the turn's display.
+
+- **Each piece of outside text is escaped where it goes into the markup**, and
+  the TUI's colors stay as they were:
+  - tool calls: paths, grep and glob patterns, commands, `file_edit` diffs,
+    task prompts, `batch` lines, browser URLs, selectors, text and code,
+    desktop keys and text, and unknown tool names;
+  - results: error output, command and script output lines, page titles, and
+    click and typing output;
+  - collapsed steps' lines, step labels, the model name under each step, the
+    status line, subagent lines, errors, and the choice menu's options and the
+    answer. Text the model wrote before a choice menu prints as plain text.
+- **`_esc` is `rich.markup.escape` plus two backslash cases it misses** (Rich
+  14.0.0 and 15.0.0 share the same `markup.py`):
+  - Rich drops the backslash before a `[` that doesn't open a tag, so a
+    regex's `\[0-9]` printed `[0-9]`. Such a run gets one more backslash.
+  - `escape` doubles only a single trailing backslash. Two before a closing
+    tag printed one, and three turned the closing tag into text. All trailing
+    backslashes are doubled now.
+
+  The whole run of text before a closing tag is escaped, quotes included, so
+  that doubling always meets a tag. Escaping only the value inside quotes
+  would print `'C:\tmp\'` as `'C:\tmp\\'`. Refusal reasons use `_esc` too.
+- **A turn's lines print without emoji codes or Rich's highlighter**
+  (`_print`), as refusal reasons already did. Digits are no longer bolded and
+  URLs no longer underlined by Rich's automatic highlighting, on every line
+  alike; the text and the TUI's own colors are unchanged.
+
+Validation on September 25, 2026:
+
+- `tests/test_tui.py` (51 tests, 37 new), the console captured as plain text,
+  72 columns wide:
+  - every string of `[`, `]`, `\`, `/`, `a` and space up to six characters
+    long (55,987) reads back exactly after `_esc` between two tags;
+  - a character class, `[/]`, `[/something]`, link and `@click` tags, a
+    regex's escaped brackets, emoji codes, and one, two and three trailing
+    backslashes print exactly through `_print`;
+  - 14 tool calls and 9 tool results print their arguments and output exactly,
+    gutter included; an edit's diff keeps `list[str]` and `dict[str, int]`;
+  - a turn through `consume_events` (a collapsed grep and read, a step label,
+    the model name, subagent lines, an error and choice text with `[/]`) and
+    the choice menu print as written;
+  - a real session (the streaming stub) through `run_embedded`: a `grep` for
+    `[a-z_]+\(` over a project file, then a command whose stdout and stderr
+    hold `[/]`, `[bold]`, `\[0-9]`, `:a:` and a trailing backslash, exiting 3,
+    from a model named `local[/]:a:`. Its lines print as written.
+- On main's `tui.py`, 36 of the 37 new tests fail: 26 renderer tests with
+  `MarkupError` or lost text, and the 10 that call `_esc` or `_print`, which
+  it doesn't have. Only the browser typing test passed: an unescaped
+  `'C:\tmp\'` happened to print right, and it guards the quotes case.
+- A seeded fuzz (a scratch script, not in the repository): 31,200 random
+  strings of brackets, backslashes, `/`, `#`, `@`, `=`, `:`, quotes,
+  parentheses, letters and spaces, each in three markup contexts (93,600
+  renderings), read back exactly, seeds 7 and 2026 with Rich 14.0.0 and
+  15.0.0. `rich.markup.escape` alone got 3,372 of seed 7's wrong.
+- With Rich 15.0.0, the release lock's version, `tests/test_tui.py` passed (51).
+- An ordinary turn (nothing markup-like) rendered in true color through main's
+  `tui.py` and this one: the plain text is identical, and 18 of its 51 lines
+  differ in escape codes, all from Rich's highlighter. 16 of them lose bold
+  digits or a URL's underline; 2 only split one color into more segments. No
+  line keeps highlighter bold or underline now. A turn with markup-like text
+  raised `MarkupError` on main and prints in full here.
+- On main at 1c42562 with this change (a30d4de), from an isolated home:
+  - a full `pytest` run, before the last result and summary lines moved to
+    `_print`: 4,402 passed, 5 skipped;
+  - a full run on the final code: 4,401 passed, 5 skipped and 1 failed outside
+    the TUI. `tests/test_skill_curator.py` hit `OSError: [WinError 1450]
+    Insufficient system resources` creating a pytest temp folder, on a machine
+    where several sessions run their suites at once; that file passed alone
+    (27 tests);
+  - `ruff check .` is clean (ruff 0.12.12), `node --check` passes for `app.js`
+    and `settings_view.js`, the four Node UI test files pass (66 tests), and
+    `git diff --check` is clean. The real `~/.resonant` was unchanged and no
+    `~/.lumi` was created.
+
+Not exercised: the TUI in a terminal window with a live model; the console was
+captured instead, from an isolated home. Not changed: `main()`'s own lines
+(the banner's working folder, `/cd` errors, unknown slash commands, Ollama's
+model lists, `/status`) still put text into markup unescaped. It is text the
+person typed or the local Ollama server sent, not a turn's. The prompt_toolkit
+prompts build `HTML(...)` from the working folder's name and the tool's name
+unescaped: a folder named `R&D` or `a<b` makes `HTML` raise `ExpatError`.
+
 ## September 25 each turn's footer holds its own model and tokens — source only, not released
 
 **A replayed turn's footer showed the last live run's model and tokens.** A

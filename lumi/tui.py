@@ -12,6 +12,7 @@ The TUI handles ONLY display and input. All logic lives in the engine.
 import json
 import io
 import os
+import re
 import sys
 import argparse
 import logging
@@ -162,20 +163,57 @@ def _tool_info(name: str) -> tuple:
     return TOOL_DISPLAY.get(name, ("⚙", name, C_TOOL))
 
 
+# Backslashes before a "[" that doesn't open a tag, by the tag pattern Rich's
+# parser and `escape` share (rich.markup.RE_TAGS).
+_BACKSLASHES_BEFORE_PLAIN_BRACKET = re.compile(r"\\+(?=\[(?![a-z#/@][^[]*\]))")
+
+
+def _esc(value) -> str:
+    """
+    `value` as markup that prints exactly as written, for text the TUI didn't
+    write: tool arguments and output, the model's words, model names. Escape
+    the whole run of text before a closing tag, quotes included
+    (`_esc(f"'{pattern}'")`), and print the line with `_print`.
+
+    `rich.markup.escape` escapes what would read as a tag. Backslashes need
+    two more fixes: Rich drops one before a "[" that doesn't open a tag (a
+    regex's escaped bracket), so each such run gets one more; and trailing
+    ones would escape the closing tag, so all of them are doubled, not only
+    a single one. Doubled, they print right only directly before a tag.
+    """
+    text = str(value)
+    body = text.rstrip("\\")
+    trailing = "\\" * (2 * (len(text) - len(body)))
+    return escape(_BACKSLASHES_BEFORE_PLAIN_BRACKET.sub(r"\g<0>\\", body)) + trailing
+
+
+def _print(markup: str):
+    """
+    Print a line of a turn's display without emoji codes or highlighting, so
+    outside text in it (see `_esc`) reads as written: ":x:" stays text and
+    Rich adds no styles of its own. Lines without outside text print this
+    way too, so numbers look the same on every line.
+    """
+    console.print(markup, emoji=False, highlight=False)
+
+
 def _inline_tool(icon: str, desc: str, meta: str = "", color: str = C_MUTED):
-    """Render a single-line inline tool display (opencode InlineTool pattern)."""
-    meta_part = f"  [{C_DIM}]({meta})[/{C_DIM}]" if meta else ""
-    console.print(f"  [{C_DIMMER}]{G_SPLIT}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{desc}[/{C_TEXT}]{meta_part}")
+    """
+    Render a single-line inline tool display (opencode InlineTool pattern).
+    `desc` is markup, its outside text escaped; `meta` prints as written.
+    """
+    meta_part = f"  [{C_DIM}]{_esc(f'({meta})')}[/{C_DIM}]" if meta else ""
+    _print(f"  [{C_DIMMER}]{G_SPLIT}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{desc}[/{C_TEXT}]{meta_part}")
 
 
 def _block_tool_start(icon: str, title: str, color: str = C_TOOL):
-    """Start a block tool display — title line with split border."""
-    console.print(f"  [{color}]{G_SPLIT}[/{color}] [{color}]{icon} {title}[/{color}]")
+    """Start a block tool display — title line with split border. `title` is markup, its outside text escaped."""
+    _print(f"  [{color}]{G_SPLIT}[/{color}] [{color}]{icon} {title}[/{color}]")
 
 
 def _block_tool_line(text: str, color: str = C_DIM):
-    """Add a line inside a block tool display."""
-    console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{color}]{text}[/{color}]")
+    """Add a line inside a block tool display; `text` prints as written."""
+    _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{color}]{_esc(text)}[/{color}]")
 
 
 def _block_tool_end():
@@ -214,8 +252,7 @@ def _print_denial_reason(reason: str, lead: int, pad: int):
     width = max(console.width - (lead + 1 + pad), 20)
     for line in Text(reason).wrap(console, width):
         # Escaped after wrapping: a break must not split an escape apart.
-        console.print(f"{prefix}[{C_DIM}]{escape(line.plain.rstrip())}[/{C_DIM}]",
-                      emoji=False, highlight=False)
+        _print(f"{prefix}[{C_DIM}]{_esc(line.plain.rstrip())}[/{C_DIM}]")
 
 
 def _render_tool_call(event: dict):
@@ -242,7 +279,7 @@ def _render_tool_call(event: dict):
         line_count = len(lines)
         lang = _detect_lang(fpath)
 
-        _block_tool_start(icon, f"{label} [{C_FILE}]{fpath}[/{C_FILE}]", color=C_OK)
+        _block_tool_start(icon, f"{label} [{C_FILE}]{_esc(fpath)}[/{C_FILE}]", color=C_OK)
 
         # Syntax-highlighted preview with split border
         preview = "\n".join(lines[:15])
@@ -263,7 +300,7 @@ def _render_tool_call(event: dict):
         old_text = args.get("old_text", "")
         new_text = args.get("new_text", "")
 
-        _block_tool_start(icon, f"{label} [{C_FILE}]{fpath}[/{C_FILE}]", color=C_WARN)
+        _block_tool_start(icon, f"{label} [{C_FILE}]{_esc(fpath)}[/{C_FILE}]", color=C_WARN)
 
         old_lines = old_text.split("\n")
         new_lines = new_text.split("\n")
@@ -272,20 +309,21 @@ def _render_tool_call(event: dict):
             colored_lines = []
             for line in diff[2:20]:
                 if line.startswith("+"):
-                    colored_lines.append(f"[{C_OK}]  + {line[1:]}[/{C_OK}]")
+                    colored_lines.append(f"[{C_OK}]  + {_esc(line[1:])}[/{C_OK}]")
                 elif line.startswith("-"):
-                    colored_lines.append(f"[{C_ERR}]  - {line[1:]}[/{C_ERR}]")
+                    colored_lines.append(f"[{C_ERR}]  - {_esc(line[1:])}[/{C_ERR}]")
                 elif line.startswith("@@"):
                     colored_lines.append(f"[{C_BRAND}]  {line}[/{C_BRAND}]")
                 else:
-                    colored_lines.append(f"[{C_DIM}]    {line}[/{C_DIM}]")
+                    colored_lines.append(f"[{C_DIM}]    {_esc(line)}[/{C_DIM}]")
             if len(diff) > 20:
                 colored_lines.append(f"[{C_DIM}]    {G_THINK} {len(diff) - 20} more lines[/{C_DIM}]")
             added = sum(1 for line in diff[2:] if line.startswith("+"))
             removed = sum(1 for line in diff[2:] if line.startswith("-"))
             subtitle = f"[{C_OK}]+{added}[/{C_OK}] [{C_ERR}]-{removed}[/{C_ERR}]"
             console.print(Panel(
-                "\n".join(colored_lines),
+                # The edit's own text, so no emoji codes (a str would get them).
+                Text.from_markup("\n".join(colored_lines), emoji=False),
                 border_style=C_DIMMER,
                 padding=(0, 1),
                 expand=False,
@@ -298,23 +336,23 @@ def _render_tool_call(event: dict):
     elif name == "file_read":
         # Inline — single line, no block needed
         fpath = args.get("path", "")
-        _inline_tool(icon, f"[{C_FILE}]{fpath}[/{C_FILE}]", color=C_TOOL)
+        _inline_tool(icon, f"[{C_FILE}]{_esc(fpath)}[/{C_FILE}]", color=C_TOOL)
 
     elif name == "glob":
         pattern = args.get("pattern", "")
         base = args.get("path", ".")
-        _inline_tool(icon, f"{pattern}", meta=base, color=C_TOOL)
+        _inline_tool(icon, _esc(pattern), meta=base, color=C_TOOL)
 
     elif name == "grep":
         pattern = args.get("pattern", "")
         path = args.get("path", ".")
-        _inline_tool(icon, f"'{pattern}'", meta=path, color=C_TOOL)
+        _inline_tool(icon, _esc(f"'{pattern}'"), meta=path, color=C_TOOL)
 
     elif name == "task":
         prompt = args.get("prompt", "")
         agent_type = args.get("agent_type", "explore")
         display_prompt = prompt if len(prompt) < 80 else prompt[:77] + "..."
-        _block_tool_start(icon, f"{label} [{C_BRAND2}]{agent_type}[/{C_BRAND2}] agent", color=C_BRAND2)
+        _block_tool_start(icon, f"{label} [{C_BRAND2}]{_esc(agent_type)}[/{C_BRAND2}] agent", color=C_BRAND2)
         _block_tool_line(f'"{display_prompt}"', color=C_TEXT)
 
     elif name == "batch":
@@ -339,16 +377,17 @@ def _render_tool_call(event: dict):
     # ── Browser tools ──
     elif name == "browser_navigate":
         url = args.get("url", "")
-        _inline_tool(icon, f"[{C_FILE}]{url}[/{C_FILE}]", color=C_BRAND2)
+        _inline_tool(icon, f"[{C_FILE}]{_esc(url)}[/{C_FILE}]", color=C_BRAND2)
     elif name == "browser_click":
         text = args.get("text", "")
         selector = args.get("selector", "")
         target = text or selector or f"({args.get('x', '?')}, {args.get('y', '?')})"
-        _inline_tool(icon, f"Click [{C_TEXT}]{target}[/{C_TEXT}]", color=C_BRAND2)
+        _inline_tool(icon, f"Click [{C_TEXT}]{_esc(target)}[/{C_TEXT}]", color=C_BRAND2)
     elif name == "browser_type":
         text = args.get("text", "")
         display = text if len(text) < 40 else text[:37] + "..."
-        _inline_tool(icon, f"Type [{C_TEXT}]'{display}'[/{C_TEXT}]", color=C_BRAND2)
+        quoted = _esc(f"'{display}'")
+        _inline_tool(icon, f"Type [{C_TEXT}]{quoted}[/{C_TEXT}]", color=C_BRAND2)
     elif name == "browser_read":
         mode = args.get("mode", "text")
         selector = args.get("selector", "")
@@ -373,22 +412,23 @@ def _render_tool_call(event: dict):
         button = args.get("button", "left")
         clicks = args.get("clicks", 1)
         click_type = "Double-click" if clicks == 2 else "Click"
-        _inline_tool(icon, f"{click_type} ({x}, {y})", meta=button, color=C_WARN)
+        _inline_tool(icon, _esc(f"{click_type} ({x}, {y})"), meta=button, color=C_WARN)
     elif name == "computer_type":
         text = args.get("text", "")
         key = args.get("key", "") or args.get("hotkey", "")
         if key:
-            _inline_tool(icon, f"Press [{C_TEXT}]{key}[/{C_TEXT}]", color=C_WARN)
+            _inline_tool(icon, f"Press [{C_TEXT}]{_esc(key)}[/{C_TEXT}]", color=C_WARN)
         else:
             display = text if len(text) < 40 else text[:37] + "..."
-            _inline_tool(icon, f"Type [{C_TEXT}]'{display}'[/{C_TEXT}]", color=C_WARN)
+            quoted = _esc(f"'{display}'")
+            _inline_tool(icon, f"Type [{C_TEXT}]{quoted}[/{C_TEXT}]", color=C_WARN)
     elif name == "computer_scroll":
         direction = args.get("direction", "down")
         amount = args.get("amount", 3)
-        _inline_tool(icon, f"Scroll {direction} ×{amount}", color=C_WARN)
+        _inline_tool(icon, _esc(f"Scroll {direction} ×{amount}"), color=C_WARN)
 
     else:
-        _inline_tool("⚙", name, color=C_TOOL)
+        _inline_tool("⚙", _esc(name), color=C_TOOL)
 
 
 def _render_tool_result(event: dict):
@@ -408,7 +448,7 @@ def _render_tool_result(event: dict):
     if denied:
         # A refused call never ran, so its output is the reason why.
         reason = _tool_denial_reason(event)
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   {_denial_status(reason)}")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   {_denial_status(reason)}")
         _print_denial_reason(reason, lead=2, pad=5)
         return
 
@@ -447,17 +487,17 @@ def _render_tool_result(event: dict):
     elif name == "file_read":
         lines_count = metadata.get("lines", 0)
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {output}[/{C_ERR}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {_esc(output)}[/{C_ERR}]")
         elif lines_count:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{lines_count} lines[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{lines_count} lines[/{C_DIM}]")
 
     elif name == "glob":
         count = metadata.get("count", 0)
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{count} files[/{C_DIM}]")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{count} files[/{C_DIM}]")
 
     elif name == "grep":
         count = metadata.get("count", 0)
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{count} matches[/{C_DIM}]")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{count} matches[/{C_DIM}]")
 
     elif name == "task":
         agent_type = metadata.get("agent_type", "")
@@ -481,28 +521,28 @@ def _render_tool_result(event: dict):
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{title}[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{_esc(title)}[/{C_DIM}]")
     elif name in ("browser_click", "browser_type"):
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
     elif name == "browser_read":
         chars = metadata.get("chars", 0)
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {output}[/{C_ERR}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {_esc(output)}[/{C_ERR}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{chars:,} chars[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]{chars:,} chars[/{C_DIM}]")
     elif name == "browser_screenshot":
         size_bytes = metadata.get("size_bytes", 0)
         size_kb = size_bytes / 1024 if size_bytes else 0
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{size_kb:.0f}KB[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{size_kb:.0f}KB[/{C_DIM}]")
     elif name == "browser_js":
         lines = output.split("\n")
         if len(lines) > MAX_TOOL_OUTPUT_LINES:
@@ -522,19 +562,19 @@ def _render_tool_result(event: dict):
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{w}×{h} · {size_kb:.0f}KB[/{C_DIM}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon}[/{style}] [{C_DIM}]{w}×{h} · {size_kb:.0f}KB[/{C_DIM}]")
     elif name in ("computer_click", "computer_type", "computer_scroll"):
         icon = G_CHECK if not is_error else G_CROSS
         style = C_OK if not is_error else C_ERR
-        console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {output}[/{style}]")
+        _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{style}]{icon} {_esc(output)}[/{style}]")
 
     else:
         if is_error:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {output}[/{C_ERR}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_ERR}]{G_CROSS} {_esc(output)}[/{C_ERR}]")
         else:
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_OK}]{G_CHECK}[/{C_OK}]")
+            _print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_OK}]{G_CHECK}[/{C_OK}]")
 
 
 def _render_step_start(event: dict):
@@ -549,16 +589,17 @@ def _render_step_start(event: dict):
 
     console.print()
 
+    # A label can name the tools the model called ("after grep").
     if step_type == "plan":
         console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
-        console.print(f"  [{C_WARN}]{G_PLAN} Plan[/{C_WARN}]  [{C_DIM}]{label}[/{C_DIM}]")
+        _print(f"  [{C_WARN}]{G_PLAN} Plan[/{C_WARN}]  [{C_DIM}]{_esc(label)}[/{C_DIM}]")
     elif step == 1:
         console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
-        console.print(f"  [{C_BRAND}]{G_STEP} Step {step}[/{C_BRAND}]")
+        _print(f"  [{C_BRAND}]{G_STEP} Step {step}[/{C_BRAND}]")
     else:
         console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
-        ctx = f"  [{C_DIM}]{label}[/{C_DIM}]" if label else ""
-        console.print(f"  [{C_BRAND}]{G_STEP} Step {step}[/{C_BRAND}]{ctx}")
+        ctx = f"  [{C_DIM}]{_esc(label)}[/{C_DIM}]" if label else ""
+        _print(f"  [{C_BRAND}]{G_STEP} Step {step}[/{C_BRAND}]{ctx}")
 
 
 def _render_step_end(event: dict, model: str = None, stats: dict = None):
@@ -582,7 +623,7 @@ def _render_step_end(event: dict, model: str = None, stats: dict = None):
         elif input_tok and output_tok:
             parts.append(f"{input_tok}→{output_tok} tok")
     parts.append(f"{elapsed:.1f}s")
-    console.print(f"  [{C_DIM}]{G_SQUARE} {' · '.join(parts)}[/{C_DIM}]")
+    _print(f"  [{C_DIM}]{G_SQUARE} {_esc(' · '.join(parts))}[/{C_DIM}]")
 
 
 def _render_status(event: dict):
@@ -594,7 +635,7 @@ def _render_status(event: dict):
     cog_state = event.get("cognitive_state")
 
     if model:
-        parts.append(f"[{C_BRAND2}]{model}[/{C_BRAND2}]")
+        parts.append(f"[{C_BRAND2}]{_esc(model)}[/{C_BRAND2}]")
 
     if cog_state:
         energy = cog_state.get("energy", 0)
@@ -606,7 +647,7 @@ def _render_status(event: dict):
         if clusters:
             parts.append(f"[{C_MUTED}]{clusters} clusters[/{C_MUTED}]")
         if mode:
-            parts.append(f"[{C_MUTED}]{mode}[/{C_MUTED}]")
+            parts.append(f"[{C_MUTED}]{_esc(mode)}[/{C_MUTED}]")
 
     if stats:
         eval_count = stats.get("eval_count")
@@ -631,22 +672,23 @@ def _render_status(event: dict):
 
     if parts:
         sep = f" [{C_DIMMER}]·[/{C_DIMMER}] "
-        console.print(f"  {sep.join(parts)}")
+        _print(f"  {sep.join(parts)}")
 
 
 def _render_choices(options: list) -> str:
     """Render choices as a clean numbered menu and prompt the user to pick."""
     console.print()
     console.print(f"  [{C_BORDER}]{G_DASH * 40}[/{C_BORDER}]")
+    # The options are the model's words.
     for i, opt in enumerate(options):
         rec = f"  [{C_BRAND2}]recommended[/{C_BRAND2}]" if "(Recommended)" in opt or "(recommended)" in opt else ""
-        label = opt.replace("(Recommended)", "").replace("(recommended)", "").strip()
+        label = _esc(opt.replace("(Recommended)", "").replace("(recommended)", "").strip())
         if i == 0:
-            console.print(f"  [{C_BRAND}]{G_DOT}[/{C_BRAND}] [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{label}[/{C_TEXT}]{rec}")
+            _print(f"  [{C_BRAND}]{G_DOT}[/{C_BRAND}] [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{label}[/{C_TEXT}]{rec}")
         else:
-            console.print(f"    [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{label}[/{C_TEXT}]{rec}")
+            _print(f"    [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{label}[/{C_TEXT}]{rec}")
 
-    console.print(f"    [{C_DIM}]{len(options) + 1}. Other (type your own)[/{C_DIM}]")
+    _print(f"    [{C_DIM}]{len(options) + 1}. Other (type your own)[/{C_DIM}]")
     console.print()
 
     try:
@@ -660,17 +702,17 @@ def _render_choices(options: list) -> str:
         idx = int(answer) - 1
         if 0 <= idx < len(options):
             selected = options[idx].replace("(Recommended)", "").replace("(recommended)", "").strip()
-            console.print(f"  [{C_OK}]{G_CHECK} {selected}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} {_esc(selected)}[/{C_OK}]")
             return selected
         elif idx == len(options):
             custom = pt_prompt(HTML(f'<style fg="#{C_BRAND[1:]}">  Your choice: </style>')).strip()
             if custom:
-                console.print(f"  [{C_OK}]{G_CHECK} {custom}[/{C_OK}]")
+                _print(f"  [{C_OK}]{G_CHECK} {_esc(custom)}[/{C_OK}]")
                 return custom
             return options[0]
     except ValueError:
         if answer:
-            console.print(f"  [{C_OK}]{G_CHECK} {answer}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} {_esc(answer)}[/{C_OK}]")
             return answer
 
     return options[0]
@@ -713,15 +755,15 @@ def _flush_collapsed_group(group: list):
             summary_parts.append(f"{label}")
         else:
             summary_parts.append(f"{label} ×{count}")
-    summary = ", ".join(summary_parts)
+    summary = _esc(", ".join(summary_parts))
 
     # Header
     console.print()
     console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
     if first_step == last_step:
-        console.print(f"  [{C_BRAND}]{G_STEP} Step {first_step}[/{C_BRAND}]  [{C_DIM}]{summary}[/{C_DIM}]")
+        _print(f"  [{C_BRAND}]{G_STEP} Step {first_step}[/{C_BRAND}]  [{C_DIM}]{summary}[/{C_DIM}]")
     else:
-        console.print(f"  [{C_BRAND}]{G_STEP} Steps {first_step}–{last_step}[/{C_BRAND}]  [{C_DIM}]{summary}[/{C_DIM}]")
+        _print(f"  [{C_BRAND}]{G_STEP} Steps {first_step}–{last_step}[/{C_BRAND}]  [{C_DIM}]{summary}[/{C_DIM}]")
 
     # Compact tool lines — one per tool call
     for g in group:
@@ -746,23 +788,24 @@ def _flush_collapsed_group(group: list):
                 meta = f"{lines_count} lines" if lines_count else ""
                 status = f"[{C_ERR}]{G_CROSS}[/{C_ERR}]" if is_error else ""
                 detail = refusal or f"[{C_DIM}]{meta}[/{C_DIM}] {status}"
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_FILE}]{short}[/{C_FILE}]  {detail}")
+                _print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_FILE}]{_esc(short)}[/{C_FILE}]  {detail}")
 
             elif name == "glob":
                 pattern = args.get("pattern", "")
                 count = metadata.get("count", 0)
                 detail = refusal or f"[{C_DIM}]{count} files[/{C_DIM}]"
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{pattern}[/{C_TEXT}]  {detail}")
+                _print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{_esc(pattern)}[/{C_TEXT}]  {detail}")
 
             elif name == "grep":
                 pattern = args.get("pattern", "")
+                quoted = _esc(f"'{pattern}'")
                 count = metadata.get("count", 0)
                 detail = refusal or f"[{C_DIM}]{count} matches[/{C_DIM}]"
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]'{pattern}'[/{C_TEXT}]  {detail}")
+                _print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{quoted}[/{C_TEXT}]  {detail}")
 
             else:
                 detail = f"  {refusal}" if refusal else ""
-                console.print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{name}[/{C_TEXT}]{detail}")
+                _print(f"    [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}] [{color}]{icon}[/{color}] [{C_TEXT}]{_esc(name)}[/{C_TEXT}]{detail}")
 
             # Under the path or pattern, past the tool's icon.
             _print_denial_reason(reason, lead=4, pad=3)
@@ -779,7 +822,7 @@ def _flush_collapsed_group(group: list):
         if input_tok and output_tok:
             parts.append(f"{input_tok}{G_ARROW}{output_tok} tok")
     parts.append(f"{total_elapsed:.1f}s")
-    console.print(f"  [{C_DIM}]{G_SQUARE} {' · '.join(parts)}[/{C_DIM}]")
+    _print(f"  [{C_DIM}]{G_SQUARE} {_esc(' · '.join(parts))}[/{C_DIM}]")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -928,7 +971,8 @@ def consume_events(event_stream, on_permission=None):
             if options:
                 before = event.get("before", "")
                 if before:
-                    console.print(f"  {before}")
+                    # The model's words, unstyled: no markup to escape into.
+                    console.print(f"  {before}", markup=False, emoji=False, highlight=False)
 
         elif etype == EngineEvent.PLAN_GENERATED.value:
             pass  # Plan was streamed via TEXT_DELTA
@@ -940,14 +984,14 @@ def consume_events(event_stream, on_permission=None):
             agent_type = event.get("agent_type", "")
             prompt = event.get("prompt", "")
             display_prompt = prompt if len(prompt) < 70 else prompt[:67] + "..."
-            console.print(f"  [{C_BRAND2}]{G_SPLIT}[/{C_BRAND2}] [{C_BRAND2}]│ Task[/{C_BRAND2}]  [{C_MUTED}]{agent_type} agent[/{C_MUTED}]")
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_DIM}]\"{display_prompt}\"[/{C_DIM}]")
+            _print(f"  [{C_BRAND2}]{G_SPLIT}[/{C_BRAND2}] [{C_BRAND2}]│ Task[/{C_BRAND2}]  [{C_MUTED}]{_esc(f'{agent_type} agent')}[/{C_MUTED}]")
+            _block_tool_line(f'"{display_prompt}"', color=C_DIM)
 
         elif etype == EngineEvent.SUBAGENT_END.value:
             agent_type = event.get("agent_type", "")
             steps = event.get("steps", 0)
             elapsed = event.get("elapsed", 0)
-            console.print(f"  [{C_DIMMER}]{G_VLINE}[/{C_DIMMER}]   [{C_OK}]{G_CHECK} {agent_type} · {steps} steps · {elapsed:.1f}s[/{C_OK}]")
+            _block_tool_line(f"{G_CHECK} {agent_type} · {steps} steps · {elapsed:.1f}s", color=C_OK)
 
         elif etype == EngineEvent.ERROR.value:
             if spinner_live:
@@ -955,7 +999,7 @@ def consume_events(event_stream, on_permission=None):
                 spinner_live = None
             _ensure_step_rendered()
             msg = event.get("message", "Unknown error")
-            console.print(f"\n  [{C_ERR}]{G_CROSS} {msg}[/{C_ERR}]")
+            _print(f"\n  [{C_ERR}]{G_CROSS} {_esc(msg)}[/{C_ERR}]")
 
         elif etype == EngineEvent.SESSION_END.value:
             if spinner_live:
@@ -970,7 +1014,7 @@ def consume_events(event_stream, on_permission=None):
             if total_steps > 1:
                 console.print()
                 console.print(f"  [{C_DIMMER}]{G_DASH * 60}[/{C_DIMMER}]")
-                console.print(f"  [{C_OK}]{G_CHECK}[/{C_OK}] [{C_MUTED}]Done[/{C_MUTED}]  [{C_DIM}]{total_steps} steps · {total_elapsed:.1f}s[/{C_DIM}]")
+                _print(f"  [{C_OK}]{G_CHECK}[/{C_OK}] [{C_MUTED}]Done[/{C_MUTED}]  [{C_DIM}]{total_steps} steps · {total_elapsed:.1f}s[/{C_DIM}]")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1162,7 +1206,7 @@ def run_remote(ws_url: str):
 
     async def _connect():
         async with websockets.connect(ws_url) as ws:
-            console.print(f"  [{C_OK}]{G_CHECK} Connected to {ws_url}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} Connected to {_esc(ws_url)}[/{C_OK}]")
 
             # Receive initial status
             raw = await ws.recv()
@@ -1215,10 +1259,10 @@ def run_remote(ws_url: str):
                         total = event.get("total_elapsed", 0)
                         steps = event.get("total_steps", 0)
                         if steps > 1:
-                            console.print(f"\n  [{C_DIM}]{G_CHECK} Done · {total:.1f}s · {steps} steps[/{C_DIM}]")
+                            _print(f"\n  [{C_DIM}]{G_CHECK} Done · {total:.1f}s · {steps} steps[/{C_DIM}]")
                         break
                     elif etype == EngineEvent.ERROR.value:
-                        console.print(f"\n  [{C_ERR}]{G_CROSS} {event.get('message', '')}[/{C_ERR}]")
+                        _print(f"\n  [{C_ERR}]{G_CROSS} {_esc(event.get('message', ''))}[/{C_ERR}]")
                         if "step limit" in event.get("message", ""):
                             break
                     else:

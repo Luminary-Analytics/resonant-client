@@ -95,6 +95,8 @@ for their context-handoff and verification boundaries.
   Cloud ([team library](docs/team-library.md))
 - Agent changes that wait for a named reviewer: no merging or pushing to the
   default branch, reviewers requested, a review queue ([code review](docs/code-review.md))
+- Risky commands your organization lists wait for a second person's approval
+  in Lumi Cloud ([second-person approval](docs/second-approval.md))
 - Built-in browser control (native CDP) and desktop computer use, with an
   on-screen indicator while the agent drives the machine
 - Permission modes and a project-root path sandbox

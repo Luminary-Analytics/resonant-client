@@ -40,8 +40,13 @@ What a policy can do (every section is optional)::
       "mcp": {"allowed_servers": ["github"], "allow_stdio": false},
       "extensions": {"allowed_packs": ["team-*"]},
       "pricing": {"prices": {"anthropic:claude-opus-*": {"input": 3.2, "output": 16}}},
-      "budgets": [{"scope": "user", "period": "month", "warn_usd": 200, "block_usd": 400}]
+      "budgets": [{"scope": "user", "period": "month", "warn_usd": 200, "block_usd": 400}],
+      "approvals": {"commands": ["git push --force*", "terraform apply*"], "wait_minutes": 30}
     }
+
+``approvals`` lists commands (``fnmatch`` patterns over the whole command)
+that a second person in the organization approves in Lumi Cloud before they
+run (engine/second_approval.py).
 
 Locked settings override the user's value and can't be changed in Settings,
 which shows who manages them. Lists match ``fnmatch`` patterns.
@@ -107,6 +112,9 @@ class Policy:
     # marked zero_retention (see zero_retention_ok).
     require_zero_retention: bool = False
     zero_retention_providers: tuple[str, ...] = ()
+    # Commands a second person approves in Lumi Cloud before they run (engine/second_approval.py).
+    approval_commands: tuple[str, ...] = ()
+    approval_wait_minutes: int = 30
     raw: dict = field(default_factory=dict)
 
     # ── Queries ────────────────────────────────────────────────────────────
@@ -183,6 +191,7 @@ class Policy:
             "capability_overrides": [pattern for pattern, _ in self.capability_overrides],
             "require_zero_retention": self.require_zero_retention,
             "zero_retention_providers": list(self.zero_retention_providers),
+            "approval_commands": list(self.approval_commands),
         }
 
 
@@ -328,6 +337,15 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     raw_keys = document.get("trusted_keys") or {}
     if not isinstance(raw_keys, dict):
         raise PolicyError("trusted_keys must map key ids to base64 Ed25519 public keys.")
+    approvals = document.get("approvals") or {}
+    if not isinstance(approvals, dict):
+        raise PolicyError("approvals must be an object with commands and wait_minutes.")
+    approval_commands = _patterns(approvals.get("commands"), "approvals.commands")
+    if len(approval_commands) > 100 or any(len(pattern) > 300 for pattern in approval_commands):
+        raise PolicyError("approvals.commands holds at most 100 patterns of 300 characters.")
+    wait_minutes = approvals.get("wait_minutes", 30)
+    if isinstance(wait_minutes, bool) or not isinstance(wait_minutes, int) or not 1 <= wait_minutes <= 240:
+        raise PolicyError("approvals.wait_minutes must be a whole number from 1 to 240.")
 
     return Policy(
         organization=str(document.get("organization") or "your organization"),
@@ -359,6 +377,8 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
         prices=prices,
         budgets=budgets,
         capability_overrides=capability_overrides,
+        approval_commands=approval_commands,
+        approval_wait_minutes=wait_minutes,
         raw=document,
     )
 

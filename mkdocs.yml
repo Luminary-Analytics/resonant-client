@@ -72,6 +72,7 @@ nav:
       - Hand-offs to a teammate or CI: hand-offs.md
       - Team skills, prompts and project notes: team-library.md
       - Code review for agent changes: code-review.md
+      - Second-person approval of commands: second-approval.md
       - Autonomous sessions (experimental): autonomous-sessions.md
       - Signing in to enterprise endpoints: connection-sign-in.md
       - Usage, prices and budgets: usage-and-costs.md

@@ -42,7 +42,7 @@ def _no_organization_policy():
     # mark every later test's history in the same worker. The audit log and
     # usage records are recreated for each test, under its isolated home.
     from lumi import audit, budgets, pricing, secret_scan, updater, usage
-    from lumi.engine import review_gate
+    from lumi.engine import review_gate, second_approval
 
     def reset():
         _lumi_policy.set_for_tests(None)
@@ -56,6 +56,7 @@ def _no_organization_policy():
         # Every execution policy asks the review gate; a test's settings must not reach the next test.
         review_gate.configure(None)
         review_gate.set_registrar(None)
+        second_approval.set_requester(None)
 
     reset()
     yield

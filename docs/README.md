@@ -37,6 +37,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Lumi account and Lumi Cloud: signing in, enrolling this computer, managed enrollment](lumi-cloud.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
+- [Comparing models on your own tasks before switching](model-comparisons.md)
 - [Code intelligence: language servers for definitions, references and diagnostics](code-intelligence.md)
 - [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
 - [Skills and learning](skills.md)

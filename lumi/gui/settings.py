@@ -67,18 +67,27 @@ DEFAULTS = {
     },
     # Secrets are masked before settings are sent to the frontend.
     "api_keys": {"anthropic": "", "openai": "", "kimi": "", "openrouter": "", "sonn": "", "telegram_bot": "", "otlp": "",
-                 "github": "", "gitlab": "", "bitbucket": "", "azure_devops": ""},
+                 "github": "", "gitlab": "", "bitbucket": "", "azure_devops": "", "slack_bot": "", "slack_app": ""},
     # Custom model connections (gateways, Azure, Bedrock, Vertex); see lumi/connections.py.
     # Each one's key is stored in api_keys as conn_<id>.
     "connections": [],
     "project_models": {},
     "model_favorites": {"models": []},
-    # Chat-channel gateway (`lumi gateway`): drive the agent from
-    # Telegram. Only allowlisted chat IDs are served.
+    # Chat-channel gateway (`lumi gateway`, docs/chat-gateway.md): work with
+    # the agent from Telegram or Slack. Only allowlisted chats are served.
+    # It grants remote control, so this section and its tokens (api_keys
+    # telegram_bot, slack_bot, slack_app) are edited in the file, never from
+    # the Settings page (gui/ws_commands.py).
     "gateway": {
+        "channel": "",            # "telegram" (default) or "slack"
+        "project": "",            # default: the folder the gateway starts in
+        "mode": "",               # "ask" (default), "auto-edit" or "bypass"
         "backend": "",
         "model": "",
-        "allowed_chat_ids": [],
+        "allowed_chat_ids": [],   # Telegram chat IDs
+        "slack_allowed": [],      # Slack channel or user IDs
+        "approval_minutes": 10,
+        "telegram_api_url": "",   # a self-hosted Bot API server; default api.telegram.org
     },
     "hooks": [],
     "mcp_servers": {

@@ -104,12 +104,15 @@ def build_spec(settings: Any, provider: str, model: str, project: str):
 
 
 def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_project: bool,
-                  max_requests: int | None, run_id: str, policy_digest: str | None = None):
+                  max_requests: int | None, run_id: str, policy_digest: str | None = None,
+                  tier: str = ""):
     """A session set up as the desktop app would, for one unattended run.
 
     ``policy_digest`` narrows ``trust_project``: the repository's allow rules
     apply only if its lumi-policy.json has that SHA-256 (model comparisons
-    pass the version the user trusted in the app).
+    pass the version the user trusted in the app). ``tier`` overrides the
+    mode's: the chat gateway, which can ask someone, runs Ask in the tier that
+    asks rather than the read-only one.
     """
     from .engine import Session
     from .engine.exclusions import ExclusionRules
@@ -122,16 +125,17 @@ def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_pr
     status = WorkspaceTrust().status(project)
     trusted = trust_project or status.trusted
     backend = spec.create_backend(settings)
+    tier = tier or MODES[mode]
     session = Session(
         backend,
-        auto_approve=MODES[mode] == "full-auto",
+        auto_approve=tier == "full-auto",
         project_instructions=load_project_instructions(project) if trusted else None,
         max_model_requests=max_requests,
     )
     session.project_path = project
     # File tools stay inside the project, as in the app (gui/app.py).
     session.sandbox = PathSandbox(project, enabled=True)
-    session.autonomy_tier = MODES[mode]
+    session.autonomy_tier = tier
     # --trust-project trusts whatever the policy says now, unless --policy-digest
     # names the version to trust; otherwise its allow rules must be the version
     # trusted in the app.

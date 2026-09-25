@@ -56,6 +56,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Usage records and prices](usage-and-costs.md)
 - [Running Lumi without a UI (`lumi run`, CI, containers)](headless.md)
 - [Scheduled tasks (`lumi schedule`, Task Scheduler, launchd, cron)](scheduled-tasks.md)
+- [Chat gateway: working with the agent from Telegram or Slack, with approvals in the chat](chat-gateway.md)
 - [Pull requests on GitHub, GitLab, Bitbucket and Azure DevOps (reviews, checks, opening and commenting)](github.md)
 - [Fallback models, roles and capability overrides](models.md)
 - [Signing in to enterprise model endpoints (OAuth, Entra ID, client certificates)](connection-sign-in.md)

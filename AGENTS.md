@@ -219,6 +219,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   every priced request while the mission runs (`iter_cost_tracker`), is
   checked at each heartbeat as well as between iterations, and is kept in the
   roadmap with the spend so far, so a resumed mission counts on.
+- The chat gateway (`gateway/`) builds each chat's session with
+  `headless.build_session`, as `lumi run` does, and never trusts a project
+  itself. Approvals, stop and status are handled on the adapter's thread as
+  they arrive, never queued behind the turn they concern; an unanswered
+  approval is refused. Adapters are transport only and check their allowlist
+  for messages and button presses alike. Tests use mock transports, never
+  real Telegram or Slack.
 - Code editors reach the app only through `gui/editor_bridge.py`: a per-launch
   bearer token in the user-only `editor-bridge.json`, no `Origin` (web pages
   are refused), files inside the open project and not excluded. The bridge

@@ -277,6 +277,53 @@ Validation on September 25, 2026:
     suggested reviewing it. After a reload, only the accepted turn listed a
     file.
 
+## September 25 chat gateway: approvals in the chat, and Slack — source only, not released
+
+- **Approvals in the chat** (`lumi gateway`, [guide](chat-gateway.md)): the
+  gateway used to run every chat's requests with nothing asked. It now takes
+  `--mode ask` (the default), `auto-edit` or `bypass`. In Ask and Auto-edit
+  modes an action the mode doesn't allow is sent to the chat with **Approve**
+  and **Deny** buttons, and it runs only if approved. Nobody answering within
+  `--approval-minutes` (10) refuses it. **stop** stops the running request,
+  and **status** shows the project, mode, model and what's running. Both
+  work while a request runs, and so do approve and deny. Commands work with
+  or without the slash, since Slack keeps the slash for its own.
+- **Sessions built like `lumi run`'s** (`lumi/headless.py`): a project
+  (`--project`, `gateway.project`, or the current folder), its trust, file
+  exclusions, the guardrails and shell sandbox, and the organization's modes
+  and models. Before, gateway sessions had none of these. The gateway never
+  trusts a project itself. Any provider `lumi run` supports works
+  (`--backend`, `--model`).
+- **Slack** over Socket Mode (`lumi/gateway/slack.py`), so no public address
+  is needed. Direct messages go to the agent, and in channels the messages
+  that mention the app. `gateway.slack_allowed` takes channel IDs (everyone
+  in the channel) or user IDs (that person anywhere). The buttons are checked
+  against the same list. Tokens go in settings.json's `api_keys`
+  (`slack_bot`, `slack_app`; `telegram_bot` as before) or in
+  `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN` and, new, `TELEGRAM_BOT_TOKEN`. Like
+  the rest of the gateway's settings, they stay out of the Settings page.
+- Saved key values are removed from approval requests before they're sent.
+  `gateway.telegram_api_url` can point at a self-hosted Bot API server.
+- Microsoft Teams needs a public HTTPS address, so it is left to Lumi Cloud.
+
+Validation on September 25, 2026: full `pytest` 4,136 passed, 4 skipped;
+`test_chat_gateway.py` (11 tests) covers
+approve, deny, stop, status and queued requests on the gateway's two threads,
+and unanswered approvals. It covers the Telegram adapter's buttons and
+allowlist, and the Slack adapter's events, mentions, bot and edited messages,
+buttons, acknowledgements and reconnecting, all against mock transports. It
+checks a real engine session in Ask mode writing a file only after approval,
+and the organization's allowed modes. The real `lumi gateway` process, run with
+an isolated home against a stand-in Telegram Bot API and a stub model:
+
+- asked "Lumi wants to write notes.txt (14 characters)." with Approve and Deny
+  buttons;
+- wrote nothing until Approve was pressed, then wrote the file and replied;
+- answered status with the project, mode, model and "Idle.";
+- refused a chat that wasn't allowed.
+
+No real Telegram or Slack account was used.
+
 ## September 25 untrusted text in the Git panel, tool rows and plan graph — source only, not released
 
 The escaping fix below (quotes) covered `escapeHtml`, but some views never

@@ -5527,9 +5527,11 @@ class LumiApp {
             this.trackTerminalStart(callId, name, event.arguments || {});
         }
 
+        // A call is not a change: it counts once its own result succeeds
+        // (handleToolResult). Sub-agent calls returned above and never count.
         const renderKind = event.presentation?.kind || '';
         if (renderKind === 'edit' || renderKind === 'write' || name === 'file_edit' || name === 'file_write') {
-            this._recordAgentFileChange(name, event.arguments || {}, event);
+            this._rememberFileChangeCall(event);
         }
 
         // CLI backends: group ALL tool calls into a collapsible activity panel
@@ -5618,6 +5620,8 @@ class LumiApp {
             this.renderToolResult(event);
             return;
         }
+
+        this._settleFileChangeCall(event);
 
         // If a screenshot comes back with an image, force step to render (don't collapse)
         if (hasImage && this.stepIsInlineOnly) {
@@ -7132,6 +7136,35 @@ class LumiApp {
         if (!t) return '';
         if (t.length <= 72) return t;
         return t.slice(0, 69) + '…';
+    }
+
+    /**
+     * Hold a file-changing call until its result arrives. "Changed files" and
+     * the "review these changes" suggestion describe edits that happened: a
+     * call the user rejects, a policy blocks, that fails, or that a cancel
+     * stops before it runs leaves the file as it was.
+     */
+    _rememberFileChangeCall(event) {
+        if (!this._agentRunSummary) {
+            this._agentRunSummary = { title: '', fileChanges: [], todos: null };
+        }
+        (this._agentRunSummary.pendingFileChanges ||= []).push(event);
+    }
+
+    /** Count a remembered call's change only when its own result succeeded. */
+    _settleFileChangeCall(result) {
+        const pending = this._agentRunSummary?.pendingFileChanges;
+        if (!pending?.length) return;
+        const callId = result.call_id || '';
+        // Match by call id. Calls run in order, so a backend that sends no id
+        // is answered by its oldest id-less call of the same tool.
+        const index = pending.findIndex((call) => (callId
+            ? call.call_id === callId
+            : !call.call_id && call.name === result.name));
+        if (index < 0) return;
+        const [call] = pending.splice(index, 1);
+        if (result.is_error || result.denied) return;
+        this._recordAgentFileChange(call.name || '', call.arguments || {}, call);
     }
 
     _recordAgentFileChange(name, args, event) {

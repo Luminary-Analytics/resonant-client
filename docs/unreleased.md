@@ -36,7 +36,7 @@ The dated September 15/18 records below are historical.
   restored. Each response now starts afresh.
 
 Validation on September 25, 2026, after merging main: full `pytest` 4,076 passed, 4 skipped;
-`node --test` 51 passed, including `vscode_extension.test.cjs` (8 tests), which
+`node --test` 54 passed, including `vscode_extension.test.cjs` (8 tests), which
 runs the extension against a simulated VS Code API and a stand-in bridge.
 `test_editor_bridge.py` (11) covers the token and file checks, line ranges,
 and changes against git snapshots, snapshot archives and the last commit,
@@ -73,6 +73,48 @@ The packed .vsix installed with VS Code 1.125's `code --install-extension`
 into a temporary extensions folder and user-data folder, where it was listed
 as `luminary-analytics.lumi-vscode` 0.1.0. The extension was not run inside
 VS Code, and no JetBrains IDE was run.
+
+## September 25 changed files count only edits that happened — source only, not released
+
+- A task's **Changed files** and the "Review these changes" next-prompt
+  suggestion count a file change only when that call's own result succeeds,
+  matched by call id (`lumi/gui/static/app.js`). They used to count the
+  model's `file_edit` or `file_write` call, so an edit the user rejected, a
+  policy blocked, that failed (`old_text` not found) or that a cancel stopped
+  before it ran still counted: the suggestion offered to review changes that
+  never happened, and a card finished without the server's evidence (a turn
+  ending in an error, or a replayed interrupted turn) listed the file.
+- Replay rebuilds the list from the saved results the same way. A Codex file
+  change counts when its result succeeds. A worker's tool events never count
+  for the parent turn and can't complete a parent call that has the same id.
+  The line and diff counts shown beside each file are unchanged.
+- A worker's handoff still lists the files its write calls named, whether or
+  not they succeeded; the engine builds that list.
+
+Validation on September 25, 2026:
+
+- With `main` merged in: full `pytest` 4,054 passed, 5 skipped (before
+  "untrusted text in the Git panel" landed); `ruff check` clean; the UI node
+  tests (`ui_recovery`, `appearance`, `autonomous_view`) 46 passed.
+- Three new tests drive the real `handleToolCall`, `handleToolResult` and
+  `replayDisplayEvents` with rejected, policy-blocked, failed, unanswered,
+  accepted, id-less, Codex and worker events. All three fail against the
+  previous `app.js`, and they also catch counting a worker's result for the
+  parent or ignoring `denied`.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model:
+  - Before the change, Ask still refused edits by policy, so Auto-edit with
+    a project `lumi-policy.json` `prompt` rule for `file_edit` gave the
+    Accept/Reject card. Reject left `notes.txt` unchanged, yet the next
+    prompt suggested reviewing the changes, and after a provider error the
+    Failed card listed `notes.txt` under **Changed files**.
+  - After the change, the same setup, and an Ask policy block, listed no
+    changed files and suggested no review.
+  - Merged with "Ask asks before changes" below, in Ask mode: Reject, and
+    Reject followed by a provider error, listed no changed files and
+    suggested no review. Accept changed the file, listed `notes.txt` and
+    suggested reviewing it. After a reload, only the accepted turn listed a
+    file.
 
 ## September 25 untrusted text in the Git panel, tool rows and plan graph — source only, not released
 

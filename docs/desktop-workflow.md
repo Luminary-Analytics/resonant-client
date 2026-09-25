@@ -295,7 +295,10 @@ like any other draft.
 
 Suggestions are chosen locally from the last reply's explicit next step, change
 summary, or recommendation. They do not use an additional model request and are
-not a claim that a model has planned or authorized the next action.
+not a claim that a model has planned or authorized the next action. Offering to
+review changes, like the task card's **Changed files**, counts only edits whose
+own result succeeded: an edit you reject, that a policy blocks, that fails or
+that never ran doesn't count.
 
 New sessions also get a short task title from the first prompt. A local title
 appears immediately. With native model connections, a small tool-free request

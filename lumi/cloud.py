@@ -178,6 +178,12 @@ class CloudClient:
         self._device_access: tuple[str, float] | None = None
         self.last_error = ""
         self.next_checkin = DEFAULT_CHECKIN_SECONDS
+        # The organization's shared credit, as the last check-in reported it.
+        from . import budgets
+
+        saved = self._section().get("shared_credit")
+        budgets.set_shared_credit(saved.get("budget") if isinstance(saved, dict) else None,
+                                  since=str(saved.get("since") or "") if isinstance(saved, dict) else "")
 
     # ── Settings ───────────────────────────────────────────────────────────
     def _section(self) -> dict:
@@ -520,6 +526,12 @@ class CloudClient:
                 raise
         self.last_error = ""
         updates: dict[str, Any] = {"last_checkin": until, "usage_since": until}
+        # The organization's shared credit and the month's spend so far (lumi/budgets.py).
+        from . import budgets
+
+        shared = answer.get("budget") if isinstance(answer.get("budget"), dict) else None
+        budgets.set_shared_credit(shared, since=until)
+        updates["shared_credit"] = {"budget": shared, "since": until} if shared else None
         keys = answer.get("trusted_keys")
         if device.get("how") == "joined" and isinstance(keys, dict) and keys:
             # A joined computer trusts the keys its organization lists (key rotation).

@@ -19,8 +19,13 @@ turn for turn budgets) and stops without an answer; at ``block_usd`` it stops.
 Rules come from an organization policy's ``budgets`` (lumi/policy.py) and
 from Settings: ``cost_tracking.budget_alert_usd`` warns daily,
 ``cost_tracking.daily_limit_usd`` asks before going past it, and
-``cost_tracking.turn_limit_usd`` stops a turn. Budgets across a team's
-machines need Lumi Cloud; these are enforced on this machine.
+``cost_tracking.turn_limit_usd`` stops a turn.
+
+An organization's **shared credit** comes from Lumi Cloud (``set_shared_credit``,
+from each check-in's answer, lumi/cloud.py): an ``organization`` rule that
+stops model requests when the month's spend across every computer reaches
+it. Its spend is what Lumi Cloud reported at the last check-in plus what
+this computer spent since.
 """
 
 from __future__ import annotations
@@ -33,6 +38,8 @@ from fnmatch import fnmatchcase
 from typing import Any, Iterable
 
 SCOPES = ("user", "project", "turn")
+# Only from Lumi Cloud, never from a policy's list: see set_shared_credit.
+SHARED = "organization"
 PERIODS = ("day", "month")
 LEVELS = ("ok", "warn", "approve", "block")
 
@@ -47,6 +54,9 @@ class Rule:
     block_usd: float | None = None
     block_unpriced: bool = False
     owner: str = ""  # the organization; empty for the person's own settings
+    # A shared credit's spend at the last check-in, and when that was.
+    base_usd: float = 0.0
+    since: str = ""
 
     @property
     def id(self) -> str:
@@ -119,6 +129,26 @@ _settings_rules: tuple[Rule, ...] = ()
 # Warnings shown and approvals given, per rule and period (or turn).
 _warned: set[tuple[str, str]] = set()
 _approved: set[tuple[str, str]] = set()
+_shared: Rule | None = None
+
+
+def set_shared_credit(budget: dict | None, *, since: str = "") -> Rule | None:
+    """Apply a Lumi Cloud check-in's ``budget`` (None removes the shared credit)."""
+    global _shared
+    rule = None
+    if isinstance(budget, dict):
+        try:
+            credit = _amount(budget.get("credit_usd"), "credit_usd")
+            spent = _amount(budget.get("spent_usd"), "spent_usd") or 0.0
+        except ValueError:
+            credit = None
+        if credit:
+            rule = Rule(scope=SHARED, period="month", block_usd=credit, owner=str(budget.get("organization") or "")
+                        or "Your organization", base_usd=spent, since=since,
+                        match=str(budget.get("period") or period_key("month")))
+    with _lock:
+        _shared = rule
+    return rule
 
 
 def configure(settings: Any) -> None:
@@ -145,9 +175,10 @@ def configure(settings: Any) -> None:
 
 def reset() -> None:
     """No rules, warnings or approvals (tests)."""
-    global _settings_rules
+    global _settings_rules, _shared
     with _lock:
         _settings_rules = ()
+        _shared = None
         _warned.clear()
         _approved.clear()
 
@@ -158,8 +189,10 @@ def rules() -> tuple[Rule, ...]:
 
     policy = current_policy()
     with _lock:
-        own = _settings_rules
-    return tuple(policy.budgets if policy else ()) + own
+        own, shared = _settings_rules, _shared
+    # A shared credit counts for the month Lumi Cloud reported it for.
+    extra = (shared,) if shared is not None and shared.match == period_key("month") else ()
+    return tuple(policy.budgets if policy else ()) + extra + own
 
 
 # ── Spend ───────────────────────────────────────────────────────────────────
@@ -174,9 +207,12 @@ def _spent(rule: Rule, project: str, turn_spend: float, rows: list[dict], user: 
     if rule.scope == "turn":
         return turn_spend
     key = period_key(rule.period)
-    total = 0.0
+    total = rule.base_usd if rule.scope == SHARED else 0.0
     for row in rows:
         if not str(row.get("ts", "")).startswith(key):
+            continue
+        # A shared credit adds this computer's spend since Lumi Cloud counted it.
+        if rule.scope == SHARED and str(row.get("ts", "")) < rule.since:
             continue
         if rule.scope == "user" and row.get("user") != user:
             continue
@@ -211,6 +247,8 @@ def _whose(rule: Rule) -> str:
 def _what(rule: Rule, project: str) -> str:
     if rule.scope == "turn":
         return "This turn has spent"
+    if rule.scope == SHARED:
+        return f"This month's spend across {rule.owner} is"
     period = "Today's" if rule.period == "day" else "This month's"
     if rule.scope == "project":
         return f"{period} spend in this project is"
@@ -233,8 +271,10 @@ def evaluate(project: str = "", *, turn_spend: float = 0.0, rows: Iterable[dict]
         spent = _spent(rule, project, turn_spend, rows, user)
         what = _what(rule, project)
         if rule.block_usd is not None and spent >= rule.block_usd:
+            limit = "shared model credit" if rule.scope == SHARED else "budget"
             verdicts.append(Verdict("block", rule, spent, rule.block_usd,
-                                    f"{what} {_money(spent)}, which reaches {_whose(rule)} {_money(rule.block_usd)} budget."))
+                                    f"{what} {_money(spent)}, which reaches {_whose(rule)} {_money(rule.block_usd)} "
+                                    f"{limit}."))
         elif rule.approve_usd is not None and spent >= rule.approve_usd:
             verdicts.append(Verdict("approve", rule, spent, rule.approve_usd,
                                     f"{what} {_money(spent)}, past {_whose(rule)} {_money(rule.approve_usd)} limit."))

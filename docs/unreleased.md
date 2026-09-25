@@ -27,24 +27,28 @@ The dated September 15/18 records below are historical.
 
 Validation on September 25, 2026:
 
-- Full `pytest`: 3,995 passed, 5 skipped. `ruff check` clean.
-- `node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs`: 37
-  passed. Three new tests drive the real `handleToolCall`,
-  `handleToolResult` and `replayDisplayEvents` with rejected,
-  policy-blocked, failed, unanswered, accepted, id-less, Codex and worker
-  events. All three fail against the previous `app.js`, and they also catch
-  counting a worker's result for the parent or ignoring `denied`.
+- On the tree merged with `main`: full `pytest` 4,054 passed, 5 skipped;
+  `ruff check` clean; the UI node tests (`ui_recovery`, `appearance`,
+  `autonomous_view`) 43 passed.
+- Three new tests drive the real `handleToolCall`, `handleToolResult` and
+  `replayDisplayEvents` with rejected, policy-blocked, failed, unanswered,
+  accepted, id-less, Codex and worker events. All three fail against the
+  previous `app.js`, and they also catch counting a worker's result for the
+  parent or ignoring `denied`.
 - In the browser pane, with an isolated home and a scripted
-  Ollama-compatible model. Ask mode on this base refuses edits by policy, so
-  a project `lumi-policy.json` `prompt` rule for `file_edit` in Auto-edit
-  produced the real Accept/Reject card:
-  - Before the change, Reject left `notes.txt` unchanged, yet the next prompt
-    suggested reviewing the changes, and after a provider error the Failed
-    card listed `notes.txt` under **Changed files**.
-  - After it, a rejection, a rejection followed by a provider error and an
-    Ask-mode policy block listed no changed files and suggested no review.
-    An accepted edit changed the file, listed `notes.txt` and suggested
-    reviewing it. After a reload, only the accepted turn listed a file.
+  Ollama-compatible model:
+  - Before the change, Ask still refused edits by policy, so Auto-edit with
+    a project `lumi-policy.json` `prompt` rule for `file_edit` gave the
+    Accept/Reject card. Reject left `notes.txt` unchanged, yet the next
+    prompt suggested reviewing the changes, and after a provider error the
+    Failed card listed `notes.txt` under **Changed files**.
+  - After the change, the same setup, and an Ask policy block, listed no
+    changed files and suggested no review.
+  - Merged with "Ask asks before changes" below, in Ask mode: Reject, and
+    Reject followed by a provider error, listed no changed files and
+    suggested no review. Accept changed the file, listed `notes.txt` and
+    suggested reviewing it. After a reload, only the accepted turn listed a
+    file.
 
 ## September 25 Ask asks before changes — source only, not released
 

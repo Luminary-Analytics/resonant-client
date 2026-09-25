@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -78,14 +79,43 @@ def _python_call_name(node: ast.AST) -> str:
     return ""
 
 
+# tree-sitter is optional. Look it up once: a failed import retried for every
+# file of a large repository cost about a millisecond each.
+_GET_PARSER: Any = None
+# Parsers aren't safe to share between threads; each thread keeps its own.
+_LOCAL = threading.local()
+
+
+def _tree_sitter_parser(grammar: str) -> Any:
+    global _GET_PARSER
+    if _GET_PARSER is None:
+        try:
+            from tree_sitter_language_pack import get_parser
+
+            _GET_PARSER = get_parser
+        except Exception:
+            _GET_PARSER = False
+    if not _GET_PARSER:
+        return None
+    parsers = getattr(_LOCAL, "parsers", None)
+    if parsers is None:
+        parsers = _LOCAL.parsers = {}
+    if grammar not in parsers:
+        try:
+            parsers[grammar] = _GET_PARSER(grammar)
+        except Exception:
+            parsers[grammar] = None
+    return parsers[grammar]
+
+
 def _parse_tree_sitter(content: str, language: str) -> ParsedCode | None:
     grammar = _TREE_SITTER_LANGUAGE.get(language)
     if not grammar:
         return None
+    parser = _tree_sitter_parser(grammar)
+    if parser is None:
+        return None
     try:
-        from tree_sitter_language_pack import get_parser
-
-        parser = get_parser(grammar)
         tree = parser.parse(content.encode("utf-8"))
     except Exception:
         return None

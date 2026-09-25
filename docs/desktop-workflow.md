@@ -235,6 +235,37 @@ Codex shows remaining subscription usage when the CLI account service reports
 it. OpenRouter shows provider-reported run costs and connection usage; model
 picker prices are catalog prices, which can differ from actual charges.
 
+## Large repositories
+
+The codebase index (`lumi/engine/rag.py`) gives the model a repo map and
+search over files, symbols and imports. On a large monorepo:
+
+- **What gets indexed.** In a Git repository, or a folder inside one, the
+  file list comes from Git, so anything `.gitignore` excludes stays out.
+  `vendor`, `node_modules`, build output and hidden folders are skipped even
+  when tracked. So are files you exclude (Settings > Privacy & security, or
+  `.lumiignore`). A repository in your home folder itself (dotfiles) isn't
+  used for projects under it.
+- **The cap.** The index stops at 100,000 files and says so. Exclude trees
+  you don't work in to bring more of the rest in.
+- **Changes are cheap.** Only files whose size or modification time changed
+  are read again, each read once and parsed once.
+- **What it costs.** Measured with `scripts/benchmark_index.py` on Windows,
+  on September 25, 2026:
+
+| Repository | First index | Nothing changed | 1% changed | Search | Repo map |
+| --- | --- | --- | --- | --- | --- |
+| 20,000 files plus 20,000 ignored | 15 s | 0.5 s | 0.8 s | ~30 ms | 0.1 s |
+| 100,002 files (the cap) | 76 s | 2.5 s | 4.0 s | ~190 ms | 0.9 s |
+
+  Most of a first index is reading each file for the first time: on this
+  machine, antivirus scans a newly written file. Re-indexing everything
+  from files already read took 4.6 s for 20,000 files and 23 s for
+  100,000. The saved index is about 10 MB and 49 MB.
+
+To work in one part of a monorepo, open that folder as the project. The
+index, and what the agent's tools see, then start there.
+
 ## Conversation progress, suggestions, and titles
 
 Available in [0.18.2](v0.18.2-release-notes.md). The working

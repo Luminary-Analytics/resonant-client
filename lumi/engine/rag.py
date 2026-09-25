@@ -12,12 +12,18 @@ The local index is always available. Engram enhances it with semantic search.
 """
 
 import hashlib
+import heapq
 import json
 import logging
 import os
 import re
+import shutil
+import stat
+import subprocess
 import threading
 import time
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from ..paths import project_dir
@@ -56,6 +62,20 @@ SKIP_DIRS = {
 # Max file size to index (256KB)
 MAX_FILE_SIZE = 256 * 1024
 
+# Files indexed per project. Past this, the rest of a very large monorepo is
+# left out (the stats say "truncated") rather than making every index slow.
+MAX_INDEXED_FILES = 100_000
+
+# An import that matches more files than this is too ambiguous to count.
+AMBIGUOUS_IMPORT_TARGETS = 3
+
+# Files read concurrently while indexing, and how many are held at once.
+READ_THREADS = 8
+READ_BATCH = 256
+
+# Extensionless files worth indexing.
+EXTENSIONLESS = {"makefile", "dockerfile", "procfile", "gemfile", "rakefile", "vagrantfile", "jenkinsfile"}
+
 
 @dataclass
 class IndexEntry:
@@ -70,6 +90,17 @@ class IndexEntry:
     imports: list[str] = field(default_factory=list)   # Import statements
     last_indexed: float = 0.0
     mtime_ns: int = 0  # Filesystem identity for fast unchanged-file detection
+    # Lower-cased search fields, built on first search (not saved).
+    _search: tuple | None = field(default=None, init=False, repr=False, compare=False)
+
+    def search_fields(self) -> tuple:
+        """(path, path parts, symbols, imports, summary, language), lower-cased once."""
+        if self._search is None:
+            path_lower = self.path.lower()
+            parts = {part for part in re.split(r'[\s_.\-/]+', path_lower) if part}
+            self._search = (path_lower, parts, [s.lower() for s in self.symbols], " ".join(self.imports).lower(),
+                            self.summary.lower(), self.language.lower())
+        return self._search
 
     def to_dict(self) -> dict:
         return {
@@ -110,8 +141,9 @@ class CodebaseIndex:
     - Semantic search: uses engram embeddings (when available)
     """
 
-    def __init__(self, project_path: str | Path, engram=None):
+    def __init__(self, project_path: str | Path, engram=None, *, max_files: int = MAX_INDEXED_FILES):
         self.project_path = Path(project_path)
+        self.max_files = max(1, int(max_files))
         self._engram = engram  # Optional EngramIntegration
         self._entries: dict[str, IndexEntry] = {}  # rel_path -> entry
         self._lock = threading.Lock()
@@ -142,6 +174,12 @@ class CodebaseIndex:
     def index(self, force: bool = False) -> dict:
         """Index the entire codebase. Returns stats.
 
+        In a Git repository the files come from ``git ls-files`` (tracked and
+        untracked, without ignored ones), so ``.gitignore`` keeps generated
+        trees out; elsewhere the folder is walked. Each changed file is read
+        once and parsed once. Unchanged files (same size and modification
+        time) aren't read at all.
+
         Args:
             force: If True, re-index all files even if unchanged.
         """
@@ -152,93 +190,73 @@ class CodebaseIndex:
         start = time.time()
         stats = {"files_scanned": 0, "files_indexed": 0, "files_skipped": 0, "errors": 0}
         current_paths: set[str] = set()
-        metadata_changed = False
+        todo: list[tuple[str, str, int, int]] = []
+        changed = False
 
         try:
-            for dirpath, dirnames, filenames in os.walk(self.project_path):
-                # Skip excluded directories
-                dirnames[:] = [
-                    d for d in dirnames
-                    if d not in SKIP_DIRS and not d.startswith(".")
-                    # A directory rule excludes everything inside it.
-                    and not self._excluded_path(os.path.join(dirpath, d, "_"))
-                ]
+            listing, stats["listing"] = self._list_files()
+            for rel_path in listing:
+                stats["files_scanned"] += 1
+                if not _indexable(rel_path):
+                    stats["files_skipped"] += 1
+                    continue
+                full_path = os.path.join(self.project_path, rel_path)
+                if self._excluded_path(full_path):
+                    stats["files_skipped"] += 1
+                    continue
+                try:
+                    file_stat = os.stat(full_path)
+                except OSError:
+                    stats["files_skipped"] += 1
+                    continue
+                size = file_stat.st_size
+                # Regular files only (a submodule is a directory); skip empty and large ones.
+                if not stat.S_ISREG(file_stat.st_mode) or size > MAX_FILE_SIZE or size == 0:
+                    stats["files_skipped"] += 1
+                    continue
+                if len(current_paths) >= self.max_files:
+                    stats["truncated"] = True
+                    break
+                current_paths.add(rel_path)
 
-                for filename in filenames:
-                    stats["files_scanned"] += 1
-                    ext = os.path.splitext(filename)[1].lower()
+                existing = self._entries.get(rel_path)
+                if not force and existing and existing.size == size and existing.mtime_ns == file_stat.st_mtime_ns:
+                    continue
+                todo.append((rel_path, full_path, size, file_stat.st_mtime_ns))
 
-                    # Also index extensionless files that look like configs
-                    if ext not in INDEXABLE_EXTENSIONS and ext:
-                        stats["files_skipped"] += 1
-                        continue
-
-                    # Check special extensionless files
-                    if not ext and filename.lower() not in {
-                        "makefile", "dockerfile", "procfile", "gemfile",
-                        "rakefile", "vagrantfile", "jenkinsfile",
-                    }:
-                        stats["files_skipped"] += 1
-                        continue
-
-                    full_path = os.path.join(dirpath, filename)
-                    if self._excluded_path(full_path):
-                        stats["files_skipped"] += 1
-                        continue
-
-                    # Skip large files
-                    try:
-                        file_stat = os.stat(full_path)
-                        size = file_stat.st_size
-                        if size > MAX_FILE_SIZE or size == 0:
-                            stats["files_skipped"] += 1
+            # Read changed files a batch at a time on a few threads (opening a
+            # file is I/O, and on Windows often an antivirus scan, so it
+            # overlaps well), then parse them in order on this thread.
+            with ThreadPoolExecutor(max_workers=READ_THREADS) as pool:
+                for batch_start in range(0, len(todo), READ_BATCH):
+                    batch = todo[batch_start:batch_start + READ_BATCH]
+                    for (rel_path, _full, size, mtime_ns), data in zip(batch, pool.map(_read_bytes, batch)):
+                        if data is None:
+                            stats["errors"] += 1
                             continue
-                    except OSError:
-                        stats["files_skipped"] += 1
-                        continue
-
-                    rel_path = os.path.relpath(full_path, self.project_path).replace("\\", "/")
-                    current_paths.add(rel_path)
-
-                    existing = self._entries.get(rel_path)
-                    if (
-                        not force
-                        and existing
-                        and existing.size == size
-                        and existing.mtime_ns == file_stat.st_mtime_ns
-                    ):
-                        continue
-
-                    # Check if file has changed
-                    try:
-                        content_hash = self._hash_file(full_path)
-                    except Exception:
-                        stats["errors"] += 1
-                        continue
-
-                    if not force and existing and existing.hash == content_hash:
-                        existing.size = size
-                        existing.mtime_ns = file_stat.st_mtime_ns
-                        metadata_changed = True
-                        continue  # Unchanged
-
-                    # Index the file
-                    try:
-                        entry = self._index_file_content(
-                            full_path,
-                            rel_path,
-                            content_hash,
-                            file_size=size,
-                            mtime_ns=file_stat.st_mtime_ns,
-                        )
+                        existing = self._entries.get(rel_path)
+                        content_hash = hashlib.md5(data).hexdigest()[:12]
+                        if not force and existing and existing.hash == content_hash:
+                            existing.size = size
+                            existing.mtime_ns = mtime_ns
+                            changed = True
+                            continue
+                        try:
+                            entry = self._index_content(rel_path, data.decode("utf-8", errors="replace"),
+                                                        content_hash, size=size, mtime_ns=mtime_ns)
+                        except Exception as e:
+                            logger.debug(f"Failed to index {rel_path}: {e}")
+                            stats["errors"] += 1
+                            continue
                         with self._lock:
                             self._entries[rel_path] = entry
                         stats["files_indexed"] += 1
-                    except Exception as e:
-                        logger.debug(f"Failed to index {rel_path}: {e}")
-                        stats["errors"] += 1
+                        changed = True
 
             self._last_full_index = time.time()
+            if stats.get("truncated"):
+                logger.warning("Indexed the first %d files of %s; the rest of the repository is left out",
+                               self.max_files, self.project_path)
 
             # Remove entries for deleted, excluded, empty, or newly oversized
             # files using paths collected during the primary walk.
@@ -248,12 +266,14 @@ class CodebaseIndex:
                     del self._entries[p]
                 if stale:
                     stats["files_removed"] = len(stale)
-                if stats["files_indexed"] or stale or metadata_changed:
+                if stats["files_indexed"] or stale or changed:
                     self._repo_map_cache.clear()
                     self._repo_map_generation += 1
 
-            # Save cache
-            self._save_cache()
+            # Save the cache only when something changed: for a large
+            # repository it is megabytes of JSON.
+            if changed or stale or not self._index_file.exists():
+                self._save_cache()
 
             # Push to engram if available
             if self._engram and self._engram.enabled:
@@ -267,6 +287,46 @@ class CodebaseIndex:
         logger.info(f"Indexed {stats['files_indexed']} files in {stats['elapsed_ms']}ms "
                      f"({stats['total_files']} total)")
         return stats
+
+    def _list_files(self) -> tuple[Iterator[str], str]:
+        """Relative paths to consider, and how they were found ("git" or "walk")."""
+        listed = self._git_files()
+        if listed is not None:
+            return (path for path in listed if _visible(path)), "git"
+        return self._walk_files(), "walk"
+
+    def _git_files(self) -> list[str] | None:
+        """Tracked and untracked files that .gitignore doesn't exclude, or None outside Git.
+
+        The project can be a folder inside a repository (one part of a
+        monorepo); ``git ls-files`` then lists that folder, relative to it.
+        """
+        if _repository_root(self.project_path) is None or not shutil.which("git"):
+            return None
+        try:
+            result = subprocess.run(
+                ["git", "-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                cwd=self.project_path, capture_output=True, timeout=120,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        # --cached and --others can both list a file that was just staged.
+        return list(dict.fromkeys(p for p in result.stdout.decode("utf-8", "replace").split("\0") if p))
+
+    def _walk_files(self) -> Iterator[str]:
+        for dirpath, dirnames, filenames in os.walk(self.project_path):
+            # Skip excluded directories
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in SKIP_DIRS and not d.startswith(".")
+                # A directory rule excludes everything inside it.
+                and not self._excluded_path(os.path.join(dirpath, d, "_"))
+            ]
+            for filename in filenames:
+                yield os.path.relpath(os.path.join(dirpath, filename), self.project_path).replace("\\", "/")
 
     def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
         """Search the index for relevant files.
@@ -331,51 +391,42 @@ class CodebaseIndex:
         if not entries:
             return ""
 
-        identities: dict[str, set[str]] = {}
+        # Every file is known by each suffix of its path without the extension,
+        # with slashes or dots ("pkg/util", "util", "pkg.util"...). An import
+        # counts for the files matching its most specific suffix only. Counting
+        # every suffix, as before, credited all of a monorepo's many index.ts
+        # or utils.py for each import of one of them, which grew quadratically
+        # (about a minute for 100,000 files).
+        identity_targets: dict[str, list[str]] = {}
         for entry in entries:
-            no_ext = os.path.splitext(entry.path)[0].replace("\\", "/")
-            identities[entry.path] = {
-                no_ext.lower(),
-                no_ext.replace("/", ".").lower(),
-                Path(no_ext).name.lower(),
-            }
-
-        # Resolve imports through an inverted identity index. The previous
-        # implementation compared every import against every file (O(F^2));
-        # suffix candidates preserve those matches in roughly
-        # O(imports * path depth).
-        identity_targets: dict[str, set[str]] = {}
-        for target, names in identities.items():
-            for name in names:
-                identity_targets.setdefault(name, set()).add(target)
+            no_ext = os.path.splitext(entry.path)[0].replace("\\", "/").lower()
+            parts = no_ext.split("/")
+            for index in range(len(parts)):
+                suffix = parts[index:]
+                for name in {"/".join(suffix), ".".join(suffix)}:
+                    identity_targets.setdefault(name, []).append(entry.path)
 
         inbound = {entry.path: 0 for entry in entries}
         for source in entries:
             for raw_import in source.imports:
                 imported = raw_import.strip("./").replace("\\", "/").lower()
-                imported_dotted = imported.replace("/", ".")
-                candidates = {imported, imported_dotted}
-                slash_parts = imported.split("/")
-                dotted_parts = imported_dotted.split(".")
-                candidates.update(
-                    "/".join(slash_parts[index:])
-                    for index in range(1, len(slash_parts))
-                )
-                candidates.update(
-                    ".".join(dotted_parts[index:])
-                    for index in range(1, len(dotted_parts))
-                )
-                targets: set[str] = set()
-                for candidate in candidates:
-                    targets.update(identity_targets.get(candidate, ()))
-                for target in targets:
-                    if target == source.path:
+                pieces = [piece for piece in imported.replace(".", "/").split("/") if piece]
+                for index in range(len(pieces)):
+                    suffix = pieces[index:]
+                    targets = (identity_targets.get("/".join(suffix))
+                               or identity_targets.get(".".join(suffix)))
+                    if not targets:
                         continue
-                    inbound[target] += 1
+                    # A bare name shared by many files says nothing about which.
+                    if len(targets) <= AMBIGUOUS_IMPORT_TARGETS:
+                        for target in targets:
+                            if target != source.path:
+                                inbound[target] += 1
+                    break
 
         def rank(entry: IndexEntry) -> tuple[float, str]:
             depth = entry.path.count("/")
-            filename = Path(entry.path).name.lower()
+            filename = entry.path.rsplit("/", 1)[-1].lower()
             entrypoint = 3 if filename in {
                 "readme.md", "pyproject.toml", "package.json", "main.py", "app.py",
                 "main.ts", "main.js", "cargo.toml", "go.mod",
@@ -386,7 +437,9 @@ class CodebaseIndex:
         lines = ["--- REPO MAP (dependency-weighted, signatures only) ---"]
         budget_chars = max(400, int(max_tokens) * 4)
         used_chars = len(lines[0]) + 1
-        for entry in sorted(entries, key=rank):
+        # Only the top of the ranking fits the budget; don't sort every file
+        # of a large repository to find it. A line is at least ~20 characters.
+        for entry in heapq.nsmallest(budget_chars // 20 + 1, entries, key=rank):
             symbols = ", ".join(entry.symbols[:8]) or "(no indexed symbols)"
             line = f"- {entry.path}: {symbols}"
             if inbound[entry.path]:
@@ -439,7 +492,7 @@ class CodebaseIndex:
         file_size: int | None = None,
         mtime_ns: int = 0,
     ) -> IndexEntry:
-        """Index a single file's content."""
+        """Index a single file's content, reading it from disk."""
         try:
             with open(full_path, "r", encoding="utf-8", errors="replace") as f:
                 content = f.read()
@@ -451,11 +504,15 @@ class CodebaseIndex:
                 last_indexed=time.time(),
                 mtime_ns=mtime_ns,
             )
+        return self._index_content(rel_path, content, content_hash, size=file_size, mtime_ns=mtime_ns)
 
+    def _index_content(self, rel_path: str, content: str, content_hash: str, *, size: int | None = None,
+                       mtime_ns: int = 0) -> IndexEntry:
+        """Index content already read: one parse gives both symbols and imports."""
         lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         language = _detect_language(rel_path)
-        symbols = _extract_symbols(content, language)
-        imports = _extract_imports(content, language)
+        file_size = size
+        symbols, imports = _extract_symbols_and_imports(content, language)
 
         # Build a brief summary
         summary = _build_summary(rel_path, language, symbols, imports, lines)
@@ -494,11 +551,10 @@ class CodebaseIndex:
             for path, entry in self._entries.items():
                 score = 0.0
                 reasons = []
+                path_lower, path_parts, symbols_lower, imports_lower, summary_lower, lang_lower = (
+                    entry.search_fields())
 
                 # Path matching (bidirectional: term in path OR path-part in term)
-                path_lower = path.lower()
-                path_parts = set(re.split(r'[\s_.\-/]+', path_lower))
-                path_parts.discard("")
                 for term in terms:
                     if term in path_lower:
                         score += 0.3
@@ -513,27 +569,24 @@ class CodebaseIndex:
 
                 # Symbol matching
                 for term in terms:
-                    matches = [s for s in entry.symbols if term in s.lower()]
+                    matches = [s for s, lowered in zip(entry.symbols, symbols_lower) if term in lowered]
                     if matches:
                         score += 0.25 * len(matches)
                         reasons.append(f"defines {', '.join(matches[:3])}")
 
                 # Import matching
-                imports_lower = " ".join(entry.imports).lower()
                 for term in terms:
                     if term in imports_lower:
                         score += 0.1
                         reasons.append(f"imports related to '{term}'")
 
                 # Summary matching
-                if entry.summary:
-                    summary_lower = entry.summary.lower()
+                if summary_lower:
                     for term in terms:
                         if term in summary_lower:
                             score += 0.15
 
                 # Language boost (if query mentions a language)
-                lang_lower = entry.language.lower()
                 if lang_lower in query_lower:
                     score += 0.1
 
@@ -622,8 +675,11 @@ class CodebaseIndex:
                     for path, e in self._entries.items()
                 },
             }
-            with open(self._index_file, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
+            # Compact, and replaced whole so a crash never leaves half a cache.
+            temporary = self._index_file.with_name(self._index_file.name + ".tmp")
+            with open(temporary, "w", encoding="utf-8") as f:
+                json.dump(data, f, separators=(",", ":"))
+            os.replace(temporary, self._index_file)
         except Exception as e:
             logger.debug(f"Failed to save index cache: {e}")
 
@@ -655,6 +711,46 @@ class CodebaseIndex:
             logger.info(f"Loaded {len(self._entries)} entries from index cache")
         except Exception as e:
             logger.debug(f"Failed to load index cache: {e}")
+
+
+def _read_bytes(item: tuple[str, str, int, int]) -> bytes | None:
+    try:
+        with open(item[1], "rb") as handle:
+            return handle.read()
+    except OSError:
+        return None
+
+
+def _repository_root(project_path: Path) -> Path | None:
+    """The Git repository holding the project: its own folder or one above it.
+
+    The search stops below the home folder. A repository there (dotfiles
+    kept in Git) often ignores everything it doesn't track, which would
+    empty the index of every project under home.
+    """
+    try:
+        here = project_path.resolve()
+        home = Path.home().resolve()
+    except (OSError, RuntimeError):
+        return None
+    for folder in (here, *here.parents):
+        if folder == home or folder in home.parents:
+            return None
+        if (folder / ".git").exists():
+            return folder
+    return None
+
+
+def _visible(rel_path: str) -> bool:
+    """Whether a listed path is outside skipped and hidden directories (as the walk prunes them)."""
+    parts = rel_path.split("/")[:-1]
+    return not any(part in SKIP_DIRS or part.startswith(".") for part in parts)
+
+
+def _indexable(rel_path: str) -> bool:
+    name = rel_path.rsplit("/", 1)[-1].lower()
+    ext = os.path.splitext(name)[1]
+    return ext in INDEXABLE_EXTENSIONS if ext else name in EXTENSIONLESS
 
 
 # ── Language Detection ───────────────────────────────────────────────
@@ -693,13 +789,26 @@ def _detect_language(path: str) -> str:
 
 # ── Symbol Extraction ────────────────────────────────────────────────
 
-def _extract_symbols(content: str, language: str) -> list[str]:
-    """Extract function/class/type names from source code."""
+def _extract_symbols_and_imports(content: str, language: str) -> tuple[list[str], list[str]]:
+    """Symbols and imports from one parse, with the regular-expression fallbacks."""
     try:
         from .code_intelligence import parse_code
 
         parsed = parse_code(content, language)
-        if parsed.symbols:
+    except Exception:
+        parsed = None
+    symbols = parsed.symbols[:50] if parsed and parsed.symbols else _extract_symbols(content, language, parse=False)
+    imports = parsed.imports[:30] if parsed and parsed.imports else _extract_imports(content, language, parse=False)
+    return symbols, imports
+
+
+def _extract_symbols(content: str, language: str, *, parse: bool = True) -> list[str]:
+    """Extract function/class/type names from source code."""
+    try:
+        from .code_intelligence import parse_code
+
+        parsed = parse_code(content, language) if parse else None
+        if parsed and parsed.symbols:
             return parsed.symbols[:50]
     except Exception:
         pass
@@ -748,13 +857,13 @@ def _extract_symbols(content: str, language: str) -> list[str]:
     return symbols[:50]  # Cap at 50 symbols per file
 
 
-def _extract_imports(content: str, language: str) -> list[str]:
+def _extract_imports(content: str, language: str, *, parse: bool = True) -> list[str]:
     """Extract import/include statements."""
     try:
         from .code_intelligence import parse_code
 
-        parsed = parse_code(content, language)
-        if parsed.imports:
+        parsed = parse_code(content, language) if parse else None
+        if parsed and parsed.imports:
             return parsed.imports[:30]
     except Exception:
         pass

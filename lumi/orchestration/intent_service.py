@@ -6,9 +6,11 @@ with an intent_id; the actual work happens on a background thread. Events are
 forwarded through an `on_event` callback (the GUI wires this to a WebSocket
 emitter). Every state change persists to disk so the user can reload mid-run.
 
-Cancellation: each active intent owns a `threading.Event`. `cancel()` sets it;
-the walker checks it between nodes and the runner checks it before each
-specialist Session.
+Cancellation: each active intent owns a `threading.Event`. `cancel()` sets it
+and emits `intent.cancelling`. The running specialist's Session shares the
+event, so it makes no further model request or tool call; the walker starts no
+new node, abandons those that never ran (`plan.stopped`), and the worker then
+emits `intent.cancelled`, once, when the plan has stopped.
 
 Pause: each active intent owns a `pause_event`. `pause()` sets it; the walker
 starts no new node while the flag is up (the specialist already running
@@ -199,7 +201,9 @@ class IntentService:
         active.cancel_event.set()
         active.status = "cancelled"
         log_decision(self.project_path, intent_id, summary="intent cancel requested")
-        self._emit({"event": "intent.cancelled", "intent_id": intent_id})
+        # Not yet `intent.cancelled`: the running step is still ending. The
+        # worker sends that when the walk is over.
+        self._emit({"event": "intent.cancelling", "intent_id": intent_id})
         return True
 
     def pause(self, intent_id: str) -> bool:
@@ -225,6 +229,27 @@ class IntentService:
     def list_active(self) -> list[str]:
         with self._lock:
             return list(self._active.keys())
+
+    def adopt_running(self, previous: Optional["IntentService"]) -> None:
+        """Keep a replaced service's running intents reachable from this one.
+
+        The app builds a new service when its backend, project or tools
+        change. An intent started before that keeps running under the service
+        that started it, and its events still flow from there; without this,
+        its Stop, Pause and Resume would report it finished while it carried
+        on.
+        """
+        if previous is None or previous is self:
+            return
+        with previous._lock:
+            running = {
+                intent_id: active
+                for intent_id, active in previous._active.items()
+                if active.thread.is_alive()
+            }
+        with self._lock:
+            for intent_id, active in running.items():
+                self._active.setdefault(intent_id, active)
 
     def get_graph(self, intent_id: str) -> Optional[PlanGraph]:
         active = self._get(intent_id)
@@ -273,9 +298,13 @@ class IntentService:
     def _get_running(self, intent_id: str) -> Optional[_ActiveIntent]:
         # Finished intents stay in `_active` for get_graph; pausing or
         # cancelling one would only relabel it and announce a change that
-        # never happens.
+        # never happens. `completed_at` is set before the final event goes
+        # out, while the thread is still alive: a stop accepted after that
+        # would never be followed by `intent.cancelled`.
         active = self._get(intent_id)
-        return active if active and active.thread.is_alive() else None
+        if active and active.thread.is_alive() and not active.completed_at:
+            return active
+        return None
 
     def _emit(self, payload: dict) -> None:
         try:
@@ -364,6 +393,12 @@ class IntentService:
                     all_done=event.payload.get("all_done"),
                     node_count=event.payload.get("node_count"),
                 )
+            elif event.kind == "plan.stopped":
+                log_decision(
+                    self.project_path, graph.intent_id,
+                    summary="plan stopped",
+                    abandoned=len(event.payload.get("abandoned") or []),
+                )
         except Exception:
             logger.debug("audit log raised", exc_info=True)
 
@@ -390,14 +425,15 @@ class IntentService:
             walker.run(graph)
         except Exception as exc:
             logger.exception("Walker crashed for intent %s", graph.intent_id)
+            with self._lock:
+                if graph.intent_id in self._active:
+                    self._active[graph.intent_id].status = "failed"
+                    self._active[graph.intent_id].completed_at = time.time()
             self._emit({
                 "event": "intent.failed",
                 "intent_id": graph.intent_id,
                 "error": str(exc),
             })
-            with self._lock:
-                if graph.intent_id in self._active:
-                    self._active[graph.intent_id].status = "failed"
             return
 
         # Walker returned normally — mark done, snapshot final state.
@@ -407,10 +443,12 @@ class IntentService:
         except Exception:
             logger.debug("final persist raised", exc_info=True)
 
-        # Auto-extract a skill if this graph qualifies. Best-effort.
+        # Auto-extract a skill if this graph qualifies. Best-effort. A plan
+        # the person stopped isn't a procedure to repeat, even if every step
+        # that ran had finished.
         skill_id = None
         try:
-            if is_extraction_candidate(graph):
+            if not cancel_event.is_set() and is_extraction_candidate(graph):
                 skill = extract_skill(graph)
                 if skill:
                     skill_id = skill.id

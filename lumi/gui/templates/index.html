@@ -579,10 +579,14 @@
                     <div id="plan-graph-pane" class="plan-graph-pane" style="display:none">
                         <div class="plan-graph-toolbar">
                             <span class="plan-graph-intent" id="plan-graph-intent">No active intent</span>
+                            <span class="plan-graph-state" id="plan-graph-state" role="status"></span>
                             <span class="plan-graph-spacer"></span>
-                            <button class="plan-graph-btn" id="plan-graph-pause" title="Pause new node spawns">Pause</button>
-                            <button class="plan-graph-btn" id="plan-graph-history" title="Plan snapshots / restore">History</button>
-                            <button class="plan-graph-btn" id="plan-graph-branch" title="Fork plan-graph from selected node">Branch</button>
+                            <span class="plan-graph-actions" role="group" aria-label="Plan controls">
+                                <button class="plan-graph-btn" id="plan-graph-pause" type="button" title="Pause new node spawns" aria-disabled="true">Pause</button>
+                                <button class="plan-graph-btn" id="plan-graph-stop" type="button" title="End the running step now and start no more" aria-label="Stop plan" aria-disabled="true">Stop</button>
+                                <button class="plan-graph-btn" id="plan-graph-history" title="Plan snapshots / restore">History</button>
+                                <button class="plan-graph-btn" id="plan-graph-branch" title="Fork plan-graph from selected node">Branch</button>
+                            </span>
                         </div>
                         <div id="plan-graph-checkpoint" class="plan-graph-checkpoint" style="display:none"></div>
                         <div id="plan-graph-canvas" class="plan-graph-canvas">

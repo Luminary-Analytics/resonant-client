@@ -756,3 +756,89 @@ def test_plan_through_the_app_socket_starts_the_intent_and_streams_its_events(tm
     for kind in ("plan.snapshot", "intent.started", "plan.event", "intent.complete"):
         assert kind in kinds, kinds
     assert all(event["intent_id"] == accepted["intent_id"] for event in replies if event["event"].startswith("intent."))
+
+
+def test_stop_through_the_app_socket_reaches_a_plan_started_before_a_model_switch(tmp_path, monkeypatch):
+    """The Plan tab's Stop: intent_cancel on the app's socket ends the running
+    step, and nothing after it starts. Switching models rebuilds the intent
+    service in between, which used to leave the plan out of reach."""
+    from lumi.gui import app as gui_app
+    from lumi.orchestration import NodeSpecialization, NodeStatus, SpecialistResult
+    from tests.gui_access import LocalClient
+
+    monkeypatch.setenv("LUMI_STATE_HOME", str(tmp_path / "state"))
+    project = tmp_path / "project"
+    project.mkdir()
+    state = SimpleNamespace(
+        backend=object(),
+        project=SimpleNamespace(project_path=str(project), current_session=None),
+        mcp_manager=SimpleNamespace(get_all_tools=list),
+        _project_instructions="",
+        settings=None,
+        _build_specialist_backend=lambda _specialization: None,
+        session=None,
+        available_backends={"ollama": {}},
+        codebase_index=object(),
+    )
+    state.get_intent_service = gui_app.AppState.get_intent_service.__get__(state)
+    monkeypatch.setattr(gui_app, "state", state)
+    started = []
+    implementing = threading.Event()
+
+    def make_specialist(cancel_event):
+        def specialist(node, _graph):
+            started.append(node.goal)
+            if node.specialization == NodeSpecialization.PLAN:
+                return SpecialistResult(status=NodeStatus.DONE, confidence=0.9, subgoals=[
+                    {"goal": "add the toggle", "specialization": "implement"},
+                    {"goal": "check the toggle", "specialization": "verify", "depends_on": [0]},
+                ])
+            implementing.set()
+            # A specialist's Session shares the intent's cancel event.
+            cancel_event.wait(timeout=10)
+            return SpecialistResult(status=NodeStatus.ABANDONED, confidence=0.0,
+                                    summary="Stopped before this step finished.")
+        return specialist
+
+    sentinel = {"command": "get_context_state"}
+    with (
+        patch("lumi.orchestration.intent_service.LocalSpecialistRunner",
+              side_effect=lambda **kwargs: make_specialist(kwargs["cancel_event"])),
+        LocalClient(gui_app.app) as client,
+        client.websocket_connect("/ws") as socket,
+    ):
+        socket.send_json({"command": "intent_start", "text": "add a dark mode toggle"})
+        socket.send_json(sentinel)
+        replies = _events_until(socket, "context.state")
+        accepted = next((event for event in replies if event["event"] == "intent.accepted"), None)
+        assert accepted is not None, replies
+        intent_id = accepted["intent_id"]
+        assert implementing.wait(timeout=10)
+        state.backend = object()  # the person picked another model meanwhile
+        socket.send_json({"command": "intent_cancel", "intent_id": intent_id})
+        socket.send_json(sentinel)
+        replies = _events_until(socket, "context.state")
+        worker = state._intent_service._get(intent_id).thread
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        socket.send_json(sentinel)
+        replies += _events_until(socket, "context.state")
+
+    assert started == ["add a dark mode toggle", "add the toggle"]
+    assert {"event": "intent.cancel_ack", "intent_id": intent_id, "ok": True} in replies
+    kinds = [event["event"] for event in replies]
+    assert kinds.count("intent.cancelling") == 1
+    assert kinds.count("intent.cancelled") == 1
+    assert "intent.complete" not in kinds
+    stopped = [event["event_payload"] for event in replies
+               if event["event"] == "plan.event" and event["event_payload"]["kind"] == "plan.stopped"]
+    assert len(stopped) == 1
+    graph = state._intent_service.get_graph(intent_id)
+    assert stopped[0]["payload"]["abandoned"] == [
+        node.id for node in graph.nodes.values() if node.goal == "check the toggle"
+    ]
+    assert {node.goal: node.status for node in graph.nodes.values()} == {
+        "add a dark mode toggle": NodeStatus.DONE,
+        "add the toggle": NodeStatus.ABANDONED,
+        "check the toggle": NodeStatus.ABANDONED,
+    }

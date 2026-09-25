@@ -243,6 +243,32 @@ def test_runner_exception_translates_to_blocked():
     assert "simulated" in result.summary.lower() or "exception" in result.summary.lower()
 
 
+def test_a_planner_stopped_mid_stream_asks_the_model_nothing_more():
+    # The Plan tab's Stop sets the intent's cancel event, which the
+    # specialist's Session shares: the stream ends with "Interrupted". The
+    # partial plan must not go to the model for repair.
+    g = PlanGraph.new("intent")
+    node = _node(g, goal="plan it", spec=NodeSpecialization.PLAN)
+    cancel = threading.Event()
+    runner, _ = _make_runner(cancel_event=cancel)
+
+    def stopped_run(self, user_msg, **kwargs):
+        yield {"event": "session.start"}
+        yield {"event": "text.delta", "delta": 'Splitting it up: ```json\n{"subgoals": ['}
+        cancel.set()
+        yield {"event": "error", "message": "Interrupted"}
+        yield {"event": "session.end"}
+
+    with patch("lumi.orchestration.runner.Session.run", stopped_run):
+        result = runner(node, g)
+
+    runner.backend.generate_structured.assert_not_called()
+    assert result.status == NodeStatus.ABANDONED
+    assert result.confidence == 0.0
+    assert result.subgoals == []
+    assert result.summary == "Stopped before this step finished."
+
+
 def test_cancel_before_run_returns_abandoned():
     g = PlanGraph.new("intent")
     node = _node(g, goal="x", spec=NodeSpecialization.IMPLEMENT)

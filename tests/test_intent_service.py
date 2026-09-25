@@ -186,6 +186,151 @@ def test_cancel_unknown_intent_returns_false(state_home, project_dir):
     assert service.cancel("does-not-exist") is False
 
 
+def _stoppable_runner(started: list, implementing: threading.Event, cancel_event: threading.Event):
+    """A planner that plans two steps, then an implementer that works until
+    the plan is stopped, as a specialist's Session sharing the event does."""
+    def runner(node, graph):
+        started.append(node.goal)
+        if node.specialization == NodeSpecialization.PLAN:
+            return SpecialistResult(status=NodeStatus.DONE, confidence=0.9, subgoals=[
+                {"goal": "write the toggle", "specialization": "implement"},
+                {"goal": "wire it up", "specialization": "implement", "depends_on": [0]},
+            ])
+        implementing.set()
+        if cancel_event.wait(timeout=5):
+            return SpecialistResult(status=NodeStatus.ABANDONED, confidence=0.0,
+                                    summary="Stopped before this step finished.")
+        return SpecialistResult(status=NodeStatus.DONE, confidence=1.0)
+    return runner
+
+
+def test_stopping_a_plan_ends_its_step_starts_no_other_and_says_so_once(state_home, project_dir):
+    events: list = []
+    service = _make_service(project_dir, on_event=events.append)
+    started: list = []
+    implementing = threading.Event()
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: _stoppable_runner(started, implementing, kw["cancel_event"]),
+    ):
+        intent_id = service.start_intent("add a dark mode toggle")
+        assert implementing.wait(timeout=5)
+        assert service.cancel(intent_id) is True
+        _wait_for_completion(service, intent_id)
+
+    assert started == ["add a dark mode toggle", "write the toggle"]
+    kinds = [e.get("event") for e in events]
+    # Accepted at once; reported stopped once, after the walk ended.
+    assert kinds.count("intent.cancelling") == 1
+    assert kinds.count("intent.cancelled") == 1
+    assert "intent.complete" not in kinds
+    walk = [(i, e["event_payload"]["kind"]) for i, e in enumerate(events) if e.get("event") == "plan.event"]
+    stopped_at = next(i for i, kind in walk if kind == "plan.stopped")
+    assert kinds.index("intent.cancelling") < stopped_at < kinds.index("intent.cancelled")
+    assert "plan.complete" not in [kind for _, kind in walk]
+    # The saved graph shows the stopped step and the one that never started.
+    statuses = {n.goal: n.status for n in load_graph(intent_id, str(project_dir)).nodes.values()}
+    assert statuses == {
+        "add a dark mode toggle": NodeStatus.DONE,
+        "write the toggle": NodeStatus.ABANDONED,
+        "wire it up": NodeStatus.ABANDONED,
+    }
+    summaries = [e["payload"].get("summary") for e in read_audit_events(str(project_dir), intent_id)
+                 if e["kind"] == "decision"]
+    assert "intent cancel requested" in summaries
+    assert "plan stopped" in summaries
+    assert service.cancel(intent_id) is False
+
+
+def test_a_plan_cannot_be_stopped_once_its_end_is_announced(state_home, project_dir):
+    # The worker thread is still alive while it sends its final event. A stop
+    # accepted then would say "stopping" with no intent.cancelled to follow.
+    events: list = []
+    answers: list = []
+
+    def on_event(event):
+        events.append(event)
+        if event.get("event") == "intent.complete":
+            answers.append(service.cancel(event["intent_id"]))
+
+    service = _make_service(project_dir, on_event=on_event)
+    runner_results = {
+        NodeSpecialization.PLAN: SpecialistResult(status=NodeStatus.DONE, confidence=0.9),
+    }
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: _scripted_runner(runner_results),
+    ):
+        intent_id = service.start_intent("test")
+        _wait_for_completion(service, intent_id)
+
+    assert answers == [False]
+    assert "intent.cancelling" not in [e.get("event") for e in events]
+    assert service._get(intent_id).status == "completed"
+
+
+def test_a_stopped_plan_is_not_saved_as_a_skill(state_home, project_dir):
+    """Even when every step that ran had finished (Stop at the very end)."""
+    events: list = []
+    service = _make_service(project_dir, on_event=events.append)
+    # In sequence, so step c is the last to run.
+    steps = [{"goal": f"step {name}", "specialization": "implement", "depends_on": deps}
+             for name, deps in (("a", []), ("b", [0]), ("c", [1]))]
+
+    def make_runner(cancel_event):
+        def runner(node, graph):
+            if node.specialization == NodeSpecialization.PLAN:
+                return SpecialistResult(status=NodeStatus.DONE, confidence=0.95, subgoals=steps)
+            if node.goal == "step c":
+                cancel_event.set()
+            return SpecialistResult(status=NodeStatus.DONE, confidence=0.95, summary="implemented")
+        return runner
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: make_runner(kw["cancel_event"]),
+    ):
+        intent_id = service.start_intent("a successful three-step task")
+    _wait_for_completion(service, intent_id)
+
+    cancelled = [e for e in events if e.get("event") == "intent.cancelled"]
+    assert len(cancelled) == 1
+    assert cancelled[0]["extracted_skill_id"] is None
+    assert not any("successful" in s.id for s in list_skills())
+
+
+def test_a_rebuilt_service_still_reaches_a_running_plan(state_home, project_dir):
+    """The app rebuilds its service on a model switch; Stop must still work."""
+    first_events: list = []
+    first = _make_service(project_dir, on_event=first_events.append)
+    started: list = []
+    implementing = threading.Event()
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: _stoppable_runner(started, implementing, kw["cancel_event"]),
+    ):
+        intent_id = first.start_intent("add a dark mode toggle")
+        assert implementing.wait(timeout=5)
+        second_events: list = []
+        second = _make_service(project_dir, on_event=second_events.append)
+        second.adopt_running(first)
+        assert second.pause(intent_id) is True
+        assert second.cancel(intent_id) is True
+        _wait_for_completion(first, intent_id)
+
+    assert started == ["add a dark mode toggle", "write the toggle"]
+    assert [e["event"] for e in second_events] == ["intent.paused", "intent.cancelling"]
+    # The walk's own service reports its end.
+    assert [e["event"] for e in first_events].count("intent.cancelled") == 1
+    # Only running intents carry over.
+    third = _make_service(project_dir)
+    third.adopt_running(second)
+    assert third._get(intent_id) is None
+    assert third.cancel(intent_id) is False
+
+
 # ── Pause / resume ─────────────────────────────────────────────────────
 
 

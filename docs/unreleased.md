@@ -8,6 +8,102 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 a plan can be stopped — source only, not released
+
+**Nothing could stop a plan.** Nothing in the app sent `intent_cancel`, so a
+plan started with `/plan` or a Mission's **Build this roadmap** ran to its
+end. (The composer's Stop acts on the conversation's own turn, never a plan.)
+Sending `intent_cancel` by hand showed the backend wasn't ready either: a
+stopped planner's partial answer went back to the model for repair, a model
+request after the stop, and the walker added a planner retry that nothing
+would run.
+
+- **Stop in the Plan tab** (`lumi/gui/templates/index.html`,
+  `lumi/gui/static/app.js`, [guide](desktop-workflow.md#plans-with-plan-unreleased)).
+  - Next to Pause, **Stop** sends `intent_cancel` for the plan the tab
+    follows. The toolbar shows the plan's state in a status label: Running,
+    Paused, Stopping… until the running step has ended, then Stopped (also
+    Complete, Failed).
+  - Pause and Stop look unavailable when they can't act, and say why when
+    pressed. They stay focusable (`aria-disabled`, not `disabled`), so focus
+    stays on Stop when the plan stops. A plan step's end no longer moves
+    keyboard focus out of the Plan tab to the composer (`setRunning`).
+  - The tab also follows a Mission's **Build this roadmap** (from
+    `mission_phase_changed`), which used to leave its Pause answering "No
+    active intent". An autonomous session's plans keep their own Stop, in its
+    badge: its `intent_id` names the daemon, not a plan.
+  - A step ended by Stop shows as stopped in the conversation, not failed
+    and needing attention. While the app reconnects, Stop says so instead of
+    showing a stop it couldn't send.
+  - The toolbar wraps, controls together on a second row, in a narrow
+    preview panel instead of squeezing the plan's name away.
+- **What a stop does** (`lumi/orchestration/`).
+  - The running specialist's Session already shared the plan's cancel event.
+    A stopped step is now abandoned without asking the model anything more
+    (`LocalSpecialistRunner` skips the structured-output repair), and the
+    walker adds no subgoals, planner retry, verifier or repair after a stop.
+  - Steps that never ran are marked abandoned, in the saved plan too, and
+    the walk reports `plan.stopped` instead of `plan.complete`. A stopped
+    plan is never saved as a skill.
+  - `intent_cancel` is answered with `intent.cancelling` at once and
+    `intent.cancelled` once the plan has stopped. `intent.cancelled` used to
+    come twice, the first time before the step had ended. The autonomous
+    dispatch tracker ends a sub-mission's wait on either, so its stall
+    ceiling still releases a hung one immediately.
+  - A plan that has announced its end can no longer be stopped, paused or
+    resumed while its worker thread exits.
+- **A model switch no longer strands a running plan** (`lumi/gui/app.py`).
+  Picking another model, saving some settings or connecting an MCP server
+  rebuilds the intent service. Plans started before kept running, but Stop,
+  Pause and Resume answered that they had ended. The new service now takes
+  over the plans still running (`IntentService.adopt_running`).
+
+Validation on September 25, 2026:
+
+- New tests, each failing against the code it covers (20 mutations, one
+  change reverted at a time):
+  - the walker marks never-run steps abandoned, reports `plan.stopped`, and
+    adds no retry, subgoals, verifier or repair after a stop;
+  - a planner stopped mid-stream is abandoned without a repair request;
+  - the service sends `intent.cancelling`, then one `intent.cancelled`
+    after `plan.stopped`, audits "plan stopped", saves the abandoned steps,
+    extracts no skill, and refuses a stop once the end is announced;
+  - a rebuilt service reaches a running plan, and only running ones;
+  - the dispatch tracker's wait ends while a cancelled sub-mission is still
+    stuck;
+  - through the app's real `/ws` socket: `intent_cancel` after a model
+    switch stops the running step, and the next one never starts;
+  - in node, against the toolbar markup from `index.html`: Stop's states,
+    refusals, reconnecting, Build this roadmap, the stopped step, focus, and
+    the graph's abandoned steps.
+- In the browser pane, against an isolated fixture (temporary home and
+  state, keychain off, a scripted Ollama-compatible model that streams a plan
+  over 22 s and gives the first implementer a `bash` that sleeps 60 s):
+  - Stop during the planner's stream: the toolbar read Stopping…, then
+    Stopped 0.3 s later. The model's stream was closed 14 s into its 22 s,
+    and no request followed.
+  - From the keyboard (Tab from Pause to Stop, which shows a focus ring,
+    then Enter) during the implementer's `bash`: the command was killed at
+    once, the next step never started and was marked abandoned, and focus
+    stayed on Stop.
+  - Build this roadmap: the Plan tab followed the Mission's plan, and Stop
+    ended its planner the same way.
+  - After switching the composer's model mid-plan, Stop still stopped it.
+  - The same stop sent to #69's code by hand: a structured-output repair
+    request reached the model after the stop, a planner retry was added and
+    left pending, the step read Failed, and `intent.cancelled` arrived twice.
+  - The toolbar wraps at 375 and 768 px without overflow and stays one row
+    at 1600 px.
+  - The real home was unchanged afterwards.
+
+Not yet:
+- After a page reload the Plan tab no longer follows a plan that is still
+  running, so its Stop can't reach it until it finishes.
+- Exit Mission doesn't stop the Mission's roadmap, and the Mission's badge
+  doesn't show when its roadmap ends, finished or stopped.
+- The preview panel's Browser, Plan and Context tabs can't be reached from
+  the keyboard; `/plan` and Build this roadmap bring the Plan tab forward.
+
 ## September 25 /plan and the Plan tab's controls work again — source only, not released
 
 - **`/plan <goal>` starts a plan again** (`lumi/gui/ws_commands.py`,
@@ -74,10 +170,10 @@ that denies `forbidden-by-acme`):
 - The implementer's `echo forbidden-by-acme > ran.txt` ran and wrote the
   file. The same command in a normal turn was "Blocked by policy: Acme: no".
 
-Not yet: a Stop control for plans (nothing sends `intent_cancel`). A plan's
-steps also show in the conversation as ordinary turns, with "Needs
-attention", Retry and a suggested next prompt, and each step's end moves
-keyboard focus to the composer.
+Not yet: a plan's steps also show in the conversation as ordinary turns,
+with "Needs attention", Retry and a suggested next prompt. (A Stop control,
+and keeping keyboard focus in the Plan tab as steps end, came in "September
+25 a plan can be stopped".)
 
 ## September 25 refused tool calls say why — source only, not released
 

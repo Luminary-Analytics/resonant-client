@@ -185,6 +185,18 @@ const LUMI_EVENT_DELEGATES = {
     'user_input_received': 'handleUserInputReceived',
 };
 
+// The state label in the Plan tab's toolbar, for the plan it follows.
+const PLAN_STATE_LABELS = {
+    running: 'Running',
+    paused: 'Paused',
+    stopping: 'Stopping…',
+    stopped: 'Stopped',
+    complete: 'Complete',
+    failed: 'Failed',
+    ended: 'Ended',
+};
+const PLAN_FINAL_STATES = new Set(['stopped', 'complete', 'failed', 'ended']);
+
 
 class LumiApp {
     constructor() {
@@ -1398,21 +1410,7 @@ class LumiApp {
             button.addEventListener('click', () => this.switchRuntimeView(button.dataset.runtimeView));
         });
 
-        // Plan-graph toolbar buttons
-        document.getElementById('plan-graph-pause')?.addEventListener('click', () => {
-            const id = this._currentIntentId;
-            if (!id) { this.showStatusMessage('No active intent to pause.'); return; }
-            // The button reads Resume while the intent is paused.
-            this.send({ command: this._currentIntentPaused ? 'intent_resume' : 'intent_pause', intent_id: id });
-        });
-        document.getElementById('plan-graph-history')?.addEventListener('click', () => {
-            const id = this._currentIntentId;
-            if (!id) { this.showStatusMessage('No active intent — nothing to show history for.'); return; }
-            this.send({ command: 'intent_list_snapshots', intent_id: id });
-        });
-        document.getElementById('plan-graph-branch')?.addEventListener('click', () => {
-            this.showStatusMessage('Branch from a node by clicking it in the viz, then choosing Restore from here.');
-        });
+        this._bindPlanGraphToolbar();
 
         // Wire host-app hooks for the plan-graph view: per-node Restore / Re-run.
         if (window.PlanGraphView) {
@@ -2087,17 +2085,103 @@ class LumiApp {
     }
 
     /**
-     * Track whether the plan-graph's intent is paused and label its Pause
-     * button to match, since the same button resumes it. Events for another
-     * intent (a Mission's roadmap, say) leave it alone.
+     * Wire the Plan tab's toolbar. Pause (Resume while paused) and Stop act
+     * on the plan the tab follows: the last one started with /plan or a
+     * Mission's Build this roadmap.
      */
-    _setIntentPaused(paused, intentId) {
+    _bindPlanGraphToolbar() {
+        document.getElementById('plan-graph-pause')?.addEventListener('click', () => {
+            const id = this._currentIntentId;
+            if (!id) { this.showStatusMessage('No active intent to pause.'); return; }
+            if (!this._planControlsLive()) { this.showStatusMessage(this._planUnavailableMessage()); return; }
+            // The button reads Resume while the intent is paused.
+            this.send({ command: this._currentIntentPaused ? 'intent_resume' : 'intent_pause', intent_id: id });
+        });
+        document.getElementById('plan-graph-stop')?.addEventListener('click', () => this.stopCurrentIntent());
+        document.getElementById('plan-graph-history')?.addEventListener('click', () => {
+            const id = this._currentIntentId;
+            if (!id) { this.showStatusMessage('No active intent — nothing to show history for.'); return; }
+            this.send({ command: 'intent_list_snapshots', intent_id: id });
+        });
+        document.getElementById('plan-graph-branch')?.addEventListener('click', () => {
+            this.showStatusMessage('Branch from a node by clicking it in the viz, then choosing Restore from here.');
+        });
+    }
+
+    /**
+     * Stop the plan the Plan tab follows. Its running step makes no further
+     * model request or tool call and no other step starts; the toolbar
+     * reads Stopping… until the server reports the plan stopped.
+     */
+    stopCurrentIntent() {
+        const id = this._currentIntentId;
+        if (!id) { this.showStatusMessage('No plan is running.'); return; }
+        if (!this._planControlsLive()) { this.showStatusMessage(this._planUnavailableMessage()); return; }
+        // send() drops a message while the socket is down, which would leave
+        // the toolbar saying Stopping… for a plan that carries on.
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            this.showStatusMessage('Reconnecting to Lumi. Press Stop again once it’s back.');
+            return;
+        }
+        this._setIntentState('stopping');
+        this.send({ command: 'intent_cancel', intent_id: id });
+    }
+
+    /**
+     * Point the Plan tab's Pause and Stop at a plan the person started with
+     * /plan or a Mission's Build this roadmap. An autonomous session's plans
+     * are stopped from its own badge instead.
+     */
+    _followIntent(intentId) {
+        if (!intentId) return;
+        this._currentIntentId = intentId;
+        this._currentIntentState = '';
+        this._setIntentState('running');
+    }
+
+    _planControlsLive() {
+        return this._currentIntentState === 'running' || this._currentIntentState === 'paused';
+    }
+
+    _planUnavailableMessage() {
+        return this._currentIntentState === 'stopping'
+            ? 'The plan is already stopping.'
+            : 'That plan has already ended.';
+    }
+
+    /**
+     * Track the state of the plan the toolbar follows and show it: a status
+     * label, Pause reading Resume while the plan is paused, and Pause and
+     * Stop marked unavailable once it is stopping or over. They stay
+     * focusable (aria-disabled, not disabled), so keyboard focus isn't
+     * dropped when a plan stops under it. Events for another intent (an
+     * autonomous session's, say) leave the toolbar alone.
+     */
+    _setIntentState(state, intentId) {
         if (intentId && intentId !== this._currentIntentId) return;
-        this._currentIntentPaused = paused;
-        const button = document.getElementById('plan-graph-pause');
+        const current = this._currentIntentState || '';
+        // An ended plan stays ended, and a late pause or resume doesn't bring
+        // back one that is stopping.
+        if (PLAN_FINAL_STATES.has(current)) return;
+        if (current === 'stopping' && (state === 'running' || state === 'paused')) return;
+        this._currentIntentState = state;
+        this._currentIntentPaused = state === 'paused';
+        const live = this._planControlsLive();
+        const pause = document.getElementById('plan-graph-pause');
+        if (pause) {
+            pause.textContent = state === 'paused' ? 'Resume' : 'Pause';
+            pause.title = state === 'paused' ? 'Resume starting new nodes' : 'Pause new node spawns';
+            this._setPlanControlAvailable(pause, live);
+        }
+        this._setPlanControlAvailable(document.getElementById('plan-graph-stop'), live);
+        const label = document.getElementById('plan-graph-state');
+        if (label) label.textContent = PLAN_STATE_LABELS[state] || '';
+    }
+
+    _setPlanControlAvailable(button, available) {
         if (!button) return;
-        button.textContent = paused ? 'Resume' : 'Pause';
-        button.title = paused ? 'Resume starting new nodes' : 'Pause new node spawns';
+        if (available) button.removeAttribute('aria-disabled');
+        else button.setAttribute('aria-disabled', 'true');
     }
 
     /**
@@ -2986,7 +3070,9 @@ class LumiApp {
         this.userInput.closest('.input-wrapper')?.classList.toggle('is-running', running);
         if (running) this._startLiveRun();
         else this._stopLiveRun();
-        this.userInput.focus();
+        // A plan's steps start and end while the person may be using the
+        // Plan tab's Pause or Stop: keep keyboard focus there.
+        if (!document.activeElement?.closest?.('#plan-graph-pane')) this.userInput.focus();
     }
 
     // ── Terminal Bar ─────────────────────────────────────────────
@@ -3713,34 +3799,39 @@ class LumiApp {
                 this._renderSnapshotList(event.intent_id, event.snapshots || []);
                 break;
             case 'intent.accepted':
-                this._currentIntentId = event.intent_id;
-                this._setIntentPaused(false);
+                this._followIntent(event.intent_id);
                 break;
             case 'intent.started':
                 this.showStatusMessage(`Intent started: ${event.text || ''}`);
                 break;
             case 'intent.complete':
-                this._setIntentPaused(false, event.intent_id);
+                this._setIntentState('complete', event.intent_id);
                 this.showStatusMessage(
                     event.extracted_skill_id
                         ? `Intent complete \u00B7 skill saved: ${event.extracted_skill_id}`
                         : 'Intent complete'
                 );
                 break;
+            case 'intent.cancelling':
+                // The stop was accepted and the running step is ending;
+                // intent.cancelled follows once the plan has stopped.
+                this._setIntentState('stopping', event.intent_id);
+                this.showStatusMessage('Stopping the plan. No new step will start.');
+                break;
             case 'intent.cancelled':
-                this._setIntentPaused(false, event.intent_id);
-                this.showStatusMessage('Intent cancelled.');
+                this._setIntentState('stopped', event.intent_id);
+                this.showStatusMessage('Plan stopped.');
                 break;
             case 'intent.failed':
-                this._setIntentPaused(false, event.intent_id);
+                this._setIntentState('failed', event.intent_id);
                 this.showStatusMessage(`Intent failed: ${event.error || 'unknown error'}`);
                 break;
             case 'intent.paused':
-                this._setIntentPaused(true, event.intent_id);
+                this._setIntentState('paused', event.intent_id);
                 this.showStatusMessage('Intent paused. The running step finishes first.');
                 break;
             case 'intent.resumed':
-                this._setIntentPaused(false, event.intent_id);
+                this._setIntentState('running', event.intent_id);
                 this.showStatusMessage('Intent resumed.');
                 break;
             case 'intent.cancel_ack':
@@ -3751,6 +3842,9 @@ class LumiApp {
                 // (intent.paused, plan.snapshot, ...). A refused one is not,
                 // so say why nothing changed.
                 if (event.ok === false) {
+                    // Stop, Pause and Resume are refused only for a plan
+                    // that isn't running any more.
+                    if (event.event !== 'intent.restore_ack') this._setIntentState('ended', event.intent_id);
                     this.showStatusMessage({
                         'intent.cancel_ack': 'That plan can no longer be stopped.',
                         'intent.pause_ack': 'That plan can no longer be paused.',
@@ -8686,6 +8780,12 @@ class LumiApp {
         if (event.message === 'Interrupted' && this._cancelInFlight) {
             this._cancelInterrupted = true;
             this._setLiveRunPhase('Stopping', 'The active run has been interrupted');
+            return;
+        }
+        // A plan's step ended by its Stop: show it stopped, as the composer's
+        // Stop does, not failed and needing attention.
+        if (event.message === 'Interrupted' && event._source === 'intent') {
+            this._finishCancelledTask();
             return;
         }
 

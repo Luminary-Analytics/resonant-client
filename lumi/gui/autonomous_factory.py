@@ -81,6 +81,10 @@ logger = logging.getLogger(__name__)
 _TERMINAL_EVENTS = frozenset({
     "intent.complete",
     "intent.failed",
+    # Sent the moment a cancel is accepted; `intent.cancelled` follows once
+    # the walk has stopped. The stall ceiling cancels a sub-mission that may
+    # never stop by itself and relies on the first to unblock its wait.
+    "intent.cancelling",
     "intent.cancelled",
 })
 
@@ -122,7 +126,7 @@ class DispatchTracker:
 
         if kind == "intent.complete":
             outcome = DispatchOutcome(success=True, handle=intent_id)
-        elif kind == "intent.cancelled":
+        elif kind in ("intent.cancelling", "intent.cancelled"):
             outcome = DispatchOutcome(
                 success=False,
                 error="cancelled",

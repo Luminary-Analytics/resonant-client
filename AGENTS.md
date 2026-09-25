@@ -214,6 +214,16 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   state during a run; Stop and persistence must use captured run ownership.
   Keep main request allowances distinct from tool counts, auxiliary requests and
   dollar budgets. Preserve partial checkpoints and interrupted request uncertainty.
+- Autonomous sessions (`gui/autonomous_loop.py`) are experimental and shown
+  only when `general.autonomous_sessions` is on. Their spending limit counts
+  every priced request while the mission runs (`iter_cost_tracker`), is
+  checked at each heartbeat as well as between iterations, and is kept in the
+  roadmap with the spend so far, so a resumed mission counts on.
+- Model comparisons (`model_evals.py`) run each task as a `lumi run`
+  subprocess in a detached git worktree of `HEAD` under the project's state
+  folder, never in the user's checkout; the user's check command passes the
+  guardrails and the shell sandbox. Test them with a fake `lumi run`, never
+  real providers.
 - Keep cancellation and user input live. Report completion only after work and
   relevant checks finish. Use enforced execution limits for qualification; a
   prompt-only tool-call limit is not enforcement. Preserve observed overruns and
@@ -239,7 +249,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs tests/autonomous_view.test.cjs
 git diff --check
 ```
 

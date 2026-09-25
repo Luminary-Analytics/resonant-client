@@ -1,14 +1,18 @@
-# GitHub pull requests
+# Pull requests: GitHub, GitLab, Bitbucket and Azure DevOps
 
-The agent can work with the pull request for the branch you're on:
+The agent can work with the pull request (on GitLab, the merge request) for
+the branch you're on:
 
 - read its reviews, comments and checks;
 - read why a check failed;
 - open the pull request, reply to reviews, and update its title, description
   or draft state.
 
-The code is `lumi/engine/github_tools.py`. The tools are loaded on demand
-(through `search_tools`), so they cost nothing until a task needs them.
+The code is `lumi/engine/github_tools.py`, with GitLab, Bitbucket and Azure
+DevOps in `lumi/engine/code_hosts.py`. The tools are loaded on demand
+(through `search_tools`), so they cost nothing until a task needs them. They
+keep their `github_` names on every host, so policies and permission rules
+that name them cover all four.
 
 ## Setting up
 
@@ -29,12 +33,36 @@ repository:
 The token goes only into request headers. Nothing a tool returns contains it,
 and the secret scan removes its value from anything sent to a model.
 
+## Other hosts
+
+The host is chosen from the `origin` remote:
+
+| Host | Recognized by | Token (Settings > Connections > API keys, or the environment) |
+|---|---|---|
+| GitLab | gitlab.com, a host whose name contains "gitlab", the host GitLab CI runs on (`CI_SERVER_HOST`), or one listed in `LUMI_GITLAB_HOSTS` (comma-separated) | **GitLab token** or `GITLAB_TOKEN`: a personal, group or project access token with the `api` scope |
+| Bitbucket Cloud | bitbucket.org | **Bitbucket token** or `BITBUCKET_TOKEN`: a repository or workspace access token (pull requests: write, pipelines: read), or `username:app-password` |
+| Azure DevOps | dev.azure.com, `*.visualstudio.com`, `ssh.dev.azure.com` | **Azure DevOps token** or `AZURE_DEVOPS_TOKEN`: a personal access token with Code (read & write) and Build (read); in Azure Pipelines, `SYSTEM_ACCESSTOKEN` |
+
+What each host shows:
+
+- **GitLab:** the merge request, who approved it, its discussions (resolved
+  ones marked, system notes left out) and its pipeline's jobs. A job's log is
+  its trace. `github_pr_create` opens a merge request, a draft by a `Draft:`
+  title; `ready=true` removes the prefix. `reply_to` is a discussion id.
+- **Bitbucket:** the pull request, participants' approvals and change
+  requests, its comments, and the steps of the latest Pipelines run on its
+  branch; a step's job id is `{pipeline}:{step}`. `reply_to` is a comment id.
+- **Azure DevOps:** the pull request, reviewers' votes, its comment threads
+  (system threads left out) and the newest build of each pipeline for it. A
+  build's log is its first failed task's (or its last) log. Comments start a
+  thread; `reply_to` is a thread id.
+
 ## The tools
 
 | Tool | What it does | Asks first in Auto accept edits |
 |---|---|---|
 | `github_pr_view` | The branch's open pull request (or `number`): state, draft, review decisions, review comments with ids, file and line (outdated ones marked), the conversation, and every check with its job id | No: it only reads |
-| `github_check_log` | The end of a GitHub Actions job's log (`lines`, default 150), plus earlier lines that mention errors or failures | No: it only reads |
+| `github_check_log` | The end of a check's log (`lines`, default 150), plus earlier lines that mention errors or failures: a GitHub Actions job, GitLab job, Bitbucket Pipelines step or Azure Pipelines build | No: it only reads |
 | `github_pr_create` | Pushes the current branch (never forced) and opens a pull request into `base` (default: the repository's default branch); `draft` optional | Yes |
 | `github_pr_comment` | Comments on the pull request, or replies in a review thread with `reply_to` (a review comment id) | Yes |
 | `github_pr_update` | Changes the title or description, or marks a draft ready for review | Yes |
@@ -92,6 +120,8 @@ App or personal token if the fix should run the checks again.
 
 - Resolving review threads, requesting reviewers and merging aren't tools.
   The agent can't merge.
-- Only GitHub Actions job logs can be read; other check providers show their
-  status and link.
+- On GitHub, only GitHub Actions job logs can be read; other check providers
+  show their status and link.
 - Lists are limited to the first 100 review comments, comments and checks.
+- Bitbucket Server and Data Center, and Azure DevOps Server, aren't supported;
+  only the cloud services and GitLab (cloud or self-managed) are.

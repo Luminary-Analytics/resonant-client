@@ -141,18 +141,25 @@ every token.
 
 The composer's mode menu applies immediately to the current conversation,
 including a run in progress, for native providers. **Ask** runs read-only tools
-and asks before other actions; file edits and shell commands stay blocked.
+and asks before everything else, including file edits and shell commands. It
+refuses the commands Auto-edit refuses (a recursive `rm`, `chmod` on a system
+path, a download piped into a shell) without asking, and a project's
+`lumi-policy.json` can't turn its approvals off.
 **Auto-edit** also accepts file edits and asks before shell, MCP, browser,
 desktop and git actions. **Plan** uses Auto-edit approvals for native providers.
 **Full-auto** runs everything inside the project sandbox. A project's
 `lumi-policy.json` can require more approval but cannot lift a built-in
-block.
+block. Codex and Claude Code can't pass an approval request to Lumi, so under
+Ask and Plan they only read.
 
 **Deny** is final: nothing, including a hook, runs the call afterward. The
 approval dialog takes focus when it opens, so typing in the composer cannot
-answer it. **Tab** reaches **Deny** and **Allow**, and **Escape** denies. Work
-that runs without an approval dialog, such as background sprint roles, skips
-calls that need approval instead of running them.
+answer it. **Tab** reaches **Deny** and **Allow**, and **Escape** denies. A file
+edit or new file is reviewed instead in a card in the conversation, with its
+diff, **Reject** and **Accept**. The card doesn't take focus; **Shift+Tab** from
+the composer reaches its buttons. Work that runs without an approval dialog,
+such as background sprint roles, skips calls that need approval instead of
+running them.
 
 **Settings > Capability packs** lists packs from the project's `.lumi/packs`
 (and a legacy `.resonant/packs`) and `~/.lumi/packs`, with the hooks and MCP servers each would run. Nothing

@@ -496,7 +496,9 @@ def _extract_refined_intent(spec_block: str) -> str:
 # is preferable to fuzzy matching.
 
 _SPEC_CRITERION_RE = re.compile(
-    r"^-\s+`\[(bash|chrome|vision|manual)\]`\s+(.+?)\s*$",
+    # The prompt asks for "- `[bash]` ..."; a model that copies the roadmap's
+    # checkbox form ("- [ ] `[bash]` ...") means the same criterion.
+    r"^-\s+(?:\[[ xX]\]\s+)?`\[(bash|chrome|vision|manual)\]`\s+(.+?)\s*$",
     re.MULTILINE,
 )
 

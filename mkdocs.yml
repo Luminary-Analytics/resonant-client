@@ -65,7 +65,9 @@ nav:
   - Using Lumi:
       - Getting started, projects and sessions: desktop-workflow.md
       - Models, fallbacks and image descriptions: models.md
+      - Comparing models on your tasks: model-comparisons.md
       - Code intelligence (language servers): code-intelligence.md
+      - Autonomous sessions (experimental): autonomous-sessions.md
       - Signing in to enterprise endpoints: connection-sign-in.md
       - Usage, prices and budgets: usage-and-costs.md
       - Updates: updates.md
@@ -79,7 +81,7 @@ nav:
       - Audit log: audit-log.md
       - Running without a UI: headless.md
       - Scheduled tasks: scheduled-tasks.md
-      - GitHub pull requests: github.md
+      - Pull requests (GitHub, GitLab, Bitbucket, Azure DevOps): github.md
   - Extending Lumi:
       - Writing a capability pack: packs.md
       - Skills: skills.md

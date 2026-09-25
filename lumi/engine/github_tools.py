@@ -1,5 +1,6 @@
-"""GitHub pull request tools: read a PR's reviews and checks, open, update and
-comment on it.
+"""Pull request tools: read a PR's reviews and checks, open, update and comment
+on it. They're named for GitHub and also work on GitLab, Bitbucket and Azure
+DevOps (engine/code_hosts.py), chosen by the ``origin`` remote.
 
 The repository comes from the project's ``origin`` remote (github.com or a
 GitHub Enterprise Server host). The token is ``api_keys.github`` from
@@ -31,6 +32,9 @@ def configure(settings: Any) -> None:
     """Read the token from Settings at use, so a changed key applies at once."""
     global _token_source
     _token_source = (lambda: str(settings.get("api_keys", "github", "") or "")) if settings is not None else (lambda: "")
+    from . import code_hosts  # the other hosts' tokens, from the same Settings
+
+    code_hosts.configure(settings)
 
 
 def set_transport_for_tests(transport: Any) -> None:
@@ -238,7 +242,7 @@ def pr_comment(cwd: str, *, body: str, number: Any = None, reply_to: Any = None)
     repo = repo_for(cwd)
     pr = _current_pr(repo, cwd, number)
     if reply_to:
-        comment = _request(repo, "POST", f"{repo.path}/pulls/{pr['number']}/comments/{int(reply_to)}/replies",
+        comment = _request(repo, "POST", f"{repo.path}/pulls/{pr['number']}/comments/{int(str(reply_to))}/replies",
                            json={"body": body})
     else:
         comment = _request(repo, "POST", f"{repo.path}/issues/{pr['number']}/comments", json={"body": body})
@@ -283,8 +287,20 @@ def _run(fn: Callable[..., tuple[str, dict]], start: float, *args: Any, **kwargs
     return ToolResult(output, elapsed=time.time() - start, metadata=metadata)
 
 
+def _other_host(cwd: str):
+    """GitLab, Bitbucket or Azure DevOps behind origin (engine/code_hosts.py); None for GitHub."""
+    from . import code_hosts
+
+    try:
+        return code_hosts.host_for(cwd)
+    except GitHubError:  # no origin: the GitHub path says so
+        return None
+
+
 def exec_github_pr_view(args: dict, start: float):
-    return _run(pr_view, start, args.get("cwd") or ".", args.get("number"))
+    cwd = args.get("cwd") or "."
+    host = _other_host(cwd)
+    return _run(host.view if host else pr_view, start, cwd, args.get("number"))
 
 
 def exec_github_check_log(args: dict, start: float):
@@ -292,23 +308,36 @@ def exec_github_check_log(args: dict, start: float):
         from .tools import ToolResult
 
         return ToolResult("Give the job id from github_pr_view's checks.", is_error=True, elapsed=time.time() - start)
-    return _run(check_log, start, args.get("cwd") or ".", args["job_id"], args.get("lines") or _LOG_TAIL_LINES)
+    cwd = args.get("cwd") or "."
+    host = _other_host(cwd)
+    return _run(host.check_log if host else check_log, start, cwd, args["job_id"],
+                args.get("lines") or _LOG_TAIL_LINES)
 
 
 def exec_github_pr_create(args: dict, start: float):
-    return _run(pr_create, start, args.get("cwd") or ".", title=str(args.get("title") or ""),
+    cwd = args.get("cwd") or "."
+    host = _other_host(cwd)
+    if host and not str(args.get("title") or "").strip():
+        return _run(pr_create, start, cwd, title="")  # the same refusal on every host
+    return _run(host.create if host else pr_create, start, cwd, title=str(args.get("title") or ""),
                 body=str(args.get("body") or ""), base=str(args.get("base") or ""),
                 draft=bool(args.get("draft")), push=args.get("push", True) is not False)
 
 
 def exec_github_pr_comment(args: dict, start: float):
-    return _run(pr_comment, start, args.get("cwd") or ".", body=str(args.get("body") or ""),
+    cwd = args.get("cwd") or "."
+    host = _other_host(cwd)
+    if host and not str(args.get("body") or "").strip():
+        return _run(pr_comment, start, cwd, body="")
+    return _run(host.comment if host else pr_comment, start, cwd, body=str(args.get("body") or ""),
                 number=args.get("number"), reply_to=args.get("reply_to"))
 
 
 def exec_github_pr_update(args: dict, start: float):
     body = args.get("body")
-    return _run(pr_update, start, args.get("cwd") or ".", number=args.get("number"),
+    cwd = args.get("cwd") or "."
+    host = _other_host(cwd)
+    return _run(host.update if host else pr_update, start, cwd, number=args.get("number"),
                 title=str(args.get("title") or ""), body=None if body is None else str(body),
                 ready=bool(args.get("ready")))
 
@@ -318,8 +347,9 @@ GITHUB_TOOLS = [
         "type": "function",
         "function": {
             "name": "github_pr_view",
-            "description": "Show the GitHub pull request for the current branch (or `number`): state, reviews, "
-                           "review comments with their ids, the conversation, and every check with its job id.",
+            "description": "Show the pull request for the current branch (or `number`) on GitHub, GitLab (merge "
+                           "request), Bitbucket or Azure DevOps: state, reviews, review comments or threads with "
+                           "their ids, the conversation, and every check with its job id.",
             "parameters": {"type": "object", "properties": {
                 "number": {"type": "integer", "description": "PR number (default: the current branch's open PR)"},
                 "cwd": {"type": "string", "description": "Working directory (default: project root)"},
@@ -330,9 +360,10 @@ GITHUB_TOOLS = [
         "type": "function",
         "function": {
             "name": "github_check_log",
-            "description": "Read the end of a GitHub Actions job's log, plus earlier error lines, to find why a check failed.",
+            "description": "Read the end of a check's log (a GitHub Actions job, GitLab job, Bitbucket Pipelines "
+                           "step or Azure Pipelines build), plus earlier error lines, to find why it failed.",
             "parameters": {"type": "object", "properties": {
-                "job_id": {"type": "integer", "description": "The job id github_pr_view lists for the check"},
+                "job_id": {"type": "string", "description": "The job id github_pr_view lists for the check"},
                 "lines": {"type": "integer", "description": "How many final lines to show (default 150)"},
                 "cwd": {"type": "string", "description": "Working directory (default: project root)"},
             }, "required": ["job_id"]},
@@ -342,7 +373,8 @@ GITHUB_TOOLS = [
         "type": "function",
         "function": {
             "name": "github_pr_create",
-            "description": "Push the current branch (never forced) and open a pull request from it.",
+            "description": "Push the current branch (never forced) and open a pull request (a merge request on "
+                           "GitLab) from it.",
             "parameters": {"type": "object", "properties": {
                 "title": {"type": "string"},
                 "body": {"type": "string", "description": "Markdown description"},
@@ -357,10 +389,11 @@ GITHUB_TOOLS = [
         "type": "function",
         "function": {
             "name": "github_pr_comment",
-            "description": "Comment on the pull request, or reply in a review thread with `reply_to` (a review comment id).",
+            "description": "Comment on the pull request, or reply in a review thread with `reply_to` (the id "
+                           "github_pr_view lists: a review comment, GitLab discussion or Azure DevOps thread).",
             "parameters": {"type": "object", "properties": {
                 "body": {"type": "string", "description": "Markdown text"},
-                "reply_to": {"type": "integer", "description": "Review comment id to reply to"},
+                "reply_to": {"type": "string", "description": "The id of the comment or thread to reply to"},
                 "number": {"type": "integer", "description": "PR number (default: the current branch's open PR)"},
                 "cwd": {"type": "string", "description": "Working directory (default: project root)"},
             }, "required": ["body"]},

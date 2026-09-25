@@ -213,7 +213,12 @@ class ExecutionPolicy:
 # ── Built-in tier policies ──────────────────────────────────────
 
 def default_suggest_policy() -> ExecutionPolicy:
-    """Suggest mode: deny all writes, allow reads."""
+    """Suggest mode: deny all writes, allow reads.
+
+    The read-only tier, for runs where nobody can answer a prompt
+    (``lumi run --mode ask``). The desktop's Ask mode asks instead; see
+    default_ask_policy.
+    """
     return ExecutionPolicy([
         PolicyRule(tool_pattern="file_read", action="allow", reason="Read-only access"),
         PolicyRule(tool_pattern="glob", action="allow", reason="Read-only access"),
@@ -225,13 +230,13 @@ def default_suggest_policy() -> ExecutionPolicy:
     ])
 
 
-def default_auto_edit_policy() -> ExecutionPolicy:
-    """Auto-edit mode: allow file writes, prompt for dangerous shell commands."""
-    return ExecutionPolicy([
-        PolicyRule(tool_pattern="file_*", action="allow", reason="File operations allowed in auto-edit mode"),
-        PolicyRule(tool_pattern="glob", action="allow"),
-        PolicyRule(tool_pattern="grep", action="allow"),
-        # Dangerous bash patterns require prompting
+def _dangerous_shell_rules() -> list[PolicyRule]:
+    """Shell commands refused in the tiers that ask about the others.
+
+    Approving a command must not run one of these; the guardrails
+    (engine/guardrails.py) refuse worse ones in every tier.
+    """
+    return [
         PolicyRule(
             tool_pattern="bash",
             action="deny",
@@ -250,6 +255,38 @@ def default_auto_edit_policy() -> ExecutionPolicy:
             arg_patterns={"command": r"curl.*\|\s*(sh|bash)"},
             reason="Piping remote scripts to shell blocked",
         ),
+    ]
+
+
+def default_ask_policy() -> ExecutionPolicy:
+    """Ask mode: allow reads, ask before file changes and shell commands.
+
+    The ask tier already asks before anything that isn't read-only
+    (Session._should_auto_approve); these prompt rules say so for the
+    changes the mode is named for. Unlike suggest, it refuses nothing
+    outright except Auto-edit's dangerous commands (and the guardrails every
+    tier starts with): approving a command in Ask must not run one that
+    Auto-edit refuses.
+    """
+    return ExecutionPolicy([
+        PolicyRule(tool_pattern="file_read", action="allow", reason="Read-only access"),
+        PolicyRule(tool_pattern="glob", action="allow", reason="Read-only access"),
+        PolicyRule(tool_pattern="grep", action="allow", reason="Read-only access"),
+        *_dangerous_shell_rules(),
+        PolicyRule(tool_pattern="file_write", action="prompt", reason="Write operations require approval in ask mode"),
+        PolicyRule(tool_pattern="file_edit", action="prompt", reason="Write operations require approval in ask mode"),
+        PolicyRule(tool_pattern="bash", action="prompt", reason="Shell commands require approval in ask mode"),
+        PolicyRule(tool_pattern="batch", action="prompt", reason="Batched calls require approval in ask mode"),
+    ])
+
+
+def default_auto_edit_policy() -> ExecutionPolicy:
+    """Auto-edit mode: allow file writes, deny dangerous shell commands, ask about the rest."""
+    return ExecutionPolicy([
+        PolicyRule(tool_pattern="file_*", action="allow", reason="File operations allowed in auto-edit mode"),
+        PolicyRule(tool_pattern="glob", action="allow"),
+        PolicyRule(tool_pattern="grep", action="allow"),
+        *_dangerous_shell_rules(),
         PolicyRule(
             tool_pattern="bash",
             action="prompt",
@@ -275,6 +312,7 @@ def policy_for_tier(tier: str) -> ExecutionPolicy:
 
     policies = {
         "suggest": default_suggest_policy,
+        "ask": default_ask_policy,
         "auto-edit": default_auto_edit_policy,
         "full-auto": default_full_auto_policy,
     }

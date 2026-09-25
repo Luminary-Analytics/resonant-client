@@ -80,8 +80,12 @@ def test_permission_mode_switch_updates_the_live_session(gui_state):
     assert session.autonomy_tier == "full-auto"
 
     gui_state.apply_permission_mode("ask")
-    assert session.autonomy_tier == "suggest"
-    assert session.execution_policy.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
+    assert session.autonomy_tier == "ask"
+    # Ask asks before changes; it does not refuse them.
+    assert session.execution_policy.evaluate("file_write", {"path": "x"}) == PolicyAction.PROMPT
+    assert session.execution_policy.evaluate("bash", {"command": "ls"}) == PolicyAction.PROMPT
+    assert not session._should_auto_approve("file_edit")
+    assert session._should_auto_approve("file_read")
 
     gui_state.apply_permission_mode("auto-edit")
     assert session.autonomy_tier == "auto-edit"
@@ -225,7 +229,7 @@ def test_repository_policy_cannot_unlock_built_in_denies(gui_state):
     assert session.execution_policy.evaluate("bash", {"command": "rm -rf build"}) == PolicyAction.DENY
 
     gui_state.apply_permission_mode("ask")
-    assert session.execution_policy.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
+    assert session.execution_policy.evaluate("bash", {"command": "rm -rf build"}) == PolicyAction.DENY
 
 
 def test_repository_restrictions_survive_a_mode_switch(gui_state):
@@ -243,3 +247,91 @@ def test_repository_restrictions_survive_a_mode_switch(gui_state):
 
     assert session.execution_policy.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
     assert session.execution_policy.get_reason("file_write", {"path": "x"}) == "frozen"
+
+    # Ask would otherwise ask about the write; the repository still forbids it.
+    gui_state.apply_permission_mode("ask")
+
+    assert session.execution_policy.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
+    assert session.execution_policy.get_reason("file_write", {"path": "x"}) == "frozen"
+
+
+# ── Ask asks before changes instead of refusing them ───────────────────
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_ask_prompts_before_a_file_edit_and_the_answer_decides(gui_state, approved):
+    gui_state.apply_permission_mode("ask")
+    target = Path(gui_state.project.project_path) / "notes.txt"
+    target.write_text("old line\n", encoding="utf-8")
+
+    socket = _turn(
+        gui_state,
+        "file_edit",
+        {"path": "notes.txt", "old_text": "old line", "new_text": "new line"},
+        {"approved": approved},
+    )
+
+    prompts = socket.events("tool_permission")
+    assert [prompt["name"] for prompt in prompts] == ["file_edit"]
+    # The change is shown for review before anything is written.
+    assert prompts[0]["review"]["hunks"]
+    result = socket.events("tool.result")[0]
+    assert result["denied"] is (not approved)
+    assert "Blocked by policy" not in result["output"]
+    assert target.read_text(encoding="utf-8") == ("new line\n" if approved else "old line\n")
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_ask_prompts_before_writing_a_new_file(gui_state, approved):
+    gui_state.apply_permission_mode("ask")
+    target = Path(gui_state.project.project_path) / "new.txt"
+
+    socket = _turn(gui_state, "file_write", {"path": "new.txt", "content": "hello"}, {"approved": approved})
+
+    assert [prompt["name"] for prompt in socket.events("tool_permission")] == ["file_write"]
+    assert socket.events("tool.result")[0]["denied"] is (not approved)
+    assert target.exists() is approved
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_ask_prompts_before_a_shell_command(gui_state, approved):
+    gui_state.apply_permission_mode("ask")
+    project = Path(gui_state.project.project_path)
+
+    socket = _turn(gui_state, "bash", {"command": "echo ran > ran.txt"}, {"approved": approved})
+
+    assert [prompt["name"] for prompt in socket.events("tool_permission")] == ["bash"]
+    assert socket.events("tool.result")[0]["denied"] is (not approved)
+    assert (project / "ran.txt").exists() is approved
+
+
+def test_ask_still_refuses_dangerous_commands_without_asking(gui_state):
+    gui_state.apply_permission_mode("ask")
+    build = Path(gui_state.project.project_path) / "build"
+    build.mkdir()
+    (build / "keep.txt").write_text("kept", encoding="utf-8")
+
+    socket = _turn(gui_state, "bash", {"command": "rm -rf build"}, {"approved": True})
+
+    assert socket.events("tool_permission") == []
+    result = socket.events("tool.result")[0]
+    assert result["denied"] is True
+    assert "Recursive delete blocked" in result["output"]
+    assert (build / "keep.txt").exists()
+
+
+def test_a_trusted_repositorys_allow_rules_do_not_skip_asks_approval(gui_state):
+    project = Path(gui_state.project.project_path)
+    (project / "lumi-policy.json").write_text(
+        json.dumps({"rules": [{"tool_pattern": "*", "action": "allow"}]}),
+        encoding="utf-8",
+    )
+    gui_state.workspace_trust.trust(str(project))
+    assert gui_state.project_trust(str(project)).honor_policy_allows
+    gui_state.apply_permission_mode("ask")
+
+    socket = _turn(gui_state, "file_write", {"path": "new.txt", "content": "hello"}, {"approved": False})
+
+    assert [prompt["name"] for prompt in socket.events("tool_permission")] == ["file_write"]
+    assert socket.events("tool.result")[0]["denied"] is True
+    assert not (project / "new.txt").exists()

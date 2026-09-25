@@ -106,6 +106,9 @@ class AutonomousIterCostTracker:
         # status events route to this iter even though they arrive
         # asynchronously. One open bucket per intent.
         self._open_iter: dict[str, int] = {}
+        # Per intent_id, everything recorded for the mission, open bucket or
+        # not (REFLECT runs between iterations), for its spending limit.
+        self._totals: dict[str, float] = {}
 
     def on_iteration_started(
         self, intent_id: str, iter_count: int, started_at: float = 0.0,
@@ -154,6 +157,7 @@ class AutonomousIterCostTracker:
         if tokens_in <= 0 and tokens_out <= 0 and cost_usd <= 0:
             return
         with self._lock:
+            self._totals[intent_id] = self._totals.get(intent_id, 0.0) + float(max(0.0, cost_usd))
             iter_count = self._open_iter.get(intent_id)
             if iter_count is None:
                 # No iter open. We could route to a "pre-iter"
@@ -210,11 +214,17 @@ class AutonomousIterCostTracker:
             return
         with self._lock:
             self._open_iter.pop(intent_id, None)
+            self._totals.pop(intent_id, None)
             keys_to_drop = [
                 k for k in self._buckets if k[0] == intent_id
             ]
             for k in keys_to_drop:
                 self._buckets.pop(k, None)
+
+    def mission_total(self, intent_id: str) -> float:
+        """What the mission's recorded requests have cost (USD), in every iteration and between."""
+        with self._lock:
+            return self._totals.get(intent_id, 0.0)
 
     def open_iter_for(self, intent_id: str) -> Optional[int]:
         """Read the currently-open iter for an intent. Used by tests."""

@@ -1,5 +1,8 @@
 # Fallback models, roles and capabilities
 
+To compare models on your own tasks before switching, see
+[comparing models on your tasks](model-comparisons.md).
+
 ## Fallback models
 
 **Settings > General > If the model fails, continue with** lists up to five

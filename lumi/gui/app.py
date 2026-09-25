@@ -255,6 +255,9 @@ class AppState:
         # fires, cleared on iter_complete/_failed. Status events
         # check this before routing tokens to the tracker.
         self._active_autonomous_intent_id: str = ""
+        # The running mission, from its start to its end: requests between
+        # iterations (REFLECT) count toward its spending limit too.
+        self._running_autonomous_intent_id: str = ""
         # Project instructions (RESONANT.md)
         self._project_instructions: str | None = None
         self._ws_ref = None
@@ -386,10 +389,11 @@ class AppState:
         return f"project:{digest}"
 
     PERMISSION_MODES = ("ask", "auto-edit", "plan", "bypass")
-    # Native engine tier for each GUI permission mode. Plan keeps its
-    # historical Auto-edit tier for native providers; CLI providers map modes
-    # through their own permission profiles.
-    _MODE_TIERS = {"ask": "suggest", "auto-edit": "auto-edit", "plan": "auto-edit", "bypass": "full-auto"}
+    # Native engine tier for each GUI permission mode. Ask asks before every
+    # change; the read-only suggest tier is for runs nobody can answer
+    # (headless.py). Plan keeps its historical Auto-edit tier for native
+    # providers; CLI providers map modes through their own permission profiles.
+    _MODE_TIERS = {"ask": "ask", "auto-edit": "auto-edit", "plan": "auto-edit", "bypass": "full-auto"}
 
     @classmethod
     def normalize_permission_mode(cls, mode: Any) -> str:
@@ -2403,7 +2407,10 @@ def _make_autonomous_event_forwarder(
         try:
             tracker = getattr(target_state, "iter_cost_tracker", None)
             if tracker is not None and intent_id:
-                if kind == "autonomous_iteration_started":
+                if kind == "autonomous_mission_started":
+                    # Between iterations too (REFLECT), for its spending limit.
+                    target_state._running_autonomous_intent_id = intent_id
+                elif kind == "autonomous_iteration_started":
                     iter_count = int(payload.get("iter_count", 0) or 0)
                     tracker.on_iteration_started(
                         intent_id, iter_count,
@@ -2463,6 +2470,8 @@ def _make_autonomous_event_forwarder(
             tracker = getattr(target_state, "iter_cost_tracker", None)
             if tracker is not None and intent_id:
                 tracker.reset_intent(intent_id)
+            if getattr(target_state, "_running_autonomous_intent_id", "") == intent_id:
+                target_state._running_autonomous_intent_id = ""
         except Exception:
             logger.debug("iter_cost_tracker reset raised", exc_info=True)
         try:
@@ -2964,6 +2973,9 @@ async def websocket_endpoint(ws: WebSocket):
                         decision_timeout_label=str(
                             msg.get("decision_timeout") or ""
                         ).strip(),
+                        # Per-run: stop once the mission's model requests
+                        # cost this much ("$25"); empty for no limit.
+                        spend_limit_label=str(msg.get("spend_limit") or "").strip(),
                     )
                 except ValueError as exc:
                     # Misconfigured spec (no typed criteria / no Final
@@ -3568,7 +3580,7 @@ async def _run_session_streaming(
                     try:
                         active_intent = getattr(
                             state, "_active_autonomous_intent_id", "",
-                        )
+                        ) or getattr(state, "_running_autonomous_intent_id", "")
                         if active_intent and state.iter_cost_tracker is not None:
                             # Mission budgets count priced calls; an unpriced
                             # call adds its tokens only.

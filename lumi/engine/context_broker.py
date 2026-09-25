@@ -58,8 +58,11 @@ class ContextBroker:
         checkpoint_store: Any = None,
         artifact_store: Any = None,
         codebase_index: Any = None,
+        exclusions: Any = None,
     ):
         self.project_path = Path(project_path).expanduser().resolve()
+        # engine/exclusions.ExclusionRules: excluded files are never attached.
+        self.exclusions = exclusions
         self.agent_registry = agent_registry
         self.checkpoint_store = checkpoint_store
         self.artifact_store = artifact_store
@@ -130,6 +133,10 @@ class ContextBroker:
             return None
         if not path.is_file():
             return None
+        rule = self.exclusions.match(str(path)) if self.exclusions else None
+        if rule:
+            # Say why instead of dropping the mention silently.
+            return self._item("file", selector, self.exclusions.refusal(str(path), rule), "excluded")
         content = path.read_text(encoding="utf-8", errors="replace")
         return self._item("file", selector, content, str(path))
 
@@ -151,8 +158,15 @@ class ContextBroker:
     def _diff(self, selector: str) -> ContextItem | None:
         args = ["git", "diff"]
         if selector not in {"working", "workspace", "current", "."}:
+            # A selector is a revision; one starting with '-' would be read as
+            # an option (for example --output=<file>, which writes a file).
+            if selector.startswith("-") or any(ch.isspace() for ch in selector):
+                return None
             args.append(selector)
         args.append("--")
+        if self.exclusions:
+            # Only exclude pathspecs: git diffs everything else.
+            args.extend(self.exclusions.git_pathspecs())
         result = subprocess.run(
             args,
             cwd=self.project_path,

@@ -199,7 +199,14 @@ def test_app_state_applies_project_context_and_builds_project_scoped_session(mon
     assert os.path.normpath(state.project.project_path) == os.path.normpath(str(project_two))
     assert state.codebase_index.project_path == Path(project_two)
     assert state.engram._namespace != first_namespace
+    # A newly opened project's instructions wait for the user's trust
+    # (gui/workspace_trust.py); trusting applies them to the open session.
+    assert session.project_instructions is None
+    state.session = session
+    state.set_project_trust("trusted", str(project_two))
     assert "project two instructions" in (session.project_instructions or "")
+    rebuilt = state.build_session(backend=_DummyBackend(name="codex", model="gpt-5"), project_path=str(project_two))
+    assert "project two instructions" in (rebuilt.project_instructions or "")
 
 
 def test_saved_http_session_reuses_compatible_provider_client(monkeypatch, tmp_path):

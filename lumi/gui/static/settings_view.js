@@ -232,6 +232,48 @@ class LumiSettingsView {
         }).join('')}</div>`;
     }
 
+    _renderFileExclusions() {
+        const saved = this.settings?.privacy?.excluded_paths || [];
+        const draft = this._exclusionDraft ?? saved.join('\n');
+        return `<p class="editor-help">Gitignore-style patterns, one per line, for every project: <code>.env</code> matches that name in any folder, and <code>secrets/**</code> is anchored at the project root. Lumi won’t read or change these files and leaves them out of searches, git diffs, the codebase index and attachments. A project’s <code>.lumiignore</code> adds its own patterns. Shell commands can still open excluded files, so keep command approval on for sensitive work.</p>
+            <textarea id="settings-exclusions" class="settings-input settings-textarea" rows="6" spellcheck="false" aria-label="Excluded files, one pattern per line" placeholder=".env&#10;*.pem&#10;secrets/**">${this.escapeHtml(draft)}</textarea>
+            <div class="editor-actions">
+                <button type="button" class="btn-sm" id="settings-exclusions-save">Save exclusions</button>
+                <button type="button" class="btn-sm" id="settings-exclusions-common">Add common secret files</button>
+            </div>`;
+    }
+
+    _renderProjectTrust() {
+        const data = this.projectTrust;
+        if (!data) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const current = data.current || {};
+        const brings = [...(current.instructions || [])];
+        if (current.notes) brings.push('project notes (.lumi/memory.json)');
+        if (current.policy_file) brings.push(current.policy_allows ? `${current.policy_file} (${current.policy_allows} approval-skipping rule${current.policy_allows === 1 ? '' : 's'})` : current.policy_file);
+        const state = !brings.length ? 'This project brings no instructions or policy.'
+            : current.policy_changed ? 'Trusted, but its policy changed since; approval-skipping rules are off until you trust the change.'
+            : current.decision === 'trusted' ? 'Trusted: Lumi uses what it brings.'
+            : current.decision === 'restricted' ? 'Restricted: Lumi ignores what it brings.'
+            : 'Not decided yet: Lumi ignores what it brings until you trust it.';
+        const path = esc(current.project_path);
+        const actions = brings.length ? `<div class="editor-actions">
+                <button type="button" class="btn-sm" data-trust-decision="trusted" data-trust-path="${path}">Trust this project</button>
+                <button type="button" class="btn-sm" data-trust-decision="restricted" data-trust-path="${path}">Restrict</button>
+            </div>` : '';
+        const rows = (data.decisions || []).map(item => `<div class="settings-row">
+                <div class="settings-row-copy"><span class="settings-row-label"><code>${esc(item.path)}</code></span>
+                <div class="settings-row-hint">${item.decision === 'trusted' ? 'Trusted' : 'Restricted'} since ${esc(item.at)}${item.note ? ` · ${esc(item.note)}` : ''}</div></div>
+                <div class="settings-row-value"><button type="button" class="btn-sm" data-trust-decision="forget" data-trust-path="${esc(item.path)}" aria-label="Forget the decision for ${esc(item.path)}">Forget</button></div>
+            </div>`).join('');
+        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the approval-skipping rules in its lumi-policy.json apply only after you trust it, and automatic lint and test runs wait for trust because they execute the project’s code. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
+            <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">This project</span>
+                <div class="settings-row-hint">${esc(brings.length ? `Brings ${brings.join(', ')}. ${state}` : state)}</div></div></div>
+            ${actions}
+            <h4 class="settings-subheading">Remembered decisions</h4>
+            ${rows || '<p class="editor-help">None yet.</p>'}`;
+    }
+
     openSettingsPage(page) {
         this._settingsActivePage = page || this._settingsActivePage || 'general';
         this._settingsQuery = '';
@@ -948,7 +990,7 @@ class LumiSettingsView {
             {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
             {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
-            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what leaves your machine with each model request.', sections:['privacy'], keywords:'secrets redact scan credentials DLP'},
+            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['privacy','file_exclusions','transcripts','security','project_trust'], keywords:'secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
@@ -1041,6 +1083,7 @@ class LumiSettingsView {
         if (page === 'sonn_account' && !this.sonnAccount) this._requestSonnAccount();
         if (page === 'provider_connections' && !this.providerConnections?.codex) this.send({command:'provider_connection', provider:'codex', action:'status'});
         if (page === 'provider_connections') this.send({command: 'connections_list'});
+        if (page === 'privacy') this.send({command: 'project_trust_list'});
         const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list'}[page];
         if (command) this.send({command});
     }
@@ -1193,6 +1236,26 @@ class LumiSettingsView {
                       hint: 'Also removes well-known credentials — cloud and platform keys, tokens, private keys, passwords in connection strings and .env lines — from tool output and your messages. The model sees [REDACTED …] in their place. Codex and Claude Code read files through their own tools and are not scanned.' },
                 ]
             },
+            { id: 'file_exclusions', title: 'Files Lumi never reads', custom: true },
+            {
+                id: 'transcripts', title: 'Transcripts', store: 'privacy',
+                fields: [
+                    { key: 'transcript_retention_days', label: 'Delete transcripts after (days)', type: 'number',
+                      hint: 'Empty or 0 keeps them. Lumi deletes saved sessions and session logs this many days after their last activity, at startup and daily. The open session is never deleted.' },
+                ]
+            },
+            {
+                id: 'security', title: 'Tools outside Lumi’s own loop',
+                fields: [
+                    { key: 'cli_adapters', label: 'Codex and Claude Code', type: 'toggle', default: true,
+                      hint: 'They run their own tool loops, so Lumi’s approvals, file exclusions and secret scan don’t apply inside them. Off removes them from Models.' },
+                    { key: 'computer_use', label: 'Computer use', type: 'toggle', default: true,
+                      hint: 'Screenshots and mouse and keyboard control of this computer. Off removes these tools from every session.' },
+                    { key: 'chat_gateway', label: 'Chat gateway', type: 'toggle', default: true,
+                      hint: 'Lets `lumi gateway` answer messages from Telegram. Off makes it refuse to start.' },
+                ]
+            },
+            { id: 'project_trust', title: 'Project trust', custom: true },
             {
                 id: 'engram', title: 'Memory (Engram)',
                 fields: [
@@ -1242,7 +1305,9 @@ class LumiSettingsView {
         this.settingsBody.innerHTML = '';
 
         for (const section of visibleSections) {
-            const data = this.settings[section.id] || {};
+            // A section can show fields stored under another settings key.
+            const store = section.store || section.id;
+            const data = this.settings[store] || {};
             const el = document.createElement('div');
             el.className = 'settings-section open';
             el.dataset.settingsSection = section.id;
@@ -1254,6 +1319,10 @@ class LumiSettingsView {
                 bodyHtml = this._renderProviderConnections();
             } else if (section.id === 'creative_editors') {
                 bodyHtml = this._renderEditorIntegrations();
+            } else if (section.id === 'file_exclusions') {
+                bodyHtml = this._renderFileExclusions();
+            } else if (section.id === 'project_trust') {
+                bodyHtml = this._renderProjectTrust();
             } else if (section.id === 'capability_packs') {
                 bodyHtml = this._renderCapabilityPacks();
             } else if (section.id === 'cost_tracking') {
@@ -1433,24 +1502,24 @@ class LumiSettingsView {
                         const opts = field.options.map(o =>
                             `<option value="${o.value}" ${val === o.value ? 'selected' : ''}>${o.label}</option>`
                         ).join('');
-                        input = `<select class="settings-select" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}">${opts}</select>`;
+                        input = `<select class="settings-select" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}">${opts}</select>`;
                     } else if (field.type === 'toggle') {
                         const checked = val ? 'checked' : '';
-                        input = `<label class="settings-toggle"><input type="checkbox" ${checked} data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" /><span class="settings-toggle-track" aria-hidden="true"></span></label>`;
+                        input = `<label class="settings-toggle"><input type="checkbox" ${checked} data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" /><span class="settings-toggle-track" aria-hidden="true"></span></label>`;
                     } else if (field.type === 'password') {
                         const hasSecret = Boolean(this.settings._meta?.api_keys_present?.[field.key]);
                         input = `
                             <div style="display:flex;align-items:center;gap:8px;">
-                                <input class="settings-input" type="password" value="" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}" style="flex:1" />
+                                <input class="settings-input" type="password" value="" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" data-secret-field="true" placeholder="${hasSecret ? 'Stored key' : 'Enter key'}" style="flex:1" />
                                 <span style="color:var(--muted);font-size:11px;white-space:nowrap">${hasSecret ? 'Stored' : 'Not set'}</span>
-                                ${hasSecret ? `<button class="btn-sm settings-clear-secret" data-section="${section.id}" data-key="${field.key}" aria-label="Clear ${this.escapeHtml(field.label)}" style="font-size:11px">Clear</button>` : ''}
+                                ${hasSecret ? `<button class="btn-sm settings-clear-secret" data-section="${store}" data-key="${field.key}" aria-label="Clear ${this.escapeHtml(field.label)}" style="font-size:11px">Clear</button>` : ''}
                             </div>
                         `;
                     } else if (field.type === 'number') {
-                        input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None" style="width:80px" />`;
+                        input = `<input class="settings-input" type="number" value="${val || ''}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}" placeholder="None" style="width:80px" />`;
                     } else {
                         const ph = field.placeholder ? ` placeholder="${this.escapeHtml(field.placeholder)}"` : '';
-                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${section.id}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph} />`;
+                        input = `<input class="settings-input" type="text" value="${this.escapeHtml(String(val))}" data-section="${store}" data-key="${field.key}" aria-label="${this.escapeHtml(field.label)}"${ph} />`;
                     }
                     const hint = field.hint ? `<div class="settings-row-hint">${this.escapeHtml(field.hint)}</div>` : '';
                     bodyHtml += `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${this.escapeHtml(field.label)}</span>${hint}</div><div class="settings-row-value">${input}</div></div>`;
@@ -1469,6 +1538,25 @@ class LumiSettingsView {
             this.renderSettingsView();
         });
         this._bindCustomConnections();
+        const exclusions = document.getElementById('settings-exclusions');
+        exclusions?.addEventListener('input', () => { this._exclusionDraft = exclusions.value; });
+        document.getElementById('settings-exclusions-save')?.addEventListener('click', () => {
+            this._exclusionDraft = null;
+            this.send({command: 'update_settings', section: 'privacy', key: 'excluded_paths', value: exclusions.value.split('\n')});
+        });
+        document.getElementById('settings-exclusions-common')?.addEventListener('click', () => {
+            const lines = exclusions.value.split('\n').map(line => line.trim()).filter(Boolean);
+            const common = this.settings?._meta?.common_exclusions || [];
+            exclusions.value = [...lines, ...common.filter(item => !lines.includes(item))].join('\n');
+            this._exclusionDraft = exclusions.value;
+            exclusions.focus();
+        });
+        this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
+            button.addEventListener('click', () => {
+                button.disabled = true;
+                this.send({command: 'project_trust_set', decision: button.dataset.trustDecision, project_path: button.dataset.trustPath});
+            });
+        });
         this.settingsBody.querySelectorAll('[data-provider-action]').forEach(btn => {
             btn.addEventListener('click', () => {
                 btn.disabled = true;

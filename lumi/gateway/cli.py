@@ -73,6 +73,13 @@ def main(argv: list[str] | None = None) -> None:
     )
 
     settings = SettingsManager()
+    if settings.get("security", "chat_gateway", True) is False:
+        print(
+            "The chat gateway is turned off in Settings > Privacy & security "
+            "(or by your organization's policy).",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     net.configure(settings)
     secret_scan.configure(settings)
     token = args.token or str(settings.get("api_keys", "telegram_bot", "") or "")

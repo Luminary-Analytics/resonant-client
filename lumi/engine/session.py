@@ -616,6 +616,15 @@ class Session:
         self._permission_prompt: Optional[Callable] = None
         self._permission_prompt_lock = threading.Lock()
         self.sandbox = None  # PathSandbox, set externally
+        # Files the agent may never read, list or send (engine/exclusions.py),
+        # set externally from Settings, the project's .lumiignore and policy.
+        self.exclusions = None
+        # Settings > Privacy & security (or policy) can turn computer use off.
+        self.computer_use_enabled = True
+        # Project notes (.lumi/memory.json) and a codebase index can come from
+        # the repository itself; they join the prompt only for trusted
+        # projects (gui/workspace_trust.py).
+        self.project_content_trusted = True
         self.event_logger = None  # EventLogger, set externally for JSONL logging
         self.agent_registry: Optional[AgentRegistry] = None
         self.agent_id: str = ""
@@ -746,6 +755,9 @@ class Session:
         self.project_path = parent.project_path
         self.browser_session_name = parent.browser_session_name
         self.sandbox = parent.sandbox
+        self.exclusions = parent.exclusions
+        self.computer_use_enabled = parent.computer_use_enabled
+        self.project_content_trusted = parent.project_content_trusted
         self.project_instructions = parent.project_instructions
         self.autonomy_tier = parent.autonomy_tier
         self.execution_policy = parent.execution_policy
@@ -833,6 +845,8 @@ class Session:
           enough reason to spend them — the tools stay reachable through
           `search_tools` either way.
         """
+        if not self.computer_use_enabled:
+            return False
         profile = getattr(self.backend, "capability_profile", None)
         if profile is None:
             return unknown
@@ -1233,8 +1247,30 @@ class Session:
                 f"Tool '{tool_name}' arguments must be a JSON object, got "
                 f"{type(tool_args).__name__}."
             )
+        if tool_name in DESKTOP_TOOL_NAMES and not self.computer_use_enabled:
+            # Not offered to the model when off, but history or a guess can
+            # still name one.
+            raise ToolBoundaryViolation(
+                "Computer use is turned off (Settings > Privacy & security, or your "
+                "organization's policy)."
+            )
         prepared = dict(tool_args)
         working_dir = self.project_path or os.getcwd()
+
+        if tool_name in {"browser_navigate", "browser_tabs"}:
+            # A file:// page is a file read: same sandbox and exclusion rules.
+            url = str(prepared.get("url") or "").strip()
+            if url.lower().startswith("file:"):
+                from urllib.parse import urlsplit
+                from urllib.request import url2pathname
+
+                parts = urlsplit(url)
+                local = url2pathname(("//" + parts.netloc if parts.netloc else "") + parts.path)
+                if self.sandbox:
+                    self.sandbox.validate_path(local)
+                rule = self.exclusions.match(local) if self.exclusions else None
+                if rule:
+                    raise ToolBoundaryViolation(self.exclusions.refusal(local, rule))
 
         if tool_name == "batch":
             calls = prepared.get("calls", [])
@@ -1316,6 +1352,17 @@ class Session:
             if tool_name in cwd_tools and prepared.get("cwd"):
                 prepared["cwd"] = self.sandbox.validate_bash_cwd(prepared["cwd"])
 
+        if self.exclusions and tool_name in file_tools | search_tools and prepared.get("path"):
+            # Reading, writing or searching inside an excluded file or folder is
+            # refused outright; search results elsewhere are filtered by the tools.
+            target = str(prepared["path"])
+            rule = (
+                self.exclusions.match_tree(target) if tool_name in search_tools
+                else self.exclusions.match(target)
+            )
+            if rule:
+                raise ToolBoundaryViolation(self.exclusions.refusal(target, rule))
+
         return prepared
 
     def _cancelled_events(self, total_start: float, total_steps: int) -> Iterator[dict]:
@@ -1370,7 +1417,9 @@ class Session:
         abs_path = _os.path.normpath(abs_path)
 
         # ── Lint ──
-        if self.auto_lint_enabled:
+        # Linters and test runners execute repository code (eslint configs,
+        # conftest.py), so they don't run on their own in untrusted projects.
+        if self.auto_lint_enabled and self.project_content_trusted:
             try:
                 from .lint import lint_file
                 lint_result = lint_file(self.project_path, abs_path, timeout=10.0)
@@ -1392,7 +1441,7 @@ class Session:
                     )
 
         # ── Tests ──
-        if self.auto_test_enabled:
+        if self.auto_test_enabled and self.project_content_trusted:
             try:
                 from .auto_test import run_tests_for_edit
                 test_result = run_tests_for_edit(
@@ -1789,7 +1838,7 @@ class Session:
         # prompt byte-stable across every tool step.
         turn_context = ""
         turn_sources: dict[str, str] = {}
-        if self.project_path:
+        if self.project_path and self.project_content_trusted:
             try:
                 from .project_memory import ProjectMemory
                 notes = ProjectMemory(self.project_path).context(user_msg)
@@ -1806,7 +1855,7 @@ class Session:
                     turn_sources["memory"] = memory_context
             except Exception as e:
                 logger.warning(f"Engram recall failed: {e}")
-        if self._codebase_index and self._codebase_index.is_indexed:
+        if self._codebase_index and self._codebase_index.is_indexed and self.project_content_trusted:
             try:
                 rag_context = self._codebase_index.get_context_for_prompt(user_msg) or ""
                 turn_context += rag_context
@@ -2837,6 +2886,7 @@ class Session:
                             project_path=self.project_path or "",
                             settings=getattr(self, "_settings_ref", None),
                             session_name=self.browser_session_name,
+                            exclusions=self.exclusions,
                         )
                         if self.action_guard is not None:
                             try:

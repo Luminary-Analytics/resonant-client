@@ -71,6 +71,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   `secret_scan` removes saved key values from tool output before each request.
   Tests and fixtures use `LUMI_KEYCHAIN=off` or an in-memory keyring, never the
   real credential store.
+- File exclusions (`engine/exclusions.py`) are enforced at
+  `Session._prepare_workspace_tool_args` and inside the listing tools. Any new
+  path that reads project files for the model must check `session.exclusions`.
+- Repository-provided instructions, notes, index summaries, policy `allow`
+  rules and automatic lint/test runs require project trust
+  (`gui/workspace_trust.py`). Repository content must never grant itself trust.
 
 ## Working in the codebase
 

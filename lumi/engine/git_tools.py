@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import subprocess
 import time
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -411,11 +412,40 @@ def _format_status(data: dict) -> str:
     return "\n".join(lines)
 
 
-def exec_git_status(args: dict, start: float) -> ToolResult:
+def _hide_excluded(data: dict, cwd: Path | str, exclusions, *, keys: tuple[str, ...]) -> int:
+    """Drop entries for excluded files (engine/exclusions.py); return how many."""
+    if not exclusions or data.get("error"):
+        return 0
+    rc, out, _ = _run_git(["rev-parse", "--show-toplevel"], cwd)
+    top = out.strip() if rc == 0 and out.strip() else str(cwd)
+    hidden = 0
+    excluded = exclusions.checker()
+    for key in keys:
+        entries = data.get(key) or []
+        kept = []
+        for entry in entries:
+            path = entry.get("path", "") if isinstance(entry, dict) else str(entry)
+            if path and excluded(os.path.join(top, path)):
+                hidden += 1
+            else:
+                kept.append(entry)
+        data[key] = kept
+    return hidden
+
+
+def _excluded_note(hidden: int) -> str:
+    if not hidden:
+        return ""
+    plural = "s" if hidden != 1 else ""
+    return f"\n[{hidden} excluded file{plural} not shown (file exclusion rules)]"
+
+
+def exec_git_status(args: dict, start: float, *, exclusions=None) -> ToolResult:
     cwd = args.get("cwd") or "."
     data = git_status(cwd)
+    hidden = _hide_excluded(data, cwd, exclusions, keys=("staged", "unstaged", "untracked"))
     return ToolResult(
-        output=_format_status(data),
+        output=_format_status(data) + _excluded_note(hidden),
         is_error=bool(data.get("error")),
         elapsed=time.time() - start,
         metadata=data,
@@ -433,15 +463,19 @@ def _format_diff(data: dict) -> str:
     return "\n".join(lines)
 
 
-def exec_git_diff(args: dict, start: float) -> ToolResult:
+def exec_git_diff(args: dict, start: float, *, exclusions=None) -> ToolResult:
     cwd = args.get("cwd") or "."
     staged = bool(args.get("staged", False))
     paths = args.get("paths")
     if isinstance(paths, str):
         paths = [paths]
     data = git_diff(cwd, staged=staged, paths=paths)
+    hidden = _hide_excluded(data, cwd, exclusions, keys=("files",))
+    if hidden:
+        data["total_additions"] = sum(int(f.get("additions", 0)) for f in data["files"])
+        data["total_deletions"] = sum(int(f.get("deletions", 0)) for f in data["files"])
     return ToolResult(
-        output=_format_diff(data),
+        output=_format_diff(data) + _excluded_note(hidden),
         is_error=bool(data.get("error")),
         elapsed=time.time() - start,
         metadata=data,

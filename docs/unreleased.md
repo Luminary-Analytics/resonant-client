@@ -8,6 +8,66 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 client security: file exclusions, project trust, retention and tool switches — source only, not released
+
+- **Files Lumi never reads** (`lumi/engine/exclusions.py`): gitignore-style
+  patterns in **Settings > Privacy & security**, plus a project's `.lumiignore`.
+  Both apply at once when edited.
+  - File tools refuse excluded files, including `batch` children, and so does a
+    search rooted at an excluded folder.
+  - glob, grep, git status and git diff leave them out and say how many were
+    hidden. The codebase index skips them.
+  - `@file:` attachments explain the refusal instead of attaching.
+    `@diff:working` excludes them from the diff text.
+  - Opening a `file://` page in the browser tools now goes through the same
+    sandbox and exclusion checks; before, it could read any local file.
+  - Shell commands can still open excluded files.
+- **Project trust** (`lumi/gui/workspace_trust.py`): until the user trusts a
+  project, Lumi doesn't use what the repository brings:
+  - its instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), including
+    in a Mission's first message;
+  - its committed notes (`.lumi/memory.json`) and codebase summary;
+  - the `allow` rules in its `lumi-policy.json`, which previously let a cloned
+    repository skip approval prompts (its deny and ask rules still apply);
+  - automatic lint and test runs, which execute the repository's own code.
+
+  A banner in the chat offers **Trust this project** or **Keep restricted**.
+  A policy file that changes after trust needs review again. Projects already in
+  Recent projects are trusted on first run, so upgrading changes nothing for
+  existing work.
+- **Transcript retention** (`lumi/gui/retention.py`): "Delete transcripts after
+  (days)" deletes everything holding conversation content that was last touched
+  before then, at startup and daily:
+  - sessions and their ledgers;
+  - drafts, checkpoints, worker records, artifacts, traces and mission audit logs;
+  - recordings and dated logs.
+
+  The open session is never deleted. The default keeps everything.
+- **Tools outside Lumi's own loop:** switches for Codex and Claude Code (they
+  leave Models; a selected one falls back to another provider), computer use
+  (tools hidden and refused) and the chat gateway (`lumi gateway` refuses to
+  start). Organization policy will be able to lock these.
+- `@diff:` mentions no longer pass a selector starting with `-` to git, where
+  `--output=<file>` would have written a file.
+
+Validation on September 25, 2026:
+
+- New tests: `test_exclusions_and_trust.py`, `test_client_security.py`,
+  `test_retention.py`. They cover the real tools, git, the context broker,
+  project notes across a trust change, the policy builder and `AppState` wiring.
+- Full `pytest`: 3,631 passed, 2 skipped.
+- In the browser pane against an isolated home with a scripted model:
+  - The trust banner appeared for a project with AGENTS.md and a policy allow
+    rule.
+  - `.env` was excluded through Settings: the model's read of it was blocked
+    with the rule named, and the file's value never reached the model.
+  - **Trust this project** hid the banner, and the next request carried
+    AGENTS.md (it hadn't before). The decision persisted with the policy
+    digest.
+
+Not exercised: organization policy locking these settings (next group), and
+the packaged app.
+
 ## September 24 supply chain: pinned dependencies, audit, notices, SBOM and signing — source only, not released
 
 - **Pinned, hash-checked release builds:** `scripts/build_clean.ps1` installs

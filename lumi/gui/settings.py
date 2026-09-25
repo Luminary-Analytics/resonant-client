@@ -99,6 +99,19 @@ DEFAULTS = {
     # saved key values are removed from tool output either way.
     "privacy": {
         "secret_scan": False,
+        # Gitignore-style patterns the agent never reads, lists or sends
+        # (lumi/engine/exclusions.py), in addition to a project's .lumiignore.
+        "excluded_paths": [],
+        # Delete local transcripts and session logs this many days after
+        # their last activity; 0 keeps them (lumi/gui/retention.py).
+        "transcript_retention_days": 0,
+    },
+    # Tools that act outside Lumi's own tool loop. Organization policy can
+    # turn them off for everyone; these are the local switches.
+    "security": {
+        "cli_adapters": True,     # Codex and Claude Code backends
+        "computer_use": True,     # screenshots, mouse and keyboard control
+        "chat_gateway": True,     # `lumi gateway` (Telegram)
     },
     "cost_tracking": {
         "enabled": True,
@@ -183,6 +196,9 @@ class SettingsManager:
                 data["api_keys"][key] = ""
             meta["api_keys_present"] = present
         meta["secret_storage"] = self.secret_storage()
+        # Offered by Settings > Privacy & security; nothing is excluded by default.
+        from ..engine.exclusions import COMMON_SECRET_PATTERNS
+        meta["common_exclusions"] = list(COMMON_SECRET_PATTERNS)
         return data
 
     def secret_storage(self) -> dict:

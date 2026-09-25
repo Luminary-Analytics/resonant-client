@@ -1347,7 +1347,7 @@ class LumiSettingsView {
 
     _settingsPages() {
         return [
-            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','fallback_models','role_models','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled'], keywords:'permissions approval workflow fallback failover roles summarize'},
+            {id:'general', title:'General', group:'Personal', icon:'settings', description:'Choose how the agent works and which models new sessions use.', sections:['general'], fields:['default_permission_mode','default_backend','default_model','fallback_models','role_models','auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','big_context_profile','harness_enabled','autonomous_sessions'], keywords:'permissions approval workflow fallback failover roles summarize autonomous mission unattended'},
             {id:'profile', title:'Profile', group:'Personal', icon:'person', description:'Personalize your local workspace identity.', sections:['general'], fields:['display_name']},
             {id:'appearance', title:'Appearance', group:'Personal', icon:'sun', description:'Make the workspace feel right for you.', sections:['appearance']},
             {id:'pets', title:'Pets', group:'Personal', icon:'pet', description:'A little company while you build.', sections:['general'], fields:['show_companion'], keywords:'Echo companion'},
@@ -1532,6 +1532,8 @@ class LumiSettingsView {
                       hint: 'Bumps Ollama context to 131072 tokens and batch to 2048. Best for large-repo sessions. Restart the app for the change to take effect on the next backend connection.' },
                     { key: 'harness_enabled', label: 'Sprint workflow (planner / generator / evaluator)', type: 'toggle',
                       hint: 'Off by default. Enable to use Lumi\u2019s structured planner\u2192generator\u2192evaluator pattern with sprint contracts and an autonomous cycle. State lives in ~/.lumi/, not in your repo.' },
+                    { key: 'autonomous_sessions', label: 'Autonomous sessions (experimental)', type: 'toggle',
+                      hint: 'Off by default. Shows the Autonomous button: Lumi drafts a spec with you, then works through it unattended within a time budget and an optional spending limit, checking the acceptance criteria as it goes.' },
                 ]
             },
             {
@@ -1754,7 +1756,7 @@ class LumiSettingsView {
         })).flatMap(section => page.id === 'general' ? [
             {heading:'Permissions', keys:['default_permission_mode']},
             {heading:'Models', keys:['default_backend','default_model','fallback_models','role_models','big_context_profile']},
-            {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled']},
+            {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled','autonomous_sessions']},
         ].map(group => ({...section, heading:group.heading, fields:section.fields.filter(field => group.keys.includes(field.key))})) : [section]) : [];
         this.settingsBody.innerHTML = '';
         if (this.settingsError) {

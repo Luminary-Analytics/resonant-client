@@ -31,6 +31,9 @@ DEFAULTS = {
         # planner/generator/evaluator pattern. When off, no .resonant-harness/
         # directory is created and the harness preamble is never injected.
         "harness_enabled": False,
+        # Autonomous sessions (gui/autonomous_loop.py): experimental and off
+        # by default; on shows the Autonomous button and the mission views.
+        "autonomous_sessions": False,
         # Full-Autonomy tenet — concrete dials. The agent runs everything else
         # without asking; only these floor checks pause for explicit approval.
         # See lumi/orchestration/autonomy.py.

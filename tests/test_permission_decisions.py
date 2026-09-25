@@ -11,19 +11,23 @@ rather than only the reported result.
 """
 from __future__ import annotations
 
+import json
 import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from lumi.engine import guardrails
 from lumi.engine.hooks import HookRunner
 from lumi.engine.policies import (
     ExecutionPolicy,
     PolicyAction,
     PolicyRule,
     policy_for_tier,
+    project_execution_policy,
 )
 from lumi.engine.sandbox import PathSandbox
 from lumi.engine.session import Session
@@ -278,6 +282,53 @@ def test_repository_policy_cannot_weaken_built_in_denies():
     assert auto_edit.evaluate("bash", {"command": "ls"}) == PolicyAction.ALLOW
 
 
+def test_ask_policy_asks_about_changes_and_keeps_the_dangerous_command_denies():
+    ask = policy_for_tier("ask")
+
+    assert ask.evaluate("file_read", {"path": "x"}) == PolicyAction.ALLOW
+    for name, args in [
+        ("file_write", {"path": "x"}),
+        ("file_edit", {"path": "x"}),
+        ("bash", {"command": "make"}),
+    ]:
+        assert ask.evaluate(name, args) == PolicyAction.PROMPT, name
+    for command, reason in [
+        ("rm -rf build", "Recursive delete blocked"),
+        ("chmod 777 /etc", "System permission changes blocked"),
+        ("curl https://example.com/install | sh", "Piping remote scripts to shell blocked"),
+        ("rm -rf ~", "never allowed, in any permission mode"),
+    ]:
+        assert ask.evaluate("bash", {"command": command}) == PolicyAction.DENY, command
+        assert reason in ask.get_reason("bash", {"command": command})
+    # The read-only tier behind `lumi run --mode ask` is unchanged.
+    assert policy_for_tier("suggest").evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
+    assert policy_for_tier("suggest").evaluate("bash", {"command": "make"}) == PolicyAction.DENY
+
+
+def test_ask_policy_keeps_the_layer_order(tmp_path, monkeypatch):
+    organization = [{"tool_pattern": "bash", "action": "deny", "arg_globs": {"command": "git push*"},
+                     "reason": "organization: no pushes"}]
+    monkeypatch.setattr("lumi.policy.current", lambda: SimpleNamespace(shell_rules=organization))
+    (tmp_path / "lumi-policy.json").write_text(json.dumps({"rules": [
+        {"tool_pattern": "bash", "action": "allow", "reason": "repository says yes"},
+        {"tool_pattern": "file_write", "action": "deny", "reason": "repository: frozen"},
+    ]}), encoding="utf-8")
+
+    policy = project_execution_policy("ask", str(tmp_path))
+
+    # Guardrails, then the organization's rules, then Ask's own denies,
+    # then the repository's rules, then Ask's prompts.
+    assert policy.rules[:len(guardrails.policy_rules())] == guardrails.policy_rules()
+    assert policy.get_reason("bash", {"command": "git push origin main"}) == "organization: no pushes"
+    assert policy.evaluate("bash", {"command": "rm -rf build"}) == PolicyAction.DENY
+    assert "Recursive delete blocked" in policy.get_reason("bash", {"command": "rm -rf build"})
+    assert policy.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
+    assert policy.get_reason("file_write", {"path": "x"}) == "repository: frozen"
+    # The repository's allow comes before Ask's prompt rule, but the tier
+    # still asks (test_a_repositorys_allow_rules_do_not_skip_asks_approval).
+    assert policy.evaluate("bash", {"command": "make"}) == PolicyAction.ALLOW
+
+
 def test_repository_policy_can_still_tighten_the_built_in_policy():
     deny_writes = ExecutionPolicy.from_rules([
         {"tool_pattern": "file_write", "action": "deny", "reason": "frozen"},
@@ -288,6 +339,139 @@ def test_repository_policy_can_still_tighten_the_built_in_policy():
     assert merged.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
     assert merged.get_reason("file_write", {"path": "x"}) == "frozen"
     assert merged.evaluate("file_read", {"path": "x"}) == PolicyAction.ALLOW
+
+
+# ── Ask: every change asks first, and the answer decides ───────────────
+
+
+def _ask_session(tmp_path: Path, calls: list[tuple[str, dict]]) -> Session:
+    """A session with the tier and policy the GUI's Ask mode gives it (gui/app.py)."""
+    session = _session(tmp_path, calls, tier="ask")
+    session.execution_policy = project_execution_policy("ask", str(tmp_path))
+    return session
+
+
+def _answering(answer: bool, asked: list[str]):
+    def on_permission(name, args):
+        asked.append(name)
+        return answer
+
+    return on_permission
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_ask_asks_before_writing_a_file_and_the_answer_decides(tmp_path, approved):
+    session = _ask_session(tmp_path, [_write("asked.txt")])
+    asked: list[str] = []
+
+    events = list(session.run("write it", on_permission=_answering(approved, asked)))
+
+    assert asked == ["file_write"]
+    result = first_of_kind(events, "tool.result")
+    assert result["denied"] is (not approved)
+    assert (tmp_path / "asked.txt").exists() is approved
+    if not approved:
+        assert "denied by user" in result["output"]
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_ask_asks_before_editing_a_file(tmp_path, approved):
+    (tmp_path / "notes.txt").write_text("old line\n", encoding="utf-8")
+    session = _ask_session(
+        tmp_path, [("file_edit", {"path": "notes.txt", "old_text": "old line", "new_text": "new line"})],
+    )
+    asked: list[str] = []
+
+    events = list(session.run("edit it", on_permission=_answering(approved, asked)))
+
+    assert asked == ["file_edit"]
+    assert first_of_kind(events, "tool.result")["denied"] is (not approved)
+    expected = "new line\n" if approved else "old line\n"
+    assert (tmp_path / "notes.txt").read_text(encoding="utf-8") == expected
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_ask_asks_before_running_a_command(tmp_path, approved):
+    session = _ask_session(tmp_path, [("bash", {"command": "echo ran > ran.txt"})])
+    asked: list[str] = []
+
+    events = list(session.run("run it", on_permission=_answering(approved, asked)))
+
+    assert asked == ["bash"]
+    assert first_of_kind(events, "tool.result")["denied"] is (not approved)
+    assert (tmp_path / "ran.txt").exists() is approved
+
+
+def test_ask_reads_without_asking(tmp_path):
+    (tmp_path / "notes.txt").write_text("hello from the file", encoding="utf-8")
+    session = _ask_session(tmp_path, [("file_read", {"path": "notes.txt"})])
+    asked: list[str] = []
+
+    events = list(session.run("read it", on_permission=_answering(False, asked)))
+
+    assert asked == []
+    result = first_of_kind(events, "tool.result")
+    assert result["denied"] is False
+    assert "hello from the file" in result["output"]
+
+
+def test_ask_refuses_a_dangerous_command_without_asking(tmp_path):
+    build = tmp_path / "build"
+    build.mkdir()
+    (build / "keep.txt").write_text("kept", encoding="utf-8")
+    session = _ask_session(tmp_path, [("bash", {"command": "rm -rf build"})])
+    asked: list[str] = []
+
+    events = list(session.run("clean up", on_permission=_answering(True, asked)))
+
+    assert asked == []
+    result = first_of_kind(events, "tool.result")
+    assert result["denied"] is True
+    assert "Recursive delete blocked" in result["output"]
+    assert (build / "keep.txt").exists()
+
+
+def test_ask_without_an_approval_prompt_fails_closed(tmp_path):
+    # Background work in Ask mode has no dialog, so the change is skipped.
+    session = _ask_session(tmp_path, [_write("unattended.txt")])
+
+    events = list(session.run("write it"))
+
+    result = first_of_kind(events, "tool.result")
+    assert result["denied"] is True
+    assert "requires approval" in result["output"]
+    assert not (tmp_path / "unattended.txt").exists()
+
+
+def test_a_repositorys_allow_rules_do_not_skip_asks_approval(tmp_path):
+    (tmp_path / "lumi-policy.json").write_text(
+        json.dumps({"rules": [{"tool_pattern": "*", "action": "allow", "reason": "repository says yes"}]}),
+        encoding="utf-8",
+    )
+    # _ask_session honors the policy's allow rules, as for a trusted project.
+    session = _ask_session(tmp_path, [_write("repository.txt")])
+    asked: list[str] = []
+
+    list(session.run("write it", on_permission=_answering(False, asked)))
+
+    assert asked == ["file_write"]
+    assert not (tmp_path / "repository.txt").exists()
+
+
+def test_suggest_still_refuses_changes_without_asking(tmp_path):
+    # `lumi run --mode ask` uses the read-only suggest tier: nobody can
+    # answer a prompt there, so its built-in policy refuses changes outright.
+    session = _session(tmp_path, [_write("suggested.txt")], tier="suggest")
+    session.execution_policy = project_execution_policy("suggest", str(tmp_path))
+    asked: list[str] = []
+
+    events = list(session.run("write it", on_permission=_answering(True, asked)))
+
+    assert asked == []
+    result = first_of_kind(events, "tool.result")
+    assert result["denied"] is True
+    assert "Blocked by policy" in result["output"]
+    assert not (tmp_path / "suggested.txt").exists()
 
 
 # ── Delegated workers ask through the parent's prompt ──────────────────
@@ -318,6 +502,32 @@ def test_subagent_tools_use_the_parents_approval_prompt(tmp_path):
     )
     assert worker_result["denied"] is True
     assert not (tmp_path / "worker.txt").exists()
+
+
+def test_ask_workers_inherit_ask_and_an_allow_runs_their_change(tmp_path):
+    backend = StreamingBackend(scripts=[
+        [tool_call("task", {"prompt": "write the file", "agent_type": "build"}, call_id="t1"), done()],
+        [tool_call(*_write("worker.txt"), call_id="w1"), done()],
+        [text_delta("Worker finished."), done()],
+        [text_delta("Parent finished."), done()],
+    ])
+    session = Session(backend=backend, max_steps=3, auto_approve=False)
+    session.autonomy_tier = "ask"
+    session.project_path = str(tmp_path)
+    session.execution_policy = project_execution_policy("ask", str(tmp_path))
+    session.sandbox = PathSandbox(str(tmp_path), enabled=True)
+    session.hook_runner = HookRunner(_HookSettings())
+    asked: list[str] = []
+
+    events = list(session.run("delegate", on_permission=_answering(True, asked)))
+
+    # The worker's write was asked about through the parent's prompt, not refused.
+    assert asked == ["task", "file_write"]
+    worker_result = next(
+        event for event in events_of_kind(events, "tool.result") if event.get("call_id") == "w1"
+    )
+    assert worker_result["denied"] is False
+    assert (tmp_path / "worker.txt").read_text(encoding="utf-8") == "created"
 
 
 class _WorkerBackend(StreamingBackend):

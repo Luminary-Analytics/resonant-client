@@ -38,6 +38,9 @@ from typing import Any, Iterable, TextIO
 
 EXIT_OK, EXIT_FAILED, EXIT_USAGE, EXIT_ATTENTION = 0, 1, 2, 3
 
+# `--mode ask` is read only: nobody can answer a prompt during a run, so it
+# keeps the suggest tier, whose policy refuses changes outright. The
+# desktop's Ask mode uses the ask tier, which asks about them instead.
 MODES = {"ask": "suggest", "auto-edit": "auto-edit", "bypass": "full-auto"}
 API_KEY_ENV = {
     "anthropic": "ANTHROPIC_API_KEY",

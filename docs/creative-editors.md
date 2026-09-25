@@ -93,7 +93,8 @@ assets, compile modified Blueprints, and verify the result in PIE.”
 
 ## Models, permissions, and evidence
 
-- Ollama, EXO, Kimi, OpenRouter, and SONN use Lumi's native MCP execution.
+- Anthropic, OpenAI, Ollama, EXO, Kimi, OpenRouter, SONN and custom connections use
+  Lumi's native MCP execution.
   Tool and vision capability remains dependent on the selected model. MCP
   images enter the existing image-result path; text-only models cannot see them.
 - Enabled built-in bridges are passed to **Codex** using per-process `-c`

@@ -8,6 +8,48 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 24 model connections: Anthropic, OpenAI and custom endpoints — source only, not released
+
+- **Anthropic (Claude):** a native Messages API adapter (`lumi/anthropic_api.py`)
+  with tool use, extended thinking and prompt caching (system prompt, tools and the
+  latest user turn). Signed thinking blocks are replayed within a tool loop only
+  to the model that produced them. If a loop started without thinking, thinking is
+  dropped for that request instead of failing.
+  - The same adapter reaches Claude on Amazon Bedrock (SigV4 signing and AWS event
+    stream decoding in-house, botocore used for credentials when installed, or a
+    Bedrock API key) and Vertex AI (google-auth or the gcloud CLI).
+- **OpenAI:** a Responses API adapter (`lumi/openai_api.py`) for OpenAI and Azure
+  OpenAI. It is stateless (`store: false`). Encrypted reasoning items are replayed
+  only to the same model, quota errors are not retried, and chat model discovery
+  drops embedding, audio and image models.
+- **Custom connections** (`lumi/connections.py`): OpenAI-compatible gateways, Azure
+  OpenAI, Bedrock, Vertex, and Anthropic or Responses proxies are defined as
+  validated data in **Settings > Connections**. Each has a test button and appears
+  in the model menu under its name.
+  - HTTPS is required outside localhost and private networks, and credentials in
+    URLs are refused.
+  - Keys are stored as `conn_<id>`, are written only by the connection commands,
+    and are never returned to the page.
+  - A connection in use by a running turn can't be edited or removed.
+- Anthropic and OpenAI keys sit alongside the other API keys and have their own
+  connection checks. Capability profiles now cover the Claude, GPT/o-series and
+  Gemini families, where the generic fallback had assumed a 32K window.
+- The runtime status shows a connection's name, not its internal key.
+
+Validation on September 24, 2026:
+
+- 38 new tests: `test_anthropic_api.py`, `test_openai_responses.py`,
+  `test_connections.py`. The SigV4 signature matches botocore's for a Bedrock model
+  path that needs double encoding.
+- Full `pytest`: 3,517 passed, 2 skipped.
+- In the browser pane against an isolated home, three connections were added
+  through the Settings form (typing, selects and Enter), tested, saved, and used
+  from the model menu. Each completed a scripted tool loop through its own wire
+  format: Chat Completions, Anthropic Messages and OpenAI Responses.
+
+Not exercised: live Anthropic, OpenAI, Azure, Bedrock or Vertex accounts (no keys
+were used), extended thinking against a real model, and the packaged app.
+
 ## September 24 dark and light themes — source only, not released
 
 - **The saved theme now survives a restart.** The desktop window uses a new

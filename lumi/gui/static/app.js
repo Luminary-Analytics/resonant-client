@@ -3798,6 +3798,29 @@ class LumiApp {
                 this._renderAccountMenu();
                 if (this.currentView === 'settings') this.renderSettingsView();
                 break;
+            case 'connections':
+                this.connectionsData = event.data || { items: [], types: {} };
+                if (this.currentView === 'settings') this.renderSettingsView();
+                break;
+            case 'connection_saved':
+                if (event.data?.error) {
+                    this._connectionStatus = { ok: false, message: event.data.error };
+                } else {
+                    this._connectionEdit = null;
+                    this._connectionStatus = { ok: true, message: event.data?.deleted ? 'Connection removed.' : 'Connection saved. Its models are in the model menu.' };
+                }
+                // Forced: saving with Enter leaves focus in a field, and the
+                // result (a closed form or an error) must show at once. The
+                // form renders from its draft, so nothing typed is lost.
+                if (this.currentView === 'settings') this.renderSettingsView({force: true});
+                break;
+            case 'connection_test':
+                this._connectionStatus = { ok: Boolean(event.data?.ok), message: event.data?.message || 'No response.' };
+                if (event.data?.ok && event.data.models?.length) {
+                    this._connectionStatus.message += `: ${event.data.models.slice(0, 6).join(', ')}${event.data.models.length > 6 ? '…' : ''}`;
+                }
+                if (this.currentView === 'settings') this.renderSettingsView({force: true});
+                break;
             case 'provider_connection':
                 this.providerConnections ||= {};
                 this.providerConnections[event.provider] = event.data || {};
@@ -4239,7 +4262,9 @@ class LumiApp {
             if (event.runtime_ready === false) {
                 this._setSystemStatus('warning', `${current_model} — not running`);
             } else {
-                this._setSystemStatus('connected', `${current_backend} / ${current_model}`);
+                const backendLabel = backends?.[current_backend]?.label
+                    || this._getBackendLabels()[current_backend] || current_backend;
+                this._setSystemStatus('connected', `${backendLabel} / ${current_model}`);
             }
             this._modelCapabilities = event.model_capabilities || {};
             this.populateModelSelector(backends, current_backend, current_model);
@@ -4559,9 +4584,17 @@ class LumiApp {
     }
 
     _getModelGroups() {
-        // v0.4.0 — single backend, single group. Old multi-backend
-        // grouping (Local / Subscriptions / APIs) is gone.
-        return {
+        // One group per backend. Custom connections (conn-<id>) and any
+        // provider the server labels are added after the built-in ones.
+        const groups = {
+            anthropic: {
+                label: 'Anthropic',
+                backends: ['anthropic'],
+            },
+            openai: {
+                label: 'OpenAI',
+                backends: ['openai'],
+            },
             exo: {
                 label: 'EXO',
                 backends: ['exo'],
@@ -4587,10 +4620,18 @@ class LumiApp {
                 backends: ['ollama'],
             },
         };
+        for (const [key, info] of Object.entries(this.backends || {})) {
+            if (!groups[key]) groups[key] = { label: info?.label || key, backends: [key] };
+        }
+        return groups;
     }
 
     _getBackendLabels() {
-        return { codex: 'ChatGPT / Codex', openrouter: 'OpenRouter', sonn: 'SONN', exo: 'EXO', kimi: 'Kimi API', ollama: 'Ollama' };
+        const labels = { anthropic: 'Anthropic', openai: 'OpenAI', codex: 'ChatGPT / Codex', openrouter: 'OpenRouter', sonn: 'SONN', exo: 'EXO', kimi: 'Kimi API', ollama: 'Ollama' };
+        for (const [key, info] of Object.entries(this.backends || {})) {
+            if (!labels[key] && info?.label) labels[key] = info.label;
+        }
+        return labels;
     }
 
     _getPreferredBackendSelection(backends) {
@@ -4600,7 +4641,8 @@ class LumiApp {
         if (preferredConfiguredBackend && backends?.[preferredConfiguredBackend]?.models?.length) {
             backendOrder.push(preferredConfiguredBackend);
         }
-        for (const candidate of ['ollama', 'exo', 'kimi', 'codex', 'openrouter', 'sonn']) {
+        const connections = Object.keys(backends || {}).filter(key => key.startsWith('conn-'));
+        for (const candidate of ['ollama', 'exo', 'kimi', 'anthropic', 'openai', 'codex', 'openrouter', 'sonn', ...connections]) {
             if (!backendOrder.includes(candidate)) backendOrder.push(candidate);
         }
         for (const backend of backendOrder) {

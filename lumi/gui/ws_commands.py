@@ -2942,7 +2942,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "appearance": frozenset({"theme", "density", "font_size"}),
     "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
     "network": frozenset({"ollama_url", "exo_url", "sonn_url"}),
-    "api_keys": frozenset({"sonn", "openrouter", "kimi"}),
+    "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai"}),
     "engram": frozenset({"enabled", "server_url"}),
     "cost_tracking": frozenset({"enabled", "budget_alert_usd"}),
     "model_favorites": frozenset({"models"}),
@@ -3086,6 +3086,19 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
             data = await asyncio.to_thread(OpenRouterBackend(api_key, "connection-check").health)
             await asyncio.to_thread(OpenRouterBackend.catalog, force=True)
             await asyncio.to_thread(ctx.state.detect_backends, force=True)
+        elif provider in {"anthropic", "openai"} and action == "status":
+            from ..anthropic_api import AnthropicBackend
+            from ..openai_api import OpenAIResponsesBackend
+
+            env = "ANTHROPIC_API_KEY" if provider == "anthropic" else "OPENAI_API_KEY"
+            api_key, _, _, _ = ctx.state._api_key_details(provider, env)
+            if not api_key:
+                raise ValueError(f"Add your {'Anthropic' if provider == 'anthropic' else 'OpenAI'} key "
+                                 "in API keys below, then check the connection.")
+            backend_class = AnthropicBackend if provider == "anthropic" else OpenAIResponsesBackend
+            data = await asyncio.to_thread(backend_class(api_key, backend_class.DEFAULT_MODEL).health)
+            data["model_count"] = len(data.get("models") or [])
+            await asyncio.to_thread(ctx.state.detect_backends, force=True)
         elif provider == "sonn" and action == "status":
             api_key, _, _, _ = ctx.state._api_key_details("sonn", "SONN_API_KEY")
             base_url = resolve_sonn_url(settings_data=ctx.state.settings.get_all())
@@ -3100,6 +3113,129 @@ async def _cmd_provider_connection(ctx: CommandContext) -> None:
             await ctx.send(ctx.state.get_init_data(refresh_only=True))
     except Exception as exc:
         await ctx.send({"event": "provider_connection", "provider": provider, "data": {"error": str(exc)}})
+
+# ── Model connections (gateways, Azure, Bedrock, Vertex) ───────────
+
+
+def _connections_payload(state) -> dict:
+    from ..connections import AUTH_METHODS, CONNECTION_TYPES, list_connections, secret_setting
+
+    items = []
+    for connection in list_connections(state.settings):
+        key = str(state.settings.get("api_keys", secret_setting(connection["id"]), "") or "")
+        items.append({**connection, "has_key": bool(key)})
+    return {"event": "connections", "data": {
+        "items": items, "types": CONNECTION_TYPES, "auth_methods": list(AUTH_METHODS)}}
+
+
+def _connection_in_use(ctx: CommandContext, connection_id: str) -> bool:
+    spec = getattr(ctx.state, "backend_spec", None)
+    return bool(ctx.runs.busy and spec and spec.backend_type == "conn-" + connection_id)
+
+
+@command("connections_list")
+async def _cmd_connections_list(ctx: CommandContext) -> None:
+    await ctx.send(_connections_payload(ctx.state))
+
+
+@command("connection_save")
+async def _cmd_connection_save(ctx: CommandContext) -> None:
+    from ..connections import MAX_CONNECTIONS, list_connections, normalize_connection, secret_setting
+
+    original_id = str(ctx.msg.get("original_id") or "").strip()
+    try:
+        existing = list_connections(ctx.state.settings)
+        others = {c["id"] for c in existing if c["id"] != original_id}
+        connection = normalize_connection(ctx.msg.get("connection"), existing_ids=others)
+        if not original_id and len(existing) >= MAX_CONNECTIONS:
+            raise ValueError(f"Lumi keeps up to {MAX_CONNECTIONS} connections. Remove one first.")
+        if original_id and not any(c["id"] == original_id for c in existing):
+            raise ValueError("That connection no longer exists. Reload Settings and try again.")
+        if _connection_in_use(ctx, original_id or connection["id"]):
+            raise ValueError("Finish or stop the current run before changing the connection it uses.")
+        api_key = ctx.msg.get("api_key")
+        if api_key is not None and not isinstance(api_key, str):
+            raise ValueError("The key must be text.")
+    except ValueError as exc:
+        await ctx.send({"event": "connection_saved", "data": {"error": str(exc)}})
+        return
+
+    def _save() -> None:
+        updated = [c for c in existing if c["id"] != original_id] + [connection]
+        if original_id and original_id != connection["id"]:
+            old_key = str(ctx.state.settings.get("api_keys", secret_setting(original_id), "") or "")
+            if old_key and not api_key:
+                ctx.state.settings.set("api_keys", secret_setting(connection["id"]), old_key)
+            ctx.state.settings.set("api_keys", secret_setting(original_id), "")
+        if ctx.msg.get("clear_key"):
+            ctx.state.settings.set("api_keys", secret_setting(connection["id"]), "")
+        elif api_key:
+            ctx.state.settings.set("api_keys", secret_setting(connection["id"]), api_key.strip())
+        ctx.state.update_setting_value("connections", None, updated)
+
+    await asyncio.to_thread(_save)
+    await ctx.send({"event": "connection_saved", "data": {"id": connection["id"]}})
+    await ctx.send(_connections_payload(ctx.state))
+    await ctx.send(ctx.state.get_init_data(refresh_only=True))
+
+
+@command("connection_delete")
+async def _cmd_connection_delete(ctx: CommandContext) -> None:
+    from ..connections import list_connections, secret_setting
+
+    connection_id = str(ctx.msg.get("id") or "").strip()
+    existing = list_connections(ctx.state.settings)
+    if not any(c["id"] == connection_id for c in existing):
+        await ctx.send({"event": "connection_saved", "data": {"error": "That connection no longer exists."}})
+        return
+    if _connection_in_use(ctx, connection_id):
+        await ctx.send({"event": "connection_saved", "data": {
+            "error": "Finish or stop the current run before removing the connection it uses."}})
+        return
+
+    def _delete() -> None:
+        ctx.state.settings.set("api_keys", secret_setting(connection_id), "")
+        ctx.state.update_setting_value("connections", None, [c for c in existing if c["id"] != connection_id])
+
+    await asyncio.to_thread(_delete)
+    await ctx.send({"event": "connection_saved", "data": {"deleted": connection_id}})
+    await ctx.send(_connections_payload(ctx.state))
+    await ctx.send(ctx.state.get_init_data(refresh_only=True))
+
+
+@command("connection_test")
+async def _cmd_connection_test(ctx: CommandContext) -> None:
+    """Check a draft or saved connection: credentials resolve and models are listed."""
+    from ..connections import (
+        create_connection_backend, discover_models, normalize_connection, secret_setting,
+    )
+
+    try:
+        connection = normalize_connection(ctx.msg.get("connection"))
+        api_key = ctx.msg.get("api_key")
+        if not api_key:
+            # A draft of a saved connection reuses its stored key.
+            api_key = str(ctx.state.settings.get(
+                "api_keys", secret_setting(str(ctx.msg.get("original_id") or connection["id"])), "") or "")
+
+        def _check() -> dict:
+            models = discover_models(connection, api_key, timeout=8.0)
+            if connection["type"] in {"openai-compatible"} and not models:
+                raise ValueError(f"{connection['name']} answered, but listed no models. "
+                                 "Enter the model ids by hand.")
+            probe_model = (models or connection["models"] or [""])[0]
+            if connection["type"] != "openai-compatible":
+                backend = create_connection_backend(connection, probe_model, api_key)
+                health = backend.health()
+                models = models or health.get("models") or []
+            return {"ok": True, "models": models[:200],
+                    "message": f"Connected · {len(models)} model{'s' if len(models) != 1 else ''} available"}
+
+        data = await asyncio.to_thread(_check)
+    except Exception as exc:
+        data = {"ok": False, "message": str(exc) or type(exc).__name__}
+    await ctx.send({"event": "connection_test", "data": data})
+
 
 # ── Cost Tracking ───────────────────────────────
 

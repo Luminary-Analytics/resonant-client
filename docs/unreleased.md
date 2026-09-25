@@ -8,6 +8,47 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 large repositories — source only, not released
+
+- **The codebase index follows `.gitignore`** ([guide](desktop-workflow.md#large-repositories)).
+  In a Git repository, or a folder inside one, the file list comes from
+  `git ls-files`; elsewhere the folder is walked as before. A repository in
+  the home folder itself (dotfiles) isn't used for projects under it.
+- **A cap of 100,000 files.** The index logs when it stops there.
+- **Indexing does less work per file:**
+  - each changed file is read once, on eight threads, and parsed once;
+  - a missing tree-sitter is looked up once instead of once per file;
+  - search reuses each file's lowercased fields;
+  - the cache is compact JSON, replaced atomically, and written only when
+    something changed.
+- **The repo map scales.** An import counts for the files matching its most
+  specific path suffix, and for none when more than three match. Before,
+  one import credited every file sharing any suffix, such as all of a
+  monorepo's `index.ts`. That took about a minute for 100,000 files.
+- `scripts/benchmark_index.py` builds a synthetic repository and measures
+  all of this.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,883 passed, 3 skipped.
+- 10 tests in `test_rag_large_repos.py`:
+  - `.gitignore` through Git, in the repository and in a folder inside it;
+  - no repository in the home folder, the walk outside Git and the cap;
+  - one read and one parse per changed file, and none when nothing changed;
+  - the cache left alone when nothing changed;
+  - the tree-sitter lookup, the cached search fields and import matching.
+- Benchmarks on Windows (this machine's antivirus scans each newly written
+  file on its first read):
+
+| Repository | First index | Nothing changed | 1% changed | Search, median | Repo map | Cache |
+| --- | --- | --- | --- | --- | --- | --- |
+| 20,000 files plus 20,000 ignored, before | 213 s (ignored files included) | | | 93 ms | 1.9 s | 20 MB |
+| The same, after | 15 s | 0.5 s | 0.8 s | 30 ms | 0.1 s | 9.8 MB |
+| 100,002 files, after (capped at 100,000) | 76 s | 2.5 s | 4.0 s | 187 ms | 0.9 s | 49 MB |
+
+  At 100,000 files the repo map took 59 s before the import change. The
+  slowest search there took 691 ms, and the cache loaded in 0.5 s.
+
 ## September 25 Lumi account and Lumi Cloud enrollment — source only, not released
 
 - **Settings > Lumi account** signs the app in to an organization's Lumi Cloud

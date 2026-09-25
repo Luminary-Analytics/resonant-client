@@ -15,11 +15,13 @@ Each channel and release line has its own feed beside the installers on the
 update site; ``packaging/update_appcast.py`` writes them. WinSparkle takes a
 feed URL, not a filter, so choosing the feed is how the choice is enforced.
 
-A copy installed from the MSI package (packaging/lumi.wxs) or the macOS
-installer package (packaging/macos_pkg.py) never updates itself: the device
-management that installed it does, and two updaters would otherwise fight over
-the same folder. The package puts ``lumi-install.json`` beside ``lumi.exe``, or
-in ``Lumi.app/Contents/Resources``, to say so; it wins over everything.
+A copy installed from the MSI package (packaging/lumi.wxs), the macOS
+installer package (packaging/macos_pkg.py) or a Linux .deb or .rpm
+(packaging/linux_packages.py) never updates itself: the device management or
+package manager that installed it does, and two updaters would otherwise fight
+over the same folder. The package puts ``lumi-install.json`` beside the
+executable, or in ``Lumi.app/Contents/Resources``, to say so; it wins over
+everything.
 
 Like the policy, these are read once at startup (``read``): a change applies
 the next time Lumi starts. ``read`` parses settings.json itself rather than
@@ -42,8 +44,14 @@ FEED_BASE = "https://luminary-analytics.github.io/resonant-client/"
 MODES = ("automatic", "manual", "off")
 CHANNELS = ("stable", "beta")
 DEFAULTS = {"mode": "automatic", "channel": "stable", "pin": ""}
-# Packages device management installs and updates, by their install marker's name.
-MANAGED_INSTALLERS = {"msi": "the MSI package", "pkg": "the macOS installer package"}
+# Packages that update the copy they installed, by their install marker's name:
+# where the copy came from, and what updates it.
+MANAGED_INSTALLERS = {
+    "msi": ("the MSI package", "your organization's device management"),
+    "pkg": ("the macOS installer package", "your organization's device management"),
+    "deb": ("the Debian package", "your package manager"),
+    "rpm": ("the RPM package", "your package manager"),
+}
 _PIN = re.compile(r"(0|[1-9]\d{0,3})\.(0|[1-9]\d{0,3})")
 
 
@@ -80,7 +88,7 @@ def validate_policy_settings(settings: dict[str, Any]) -> None:
 
 
 def installed_by(executable: str | None = None) -> str:
-    """The package this copy came from (``"msi"`` or ``"pkg"``), else ``""``.
+    """The package this copy came from (a MANAGED_INSTALLERS name), else ``""``.
 
     The MSI's marker is beside ``lumi.exe``. In a macOS app the executable is
     in ``Contents/MacOS``, and the installer package keeps its marker in
@@ -119,7 +127,7 @@ class UpdatePreferences:
     managed_by: str = ""  # the organization whose policy sets any of these
     locked: tuple[str, ...] = ()  # which keys the policy sets
     problems: tuple[str, ...] = field(default=())  # stored values that were ignored, and why
-    installed_by: str = ""  # "msi" or "pkg": device management updates this copy
+    installed_by: str = ""  # a MANAGED_INSTALLERS name: that updates this copy
 
     @property
     def feed_url(self) -> str:
@@ -143,7 +151,7 @@ def read(settings_path: Path | None = None, policy_state: Any = None,
 
     An invalid policy pauses automatic updates (``manual``): the administrator
     may have meant to turn them off, and a person can still check by hand.
-    An MSI or PKG installation turns them off whatever the settings say.
+    An MSI, PKG, deb or rpm installation turns them off whatever the settings say.
     """
     from . import policy as policy_module
     from .paths import state_home

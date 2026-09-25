@@ -8,6 +8,46 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 autonomous sessions: spending limit and an opt-in — source only, not released
+
+- **Spending limit** ([guide](autonomous-sessions.md#the-spending-limit)):
+  the launch card offers none, $5, $25 or $100. The mission stops
+  (`spend_limit_reached`) once its priced model requests, iterations and
+  reflect passes alike, reach it. It's checked before each iteration and at
+  every heartbeat while one runs, which cancels the running iteration. The
+  roadmap keeps `**Spending limit:**` and `**Spent so far:**`, so a mission
+  resumed after a restart counts on.
+- **Opt-in.** The v0.6.8 layout hid autonomous sessions entirely. They're now
+  experimental and off by default: **Settings > General > Autonomous
+  sessions (experimental)** shows an **∞** button in the message box. The
+  AI Employee task button stays hidden.
+- **Fixed:** the launch card required checkbox criteria (``- [ ] `[bash]` ``)
+  while the spec prompt asks for ``- `[bash]` ``, so a spec written as asked
+  never showed **Build autonomously**. Both forms are accepted on both sides
+  now.
+- Stop reasons read as words ("spending limit reached", "time budget used
+  up") instead of codes.
+
+Validation on September 25, 2026:
+
+- `test_mission_spend.py` (14 tests): the roadmap fields, parsing limits, a
+  stop before the next iteration, a running iteration cancelled at the limit,
+  no limit, the tracker counting requests between iterations, starting and
+  resuming with the spend carried over, and both criteria forms.
+  `tests/autonomous_view.test.cjs` (4 tests): the launch card's spec check
+  and stop-reason wording. The existing mission suites pass (282 tests),
+  and the full `pytest` run: 3,995 passed, 4 skipped.
+- In the browser pane, with an isolated home and the stub model: the switch
+  in Settings saved and showed **∞**; the composer started a session; the
+  stub's spec in the prompt's own format showed the launch card (before the
+  fix it showed "no typed criteria"); choosing $25 read "stops at $25", and
+  **Build autonomously** started a session whose banner read "spending
+  limit: $25.00" and whose roadmap recorded the limit and "$0.00" spent
+  (the stub is free). The session then paused as "stuck" because the stub
+  can't build anything. Stop's confirmation was answered by a stubbed
+  `window.confirm`. A real priced model wasn't used, so the limit was
+  reached only in tests.
+
 ## September 25 code intelligence — source only, not released
 
 - **`code_intel`** ([guide](code-intelligence.md), `lumi/engine/lsp.py`):

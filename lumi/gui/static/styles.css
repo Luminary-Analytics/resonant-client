@@ -8769,7 +8769,8 @@ body {
     color: var(--muted);
 }
 
-.mission-budget-presets {
+.mission-budget-presets,
+.mission-spend-presets {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
@@ -10936,11 +10937,16 @@ body {
     pointer-events: none;
 }
 
-#mission-toggle,
-.mission-toggle,
-.mission-badge,
-.autonomous-roadmap-inspector,
-.autonomous-mission-browser {
+/* Autonomous sessions are experimental: shown only when Settings > General
+   turns them on (general.autonomous_sessions). */
+body:not([data-autonomous-sessions="1"]) #mission-toggle,
+body:not([data-autonomous-sessions="1"]) #composer-autonomous-btn,
+body:not([data-autonomous-sessions="1"]) .mission-toggle,
+body:not([data-autonomous-sessions="1"]) .mission-badge,
+body:not([data-autonomous-sessions="1"]) .autonomous-roadmap-inspector,
+body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
+.mission-toggle[hidden] {
+    /* [hidden]: the AI Employee task button shares the class and stays hidden. */
     display: none !important;
 }
 

@@ -420,7 +420,7 @@ class LumiAutonomousView {
             isComplete ? 'Autonomous session complete' : 'Autonomous session stopped',
             isComplete
                 ? `Finished after ${s.iterCount || 0} step${s.iterCount === 1 ? '' : 's'}.`
-                : `Stopped: ${(event && event.stop_reason) || 'paused'}.`,
+                : `Stopped: ${this._autonomousStopReason((event && event.stop_reason) || 'paused')}.`,
             { tag: 'lumi-autonomous' },
         );
         // v0.5.4a4 — refresh inspector once more so it shows the final
@@ -1070,6 +1070,20 @@ class LumiAutonomousView {
      * Visually distinct from iteration cards — they're terminal
      * messages that bookmark the run.
      */
+    _autonomousStopReason(reason) {
+        return {
+            user_stop: 'stopped by you',
+            user_pause: 'paused by you',
+            time_budget_exhausted: 'time budget used up',
+            spend_limit_reached: 'spending limit reached',
+            iteration_cap: 'iteration cap reached',
+            blocked: 'blocked',
+            check_failed: 'sub-tasks kept failing',
+            misconfigured: 'no acceptance criteria',
+            stuck: 'stuck, needs you',
+        }[reason] || reason;
+    }
+
     _renderAutonomousBanner(kind, event) {
         if (!this.chatMessages) return;
 
@@ -1083,8 +1097,10 @@ class LumiAutonomousView {
                 ? `time budget: ${this._fmtDuration(event.time_budget_seconds)}`
                 : 'full auto (no time cap)';
             const cap = event && event.max_iterations ? `, iteration cap: ${event.max_iterations}` : '';
+            const spend = event && typeof event.spend_limit_usd === 'number'
+                ? `, spending limit: $${event.spend_limit_usd.toFixed(2)}` : '';
             titleText = 'Autonomous session started';
-            subText = `${budget}${cap}.`;
+            subText = `${budget}${spend}${cap}.`;
             cls += ' autonomous-banner-start';
         } else if (kind === 'complete') {
             const reason = (event && event.stop_reason) || 'satisfied';
@@ -1100,7 +1116,7 @@ class LumiAutonomousView {
             const elapsed = event && typeof event.elapsed_seconds === 'number'
                 ? this._fmtDuration(event.elapsed_seconds)
                 : '';
-            titleText = `Autonomous session paused · ${this.escapeHtml(reason)}`;
+            titleText = `Autonomous session paused · ${this.escapeHtml(this._autonomousStopReason(reason))}`;
             subText = `${this.escapeHtml(message)}${elapsed ? ` · ${elapsed} elapsed` : ''}.`;
             cls += ' autonomous-banner-paused';
         } else if (kind === 'failed') {
@@ -1895,17 +1911,18 @@ class LumiAutonomousView {
                 sectionsFound,
             };
         }
-        // Acceptance criteria section exists — count typed criteria.
-        // Mirror the regex shape `roadmap.py._CRITERION_LINE_RE` uses
-        // (`- [ ] \`[bash|chrome|vision|manual]\` <text>`).
+        // Acceptance criteria section exists — count typed criteria. The
+        // spec's form is `- \`[bash]\` <text>` (grill_me._SPEC_CRITERION_RE,
+        // which the dispatch parses); the roadmap's checkbox form
+        // `- [ ] \`[bash]\` <text>` is accepted too.
         const criteriaMatches = md.match(
-            /^-\s*\[[\s x]\]\s*`\[(?:bash|chrome|vision|manual)\]`/gim,
+            /^-\s*(?:\[[\s x]\]\s*)?`\[(?:bash|chrome|vision|manual)\]`/gim,
         );
         const criteriaCount = criteriaMatches ? criteriaMatches.length : 0;
         if (criteriaCount === 0) {
             return {
                 ok: false,
-                reason: 'Spec has the Acceptance criteria heading but no typed criteria (looking for lines like ``- [ ] `[bash]` ...``).',
+                reason: 'Spec has the Acceptance criteria heading but no typed criteria (looking for lines like ``- `[bash]` ...``).',
                 sectionsFound,
                 criteriaCount,
             };
@@ -1974,6 +1991,22 @@ class LumiAutonomousView {
             </button>
         `).join('');
 
+        const spendPresets = [
+            { label: 'No limit', value: '', sub: 'budgets still apply' },
+            { label: '$5', value: '$5', sub: '' },
+            { label: '$25', value: '$25', sub: '' },
+            { label: '$100', value: '$100', sub: '' },
+        ];
+        const spendHTML = spendPresets.map((p) => `
+            <button type="button"
+                class="mission-budget-preset mission-spend-preset"
+                data-spend="${p.value}" aria-pressed="false"
+                aria-label="${p.value ? `Spending limit ${p.value}` : 'No spending limit'}">
+                <span class="mission-budget-preset-label">${p.label}</span>
+                ${p.sub ? `<span class="mission-budget-preset-sub">${p.sub}</span>` : ''}
+            </button>
+        `).join('');
+
         wrap.innerHTML = `
             <div class="mission-autonomous-head">
                 <span class="mission-autonomous-icon" aria-hidden="true">∞</span>
@@ -1990,10 +2023,16 @@ class LumiAutonomousView {
                 waits. Bound that wait so an unattended run cannot stall on you indefinitely.
             </p>
             <div class="mission-decision-presets">${decisionHTML}</div>
+            <p class="mission-autonomous-blurb">
+                <strong>Spending limit:</strong> stop once this session's model requests cost this
+                much. Your organization's budgets apply either way.
+            </p>
+            <div class="mission-spend-presets">${spendHTML}</div>
             <div class="mission-autonomous-actions">
                 <span class="mission-autonomous-budget-label">
                     Selected: <strong class="mission-autonomous-budget-display">${recommended}</strong>
                     <span class="mission-autonomous-decision-display"></span>
+                    <span class="mission-autonomous-spend-display"></span>
                 </span>
                 <button type="button" class="mission-build-btn mission-build-btn-autonomous">
                     <span class="mission-build-icon" aria-hidden="true">∞</span>
@@ -2057,6 +2096,24 @@ class LumiAutonomousView {
             b.addEventListener('click', () => updateDecision(b.dataset.decision || ''));
         });
         updateDecision('');
+
+        // Spending limit. Empty string means none.
+        let chosenSpend = '';
+        const spendButtons = wrap.querySelectorAll('.mission-spend-presets .mission-spend-preset');
+        const spendDisplay = wrap.querySelector('.mission-autonomous-spend-display');
+        const updateSpend = (value) => {
+            chosenSpend = value || '';
+            spendDisplay.textContent = chosenSpend ? ` · stops at ${chosenSpend}` : ' · no spending limit';
+            spendButtons.forEach((b) => {
+                const selected = (b.dataset.spend || '') === chosenSpend;
+                b.classList.toggle('mission-budget-preset-selected', selected);
+                b.setAttribute('aria-pressed', selected ? 'true' : 'false');
+            });
+        };
+        spendButtons.forEach((b) => {
+            b.addEventListener('click', () => updateSpend(b.dataset.spend || ''));
+        });
+        updateSpend('');
         // Defensive — if no preset matched the recommendation, default to 4h.
         // Scoped to the budget row: the decision row's default is always
         // selected by now, and an unscoped query would see that and conclude a
@@ -2079,6 +2136,7 @@ class LumiAutonomousView {
                 refined_intent: refined,
                 time_budget: chosen,
                 decision_timeout: chosenDecision,
+                spend_limit: chosenSpend,
             });
             // v0.5.7a4 — collapse the dispatch card into a one-line
             // confirmation chip after click. Linux-bridge field-

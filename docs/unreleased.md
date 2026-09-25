@@ -100,6 +100,168 @@ Validation on September 25, 2026:
 
 Not exercised: macOS, a packaged build, Codex or Claude Code, a live model.
 
+## September 25 workers run only the tools they were given — source only, not released
+
+**A read-only worker could start a writing worker.** A delegated worker gets a
+tool list for its type. An `explore` or `plan` worker has no write tools, and
+no worker gets `task` or `task_batch`. The list offered to the model is only a
+hint, and the check that enforces it (`lumi/engine/session.py`) sat after the
+branches that run `task`, `task_batch`, `await_user`, `search_tools` and MCP
+tools themselves, so it never applied to them. An `explore` worker whose model
+called `task` anyway started a `build` worker, which wrote a file. An MCP tool
+ran the same way. It never went past the conversation's permission mode: the
+new worker had the same approvals.
+
+- **The check comes first now**, for every tool, right after a worker's
+  action guard. A tool outside the list is refused (`is_error` and `denied`)
+  before any hook, policy or approval prompt, so Ask doesn't ask about a call
+  that can't run.
+- **Unchanged for the tools a list includes**: orchestration specialists list
+  `await_user` and the MCP tools they may use, and those still run. A harness
+  evaluator's empty list now refuses every tool. SONN workers keep their own
+  file-only guard, checked first.
+- Docs: [agent runtime](modern-agent-runtime.md#tool-approvals) and
+  [Director Mode](director-mode.md).
+
+Validation on September 25, 2026:
+
+- Full `pytest` on the latest `main`: 4,156 passed, 5 skipped. `ruff check .`
+  clean, the UI node tests (`ui_recovery`, `appearance`, `autonomous_view`)
+  46 passed, `git diff --check` clean.
+- `test_worker_tool_list.py` (7 tests) drives `Session.run` with a scripted
+  model that answers as the parent, an `explore` worker or a `build` worker.
+  The `explore` worker's `task`, `task_batch`, MCP tool, `await_user` and
+  `search_tools` calls are refused. No other worker is recorded, the MCP
+  server isn't called and no file is written. In a session that asks before
+  changes, only the parent's own `task` is put to the user. A listed
+  `await_user` still reaches the user.
+- Against the previous `session.py`, 6 of the 7 failed. The listed tool
+  passes on both.
+- In the browser pane, with an isolated home and a scripted
+  Ollama-compatible model, in Ask mode: the parent delegated to an `explore`
+  worker, whose model then called `task` to start a `build` worker that
+  writes `escalated.txt`. After **Allow** for the parent's own task, no other
+  dialog appeared. The worker's `task` row showed **denied**, the model got no
+  request from a `build` worker, and no file was written. On the previous
+  `session.py`, the same run showed a second Command Review for the worker's
+  `task`. **Allow** there started the `build` worker, and **Accept** on its
+  write card created `escalated.txt`. The real `~/.resonant/settings.json`
+  was unchanged, no `~/.lumi` was created, and no Lumi credential was stored.
+
+Not exercised: a live model, a packaged build, orchestration specialists and
+harness evaluators in the app (their existing tests pass), and Codex or Claude
+Code, which run their own tools.
+
+## September 25 team skills and prompts — source only, not released
+
+- **Your organization's library** (`lumi/team_library.py`,
+  [guide](team-library.md)): skills and prompts published and versioned in
+  Lumi Cloud's **Library** (Luminary-Analytics/lumi-cloud#21).
+  - Lumi syncs the latest versions when it starts, if its copy is more than
+    15 minutes old, and from **Settings > Lumi account > Team library > Sync
+    now**.
+  - It keeps a copy in its state folder (`team/library.json`) and deletes it
+    on sign-out.
+- **Team skills** that match a request are listed for the agent next to pack
+  skills (up to four), with their organization and version. `skill_view`
+  reads `team:<organization>/<slug>`.
+- **Team prompts**: a **❝** button beside the message box, shown once the
+  organization has prompts.
+  - It opens a searchable list; Enter inserts the first match into the
+    message after anything typed, and arrow keys move through the list.
+  - Nothing is sent until the person sends it.
+
+Validation on September 25, 2026: `test_team_library.py` (2 tests) covers:
+
+- syncing, and items that aren't valid being left out;
+- matching (a trigger phrase outranks shared words; no match for an
+  unrelated request);
+- the skill list and `skill_view` for team skills;
+- an archived item disappearing at the next sync, and a failed sync keeping
+  the copy;
+- the app's command syncing only when the copy is old or when asked;
+- sign-out deleting the copy.
+
+In the browser pane, Lumi Cloud of that branch and an isolated app signed in
+as Ada ran together, with a stub model recording its requests:
+
+- **Prompts.** The **❝** button appeared after the startup sync. It was
+  reached with Tab, and the list opened with Enter. Typing "check" filtered it
+  to "Review checklist", and Enter put that prompt in the message with focus
+  back in the box.
+- **Skills.** Sending "Cut the 2.0 release" gave the model Acme's "Cut a
+  release (version 1)" in the skill list.
+- **Updating.** After Ada published version 2 from the portal's form, **Sync
+  now** brought it into the app's copy.
+- **Layout.** The prompts dialog fit a 420-pixel window once its search field
+  was made full width.
+
+## September 25 hand-offs to a teammate or a CI run — source only, not released
+
+- **Hand off…** in a conversation's menu (`lumi/handoff.py`,
+  [guide](hand-offs.md)) passes the work on with its conversation (the Share
+  copy: messages, replies and action lines, no tool results, secrets
+  removed), a note, and where the work is. That's the repository's address
+  without credentials, the branch and commit, and how much wasn't committed
+  or pushed.
+  - **To a teammate** through Lumi Cloud (Luminary-Analytics/lumi-cloud#20),
+    which emails them.
+  - **To a CI run** as `.lumi/handoffs/<name>.json` in the project, which
+    `lumi run --handoff <file>` continues from. The task defaults to
+    continuing it.
+- **Hand-offs for you** appears under **New session** when work is waiting.
+  - Each hand-off shows the note and where the work is, and suggests a recent
+    project that is a clone of the repository.
+  - It checks the chosen folder's branch and commit, and says what to do when
+    they differ. Lumi never switches branches, fetches or pulls.
+  - **Continue** keeps the hand-off in Lumi's state folder and starts a
+    conversation there, with `@handoff:<id> Continue the work …` ready to
+    review. **Dismiss** is the alternative.
+- **`@handoff:` attaches a hand-off** (by id, or a file inside the project) as
+  context framed as information, not instructions.
+  - It is the context broker's first sticky attachment: pinned for the rest of
+    the conversation.
+  - When a conversation is reopened, the session attaches hand-offs mentioned
+    in its history again (`ContextBroker.recall`).
+- **Automatic titles** leave out `@provider:selector` attachments, so a
+  continued hand-off or an `@file:` message gets a readable title.
+
+Validation on September 25, 2026: `test_handoff.py` (8 tests) covers these
+cases against a real temporary git repository:
+
+- what a hand-off holds, and the redaction of a saved key, a GitHub token and
+  a remote's credentials;
+- the branch, commit, uncommitted and unpushed counts;
+- the rendered context and its size limit;
+- CI files, ids, and what loading refuses (outside the project, excluded, not
+  a hand-off);
+- the folder check: same commit, another branch, a missing commit, another
+  repository and no repository;
+- the sticky attachment, including after a session is rebuilt from history;
+- `lumi run --handoff`;
+- the app's commands with a fake Lumi Cloud.
+
+`test_session_titles.py` covers titles without attachments.
+
+In the browser pane, Lumi Cloud of that branch and an isolated app signed in
+as Bob ran together, with a stub model on 127.0.0.1 recording its requests:
+
+- **Receiving.** "1 hand-off for you" was reached with Tab and opened with
+  Enter. The folder check said the folder was on main. After switching the
+  fixture's branch it said the folder was "at the handed-off commit". Escape
+  returned focus to the sidebar button.
+- **Continuing.** Continue, pressed with Enter, opened a new conversation with
+  the draft focused. Sending it gave the model the hand-off as a labeled
+  attachment, and a follow-up without the mention still carried it.
+- **Handing off.** Handing "Rate limit tweak" to Ada from the keyboard showed
+  it waiting in her portal, with the note, the branch and "2 commits" not
+  pushed.
+- **To CI.** A CI hand-off saved `.lumi/handoffs/rate-limit-tweak-….json` and
+  showed its `lumi run --handoff` command.
+- **Layout.** The dialog fit a 420-pixel window.
+- **Bug found and fixed.** The sidebar button's `display` rule had overridden
+  `hidden`, leaving "0 hand-offs for you" in view.
+
 ## September 25 sharing a conversation — source only, not released
 
 - **Share…** in a conversation's menu (`lumi/share.py`,

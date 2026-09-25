@@ -204,6 +204,15 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   URL, log or printed output. The socket's `update_settings` edits only
   the fields Settings shows; hooks, stdio MCP servers, LSP servers, plugins and
   the gateway stay file-edited.
+- The page's Content-Security-Policy (`local_access.content_security_policy`)
+  runs only the server's own scripts and styles and connects only to its own
+  socket. Never add inline `<script>`, `on*=` attributes, `style=""` (also in
+  markup scripts build), `javascript:` URLs, eval or `new Function`; use
+  `addEventListener`, classes, `element.style` for computed values and
+  `data-start-hidden` for elements the page starts with hidden.
+  `tests/test_content_security_policy.py` enforces this. pywebview's bridge
+  needs eval, so `gui/webview_bridge.py` replaces it; recheck
+  `tests/test_webview_bridge.py` when pywebview changes.
 - Live working status follows the active turn output; preserve manual scroll
   position when the user reads older messages. Next-prompt suggestions are
   transient, scoped to the conversation, and never replace typed drafts. Tab

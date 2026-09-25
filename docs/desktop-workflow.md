@@ -57,6 +57,13 @@ another browser, but the tab it opened keeps working through reloads and
 reconnects, as do new tabs of that browser at the same address, until Lumi exits. After a restart, paste the new link into an existing tab. A page
 opened without a link explains how to get one. See [Unreleased](unreleased.md).
 
+**What replies can't do (Unreleased):** the app page runs only Lumi's own
+scripts and styles. HTML in a reply or a file that tries to run code, restyle
+the page or submit a form does nothing, and images from other websites don't
+load in replies, because their address could carry data away. Screenshots,
+attachments and saved images still show. A browser's developer console lists
+each thing it refused.
+
 **Find projects or sessions** matches project names, paths, and session titles.
 The scope selector offers **All sessions** and **Pinned**. Expanded projects
 initially show six matching sessions, plus the active conversation if needed.

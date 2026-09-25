@@ -29,7 +29,7 @@ these services; it is not required for ordinary chat-based coding.
 | Model context | `engine/model_prompts.py`, `protocol.py`, `engine/compression.py` | Stable prompt, tool schemas/parsing, context compaction |
 | Agent loop | `engine/session.py`, `engine/tools.py`, `engine/sandbox.py` | Model/tool iteration, execution, permissions, cancellation |
 | GUI server | `gui/app.py`, `gui/ws_commands.py`, `gui/chat_loop.py` | Startup, state, commands, streaming and active-run lifecycle |
-| Local access | `gui/local_access.py`, `gui/static/local_access.js`, `gui/server.py` | Per-launch token, one-time launch links, Host/Origin checks |
+| Local access | `gui/local_access.py`, `gui/static/local_access.js`, `gui/server.py`, `gui/webview_bridge.py` | Per-launch token, one-time launch links, Host/Origin checks, the page's Content-Security-Policy |
 | Construction | `gui/runtime.py` | Serializable `BackendSpec`, shared session construction |
 | Saved work | `gui/sessions.py`, `gui/session_ledger.py`, `gui/ui_state.py` | Projects, session metadata, transcript ledger, composer drafts |
 | Configuration | `gui/settings.py`, `network_defaults.py`, `gui/project_instructions.py` | Settings, endpoint resolution, layered repository instructions |
@@ -83,6 +83,19 @@ WebSocket subprotocol or an `X-Lumi-Access` header. Codes come from the
 launcher (desktop window, `--browser` link) or the desktop bridge's
 `open_in_browser`, never from a web request. The server never logs or prints
 the token.
+
+The page renders model output and file contents while holding that token, so
+its Content-Security-Policy (`local_access.content_security_policy`) keeps an
+injection from using it. Only the server's own scripts and styles run: no
+inline scripts, event-handler attributes, `style=""` attributes or eval. The
+page connects only to its own socket, on the hosts `allowed_hosts` accepts.
+Remote images, plugins, `<base>`, form submissions and framing are refused.
+Markup therefore uses classes, `element.style` for computed values, and
+`data-start-hidden` for elements the page starts with hidden, which
+`static/appearance.js` turns into an inline `display: none`. pywebview builds
+its bridge with `new Function` and returns results through `eval`. WebKit
+(macOS, Linux) refuses both under the policy, so `gui/webview_bridge.py`
+replaces them in the desktop window.
 
 Preserve render signatures, scroll/focus restoration, session-scoped draft
 writes, and immediate catalog updates after session mutations. The compact

@@ -1333,6 +1333,102 @@ Not in this change:
   empty-roadmap branch decides before it checks for the stop. Seen in the
   fixture; it predates this change.
 
+## September 25 a strict Content-Security-Policy for the app page — source only, not released
+
+**Security hardening.** The app page sent only `frame-ancestors 'none'`.
+Inline scripts, event-handler attributes, `eval` and inline styles were all
+allowed, so markup injected through a rendered reply or a file's contents
+could have run with the page's access token and its socket, which changes
+settings and starts agent turns. Rendered Markdown already went through
+DOMPurify; the policy is a second line that doesn't depend on the sanitizer.
+
+- **The policy** (`lumi/gui/local_access.py`, `content_security_policy`),
+  sent with the page: `default-src 'self'; script-src 'self'; style-src
+  'self'; img-src 'self' data: blob:; connect-src 'self'
+  ws://127.0.0.1:<port> ws://localhost:<port>; object-src 'none'; base-uri
+  'none'; form-action 'none'; frame-ancestors 'none'`. There is no
+  `'unsafe-inline'` or `'unsafe-eval'`. The socket sources are the hosts the
+  server accepts on its own port (and a literal non-loopback bind address),
+  not every local port.
+- **What it would have broken, and what changed:**
+  - 28 elements the page starts with hidden carried `style="display:none"`.
+    They carry `data-start-hidden`, which `styles.css` hides until
+    `static/appearance.js` swaps it for the same inline `display: none`:
+    scripts show these elements with `style.display = ''` or check for
+    `'none'`, as the command palette's Ctrl+K toggle does.
+  - The saved font size was a `style` on `<html>`. It is `data-font-size`,
+    which `appearance.js` applies before the first paint.
+  - About 60 inline styles in markup the scripts build became classes
+    (`styles.css`, "Former inline styles"). Values that are computed or change
+    later go through `element.style`: budget and context bars, the live to-do
+    bar, plan-graph positions, worker depth, a tool result's status color, the
+    autonomous card's Full-auto note and the employee task panel.
+  - Rendered Markdown (replies, scheduled-task answers) drops `style`
+    attributes and `<style>` elements (`sanitizeMarkdownHtml`). The browser
+    still reports each one once, while DOMPurify parses it: every HTML parse
+    in the page inherits its policy.
+  - The desktop window. pywebview builds `window.pywebview.api` with
+    `new Function` and returns each call's result through `eval`. WebView2 on
+    Windows exempts the scripts its host runs. WebKit on macOS and Linux
+    applies the page's policy to them, which would have left the frameless
+    window's minimize, maximize and close buttons without an API.
+    `lumi/gui/webview_bridge.py` builds the API from closures and returns
+    results with `run_js`.
+- **Visible change:** images from other websites in a reply no longer load,
+  because a remote image's address can carry data away. Screenshots,
+  attachments and saved images, which are data: URLs, still show. A form in a
+  reply can't submit. Nothing in the app used inline scripts, event-handler
+  attributes, eval or iframes. The preview panel shows screenshots and opens
+  previews in a new tab, so no `frame-src` is needed.
+
+Validation on September 25, 2026:
+
+- `tests/test_content_security_policy.py` checks the page's policy under
+  both host names and the socket sources for other binds. It also finds no
+  inline style, event-handler attribute, inline script, `javascript:` URL,
+  eval, string timer, `setAttribute('style')` or `cssText` in the template or
+  the static scripts. Against `main`'s files it flags 30 inline styles in the
+  template and 58 in the scripts.
+- `tests/test_webview_bridge.py` runs the installed pywebview's own injected
+  scripts in a Node context that refuses code generation from strings, as
+  WebKit does under the policy. With the replacement the API is built, the
+  call is posted and its result arrives through `run_js`. Without it, the same
+  context stops at `new Function` with an EvalError.
+- `tests/appearance.test.cjs` adds the font size and the start-hidden
+  conversion; `tests/test_appearance.py` checks `data-font-size`.
+- A Chromium test page with this exact policy refused `style=""` in markup,
+  `setAttribute('style')` and style attributes set through `innerHTML`, but
+  not `style.cssText`, `style.color` or `setProperty`. It refused eval,
+  `new Function`, inline handlers and inline scripts, a WebSocket to another
+  local port and a remote image.
+- A standalone pywebview 6.1 window (WebView2) with this policy: pywebview's
+  own bridge still worked, because host scripts are exempt there. With
+  `webview_bridge.install` the API was built without `new Function`, and both
+  calls' results came back through `run_js`, with no violations.
+- The app in the browser pane, with an isolated home and a scripted local
+  model (no live model), covered:
+  - loading the page, and a conversation with a list, a table, a highlighted
+    code block, a quote and tool rows;
+  - all 25 Settings pages;
+  - the command palette (Ctrl+K opens and closes it), keyboard shortcuts,
+    Timeline, Trace, the Command Review dialog in Ask mode (denied with
+    Escape) and the inline edit review (Reject);
+  - the preview panel's Plan and Context tabs, and a 375px width.
+
+  The only violations came from content the scripted reply injected: its
+  style attribute and `<style>` (reported during sanitizing, absent from the
+  page), its remote image, and its form when submitted. Computed styles
+  matched the old inline values (bar widths, Settings spacing and sizes, tool
+  colors), and a font size chosen in Settings survived a reload.
+- The real desktop window (pywebview 6.1, WebView2), hidden and driven from a
+  function: no violations; all seven `pywebview.api` functions built without
+  `new Function`; `is_maximized()` answered through `run_js`; window controls
+  shown and **Open in Browser** offered.
+- FULL_SUITE_RESULTS
+
+Not exercised: a macOS or Linux (WebKit) window, where the bridge replacement
+matters most, and a packaged build.
+
 ## September 25 a plan's specialists report under its card — source only, not released
 
 **A plan's specialists showed up as turns of the conversation.** A plan

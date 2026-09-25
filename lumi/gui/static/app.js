@@ -5816,10 +5816,10 @@ class LumiApp {
     }
 
     /**
-     * Sanitizes rendered Markdown, which is model output and file contents.
-     * The page's CSP refuses their style="" attributes and <style> elements
-     * anyway (gui/local_access.py); removing them here keeps each refusal out
-     * of the console, where it would hide a real one.
+     * Sanitizes rendered Markdown, which is model output and file contents,
+     * and drops its style="" attributes and <style> elements. The page's CSP
+     * refuses those (gui/local_access.py), so a reply never shows them; the
+     * browser still reports each one once, when DOMPurify parses it.
      */
     sanitizeMarkdownHtml(html) {
         return DOMPurify.sanitize(html, {FORBID_TAGS: ['style'], FORBID_ATTR: ['style']});

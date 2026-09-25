@@ -75,8 +75,10 @@ def test_page_renders_the_saved_appearance_before_any_script(gui_state):
         gui_state.settings.set("appearance", "density", "compact")
         gui_state.settings.set("appearance", "font_size", "14")
         tag, _ = _html_tag(client)
+        # The font size is data: the page's CSP refuses style="" attributes,
+        # so static/appearance.js applies it before the first paint.
         assert tag == ('<html lang="en" data-theme-setting="light" data-theme="light" '
-                       'data-density="compact" style="--text-base: 14px">')
+                       'data-density="compact" data-font-size="14">')
 
         # The page resolves "system" against the OS (static/appearance.js).
         gui_state.settings.set("appearance", "theme", "system")

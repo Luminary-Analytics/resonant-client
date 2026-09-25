@@ -291,6 +291,8 @@ def launch_gui(
                 height=800,
                 min_size=(800, 600),
                 resizable=True,
+                # pywebview turns selection off with an injected <style>, which
+                # the page's Content-Security-Policy refuses.
                 text_select=True,
                 background_color=window_background(app_state.settings),
                 frameless=True,

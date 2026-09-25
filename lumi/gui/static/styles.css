@@ -13666,6 +13666,18 @@ body.is-window-dragging * {
 .eval-model-group label { display: inline-flex; align-items: center; gap: 4px; }
 .eval-task-row { display: grid; gap: 6px; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
 
+/* Team prompts from the organization's library (app.js, openTeamPrompts). */
+.composer-prompts-btn[hidden] { display: none; }
+.team-prompts-dialog { width: 520px; max-height: 80vh; display: flex; flex-direction: column; }
+.team-prompts-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.team-prompts-dialog .dialog-body { overflow: auto; }
+.team-prompts-dialog .settings-input { display: block; width: 100%; box-sizing: border-box; }
+.team-prompts-list { display: grid; gap: 6px; margin: 10px 0; }
+.team-prompt { display: grid; gap: 2px; width: 100%; text-align: left; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.team-prompt:hover, .team-prompt:focus-visible { background: var(--bg-hover); outline: 1px solid var(--brand2); }
+.team-prompt-name { font-weight: 600; }
+.team-prompt-meta { color: var(--muted); font-size: 12px; }
+
 /* Hand off a conversation, and hand-offs for you (app.js, openHandoffDialog and openHandoffsInbox). */
 .handoff-dialog { width: 520px; }
 .handoffs-dialog { width: 560px; max-height: 85vh; display: flex; flex-direction: column; }

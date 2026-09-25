@@ -348,6 +348,14 @@ class LumiSettingsView {
                 <div class="settings-row"><div class="settings-row-copy"><label class="settings-row-label" for="remote-tasks-mode">Permission mode</label></div>
                 <div class="settings-row-value"><select id="remote-tasks-mode" class="settings-select">${options}</select> ${button('remote_tasks', 'Save')}</div></div>`);
         }
+        const library = this.teamLibrary;
+        if (s.signed_in && library) {
+            const counts = (library.organizations || []).map(org =>
+                `${esc(org.name)}: ${org.skills} skill${org.skills === 1 ? '' : 's'} and ${org.prompts} prompt${org.prompts === 1 ? '' : 's'}`).join('; ');
+            const when = library.synced_at ? `Synced ${esc(new Date(library.synced_at * 1000).toLocaleString())}.` : 'Not synced yet.';
+            parts.push(row('Team library', `Skills and prompts your organization publishes in Lumi Cloud. The agent is offered matching skills, and the ❝ button beside the message box inserts prompts. ${counts ? `${counts}.` : 'Nothing is published yet.'} ${when}`
+                + (library.error ? `<div class="editor-error" role="alert">${esc(library.error)}</div>` : ''), button('library_sync', 'Sync now')));
+        }
         parts.push('<p class="editor-help">An enrolled computer checks in hourly with its Lumi version, the policy in force and usage totals per model (requests, tokens and cost). Prompts, code and file names never go to Lumi Cloud.</p>');
         return parts.join('');
     }
@@ -374,6 +382,10 @@ class LumiSettingsView {
             const organization = this.cloudStatus?.device?.organization_name || 'the organization';
             if (action === 'unenroll' && !window.confirm(`Leave ${organization} on this computer? Its policy stops applying here.`)) return;
             control.disabled = true;
+            if (action === 'library_sync') {
+                this.send({command: 'team_library', sync: true});
+                return;
+            }
             const message = {command: `cloud_${action}`};
             if (action === 'sign_in') message.url = (section.querySelector('#cloud-url')?.value || '').trim();
             if (action === 'enroll') message.organization_id = control.dataset.org;

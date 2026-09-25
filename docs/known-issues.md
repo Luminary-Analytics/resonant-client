@@ -4,6 +4,27 @@ Living catalog of known bugs surfaced during real usage. Each entry has reproduc
 
 > **Convention:** issues are numbered chronologically across all sources (dogfood passes, release pipeline, post-release reports). Numbers are stable — even after a fix lands, the issue number stays in this doc as a historical record.
 
+## Desktop views without an entry point (2026-09-25)
+
+v0.14.0 ("conversation-first agent workflow", 8d6d023) removed the Agents pane
+from the page. `app.js` still renders into its elements (`agent-activity-tree`,
+`agent-handoff-detail`), which no longer exist, so these have no desktop entry
+point:
+
+- workers' transcripts and their pause, resume, cancel, steer and restart
+  controls (`agent_runtime_*`);
+- the checkpoint Timeline (`session_timeline_*`): restoring the conversation,
+  or a non-Git snapshot. **Settings > Checkpoints & recovery** still lists Git
+  checkpoints and compares or restores their files;
+- flight-recorder traces and their OTLP export (`flight_recorder_*`);
+- the artifact list (`artifact_list`).
+
+Worker handoffs show in the conversation again (Unreleased), and capability
+packs are in Settings. **Severity:** medium, since conversation restore and
+worker controls can't be reached from the app. **Reproduce:** search the page for
+`#agent-activity-tree`; nothing matches. **Fix proposal:** give the remaining
+views a place in the conversation layout, or remove the unused rendering code.
+
 ## Current provider and validation limitations (2026-09-14)
 
 - Authenticated live SONN discovery and coding have been exercised through the

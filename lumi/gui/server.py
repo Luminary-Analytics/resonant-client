@@ -221,6 +221,11 @@ def launch_gui(
             icon_dir = os.path.join(os.path.dirname(__file__), "static")
             ico_path = os.path.join(icon_dir, "lumi.ico")
 
+            # Paint the window in the saved theme's background until the page
+            # loads, instead of a white flash. Same process as the server.
+            from .app import state as app_state
+            from .appearance import window_background
+
             wv_kwargs = dict(
                 title="Lumi",
                 url=local_access.launch_url(url),
@@ -229,6 +234,7 @@ def launch_gui(
                 min_size=(800, 600),
                 resizable=True,
                 text_select=True,
+                background_color=window_background(app_state.settings),
                 frameless=True,
                 # Whole-window drag off; pywebview moves the window only from .pywebview-drag-region
                 # (see menubar title in index.html). -webkit-app-region is for other hosts only.

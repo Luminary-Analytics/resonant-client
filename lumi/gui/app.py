@@ -49,6 +49,7 @@ from ..sonn import SonnBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
 from . import ws_commands
+from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
 from .local_access import WS_REFUSED, LocalHostGuard, access as local_access, same_origin
 # Payload builders moved to ws_commands.py with the handlers that use them.
@@ -3287,7 +3288,11 @@ async def homepage(request):
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"asset_version": _asset_version()},
+        {
+            "asset_version": _asset_version(),
+            # Rendered into <html> so the saved theme shows from the first paint.
+            "appearance": page_appearance(state.settings),
+        },
         headers={
             # The page holds this launch's access token in origin storage.
             # Never let another site frame it and steer clicks, and never tell
@@ -3295,6 +3300,8 @@ async def homepage(request):
             "Content-Security-Policy": "frame-ancestors 'none'",
             "X-Frame-Options": "DENY",
             "Referrer-Policy": "no-referrer",
+            # It carries the saved appearance, so a cached copy would be stale.
+            "Cache-Control": "no-store",
         },
     )
 

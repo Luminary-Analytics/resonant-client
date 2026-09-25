@@ -8,6 +8,47 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 24 dark and light themes — source only, not released
+
+- **The saved theme now survives a restart.** The desktop window uses a new
+  port and private browser storage on every launch, and the page restored the
+  theme only from browser storage. A Light choice therefore came back Dark, while
+  Settings still showed Light; density and font size were lost the same way. The
+  server now renders the saved appearance into the page (`gui/appearance.py`).
+  The native window also opens in the theme's background instead of white.
+- **Match system:** a third theme choice that follows the operating system's
+  light or dark setting, including changes while Lumi is open.
+- **Light theme coverage.** 268 color literals that only suited the dark
+  theme now use theme tokens. They had left light mode with a dark composer,
+  code blocks, task cards, menus and status popover, a dark "Review" button with
+  dark text, and hints below 2.5:1 contrast. Code blocks get a light
+  highlighting palette. New tokens cover gold-tinted text and chips, softer
+  status text, and diff colors. Native controls and scrollbars follow the theme
+  through `color-scheme`.
+- Dark mode is unchanged. Computed colors of every element were compared before
+  and after in the chat view, the command palette, the status popover, menus,
+  the model and permission pickers, New session, and Settings. The only
+  differences were the same colors written in a new format, one border moving
+  from 12% to 15% opacity, and native checkboxes now following the dark scheme.
+
+Validation on September 24, 2026, in the browser pane against an isolated home
+and a scripted Ollama-compatible model (no live model):
+
+- Light mode had no text below 3:1 and no dark surfaces in the chat, all 17
+  Settings pages, the command palette, status popover, menus, the model and
+  permission pickers, and New session. Only hint-level text is between 3.7:1
+  and 4.5:1; dark mode's hints measure 3.3–3.8:1.
+- Choosing Light in Settings saved it, and a reload with empty browser storage
+  still showed Light.
+- Match system followed an emulated OS switch from dark to light without a
+  reload, and resolved on load.
+- New tests: `tests/test_appearance.py` and `tests/appearance.test.cjs`.
+
+Not exercised: the packaged desktop window (its native background color and a
+real OS theme switch), macOS, and surfaces the fixture did not open (live-run
+progress, steer queue, onboarding, mission and autonomous views). Those use the
+same tokens, but no one has looked at them in light mode.
+
 ## September 24 rebrand to Lumi — source only, not released
 
 SONN Client (originally Resonant) is now **Lumi**. SONN keeps its name as the

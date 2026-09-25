@@ -70,5 +70,5 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Test draft recovery
-        run: node --test tests/ui_recovery.test.cjs
+      - name: Test draft recovery and appearance
+        run: node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs

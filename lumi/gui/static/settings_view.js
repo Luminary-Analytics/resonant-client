@@ -1735,6 +1735,12 @@ class LumiSettingsView {
                       hint: 'MOONSHOT_API_KEY is also supported and takes effect when no stored key exists.' },
                     { key: 'github', label: 'GitHub token', type: 'password',
                       hint: 'Lets the agent read pull request reviews and checks, and open, update and comment on pull requests. GITHUB_TOKEN or GH_TOKEN also work.' },
+                    { key: 'gitlab', label: 'GitLab token', type: 'password',
+                      hint: 'The same for merge requests on GitLab (api scope). GITLAB_TOKEN also works.' },
+                    { key: 'bitbucket', label: 'Bitbucket token', type: 'password',
+                      hint: 'An access token, or username:app-password, for Bitbucket Cloud pull requests. BITBUCKET_TOKEN also works.' },
+                    { key: 'azure_devops', label: 'Azure DevOps token', type: 'password',
+                      hint: 'A personal access token (Code: read & write; Build: read). AZURE_DEVOPS_TOKEN also works.' },
                     { key: 'otlp', label: 'OpenTelemetry collector token', type: 'password',
                       hint: 'Sent in the header set under Privacy & security when audit records are exported.' },
                 ]

@@ -207,10 +207,12 @@ hiddenimports = [
 ]
 
 # pywebview's platform backend: Edge through pythonnet/WinForms on Windows,
-# WebKit through PyObjC on macOS.
+# WebKit through PyObjC on macOS. Linux gets none: GTK or Qt would need the
+# system's libraries and copyleft bindings, so `lumi gui` opens the system
+# browser there (gui/server.py, docs/deploy-linux.md).
 if sys.platform == "darwin":
     hiddenimports += ["webview.platforms.cocoa"]
-else:
+elif sys.platform == "win32":
     hiddenimports += ["webview.platforms.edgechromium", "webview.platforms.winforms",
                       "clr", "clr_loader", "pythonnet"]
 
@@ -243,6 +245,9 @@ excludes += [
     )["not_shipped"]
     if not name.startswith("_")
 ]
+# python3-xlib (not_shipped; GPL-2.0) imports as Xlib. Without it PyAutoGUI
+# can't drive X11, so the Linux packages have no computer use.
+excludes += ["Xlib"]
 
 # ---- Analysis ----------------------------------------------------------------
 
@@ -326,7 +331,8 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon=str(PROJECT_ROOT / "packaging" / "macos" / "lumi.icns") if sys.platform == "darwin"
-    else str(PKG_ROOT / "gui" / "static" / "lumi.ico"),
+    else str(PKG_ROOT / "gui" / "static" / "lumi.ico") if sys.platform == "win32"
+    else None,  # Linux: the desktop entry's icon (packaging/linux_packages.py)
 )
 
 # ---- Collect (one-folder bundle) --------------------------------------------

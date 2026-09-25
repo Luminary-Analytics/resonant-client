@@ -51,6 +51,36 @@ def _brand_macos_process(icon_path: str) -> None:
         logger.debug("Could not set the macOS app name and icon", exc_info=True)
 
 
+def _graphical_session() -> bool:
+    """Whether a browser opened now would appear on a screen.
+
+    Without a display, Python's webbrowser on Linux falls back to console
+    browsers such as lynx, which would take over a server's terminal.
+    """
+    if sys.platform.startswith("linux"):
+        return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return True
+
+
+def _without_native_window(gui_app, open_page) -> bool:
+    """The native window couldn't start: forget it, then open the page in the system browser.
+
+    Native dialogs such as the folder picker must not wait on a window that
+    never opened. A launcher (the Linux desktop entry) has no terminal to
+    show the link in, so the page opens by itself where there's a screen.
+    Returns whether a browser was opened.
+    """
+    if getattr(gui_app, "_webview_window", None) is not None:
+        gui_app._webview_window = None
+    if not _graphical_session():
+        return False
+    try:
+        return bool(open_page())
+    except Exception:
+        logger.debug("Could not open the default browser", exc_info=True)
+        return False
+
+
 def _find_free_port() -> int:
     """Find a free TCP port."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -331,7 +361,15 @@ def launch_gui(
             _brand_macos_process(os.path.join(icon_dir, "lumi-macos.png"))
             webview.start(debug=debug)
         except (ImportError, Exception) as exc:
+            # For example Linux without GTK or Qt, which the packages don't
+            # bundle: the app runs in the system browser instead.
             logger.debug("pywebview not available: %s", exc)
+            import webbrowser
+
+            import lumi.gui.app as _gui_app
+
+            if _without_native_window(_gui_app, lambda: webbrowser.open(local_access.launch_url(url))):
+                print("  Opened Lumi in your browser.", flush=True)
             _run_in_browser()
 
 

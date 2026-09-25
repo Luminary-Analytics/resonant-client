@@ -284,8 +284,6 @@ class LumiApp {
         this.runtimeView = 'agents';
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimeTraces = [];
-        this.runtimeArtifacts = [];
         this.runtimePacks = [];
         this.agentActivityOrder = [];
         this.agentActivityStack = [];
@@ -2959,7 +2957,7 @@ class LumiApp {
         this._setLiveRunPhase('Stopping', 'Draining the active session');
     }
 
-    _finishCancelledTask() {
+    _finishCancelledTask(event = {}) {
         const task = this._activeTask;
         if (task) {
             task.card.classList.remove('task-card-running');
@@ -2967,7 +2965,8 @@ class LumiApp {
             task.stateEl.className = 'task-card-state is-stopped';
             task.stateEl.textContent = 'Stopped';
             this._completeLiveRun(true);
-            this._collapseTaskActivity({});
+            // A stopped turn's session.end still names its trace.
+            this._collapseTaskActivity({ trace: event.trace });
             this._setActiveTask(null);
         }
         this.removeThinking();
@@ -3442,6 +3441,11 @@ class LumiApp {
                     this.settingsError = event.message || 'That setting could not be saved.';
                     this._pricePending = false;
                     this.renderSettingsView({force: true});
+                    break;
+                }
+                // A trace or saved file that can't be read says so in its dialog.
+                if (event.source === 'trace' || event.source === 'artifact') {
+                    this._runRecordError(event);
                     break;
                 }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
@@ -4072,23 +4076,24 @@ class LumiApp {
                 }
                 this.send({ command: 'session_timeline_list' });
                 break;
-            case 'flight.recorder_list':
-                this.runtimeTraces = event.runs || [];
-                this.renderRuntimeView();
-                break;
             case 'flight.recorder_detail':
-                this.showRuntimePayload('Run trace', { manifest: event.manifest, events: event.events });
-                break;
-            case 'flight.recorder_comparison':
-                this.showRuntimePayload('Trajectory comparison', event.data || {});
-                break;
-            case 'artifact.list':
-                this.runtimeArtifacts = event.artifacts || [];
-                this.renderRuntimeView();
+                if (this._runTrace && event.turn_id && event.turn_id === this._runTrace.turn_id) {
+                    this._runTrace.data = event.trace || null;
+                    this._renderRunTrace();
+                }
                 break;
             case 'artifact.created':
-                if (event.artifact) this.runtimeArtifacts.unshift(event.artifact);
-                this.renderRuntimeView();
+                // A trace saved from its Trace dialog. (A run's own
+                // artifact.created events carry `artifact_id` instead.)
+                if (this._runTrace && event.artifact && event.turn_id === this._runTrace.turn_id) {
+                    this._runTrace.exporting = false;
+                    this._runTrace.exported = event.artifact;
+                    this._renderRunTrace();
+                    this._focusIn('run-trace-body', '[data-trace-action="open"]');
+                }
+                break;
+            case 'artifact.view':
+                this._receiveArtifactView(event);
                 break;
             case 'audit_status':
                 this.auditStatus = event;
@@ -5744,6 +5749,10 @@ class LumiApp {
 
     handleToolResult(event) {
         if (event.metadata?.preview && !this.isReplaying) this.send({command: 'preview_list'});
+        // A long output or a screenshot the run saved (engine/artifacts.py),
+        // a worker's included: listed at the end of the card's work details.
+        const saved = event.metadata?.artifact;
+        if (saved?.id && this._activeTask) (this._activeTask.artifacts ||= []).push(saved);
         const check = event.metadata?.check;
         if (check && this._liveRun) {
             const run = this._liveRun;
@@ -6663,8 +6672,6 @@ class LumiApp {
         this.contextState = null;
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimeTraces = [];
-        this.runtimeArtifacts = [];
         this.runtimePacks = [];
         this.renderAgentActivityTree();
         this.renderContextCockpit();
@@ -7542,6 +7549,7 @@ class LumiApp {
         while (activity.firstChild) {
             details.appendChild(activity.firstChild);
         }
+        this._appendRunRecords(details, task, event.trace);
         activity.appendChild(details);
     }
 
@@ -7570,7 +7578,7 @@ class LumiApp {
         this._closedEvidenceGroups = [];
 
         if (this._cancelInFlight || this._cancelInterrupted) {
-            this._finishCancelledTask();
+            this._finishCancelledTask(event);
             this._cancelInterrupted = false;
             this.scrollToBottom();
             return;
@@ -7785,8 +7793,6 @@ class LumiApp {
         const commands = {
             agents: 'agent_runtime_list',
             timeline: 'session_timeline_list',
-            traces: 'flight_recorder_list',
-            artifacts: 'artifact_list',
             packs: 'capability_pack_list',
         };
         this.send({ command: commands[this.runtimeView] || commands.agents });
@@ -7832,8 +7838,6 @@ class LumiApp {
         }
         const collections = {
             timeline: this.runtimeTimeline,
-            traces: this.runtimeTraces,
-            artifacts: this.runtimeArtifacts,
             packs: this.runtimePacks,
         };
         const items = collections[this.runtimeView] || [];
@@ -7842,41 +7846,12 @@ class LumiApp {
             tree.innerHTML = `<div class="agent-activity-empty">No ${this.escapeHtml(this.runtimeView)} recorded yet.</div>`;
             return;
         }
-        if (this.runtimeView === 'traces') {
-            tree.innerHTML = items.map((item) => `
-                <article class="runtime-card" data-run-id="${this.escapeHtml(item.run_id)}">
-                    <div><strong>${this.escapeHtml(item.model || item.run_id)}</strong><small>${this.escapeHtml(item.model_role || 'primary')} · ${this.escapeHtml(item.status || '')}</small></div>
-                    <span>${new Date(Number(item.updated_at || 0) * 1000).toLocaleString()}</span>
-                    <div class="runtime-actions"><button data-action="inspect">Inspect</button><button data-action="export">Export OTLP</button></div>
-                </article>`).join('');
-            tree.querySelectorAll('.runtime-card').forEach((card) => {
-                card.querySelector('[data-action="inspect"]')?.addEventListener('click', () => this.send({ command: 'flight_recorder_detail', run_id: card.dataset.runId }));
-                card.querySelector('[data-action="export"]')?.addEventListener('click', () => this.send({ command: 'flight_recorder_export', run_id: card.dataset.runId }));
-            });
-            return;
-        }
-        if (this.runtimeView === 'artifacts') {
-            tree.innerHTML = items.map((item) => `
-                <article class="runtime-card">
-                    <div><strong>${this.escapeHtml(item.label || item.id)}</strong><small>${this.escapeHtml(item.kind || '')} · ${Number(item.size || 0).toLocaleString()} bytes</small></div>
-                    <span title="${this.escapeHtml(item.path || '')}">${this.escapeHtml((item.path || '').split(/[\\/]/).pop() || '')}</span>
-                </article>`).join('');
-            return;
-        }
         tree.innerHTML = items.map((item) => `
             <article class="runtime-card">
                 <div><strong>${this.escapeHtml(item.name || item.id)}</strong><small>v${this.escapeHtml(item.version || '0.0.0')}</small></div>
                 <span>${this.escapeHtml(item.description || '')}</span>
                 <div class="runtime-badges"><b class="${item.enabled ? 'is-on' : ''}">${item.enabled ? 'enabled' : 'disabled'}</b><b class="${item.trusted ? 'is-on' : ''}">${item.trusted ? 'trusted' : 'untrusted'}</b><b>${(item.agents || []).length} agents</b><b>${(item.skills || []).length} skills</b></div>
             </article>`).join('');
-    }
-
-    showRuntimePayload(title, payload) {
-        const detail = document.getElementById('agent-handoff-detail');
-        if (!detail) return;
-        detail.innerHTML = `<div class="agent-handoff-header"><strong>${this.escapeHtml(title)}</strong><button class="agent-handoff-close" type="button">×</button></div><pre>${this.escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
-        detail.style.display = 'block';
-        detail.querySelector('.agent-handoff-close')?.addEventListener('click', () => { detail.style.display = 'none'; });
     }
 
     renderAgentActivityTree() {
@@ -8695,6 +8670,320 @@ class LumiApp {
                 + `</div></div>${detail}</li>`;
         });
         body.innerHTML = `${intro}<ol class="timeline-list">${rows.join('')}</ol>`;
+    }
+
+    // ── A run's trace and saved files ───────────────────────────
+    // A finished run card's work details end with its trace (the flight
+    // recorder's slice for that turn, which its session.end names) and the
+    // files the run saved: a long output, a screenshot (engine/artifacts.py).
+
+    _appendRunRecords(details, task, trace) {
+        const artifacts = Array.isArray(task?.artifacts) ? task.artifacts : [];
+        const hasTrace = Boolean(trace?.run_id && trace?.turn_id);
+        if (!details || (!hasTrace && !artifacts.length)) return;
+        const row = document.createElement('div');
+        row.className = 'task-run-records';
+        const button = (text, title, onClick) => {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = 'task-review-btn';
+            el.textContent = text;
+            el.title = title;
+            el.addEventListener('click', (event) => {
+                event.stopPropagation();
+                onClick(el);
+            });
+            return el;
+        };
+        if (hasTrace) {
+            row.appendChild(button('Trace', "This run's steps, timings and model", (el) => this.openRunTrace(trace, el)));
+        }
+        if (artifacts.length) {
+            const label = document.createElement('span');
+            label.className = 'task-run-records-label';
+            label.textContent = 'Saved';
+            row.appendChild(label);
+            for (const artifact of artifacts) {
+                const name = this._artifactName(artifact);
+                row.appendChild(button(name, `Open ${name}`, (el) => this.openArtifact(artifact, el)));
+            }
+        }
+        details.appendChild(row);
+    }
+
+    _artifactName(artifact = {}) {
+        const size = this._formatBytes(artifact.size);
+        return `${artifact.label || artifact.id || 'Saved file'}${size ? ` · ${size}` : ''}`;
+    }
+
+    _formatBytes(size) {
+        const bytes = Number(size || 0);
+        if (!(bytes > 0)) return '';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    openRunTrace(trace, returnFocus = null) {
+        const dialog = document.getElementById('run-trace-dialog');
+        if (!dialog || !trace?.run_id || !trace?.turn_id) return;
+        this._runTrace = { run_id: trace.run_id, turn_id: trace.turn_id, data: null, error: '' };
+        this._runTraceReturnFocus = returnFocus || document.activeElement;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'run-trace-close', () => this.closeRunTrace());
+        if (!dialog.dataset.traceWired) {
+            document.getElementById('run-trace-body')?.addEventListener('click', (event) => {
+                const action = event.target.closest('[data-trace-action]')?.dataset.traceAction;
+                if (action) this._onRunTraceAction(action, event.target.closest('button'));
+            });
+            dialog.dataset.traceWired = '1';
+        }
+        this._renderRunTrace();
+        document.getElementById('run-trace-close')?.focus();
+        this.send({ command: 'flight_recorder_detail', run_id: trace.run_id, turn_id: trace.turn_id });
+    }
+
+    closeRunTrace() {
+        const dialog = document.getElementById('run-trace-dialog');
+        if (!dialog || !this._runTrace) return;
+        dialog.style.display = 'none';
+        this._runTrace = null;
+        const back = this._runTraceReturnFocus;
+        (back && back.isConnected ? back : this.userInput)?.focus?.();
+    }
+
+    _onRunTraceAction(action, button) {
+        const view = this._runTrace;
+        if (!view) return;
+        if (action === 'export' && !view.exporting) {
+            view.exporting = true;
+            view.exportError = '';
+            this._renderRunTrace();
+            this._focusIn('run-trace-body', '[data-trace-action="export"]');
+            this.send({ command: 'flight_recorder_export', run_id: view.run_id, turn_id: view.turn_id });
+        } else if (action === 'copy' && view.exported?.path) {
+            this._copyPath(view.exported.path);
+        } else if (action === 'open' && view.exported) {
+            this.openArtifact(view.exported, button);
+        }
+    }
+
+    /**
+     * Re-rendering a dialog replaces the button that was just used: keep
+     * keyboard focus on its successor instead of letting it fall to the page.
+     */
+    _focusIn(bodyId, selector) {
+        document.getElementById(bodyId)?.querySelector(selector)?.focus();
+    }
+
+    _copyPath(path) {
+        Promise.resolve()
+            .then(() => navigator.clipboard.writeText(path))
+            .then(() => this.showStatusMessage('Path copied.'))
+            .catch(() => this.showStatusMessage("Couldn't copy the path; select it instead."));
+    }
+
+    _traceTime(seconds) {
+        return `+${this._traceDuration(seconds, true)}`;
+    }
+
+    /** A trace's durations are short and precise (_formatRunDuration rounds to seconds). */
+    _traceDuration(seconds, offset = false) {
+        const s = Math.max(0, Number(seconds || 0));
+        if (s < 1 && !offset) return `${Math.round(s * 1000)} ms`;
+        if (s < 60) return `${s.toFixed(2)}s`;
+        return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+    }
+
+    /** One trace row (ws_commands._trace_rows) in words. */
+    _traceRowLabel(row = {}) {
+        const name = row.name || 'a tool';
+        const target = row.target ? `: ${row.target}` : '';
+        const took = Number(row.elapsed) > 0 ? ` in ${this._traceDuration(row.elapsed)}` : '';
+        const outcomes = {
+            answered: 'answered', changed_verified: 'changed, named checks passed',
+            changed_unverified: 'changed, not verified', no_changes_needed: 'no changes needed',
+            needs_input: 'needs input', incomplete: 'incomplete', failed: 'failed',
+        };
+        switch (row.event) {
+            case 'session.start': return row.model ? `Started with ${row.model}` : 'Started';
+            case 'session.end': return row.outcome ? `Finished: ${outcomes[row.outcome] || row.outcome}` : 'Finished';
+            case 'step.start': return `Step ${row.step || 1}${row.detail ? ` (${row.detail})` : ''}`;
+            case 'step.end': return `Step ${row.step || 1} done${took}`;
+            case 'tool.call': return `Called ${name}${target}`;
+            case 'tool_permission': return `Asked to approve ${name}${target}`;
+            case 'tool.result': {
+                const how = row.denied ? 'was refused' : row.is_error ? `failed${took}` : `finished${took}`;
+                const size = Number(row.chars) > 0 ? ` · ${Number(row.chars).toLocaleString()} characters` : '';
+                return `${name} ${how}${size}${row.artifact ? ` · saved “${row.artifact}”` : ''}`;
+            }
+            case 'status': {
+                const [inTokens, outTokens] = Array.isArray(row.tokens) ? row.tokens.map(Number) : [0, 0];
+                return inTokens || outTokens
+                    ? `Model call: ${inTokens.toLocaleString()} token${inTokens === 1 ? '' : 's'} in, ${outTokens.toLocaleString()} out`
+                    : 'Model call';
+            }
+            case 'text.done': return Number(row.chars) > 0 ? `Replied (${Number(row.chars).toLocaleString()} characters)` : 'Replied';
+            case 'checkpoint.created': return 'Checkpoint saved';
+            case 'artifact.created': return row.artifact ? `Saved “${row.artifact}”` : 'Saved a file';
+            case 'subagent.start': return `Started a ${row.agent_type || 'worker'} worker`;
+            case 'subagent.end': return `Worker finished${Number(row.steps) > 0 ? ` after ${row.steps} steps` : ''}`;
+            case 'error': return `Error: ${row.message || 'unknown'}`;
+            default: return row.event || 'Event';
+        }
+    }
+
+    _renderRunTrace() {
+        const body = document.getElementById('run-trace-body');
+        const view = this._runTrace;
+        if (!body || !view) return;
+        const esc = (value) => this.escapeHtml(value);
+        const data = view.data;
+        if (view.error || !data) {
+            body.innerHTML = `<p class="share-note">${esc(view.error || 'Loading…')}</p>`;
+            return;
+        }
+        const when = Number(data.started_at) ? new Date(Number(data.started_at) * 1000).toLocaleString() : '';
+        const meta = [
+            data.model,
+            data.backend,
+            when,
+            Number(data.duration) > 0 ? this._traceDuration(data.duration) : '',
+            `${Number(data.events || 0).toLocaleString()} events recorded`,
+        ].filter(Boolean).join(' · ');
+        const rows = (data.rows || []).map((row) => {
+            const failed = row.event === 'error' || row.is_error || row.denied;
+            return `<li class="run-trace-row${failed ? ' is-error' : ''}">`
+                + `<span class="run-trace-at">${esc(this._traceTime(row.at))}</span>`
+                + `<span class="run-trace-text">${row.worker ? `<b>${esc(row.worker)}</b> ` : ''}${esc(this._traceRowLabel(row))}</span></li>`;
+        }).join('');
+        const exported = view.exported;
+        const actions = exported
+            ? `<p class="run-trace-saved">Saved as <code>${esc(exported.path || exported.id)}</code></p>`
+                + `<button type="button" class="task-review-btn" data-trace-action="open">Open</button>`
+                + `<button type="button" class="task-review-btn" data-trace-action="copy">Copy path</button>`
+            // aria-disabled, not disabled: a disabled button drops keyboard focus.
+            : `<button type="button" class="task-review-btn" data-trace-action="export" aria-disabled="${Boolean(view.exporting)}">`
+                + `${view.exporting ? 'Saving…' : 'Save for OpenTelemetry'}</button>`
+                + (view.exportError ? `<p class="share-note">${esc(view.exportError)}</p>` : '');
+        body.innerHTML = `<p class="share-note">${esc(meta)}</p>`
+            + `<ol class="run-trace-list">${rows}</ol>`
+            + (data.truncated ? `<p class="share-note">Showing the first ${(data.rows || []).length.toLocaleString()} events.</p>` : '')
+            + `<div class="run-trace-actions">${actions}</div>`;
+    }
+
+    openArtifact(artifact, returnFocus = null) {
+        const dialog = document.getElementById('artifact-dialog');
+        if (!dialog || !artifact?.id) return;
+        this._artifactView = { id: artifact.id, artifact, text: null, next: null, image: '', note: '', error: '', loading: true };
+        this._artifactReturnFocus = returnFocus || document.activeElement;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'artifact-dialog-close', () => this.closeArtifact());
+        if (!dialog.dataset.artifactWired) {
+            document.getElementById('artifact-dialog-body')?.addEventListener('click', (event) => {
+                const action = event.target.closest('[data-artifact-action]')?.dataset.artifactAction;
+                if (action) this._onArtifactAction(action);
+            });
+            dialog.dataset.artifactWired = '1';
+        }
+        this._renderArtifact();
+        document.getElementById('artifact-dialog-close')?.focus();
+        this.send({ command: 'artifact_view', artifact_id: artifact.id });
+    }
+
+    closeArtifact() {
+        const dialog = document.getElementById('artifact-dialog');
+        if (!dialog || !this._artifactView) return;
+        dialog.style.display = 'none';
+        this._artifactView = null;
+        const back = this._artifactReturnFocus;
+        (back && back.isConnected ? back : this.userInput)?.focus?.();
+    }
+
+    _onArtifactAction(action) {
+        const view = this._artifactView;
+        if (!view) return;
+        if (action === 'more' && view.next != null && !view.loading) {
+            view.loading = true;
+            this._renderArtifact();
+            this._focusIn('artifact-dialog-body', '[data-artifact-action="more"]');
+            this.send({ command: 'artifact_view', artifact_id: view.id, offset: view.next });
+        } else if (action === 'copy' && view.artifact?.path) {
+            this._copyPath(view.artifact.path);
+        }
+    }
+
+    _receiveArtifactView(event) {
+        const view = this._artifactView;
+        if (!view || event.artifact?.id !== view.id) return;
+        view.artifact = { ...view.artifact, ...event.artifact };
+        view.loading = false;
+        const morePage = Number(event.offset) > 0 && Boolean(view.text);
+        if (typeof event.text === 'string') {
+            // "Show more" asks for the next page; the first page replaces.
+            view.text = morePage ? view.text + event.text : event.text;
+            view.next = event.next_offset ?? null;
+        }
+        view.image = event.image || '';
+        view.note = event.note || '';
+        this._renderArtifact();
+        // After "Show more", stay on it, or on the text once it's all shown.
+        if (morePage) this._focusIn('artifact-dialog-body', view.next != null ? '[data-artifact-action="more"]' : '.artifact-text');
+    }
+
+    _runRecordError(event) {
+        const message = event.message || "This couldn't be read.";
+        if (event.source === 'trace' && this._runTrace && (!event.turn_id || event.turn_id === this._runTrace.turn_id)) {
+            // Saving an export failed, or the trace itself can't be read.
+            const exporting = this._runTrace.exporting;
+            if (exporting) {
+                this._runTrace.exporting = false;
+                this._runTrace.exportError = message;
+            } else {
+                this._runTrace.error = message;
+            }
+            this._renderRunTrace();
+            if (exporting) this._focusIn('run-trace-body', '[data-trace-action="export"]');
+        } else if (event.source === 'artifact' && this._artifactView
+            && (!event.artifact_id || event.artifact_id === this._artifactView.id)) {
+            this._artifactView.loading = false;
+            this._artifactView.error = message;
+            this._renderArtifact();
+        }
+    }
+
+    _renderArtifact() {
+        const body = document.getElementById('artifact-dialog-body');
+        const view = this._artifactView;
+        if (!body || !view) return;
+        const esc = (value) => this.escapeHtml(value);
+        const artifact = view.artifact || {};
+        const title = document.getElementById('artifact-dialog-title');
+        if (title) title.textContent = artifact.label || 'Saved file';
+        const meta = [
+            artifact.kind,
+            this._formatBytes(artifact.size),
+            Number(artifact.created_at) ? new Date(Number(artifact.created_at) * 1000).toLocaleString() : '',
+        ].filter(Boolean).join(' · ');
+        let content;
+        if (view.error) {
+            content = `<p class="share-note">${esc(view.error)}</p>`;
+        } else if (view.image) {
+            content = `<img class="artifact-image" src="${esc(view.image)}" alt="${esc(artifact.label || 'Saved image')}">`;
+        } else if (typeof view.text === 'string') {
+            // The text scrolls on its own, so it takes focus for the keyboard.
+            content = `<pre class="artifact-text" tabindex="0">${esc(view.text)}</pre>`
+                + (view.next != null
+                    ? `<button type="button" class="task-review-btn" data-artifact-action="more" aria-disabled="${Boolean(view.loading)}">${view.loading ? 'Loading…' : 'Show more'}</button>`
+                    : '');
+        } else {
+            content = `<p class="share-note">${esc(view.note || (view.loading ? 'Loading…' : ''))}</p>`;
+        }
+        const path = artifact.path
+            ? `<p class="artifact-path"><code>${esc(artifact.path)}</code></p>`
+                + '<button type="button" class="task-review-btn" data-artifact-action="copy">Copy path</button>'
+            : '';
+        body.innerHTML = `<p class="share-note">${esc(meta)}</p>${content}<div class="artifact-actions">${path}</div>`;
     }
 
     handleSubagentError(event) {

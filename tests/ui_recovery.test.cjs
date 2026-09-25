@@ -998,6 +998,88 @@ test('a restored conversation stops at its checkpoint instead of replaying as a 
     assert.equal(notes[0].textContent, 'Files and conversation restored to before writing notes.txt.');
 });
 
+// A run's trace and saved files, at the end of its card's work details.
+test('a trace row says what happened, never what a call contained', () => {
+    const app = setup(() => {});
+    const label = (row) => app._traceRowLabel(row);
+    assert.equal(label({event: 'tool.call', name: 'file_write', target: 'notes.txt'}), 'Called file_write: notes.txt');
+    assert.equal(label({event: 'tool.result', name: 'bash', elapsed: 0.25, chars: 600, artifact: 'bash result'}),
+        'bash finished in 250 ms · 600 characters · saved “bash result”');
+    assert.equal(label({event: 'tool.result', name: 'bash', is_error: true, elapsed: 1.5}), 'bash failed in 1.50s');
+    assert.equal(label({event: 'tool.result', name: 'task', denied: true}), 'task was refused');
+    assert.equal(label({event: 'status', tokens: [120, 30]}), 'Model call: 120 tokens in, 30 out');
+    assert.equal(label({event: 'status', tokens: [1, 1]}), 'Model call: 1 token in, 1 out');
+    assert.equal(label({event: 'step.start', step: 2, detail: 'after file_write'}), 'Step 2 (after file_write)');
+    assert.equal(label({event: 'session.end', outcome: 'changed_unverified'}), 'Finished: changed, not verified');
+    assert.equal(label({event: 'mystery.event'}), 'mystery.event');
+    assert.equal(app._traceTime(0.5), '+0.50s');
+    assert.equal(app._traceTime(75), '+1m 15s');
+});
+
+test('a run keeps the files it saved, a worker\'s included', () => {
+    const app = setup(() => {});
+    app._liveRun = null;
+    app.renderToolResult = () => {};
+    app._activeTask = {};
+    const result = (metadata) => ({event: 'tool.result', name: 'bash', _subagent: true, metadata});
+    app.handleToolResult(result({artifact: {id: 'art_1', label: 'bash result', size: 61000}}));
+    app.handleToolResult(result({}));
+    assert.deepEqual(Array.from(app._activeTask.artifacts, (saved) => saved.id), ['art_1']);
+    assert.equal(app._artifactName(app._activeTask.artifacts[0]), 'bash result · 60 KB');
+    assert.equal(app._formatBytes(0), '');
+    assert.equal(app._formatBytes(512), '512 B');
+    assert.equal(app._formatBytes(3.5 * 1024 * 1024), '3.5 MB');
+});
+
+test('a trace or saved file that can\'t be read says so in its own dialog', () => {
+    const app = setup(() => {});
+    const renders = [];
+    app._renderRunTrace = () => renders.push('trace');
+    app._renderArtifact = () => renders.push('artifact');
+    app.handleError = () => renders.push('chat');
+    app._runTrace = {turn_id: 'turn_1', data: null};
+    app.handleEvent({event: 'error', source: 'trace', turn_id: 'turn_1', message: "This run's trace is no longer saved."});
+    assert.equal(app._runTrace.error, "This run's trace is no longer saved.");
+    // A failed save keeps the trace on show.
+    app._runTrace = {turn_id: 'turn_1', data: {rows: []}, exporting: true};
+    app.handleEvent({event: 'error', source: 'trace', turn_id: 'turn_1', message: 'The disk is full.'});
+    assert.equal(app._runTrace.exportError, 'The disk is full.');
+    assert.equal(app._runTrace.exporting, false);
+    assert.equal(app._runTrace.error, undefined);
+    app._artifactView = {id: 'art_1', loading: true};
+    app.handleEvent({event: 'error', source: 'artifact', artifact_id: 'art_1', message: 'This file is no longer saved.'});
+    assert.equal(app._artifactView.error, 'This file is no longer saved.');
+    assert.deepEqual(renders, ['trace', 'trace', 'artifact']);  // never a chat error
+});
+
+test('the saved-file viewer adds each page it is shown, and only its own', () => {
+    const app = setup(() => {});
+    app._renderArtifact = () => {};
+    app._artifactView = {id: 'art_1', artifact: {id: 'art_1'}, text: null, next: null, loading: true};
+    app._receiveArtifactView({artifact: {id: 'art_1', label: 'bash result'}, text: 'aaa', offset: 0, next_offset: 3});
+    app._receiveArtifactView({artifact: {id: 'art_2'}, text: 'zzz', offset: 3});
+    app._receiveArtifactView({artifact: {id: 'art_1'}, text: 'bbb', offset: 3, next_offset: null});
+    assert.equal(app._artifactView.text, 'aaabbb');
+    assert.equal(app._artifactView.next, null);
+    assert.equal(app._artifactView.artifact.label, 'bash result');
+});
+
+test('a turn\'s trace is saved for OpenTelemetry once, from its own dialog', () => {
+    const app = setup(() => {});
+    const sent = [];
+    app.send = (message) => sent.push(`${message.command}:${message.run_id}:${message.turn_id}`);
+    app._renderRunTrace = () => {};
+    app._runTrace = {run_id: 'run_1', turn_id: 'turn_1', data: {rows: []}};
+    app._onRunTraceAction('export');
+    app._onRunTraceAction('export');
+    assert.deepEqual(sent, ['flight_recorder_export:run_1:turn_1']);
+    app.handleEvent({event: 'artifact.created', turn_id: 'turn_2', artifact: {id: 'art_8'}});
+    assert.equal(app._runTrace.exported, undefined);
+    app.handleEvent({event: 'artifact.created', turn_id: 'turn_1', artifact: {id: 'art_9', path: 'C:/trace.json'}});
+    assert.equal(app._runTrace.exported.id, 'art_9');
+    assert.equal(app._runTrace.exporting, false);
+});
+
 // ── A refused call says why ───────────────────────────────────────────
 // Its row shows the reason the model was told: a hook's message, a policy
 // rule, an approval nobody could answer. The person's own Deny needs none.

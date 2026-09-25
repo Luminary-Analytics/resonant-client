@@ -266,6 +266,23 @@ class LumiSettingsView {
             <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">OpenTelemetry export</span><div class="settings-row-hint">${exported}</div></div></div>`;
     }
 
+    _renderAbout() {
+        const info = this.aboutInfo;
+        if (!info) return '<p class="editor-help">Loading…</p>';
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const managed = info.installed_by === 'msi'
+            ? 'Installed by your organization’s device management.'
+            : info.organization ? `Managed by ${esc(info.organization)}.` : '';
+        const row = (label, body) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span><div class="settings-row-hint">${body}</div></div></div>`;
+        return [
+            row(`Lumi ${esc(info.version)}`, `The coding agent by Luminary Analytics. ${managed}`),
+            row('Free for individuals', 'The whole agent, every tool, provider and feature in this app, works without an account: with your own API keys, your ChatGPT sign-in, or models on your own computer.'),
+            row('What leaves this computer', 'Your prompts, code and keys go only to the model providers you choose. Luminary Analytics receives only the update check, which you can turn off in Updates.'),
+            row('For teams and organizations', 'Lumi Cloud, with central policy, single sign-on, audit export and usage reporting, is in development. Organizations can already set policy on each computer (see docs/enterprise-policy.md).'),
+            row('License', `Lumi’s source is available under the ${esc(info.license)} license.${info.notices ? ` Third-party components and their licenses: <code>${esc(info.notices)}</code>` : ''}`),
+        ].join('');
+    }
+
     _bindUpdateCheck() {
         document.getElementById('update-check')?.addEventListener('click', () => {
             this.showStatusMessage('Checking for updates...');
@@ -1138,6 +1155,7 @@ class LumiSettingsView {
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
             {id:'iteration_checkpoints', title:'Checkpoints & recovery', group:'Advanced', icon:'history', description:'Inspect saved iterations and recovery options.', sections:['iteration_checkpoints']},
+            {id:'about', title:'About Lumi', group:'Personal', icon:'book', description:'What Lumi is, what it costs and what it sends where.', sections:['about'], keywords:'version license free plan pricing account privacy telemetry notices MIT'},
             {id:'updates', title:'Updates', group:'Advanced', icon:'history', description:'Choose how Lumi updates itself and which releases it takes.', sections:['updates','update_status'], keywords:'update upgrade version release beta channel pin stable automatic manual off'},
         ];
     }
@@ -1231,7 +1249,7 @@ class LumiSettingsView {
             this.send({command: 'project_trust_list'});
             this.send({command: 'audit_status'});
         }
-        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status'}[page];
+        const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info'}[page];
         if (command) this.send({command});
     }
 
@@ -1461,6 +1479,7 @@ class LumiSettingsView {
                 ]
             },
             { id: 'update_status', title: 'This installation', custom: true },
+            { id: 'about', title: 'About Lumi', custom: true },
             {
                 id: 'engram', title: 'Memory (Engram)',
                 fields: [
@@ -1535,6 +1554,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderAuditStatus();
             } else if (section.id === 'update_status') {
                 bodyHtml = this._renderUpdateStatus();
+            } else if (section.id === 'about') {
+                bodyHtml = this._renderAbout();
             } else if (section.id === 'org_policy') {
                 bodyHtml = this._renderOrgPolicy();
             } else if (section.id === 'file_exclusions') {

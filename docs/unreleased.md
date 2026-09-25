@@ -8,6 +8,29 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 free for individuals: About Lumi and plans — source only, not released
+
+- **Settings > About Lumi**, also opened from **Help > About Lumi**, which
+  used to flash a one-line status. It shows:
+  - the version, and who manages this copy (the policy's organization, or
+    device management for an MSI install);
+  - that the whole app is free for individuals, without an account;
+  - what leaves the computer: prompts, code and keys go only to the chosen
+    model providers, and Luminary Analytics receives only the update check;
+  - the MIT license and, in an installed copy, where the third-party notices
+    are.
+- **[Plans](plans.md)** (a draft for product review) writes the free tier down
+  and lists what Lumi Cloud will add for organizations. Paid plans and prices
+  aren't decided.
+
+Validation on September 25, 2026:
+
+- `test_about.py`: the About command's version, license, notices and
+  organization under a policy.
+- In the browser pane, with a pilot policy from "Example Corp", Help > About
+  Lumi opened Settings > About Lumi with "Managed by Example Corp" and the
+  sections above.
+
 ## September 25 getting-started checklist — source only, not released
 
 - **A first-run checklist in the empty chat** ([guide](desktop-workflow.md#getting-started),

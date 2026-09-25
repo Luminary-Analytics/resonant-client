@@ -28,6 +28,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 ## Using Lumi
 
 - [Install, configure providers, and run](../README.md)
+- [Plans: free for individuals, and what's planned for organizations](plans.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
 - [Skills and learning](skills.md)

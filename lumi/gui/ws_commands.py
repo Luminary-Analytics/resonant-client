@@ -2803,6 +2803,33 @@ def _update_check_message(info: dict, started: bool) -> str:
     return message
 
 
+def _third_party_notices_path() -> str:
+    """THIRD_PARTY_NOTICES.txt of an installed copy, or "" when running from source."""
+    import sys
+    from pathlib import Path
+
+    base = getattr(sys, "_MEIPASS", "")
+    candidate = Path(base) / "licenses" / "THIRD_PARTY_NOTICES.txt" if base else None
+    return str(candidate) if candidate and candidate.is_file() else ""
+
+
+@command("about_info")
+async def _cmd_about_info(ctx: CommandContext) -> None:
+    """Settings > About Lumi: version, license and who manages this copy."""
+    from .. import __version__
+    from ..policy import current as current_policy
+    from ..update_channels import installed_by
+
+    policy = current_policy()
+    await ctx.send({"event": "about_info", "data": {
+        "version": __version__,
+        "license": "MIT",
+        "notices": _third_party_notices_path(),
+        "organization": policy.organization if policy else "",
+        "installed_by": installed_by(),
+    }})
+
+
 @command("create_sample_project")
 async def _cmd_create_sample_project(ctx: CommandContext) -> None:
     """Make (or find) the first-run sample project; the page then opens it."""

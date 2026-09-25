@@ -43,6 +43,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Issue trackers: starting from a Jira, Linear, GitHub or GitLab issue, and commenting on it](issue-trackers.md)
 - [Hand-offs: passing work to a teammate or a CI run](hand-offs.md)
 - [Team skills, prompts and project notes from your organization's library](team-library.md)
+- [Code review: agent changes wait for a named reviewer](code-review.md)
 - [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)

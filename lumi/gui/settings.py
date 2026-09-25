@@ -72,6 +72,8 @@ DEFAULTS = {
     # with an email it's a Jira Cloud API token, without one a personal access
     # token for Jira Server or Data Center. Linear's key is api_keys.linear.
     "issue_trackers": {"jira_url": "", "jira_email": ""},
+    # Agent pull requests wait for these reviewers (engine/review_gate.py); lockable by policy.
+    "review": {"agent_changes": False, "reviewers": []},
     # Custom model connections (gateways, Azure, Bedrock, Vertex); see lumi/connections.py.
     # Each one's key is stored in api_keys as conn_<id>.
     "connections": [],

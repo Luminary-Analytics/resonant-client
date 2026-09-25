@@ -316,8 +316,12 @@ def policy_for_tier(tier: str) -> ExecutionPolicy:
         "auto-edit": default_auto_edit_policy,
         "full-auto": default_full_auto_policy,
     }
+    from .review_gate import policy_rules as review_rules
+
     factory = policies.get(tier, default_auto_edit_policy)
-    return ExecutionPolicy(guardrail_rules() + factory().rules)
+    # While agent changes need review (engine/review_gate.py), merging and
+    # pushing to a default branch are refused right after the guardrails.
+    return ExecutionPolicy(guardrail_rules() + review_rules() + factory().rules)
 
 
 def project_execution_policy(
@@ -358,7 +362,8 @@ def project_execution_policy(
     if org_policy and org_policy.shell_rules:
         org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
         from .guardrails import policy_rules as guardrail_rules
+        from .review_gate import policy_rules as review_rules
 
-        first = guardrail_rules()
+        first = guardrail_rules() + review_rules()
         merged = ExecutionPolicy(first + org_rules + [rule for rule in merged.rules if rule not in first])
     return merged

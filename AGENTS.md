@@ -251,6 +251,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   notes are recalled only in clones of their repository and only while their
   files' line-ending-normalized hashes match (`team_library.fingerprint`);
   never mix them into the project's own `.lumi/memory.json`.
+- With `review.agent_changes` on (Settings or a policy lock), the review
+  gate (`engine/review_gate.py`) adds deny rules for merging and pushing to a
+  default branch right after the guardrails in every execution policy, and
+  `github_pr_create` names the reviewers and reports to Lumi Cloud's review
+  queue. A new tool that merges or pushes for the model must check
+  `review_gate.blocked` too.
 - Hand-offs (`handoff.py`) carry that same copy, the note and the
   repository's address (without credentials), branch and commit. A picked-up
   hand-off is context (`@handoff:`, sticky in `ContextBroker.STICKY`), never

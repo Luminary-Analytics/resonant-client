@@ -3284,6 +3284,7 @@ body {
 
 .tool-inline .tool-status.ok { color: var(--ok); }
 .tool-inline .tool-status.err { color: var(--err); }
+.tool-inline .tool-status.denied { color: var(--warn); }
 
 /* ── Block Tool (panel) ── */
 .tool-block {
@@ -3345,6 +3346,33 @@ body {
 /* Desktop tool border color */
 .tool-block.desktop { border-left-color: var(--warn); }
 .tool-inline.desktop { border-left-color: var(--warn); }
+
+/* A refused call (amber: it didn't run, so it didn't fail). */
+.tool-inline.is-denied {
+    border-left-color: var(--warn);
+}
+
+/* A refusal's reason, or an evidence call's output, takes a line of its own
+   under the row instead of squeezing the row beside it. */
+.tool-inline.is-denied,
+.tool-inline.evidence-item {
+    flex-wrap: wrap;
+    row-gap: 2px;
+}
+.tool-inline.is-denied .tool-meta {
+    min-width: 0;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tool-inline .tool-denial-reason {
+    flex: 1 0 100%;
+    padding-left: 22px;
+}
+.tool-inline .tool-evidence-output {
+    flex: 1 1 100%;
+}
 
 /* ── Diff Lines ── */
 .diff-line { display: block; white-space: pre-wrap; word-break: break-all; }
@@ -7000,6 +7028,11 @@ body {
     background: color-mix(in srgb, var(--bg-elem) 45%, color-mix(in srgb, var(--err) 16%, transparent));
 }
 
+/* A refused call keeps its amber edge when expanded, like an error's. */
+.tool-row.denied {
+    border-left-color: var(--warn);
+}
+
 .tool-row-status {
     font-family: var(--font-mono, monospace);
     font-weight: 600;
@@ -7014,6 +7047,7 @@ body {
 
 .tool-row-status.ok  { color: var(--ok); }
 .tool-row-status.err { color: var(--err); }
+.tool-row-status.denied { color: var(--warn); }
 
 @keyframes tool-row-pulse {
     0%, 100% { opacity: 1; }
@@ -7117,6 +7151,24 @@ body {
 .tool-row-detail-empty {
     color: var(--muted);
     font-style: italic;
+}
+
+/* Why a refused call didn't run: a hook's message, a policy rule. It comes
+   from hooks, policies and models, so a long path or JSON wraps anywhere
+   rather than widening the conversation, and a long message scrolls. */
+.tool-denial-reason {
+    min-width: 0;
+    max-height: 12em;
+    overflow-y: auto;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.tool-row .tool-denial-reason {
+    grid-column: 3 / -1;
 }
 
 /* ── Per-turn footer ── */

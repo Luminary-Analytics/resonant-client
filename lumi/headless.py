@@ -132,6 +132,9 @@ def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_pr
         policy_patterns=lambda: current_policy().exclude if current_policy() else (),
     )
     session.project_content_trusted = trusted
+    # Tools read Settings as in the app: the autonomy floor, Settings'
+    # language servers (engine/lsp.py) and pack skills.
+    session._settings_ref = settings
     # Nobody is watching the screen of an unattended run.
     session.computer_use_enabled = False
     session.audit_session_id = f"headless:{run_id}"

@@ -8,6 +8,44 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 code intelligence — source only, not released
+
+- **`code_intel`** ([guide](code-intelligence.md), `lumi/engine/lsp.py`):
+  the agent asks a language server for a symbol's definition, its
+  references, its type and documentation, a file's diagnostics, or a file's
+  outline. Lumi starts the server named in Settings' `lsp_servers` for the
+  file's type, or a well-known one found on PATH (Pyright, pylsp,
+  typescript-language-server, rust-analyzer, gopls, clangd, csharp-ls,
+  OmniSharp, jdtls, lua-language-server), keeps it per project and stops it
+  after 10 idle minutes or when Lumi exits.
+- Servers start only in trusted projects, get the children's environment,
+  pass the guardrails and run in the shell sandbox when it's on. Answers
+  leave out excluded files, and a server that reports nothing isn't taken
+  to mean a file is clean.
+- **Project trust** can now be given to any project in Settings, not only
+  one that brings instructions, since trust also lets Lumi run the project's
+  code (language servers, automatic lint and tests).
+- The status popover's LSP tab lists the servers Lumi would use and which
+  are running or failed. `lumi run` passes Settings to its tools, as the app
+  does, so it uses `lsp_servers` too.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,996 passed, 4 skipped. `test_lsp.py` (15 tests) against
+  `tests/fake_lsp_server.py`: settings
+  entries, choosing a server, UTF-16 positions, `file:///c%3A/` URIs,
+  definition, references (with excluded files left out), hover, symbols,
+  pushed and pulled diagnostics following file changes, a silent server,
+  the trust requirement, a server that fails to start and isn't restarted
+  at once, idle stopping and restarting, the session's path checks, process
+  cleanup and the inventory.
+- In the browser pane, with an isolated home, the stub model calling the tool
+  and the fake server configured in `lsp_servers`: before trust the call was
+  refused; **Trust this project** appeared for the plain project and trusted
+  it; then references showed "5 found" with the list, and diagnostics
+  "1 warning"; the LSP inventory showed the server running; after the app
+  stopped, no server process was left. No real language server was run.
+
 ## September 25 scheduled tasks — source only, not released
 
 - **Settings > Scheduled tasks** and `lumi schedule`

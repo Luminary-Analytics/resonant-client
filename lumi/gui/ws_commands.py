@@ -38,7 +38,6 @@ import asyncio
 import json
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -3802,6 +3801,11 @@ def _workspace_language_hints(project_path: str, *, max_files: int = 1600) -> se
         ".cs": "csharp",
         ".java": "java",
         ".lua": "lua",
+        ".c": "c",
+        ".h": "c",
+        ".cc": "cpp",
+        ".cpp": "cpp",
+        ".hpp": "cpp",
         ".rb": "ruby",
         ".php": "php",
     }
@@ -3833,116 +3837,63 @@ def _workspace_language_hints(project_path: str, *, max_files: int = 1600) -> se
 def _lsp_list_payload(*, project_path: str = "", settings: SettingsManager | None = None) -> dict:
     """Build the {event: "lsp_list", servers: [...]} status payload.
 
-    Lumi does not yet own a full LSP client, so this is an inventory:
-    explicitly configured servers plus common language-server binaries found
-    on PATH for languages present in the current workspace.
+    The servers the ``code_intel`` tool can use (engine/lsp.py): Settings'
+    ``lsp_servers``, then well-known servers installed on PATH or matching the
+    project's languages, with whether each is running for this project.
     """
-    configured = settings.get("lsp_servers") if settings else {}
-    if not isinstance(configured, dict):
-        configured = {}
+    from ..engine import lsp
+
+    running = lsp.servers.status(project_path) if project_path else {}
+
+    def status_of(spec_id: str, fallback: str) -> tuple[str, str]:
+        state = running.get(spec_id) or {}
+        if state.get("state") in ("running", "failed"):
+            return state["state"], state.get("error", "")
+        return fallback, ""
 
     servers: list[dict[str, Any]] = []
-    seen_names: set[str] = set()
-    for name, raw in configured.items():
-        data = raw if isinstance(raw, dict) else {"command": str(raw)}
-        command = str(data.get("command", "") or "").strip()
-        enabled = bool(data.get("enabled", True))
-        try:
-            # posix=False on Windows: POSIX rules eat the backslashes in
-            # "C:\tools\...\server.exe" and which() never finds it.
-            parts = shlex.split(command, posix=(os.name != "nt")) if command else []
-            command_head = parts[0].strip('"') if parts else ""
-        except ValueError:
-            command_head = command.split(" ", 1)[0] if command else ""
-        available = bool(command_head and shutil.which(command_head))
-        status = "disabled" if not enabled else ("available" if available else "missing")
+    configured_programs: set[str] = set()
+    for spec, enabled in lsp.configured(settings):
+        program = spec.command[0]
+        configured_programs.add(lsp._program_name(program))
+        available = bool(shutil.which(program) or os.path.isfile(program))
+        languages = sorted(set(spec.languages.values()))
+        status, error = status_of(spec.id, "available" if available else "missing")
+        if not enabled:
+            status, error = "disabled", ""
         servers.append({
-            "id": f"configured:{name}",
-            "name": str(data.get("name") or name),
-            "command": command,
+            "id": spec.id,
+            "name": spec.name,
+            "command": " ".join(spec.command),
             "enabled": enabled,
             "available": available,
             "status": status,
             "source": "configured",
+            "languages": languages,
+            "detail": error or (", ".join(languages) if languages
+                                else "Add extensions or languages to use it"),
         })
-        seen_names.add(str(name).lower())
 
     workspace_langs = _workspace_language_hints(project_path)
-    common_specs = [
-        {
-            "id": "typescript",
-            "name": "TypeScript/JavaScript",
-            "languages": ["typescript", "javascript"],
-            "executables": ["typescript-language-server"],
-            "command": "typescript-language-server --stdio",
-        },
-        {
-            "id": "python-pyright",
-            "name": "Python (Pyright)",
-            "languages": ["python"],
-            "executables": ["pyright-langserver"],
-            "command": "pyright-langserver --stdio",
-        },
-        {
-            "id": "python-pylsp",
-            "name": "Python (pylsp)",
-            "languages": ["python"],
-            "executables": ["pylsp"],
-            "command": "pylsp",
-        },
-        {
-            "id": "rust-analyzer",
-            "name": "Rust Analyzer",
-            "languages": ["rust"],
-            "executables": ["rust-analyzer"],
-            "command": "rust-analyzer",
-        },
-        {
-            "id": "gopls",
-            "name": "Go",
-            "languages": ["go"],
-            "executables": ["gopls"],
-            "command": "gopls",
-        },
-        {
-            "id": "csharp",
-            "name": "C#",
-            "languages": ["csharp"],
-            "executables": ["csharp-ls", "omnisharp"],
-            "command": "csharp-ls",
-        },
-        {
-            "id": "java",
-            "name": "Java",
-            "languages": ["java"],
-            "executables": ["jdtls"],
-            "command": "jdtls",
-        },
-        {
-            "id": "lua",
-            "name": "Lua",
-            "languages": ["lua"],
-            "executables": ["lua-language-server"],
-            "command": "lua-language-server",
-        },
-    ]
-    for spec in common_specs:
-        if spec["id"] in seen_names:
+    for spec in lsp.KNOWN:
+        if lsp._program_name(spec.command[0]) in configured_programs:
             continue
-        relevant = bool(workspace_langs.intersection(spec["languages"]))
-        executable = next((exe for exe in spec["executables"] if shutil.which(exe)), "")
-        if not relevant and not executable:
+        languages = sorted(set(spec.languages.values()))
+        executable = shutil.which(spec.command[0])
+        if not executable and not workspace_langs.intersection(languages):
             continue
+        status, error = status_of(spec.id, "available" if executable else "missing")
         servers.append({
-            "id": spec["id"],
-            "name": spec["name"],
-            "command": spec["command"],
-            "enabled": False,
+            "id": spec.id,
+            "name": spec.name,
+            "command": " ".join(spec.command),
+            "enabled": bool(executable),
             "available": bool(executable),
-            "status": "available" if executable else "missing",
+            "status": status,
             "source": "detected",
-            "languages": spec["languages"],
-            "detail": (f"Installed: {executable}" if executable else "Not installed on PATH"),
+            "languages": languages,
+            "detail": error or (f"Installed: {executable}; starts when the agent asks about this code"
+                                if executable else f"Install {spec.command[0]} to use it"),
         })
 
     servers.sort(key=lambda item: (

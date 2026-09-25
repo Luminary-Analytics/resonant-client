@@ -8,6 +8,101 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 refused tool calls say why — source only, not released
+
+**A refused call's row said only "denied".** When a hook, a policy rule, a
+tool boundary, a second approver or an approval nobody could answer stops a
+tool call, the model gets the reason as the call's result. The app added a
+line reading "✗ denied" (and "not run" on a command's row) and dropped the
+reason. A guard hook that timed out looked the same as the user's own Deny.
+
+- **The reason shows under the call's row** (`lumi/gui/static/app.js`,
+  `_settleDeniedToolRow`), always set as text, since it can come from a hook,
+  a policy, a repository or the model.
+  - A command, edit or write row reads "✗ … not run" with the reason above its
+    expandable detail. Expanded, a command that never ran shows "(not run)"
+    rather than "(no output)".
+  - Other rows read "✗ not run", with the reason on the line below.
+  - A refusal whose call has no row gets a line of its own. The separate
+    "✗ denied" line is gone.
+  - The user's own Deny still reads just "denied".
+  - Refusals are amber and errors red: a refused call didn't run, so it
+    didn't fail.
+- **A refused Evidence call no longer reads ✓.** Reads, searches and check
+  commands in the collapsed Evidence group showed ✓ when the refusal wasn't
+  also marked as an error (a hook, an approval). They show ✗ with the reason
+  open. The group's header counts "N not run", and the group stays open
+  without the error styling.
+- **A worker's refused calls** get the same, in the worker's own rows.
+  **Codex and Claude Code** rows are unchanged: those CLIs run their own tools
+  and approvals, and Lumi forwards their observations with `denied` false, so
+  there is no refusal to show.
+- **Fixed along the way:**
+  - An inline result went to the last row of its tool, so a tool called twice
+    in a step could put its status or reason on the other call's row. A result
+    now finds the row with its own call id, among its own lane's rows only, so
+    a worker that reuses one of the parent's call ids doesn't reach the
+    parent's row.
+  - An Evidence call's output, once opened, sat beside its row and squeezed
+    the pattern or path to nothing. It takes a line of its own, like a reason.
+
+Validation on September 25, 2026:
+
+- Four tests in `tests/ui_recovery.test.cjs` drive the real `handleEvent`,
+  `renderToolCall` and `renderToolResult`, and the Evidence group from
+  `run_cards.js`, in a small DOM that parses the rows' markup and keeps every
+  `innerHTML` write:
+  - command rows refused by a timed-out hook and by a policy, and one the user
+    denied;
+  - inline rows whose tool name, call id and reason are hostile markup: the
+    reason stays text, no markup write carries it, and each result reaches its
+    own row;
+  - a refusal whose call has no row;
+  - a refused Evidence call next to a passing one and a denied one;
+  - a worker's refused write and `task` in its lane, while the parent's `task`
+    with the same call id succeeds.
+- On the previous `app.js` and `run_cards.js`, all four failed: six rows for
+  three calls (the extra "✗ denied" lines), ✓ for the refused Evidence call,
+  and no reason in the worker's row.
+- After rebasing on main (with gate hooks failing closed, second approvals
+  and worker transcripts): full `pytest` 4,294 passed, 5 skipped.
+  `ruff check .` clean, `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (65 tests),
+  `git diff --check` clean.
+- In the browser pane, from an isolated home with a scripted Ollama stub, in
+  Ask mode, with two `pre_tool_use` hooks in `settings.json` (one exits 1 with
+  a message on stderr, one sleeps past `timeout_seconds: 2`) and the built-in
+  recursive-delete deny:
+  - A `grep` the hook refused read ✗ "not run" with the hook's message open,
+    under a `grep` that found "2 matches ✓". The group read "Evidence ·
+    Searching codebase · 1 not run".
+  - `git push` refused by the hook, `rm -rf build` refused by the policy
+    ("Blocked by policy: Recursive delete blocked — use a safer alternative")
+    and a `task` refused by the hook each read "not run" with their reason.
+  - `npm publish`, denied in the approval dialog with Escape and, in a second
+    run, with **Deny**, read just "denied". Focus went back to the message box.
+  - The hook that never answered: `make release` read "not run" with "Blocked
+    by hook: pre_tool_use hook \`slow-guard\` timed out after 2 s; gate hooks
+    block when they give no answer. Raise its timeout_seconds if it needs
+    longer."
+  - The model's closing message listed the same reasons it had been given.
+    After a reload, the replayed session showed the same rows, and so did a
+    last run on the branch rebased over worker transcripts.
+  - At 375 px there was no horizontal scroll, including for reasons with 120
+    to 160 character unbroken tokens, which wrapped inside their rows.
+  - On a refused Evidence call, Enter closed the reason and Space opened it
+    again. `aria-expanded` followed and focus stayed on the item.
+  - The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+    credential was stored. `~/.codex` changed during the run while the user's
+    own Codex was running; the fixture never started Codex, so those writes
+    are unattributed.
+
+Not exercised: a live model, a packaged build, Codex or Claude Code, the
+"no approval prompt is available" refusal in the app (a Node test covers its
+text) and a second approver's refusal (it takes the same path, with the
+approval's message as the reason). The terminal UI shows the reason too; see
+the next section.
+
 ## September 25 a mistyped organization policy no longer counts as no policy — source only, not released
 
 **A typo in an administrator's policy could switch the whole policy off.** A
@@ -716,9 +811,9 @@ blocks. Set its `timeout_seconds` (default 30) above the time its work takes,
 in the hook's entry in `settings.json` (`hooks`) or in its pack's manifest
 ([capability packs](packs.md#gate-hooks-fail-closed)). On Linux an `env` hook
 can't start for a call whose arguments exceed 128 KiB, so a gate hook blocks
-that call; `"input_format": "json"` avoids it. The app still shows a refused
-call only as "denied": the reason reaches the model and the turn's events, not
-the tool row.
+that call; `"input_format": "json"` avoids it. The tool row showed a refused
+call only as "denied" until "refused tool calls say why" (above) put the
+reason under it.
 
 Validation on September 25, 2026:
 

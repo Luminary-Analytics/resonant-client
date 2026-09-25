@@ -98,6 +98,7 @@ class LumiRunCards {
                 callIdToItem: new Map(),
                 callCount: 0,
                 errorCount: 0,
+                deniedCount: 0,
             };
         }
 
@@ -177,11 +178,13 @@ class LumiRunCards {
             const live = this._liveCollapsedGroup;
             live.container.classList.remove('running');
             live.container.classList.remove('expanded');
-            if (live.errorCount) live.container.classList.add('expanded');
+            // Failed and refused calls stay in view.
+            const attention = live.errorCount || live.deniedCount;
+            if (attention) live.container.classList.add('expanded');
             const icon = live.header && live.header.querySelector('.collapsed-icon');
             if (icon && live.errorCount) icon.textContent = '\u25be';
             if (icon) icon.textContent = '▸';
-            if (icon) icon.textContent = live.errorCount ? '\u25be' : '\u25b8';
+            if (icon) icon.textContent = attention ? '\u25be' : '\u25b8';
             this._liveCollapsedGroup = null;
         }
         this.collapsedGroup = [];

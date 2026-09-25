@@ -424,6 +424,7 @@ class LumiSettingsView {
             ['Permission modes', list(policy.allowed_modes, 'all')],
             ['Models allowed', list(policy.models_allowed, 'all')],
             ['Models blocked', list(policy.models_blocked, 'none')],
+            ['Zero data retention', policy.require_zero_retention ? `Required: local models, connections marked zero retention${(policy.zero_retention_providers || []).length ? ', and ' + esc(policy.zero_retention_providers.join(', ')) : ''}` : 'Not required'],
             ['Files never read', list(policy.exclude, 'none')],
             ['Shell rules', String(policy.shell_rules || 0)],
             ['MCP servers', `${list(policy.mcp_allowed, 'all')}${policy.mcp_allow_stdio ? '' : ' · command-based servers off'}`],
@@ -525,7 +526,7 @@ class LumiSettingsView {
     _blankConnectionDraft() {
         return { name: '', type: 'openai-compatible', base_url: '', auth: 'bearer', auth_header: '', models: '',
                  region: '', project: '', api_version: '', aws_profile: '', context_window: '', vision: false,
-                 headers: '', max_tokens_param: 'max_tokens', reasoning_effort: '', api_key: '',
+                 headers: '', max_tokens_param: 'max_tokens', reasoning_effort: '', api_key: '', zero_retention: false,
                  tenant_id: '', client_id: '', token_url: '', scope: '', audience: '', client_cert: '', client_key: '' };
     }
 
@@ -533,7 +534,8 @@ class LumiSettingsView {
         return { ...this._blankConnectionDraft(), ...item,
                  models: (item.models || []).join(', '),
                  headers: Object.entries(item.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n'),
-                 context_window: item.context_window || '', vision: Boolean(item.vision), api_key: '' };
+                 context_window: item.context_window || '', vision: Boolean(item.vision),
+                 zero_retention: Boolean(item.zero_retention), api_key: '' };
     }
 
     _connectionSecret(draft) {
@@ -559,6 +561,7 @@ class LumiSettingsView {
         if (this._connectionEdit?.originalId) payload.id = this._connectionEdit.originalId;
         if (String(draft.context_window || '').trim()) payload.context_window = Number(draft.context_window);
         if (draft.vision) payload.vision = true;
+        payload.zero_retention = Boolean(draft.zero_retention);
         return payload;
     }
 
@@ -571,7 +574,7 @@ class LumiSettingsView {
         const rows = (data.items || []).map(item => {
             const confirm = this._connectionDeleteId === item.id;
             return `<li class="connection-row">
-                <div class="connection-row-main"><strong>${this.escapeHtml(item.name)}</strong>
+                <div class="connection-row-main"><strong>${this.escapeHtml(item.name)}</strong>${item.zero_retention ? ' <span class="connection-badge">Zero retention</span>' : ''}
                 <span class="connection-meta">${this.escapeHtml(types[item.type] || item.type)}${item.base_url ? ' · ' + this.escapeHtml(item.base_url) : ''}</span>
                 <span class="connection-meta">${item.models?.length ? this.escapeHtml(item.models.slice(0, 4).join(', ')) + (item.models.length > 4 ? ` +${item.models.length - 4}` : '') : 'Models discovered from the endpoint'}${item.auth === 'none' || item.auth === 'aws' || item.auth === 'google' || (item.auth === 'entra' && !item.client_id) ? '' : item.has_key ? ` · ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} stored` : ` · no ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} yet`}</span></div>
                 <div class="connection-row-actions">${confirm
@@ -624,6 +627,7 @@ class LumiSettingsView {
                 ${d.type === 'openai-compatible' ? field('reasoning_effort', 'Reasoning effort', `<select class="settings-select" id="conn-f-reasoning_effort" data-conn-field="reasoning_effort">${['', 'low', 'medium', 'high'].map(v => `<option value="${v}" ${d.reasoning_effort === v ? 'selected' : ''}>${v || 'Don\u2019t send'}</option>`).join('')}</select>`) : ''}
                 ${field('headers', 'Extra headers (optional)', `<textarea class="settings-input" id="conn-f-headers" data-conn-field="headers" rows="3" placeholder="Header-Name: value" spellcheck="false">${this.escapeHtml(d.headers || '')}</textarea>`, 'One per line. Put secrets in the key field instead.')}
                 <label class="connection-check"><input type="checkbox" id="conn-f-vision" data-conn-field="vision" ${d.vision ? 'checked' : ''}> Models accept images</label>
+                <label class="connection-check"><input type="checkbox" id="conn-f-zero_retention" data-conn-field="zero_retention" ${d.zero_retention ? 'checked' : ''}> This endpoint keeps no prompts or responses (a zero data retention agreement)</label>
                 </div>
                 <div class="provider-actions"><button class="btn-sm" type="button" data-conn-action="test">Test connection</button>
                 <button class="btn-sm connection-save" type="submit">${edit.originalId ? 'Save changes' : 'Add connection'}</button>

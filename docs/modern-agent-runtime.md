@@ -121,7 +121,12 @@ Each tool call passes, in order: PRE_TOOL_USE hooks, the execution policy, then
 the autonomy tier. Built-in policy denies are checked before a project's
 `lumi-policy.json`, so a repository can tighten the policy but cannot
 weaken a built-in deny. A policy `prompt` rule requires approval even in
-Full-auto.
+Full-auto. Rules are checked when they load (`PolicyRule.from_dict`). A
+`lumi-policy.json` with a mistake keeps only its valid `deny` and `prompt`
+rules and logs a warning (`repository_rules`). The policy the app and
+`lumi run` give a session includes the organization's shell rules, and so
+does the app's fallback when the project's policy can't be built
+(`with_organization_rules`).
 
 When approval is required, the user's answer is final and only an explicit
 `true` approves. A PERMISSION_REQUEST hook can neither run a call the user

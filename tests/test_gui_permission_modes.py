@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from lumi import policy as lumi_policy
 from lumi.engine.policies import PolicyAction
 from lumi.gui import app as gui_app
 from lumi.gui import ws_commands
@@ -207,6 +208,57 @@ def test_repository_restrictions_survive_a_mode_switch(gui_state):
 
     assert session.execution_policy.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
     assert session.execution_policy.get_reason("file_write", {"path": "x"}) == "frozen"
+
+
+# ── The organization's shell rules survive a broken repository policy ──
+
+
+ACME = {
+    "schema": "lumi.policy/v1",
+    "organization": "Acme",
+    "shell": {"rules": [{"tool_pattern": "bash", "action": "deny",
+                         "arg_patterns": {"command": "forbidden-by-acme"},
+                         "reason": "Acme: not from the agent's shell"}]},
+}
+
+
+def _refused_by_acme(gui_state) -> None:
+    """A Full-auto turn runs a command Acme denies; it's refused without asking."""
+    project = Path(gui_state.project.project_path)
+
+    socket = _turn(gui_state, "bash", {"command": "echo forbidden-by-acme > ran.txt"}, {"approved": True})
+
+    assert socket.events("tool_permission") == []
+    result = socket.events("tool.result")[0]
+    assert result["denied"] is True
+    assert "Acme: not from the agent's shell" in result["output"]
+    assert not (project / "ran.txt").exists()
+
+
+@pytest.mark.parametrize("content", [[], {"rules": 5}, {"rules": [1]}])
+def test_a_malformed_repository_policy_keeps_the_organizations_shell_rules(gui_state, content):
+    lumi_policy.set_for_tests(lumi_policy.parse(ACME, source="test"))
+    project = Path(gui_state.project.project_path)
+    (project / "lumi-policy.json").write_text(json.dumps(content), encoding="utf-8")
+    gui_state.workspace_trust.trust(str(project))
+    gui_state.apply_permission_mode("bypass")
+
+    _refused_by_acme(gui_state)
+
+
+def test_the_fallback_policy_keeps_the_organizations_shell_rules(gui_state, monkeypatch):
+    lumi_policy.set_for_tests(lumi_policy.parse(ACME, source="test"))
+
+    def unbuildable(*args, **kwargs):
+        raise RuntimeError("the project's policy can't be built")
+
+    monkeypatch.setattr(gui_app.AppState, "_execution_policy_for", staticmethod(unbuildable))
+    gui_state.apply_permission_mode("bypass")
+
+    _refused_by_acme(gui_state)
+    # The tier's built-in rules stay as well.
+    assert gui_state.session.execution_policy.evaluate("bash", {"command": "rm -rf ~"}) == PolicyAction.DENY
+    assert gui_state.session.execution_policy.evaluate("bash", {"command": "make"}) == PolicyAction.ALLOW
 
 
 # ── Ask asks before changes instead of refusing them ───────────────────

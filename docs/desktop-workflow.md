@@ -149,8 +149,10 @@ path, a download piped into a shell) without asking, and a project's
 desktop and git actions. **Plan** uses Auto-edit approvals for native providers.
 **Full-auto** runs everything inside the project sandbox. A project's
 `lumi-policy.json` can require more approval but cannot lift a built-in
-block. Codex and Claude Code can't pass an approval request to Lumi, so under
-Ask and Plan they only read.
+block. If the file has a mistake, Lumi still applies its valid deny and ask
+(`prompt`) rules but none of its approval-skipping (`allow`) rules until it's
+fixed, and the log says what's wrong. Codex and Claude Code can't pass an
+approval request to Lumi, so under Ask and Plan they only read.
 
 **Deny** is final: nothing, including a hook, runs the call afterward. The
 approval dialog takes focus when it opens, so typing in the composer cannot

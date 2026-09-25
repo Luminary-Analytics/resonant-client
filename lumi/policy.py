@@ -295,9 +295,21 @@ def parse(data: Any, *, source: str, trusted_keys: dict[str, str] | None = None,
     models = document.get("models") or {}
     mcp = document.get("mcp") or {}
     extensions = document.get("extensions") or {}
-    shell_rules = (document.get("shell") or {}).get("rules") or []
+    shell = document.get("shell") or {}
+    if not isinstance(shell, dict):
+        raise PolicyError("shell must be an object with a 'rules' list.")
+    shell_rules = shell.get("rules") or []
     if not isinstance(shell_rules, list) or not all(isinstance(rule, dict) for rule in shell_rules):
         raise PolicyError("shell.rules must be a list of rule objects.")
+    if shell_rules:
+        # Checked now, so a rule that can't be applied makes the policy
+        # invalid (model requests stop) instead of failing a tool call.
+        from .engine.policies import ExecutionPolicy
+
+        try:
+            ExecutionPolicy.from_rules(shell_rules)
+        except ValueError as exc:
+            raise PolicyError(f"shell.rules {exc}.") from exc
     expires_at = str(document.get("expires_at") or "")
     if expires_at:
         _parse_time(expires_at)

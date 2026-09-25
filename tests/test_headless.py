@@ -159,6 +159,31 @@ class TestRefusals:
                              stdin=io.StringIO(""), stdout=io.StringIO(), stderr=err)
         assert code == 2 and "doesn't allow claude-opus-5-5" in err.getvalue()
 
+    @pytest.mark.parametrize("content", [b"[]", b'{"rules": 5}', b"\xff\xfe{\x00"],
+                             ids=["a list", "rules is a number", "not UTF-8"])
+    def test_a_malformed_repository_policy_keeps_the_organizations_rules(self, monkeypatch, tmp_path, ledger,
+                                                                          content):
+        # These used to crash the run: building the policy, or the trust check before it.
+        lumi_policy.set_for_tests(parse({
+            "schema": "lumi.policy/v1", "organization": "Acme",
+            "shell": {"rules": [{"tool_pattern": "bash", "action": "deny",
+                                 "arg_patterns": {"command": "forbidden-by-acme"},
+                                 "reason": "Acme: not from the agent's shell"}]},
+        }, source="t"))
+        (tmp_path / "lumi-policy.json").write_bytes(content)
+        backend = scripted(call(0.01, tool_call("bash", {"command": "echo forbidden-by-acme > ran.txt"})),
+                           call(0.01, text_delta("That command was refused.")))
+
+        code, out, err = run(monkeypatch, tmp_path, backend, "Run it", "--mode", "bypass", "--trust-project",
+                             "--output", "jsonl")
+
+        lines = [json.loads(line) for line in out.splitlines()]
+        refused = [line for line in lines if line.get("event") == "tool.result"]
+        assert refused and refused[0]["denied"] is True, (out, err)
+        assert "Acme: not from the agent's shell" in refused[0]["output"]
+        assert (code, lines[-1]["status"], lines[-1]["denied_calls"]) == (3, "needs_attention", 1)
+        assert not (tmp_path / "ran.txt").exists()
+
     def test_repository_instructions_need_trust(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Always answer in French.", encoding="utf-8")
         spec = SimpleNamespace(create_backend=lambda settings: scripted())

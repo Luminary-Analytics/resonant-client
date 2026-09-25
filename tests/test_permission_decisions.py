@@ -12,6 +12,7 @@ rather than only the reported result.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import threading
 import time
@@ -20,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from lumi import policy as lumi_policy
 from lumi.engine import guardrails
 from lumi.engine.hooks import HookRunner
 from lumi.engine.policies import (
@@ -339,6 +341,92 @@ def test_repository_policy_can_still_tighten_the_built_in_policy():
     assert merged.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
     assert merged.get_reason("file_write", {"path": "x"}) == "frozen"
     assert merged.evaluate("file_read", {"path": "x"}) == PolicyAction.ALLOW
+
+
+# ── A repository's lumi-policy.json with mistakes ──────────────────────
+
+
+ACME = {
+    "schema": "lumi.policy/v1",
+    "organization": "Acme",
+    "shell": {"rules": [{"tool_pattern": "bash", "action": "deny",
+                         "arg_patterns": {"command": "forbidden-by-acme"},
+                         "reason": "Acme: not from the agent's shell"}]},
+}
+
+
+def _bad_rule(**fields) -> bytes:
+    return json.dumps({"rules": [{"tool_pattern": "bash", "action": "deny", **fields}]}).encode()
+
+
+# Each of these made project_execution_policy raise, and the app then fell
+# back to the bare tier without the organization's rules, or loaded and then
+# failed the tool calls checked against it.
+MALFORMED = {
+    "a list": b"[]",
+    "rules is text": b'{"rules": "x"}',
+    "rules is a number": b'{"rules": 5}',
+    "rules is null": b'{"rules": null}',
+    "a rule is a number": b'{"rules": [1]}',
+    "arg_patterns is text": _bad_rule(arg_patterns="x"),
+    "an arg_patterns value is a number": _bad_rule(arg_patterns={"command": 5}),
+    "arg_globs is text": _bad_rule(arg_globs="x"),
+    "tool_pattern is a number": _bad_rule(tool_pattern=5),
+    "not UTF-8": b"\xff\xfe{\x00",
+    "nested too deeply": b"[" * 100_000 + b"]" * 100_000,
+}
+
+
+@pytest.fixture
+def acme_denies():
+    lumi_policy.set_for_tests(lumi_policy.parse(ACME, source="test"))
+
+
+@pytest.mark.parametrize("content", list(MALFORMED.values()), ids=list(MALFORMED))
+def test_a_malformed_repository_policy_keeps_the_organizations_denies(tmp_path, acme_denies, content):
+    (tmp_path / "lumi-policy.json").write_bytes(content)
+    session = _session(tmp_path, [("bash", {"command": "echo forbidden-by-acme > ran.txt"})], tier="full-auto")
+    session.execution_policy = project_execution_policy("full-auto", str(tmp_path))
+
+    events = list(session.run("run it"))
+
+    result = first_of_kind(events, "tool.result")
+    assert result["denied"] is True
+    assert "Acme: not from the agent's shell" in result["output"]
+    assert not (tmp_path / "ran.txt").exists()
+    # Other calls are checked without failing, and the tier decides them.
+    assert session.execution_policy.evaluate("bash", {"command": "make"}) == PolicyAction.ALLOW
+
+
+def test_a_broken_rule_turns_off_the_files_allows_but_not_its_denies_or_prompts(tmp_path, acme_denies, caplog):
+    rules = [
+        {"tool_pattern": "file_write", "action": "deny", "reason": "repository: frozen"},
+        {"tool_pattern": "bash", "action": "prompt", "arg_globs": {"command": "git push*"},
+         "reason": "repository: ask before pushing"},
+        {"tool_pattern": "bash", "action": "deny", "arg_patterns": "rm "},
+        {"tool_pattern": "bash", "action": "allow", "reason": "repository says yes"},
+    ]
+    (tmp_path / "lumi-policy.json").write_text(json.dumps({"rules": rules}), encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="lumi.engine.policies"):
+        policy = project_execution_policy("auto-edit", str(tmp_path))
+
+    assert "rule 3: arg_patterns must map" in caplog.text
+    assert policy.get_reason("bash", {"command": "echo forbidden-by-acme"}) == "Acme: not from the agent's shell"
+    assert policy.evaluate("file_write", {"path": "x"}) == PolicyAction.DENY
+    assert policy.get_reason("file_write", {"path": "x"}) == "repository: frozen"
+    assert policy.evaluate("bash", {"command": "git push origin main"}) == PolicyAction.PROMPT
+    assert policy.get_reason("bash", {"command": "git push origin main"}) == "repository: ask before pushing"
+    # The file's allow is off, so Auto-edit asks about other commands as usual.
+    assert policy.evaluate("bash", {"command": "make"}) == PolicyAction.PROMPT
+    assert "auto-edit" in policy.get_reason("bash", {"command": "make"})
+
+    # Fixing the file brings the allow back.
+    del rules[2]
+    (tmp_path / "lumi-policy.json").write_text(json.dumps({"rules": rules}), encoding="utf-8")
+    fixed = project_execution_policy("auto-edit", str(tmp_path))
+    assert fixed.evaluate("bash", {"command": "make"}) == PolicyAction.ALLOW
+    assert fixed.evaluate("bash", {"command": "echo forbidden-by-acme"}) == PolicyAction.DENY
 
 
 # ── Ask: every change asks first, and the answer decides ───────────────

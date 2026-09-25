@@ -8,6 +8,76 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 Lumi account and Lumi Cloud enrollment — source only, not released
+
+- **Settings > Lumi account** signs the app in to an organization's Lumi Cloud
+  ([guide](lumi-cloud.md), `lumi/cloud.py`).
+  - It follows OAuth 2.0 for native apps: the browser opens, the person
+    approves, and the answer returns to a one-time listener on `127.0.0.1`,
+    checked with PKCE and a state value.
+  - The refresh token is kept in the credential store (`api_keys`), and the
+    access token only in memory.
+  - The page lists the person's organizations, roles and seats. **Sign out**
+    also ends the sign-in on Lumi Cloud.
+- **Use on this computer** enrolls the computer in an organization where
+  the person has a seat.
+  - Lumi generates an Ed25519 key. The private half stays in the credential
+    store, and the device signs short assertions to get device tokens.
+  - A machine policy with a `cloud` section enrolls managed computers with an
+    administrator's enrollment token instead
+    ([policy](enterprise-policy.md#lumi-cloud)).
+- **Check-ins** run hourly in the background.
+  - They send the version, the policy in force, and usage totals per model
+    since the last check-in; never prompts, code or paths.
+  - A new or nearly expired organization policy is downloaded, verified and
+    applied. Right away, the app confirms which version is in force.
+  - A revoked computer forgets its enrollment and the downloaded policy.
+- **Applying the organization's policy** (`lumi/policy.py`).
+  - A downloaded policy counts only when its signature verifies: against the
+    keys an administrator set (with a machine policy), or the keys pinned when
+    the person joined (without one).
+  - With a machine policy, the cloud policy replaces its rules once it
+    verifies; the machine rules apply before that and when a download fails.
+  - An organization joined in the app never overrides a machine policy.
+  - The running app applies a new policy at once: services, permission mode
+    and file exclusions. Settings and the chat follow without a reload.
+- Help text on the About page now points organizations to Lumi account.
+
+Validation on September 25, 2026:
+
+- `test_cloud.py`, 17 tests against a fake Lumi Cloud. They cover:
+  - sign-in through the real loopback listener;
+  - a callback with the wrong state, cancelling, and https addresses;
+  - refresh rotation, and an ended sign-in signing out;
+  - joining an organization and applying its signed policy, with the
+    version confirmed at once;
+  - usage totals without paths, and no seat meaning no enrollment;
+  - a tampered download not applied, and a revoked computer forgetting its
+    enrollment;
+  - leaving on this computer;
+  - managed enrollment from a machine policy, and a download signed by an
+    untrusted key leaving the machine policy in force;
+  - the page's status never carrying secrets.
+- Full `pytest`: 3,873 passed, 3 skipped.
+- End to end in the browser pane, with the real Lumi Cloud (development
+  server) and this app in an isolated home:
+  - Published a policy allowing only Ask and Plan, with secret scanning
+    locked.
+  - In Settings > Lumi account, entered the address and pressed Enter; the
+    browser pane (standing in for the system browser) approved; the app
+    showed the account and Acme Robotics.
+  - **Use on this computer** enrolled it. Privacy & security showed the
+    policy from Lumi Cloud (signed, valid for 14 days), and the mode
+    picker changed from Full-auto to Ask, offering only Ask and Plan, all
+    without a reload.
+  - After a restart, publishing version 2 and pressing **Check in now**
+    applied it, and Lumi Cloud's Devices page showed v2 at once.
+  - The run found and fixed three problems:
+    - the page kept an old policy snapshot until the app pushed settings
+      after a policy change;
+    - the page didn't redraw while the address field kept focus after Enter;
+    - the fleet page showed no policy until the next hourly check-in.
+
 ## September 25 documentation site — source only, not published
 
 - **The user and administrator guides build as a site** (`mkdocs.yml`, MkDocs

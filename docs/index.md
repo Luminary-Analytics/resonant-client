@@ -13,6 +13,7 @@ through Ollama or EXO, SONN, or your company's own gateway.
 - [Updates: channels, pins and turning them off](updates.md)
 - [Lumi on macOS](macos.md)
 - [Plans](plans.md)
+- [Your Lumi account and your organization's Lumi Cloud](lumi-cloud.md)
 
 ## Running Lumi for an organization
 

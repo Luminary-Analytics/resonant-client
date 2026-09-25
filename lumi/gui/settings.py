@@ -149,6 +149,18 @@ DEFAULTS = {
         "dismissed": False,
         "first_task_done": False,
     },
+    # Settings > Lumi account (lumi/cloud.py): the Lumi Cloud address, the
+    # signed-in account and this computer's enrollment. The sign-in's refresh
+    # token and the device key are secrets: they live in api_keys
+    # (lumi_cloud_refresh, lumi_cloud_device_key), in the credential store.
+    "cloud": {
+        "url": "",
+        "account": {},
+        "device": {},
+        "last_checkin": "",
+        "policy_version": None,
+        "usage_since": "",
+    },
     # Settings > Updates (lumi/update_channels.py): automatic, manual or off;
     # the stable or beta channel; and a release line ("0.20") to stay on.
     # Read at startup, so a change applies after a restart.

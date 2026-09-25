@@ -374,6 +374,16 @@ def main():
 
     threading.Thread(target=_retention_loop, daemon=True, name="lumi-retention").start()
 
+    # Lumi Cloud check-ins (lumi/cloud.py): only for an enrolled computer, or
+    # one whose machine policy asks to enroll; otherwise the loop does nothing.
+    try:
+        from lumi.cloud import start_background
+
+        from .app import state as app_state
+        start_background(app_state.cloud)
+    except Exception:
+        logger.exception("Lumi Cloud check-ins failed to start (non-fatal)")
+
     launch_gui(
         host=args.host,
         port=args.port,

@@ -66,6 +66,7 @@ guidance needs an explicit status notice and a current replacement.
 - [docs/skills.md](skills.md)
 - [docs/index.md](index.md): the documentation site's home page
 - [docs/packs.md](packs.md)
+- [docs/lumi-cloud.md](lumi-cloud.md)
 - [docs/unreleased.md](unreleased.md)
 
 ## Historical plans and subsystem records

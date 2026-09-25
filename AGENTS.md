@@ -100,6 +100,13 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   WinSparkle, and an MSI install (`lumi-install.json`) never updates itself.
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
   feed needs the user's go-ahead.
+- Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private
+  key live in `api_keys` (`lumi_cloud_refresh`, `lumi_cloud_device_key`), in the
+  credential store; status sent to the page never includes them. Check-ins
+  send versions and usage counts per model, never prompts, code, paths or
+  titles. A downloaded policy applies only when it verifies against machine
+  keys, or keys pinned when the person joined, and a joined organization
+  never replaces a machine policy (`policy._with_cloud_policy`).
 - `lumi run` (`headless.py`) builds its session from the same pieces as the
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run

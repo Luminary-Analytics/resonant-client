@@ -109,6 +109,60 @@ def build_spec(settings: Any, provider: str, model: str, project: str):
     return spec
 
 
+def scope_session(session: Any, settings: Any, project: str, *, tier: str, trust_project: bool,
+                  policy_digest: str | None = None) -> None:
+    """Give ``session`` its project and permission tier as the desktop app would.
+
+    File tools stay inside ``project`` (the path sandbox), excluded files stay
+    unread (Settings, the organization's policy and ``.lumiignore``), and the
+    execution policy is the tier's: the guardrails, the review gate and the
+    organization's shell rules first, then the tier's rules with the
+    project's lumi-policy.json layered on. The repository's instructions,
+    notes and policy allow rules apply only to a trusted project: one trusted
+    in the app, or ``trust_project`` (``--trust-project``). A repository can't
+    trust itself. ``policy_digest`` narrows ``trust_project`` (build_session).
+
+    Everything is worked out before anything is set, so a failure leaves the
+    session as it was. ``lumi run`` builds its session with this, and the
+    terminal UI (lumi/tui.py) scopes its own with it: at start, on ``/cd``
+    and when ``/approve`` changes the tier.
+    """
+    from .engine.exclusions import ExclusionRules
+    from .engine.policies import project_execution_policy
+    from .engine.sandbox import PathSandbox
+    from .gui.project_instructions import load_project_instructions
+    from .gui.workspace_trust import WorkspaceTrust
+    from .policy import current as current_policy
+
+    status = WorkspaceTrust().status(project)
+    trusted = trust_project or status.trusted
+    # --trust-project trusts whatever the policy says now, unless --policy-digest
+    # names the version to trust; otherwise its allow rules must be the version
+    # trusted in the app.
+    execution_policy = project_execution_policy(
+        tier, project, honor_allows=trust_project or status.honor_policy_allows,
+        policy_digest=policy_digest if trust_project else status.policy_digest)
+    exclusions = ExclusionRules.for_project(
+        project,
+        settings_patterns=lambda: settings.get("privacy", "excluded_paths", []) or [],
+        policy_patterns=lambda: current_policy().exclude if current_policy() else (),
+    )
+    instructions = load_project_instructions(project) if trusted else None
+    # File tools stay inside the project, as in the app (gui/app.py).
+    sandbox = PathSandbox(project, enabled=True)
+
+    session.project_path = project
+    session.sandbox = sandbox
+    session.autonomy_tier = tier
+    session.execution_policy = execution_policy
+    session.exclusions = exclusions
+    session.project_instructions = instructions
+    session.project_content_trusted = trusted
+    # Tools read Settings as in the app: the autonomy floor, Settings'
+    # language servers (engine/lsp.py) and pack skills.
+    session._settings_ref = settings
+
+
 def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_project: bool,
                   max_requests: int | None, run_id: str, policy_digest: str | None = None,
                   tier: str = ""):
@@ -121,42 +175,12 @@ def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_pr
     asks rather than the read-only one.
     """
     from .engine import Session
-    from .engine.exclusions import ExclusionRules
-    from .engine.policies import project_execution_policy
-    from .engine.sandbox import PathSandbox
-    from .gui.project_instructions import load_project_instructions
-    from .gui.workspace_trust import WorkspaceTrust
-    from .policy import current as current_policy
 
-    status = WorkspaceTrust().status(project)
-    trusted = trust_project or status.trusted
     backend = spec.create_backend(settings)
     tier = tier or MODES[mode]
-    session = Session(
-        backend,
-        auto_approve=tier == "full-auto",
-        project_instructions=load_project_instructions(project) if trusted else None,
-        max_model_requests=max_requests,
-    )
-    session.project_path = project
-    # File tools stay inside the project, as in the app (gui/app.py).
-    session.sandbox = PathSandbox(project, enabled=True)
-    session.autonomy_tier = tier
-    # --trust-project trusts whatever the policy says now, unless --policy-digest
-    # names the version to trust; otherwise its allow rules must be the version
-    # trusted in the app.
-    session.execution_policy = project_execution_policy(
-        session.autonomy_tier, project, honor_allows=trust_project or status.honor_policy_allows,
-        policy_digest=policy_digest if trust_project else status.policy_digest)
-    session.exclusions = ExclusionRules.for_project(
-        project,
-        settings_patterns=lambda: settings.get("privacy", "excluded_paths", []) or [],
-        policy_patterns=lambda: current_policy().exclude if current_policy() else (),
-    )
-    session.project_content_trusted = trusted
-    # Tools read Settings as in the app: the autonomy floor, Settings'
-    # language servers (engine/lsp.py) and pack skills.
-    session._settings_ref = settings
+    session = Session(backend, auto_approve=tier == "full-auto", max_model_requests=max_requests)
+    scope_session(session, settings, project, tier=tier, trust_project=trust_project,
+                  policy_digest=policy_digest)
     # Nobody is watching the screen of an unattended run.
     session.computer_use_enabled = False
     session.audit_session_id = f"headless:{run_id}"

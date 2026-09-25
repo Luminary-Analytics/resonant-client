@@ -36,6 +36,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Plans: free for individuals, and what's planned for organizations](plans.md)
 - [Lumi account and Lumi Cloud: signing in, enrolling this computer, sharing a conversation, managed enrollment](lumi-cloud.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)
+- [The terminal UI: permission modes, project trust and commands](terminal-ui.md)
 - [Previews, project notes, skills, and named acceptance checks](priority-improvements.md)
 - [Comparing models on your own tasks before switching](model-comparisons.md)
 - [Code intelligence: language servers for definitions, references and diagnostics](code-intelligence.md)

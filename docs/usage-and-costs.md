@@ -27,7 +27,7 @@ month:
 | Field | Meaning |
 |---|---|
 | `user` | The operating-system account that ran Lumi |
-| `project`, `session`, `agent` | The project folder, the saved conversation (`gateway:<chat>` for the chat gateway) and the worker, if any |
+| `project`, `session`, `agent` | The project folder, the saved conversation (`gateway:<chat>` for the chat gateway, `tui:<id>` for a terminal UI session) and the worker, if any |
 | `purpose` | `turn`, `subagent`, `title` or `compression` |
 | `input_tokens` | Every prompt token, cached ones included; `cached_tokens` and `cache_write_tokens` are the parts read from or written to the provider's prompt cache |
 | `cost_usd` | The cost used for totals and budgets: the reported cost when there is one, otherwise the computed one. `null` when the model has no price |

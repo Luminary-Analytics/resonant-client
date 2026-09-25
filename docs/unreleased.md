@@ -1441,6 +1441,106 @@ duplicate ids, headings, language, landmarks and composited text contrast:
   pane and gave false contrast results, so each theme was rendered from load.
 
 The full suite and the node UI tests pass.
+
+## September 25 a reloaded page picks its running plan back up — source only, not released
+
+**A reload stranded a running plan.** The Plan tab follows a plan by an id
+the page keeps in memory, and the plan's events went to the socket of the
+page that last sent an intent command. After a reload the tab followed
+nothing: Stop answered "No plan is running.", and the plan's progress went to
+a socket that was gone, while the plan ran on to its end.
+
+- **A page that connects is handed the running plans**
+  (`lumi/gui/ws_commands.py`, `lumi/gui/app.py`,
+  [guide](desktop-workflow.md#plans-with-plan-unreleased)).
+  - The socket's `init` reply lists the open project's running plans as
+    `running_intents`, oldest first: id, text, `paused`, `stopping` and the
+    graph as it stands (`get_graph(id).to_dict()`).
+  - Their events go to that socket from then on
+    (`AppState.attach_intent_viewer`). The service isn't rebuilt or rebound:
+    its `on_event` may be an autonomous mission's wrapper feeding its
+    `DispatchTracker`, which must keep seeing the mission's iterations end.
+- **A followed plan's events go to its page**
+  (`lumi/orchestration/intent_service.py`).
+  - `/plan` and Build this roadmap start their plan with the page's emitter
+    as its viewer (`start_intent(viewer=...)`), which gets the plan's events
+    instead of `on_event`. A page that connects takes over the running ones
+    (`attach_viewer`), and a page that uses one of a plan's controls (Pause,
+    Resume, Stop, History, Restore) takes over that plan (`route_to`), so the
+    page that acted gets the events that report the result.
+  - An autonomous session's plans have no viewer. They are never listed or
+    taken over, and their events keep reaching `on_event`; the mission's
+    badge stops them.
+  - A plan a rebuilt service adopted, after a model or project switch, is
+    taken over too: its viewer is read per event from the entry both
+    services share. Only the open project's plans are listed.
+  - The graph is read after the switch, and the `init` reply goes out with
+    nothing awaited in between, so an event the graph misses reaches the
+    page after it. A graph read while its walker adds a step is read again.
+- **The page follows the latest** (`lumi/gui/static/app.js`,
+  `_followRunningPlans`). The Plan tab draws its graph and shows Running,
+  Paused (with Resume) or Stopping…, and Pause and Stop reach it. The preview
+  opens on the Plan tab, leaving focus where it was, so the controls can be
+  reached from the keyboard (the preview's tabs can't be); a preview already
+  open stays on its pane with the Plan tab marked. A notice says the plan is
+  still running. A socket that reconnects to the plan its page shows only
+  takes the server's state.
+
+Validation on September 25, 2026:
+
+- `pytest`: PENDING. `ruff`, `node --check`, the four node test files
+  (PENDING), `git diff --check`.
+- New tests, each failing against the code before this change (and 5 of them
+  with only the viewer switch in `attach_viewer` removed):
+  - the service hands a connecting page its running plans (text, paused,
+    stopping, graph) and sends it their events from then on, none to the
+    page before; lists them oldest first and only the named project's,
+    including one adopted from another project's service; never lists or
+    routes an autonomous plan; reads a changing graph again;
+  - `init` lists the running plans and binds their events to its socket,
+    and still opens the page when they can't be handed over; `/plan` passes
+    its page as the viewer, and each plan control takes its plan over;
+  - through the app's real `/ws` socket: `/plan`, the socket closes, a new
+    one sends `init` and gets the plan with its graph, then its next step's
+    events without asking, and its `intent_cancel` stops it;
+  - with an autonomous mission's wrapper as `on_event`, a page that connects
+    takes over the plan but not the iteration, the wrapper stays, and the
+    mission's tracker sees its iteration end;
+  - in node, through the real `handleInit` and the toolbar from
+    `index.html`: the latest plan followed, with its graph and a working
+    Stop; paused and stopping plans; a preview already open; no plans, a
+    refresh, and a reconnect to the shown plan changing nothing else.
+- In the browser pane, against an isolated fixture (temporary home and
+  state, keychain off, a scripted Ollama-compatible model that streams the
+  planner and gives the implementer a `bash` that sleeps 240 s):
+  - Reloaded while the implementer's command ran: the Plan tab showed the
+    plan's three steps (planner done, implementer running, check pending)
+    and Running, with the notice, and focus stayed in the composer. Stop,
+    clicked: Stopping…, then Stopped; the command was killed at once and no
+    model request followed.
+  - Reloaded during the planner: the page followed the plan. Pause held the
+    implementer for 35 s after the planner ended, until Resume; Stop from
+    the keyboard (Tab from Pause, Enter) stopped it. A plan paused before a
+    reload came back Paused, with Resume.
+  - After a reload the preview opened on the Plan tab; from the composer,
+    Tab reached Stop in nine presses, and Enter stopped the plan and closed
+    the planner's stream.
+  - The same reload on the code before this change (a046131): the Plan tab
+    read "No active intent", Stop had no plan to stop, and the page received
+    no event in 8 s while the planner kept streaming.
+  - The real home was unchanged afterwards.
+
+Not yet:
+- What a plan's steps wrote in the conversation before a reload isn't shown
+  again.
+- The preview has no narrow layout. At 375 px, a preview that opens by
+  itself (for a plan's first snapshot, and now for a plan picked up after a
+  reload) squeezes the conversation to about 54 px until it is closed.
+- An autonomous mission's own events still go only to the page that started
+  it, and an intent command still replaces the intent service's `on_event`,
+  a running mission's wrapper included. Plans followed in the Plan tab no
+  longer depend on `on_event`.
+
 ## September 25 a plan can be stopped — source only, not released
 
 **Nothing could stop a plan.** Nothing in the app sent `intent_cancel`, so a
@@ -1540,12 +1640,13 @@ Validation on September 25, 2026:
   - The real home was unchanged afterwards.
 
 Not yet:
-- After a page reload the Plan tab no longer follows a plan that is still
-  running, so its Stop can't reach it until it finishes.
 - Exit Mission doesn't stop the Mission's roadmap, and the Mission's badge
   doesn't show when its roadmap ends, finished or stopped.
 - The preview panel's Browser, Plan and Context tabs can't be reached from
   the keyboard; `/plan` and Build this roadmap bring the Plan tab forward.
+
+(Picking a running plan back up after a page reload, so that its Stop reaches
+it, came in "September 25 a reloaded page picks its running plan back up".)
 
 ## September 25 /plan and the Plan tab's controls work again — source only, not released
 

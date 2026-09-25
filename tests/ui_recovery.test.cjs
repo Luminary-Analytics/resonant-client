@@ -2140,17 +2140,24 @@ test('the plan-graph Pause button becomes Resume while the plan is paused', () =
 
 // The Plan tab's toolbar as index.html draws it, wired by the real
 // _bindPlanGraphToolbar and driven through the real handleEvent. A Mission's
-// roadmap reaches it through autonomous_view.js's handleMissionPhaseChanged.
+// roadmap reaches it through autonomous_view.js's handleMissionPhaseChanged,
+// and plan_graph_view.js draws the graph into `app.canvas`.
 function planToolbarApp() {
     const dom = fakeDom();
     const page = fs.readFileSync(path.join(__dirname, '../lumi/gui/templates/index.html'), 'utf8');
     const toolbar = dom.document.createElement('div');
     toolbar.innerHTML = page.match(/<div class="plan-graph-toolbar">([\s\S]*?)<\/div>/)[1];
     const byId = id => toolbar.querySelector(`[id="${id}"]`);
-    const document = {...dom.document, getElementById: byId};
+    // The graph's markup is kept as a string; the fake DOM can't parse its SVG.
+    const canvas = {innerHTML: '', style: {}, querySelectorAll: () => []};
+    const document = {
+        ...dom.document, body: {dataset: {}}, querySelectorAll: () => [],
+        getElementById: id => (id === 'plan-graph-canvas' ? canvas : byId(id)),
+    };
     const context = vm.createContext({console, document, CSS: dom.CSS, window: {}, WebSocket: {OPEN: 1}});
     vm.runInContext(source + '\nthis.App = LumiApp;', context);
     vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/autonomous_view.js'), 'utf8'), context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/plan_graph_view.js'), 'utf8'), context);
     const app = Object.create(context.App.prototype);
     Object.assign(app, {
         ws: {readyState: 1},
@@ -2164,6 +2171,7 @@ function planToolbarApp() {
     });
     app._bindPlanGraphToolbar();
     app.button = byId;
+    app.canvas = canvas;
     app.press = id => byId(id).listeners.click();
     app.stateLabel = () => byId('plan-graph-state').textContent;
     app.unavailable = id => byId(id).getAttribute('aria-disabled') === 'true';
@@ -2247,6 +2255,109 @@ test('while Lumi reconnects, Stop says so instead of showing a stop that was nev
     assert.deepEqual(app.sent, []);
     assert.equal(app.stateLabel(), 'Running');
     assert.equal(app.notices.at(-1), 'Reconnecting to Lumi. Press Stop again once it’s back.');
+});
+
+// A page that has just connected, receiving the socket's init through the
+// real handleInit. What init touches outside the Plan tab is stubbed.
+function reloadedPlanApp() {
+    const app = planToolbarApp();
+    const noop = () => {};
+    Object.assign(app, {
+        settings: {}, _handoffsRequested: true, planTabUnread: 0,
+        _activateDraft: noop, setPermissionMode: noop, requestGitStatus: noop, renderProjectRail: noop,
+        populateModelSelector: noop, _setSystemStatus: noop, _applyRuntimeError: noop,
+        showChatInterface: noop, showNewSessionSetup: noop,
+        _markPlanTabUnread: () => { app.planTabUnread += 1; },
+    });
+    app.connect = runningIntents => app.handleEvent({event: 'init', running_intents: runningIntents});
+    return app;
+}
+
+// A plan as the server lists it for a page that connects.
+const runningPlan = (id, fields = {}) => ({
+    intent_id: id, text: `plan ${id}`, paused: false, stopping: false, started_at: 1,
+    snapshot: {intent_id: id, intent: `plan ${id}`, nodes: [
+        {id: `${id}-a`, goal: 'plan it', status: 'done', specialization: 'plan'},
+        {id: `${id}-b`, goal: 'add the toggle', status: 'running', specialization: 'implement', parent_id: `${id}-a`},
+    ]},
+    ...fields,
+});
+
+test('after a reload the Plan tab follows the latest running plan, and Stop reaches it', () => {
+    const app = reloadedPlanApp();
+    app.connect([runningPlan('plan-1'), runningPlan('plan-2')]);
+
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.unavailable('plan-graph-stop'), false);
+    assert.equal(app.unavailable('plan-graph-pause'), false);
+    // Its graph as it stands, in a preview opened on the Plan tab (focus is
+    // left where it was), and said so.
+    assert.equal(app.button('plan-graph-intent').textContent, 'plan plan-2');
+    assert.match(app.canvas.innerHTML, /class="pgn pgn-running" data-id="plan-2-b"/);
+    assert.deepEqual(app.planTabOpened, [true]);
+    assert.equal(app.planTabUnread, 1);
+    assert.equal(app.notices.at(-1), 'A plan is still running. Pause and Stop are in the Plan tab.');
+
+    app.press('plan-graph-stop');
+    assert.deepEqual(app.sent, [{command: 'intent_cancel', intent_id: 'plan-2'}]);
+    assert.equal(app.stateLabel(), 'Stopping…');
+    // The server sends its events to this page now.
+    app.handleEvent({event: 'intent.cancelling', intent_id: 'plan-2'});
+    app.handleEvent({event: 'intent.cancelled', intent_id: 'plan-2'});
+    assert.equal(app.stateLabel(), 'Stopped');
+    // The older plan's end leaves the toolbar alone.
+    app.handleEvent({event: 'intent.complete', intent_id: 'plan-1'});
+    assert.equal(app.stateLabel(), 'Stopped');
+
+    // A preview already open (the socket came back) stays on its pane.
+    const reconnected = reloadedPlanApp();
+    reconnected.previewOpen = true;
+    reconnected.connect([runningPlan('plan-3')]);
+    assert.equal(reconnected.stateLabel(), 'Running');
+    assert.deepEqual(reconnected.planTabOpened, [false]);
+    assert.equal(reconnected.planTabUnread, 1);
+});
+
+test('a plan paused or stopping when the page reloaded shows so', () => {
+    const paused = reloadedPlanApp();
+    paused.connect([runningPlan('plan-1', {paused: true})]);
+    assert.equal(paused.stateLabel(), 'Paused');
+    assert.equal(paused.button('plan-graph-pause').textContent, 'Resume');
+    paused.press('plan-graph-pause');
+    assert.deepEqual(paused.sent, [{command: 'intent_resume', intent_id: 'plan-1'}]);
+
+    // Stop was pressed before the reload; the running step is still ending.
+    const stopping = reloadedPlanApp();
+    stopping.connect([runningPlan('plan-1', {paused: true, stopping: true})]);
+    assert.equal(stopping.stateLabel(), 'Stopping…');
+    assert.equal(stopping.unavailable('plan-graph-stop'), true);
+    stopping.press('plan-graph-stop');
+    assert.deepEqual(stopping.sent, []);
+    stopping.handleEvent({event: 'intent.cancelled', intent_id: 'plan-1'});
+    assert.equal(stopping.stateLabel(), 'Stopped');
+});
+
+test('with no plan running, or reconnecting to the plan it shows, the page keeps its Plan tab', () => {
+    const app = reloadedPlanApp();
+    app.connect([]);
+    assert.equal(app.stateLabel(), '');
+    assert.deepEqual(app.planTabOpened, []);
+    assert.deepEqual(app.notices, []);
+
+    app.handleEvent({event: 'intent.accepted', intent_id: 'plan-1', text: 'add a toggle'});
+    app.handleEvent({event: 'intent.paused', intent_id: 'plan-1'});
+    const notices = app.notices.length;
+    // A refresh of the project's state lists no plans and changes none.
+    app.handleEvent({event: 'init', refresh_only: true});
+    assert.equal(app.stateLabel(), 'Paused');
+    // The socket came back while the plan was resumed from elsewhere: its
+    // state is the server's, with the panel and notices left as they were.
+    app.connect([runningPlan('plan-1')]);
+    assert.equal(app.stateLabel(), 'Running');
+    assert.equal(app.button('plan-graph-intent').textContent, 'plan plan-1');
+    assert.deepEqual(app.planTabOpened, []);
+    assert.equal(app.planTabUnread, 0);
+    assert.equal(app.notices.length, notices);
 });
 
 test('Build this roadmap points Pause and Stop at the Mission\'s plan; an autonomous session does not', () => {

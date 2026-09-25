@@ -443,8 +443,16 @@ Pause and Stop are buttons you can reach with Tab and press with Enter or
 Space; focus stays on them while a plan's steps start and end. They act on
 the plan the tab follows: the last one started with `/plan` or with a
 Mission's **Build this roadmap**. An autonomous session's plans are stopped
-from its badge. After the page reloads, the tab no longer follows a plan that
-is still running, so wait for it to finish before reloading.
+from its badge.
+
+A plan keeps running when the page reloads or reconnects, and the page picks
+it back up. The preview opens on the **Plan** tab, showing the plan's steps
+as they stand and its state (Running, Paused or Stopping…), and Pause and
+Stop reach it again, from the keyboard too. If several plans are running in
+the open project, the tab follows the latest. What the plan's steps wrote in the conversation
+before the reload isn't shown again; what they do next appears as before.
+With two windows open (File > Open in Browser), a plan's updates go to the
+window that connected last, or that last used one of the plan's controls.
 
 Specialists run in Full-auto inside the project, with the guardrails that
 apply in every mode. See [Unreleased](unreleased.md).

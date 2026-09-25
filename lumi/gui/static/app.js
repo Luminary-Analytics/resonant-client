@@ -2149,7 +2149,8 @@ class LumiApp {
     /**
      * Wire the Plan tab's toolbar. Pause (Resume while paused) and Stop act
      * on the plan the tab follows: the last one started with /plan or a
-     * Mission's Build this roadmap.
+     * Mission's Build this roadmap, or the latest still running when the
+     * page connected.
      */
     _bindPlanGraphToolbar() {
         document.getElementById('plan-graph-pause')?.addEventListener('click', () => {
@@ -2199,6 +2200,31 @@ class LumiApp {
         this._currentIntentId = intentId;
         this._currentIntentState = '';
         this._setIntentState('running');
+    }
+
+    /**
+     * Pick up the plans still running when this page connected (after a
+     * reload, say). The Plan tab follows the latest, with its graph as it
+     * stands, and Pause and Stop reach it again: the server sends its events
+     * here from now on. Only plans started with /plan or Build this roadmap
+     * are listed.
+     */
+    _followRunningPlans(plans) {
+        const latest = plans.at(-1);
+        if (!latest?.intent_id) return;
+        const alreadyShown = latest.intent_id === this._currentIntentId;
+        this._followIntent(latest.intent_id);
+        if (latest.stopping) this._setIntentState('stopping');
+        else if (latest.paused) this._setIntentState('paused');
+        if (latest.snapshot && window.PlanGraphView) window.PlanGraphView.render(latest.snapshot);
+        // A page reconnecting to the plan it shows keeps its layout.
+        if (alreadyShown) return;
+        // A preview opened for the plan shows it, so its Pause and Stop can be
+        // reached from the keyboard (the preview's tabs can't be). One already
+        // open stays on its pane, with the Plan tab marked. Neither takes focus.
+        this.openPlanTab(!this.previewOpen);
+        this._markPlanTabUnread();
+        this.showStatusMessage('A plan is still running. Pause and Stop are in the Plan tab.');
     }
 
     _planControlsLive() {
@@ -4651,6 +4677,13 @@ class LumiApp {
         // list (running + complete + paused + failed) on init.
         if (Array.isArray(event.autonomous_missions)) {
             this.handleAutonomousMissions({ missions: event.autonomous_missions });
+        }
+
+        // Plans still running when this page connected; only the socket's
+        // own init lists them. Before the returns below: a plan runs on the
+        // model it started with, whatever this page can load now.
+        if (Array.isArray(event.running_intents)) {
+            this._followRunningPlans(event.running_intents);
         }
 
         if (current_backend) {

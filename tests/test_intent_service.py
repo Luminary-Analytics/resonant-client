@@ -391,6 +391,201 @@ def test_a_rebuilt_service_still_reaches_a_running_plan(state_home, project_dir)
     assert third.cancel(intent_id) is False
 
 
+# ── Viewers: the page a plan's events go to ────────────────────────────
+
+
+def _held_runner(started: list, release: threading.Event):
+    """A planner that plans one step, and an implementer that works until
+    released, so the plan is still running while the test looks at it."""
+    def runner(node, graph):
+        started.append((graph.intent, node.specialization))
+        if node.specialization == NodeSpecialization.PLAN:
+            return SpecialistResult(status=NodeStatus.DONE, confidence=0.9, subgoals=[
+                {"goal": "write the toggle", "specialization": "implement"},
+            ])
+        release.wait(timeout=5)
+        return SpecialistResult(status=NodeStatus.DONE, confidence=0.95, summary="written")
+    return runner
+
+
+def _wait_until(condition, *, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while not condition():
+        assert time.time() < deadline, "timed out waiting"
+        time.sleep(0.02)
+
+
+def _implementing(started: list, count: int):
+    return lambda: sum(spec == NodeSpecialization.IMPLEMENT for _, spec in started) >= count
+
+
+def test_a_page_that_connects_takes_over_the_running_plans(state_home, project_dir):
+    """After a reload, the page that started a plan is gone. The page that
+    connects gets the plan's state and graph, and its events from then on;
+    an autonomous session's plan keeps sending its own to on_event."""
+    service_events: list = []
+    service = _make_service(project_dir, on_event=service_events.append)
+    first_page: list = []
+    started: list = []
+    release = threading.Event()
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: _held_runner(started, release),
+    ):
+        plan = service.start_intent("add a dark mode toggle", viewer=first_page.append)
+        iteration = service.start_intent("iteration 1 of a mission")
+        _wait_until(_implementing(started, 2))
+        assert service.pause(plan) is True
+
+        second_page: list = []
+        plans = service.attach_viewer(second_page.append, project_path=str(project_dir))
+
+        assert [described["intent_id"] for described in plans] == [plan]
+        described = plans[0]
+        assert described["text"] == "add a dark mode toggle"
+        assert described["paused"] is True
+        assert described["stopping"] is False
+        assert described["snapshot"]["intent_id"] == plan
+        assert {n["goal"]: n["status"] for n in described["snapshot"]["nodes"]} == {
+            "add a dark mode toggle": NodeStatus.DONE,
+            "write the toggle": NodeStatus.RUNNING,
+        }
+        seen_by_first_page = len(first_page)
+        assert service.resume(plan) is True
+        release.set()
+        _wait_for_completion(service, plan)
+        _wait_for_completion(service, iteration)
+
+    assert "intent.paused" in [e["event"] for e in first_page]
+    # From the switch on, the plan's events went to the new page alone.
+    assert len(first_page) == seen_by_first_page
+    kinds = [e["event"] for e in second_page]
+    assert kinds[0] == "intent.resumed"
+    assert kinds[-1] == "intent.complete"
+    assert "plan.event" in kinds
+    assert {e["intent_id"] for e in second_page} == {plan}
+    # The plan never reached on_event; the autonomous one only ever did.
+    assert {e["intent_id"] for e in service_events} == {iteration}
+    assert [e["event"] for e in service_events][-1] == "intent.complete"
+    # A plan that has ended isn't handed to the next page.
+    assert service.attach_viewer(lambda event: None) == []
+
+
+def test_a_page_is_handed_its_projects_running_plans_oldest_first(state_home, project_dir, tmp_path):
+    """A rebuilt service adopts every running plan, even after a project
+    switch. A page gets those of the project it shows, including the end of
+    an adopted plan, which the service that started it still sends."""
+    other_project = tmp_path / "other"
+    other_project.mkdir()
+    started: list = []
+    release = threading.Event()
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: _held_runner(started, release),
+    ):
+        before_switch = _make_service(other_project)
+        elsewhere = before_switch.start_intent("tidy the README", viewer=lambda event: None)
+        _wait_until(_implementing(started, 1))
+        service = _make_service(project_dir)
+        service.adopt_running(before_switch)
+        first = service.start_intent("add a toggle", viewer=lambda event: None)
+        second = service.start_intent("add a menu", viewer=lambda event: None)
+        _wait_until(_implementing(started, 3))
+
+        here: list = []
+        assert [p["intent_id"] for p in service.attach_viewer(here.append, project_path=str(project_dir))] \
+            == [first, second]
+        there: list = []
+        assert [p["intent_id"] for p in service.attach_viewer(there.append, project_path=str(other_project))] \
+            == [elsewhere]
+        release.set()
+        for intent_id in (elsewhere, first, second):
+            _wait_for_completion(service, intent_id)
+
+    assert [e["event"] for e in there if e["intent_id"] == elsewhere][-1] == "intent.complete"
+    assert {e["intent_id"] for e in there} == {elsewhere}
+    assert {e["intent_id"] for e in here} == {first, second}
+
+
+def test_a_page_acting_on_a_plan_gets_its_events_but_never_an_autonomous_plans(state_home, project_dir):
+    service_events: list = []
+    service = _make_service(project_dir, on_event=service_events.append)
+    connected_page: list = []
+    started: list = []
+    release = threading.Event()
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: _held_runner(started, release),
+    ):
+        plan = service.start_intent("add a toggle", viewer=lambda event: None)
+        iteration = service.start_intent("iteration 1 of a mission")
+        _wait_until(_implementing(started, 2))
+        service.attach_viewer(connected_page.append)
+
+        # The page that started the plan presses Stop after another page
+        # connected: the result is reported to the page that pressed it.
+        acting_page: list = []
+        assert service.route_to(plan, acting_page.append) is True
+        assert service.route_to(iteration, acting_page.append) is False
+        assert service.route_to("no-such-plan", acting_page.append) is False
+        assert service.cancel(plan) is True
+        assert service.cancel(iteration) is True
+        release.set()
+        _wait_for_completion(service, plan)
+        _wait_for_completion(service, iteration)
+
+    assert connected_page == []
+    assert [e["event"] for e in acting_page if e["event"].startswith("intent.")] == [
+        "intent.cancelling", "intent.cancelled",
+    ]
+    assert {e["intent_id"] for e in acting_page} == {plan}
+    assert [e["event"] for e in service_events if e["event"].startswith("intent.")][-2:] == [
+        "intent.cancelling", "intent.cancelled",
+    ]
+    assert {e["intent_id"] for e in service_events} == {iteration}
+
+
+def test_a_page_reloaded_while_its_plan_stops_shows_stopping_then_gets_the_end(state_home, project_dir):
+    service = _make_service(project_dir)
+    started: list = []
+    release = threading.Event()
+
+    with patch(
+        "lumi.orchestration.intent_service.LocalSpecialistRunner",
+        side_effect=lambda **kw: _held_runner(started, release),
+    ):
+        plan = service.start_intent("add a toggle", viewer=lambda event: None)
+        _wait_until(_implementing(started, 1))
+        assert service.cancel(plan) is True
+        page: list = []
+        [described] = service.attach_viewer(page.append, project_path=str(project_dir))
+        assert described["stopping"] is True
+        assert described["paused"] is False
+        release.set()
+        _wait_for_completion(service, plan)
+
+    assert [e["event"] for e in page if e["event"].startswith("intent.")] == ["intent.cancelled"]
+
+
+def test_a_graph_changing_while_it_is_read_is_read_again():
+    from lumi.orchestration import intent_service
+
+    reads: list = []
+
+    class Graph:
+        def to_dict(self):
+            reads.append(1)
+            if len(reads) == 1:
+                raise RuntimeError("dictionary changed size during iteration")
+            return {"nodes": []}
+
+    assert intent_service._graph_dict(Graph()) == {"nodes": []}
+    assert len(reads) == 2
+
+
 # ── Pause / resume ─────────────────────────────────────────────────────
 
 

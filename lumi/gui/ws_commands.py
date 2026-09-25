@@ -1833,7 +1833,35 @@ async def _cmd_init(ctx: CommandContext) -> None:
             payload["current_projections"] = snapshot["projections"]
         except Exception:
             logger.warning("Unable to hydrate current session during init", exc_info=True)
+    # Last, with nothing awaited before the send: an event a plan sends this
+    # socket from here on arrives after the snapshot it updates.
+    payload["running_intents"] = _attach_intent_viewer(ctx)
     await ctx.send(payload)
+
+
+def _attach_intent_viewer(ctx: CommandContext) -> list[dict]:
+    """The project's running plans, whose events now come to this socket.
+
+    A page that reconnects (after a reload, say) follows the latest in the
+    Plan tab, so its Pause and Stop reach it again.
+    """
+    attach = getattr(ctx.state, "attach_intent_viewer", None)
+    if attach is None:
+        return []
+    loop = asyncio.get_running_loop()
+
+    def _emit_intent(payload: dict, _ws=ctx.ws, _loop=loop):
+        try:
+            asyncio.run_coroutine_threadsafe(_ws.send_json(payload), _loop)
+        except Exception:
+            logger.debug("intent emit raised", exc_info=True)
+
+    try:
+        return attach(_emit_intent)
+    except Exception:
+        # The page still opens; it just can't pick a running plan back up.
+        logger.warning("Unable to hand running plans to the page", exc_info=True)
+        return []
 
 
 
@@ -2376,7 +2404,8 @@ async def _cmd_mission_dispatch_roadmap(ctx: CommandContext) -> None:
 
     intent_service = ctx.state.get_intent_service(on_event=_emit_intent)
     try:
-        intent_id = intent_service.start_intent(intent_text)
+        # Followed in the Plan tab like a /plan (mission_phase_changed below).
+        intent_id = intent_service.start_intent(intent_text, viewer=_emit_intent)
     except ValueError as exc:
         # Refused, for example by the organization's policy (lumi/policy.py):
         # nothing started and the mission stays in drafting.
@@ -3230,6 +3259,10 @@ async def _cmd_intent(ctx: CommandContext) -> None:
         # the one it started with, so Stop, Pause and Resume must still reach
         # it after opening a conversation whose model can't start.
         intent_service = ctx.state.get_intent_service(on_event=_emit_intent)
+        if name != "intent_start":
+            # Another page may have taken this plan over by connecting since;
+            # the page acting on it gets the events that report the result.
+            intent_service.route_to(ctx.msg.get("intent_id", ""), _emit_intent)
 
         if name == "intent_start":
             text = (ctx.msg.get("text") or "").strip()
@@ -3238,7 +3271,8 @@ async def _cmd_intent(ctx: CommandContext) -> None:
                                     "message": "intent text is required"})
             else:
                 try:
-                    intent_id = intent_service.start_intent(text)
+                    # The page follows it in the Plan tab; its events go there.
+                    intent_id = intent_service.start_intent(text, viewer=_emit_intent)
                     await ctx.send({
                         "event": "intent.accepted",
                         "intent_id": intent_id,

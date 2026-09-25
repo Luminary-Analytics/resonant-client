@@ -16,11 +16,21 @@ Pause: each active intent owns a `pause_event`. `pause()` sets it; the walker
 starts no new node while the flag is up (the specialist already running
 finishes first). `resume()` clears it. Cancel, pause and resume apply only
 while the intent's worker runs: a finished intent reports False.
+
+Viewers: a plan the person follows in the Plan tab (/plan, a Mission's Build
+this roadmap) is started with a `viewer`, the emitter of the page that
+started it, and its events go there instead of `on_event`. A page that
+connects while the plan runs takes it over (`attach_viewer`), as does one
+that acts on it (`route_to`), so a reload doesn't leave the plan's events
+going to a socket that is gone. An autonomous session's plans have no
+viewer: their events keep reaching `on_event`, where the session waits for
+their end.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass, field
@@ -68,6 +78,29 @@ class _ActiveIntent:
     started_at: float = field(default_factory=time.time)
     completed_at: float = 0.0
     status: str = "running"  # "running" | "paused" | "completed" | "cancelled" | "failed"
+    # The project it runs in. A rebuilt service adopts running intents, even
+    # after a project switch.
+    project_path: str = ""
+    # Where its events go instead of `on_event`: the page that started it,
+    # or the last one to connect while it ran or to act on it. None for an
+    # autonomous session's plan.
+    viewer: Optional[Callable[[dict], None]] = None
+
+
+def _path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path or ""))
+
+
+def _graph_dict(graph: PlanGraph) -> dict:
+    """`graph.to_dict()` for a graph its walker thread may be extending."""
+    for _ in range(3):
+        try:
+            return graph.to_dict()
+        except RuntimeError:
+            # A node was added while the nodes were being read; adding one is
+            # quick, so reading again succeeds.
+            continue
+    return graph.to_dict()
 
 
 # ── The service ─────────────────────────────────────────────────────────
@@ -108,6 +141,7 @@ class IntentService:
 
     def start_intent(
         self, text: str, *, planner_specialization: Optional[str] = None,
+        viewer: Optional[Callable[[dict], None]] = None,
     ) -> str:
         """Bootstrap a fresh plan-graph from `text` and start a worker thread.
 
@@ -124,6 +158,11 @@ class IntentService:
 
         Raises ValueError for empty text, an unknown specialization, or an
         organization policy that doesn't allow Full-auto (lumi/policy.py).
+
+        `viewer` receives the plan's events instead of `on_event`: the
+        emitter of the page that follows it in the Plan tab. An autonomous
+        session leaves it out, since it waits on `on_event` for the end of
+        each plan it starts.
         """
         text = (text or "").strip()
         if not text:
@@ -189,6 +228,8 @@ class IntentService:
             cancel_event=cancel_event,
             pause_event=pause_event,
             thread=thread,
+            project_path=self.project_path,
+            viewer=viewer,
         )
         with self._lock:
             self._active[graph.intent_id] = active
@@ -264,6 +305,59 @@ class IntentService:
             for intent_id, active in running.items():
                 self._active.setdefault(intent_id, active)
 
+    def attach_viewer(
+        self, viewer: Callable[[dict], None], *, project_path: Optional[str] = None,
+    ) -> list[dict]:
+        """Hand the running plans to a page that connects, and describe them.
+
+        After a reload the page that started a plan is gone, and so is the
+        socket its events went to. Every plan started with a viewer that is
+        still running (in `project_path`, when given) sends its events to
+        `viewer` from now on. They are returned oldest first, for the page to
+        follow: id, text, whether the plan is paused or stopping, and its
+        graph as it stands. The graph is read after the switch, so a change
+        it misses reaches `viewer` as an event.
+
+        An autonomous session's plans are left alone: they have no viewer.
+        """
+        wanted = _path_key(project_path) if project_path else None
+        with self._lock:
+            candidates = sorted(self._active.values(), key=lambda active: active.started_at)
+        plans: list[dict] = []
+        for active in candidates:
+            if active.viewer is None or not self._is_running(active):
+                continue
+            if wanted is not None and _path_key(active.project_path) != wanted:
+                continue
+            active.viewer = viewer
+            # Checked again after the switch: a plan listed as running
+            # announces its end to `viewer`; one whose end went out
+            # meanwhile is left out.
+            if not self._is_running(active):
+                continue
+            plans.append({
+                "intent_id": active.intent_id,
+                "text": active.graph.intent,
+                "paused": active.pause_event.is_set(),
+                "stopping": active.cancel_event.is_set(),
+                "started_at": active.started_at,
+                "snapshot": _graph_dict(active.graph),
+            })
+        return plans
+
+    def route_to(self, intent_id: str, viewer: Callable[[dict], None]) -> bool:
+        """Send a plan's events to `viewer` from now on.
+
+        For a page that acts on a plan (Stop, Pause, ...) which another page
+        took over by connecting since. Refused for a plan started without a
+        viewer: an autonomous session's plans keep reaching `on_event`.
+        """
+        active = self._get(intent_id)
+        if active is None or active.viewer is None:
+            return False
+        active.viewer = viewer
+        return True
+
     def get_graph(self, intent_id: str) -> Optional[PlanGraph]:
         active = self._get(intent_id)
         if active:
@@ -309,19 +403,29 @@ class IntentService:
             return self._active.get(intent_id)
 
     def _get_running(self, intent_id: str) -> Optional[_ActiveIntent]:
+        active = self._get(intent_id)
+        if active and self._is_running(active):
+            return active
+        return None
+
+    @staticmethod
+    def _is_running(active: _ActiveIntent) -> bool:
         # Finished intents stay in `_active` for get_graph; pausing or
         # cancelling one would only relabel it and announce a change that
         # never happens. `completed_at` is set before the final event goes
         # out, while the thread is still alive: a stop accepted after that
         # would never be followed by `intent.cancelled`.
-        active = self._get(intent_id)
-        if active and active.thread.is_alive() and not active.completed_at:
-            return active
-        return None
+        return active.thread.is_alive() and not active.completed_at
 
     def _emit(self, payload: dict) -> None:
+        # A plan's viewer, when it has one, replaces `on_event` for its events.
+        # It is read per event from the entry a rebuilt service shares: the
+        # service that started a plan keeps sending its events, and a page
+        # that took the plan over through the new service still gets them.
+        active = self._get(str(payload.get("intent_id") or ""))
+        send = active.viewer if active is not None and active.viewer is not None else self.on_event
         try:
-            self.on_event(payload)
+            send(payload)
         except Exception:
             logger.exception("on_event handler raised; swallowing to keep worker alive")
 

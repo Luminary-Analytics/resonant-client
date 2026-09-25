@@ -543,6 +543,21 @@ class AppState:
             self._intent_service.on_event = on_event
         return self._intent_service
 
+    def attach_intent_viewer(self, viewer: Callable[[dict], None]) -> list[dict]:
+        """Hand this project's running plans to a page that just connected.
+
+        Their events go to `viewer` from now on, and the page gets them to
+        follow in the Plan tab (IntentService.attach_viewer). Nothing is built
+        or rebound: `on_event` may carry an autonomous mission's dispatch
+        tracker, which must keep seeing its plans end.
+        """
+        # The MCP commands drop `_intent_service`; the last one built holds
+        # every plan still running, adopted from the services before it.
+        service = getattr(self, "_intent_service", None) or getattr(self, "_intent_service_last", None)
+        if service is None:
+            return []
+        return service.attach_viewer(viewer, project_path=self.project.project_path)
+
     def _module_name_from_target_file(raw_path: str) -> str:
         path = str(raw_path or "").strip().replace("\\", "/")
         if not path.endswith(".py"):

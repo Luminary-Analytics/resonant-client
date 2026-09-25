@@ -8,6 +8,8 @@ marks the item done with its commit SHA when the sub-mission ships,
 and runs the REFLECT pass every K iterations. It stops when:
 
   1. The user clicked Stop                       → "user_stop"
+     The organization's policy stopped allowing
+     Full-auto (lumi/policy.py)                  → "mode_not_allowed"
   2. Wall-clock time budget elapsed              → "time_budget_exhausted"
      Model spending reached the mission's limit   → "spend_limit_reached"
   3. MAX_ITERATIONS=100 hit (defensive backstop) → "iteration_cap"
@@ -69,6 +71,7 @@ from ..gui import roadmap as roadmap_module
 from ..gui.roadmap import Roadmap, RoadmapItem
 from ..orchestration.acceptance_check import CheckContext
 from ..orchestration.reflect import ReflectPassResult, run_reflect_pass
+from ..policy import full_auto_refusal
 
 logger = logging.getLogger(__name__)
 
@@ -792,6 +795,13 @@ class AutonomousMissionDaemon:
                 # a crash DURING the iteration leaves it set — exactly the
                 # signal the resume path looks for.
                 roadmap_module.clear_inflight(self.config.roadmap_path)
+                # A policy that arrived during the iteration (whose later
+                # specialists it refused) stops the loop with its own
+                # reason, before the reflect pass runs its [bash] checks.
+                refused = self._mode_not_allowed()
+                if refused is not None:
+                    self._emit_stop(*refused)
+                    return
                 if not iteration_ok:
                     if self._check_failed_streak >= self.config.check_failed_streak_limit:
                         self._emit_stop(
@@ -860,6 +870,11 @@ class AutonomousMissionDaemon:
                 message = self._stop_message or "stop requested"
             return (reason, message)
 
+        # 1b. The organization's policy no longer allows Full-auto.
+        refused = self._mode_not_allowed()
+        if refused is not None:
+            return refused
+
         # 2. Time budget. None means full-auto (skip this rule).
         if self.config.time_budget_seconds is not None:
             elapsed = time.time() - self._started_at
@@ -893,6 +908,18 @@ class AutonomousMissionDaemon:
                 return ("user_pause", self._pause_message or "user paused")
 
         return None
+
+    @staticmethod
+    def _mode_not_allowed() -> Optional[tuple[str, str]]:
+        """Stop when the organization's policy doesn't allow Full-auto.
+
+        The sub-missions' specialists and the reflect pass's ``[bash]``
+        checks run without anyone approving them (lumi/policy.py). The
+        runner refuses each specialist too; this ends the loop instead of
+        letting it fail iteration after iteration.
+        """
+        refusal = full_auto_refusal()
+        return ("mode_not_allowed", refusal.rstrip(".")) if refusal else None
 
     def _spent(self) -> Optional[float]:
         """The mission's spending so far, or None when it isn't tracked."""

@@ -2913,6 +2913,7 @@ class LumiApp {
             this._handleAutonomousStopClick();
         });
         card.parentNode.replaceChild(chip, card);
+        return chip;
     }
 
     /**
@@ -3473,6 +3474,8 @@ class LumiApp {
                     break;
                 }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
+                // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
+                if (event.source === 'mission_dispatch') this._missionDispatchRefused();
                 if (this._timelinePending) {
                     // The server refused the restore (a run started, or the
                     // checkpoint can't restore that): the user can try again.

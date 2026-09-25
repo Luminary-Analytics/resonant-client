@@ -139,11 +139,25 @@ class LumiAutonomousView {
     handleMissionPhaseChanged(event) {
         const phase = (event && event.phase) || '';
         if (!phase) return;
+        // The dispatch went through: its card keeps the dispatched state.
+        this._pendingMissionDispatch = null;
         // Find the seed feature from the current session record so the
         // badge can keep showing the original intent text.
         const sess = this._currentSessionSummary();
         const seed = sess?.mission_state?.seed_feature || this._pendingMissionFeature || '';
         this._refreshMissionBadge(phase, seed);
+    }
+
+
+    /**
+     * The server refused a dispatch (an error with source
+     * "mission_dispatch"): undo the dispatched look its Build button or
+     * card took on when clicked, so it doesn't claim work that never started.
+     */
+    _missionDispatchRefused() {
+        const restore = this._pendingMissionDispatch;
+        this._pendingMissionDispatch = null;
+        if (typeof restore === 'function') restore();
     }
 
 
@@ -1075,6 +1089,7 @@ class LumiAutonomousView {
         return {
             user_stop: 'stopped by you',
             user_pause: 'paused by you',
+            mode_not_allowed: 'not allowed by policy',
             time_budget_exhausted: 'time budget used up',
             spend_limit_reached: 'spending limit reached',
             iteration_cap: 'iteration cap reached',
@@ -1846,8 +1861,15 @@ class LumiAutonomousView {
                     refined_intent: refined,
                 });
                 const btn = wrap.querySelector('.mission-build-btn');
+                const label = btn.querySelector('.mission-build-label');
                 btn.disabled = true;
-                btn.querySelector('.mission-build-label').textContent = 'Roadmap dispatched';
+                label.textContent = 'Roadmap dispatched';
+                // Put back if the server refuses the dispatch, for example
+                // when the organization doesn't allow Full-auto.
+                this._pendingMissionDispatch = () => {
+                    btn.disabled = false;
+                    label.textContent = 'Build this roadmap';
+                };
                 // Surface the planner UI proactively so the user sees
                 // the graph populate as it builds.
                 this.openPlanTab(true);
@@ -2146,7 +2168,12 @@ class LumiAutonomousView {
             // of the run. The chip stays in the chat as a permanent
             // marker of WHEN the daemon was dispatched + what budget,
             // and exposes a Stop affordance that's still useful.
-            this._collapseDispatchCardToChip(wrap, chosen);
+            const chip = this._collapseDispatchCardToChip(wrap, chosen);
+            // A refused dispatch (say, the organization doesn't allow
+            // Full-auto) brings the card back in place of the chip.
+            this._pendingMissionDispatch = () => {
+                if (chip && chip.parentNode) chip.parentNode.replaceChild(wrap, chip);
+            };
             this.openPlanTab(true);
         });
 

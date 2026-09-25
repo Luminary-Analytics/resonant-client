@@ -11,23 +11,35 @@ A refused read or search in a collapsed step read "0 matches".
 Tool arguments and output, the model's words and model names go into Rich
 markup. Unescaped, a grep pattern's "[a-z_]" class vanished as an unknown
 style, "[/]" raised MarkupError out of consume_events, ":a:" became an
-emoji, and a backslash before a "[" or at the end was lost.
+emoji, and a backslash before a "[" or at the end was lost. main()'s own
+lines hold outside text too: folder names, the Ollama server's address and
+model names, errors, and the commands the person typed. There "/cd [/]" and
+"/[/]" raised MarkupError out of main(), which ended the TUI. The prompts
+are prompt_toolkit HTML, which is XML: a folder named "R&D" raised
+ExpatError at the first prompt.
 
-These tests capture the TUI's Rich console as plain text. Three run real
+These tests capture the TUI's Rich console as plain text. Four run real
 sessions the way the TUI runs each message (`run_embedded`): one with a
 hook that refuses, one answering the TUI's own approval prompt with "n",
-and one whose search pattern and command output hold brackets.
+one whose search pattern and command output hold brackets, and one asking
+about a tool whose name holds "&" and "<". main() runs with prompt_toolkit
+reading typed keys from a pipe, and no Ollama server.
 """
 from __future__ import annotations
 
 import importlib
 import io
 import itertools
+import json
+import os
+import re
 import sys
+import types
 
 import pytest
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.data_structures import Size
+from prompt_toolkit.formatted_text import HTML, fragment_list_to_text, to_formatted_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.cells import cell_len
@@ -465,3 +477,237 @@ def test_a_turn_prints_a_pattern_and_command_output_as_written(tmp_path, screen)
     assert lines[output + 4] == f"{STATUS}(exit code: 3)"
     assert lines[output + 5].startswith(STATUS) and lines[output + 5].endswith("s · exit 3")
     assert lines[output + 6].startswith(f"  ▣ {model} · ")
+
+
+def test_the_approval_prompt_names_the_tool_as_written(tmp_path, screen):
+    # An MCP server names its tools. The prompt is prompt_toolkit's HTML, which
+    # is XML: unescaped, "&" or "<" raised ExpatError.
+    name = "mcp__r&d__search<beta>"
+    backend = StreamingBackend(scripts=[
+        [tool_call(name, {"query": "release notes"}, call_id="c1"), done()],
+        [text_delta("Not searched."), done()],
+    ])
+    session = _session(tmp_path, backend)
+    session.auto_approve = False
+    asked = io.StringIO()
+    prompt_output = Vt100_Output(asked, lambda: Size(rows=24, columns=WIDTH), term="xterm")
+
+    with create_pipe_input() as keys, create_app_session(input=keys, output=prompt_output):
+        keys.send_text("n\r")
+        tui.run_embedded(session, "search the docs")
+
+    assert f"Allow {name}? [Y/n]" in asked.getvalue()
+    assert f"{STATUS}✗ denied" in screen()
+
+
+# ── main()'s own lines and prompts ─────────────────────────────────────
+
+@pytest.mark.parametrize("text, shown", [
+    ("R&D", "R&D"),  # ExpatError unescaped
+    ("a<b>c", "a<b>c"),
+    ("say \"hi\" & 'bye' {0}", "say \"hi\" & 'bye' {0}"),
+    ("tab\there", "tab\there"),
+    # What XML can't hold even escaped: a control character, a byte of a POSIX
+    # file name that isn't UTF-8 (a lone surrogate to Python), U+FFFE.
+    ("bell\x07", "bell\ufffd"),
+    ("r\udce9sum\udce9", "r\ufffdsum\ufffd"),
+    ("\ufffe", "\ufffd"),
+])
+def test_a_prompt_shows_outside_text_as_written(text, shown):
+    prompt = HTML(f'<style fg="#5f87ff"><b>{tui._html_esc(text)}</b></style> ❯ ')
+
+    assert fragment_list_to_text(to_formatted_text(prompt)) == f"{shown} ❯ "
+
+
+MODELS = ["llama3.1:8b", "local[/]:a:", "qwen3:[bold]"]  # as an Ollama server might list them
+OLLAMA = {"url": "http://ollama.test:11434", "models": MODELS}
+
+
+@pytest.fixture
+def wide_screen(monkeypatch):
+    """`screen`, wide enough for a temporary folder's path; lines come right-stripped."""
+    out = io.StringIO()
+    monkeypatch.setattr(tui, "console", Console(
+        file=out, width=400, color_system=None, force_terminal=False, legacy_windows=False,
+    ))
+    return lambda: [line.rstrip() for line in out.getvalue().splitlines()]
+
+
+class LocalOllama(StreamingBackend):
+    """What main() gets from create_backend("ollama", ...), with no server behind it."""
+
+    def __init__(self, base_url: str, model: str, *, name: str = "ollama"):
+        super().__init__(name=name, model=model)
+        self.base_url = base_url
+
+    def health(self) -> dict:
+        return {"status": "ready", "backend": self.name, "model": self.model, "available_models": list(MODELS)}
+
+    def warm_up(self):
+        pass
+
+    def list_models(self) -> list:
+        return list(MODELS)
+
+
+def _no_settings():
+    # main() hands Settings to the audit log and the GitHub tools when it can
+    # load them. Unloaded, that process-wide state can't reach other tests.
+    raise RuntimeError("no Settings in this test")
+
+
+def _run_main(monkeypatch, tmp_path, argv: list[str], keys: str = "", *,
+              detected=({"ollama": OLLAMA},), name: str = "ollama") -> str:
+    """
+    Run the TUI's main() with `argv`, typing `keys` at its prompts through
+    prompt_toolkit. Each scan for backends finds the next of `detected`, the
+    last one repeating, instead of probing a server; backends are named
+    `name`. Returns what the prompts showed.
+    """
+    monkeypatch.setattr(sys, "argv", ["lumi", *argv])
+    for variable in ("OLLAMA_HOST", "LUMI_DEFAULT_BACKEND", "LUMI_DEFAULT_MODEL", "LUMI_STATE_HOME"):
+        monkeypatch.delenv(variable, raising=False)
+    scans = iter(detected)
+    monkeypatch.setattr(tui, "_detect_backends", lambda *args: next(scans, detected[-1]))
+    monkeypatch.setattr(tui, "create_backend", lambda kind, url, model=None: LocalOllama(url, model, name=name))
+    monkeypatch.setattr(tui, "OllamaBackend", LocalOllama)  # so /model lists and switches models
+    monkeypatch.setattr("lumi.gui.settings.SettingsManager", _no_settings)
+    monkeypatch.setattr(tui, "_history_path", lambda: tmp_path / "tui_history")
+    shown = io.StringIO()
+    output = Vt100_Output(shown, lambda: Size(rows=24, columns=WIDTH), term="xterm")
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+        pipe.send_text(keys)
+        pipe.close()  # a prompt past the typed lines ends, as at Ctrl+D
+        tui.main()
+    return shown.getvalue()
+
+
+def _assert_in_order(lines: list[str], expected: list[str]):
+    """Each of `expected` is one of `lines`, in this order."""
+    at = 0
+    for line in expected:
+        assert line in lines[at:], (line, lines[at:])
+        at = lines.index(line, at) + 1
+
+
+def test_main_prints_folders_model_names_and_typed_commands_as_written(tmp_path, wide_screen, monkeypatch):
+    folder = tmp_path / "[old]" / "R&D"
+    folder.mkdir(parents=True)
+    monkeypatch.chdir(folder)
+    with pytest.raises(OSError) as refused:
+        os.chdir("[/]")  # what "/cd [/]" gets: the error repeats the path
+    typed = [
+        "2",  # the model picker: --model isn't on the server
+        "/cd [/]", "/cd ..", "/cd R&D", "/cd", "/[/]", "/status",
+        "/model", "qwen3:[bold]",  # a name typed instead of its number
+        "/model", "3", "/help", "/backend", "/quit",
+    ]
+
+    shown = _run_main(monkeypatch, tmp_path, ["--model", "missing[/]"], "".join(f"{line}\r" for line in typed))
+
+    lines = wide_screen()
+    _assert_in_order(lines, [
+        "  ✗ Model 'missing[/]' not found",
+        "    1. llama3.1:8b",
+        "    2. local[/]:a:",
+        "    3. qwen3:[bold]",
+        "  ✓ local[/]:a:",
+        "  ⋯ Warming up local[/]:a:",
+        "  ● backend  Ollama  ·  local[/]:a:",
+        f"    cwd      {folder.as_posix()}",
+        f"  ✗ {refused.value}",
+        f"  → {folder.parent}",  # on Windows, a backslash before "[old]"
+        f"  → {folder}",
+        f"  {folder}",
+        "  Unknown: /[/] · try /help",
+        "  ● 2. local[/]:a:  (current)",
+        "  ✓ qwen3:[bold]",
+        "  ⋯ Warming up qwen3:[bold]",
+        "  ✓ Switched to qwen3:[bold] · conversation cleared",
+        "  ● 3. qwen3:[bold]  (current)",
+        "  ✓ qwen3:[bold]",
+        "  Keeping qwen3:[bold]",
+        "  ┃ Lumi Code Agent  ollama · qwen3:[bold]",
+        "  Already using ollama — no other backend available",
+        "  Goodbye",
+    ])
+    # /status: the backend's own words, in Text cells rather than markup.
+    rows = [[cell.strip() for cell in line.split("│")[1:-1]] for line in lines if line.startswith("│")]
+    assert rows == [
+        ["status", "ready"], ["backend", "ollama"], ["model", "local[/]:a:"],
+        ["available_models", "llama3.1:8b, local[/]:a:, qwen3:[bold]"],
+    ]
+    # The prompt names the folder: "R&D", then "[old]" after "/cd ..".
+    prompts = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", shown)
+    assert "R&D ❯ /cd [/]" in prompts and "[old] ❯ /cd R&D" in prompts
+
+
+def test_an_unreachable_ollama_is_named_as_written(tmp_path, wide_screen, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    # An IPv6 address: "[fd00::131]" read as a style, and vanished.
+    _run_main(monkeypatch, tmp_path, ["--ollama-url", "http://[fd00::131]:11434"], detected=({},))
+
+    _assert_in_order(wide_screen(), ["  ✗ Ollama not reachable", "    Checked: http://[fd00::131]:11434"])
+
+
+def test_a_backends_name_prints_as_written(tmp_path, wide_screen, monkeypatch):
+    # Backends name themselves ("ollama"); these lines print any name as written.
+    monkeypatch.chdir(tmp_path)
+
+    _run_main(monkeypatch, tmp_path, ["--model", "llama3.1:8b"], "/help\r/backend\r/quit\r",
+              detected=({"ollama": OLLAMA}, {"[/]local": OLLAMA}), name="[/]local")
+
+    _assert_in_order(wide_screen(), [
+        "  ● backend  [/]local  ·  llama3.1:8b",
+        "  ┃ Lumi Code Agent  [/]local · llama3.1:8b",
+        "  Already using [/]local — no other backend available",
+    ])
+
+
+def test_a_fallback_backend_is_named_as_written(tmp_path, wide_screen, monkeypatch):
+    # `--backend ollama` when the scan found only another backend (today's scan
+    # finds Ollama or nothing).
+    monkeypatch.chdir(tmp_path)
+
+    _run_main(monkeypatch, tmp_path, ["--backend", "ollama"], "/quit\r", detected=({"[/]local": OLLAMA},))
+
+    _assert_in_order(wide_screen(), ["  ✗ Backend 'ollama' not available", "  → Falling back to [/]local"])
+
+
+class _EngineSocket:
+    """A remote engine that reports its status and then only listens."""
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+    async def recv(self) -> str:
+        return json.dumps({"event": "status", "model": "local[/]:a:"})
+
+    async def send(self, message: str):
+        pass
+
+
+def test_the_remote_prompt_names_the_folder_as_written(tmp_path, screen, monkeypatch):
+    # run_remote has had no command since v0.4.4, and prompt_toolkit's blocking
+    # prompt can't run inside its event loop, so this checks the prompt it builds.
+    folder = tmp_path / "R&D"
+    folder.mkdir()
+    monkeypatch.chdir(folder)
+    monkeypatch.setattr(tui, "_history_path", lambda: tmp_path / "tui_history")
+    monkeypatch.setitem(sys.modules, "websockets", types.SimpleNamespace(connect=lambda url: _EngineSocket()))
+    prompts = []
+
+    def type_quit(message, **kwargs):
+        prompts.append(fragment_list_to_text(to_formatted_text(message)))
+        return "/quit"
+
+    monkeypatch.setattr(tui, "pt_prompt", type_quit)
+
+    tui.run_remote("ws://engine.test/[/]")
+
+    assert prompts == ["R&D ❯ "]
+    assert "  ✓ Connected to ws://engine.test/[/]" in screen()

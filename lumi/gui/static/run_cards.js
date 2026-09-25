@@ -1228,7 +1228,8 @@ class LumiRunCards {
         }
         run.el.querySelectorAll('[data-subtask-elapsed]').forEach((el) => {
             const item = run.subtasks.get(el.dataset.subtaskElapsed);
-            if (item && item.status === 'running') {
+            // A paused or stopping worker shows that instead of a clock.
+            if (item && item.status === 'running' && !item.paused && !item.stopping) {
                 el.textContent = this._formatRunDuration((Date.now() - item.startedAt) / 1000);
             }
         });
@@ -1277,13 +1278,16 @@ class LumiRunCards {
             return `<li class="live-run-todo is-${item.status}"><span class="live-run-check">${glyph}</span><span>${this.escapeHtml(item.text)}</span></li>`;
         }).join('');
         const subtaskHtml = subtasks.map((item) => {
+            const live = item.status === 'running';
+            const state = live && item.stopping ? 'Stopping\u2026' : live && item.paused ? 'Paused' : '';
             const meta = item.status === 'done'
                 ? `${item.steps || 0} steps \u00b7 ${this._formatRunDuration(item.elapsed || 0)}`
-                : this._formatRunDuration((Date.now() - (item.startedAt || Date.now())) / 1000);
-            return `<li class="live-run-subtask is-${item.status}">
+                : state || this._formatRunDuration((Date.now() - (item.startedAt || Date.now())) / 1000);
+            return `<li class="live-run-subtask is-${item.status}${live && item.paused ? ' is-paused' : ''}">
                 <span class="live-run-subtask-pulse"></span>
                 <span class="live-run-subtask-copy"><strong>${this.escapeHtml(item.label || 'Sub-task')}</strong><small>${this.escapeHtml((item.prompt || '').slice(0, 96))}</small></span>
                 <span class="live-run-subtask-meta" data-subtask-elapsed="${this.escapeHtml(item.id)}">${meta}</span>
+                ${this._workerLiveControlsHtml(item)}
             </li>`;
         }).join('');
         // Keep the animated shell mounted for the entire run. Replacing this
@@ -1333,6 +1337,13 @@ class LumiRunCards {
                 'click',
                 () => this._requestLiveRunStatus(),
             );
+            // A worker's Pause, Resume, Stop and Steer (app.js, _onWorkerAction).
+            // The list is re-rendered as workers change, so one listener
+            // serves every row.
+            run.el.querySelector('.live-run-subtasks')?.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-worker-action]');
+                if (button) this._onWorkerAction(button);
+            });
             run.domReady = true;
         }
 

@@ -352,6 +352,17 @@ changed, its checks, any blockers and its suggested next step. Select a file,
 or focus it and press **Enter**, to open it. A failed or blocked worker's
 handoff opens by itself.
 
+While a worker runs, open the run details ("Working for …") to find it under
+**Sub-tasks** with **Pause** (then **Resume**), **Stop** and **Steer…**. Steer
+sends it a direction without stopping it; it reads it before its next step.
+Once a worker has stopped, its block offers **Transcript**: its messages, each
+tool call with its result, your steering, and errors. A worker that failed,
+was stopped, or was interrupted when Lumi closed also offers **Restart**, which
+runs its assignment again as a new turn (after the current run finishes); the
+original keeps its transcript and is marked restarted. After a reload, a turn
+that Lumi closed during shows as interrupted, with its work under **Work
+details**.
+
 New sessions also get a short task title from the first prompt. A local title
 appears immediately. With native model connections, a small tool-free request
 refines it after the first turn; slow or failed requests keep the local title.

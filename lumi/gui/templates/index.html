@@ -679,6 +679,33 @@
         </div>
     </div>
 
+    <div id="worker-transcript-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="worker-transcript-title">
+        <div class="dialog worker-transcript-dialog">
+            <div class="dialog-header">
+                <span id="worker-transcript-title">Worker transcript</span>
+                <button type="button" id="worker-transcript-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="worker-transcript-body"></div>
+        </div>
+    </div>
+
+    <div id="worker-steer-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="worker-steer-title">
+        <div class="dialog worker-steer-dialog">
+            <div class="dialog-header">
+                <span id="worker-steer-title">Steer the worker</span>
+                <button type="button" id="worker-steer-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body">
+                <label for="worker-steer-text" class="share-label">What should it do differently?</label>
+                <textarea id="worker-steer-text" class="handoff-note" rows="3"></textarea>
+                <p class="share-note worker-steer-note">The worker reads this before its next step and keeps going. Enter sends; Shift+Enter starts a new line.</p>
+                <div class="dialog-actions">
+                    <button type="button" id="worker-steer-send" class="dialog-btn allow">Send</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div id="skill-detail-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-label="Skill detail">
         <div class="dialog skill-detail-dialog">
             <div class="dialog-header">

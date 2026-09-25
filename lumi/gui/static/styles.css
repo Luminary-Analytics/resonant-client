@@ -8042,7 +8042,10 @@ body {
     background: color-mix(in srgb, #d97706 14%, var(--bg-hover));
 }
 
-.mission-toggle {
+/* The Timeline button has the same look but its own class: autonomous
+   sessions hide every .mission-toggle while they are off. */
+.mission-toggle,
+.timeline-toggle {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -8060,7 +8063,8 @@ body {
                 border-color var(--duration-fast) ease;
 }
 
-.mission-toggle:hover {
+.mission-toggle:hover,
+.timeline-toggle:hover {
     color: var(--text);
     border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
     background: color-mix(in srgb, var(--brand) 8%, transparent);
@@ -8073,7 +8077,8 @@ body {
     transition: filter var(--duration-fast) ease;
 }
 
-.mission-toggle:hover .mission-toggle-icon {
+.mission-toggle:hover .mission-toggle-icon,
+.timeline-toggle:hover .mission-toggle-icon {
     filter: none;
 }
 
@@ -13871,6 +13876,35 @@ body.is-window-dragging * {
 .handoff-check.is-warning { color: var(--warn); }
 .sidebar-handoffs[hidden] { display: none; }
 .sidebar-handoffs .sns-icon { font-size: 15px; line-height: 1; }
+
+/* The conversation's checkpoints (app.js, openTimeline). */
+.timeline-dialog { width: 620px; max-height: 85vh; display: flex; flex-direction: column; }
+.timeline-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.timeline-dialog .dialog-body { overflow: auto; }
+.timeline-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.timeline-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.timeline-item-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.timeline-item-copy { flex: 1; min-width: 0; }
+.timeline-item-copy strong, .timeline-item-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-item-copy small { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
+.timeline-item-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.timeline-comparison { margin: 8px 0 0; }
+.timeline-comparison span { color: var(--muted); font-size: 11.5px; }
+.timeline-comparison pre { max-height: 200px; margin: 4px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; }
+.timeline-confirm { margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.timeline-confirm legend { padding: 0 4px; color: var(--muted); font-size: 11.5px; }
+.timeline-mode { display: inline-flex; align-items: center; gap: 6px; margin: 0 14px 4px 0; cursor: pointer; }
+.timeline-confirm-note { margin: 6px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.timeline-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.timeline-confirm-actions .dialog-btn:disabled { opacity: .6; cursor: default; }
+@media (max-width: 520px) {
+    .timeline-item-head { flex-wrap: wrap; }
+    .timeline-item-actions { justify-content: flex-start; }
+    .timeline-item-copy strong, .timeline-item-copy small { white-space: normal; overflow-wrap: anywhere; }
+}
+/* Where the chat was restored (a display-only timeline.restored event). */
+.timeline-restored-note { margin: 8px 16px; padding: 6px 12px; border: 1px dashed var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
+.timeline-restored-note::before { content: "\27F2\00a0"; }
 
 /* A worker's transcript and steering (app.js, openWorkerTranscript and openWorkerSteer). */
 .worker-transcript-dialog { width: 640px; max-height: 85vh; display: flex; flex-direction: column; }

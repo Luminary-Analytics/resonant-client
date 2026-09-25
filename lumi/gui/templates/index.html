@@ -330,6 +330,12 @@
                                 <span class="header-project-path-icon" aria-hidden="true">📁</span>
                                 <span class="header-project-path-text" id="header-project-path-text">—</span>
                             </button>
+                            <button type="button" id="timeline-button" class="timeline-toggle"
+                                    aria-haspopup="dialog"
+                                    title="Checkpoints Lumi saved before each change in this conversation">
+                                <span class="mission-toggle-icon" aria-hidden="true">&#10226;</span>
+                                <span class="mission-toggle-label">Timeline</span>
+                            </button>
                             <button type="button" id="mission-toggle" class="mission-toggle"
                                     title="Run autonomously — long-running spec → roadmap → execution">
                                 <span class="mission-toggle-icon" aria-hidden="true">🎯</span>
@@ -679,6 +685,16 @@
                 <button type="button" id="share-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
             </div>
             <div class="dialog-body" id="share-dialog-body"></div>
+        </div>
+    </div>
+
+    <div id="timeline-dialog" class="dialog-overlay" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="timeline-dialog-title">
+        <div class="dialog timeline-dialog">
+            <div class="dialog-header">
+                <span id="timeline-dialog-title">Timeline</span>
+                <button type="button" id="timeline-dialog-close" class="dialog-btn-close" aria-label="Close">×</button>
+            </div>
+            <div class="dialog-body" id="timeline-dialog-body"></div>
         </div>
     </div>
 

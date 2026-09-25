@@ -74,6 +74,373 @@ Validation on September 25, 2026:
     own count. A request and then `!echo fifth` said "4" and "2 actions"
     (3.0s, 1.5s), live and after a reload.
 
+## September 25 Evidence calls drawn once — source only, not released
+
+**A read, a search or a check could show twice.** Evidence calls (`file_read`,
+`glob`, `grep`, `code_intel`, screenshots, and check commands such as `pytest`
+or `git status`) go into the collapsed Evidence group as they arrive. When
+prose, an error or Stop then closed the group in the same step,
+`ensureStepRendered` drew the step's calls again below it, as rows of their own
+with the results that had come in.
+
+- **Each call stays in its group only** (`lumi/gui/static/app.js`
+  `ensureStepRendered`). The calls were already drawn there, so they now leave
+  with the closed group. The duplicates showed:
+  - on Stop during a step with Evidence calls. The engine ends the run with
+    "Interrupted", and a stopped check also got a red "Command cancelled" row
+    below the group;
+  - when a turn stopped at its step, budget or model-request limit. The engine
+    reports those after the last step ends, so an agent that read files until
+    its limit showed its last step's reads twice;
+  - when a provider streamed prose after the step's calls;
+  - after a reload, for every step whose response had prose. A saved turn
+    keeps the engine's order: the response's calls, then its `text.done`, not
+    the deltas that streamed first. Those steps also left their calls in the
+    step-end buffer, so the next closed group drew them a third time, in a
+    group of its own.
+- A result that arrives after prose closed its group (a reloaded step with
+  prose, or prose streamed after the calls) settles its item in the closed
+  group, as other late results do since #65. Before #65 and this fix, it
+  showed only on the duplicate row and its item kept "…".
+
+Validation on September 25, 2026:
+
+- Two tests in `tests/ui_recovery.test.cjs` drive the real handlers
+  (`handleEvent`, `replayDisplayEvents`, `ensureStepRendered`, the Evidence
+  group from `run_cards.js`) in the fake DOM from #67, live and reloaded:
+  - Stop while a read waits, and a run stopped by its step limit after two
+    Evidence steps: each call once, in its group, with its status;
+  - prose streamed after a search, and the same turn reloaded: one item in one
+    group, settled "✓" by its result.
+
+  On `main`'s `app.js` both fail: each call drawn twice, and three times, in
+  two groups, for the reloaded prose. Dropping only the redraw, keeping the
+  buffered calls, fails the reloaded prose case with a second group.
+- The GUI in the Browser pane: isolated home and state, keychain off, and a
+  scripted Ollama-compatible stub, so no real provider. The fixture allowed 2
+  model requests per turn. With `main`'s `app.js` (before #67, and again after
+  it for the saved turns):
+  - Stop while `python -m pytest` ran a 90 s test after a `grep`: the group
+    showed `'TODO'` ✓ and pytest ✗, then both again below it, a plain
+    `'TODO'` row ("1 matches") and a red, expanded "Command cancelled" row.
+    The same after a reload.
+  - A turn that kept reading until "Paused after 2 model requests" showed its
+    last read, `app.py` (4 lines), again below the group.
+  - Prose, then a `grep`, in one response was right live (a plain row, since
+    the prose came first). After a reload the call showed three times: group
+    item "…", a plain row "1 matches", and a second group with "…".
+
+  With the fix, merged with `main` at e004b5a (#65 and #75 included), a new
+  live Stop and a new prose turn drew each call once. After a reload, all
+  eleven saved turns did too, with the prose items settled on "✓ 1 matches".
+  The page loaded no failed resources and kept its socket open. Earlier runs
+  on `main` with #67 alone matched, except that the reloaded prose items kept
+  "…".
+- The four Node UI test files pass (88 tests); `ruff check .` clean,
+  `node --check` passes for `app.js` and `settings_view.js`, `git diff --check`
+  clean.
+- Full `pytest` on the branch before merging `main` at e004b5a: 4,392 passed,
+  5 skipped and 2 failed, `tests/test_repl.py`'s `test_stderr_captured` and
+  `test_traceback_in_stderr` (empty REPL output while about 12 parallel
+  sessions ran pytest on this machine). Run alone, `tests/test_repl.py`
+  passed (22 tests). Not rerun after the merge; CI runs it.
+- The real home's `.resonant` settings and recent projects kept their hashes;
+  no `~/.lumi` or Lumi credential appeared.
+
+## September 25 the terminal's own lines and prompts print names as written — source only, not released
+
+**Outside a turn's display, `lumi/tui.py` still read names as markup.** The
+section "the terminal prints tool and model text as written" escaped a turn's
+lines and left `main()`'s own lines and the prompt_toolkit prompts as they
+were:
+
+- The banner, the model picker and the slash commands put the working folder,
+  the Ollama server's address and model names, errors and what the person
+  typed into Rich markup unescaped. `/cd [/]` and the unknown command `/[/]`
+  raised `MarkupError` out of `main()`, which ended the TUI. So did startup,
+  `/status` and `/model` when the server listed a model named like
+  `local[/]:a:`. A working folder `D:/work/[old]/app` printed as
+  `D:/work//app`, `/cd ..` into `[old]` on Windows dropped the backslash
+  before it, and `Checked: http://[fd00::131]:11434` printed
+  `Checked: http://:11434`.
+- prompt_toolkit's `HTML` is XML. A working folder named `R&D` raised
+  `ExpatError` at the first prompt, and an MCP tool whose name held `&` or `<`
+  raised it at the approval prompt.
+
+Changes:
+
+- **Each piece of outside text is escaped with `_esc` where it goes into the
+  markup, and its line prints with `_print`.** That covers the banner's
+  folder, backend and model; the model picker's names and the answer;
+  `Checked:`, `Model '…' not found`, `Backend '…' not available`,
+  `Falling back to`, `Warming up`, `Switched to`, `Keeping` and
+  `Already using`; `/cd`'s folder and errors, `/status` errors, `/help`'s
+  backend line and `Unknown:`. The banner's backend line prints in one piece
+  instead of four. The TUI's colors are unchanged; as on a turn's lines,
+  Rich's automatic highlighting no longer bolds digits or underlines a URL
+  on these lines.
+- **`/status` fills its table with `Text` cells**, which aren't read as markup
+  or emoji codes.
+- **`_html_esc` puts a name into a prompt**: the working folder in `main()`'s
+  and `run_remote`'s prompts, and the tool in "Allow …? [Y/n]". It is
+  `html.escape`, after replacing with U+FFFD what XML can't hold even
+  escaped: characters below space other than tab and line breaks, U+FFFE and
+  U+FFFF, and lone surrogates (Python's stand-ins for a POSIX file name's
+  bytes that aren't UTF-8). prompt_toolkit's own `HTML(...).format(value)`
+  escapes only `&`, `<`, `>` and `"`; with it, those characters still raised
+  `ExpatError` or `UnicodeEncodeError`.
+
+Validation on September 25, 2026:
+
+- `tests/test_tui.py` (64 tests, 13 new), the console captured as plain text:
+  - `main()` driven through prompt_toolkit, the keys typed into a pipe, with a
+    stand-in for the Ollama server listing `local[/]:a:` and `qwen3:[bold]`.
+    In a folder `[old]/R&D`, with `--model missing[/]`: the model picker,
+    `/cd [/]`, `/cd ..`, `/cd R&D`, `/cd`, `/[/]`, `/status`, `/model` twice (a
+    typed name, then a number), `/help`, `/backend` and `/quit` printed as
+    written, and the prompt read `R&D ❯` and `[old] ❯`;
+  - an unreachable server at `http://[fd00::131]:11434`, a backend named
+    `[/]local` (the banner, `/help`, `/backend`), and the fallback line;
+  - a real session (the streaming stub) through `run_embedded`, approvals on,
+    whose model calls `mcp__r&d__search<beta>`: "Allow
+    mcp__r&d__search<beta>? [Y/n]", answered "n" through prompt_toolkit's pipe
+    input, then "✗ denied";
+  - `_html_esc` inside an `HTML` prompt: `&`, `<`, quotes, braces and a tab
+    read back exactly; a control character, lone surrogates and U+FFFE show as
+    U+FFFD;
+  - `run_remote`'s prompt in an `R&D` folder, over a stand-in socket.
+- On the previous `tui.py`, the 13 new tests failed and the 51 others passed.
+  Run one at a time there, `/cd [/]`, `/[/]`, `/status` and `/model` each
+  raised `MarkupError` out of `main()`; the banner printed a folder
+  `…/[old]/app` as `…//app`, and `/cd ..` printed `…\[old]` as `…[old]`.
+- An ordinary session (nothing markup-like: the picker, `/cd`, an unknown
+  command, `/status`, `/model` twice, `/help`, `/backend`) rendered in true
+  color through the previous `tui.py` and this one, from an isolated home:
+  the plain text of its 73 lines is identical, and no escape code appears
+  only in the new rendering. 19 lines differ, all from Rich's highlighter: 16
+  lose bold digits, and 3 only split one color into more segments.
+- With Rich 15.0.0, the release lock's version, `tests/test_tui.py` passed
+  (64); 14.0.0 is installed here. prompt_toolkit 3.0.51 is installed; the
+  lock's 3.0.53 wasn't tested.
+- Full `pytest` from a temporary home, on main at 1c42562 with the changes of
+  "the terminal prints tool and model text as written": 4,415 passed, 5
+  skipped. `ruff check .` is clean, `node --check` passes for `app.js` and
+  `settings_view.js`, the four Node UI test files pass (66 tests), and
+  `git diff --check` is clean.
+- Rebased on main at 18b5b10 (Linux packages), over "the terminal prints tool
+  and model text as written": full `pytest` 4,468 passed, 5 skipped.
+  `ruff check .`, both `node --check` runs, the four Node UI test files (81
+  tests) and `git diff --check` passed again.
+
+Not exercised: the TUI in a terminal window with a live Ollama server;
+`main()` ran under pytest with its console captured. `run_remote` has had no
+command since v0.4.4, and prompt_toolkit's blocking `prompt()` raises
+`RuntimeError` inside its `asyncio.run` loop, so only the prompt it builds was
+checked. Not changed: the TUI's own markup, such as the hint
+`pip install resonant-client[claude]`, whose `[claude]` doesn't print;
+`--backend` accepts only `ollama` and `auto`, so those hints can't show.
+
+## September 25 specialists get a chat's exclusions, project trust and allowed modes — source only, not released
+
+**Missions and autonomous sessions skipped part of a chat's setup.** Their
+specialists (`lumi/orchestration/runner.py`, one Session per plan node):
+
+- read files the user or the organization excluded;
+- in an untrusted project, got its notes and instructions and started its
+  language servers;
+- took screenshots with computer use turned off;
+- ran in Full-auto where the organization doesn't allow it.
+
+Now each specialist gets the setup a chat in the project gets:
+
+- **File exclusions** (`engine/exclusions.py`). Specialists get the app's rules:
+  Settings' `privacy.excluded_paths`, the project's `.lumiignore` and the
+  organization's `files.exclude`. Patterns are anchored at the project root,
+  also for a specialist working in a subfolder. The file tools refuse an
+  excluded file, and searches, listings and git output leave it out.
+- **Project trust** (`gui/workspace_trust.py`). In a project the user hasn't
+  trusted, a specialist gets none of these:
+  - the repository's notes (`.lumi/memory.json`);
+  - its codebase index summary;
+  - its instructions;
+  - `code_intel`'s language servers, which don't start.
+- **Computer use** follows the Settings switch, which a policy can lock.
+- **The organization's allowed modes.** Specialists run in Full-auto, since
+  nobody can answer their approval prompts. Where `permissions.allowed_modes`
+  leaves out `bypass`:
+  - **Build this roadmap**, and starting or resuming an autonomous session,
+    are refused with "Acme's policy doesn't allow Full-auto, which missions
+    and autonomous sessions run in." Nothing is saved, and the mission stays
+    in drafting.
+  - If such a policy arrives mid-run, each later specialist is refused
+    before its first model request, and its plan node is blocked with that
+    reason.
+  - An autonomous session then stops, paused as **not allowed by policy**
+    (`mode_not_allowed`), before its next iteration. It also stops before the
+    reflect pass, whose `[bash]` checks the loop runs itself.
+  - One function gives the reason everywhere (`policy.full_auto_refusal`).
+- **A refused Build no longer looks dispatched.** The page marks **Build this
+  roadmap** as dispatched, and collapses **Build autonomously**'s card into a
+  "dispatched" chip, as soon as it's clicked.
+  - The server now tags dispatch errors `source: "mission_dispatch"`
+    (`gui/ws_commands.py`, `gui/app.py`).
+  - The page then puts the button or the card back (`autonomous_view.js`).
+- The runner sets all of this up as each specialist starts, from the project
+  root, with the execution policy (see "specialists follow the organization's
+  and the project's rules" below).
+- Docs: [agent runtime](modern-agent-runtime.md#orchestration-specialists),
+  [organization policy](enterprise-policy.md),
+  [autonomous sessions](autonomous-sessions.md#your-files-trust-and-your-organizations-policy).
+
+Validation on September 25, 2026:
+
+- The full `pytest` run passes (4369 passed, 5 skipped). `ruff check .` is
+  clean, the 63 Node tests in AGENTS.md pass, and `git diff --check` is
+  clean.
+- After merging main (#63 to #76), 701 tests of the areas both touch pass:
+  - the runner, intents, missions and autonomous sessions;
+  - the WebSocket commands and the Timeline UI;
+  - computer use, LSP, trust and policy.
+- Also after the merge, `ruff` is clean and the 88 Node tests pass. The full
+  suite wasn't rerun locally; CI runs it.
+- `tests/test_specialist_exclusions_trust_modes.py` (19 tests) runs
+  `LocalSpecialistRunner` with a scripted model and the real `Session`, and
+  records every model request:
+  - An excluded file's contents reach neither a tool result nor the model,
+    from each of the three sources. The same holds for a pattern anchored at
+    the root while the specialist works in `web/`. With no rule, the same
+    reads return them.
+  - An untrusted project's notes and instructions reach no request, and
+    `code_intel` starts no server (`tests/fake_lsp_server.py`). In a trusted
+    project, both happen.
+  - With computer use off, a screenshot is refused. The screenshot function
+    is stubbed.
+  - Without `bypass`:
+    - the specialist makes no request and writes nothing;
+    - `IntentService.start_intent` refuses and saves no plan;
+    - **Build this roadmap**'s handler sends the tagged refusal and leaves
+      the mission in drafting;
+    - starting and resuming an autonomous session refuse and leave its
+      roadmap alone;
+    - a policy that arrives during an iteration stops the loop with
+      `mode_not_allowed` before its `[bash]` check. Without the policy, the
+      check runs.
+- Against `main`, 13 of the 19 fail: every exclusion, untrusted,
+  computer-use-off and mode case. The 6 controls pass.
+- `tests/autonomous_view.test.cjs` covers the new stop reason's words and the
+  button being put back (2 tests).
+- In the browser pane, from isolated homes with the scripted Ollama stub and an
+  organization policy for "Acme" (`LUMI_POLICY_FILE`):
+  - **Exclusions and trust.** The policy had `files.exclude: ["secrets/**"]`,
+    and the project was untrusted and had a note.
+    - A Mission's **Build this roadmap** ran the planner and an implement
+      specialist.
+    - Its `file_read` of `secrets/api.txt` showed "excluded by 'secrets/**'
+      (organization policy)".
+    - Its `grep` returned only `config.txt`'s line, plus "1 match in
+      excluded files not shown".
+    - The stub checked every request: none held the file's contents or the
+      note.
+    - After **Trust this project**, the next mission's planner and specialist
+      requests carried the note, and the file still stayed out.
+  - **Allowed modes.** The policy had `allowed_modes: ["ask", "auto-edit"]`,
+    and the mode menu hid Full-auto and Plan.
+    - **Build this roadmap** showed "Roadmap dispatch failed: Acme's policy
+      doesn't allow Full-auto, which missions and autonomous sessions run
+      in."
+    - The mission stayed in drafting, the plan panel stayed idle, and the
+      model got no planner request.
+    - **Build autonomously** showed "Autonomous dispatch failed: …" and wrote
+      no roadmap.
+  - **The page fix.**
+    - Before it, a refusal left the button reading "Roadmap dispatched", and
+      the autonomous card became an "Autonomous session dispatched … Stop"
+      chip.
+    - After it, the button came back as **Build this roadmap**. Pressing Enter
+      on it was refused the same way.
+    - The autonomous card came back with its 4h budget still selected.
+    - Dispatches the policy allowed kept "Roadmap dispatched" and the chip.
+      That autonomous session finished "satisfied".
+  - **The real home.** The real `~/.resonant` was unchanged afterwards
+    (hashes and listing).
+    - No `~/.lumi` or Lumi credential entries appeared, and the fixtures' own
+      `CODEX_HOME` was never created.
+    - `~/.codex/logs_2.sqlite-wal` and `models_cache.json` changed during the
+      runs, which the user's own Codex writes. Those writes are unattributed.
+
+Not exercised: a packaged build, a live model, a policy arriving mid-run in
+the app (unit tests only), macOS and Linux.
+
+## September 25 specialists follow the organization's and the project's rules — source only, not released
+
+**A mission could run a command the organization denies.** Orchestration
+specialists (`lumi/orchestration/runner.py`) run a Mission's **Build this
+roadmap** and autonomous sessions. They got only the Full-auto tier's built-in
+rules: the guardrails, the review gate, then allow everything. The
+organization's `shell.rules` and the project's `lumi-policy.json` never
+applied, so a specialist's `echo forbidden-by-acme > ran.txt` ran although
+Acme's policy denies it.
+
+- **Specialists get the policy a chat session gets**
+  (`project_execution_policy`): Full-auto with the project's
+  `lumi-policy.json` and the organization's shell rules. Only the guardrails
+  and the review gate come before the organization's rules.
+  - The project's file is read from the project root, also when a specialist
+    works in a subfolder that an earlier one declared (`Working subdir:`).
+  - Its `allow` rules count only while the user trusts the project and the
+    file is the version they trusted (`gui/workspace_trust.py`). Its `deny`
+    and `prompt` rules always apply.
+  - The policy is built as each specialist starts, so a change of trust or
+    policy applies from the next one.
+- **A `prompt` rule refuses the call in a specialist**, the organization's or
+  the project's, since nobody can answer a specialist's approval prompt.
+  Before, the specialist ran the command without asking.
+- This closes the gap noted under "a broken lumi-policy.json can't drop
+  organization rules" below.
+- Docs: [agent runtime](modern-agent-runtime.md#tool-approvals).
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 4,344 passed, 5 skipped. `ruff check .` clean, the 61 Node
+  tests in AGENTS.md pass, `git diff --check` clean.
+- `test_specialist_execution_policy.py` (5 tests) runs
+  `LocalSpecialistRunner` with a scripted model and the real `Session`, and
+  checks the file each command writes:
+  - an organization deny refuses `echo forbidden-by-acme > ran.txt` with
+    "Blocked by policy: Acme: no", and `ran.txt` isn't written;
+  - under the same policy, `echo allowed-by-acme > ok.txt` runs and writes
+    its file;
+  - a project deny applies to a specialist working in `web/`;
+  - with a project `allow` followed by a `prompt` for every other command,
+    the allowed command runs in a trusted project. In an untrusted one the
+    `allow` is dropped, and the `prompt` refuses the command.
+- Against the previous `runner.py`, 3 of the 5 fail: the organization's deny,
+  the project's deny in `web/` and the untrusted project's prompt. Each
+  command ran. The other command and the trusted case pass on both.
+- In the browser pane, from an isolated home with the scripted Ollama stub
+  and an organization policy for "Acme" (`LUMI_POLICY_FILE`) that denies
+  `forbidden-by-acme`:
+  - a Mission (**Start an autonomous session**, not run autonomously) got its
+    spec, and **Build this roadmap** ran the planner and an implement
+    specialist;
+  - the specialist's `echo forbidden-by-acme > ran.txt` row showed "not run"
+    and **denied**, the model received "Blocked by policy: Acme: no", and
+    `ran.txt` wasn't written;
+  - its next command, `echo allowed-by-acme > ok.txt`, ran (exit 0) and wrote
+    `ok.txt`. Both plan nodes finished with confidence 1.00;
+  - the real `~/.resonant` was unchanged afterwards. No `~/.lumi` or Lumi
+    credential entries appeared. The fixture's own `CODEX_HOME` was never
+    created. `~/.codex` logs changed during the run while the user's own Codex
+    was running; those writes are unattributed.
+- Found during that run, not changed here: `/plan` and **Plan this** start
+  nothing. Since 8d0b2c8, the `intent_start` handler compares the module's
+  `command` decorator, not the message's command, with each name, so the
+  intent commands send no reply.
+
+Not exercised: a packaged build, a live model, an autonomous session's own
+loop in the app (its dispatches and REFLECT pass use the same runner, and its
+tests pass), macOS and Linux.
+
 ## September 25 the terminal prints tool and model text as written — source only, not released
 
 **The terminal UI read tool and model text as Rich markup.** `lumi/tui.py`
@@ -164,6 +531,56 @@ model lists, `/status`) still put text into markup unescaped. It is text the
 person typed or the local Ollama server sent, not a turn's. The prompt_toolkit
 prompts build `HTML(...)` from the working folder's name and the tool's name
 unescaped: a folder named `R&D` or `a<b` makes `HTML` raise `ExpatError`.
+
+## September 25 comparison diffs include what a run committed — source only, not released
+
+- **Fixed:** when a model comparison run committed its work, those changes
+  were missing from its kept diff and its count of changed files. A model
+  with **Everything** can run `git commit`, and a hook of yours can commit
+  each edit, now that hooks run in comparisons ("your own hooks run in
+  `lumi run`, schedules, comparisons and chats"). Both compared the
+  worktree's HEAD at the end, which the commits had moved. The check runs on
+  the final files, so pass or fail was right.
+- **Each run records the commit it starts from**: the project's HEAD, which
+  its worktree is made from. The result keeps it as `start_commit`. The diff
+  and the changed files are taken against it, committed or not: `git add -A`,
+  then `git diff --cached <start> --` (`model_evals._keep_diff`). A kept diff
+  still holds up to 200 KB.
+- Docs: [model comparisons](model-comparisons.md).
+
+Validation on September 25, 2026:
+
+- `tests/test_model_evals.py` (2 new tests). The fake `lumi run` gains two
+  models that commit:
+  - one commits a new file, then an edit, in two commits, and leaves a file
+    uncommitted;
+  - the other commits a 300 KB file.
+
+  Before the fix, each run counted 1 changed file, the uncommitted one,
+  though its check passed. Now:
+  - they count 3 and 2, and the committed lines are in the diff;
+  - the 300 KB diff is cut at 200 KB;
+  - `start_commit` is the project's HEAD;
+  - the checkout and its HEAD are unchanged.
+- A file named like the start commit doesn't empty the diff. git refuses an
+  argument that names both a revision and a file, so the diff passes `--`.
+- A real `lumi run` with **Everything** and a scripted model, no provider
+  (scratch tests, not kept), committed in two ways:
+  - its bash tool ran `git add` and `git commit`;
+  - after merging main, a `post_tool_use` Settings hook committed after each
+    `file_write`.
+
+  The check confirmed each commit. With main's `_keep_diff`, every run passed
+  and kept 0 changed files and an empty diff; with the fix, 1 file and its
+  lines.
+- Seven mutants each switch off one part: the start commit for the names,
+  for the diff, for both (the old code), `HEAD~1` in its place, the `--`,
+  reading the start after the run, and the 200 KB limit. Each fails at least
+  one of these tests.
+- Full suite before merging main: 4420 passed, 5 skipped. Ruff, `node --check`
+  and the node UI tests (81) pass. After merging main with the hooks change,
+  `test_model_evals.py` (9 tests) and `test_headless.py` (18) pass, as do
+  ruff, `node --check` and the node UI tests (86).
 
 ## September 25 each turn's footer holds its own model and tokens — source only, not released
 
@@ -1503,7 +1920,8 @@ tool calls checked against it.
   section that isn't an object is invalid too.
 - **Not changed:** intent specialists (`orchestration/runner.py`) still run
   with the Full-auto rules alone. They get neither the organization's shell
-  rules nor the project's policy.
+  rules nor the project's policy. (Changed later the same day: see
+  "specialists follow the organization's and the project's rules" above.)
 
 Validation on September 25, 2026, after merging main (including the
 repository allow rules change):

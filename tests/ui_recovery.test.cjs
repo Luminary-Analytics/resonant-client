@@ -2014,3 +2014,93 @@ test('a closed group\'s waiting item answers only results drawn in its own turn'
     assert.ok(staleItem.classList.contains('pending'));
     assert.equal(staleItem.querySelector('.tool-status').textContent, '…');
 });
+
+// ── An Evidence call is drawn once ────────────────────────────────────
+// Reads, searches and checks go into the step's Evidence group as they
+// arrive. Prose, an error or Stop closes the group; its calls stay in it
+// and are never drawn again as rows of their own.
+
+// toolRowApp with the step around the group: the real ensureStepRendered,
+// which closes it with run_cards.js's flushCollapsedGroup, and the handlers
+// for prose, errors and the turn's end. Prose goes to the card's result, as
+// in the app; its markup isn't tested.
+function evidenceStepApp() {
+    const app = toolRowApp();
+    delete app.ensureStepRendered;
+    const window = {};
+    vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/run_cards.js'), 'utf8'), {window});
+    const noop = () => {};
+    const result = app.element('div');
+    Object.assign(app, {
+        flushCollapsedGroup: window.LumiRunCards.prototype.flushCollapsedGroup,
+        clearTerminals: noop, setRunning: noop, scheduleRender: noop, finalizeToolActivityGroup: noop,
+        requestGitStatus: noop, _offerPromptSuggestion: noop, _finishActiveTask: noop, _finishCancelledTask: noop,
+        _ensureTaskCard: () => ({activityEl: app.activity, resultEl: result}),
+        addAssistantMessage: () => result.appendChild(app.element('div')),
+        _currentTurn: app._freshTurnAggregate(), _liveCollapsedGroup: null,
+    });
+    // A replayed answer's code blocks go to the highlighter. These answers
+    // have none, and the fake DOM reads no descendant selectors.
+    const element = Object.getPrototypeOf(result);
+    const query = element.querySelectorAll;
+    element.querySelectorAll = function (selector) {
+        return selector === 'pre code' ? [] : query.call(this, selector);
+    };
+    // Every call the activity draws, in order: as an item of an Evidence
+    // group, or as a row of its own.
+    app.drawn = () => app.activity.children.flatMap(el => (el.classList.contains('collapsed-group')
+        ? el.querySelectorAll('.evidence-item').map(item => `in group: ${item.querySelector('.tool-desc').textContent}`)
+        : el.hasAttribute('data-tool') ? [`own row: ${el.querySelector('.tool-desc').textContent}`] : []));
+    app.statuses = () => app.activity.querySelectorAll('.evidence-item')
+        .map(item => item.querySelector('.tool-status').textContent);
+    return app;
+}
+
+const grepTodo = {event: 'tool.call', name: 'grep', call_id: 'g1', arguments: {pattern: 'TODO', path: '.'}};
+const readApp = {event: 'tool.call', name: 'file_read', call_id: 'r1', arguments: {path: 'app.py'}};
+
+test('Stop or an error in an Evidence step leaves each call in its group, drawn once', () => {
+    // Stopped while the read waited to run: the engine ends the run with
+    // Interrupted and never runs the read.
+    const stopped = [{event: 'step.start', step: 1}, grepTodo, readApp, toolResult(grepTodo, {metadata: {count: 1}}),
+        {event: 'error', message: 'Interrupted'}, {event: 'session.end', total_steps: 1}];
+    // Reading until the step limit: the engine reports it after the last step ends.
+    const limited = [{event: 'step.start', step: 1}, grepTodo, toolResult(grepTodo, {metadata: {count: 1}}),
+        {event: 'step.end', step: 1}, {event: 'step.start', step: 2}, readApp,
+        toolResult(readApp, {metadata: {lines: 12}}), {event: 'step.end', step: 2},
+        {event: 'error', message: 'Reached 2 step limit. Work is retained; send Continue to resume.'},
+        {event: 'session.end', total_steps: 2}];
+    for (const [events, statuses] of [[stopped, ['✓', '…']], [limited, ['✓', '✓']]]) {
+        const live = evidenceStepApp();
+        live._cancelInFlight = events === stopped;  // the person pressed Stop
+        live.play(...events);
+        const reloaded = evidenceStepApp();
+        reloaded.replayDisplayEvents(events);
+        for (const app of [live, reloaded]) {
+            assert.deepEqual(app.drawn(), ["in group: 'TODO'", 'in group: app.py']);
+            assert.deepEqual(app.statuses(), statuses);
+        }
+    }
+});
+
+test('prose in an Evidence step closes its group without drawing the calls again', () => {
+    // Text streamed after the step's call. A saved turn keeps the engine's
+    // order, the response's calls and then its text.done, so a reloaded
+    // step with prose closes the group before the results the same way.
+    // The search's result, which comes after the prose, settles its item in
+    // the closed group.
+    const answer = text => [{event: 'text.delta', delta: text}, {event: 'text.done', text}];
+    const turn = [{event: 'step.start', step: 1}, grepTodo, ...answer('Searching for TODOs.'),
+        toolResult(grepTodo, {metadata: {count: 1}}), {event: 'step.end', step: 1},
+        {event: 'step.start', step: 2}, ...answer('One TODO, in a.py.'), {event: 'step.end', step: 2},
+        {event: 'session.end', total_steps: 2}];
+    const live = evidenceStepApp();
+    live.play(...turn);
+    const reloaded = evidenceStepApp();
+    reloaded.replayDisplayEvents(turn);
+    for (const app of [live, reloaded]) {
+        assert.deepEqual(app.drawn(), ["in group: 'TODO'"]);
+        assert.deepEqual(app.statuses(), ['✓']);
+        assert.equal(app.activity.querySelectorAll('.collapsed-group').length, 1);
+    }
+});

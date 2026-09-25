@@ -2913,6 +2913,7 @@ class LumiApp {
             this._handleAutonomousStopClick();
         });
         card.parentNode.replaceChild(chip, card);
+        return chip;
     }
 
     /**
@@ -3473,6 +3474,8 @@ class LumiApp {
                     break;
                 }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
+                // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
+                if (event.source === 'mission_dispatch') this._missionDispatchRefused();
                 if (this._timelinePending) {
                     // The server refused the restore (a run started, or the
                     // checkpoint can't restore that): the user can try again.
@@ -5274,14 +5277,14 @@ class LumiApp {
         // visually fused with the prior inline streak.
         if (!this.stepRendered && this.currentStepEvent) {
             this.flushCollapsedGroup();
-            // Buffered inline tools (rare — they'd only buffer if their
-            // group hasn't been live-rendered yet) flush now too.
-            for (const tc of this.stepToolCalls) {
-                this.renderToolCall(tc);
-            }
-            for (const tr of this.stepToolResults) {
-                this.renderToolResult(tr);
-            }
+            // The step's buffered calls are already on screen: handleToolCall
+            // drew each into the Evidence group as it arrived, and its result
+            // settled there. Drawing them again duplicated every one below
+            // the group (prose or an error after them, a reloaded step with
+            // prose). They leave with the closed group, so step.end doesn't
+            // hand them to flushCollapsedGroup's bulk render either.
+            this.stepToolCalls = [];
+            this.stepToolResults = [];
             this.stepRendered = true;
         }
     }

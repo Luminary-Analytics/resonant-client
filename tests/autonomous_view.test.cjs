@@ -46,5 +46,28 @@ test('untyped criteria are refused with a readable reason', () => {
 test('stop reasons read as words', () => {
     assert.equal(view._autonomousStopReason('spend_limit_reached'), 'spending limit reached');
     assert.equal(view._autonomousStopReason('time_budget_exhausted'), 'time budget used up');
+    assert.equal(view._autonomousStopReason('mode_not_allowed'), 'not allowed by policy');
     assert.equal(view._autonomousStopReason('something_new'), 'something_new');
+});
+
+test('a refused dispatch puts its Build button back, once', () => {
+    // e.g. the organization's policy doesn't allow Full-auto (source "mission_dispatch").
+    let restored = 0;
+    const app = {_pendingMissionDispatch: () => { restored += 1; }};
+    view._missionDispatchRefused.call(app);
+    view._missionDispatchRefused.call(app);
+    assert.equal(restored, 1);
+    assert.equal(app._pendingMissionDispatch, null);
+});
+
+test('a dispatch that went through keeps its dispatched state', () => {
+    let restored = 0;
+    const app = {
+        _pendingMissionDispatch: () => { restored += 1; },
+        _currentSessionSummary: () => null,
+        _refreshMissionBadge: () => {},
+    };
+    view.handleMissionPhaseChanged.call(app, {phase: 'planning_dispatched'});
+    view._missionDispatchRefused.call(app);  // a later, unrelated refusal
+    assert.equal(restored, 0);
 });

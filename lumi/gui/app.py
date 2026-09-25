@@ -2552,6 +2552,13 @@ async def _process_chat_message(ws: WebSocket, msg: dict[str, Any]) -> None:
     })
     if first_turn and not state.cancel_requested.is_set():
         schedule_title_refinement(state, ws, title_record, text)
+    # The first finished task completes the first-run checklist.
+    from .onboarding import turn_finished
+
+    if (not state.cancel_requested.is_set() and turn_finished(display_events)
+            and not state.settings.get("onboarding", "first_task_done")):
+        await asyncio.to_thread(state.settings.set, "onboarding", "first_task_done", True)
+        await ws.send_json({"event": "onboarding_progress", "first_task_done": True})
 
 
 async def websocket_endpoint(ws: WebSocket):

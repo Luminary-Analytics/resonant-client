@@ -5,6 +5,28 @@ v0.17.0; v0.17.1 added the compact toolbar and session rows, and v0.17.2 adds
 the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.19.0-release-notes.md)
 and [Unreleased](unreleased.md).
 
+## Getting started
+
+On a first run the empty chat shows a **Get started** checklist
+(`lumi/gui/onboarding.py`) with three steps. Each step reads the app's real
+state and is ticked when done:
+
+1. **Connect a model:** done when any provider lists a model. Before that,
+   **Open Connections** goes to Settings > Connections (Ollama on this
+   computer, API keys, Sign in with ChatGPT, custom connections).
+2. **Open a project:** done when a project other than the Playground is open.
+   - **Choose a folder** opens the folder picker.
+   - **Try the sample project** creates
+     `Documents/Lumi Projects/lumi-sample` (a tiny Python program with a bug to
+     find) and opens it. An existing sample folder is never overwritten.
+3. **Finish a first task:** done after the first turn that ends without an
+   error (`onboarding.first_task_done`). **Use a suggested task** puts a prompt
+   in the composer; nothing is sent until you send it. In the sample project the
+   prompt asks Lumi to add tests, run them and fix the bug they find.
+
+The **×** button hides the checklist for good (`onboarding.dismissed`), and it
+goes away by itself once all three steps are done.
+
 ## Projects and sessions
 
 The sidebar is one scrollable list of projects and their sessions. Use **Add

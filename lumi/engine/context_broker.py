@@ -127,8 +127,14 @@ class ContextBroker:
             for name in sorted(self._providers)
         ]
 
+    # ``@file:src/app.py#L10-20`` (or ``#L10``) attaches only those lines; the
+    # editor extensions send selections this way (gui/editor_bridge.py).
+    LINES_RE = re.compile(r"#L(?P<start>\d{1,7})(?:-L?(?P<end>\d{1,7}))?$")
+
     def _file(self, selector: str) -> ContextItem | None:
-        path = (self.project_path / selector).resolve()
+        lines = self.LINES_RE.search(selector)
+        relative = selector[:lines.start()] if lines else selector
+        path = (self.project_path / relative).resolve()
         if self.project_path not in path.parents and path != self.project_path:
             return None
         if not path.is_file():
@@ -138,6 +144,15 @@ class ContextBroker:
             # Say why instead of dropping the mention silently.
             return self._item("file", selector, self.exclusions.refusal(str(path), rule), "excluded")
         content = path.read_text(encoding="utf-8", errors="replace")
+        if lines:
+            start = max(1, int(lines.group("start")))
+            end = max(start, int(lines.group("end") or start))
+            all_lines = content.splitlines(keepends=True)
+            if start > len(all_lines):
+                return self._item("file", selector, f"{relative} has only {len(all_lines)} lines.", str(path))
+            content = "".join(all_lines[start - 1:end])
+            label = f"{relative} lines {start}-{min(end, len(all_lines))}"
+            return self._item("file", label, content, f"{path}#L{start}-{min(end, len(all_lines))}")
         return self._item("file", selector, content, str(path))
 
     def _symbol(self, selector: str) -> list[ContextItem]:

@@ -112,8 +112,10 @@ def test_pip_install_includes_the_extension():
     `pip install resonant-client` omits the extension entirely — non-Python
     files are not picked up automatically — and grouping fails with no error.
     """
-    pyproject = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"lumi" = ["browser_extension/*"]' in pyproject
+    import tomllib
+
+    pyproject = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "browser_extension/*" in pyproject["tool"]["setuptools"]["package-data"]["lumi"]
 
 
 def test_spec_bundles_the_extension():

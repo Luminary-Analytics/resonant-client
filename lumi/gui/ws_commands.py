@@ -533,6 +533,61 @@ async def _audit_status(ctx: CommandContext) -> None:
     await ctx.send(await _in_executor(ctx.state.audit_status))
 
 
+def _code_editors_payload(settings: Any = None, **extra: Any) -> dict:
+    """Settings > Code editors: the bridge, and the editors found on this computer."""
+    from ..code_editors import jetbrains_config_dirs, lumi_command, vscode_editors
+    from .editor_bridge import bridge, enabled
+
+    program, prefix = lumi_command()
+    start = " ".join(part for part in (f'"{program}"' if " " in program else program, prefix) if part)
+    return {"event": "code_editors", "data": {
+        "enabled": enabled(settings),
+        "running": bridge.published,
+        "vscode": [{"command": item["command"], "name": item["name"]} for item in vscode_editors()],
+        "jetbrains": [path.name for path in jetbrains_config_dirs()],
+        "commands": {"vscode": f"{start} editor vscode --install", "jetbrains": f"{start} editor jetbrains --install"},
+        **extra,
+    }}
+
+
+@command("code_editors_list")
+async def _code_editors_list(ctx: CommandContext) -> None:
+    settings = getattr(ctx.state, "settings", None)
+    await ctx.send(await _in_executor(lambda: _code_editors_payload(settings)))
+
+
+@command("code_editor_install")
+async def _code_editor_install(ctx: CommandContext) -> None:
+    """Install the VS Code extension, or JetBrains External Tools, from Settings > Code editors."""
+    from ..code_editors import VSCODE_FAMILY, install_jetbrains, install_vscode
+    from .editor_bridge import enabled
+
+    settings = getattr(ctx.state, "settings", None)
+    target = str(ctx.msg.get("target") or "")
+    editor = str(ctx.msg.get("editor") or "code")
+
+    def install() -> dict:
+        if not enabled(settings):
+            return {"ok": False, "message": "Turn on Code editors in Settings > Privacy & security first."}
+        if target == "vscode":
+            install_vscode(editor)
+            return {"ok": True, "message": f"Installed in {VSCODE_FAMILY[editor]}. If it is open, run "
+                                           "\"Developer: Reload Window\" there to start the extension."}
+        if target == "jetbrains":
+            written = install_jetbrains()
+            if not written:
+                return {"ok": False, "message": "No JetBrains IDE settings were found on this computer."}
+            names = ", ".join(path.parent.parent.name for path in written)
+            return {"ok": True, "message": f"Added to {names}. Restart an IDE that is open to see the tools."}
+        return {"ok": False, "message": "Choose VS Code or JetBrains."}
+
+    try:
+        result = await _in_executor(install)
+    except (RuntimeError, ValueError, OSError) as exc:
+        result = {"ok": False, "message": str(exc)}
+    await ctx.send(await _in_executor(lambda: _code_editors_payload(settings, result=result)))
+
+
 def _schedules_payload(settings: Any = None, **extra: Any) -> dict:
     from .. import schedules
 
@@ -3291,7 +3346,8 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "audit_log", "audit_capture", "audit_retention_days",
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
-    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks"}),
+    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks",
+                           "editor_bridge"}),
     "updates": frozenset({"mode", "channel", "pin"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),

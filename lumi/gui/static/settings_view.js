@@ -662,6 +662,38 @@ class LumiSettingsView {
         });
     }
 
+    _renderCodeEditors() {
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const data = this.codeEditors;
+        if (!data) return '<p class="editor-help">Loading…</p>';
+        const result = data.result
+            ? `<p class="${data.result.ok ? 'editor-help' : 'settings-error-banner'}" role="status">${esc(data.result.message)}</p>` : '';
+        const off = data.enabled ? '' : '<div class="settings-error-banner">Code editors are turned off in Privacy &amp; security, so editors can’t reach Lumi.</div>';
+        const vscode = (data.vscode || []).map(item =>
+            `<button type="button" class="btn-sm" data-code-editor-install="vscode" data-editor="${esc(item.command)}">Install in ${esc(item.name)}</button>`).join('');
+        const jetbrains = data.jetbrains || [];
+        return `<p class="editor-help">Send the selection or files from your editor into your message here, and open what Lumi changed beside your files. Editors reach Lumi only on this computer while Lumi is open, and only files in the project Lumi has open. You send the message from Lumi.</p>
+            ${off}${result}
+            <h4 class="settings-subheading">VS Code</h4>
+            <p class="editor-help">Adds Send Selection to Lumi, Ask Lumi About Selection, Send File to Lumi and Review Lumi’s Changes to the editor’s menus and Command Palette. Works in Cursor, Windsurf and VSCodium too.</p>
+            ${vscode ? `<div class="editor-actions">${vscode}</div>` : '<p class="editor-help">No <code>code</code> command was found on PATH. In VS Code, run “Shell Command: Install ‘code’ command in PATH” (macOS), or reinstall with “Add to PATH” (Windows), then reopen this page.</p>'}
+            <p class="editor-help">Or in a terminal: <code>${esc(data.commands?.vscode)}</code></p>
+            <h4 class="settings-subheading">JetBrains IDEs</h4>
+            <p class="editor-help">Adds External Tools that send the file or selection, ask about the selection, and show Lumi’s changes: Tools &gt; External Tools &gt; Lumi, and the editor’s right-click menu. ${jetbrains.length ? `Found: ${jetbrains.map(esc).join(', ')}. Restart an IDE that is open.` : 'No JetBrains IDE settings were found on this computer.'}</p>
+            ${jetbrains.length ? '<div class="editor-actions"><button type="button" class="btn-sm" data-code-editor-install="jetbrains">Add to JetBrains IDEs</button></div>' : ''}
+            <p class="editor-help">Or in a terminal: <code>${esc(data.commands?.jetbrains)}</code></p>`;
+    }
+
+    _bindCodeEditors() {
+        this.settingsBody?.querySelectorAll('[data-code-editor-install]').forEach(button => button.addEventListener('click', () => {
+            // aria-disabled rather than disabled, so keyboard focus stays put.
+            if (button.getAttribute('aria-disabled') === 'true') return;
+            button.setAttribute('aria-disabled', 'true');
+            button.textContent = 'Installing…';
+            this.send({command: 'code_editor_install', target: button.dataset.codeEditorInstall, editor: button.dataset.editor || ''});
+        }));
+    }
+
     _renderFileExclusions() {
         const saved = this.settings?.privacy?.excluded_paths || [];
         const managed = this.settings?._meta?.policy?.summary?.exclude || [];
@@ -1471,6 +1503,7 @@ class LumiSettingsView {
             {id:'sonn_account', title:'SONN account & credits', group:'Personal', icon:'person', description:'Your authenticated SONN identity and prepaid credit balance.', sections:['sonn_account'], keywords:'billing invitation balance'},
             {id:'cost_tracking', title:'Usage & cost', group:'Personal', icon:'chart', description:'Review tracked model usage and local spending alerts.', sections:['cost_tracking'], keywords:'tokens budget'},
             {id:'provider_connections', title:'Connections', group:'Integrations', icon:'globe', description:'Connect model providers and manage their endpoints and API keys.', sections:['provider_connections','network','api_keys'], keywords:'ChatGPT Codex OpenRouter SONN login authentication proxy certificates TLS keychain'},
+            {id:'code_editors', title:'Code editors', group:'Integrations', icon:'plug', description:'Use Lumi from VS Code and JetBrains IDEs: send the selection, see Lumi’s changes.', sections:['code_editors'], keywords:'vs code vscode cursor windsurf vscodium jetbrains intellij pycharm webstorm rider goland ide extension plugin selection diff'},
             {id:'creative_editors', title:'Creative editors', group:'Integrations', icon:'cube', description:'Work with Blender, Unity, and Unreal Engine 5.', sections:['creative_editors']},
             {id:'mcp_servers', title:'MCP servers', group:'Integrations', icon:'plug', description:'Connect tools supplied by external servers.', sections:['mcp_servers']},
             {id:'engram', title:'Memory', group:'Coding', icon:'book', description:'Configure the optional Engram memory service.', sections:['engram']},
@@ -1580,6 +1613,7 @@ class LumiSettingsView {
             this.send({command: 'audit_status'});
         }
         if (page === 'scheduled_tasks') this.send({command: 'schedules_list'});
+        if (page === 'code_editors') this.send({command: 'code_editors_list'});
         if (page === 'model_evaluations') this.send({command: 'model_evals_list'});
         const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status'}[page];
         if (command) this.send({command});
@@ -1590,6 +1624,7 @@ class LumiSettingsView {
             { id: "sonn_account", title: "SONN account & credits", open: true, custom: true },
             { id: 'lumi_account', title: 'Lumi account', open: true, custom: true },
             { id: "provider_connections", title: "Connections", open: true, custom: true },
+            { id: 'code_editors', title: 'Code editors', open: true, custom: true },
             { id: 'creative_editors', title: 'Creative editors', open: true, custom: true },
             {
                 id: 'cost_tracking', title: 'Usage & Cost', open: true,
@@ -1773,6 +1808,8 @@ class LumiSettingsView {
                       hint: 'Lets `lumi gateway` answer messages from Telegram. Off makes it refuse to start.' },
                     { key: 'scheduled_tasks', label: 'Scheduled tasks', type: 'toggle', default: true,
                       hint: 'Saved tasks that run unattended at set times (Settings > Scheduled tasks). Off stops them running and stops new ones being added.' },
+                    { key: 'editor_bridge', label: 'Code editors', type: 'toggle', default: true,
+                      hint: 'Lets the VS Code extension and JetBrains tools on this computer add files to your message and show what Lumi changed (Settings > Code editors).' },
                 ]
             },
             {
@@ -1923,6 +1960,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderProjectTrust();
             } else if (section.id === 'scheduled_tasks') {
                 bodyHtml = this._renderScheduledTasks();
+            } else if (section.id === 'code_editors') {
+                bodyHtml = this._renderCodeEditors();
             } else if (section.id === 'model_comparisons') {
                 bodyHtml = this._renderModelComparisons();
             } else if (section.id === 'capability_packs') {
@@ -2170,6 +2209,7 @@ class LumiSettingsView {
         this._bindUpdateCheck();
         this._bindLumiAccount();
         this._bindScheduledTasks();
+        this._bindCodeEditors();
         this._bindModelComparisons();
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {

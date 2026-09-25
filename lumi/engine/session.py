@@ -2388,6 +2388,10 @@ class Session:
             done_model = None
 
             fallback_retry = False
+            # Call ids are unique only within one response (backends._new_call_id
+            # hashes the name and arguments), so the same write in a later
+            # response or turn must still get its own checkpoint.
+            self._last_checkpoint_tool_call = ""
             try:
                 model_requests += 1
                 for event_type, data in self.backend.stream(

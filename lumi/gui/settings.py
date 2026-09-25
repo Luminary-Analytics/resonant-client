@@ -132,6 +132,7 @@ DEFAULTS = {
         "computer_use": True,     # screenshots, mouse and keyboard control
         "chat_gateway": True,     # `lumi gateway` (Telegram)
         "scheduled_tasks": True,  # `lumi schedule`: unattended runs at set times
+        "editor_bridge": True,    # VS Code and JetBrains reach Lumi (gui/editor_bridge.py)
         # "project": the agent's commands, jobs and previews run in an OS
         # sandbox that writes only to the project and temporary folders
         # (lumi/engine/os_sandbox.py, macOS and Linux).

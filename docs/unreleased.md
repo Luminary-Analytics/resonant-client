@@ -8,6 +8,72 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 code editors: VS Code and JetBrains IDEs — source only, not released
+
+- **VS Code** ([guide](code-editors.md), `lumi/code_editors/vscode/`): Send
+  Selection to Lumi, Ask Lumi About Selection, Send File to Lumi and Send
+  Open Files to Lumi add them to the message in Lumi's composer as `@file:`
+  attachments, and you send it from Lumi. Review Lumi's Changes opens each
+  file the open session's latest change-making turn changed beside its
+  version from before that turn. Also for Cursor, Windsurf and VSCodium. The
+  extension is plain JavaScript without dependencies, so Lumi packs the .vsix
+  itself (`lumi editor vscode`) and installs it with the editor's own command
+  line from **Settings > Code editors**.
+- **JetBrains IDEs**: External Tools that send the file or selection, ask
+  about the selection and print Lumi's changes, added to each IDE found from
+  Settings > Code editors or `lumi editor jetbrains --install`. `lumi editor
+  status|send|changes|diff` work from a terminal too.
+- **The editor bridge** (`lumi/gui/editor_bridge.py`): while Lumi runs, a
+  token for that launch in `editor-bridge.json` in the state folder, readable
+  only by you. It opens only `/api/editor/...`, refuses requests from web
+  pages, takes only files inside the open project that aren't excluded, and
+  can't send a message or start a turn. `security.editor_bridge` (**Settings
+  > Privacy & security > Code editors**, lockable by policy) closes it.
+- `@file:path#L10-24` attaches only those lines.
+- **Fixed:** a tool call repeated with the same arguments in a later
+  response or turn got no checkpoint, because call ids are unique only within
+  one response. A hand edit between two identical writes could not be
+  restored. Each response now starts afresh.
+
+Validation on September 25, 2026: full `pytest` 4,052 passed, 4 skipped;
+`node --test` 47 passed, including `vscode_extension.test.cjs` (8 tests), which
+runs the extension against a simulated VS Code API and a stand-in bridge.
+`test_editor_bridge.py` (11) covers the token and file checks, line ranges,
+and changes against git snapshots, snapshot archives and the last commit,
+including line endings a checkout converted. `test_code_editors.py` (9)
+covers the .vsix, the JetBrains tools and the command line against a local
+server with a proxy set. The checkpoint fix has a test that fails without it.
+
+In the browser pane, with an isolated fixture (a stub model, a fake `code`
+command and a fake PyCharm settings folder, and no real editor on PATH):
+
+- A turn changed `src/app.py`. `lumi editor changes --diff` against the
+  running app printed the diff from the turn's snapshot.
+- `lumi editor send src/app.py --lines 1-2 --text ...` put the question and
+  `@file:src/app.py#L1-2` in the focused composer, with a toast. An excluded
+  `.env` and a file outside the project were refused. Sending the message put
+  exactly those two lines (46 characters) and `notes.txt` into the model's
+  context.
+- Settings > Code editors (found by searching "pycharm") ran the fake `code`
+  with `--install-extension <temporary .vsix> --force`. It wrote
+  `tools/Lumi.xml` into the fake PyCharm folder; that button was pressed from
+  the keyboard.
+- Turning Code editors off removed the bridge file, and the command line then
+  refused. Turning it on brought the file back.
+- The extension's own code ran against the running app with only the VS Code
+  API simulated: its status message, Ask About Selection (the composer showed
+  the question and `@file:src/app.py#L2-2`) and Review Lumi's Changes, with
+  the earlier version fetched from the app.
+- With a hand edit between two identical writes: before the fix the second
+  turn had no checkpoint, and the review compared with the last commit. After
+  it, there were two checkpoints, and the review's earlier version was the
+  hand edit.
+
+The packed .vsix installed with VS Code 1.125's `code --install-extension`
+into a temporary extensions folder and user-data folder, where it was listed
+as `luminary-analytics.lumi-vscode` 0.1.0. The extension was not run inside
+VS Code, and no JetBrains IDE was run.
+
 ## September 25 pull requests on GitLab, Bitbucket and Azure DevOps — source only, not released
 
 - The pull request tools (`github_pr_view`, `github_check_log`,

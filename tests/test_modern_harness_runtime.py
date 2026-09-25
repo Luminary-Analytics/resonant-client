@@ -191,6 +191,43 @@ def test_checkpoint_timeline_restores_conversation_and_non_git_files(tmp_path: P
     assert Path(restored["workspace"]["recovery_archive"]).is_file()
 
 
+def test_the_same_write_in_a_later_turn_gets_its_own_checkpoint(tmp_path: Path):
+    """Call ids are unique only within one response, so identical calls repeat across turns."""
+    from lumi.backends import EVENT_DONE, EVENT_TEXT_DELTA, EVENT_TOOL_CALL, _new_call_id
+    from lumi.engine.session import Session
+
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "app.py"
+    target.write_text("original\n", encoding="utf-8")
+    arguments = json.dumps({"path": str(target), "content": "written by the model\n"})
+
+    class WriteEachTurn:
+        name, model, tool_mode, handles_tools = "write-each-turn", "stub-model", "native", False
+
+        def stream(self, conversation_history=(), **kwargs):
+            # Each turn: write first, then answer once the write's result is in.
+            if conversation_history and conversation_history[-1].get("role") == "tool_result":
+                yield (EVENT_TEXT_DELTA, {"delta": "Written."})
+            else:
+                yield (EVENT_TOOL_CALL, {"name": "file_write", "arguments": arguments,
+                                         "call_id": _new_call_id("file_write", arguments)})
+            yield (EVENT_DONE, {})
+
+    session = Session(WriteEachTurn(), max_steps=4, auto_approve=True)
+    session.checkpoint_store = SessionCheckpointStore(project, session_id="s1", root=tmp_path / "checkpoints")
+    first = list(session.run("Write it"))
+    target.write_text("edited by hand between the turns\n", encoding="utf-8")
+    second = list(session.run("Write it again"))
+
+    created = [[event for event in events if event.get("event") == "checkpoint.created"] for events in (first, second)]
+    assert [len(items) for items in created] == [1, 1]
+    # The second snapshot kept the hand edit that the repeated write replaced.
+    restored = session.checkpoint_store.restore(created[1][0]["checkpoint_id"], "files")
+    assert restored["workspace"]
+    assert target.read_text(encoding="utf-8") == "edited by hand between the turns\n"
+
+
 def test_structured_hook_can_modify_args_and_request_retry(tmp_path: Path):
     script = tmp_path / "hook.py"
     script.write_text(

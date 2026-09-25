@@ -8,9 +8,10 @@ Examples:
 
 Each chat's session is built like ``lumi run``'s (lumi/headless.py): the
 project (``--project``, gateway.project, or this folder), its trust, file
-exclusions, organization policy and budgets apply. In ``--mode ask`` (the
-default) the agent asks in the chat before changing anything; ``auto-edit``
-edits files and asks about the rest; ``bypass`` asks nothing. A project's own
+exclusions, organization policy, budgets and the person's Settings hooks
+(read when the gateway starts) apply. In ``--mode ask`` (the default) the
+agent asks in the chat before changing anything; ``auto-edit`` edits files
+and asks about the rest; ``bypass`` asks nothing. A project's own
 instructions apply only if it is trusted in the app: the gateway never
 trusts one itself. See docs/chat-gateway.md.
 """

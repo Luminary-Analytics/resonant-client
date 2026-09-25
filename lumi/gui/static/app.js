@@ -46,6 +46,17 @@ const BLOCK_TOOLS = new Set(['bash', 'file_write', 'file_edit', 'browser_js']);
 // didn't run, except for this one: "denied" already says it.
 const USER_DENIAL_OUTPUT = 'Tool execution denied by user.';
 
+// What a plan's card calls each specialist (orchestration/plan_graph.py,
+// NodeSpecialization).
+const PLAN_SPECIALIST_LABELS = {
+    plan: 'Planner', plan_deep: 'Planner', implement: 'Implementer', verify: 'Verifier',
+    repair: 'Repair', explore: 'Explorer', research: 'Researcher', reflect: 'Reflection',
+};
+
+// The specialist events a plan's card draws; the rest describe the
+// specialist's own session (its start and end, steps, model, context).
+const PLAN_TRACE_EVENTS = new Set(['text.delta', 'text.done', 'tool.call', 'tool.result', 'error']);
+
 function shouldGroupAsEvidence(name, args = {}) {
     if (COLLAPSIBLE_TOOLS.has(name)) return true;
     if (name !== 'bash') return false;
@@ -2123,14 +2134,15 @@ class LumiApp {
 
     /**
      * Send the user text as an intent — kicks off the orchestrator pipeline,
-     * not a one-shot Session.run. The plan-graph viz auto-opens; status events
-     * land in the chat as small status messages.
+     * not a one-shot Session.run. The plan-graph viz auto-opens, and the
+     * plan's specialists report under the /plan card rather than as a turn
+     * of the conversation (see "Plan activity").
      */
     startIntent(text) {
         text = (text || '').trim();
         if (!text) return;
         this.send({ command: 'intent_start', text });
-        this.addUserMessage('/plan ' + text);
+        this._beginPlanRun(text);
         this.showStatusMessage('Intent dispatched — plan-graph populating in the preview panel.');
         this.openPlanTab(true);
     }
@@ -3375,6 +3387,18 @@ class LumiApp {
         ) {
             return;
         }
+
+        // A plan's specialists run sessions of their own, and IntentService
+        // tags their events `_source: "intent"`. They report under the plan's
+        // card and never act as the conversation's turn: no completion
+        // verdict, Retry or suggestion, no change to isRunning or the live
+        // progress, and no focus change (see "Plan activity").
+        if (event._source === 'intent') {
+            this._handlePlanSpecialistEvent(event);
+            return;
+        }
+        if (type === 'plan.snapshot' || String(type || '').startsWith('intent.')) this._trackPlanRun(event);
+        if (type === 'error' && this._failStartingPlan(event)) return;
 
         if (
             this._liveRun?.active
@@ -5854,6 +5878,8 @@ class LumiApp {
     }
 
     getRenderTarget() {
+        // A plan specialist's rows go in its own step (_withPlanLane).
+        if (this._planLaneEl) return this._planLaneEl;
         const agentId = String(this._activeRenderEvent?._agent_id || '');
         const parallelTarget = agentId ? this.subagentContainers.get(agentId) : null;
         if (parallelTarget) return parallelTarget;
@@ -7754,35 +7780,431 @@ class LumiApp {
         }));
     }
 
+    // ── Plan activity ───────────────────────────────────────────
+    //
+    // A plan (/plan, a Mission's roadmap, an autonomous iteration's task)
+    // runs specialists in sessions of their own (orchestration/
+    // intent_service.py). Its card in the conversation shows one step per
+    // specialist, open while it runs, with the specialist's tool rows and
+    // prose, and a status line for the whole plan. None of it touches the
+    // conversation's turn: the task card and its live progress, isRunning,
+    // the completion verdict with Retry, the next-prompt suggestion, or focus.
+    // Plan activity isn't saved with the conversation; the Plan tab's History
+    // keeps the plan's snapshots.
+
+    /**
+     * Plans shown on this page, by intent id, and /plan cards whose plan
+     * hasn't named its id yet. Made on first use.
+     */
+    _planRegistry() {
+        this._planRuns ||= new Map();
+        this._pendingPlanRuns ||= [];
+        return { runs: this._planRuns, pending: this._pendingPlanRuns };
+    }
+
+    _newPlanRun(intentId) {
+        return {
+            intentId, intentText: '', request: '', fromUser: false, card: null,
+            steps: new Map(), currentNodeId: '', status: 'running', error: '',
+            toolCount: 0, firstTs: 0, lastTs: 0, allDone: null,
+        };
+    }
+
+    /**
+     * The card a /plan request shows at once, as the person's message. The
+     * plan it starts names the same text in its first event (intent.accepted,
+     * plan.snapshot or intent.started), which claims the card (_planRunFor).
+     */
+    _beginPlanRun(text) {
+        const run = this._newPlanRun('');
+        run.intentText = text;
+        run.request = `/plan ${text}`;
+        run.fromUser = true;
+        run.status = 'starting';
+        this._planRegistry().pending.push(run);
+        this._planCard(run);
+        return run;
+    }
+
+    /** The plan an event belongs to. A /plan card waiting for it is claimed by its text. */
+    _planRunFor(event) {
+        const intentId = String(event.intent_id || '');
+        if (!intentId) return null;
+        const { runs, pending } = this._planRegistry();
+        // Only these name the plan's text; a specialist's text.done is prose.
+        const text = String({
+            'plan.snapshot': (event.snapshot || event.data || {}).intent,
+            'intent.accepted': event.text,
+            'intent.started': event.text,
+        }[event.event] || '').trim();
+        let run = runs.get(intentId);
+        if (!run) {
+            const waiting = text ? pending.findIndex(item => item.intentText === text) : -1;
+            run = waiting >= 0 ? pending.splice(waiting, 1)[0] : this._newPlanRun(intentId);
+            run.intentId = intentId;
+            if (run.card) run.card.el.dataset.intentId = intentId;
+            runs.set(intentId, run);
+        }
+        if (!run.intentText && text) {
+            run.intentText = text;
+            if (run.card && !run.fromUser) run.card.requestEl.textContent = this._planTitle(text);
+        }
+        return run;
+    }
+
+    /** A plan's lifecycle event (plan.snapshot, intent.*), on its card. */
+    _trackPlanRun(event) {
+        const type = event.event;
+        const lifecycle = ['plan.snapshot', 'intent.accepted', 'intent.started', 'intent.paused',
+            'intent.resumed', 'intent.complete', 'intent.cancelled', 'intent.failed'];
+        if (!lifecycle.includes(type)) return;
+        const run = this._planRunFor(event);
+        if (!run) return;
+        if (['plan.snapshot', 'intent.accepted', 'intent.started'].includes(type)) {
+            if (run.status === 'starting') this._setPlanStatus(run, 'running');
+        } else if (type === 'intent.paused') {
+            if (['starting', 'running'].includes(run.status)) this._setPlanStatus(run, 'paused');
+        } else if (type === 'intent.resumed') {
+            if (run.status === 'paused') this._setPlanStatus(run, 'running');
+        } else {
+            this._finishPlanRun(run, type.slice('intent.'.length), event.error);
+        }
+    }
+
+    /**
+     * The server refuses a /plan it can't start (no model connected, say)
+     * with an error that names no plan: it belongs to the oldest waiting card.
+     */
+    _failStartingPlan(event) {
+        const { pending } = this._planRegistry();
+        const message = String(event.message || '');
+        const refusal = /^(?:Connect a backend before starting an intent|intent_start failed|intent text is required)/;
+        if (!pending.length || !refusal.test(message)) return false;
+        const run = pending.shift();
+        run.error = message;
+        this._setPlanStatus(run, 'not_started');
+        return true;
+    }
+
+    /** A plan's walker event (plan.event): each specialist it starts becomes a step. */
     trackPlanAgentEvent(event) {
         const wrapped = event.event_payload || event;
         const payload = wrapped.payload || {};
-        const nodeId = wrapped.node_id || '';
-        if (!nodeId || !['node.start', 'node.done'].includes(wrapped.kind)) return;
-        const id = `specialist:${event.intent_id || 'intent'}:${nodeId}`;
-        const existing = this.agentActivities.get(id) || {
-            id,
-            kind: 'specialist',
-            label: payload.specialization || 'specialist',
-            prompt: payload.goal || '',
-            parentId: '',
-            startedAt: (wrapped.ts || Date.now() / 1000) * 1000,
-        };
-        if (!this.agentActivities.has(id)) this.agentActivityOrder.push(id);
-        if (wrapped.kind === 'node.start') {
-            existing.status = 'running';
-            existing.label = payload.specialization || existing.label;
-            existing.prompt = payload.goal || existing.prompt;
-        } else {
-            existing.status = payload.status || 'done';
-            existing.finishedAt = (wrapped.ts || Date.now() / 1000) * 1000;
-            existing.handoff = payload.summary || payload.error || '';
-            existing.confidence = payload.confidence;
-            existing.verdict = payload.verdict || '';
+        const run = this._planRunFor(event);
+        if (!run) return;
+        if (wrapped.kind === 'plan.complete') {
+            run.allDone = payload.all_done === true;
+            return;
         }
-        this.agentActivities.set(id, existing);
-        this.renderAgentActivityTree();
-        this._markAgentTabUnread();
+        const nodeId = String(wrapped.node_id || '');
+        if (!nodeId || !['node.start', 'node.done'].includes(wrapped.kind)) return;
+        const ts = Number(wrapped.ts) || 0;
+        const step = this._planStep(run, nodeId, payload);
+        if (wrapped.kind === 'node.start') {
+            run.currentNodeId = nodeId;
+            step.status = 'running';
+            step.startTs = ts;
+            if (!run.firstTs) run.firstTs = ts;
+        } else {
+            this._finishPlanText(step);
+            step.status = payload.status || 'done';
+            step.verdict = payload.verdict || '';
+            step.endTs = ts;
+            if (ts) run.lastTs = ts;
+            if (payload.error) this._appendPlanError(step, payload.error);
+            if (run.currentNodeId === nodeId) run.currentNodeId = '';
+        }
+        this._renderPlanStep(run, step);
+        this._setPlanStatus(run, run.status === 'starting' ? 'running' : run.status);
+    }
+
+    /** A plan specialist's engine event, drawn in its step and nowhere else. */
+    _handlePlanSpecialistEvent(event) {
+        if (!PLAN_TRACE_EVENTS.has(event.event)) return;
+        const run = this._planRunFor(event);
+        if (!run) return;
+        // The walker runs one specialist at a time, and IntentService sends
+        // a node's node.start before its session's events.
+        const step = this._planStep(run, run.currentNodeId || 'specialist');
+        switch (event.event) {
+            case 'text.delta':
+                this._appendPlanText(step, event.delta || '');
+                break;
+            case 'text.done':
+                this._finishPlanText(step, event.text || '');
+                break;
+            case 'tool.call':
+                run.toolCount += 1;
+                step.toolCount += 1;
+                this._withPlanLane(step, () => this.renderToolCall(event));
+                this._renderPlanStep(run, step);
+                break;
+            case 'tool.result':
+                this._withPlanLane(step, () => this.renderToolResult(event));
+                break;
+            case 'error':
+                if (event.discard_partial_output) this._dropPlanText(step);
+                else this._finishPlanText(step);
+                this._appendPlanError(step, event.message);
+                break;
+        }
+    }
+
+    /** The plan's card: the /plan message, or a "Plan" card for a plan started elsewhere. */
+    _planCard(run) {
+        if (run.card) return run.card;
+        this._removeChatEmptyState();
+        const card = document.createElement('article');
+        card.className = 'task-card plan-card task-card-running';
+        // Not a message of the session: forking from a later message counts
+        // only the session's own (_forkFromUserMessage).
+        card.dataset.userMessage = 'plan';
+        if (run.intentId) card.dataset.intentId = run.intentId;
+        const header = document.createElement('div');
+        header.className = 'task-card-header';
+        const main = document.createElement('div');
+        main.className = 'task-card-main';
+        const label = document.createElement('div');
+        label.className = 'task-card-label';
+        label.textContent = run.fromUser ? 'You' : 'Plan';
+        const request = document.createElement('div');
+        request.className = 'task-request-text';
+        request.textContent = run.request || this._planTitle(run.intentText) || 'Plan';
+        main.appendChild(label);
+        main.appendChild(request);
+        header.appendChild(main);
+        const activity = document.createElement('div');
+        activity.className = 'task-activity plan-activity';
+        const footer = document.createElement('div');
+        footer.className = 'task-card-footer';
+        const status = document.createElement('div');
+        status.setAttribute('role', 'status');
+        const mark = document.createElement('span');
+        mark.className = 'task-run-mark';
+        mark.setAttribute('aria-hidden', 'true');
+        const statusLabel = document.createElement('span');
+        statusLabel.className = 'task-run-label';
+        const detail = document.createElement('span');
+        detail.className = 'task-run-detail';
+        status.appendChild(mark);
+        status.appendChild(statusLabel);
+        status.appendChild(detail);
+        footer.appendChild(status);
+        card.appendChild(header);
+        card.appendChild(activity);
+        card.appendChild(footer);
+        this.chatMessages.appendChild(card);
+        run.card = {
+            el: card, requestEl: request, activityEl: activity,
+            statusEl: status, markEl: mark, labelEl: statusLabel, detailEl: detail,
+        };
+        this._showPlanStatus(run);
+        this.scrollToBottom();
+        return run.card;
+    }
+
+    /** A specialist's step under its plan's card: a disclosure holding its trace. */
+    _planStep(run, nodeId, payload = {}) {
+        let step = run.steps.get(nodeId);
+        const created = !step;
+        if (created) {
+            const card = this._planCard(run);
+            const el = document.createElement('details');
+            el.className = 'task-activity-details plan-step is-running';
+            el.dataset.nodeId = nodeId;
+            el.open = true;
+            const summary = document.createElement('summary');
+            const caret = document.createElement('span');
+            caret.className = 'task-activity-caret';
+            caret.setAttribute('aria-hidden', 'true');
+            const title = document.createElement('span');
+            title.className = 'task-activity-title';
+            const goal = document.createElement('span');
+            goal.className = 'plan-step-goal';
+            const meta = document.createElement('span');
+            meta.className = 'task-activity-meta';
+            summary.appendChild(caret);
+            summary.appendChild(title);
+            summary.appendChild(goal);
+            summary.appendChild(meta);
+            const body = document.createElement('div');
+            body.className = 'plan-step-body';
+            el.appendChild(summary);
+            el.appendChild(body);
+            card.activityEl.appendChild(el);
+            step = {
+                nodeId, el, titleEl: title, goalEl: goal, metaEl: meta, bodyEl: body,
+                blockRows: new Map(), specialization: '', goal: '', status: 'running', verdict: '',
+                toolCount: 0, startTs: 0, endTs: 0, textEl: null, textBuffer: '', textTimer: null,
+            };
+            run.steps.set(nodeId, step);
+        }
+        if (payload.specialization) step.specialization = payload.specialization;
+        if (payload.goal) step.goal = payload.goal;
+        if (created) {
+            this._renderPlanStep(run, step);
+            this.scrollToBottom();
+        }
+        return step;
+    }
+
+    /** A step's line: who, what, and how it went. A finished step folds to it. */
+    _renderPlanStep(run, step) {
+        // The walker asks a planner again with a hint before its goal.
+        const cut = step.goal.indexOf('\n\n');
+        const retry = step.goal.startsWith('[RETRY:') && cut > 0;
+        const goal = retry ? step.goal.slice(cut + 2) : step.goal;
+        const label = PLAN_SPECIALIST_LABELS[step.specialization] || 'Specialist';
+        step.titleEl.textContent = retry ? `${label} (retry)` : label;
+        step.goalEl.textContent = this._planTitle(goal);
+        step.goalEl.title = goal.slice(0, 600);
+        const verdict = { pass: 'passed', revise: 'asked for a repair', blocked: 'blocked' }[step.verdict] || step.verdict;
+        const parts = [step.status === 'done' && verdict ? verdict : ({ abandoned: 'stopped' }[step.status] || step.status)];
+        if (step.toolCount) parts.push(`${step.toolCount} action${step.toolCount === 1 ? '' : 's'}`);
+        if (step.startTs && step.endTs > step.startTs) parts.push(this._formatRunDuration(step.endTs - step.startTs));
+        step.metaEl.textContent = parts.join(' · ');
+        const settled = step.status === 'done' && (!step.verdict || step.verdict === 'pass');
+        step.el.classList.remove('is-running', 'is-done', 'is-attention');
+        step.el.classList.add(step.status === 'running' ? 'is-running' : (settled ? 'is-done' : 'is-attention'));
+        // A step that didn't finish, or whose check asked for more, stays
+        // open. So does one the person is reading from the keyboard.
+        const focused = typeof document === 'undefined' ? null : document.activeElement;
+        if (settled && !(focused && step.bodyEl.contains(focused))) step.el.open = false;
+    }
+
+    _setPlanStatus(run, status) {
+        run.status = status;
+        this._showPlanStatus(run);
+    }
+
+    /** The plan's status line under its steps. */
+    _showPlanStatus(run) {
+        const card = run.card;
+        if (!card) return;
+        const current = run.steps.get(run.currentNodeId);
+        const counts = this._planCounts(run);
+        const [state, label, detail] = {
+            starting: ['running', 'Starting plan', ''],
+            running: ['running', 'Plan running', current ? `${current.titleEl.textContent}: ${current.goalEl.textContent}` : ''],
+            paused: ['warning', 'Plan paused', 'No new step starts until you resume it in the Plan tab.'],
+            complete: ['done', 'Plan complete', counts],
+            finished: ['warning', 'Plan finished', `Not every step finished · ${counts}`],
+            cancelled: ['warning', 'Plan cancelled', counts],
+            failed: ['error', 'Plan failed', run.error || 'The plan stopped with an error.'],
+            not_started: ['error', 'Plan not started', run.error],
+        }[run.status] || ['running', 'Plan running', ''];
+        card.statusEl.className = `task-run-summary plan-run-status is-${state}`;
+        card.markEl.textContent = { done: 'OK', warning: '!', error: '!' }[state] || '';
+        card.labelEl.textContent = label;
+        card.detailEl.textContent = detail;
+        card.el.classList.remove('task-card-running', 'task-card-done', 'task-card-warning', 'task-card-error');
+        card.el.classList.add(`task-card-${state}`);
+    }
+
+    _planCounts(run) {
+        const steps = run.steps.size;
+        const parts = [`${steps} step${steps === 1 ? '' : 's'}`];
+        if (run.toolCount) parts.push(`${run.toolCount} action${run.toolCount === 1 ? '' : 's'}`);
+        if (run.firstTs && run.lastTs > run.firstTs) parts.push(this._formatRunDuration(run.lastTs - run.firstTs));
+        return parts.join(' · ');
+    }
+
+    /** intent.complete, intent.cancelled or intent.failed. */
+    _finishPlanRun(run, outcome, error = '') {
+        // A cancel is announced at once, and the running specialist still
+        // reports until it stops (its node.done). Complete and failed come
+        // once the walker has stopped: a step still running never finished.
+        if (outcome !== 'cancelled') {
+            for (const step of run.steps.values()) {
+                this._finishPlanText(step);
+                if (step.status !== 'running') continue;
+                step.status = 'abandoned';
+                this._renderPlanStep(run, step);
+            }
+            run.currentNodeId = '';
+        }
+        if (outcome === 'failed') run.error = String(error || '');
+        // The walker reports whether every node of the graph finished
+        // (plan.complete), including any that never got to start.
+        const clean = run.allDone === true && [...run.steps.values()].every(step => step.status === 'done');
+        this._setPlanStatus(run, outcome === 'complete' && !clean ? 'finished' : outcome);
+    }
+
+    /** Draw a tool row into a step, with the step's own row lookup. */
+    _withPlanLane(step, render) {
+        const lane = this._planLaneEl;
+        const rows = this._blockToolRows;
+        this._planLaneEl = step.bodyEl;
+        this._blockToolRows = step.blockRows;
+        try {
+            return render();
+        } finally {
+            this._planLaneEl = lane;
+            this._blockToolRows = rows;
+        }
+    }
+
+    _planTextBlock(step) {
+        const el = document.createElement('div');
+        el.className = 'msg-assistant plan-step-text';
+        const content = document.createElement('div');
+        content.className = 'message-content';
+        el.appendChild(content);
+        step.bodyEl.appendChild(el);
+        return el;
+    }
+
+    _appendPlanText(step, delta) {
+        if (!delta) return;
+        if (!step.textEl) step.textEl = this._planTextBlock(step);
+        step.textBuffer += delta;
+        if (step.textTimer) return;
+        // Streamed like the conversation's replies: parsed at most every 80 ms.
+        step.textTimer = setTimeout(() => {
+            step.textTimer = null;
+            if (step.textEl) this.renderMarkdown(step.textEl, step.textBuffer, true);
+        }, 80);
+    }
+
+    /**
+     * End a step's streamed prose. `text` is text.done's full text; it comes
+     * after the tool calls of the same response, which stay below the prose.
+     */
+    _finishPlanText(step, text = '') {
+        clearTimeout(step.textTimer);
+        step.textTimer = null;
+        const finalText = String(text.trim() ? text : step.textBuffer).trim();
+        if (!step.textEl && finalText) step.textEl = this._planTextBlock(step);
+        if (step.textEl) {
+            if (finalText) this.renderMarkdown(step.textEl, finalText, false);
+            else step.textEl.remove();
+        }
+        step.textEl = null;
+        step.textBuffer = '';
+    }
+
+    _dropPlanText(step) {
+        clearTimeout(step.textTimer);
+        step.textTimer = null;
+        step.textEl?.remove();
+        step.textEl = null;
+        step.textBuffer = '';
+    }
+
+    _appendPlanError(step, message) {
+        const el = document.createElement('div');
+        el.className = 'error-block';
+        el.textContent = `✗ ${message || 'Unknown error'}`;
+        step.bodyEl.appendChild(el);
+    }
+
+    /** One line for a plan or a step: its text's first line that isn't a heading. */
+    _planTitle(text) {
+        const lines = String(text || '').split('\n')
+            .map(line => line.replace(/\*\*|__/g, '').trim())
+            .filter(Boolean);
+        const line = lines.find(item => !item.startsWith('#')) || (lines[0] || '').replace(/^#+\s*/, '');
+        return line.length > 160 ? `${line.slice(0, 159)}…` : line;
     }
 
     switchRuntimeView(view) {

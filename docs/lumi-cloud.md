@@ -93,6 +93,9 @@ While Lumi is open, it checks for your requests every 20 seconds and runs
 them one at a time, with your default model and a session built like
 [`lumi run`](headless.md)'s. The project's exclusions and your organization's
 policy apply, and the project's own instructions apply only if you trust it.
+Your own [hooks](packs.md#hooks) in `settings.json` run as they do in the
+app; a guard that refuses a call refuses it before anything is asked in the
+chat.
 When the agent wants to do something the mode doesn't allow, Lumi asks you in
 the chat with **Approve** and **Deny** buttons. No answer within 10 minutes,
 or **stop** in the chat, refuses it. The reply goes back to the chat.

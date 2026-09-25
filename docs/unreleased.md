@@ -96,6 +96,242 @@ steps take the same path), and a worker in the browser (the tests above cover
 it). The terminal UI still prints each step's footer from `status`,
 unchanged.
 
+## September 25 your own hooks run in `lumi run`, schedules, comparisons and chats — source only, not released
+
+**Only the app ran them.** The desktop app gives every session the `hooks`
+from `settings.json` (`HookRunner(settings)`). Sessions built by
+`headless.build_session` had no hook runner: `lumi run`, scheduled tasks
+(`lumi schedule run`), the runs of model comparisons, the chat gateway and
+tasks from Slack and Teams. A script in a throwaway home drove each entry
+point with a scripted model, in Bypass, with a Settings `pre_tool_use` hook
+that exits 1: `build_session`, `headless.main`, the gateway's `session_for`
+and a task from chat's `_build_session`. On all four the hook never ran and
+the write it guards happened. The same Settings through `HookRunner(settings)`
+refused it.
+
+- **`headless.build_session` attaches `HookRunner(settings)`**, so every
+  surface above gets the person's hooks. Decided per surface:
+  - **`lumi run`**: hooks are the person's own configuration, not repository
+    content, so they need no trust. Where a hook's program doesn't exist (a
+    container given a copied `settings.json`), a gate hook fails closed: the
+    call is refused with the reason and counts in `denied_calls` (so,
+    usually, `needs_attention` and exit 3). A hook stops at its
+    `timeout_seconds`. A fresh state folder (CI, the container image) has no
+    hooks.
+  - **Scheduled tasks** run on the person's computer, where the hooks'
+    programs are, and unattended work is where a guard matters.
+  - **Model comparisons**: an opt-out was considered and declined. Their runs
+    try models the person doesn't rely on yet, unattended and often in
+    Bypass. Settings hooks already work in any folder, since the app runs
+    them for every project, and here they run in the comparison's worktree.
+    The results also reflect the person's usual setup. Hooks that act on
+    every session, such as a notification, act once per run (documented).
+  - **The chat gateway and tasks from chat** run on the person's computer. A
+    guard refuses a call before anything is asked in the chat. The gateway
+    reads hooks when it starts.
+  - **No opt-out.** `lumi run` has no `--no-hooks`: an option a run can pass
+    is one the agent could pass to a `lumi run` of its own.
+  - **Capability-pack hooks** stay in the app; these surfaces load no packs.
+- **A `permission_request` hook now answers where nobody can be asked, within
+  limits.** With hooks attached, `lumi run`'s approvals go to the person's
+  `permission_request` hook, as the app's background work's do
+  (`Session._permission_hook_decision`). In `auto-edit` it can allow a command
+  the mode would ask about. It answers for the person, so two cases are
+  refused without asking it:
+  - **The read-only `suggest` tier** (`lumi run --mode ask`, and schedules
+    and comparisons set to Read only), and an unknown tier, which fails closed
+    to it. Its policy refuses writes and commands, but calls it doesn't name,
+    such as `check_run` or `job_start`, went to that approval, so an allowing
+    hook would have run them.
+  - **An organization `prompt` rule**, which needs a person: the organization
+    outranks the person's settings. The hook can't rewrite a call into one
+    either. Organization shell rules are now tagged
+    `PolicyRule.source = "organization"` (`policies.ORGANIZATION`, set in
+    `with_organization_rules`). The model is told "The organization's policy
+    requires a person to approve this call (…), but no approval prompt is
+    available for this run". This applies to the app's background work too,
+    where a hook could answer one before.
+- Five existing tests used the read-only tier as the one where a hook settles
+  an unanswerable prompt. They now use Ask without a prompt, which is where
+  that happens, and two of them also check that the hook ran.
+- Guides: [running without a UI](headless.md#hooks) has a new Hooks section.
+  Also updated: scheduled tasks, the chat gateway, Lumi Cloud and model
+  comparisons; packs (where Settings hooks run, and the `permission_request`
+  row); organization policy (`prompt` rules); the runtime contract; and
+  AGENTS.md.
+- The terminal UI (`lumi` with no subcommand) builds its own session and
+  isn't changed here.
+
+Validation on September 25, 2026:
+
+- The script above, rerun after the change: on all four the hook ran once,
+  the write was refused, and `lumi run` exited 3.
+- `python -m lumi run` as a real process, from a throwaway home, against an
+  Ollama-compatible stub, in Bypass with the same kind of guard:
+  - on the base commit (16bf05a) it exited 0 and wrote the file, the hook
+    never ran, and the model was told "File written: …";
+  - on this branch it exited 3 (`needs_attention`, one denied call) and wrote
+    nothing. The model was told "Blocked by hook: Settings guard: no writes
+    from unattended runs".
+- New tests, with the streaming stub and real hook scripts:
+  - `tests/test_headless.py` (4):
+    - a Settings guard refuses a write in Bypass with its message, and
+      `session_start` and `session_end` hooks run;
+    - a `permission_request` hook allows an Auto-edit command;
+    - `--mode ask` refuses `check_run` without asking an allowing hook;
+    - an organization `prompt` rule is refused without asking the hook, while
+      the hook answers the tier's own question about another command.
+  - The gateway, in Ask mode: the call is refused before anything is asked
+    in the chat.
+  - Tasks from chat: no approval is sent.
+  - A scheduled run through `headless.main`: `needs_attention`, nothing
+    written.
+  - A model comparison whose runs are real `lumi run` processes, with a
+    scripted model and a state folder of their own. Both models pass without
+    the hook and fail with it. The hook ran in each run's worktree, never in
+    the checkout.
+  - `tests/test_permission_decisions.py` (4):
+    - the read-only tier and an unknown tier never ask the hook;
+    - an organization prompt is refused without asking the hook, and a
+      person's answer still runs the call;
+    - a hook can't rewrite a call into an organization prompt.
+- Each piece was undone in turn, and each variant failed 1 to 7 of these
+  tests: no hook runner, the read-only tier asking the hook, the hook
+  answering an organization prompt, a rewrite into one, and untagged
+  organization rules. The files were restored after each.
+- A running hook delays `--timeout`. With `--timeout 1` and a hook that
+  takes 4 s, the run took 4.9 s and reported `timeout`. This is now
+  documented, and unchanged.
+- On 16bf05a:
+  - full `pytest`: 4,406 passed, 5 skipped;
+  - `ruff check .` (ruff 0.12.12) and `git diff --check`: clean;
+  - `node --check`: passes for `app.js` and `settings_view.js`;
+  - the four Node UI test files: pass (70 tests).
+- After merging main (the Mac package, run traces, late Evidence results and
+  the accessibility review):
+  - full `pytest`: 4,421 passed, 5 skipped;
+  - `ruff check .`, `node --check` and `git diff --check`: clean;
+  - the Node UI test files: pass (81 tests).
+- The real `~/.resonant` was unchanged, no `~/.lumi` was created, and no Lumi
+  credential was stored.
+
+Not exercised: a live model, a packaged build, and the running desktop app.
+Tasks from chat run inside it, and its background work gets the
+organization-prompt limit; both were tested only at the engine and function
+level. Also not exercised: Codex or Claude Code (their tools never reach tool
+hooks), real Telegram, Slack or Lumi Cloud, and hooks on macOS or Linux.
+
+## September 25 a plan's specialists report under its card — source only, not released
+
+**A plan's specialists showed up as turns of the conversation.** A plan
+(`/plan`, or a Mission's **Build this roadmap**) runs its planner,
+implementers and verifiers in sessions of their own
+(`lumi/orchestration/intent_service.py`), which forwards their engine events
+tagged `_source: "intent"`. The app handled those events as the
+conversation's own turn:
+
+- after each step, the turn's verdict: "Needs attention: The request asked
+  for a workspace change, but no successful edit was recorded", with Retry,
+  Retry another model and Continue, then a suggested next prompt;
+- "Worked for 0s · N actions" counts that grew across steps and plans, on
+  "Lumi · Task" cards made for them;
+- the conversation's "Working for …" progress, started by the plan;
+- each step's end called `setRunning(false)`, which moves keyboard focus to
+  the message box. Someone who paused a plan from the keyboard and pressed
+  Space to resume typed a space into the message box instead;
+- a step that ended while a turn of the conversation ran also finished that
+  turn's card and cleared its running state (`handleSessionEnd`), and the
+  header's model and token counts and the Context tab showed the
+  specialist's.
+
+**Now a plan reports under its own card** (`lumi/gui/static/app.js`,
+"Plan activity"; `styles.css`).
+
+- The `/plan` message is the plan's card. A plan started elsewhere (a
+  Mission's roadmap) gets a "Plan" card named from its text: for a Mission,
+  the spec's refined intent.
+- One line per specialist: Planner, Implementer, Verifier, Repair and so on,
+  with its goal and how it went ("done · 2 actions · 1s", "passed", "asked
+  for a repair", "blocked", "stopped"). A running step is open and shows its
+  commands, edits and prose as they come, drawn by the conversation's own row
+  renderers. A finished step folds to its line; one that didn't finish, or
+  whose check asked for a repair, stays open, and so does one the keyboard is
+  in.
+- A status line for the whole plan: starting, running (with its current
+  step), paused, complete ("3 steps · 3 actions · 49s"), finished with steps
+  that didn't finish, cancelled, failed, or not started. A `/plan` the server
+  refuses, with no model connected for example, says so on its own card.
+- Nothing from a plan reaches the conversation's turn: its task card and
+  progress, `isRunning`, the verdict and Retry, the suggestion, the header's
+  model and token counts, the Context tab, or focus. Counts are the plan's
+  own. A plan's rows keep their own lookup, so a specialist's call id never
+  settles a row of the turn.
+- The plan's card isn't a message of the session, so forking from a later
+  message no longer counts it.
+- Specialists no longer go into `agentActivities`, which fed the Agents pane
+  that left in v0.14.0.
+
+Plan activity isn't saved with the conversation, since the server doesn't
+record a plan's events in the session: a reload shows the conversation
+without it. The Plan tab's History keeps the plan's snapshots. On `main`,
+`/plan` itself starts nothing until PR #69 lands; a Mission's roadmap already
+runs (with `general.autonomous_sessions` on).
+
+Validation on September 25, 2026:
+
+- `tests/ui_recovery.test.cjs` adds 5 tests that drive the real handlers and
+  row renderers into a fake conversation: a whole `/plan` run, a roadmap
+  running beside a turn of the conversation with a repeated call id, counts
+  per plan, pause, cancel, a blocked step, a failed walker, a refused
+  `/plan`, and streamed prose above its calls with a step kept open while
+  focused. Each fails against the change it covers (checked by mutation: no
+  routing, a shared row lookup, rows drawn in the conversation, steps that
+  never fold or fold under focus, shared counts, an unclaimed refusal, cancel
+  stopping the step early, text.done adding a second block, the `/plan` task
+  card).
+- `tests/test_intent_service.py`: forwarded specialist events carry the tag
+  and the intent id without changing the session's own event, and fall
+  between their node's node.start and node.done. It fails without the tag or
+  the copy.
+- Full `pytest` on the branch rebased over `main`: 4,410 passed, 5
+  skipped. The four UI node suites: 86 passed. `ruff check` and
+  `git diff --check` clean.
+- In the browser pane, with an isolated home (temporary USERPROFILE, HOME and
+  LUMI_STATE_HOME, `LUMI_KEYCHAIN=off`) and a scripted Ollama-compatible
+  model answering as planner, implementer and verifier:
+  - `/plan add a dark mode toggle`, on this change merged with PR #69 (which
+    makes `/plan` and Pause work). While the planner ran, Pause was focused
+    and pressed with Space. When the planner finished, focus stayed on
+    Resume, the message box stayed empty with its usual placeholder, and
+    nothing called `setRunning`. Space resumed the plan, whose implementer
+    started 26 s after the planner's end. The card ended "Plan complete · 3
+    steps · 3 actions · 49s", with no verdict, Retry, suggestion or "Worked
+    for". Enter and Space opened a step's line, and Tab moved between steps.
+  - The same run on that tree without this change showed the reported
+    behavior: the "Needs attention" verdict with Retry after the planner, a
+    suggestion, "Working for …" in the chat, and focus in the message box,
+    where Space typed a space. Then came two "Lumi · Task" cards, "Worked for
+    1s · 2 actions" and "3 actions".
+  - A plan that finished while the conversation's own turn ran left that turn
+    running ("Working for …", Stop), and the turn then finished with its own
+    answer.
+  - A Mission's Build this roadmap, on this change alone: a "Plan" card named
+    "Refined intent: Add a dark mode toggle to the settings page." with the
+    three steps, from 52 specialist events, with no change to the turn.
+  - At 375 px (Plan tab closed) and 768 px (Plan tab open), step lines end in
+    an ellipsis before their status, and nothing scrolls sideways.
+  - The real home was unchanged afterwards.
+
+Not in this change:
+
+- The autonomous daemon's REFLECT pass (`make_reflect_runner`) forwards its
+  specialist's events without the tag, so they still arrive as turns.
+- After a reload during a plan, its events reach the page again only once
+  another plan command is sent from it (`get_intent_service` rebinds the
+  socket then).
+- Nodes the planner adds show in the Plan tab's graph as implement nodes
+  named by their ids until they start.
+
 ## September 25 computer use: one switch for every desktop tool, and macOS fixes — source only, not released
 
 - **Turning computer use off now turns off all of it.** This covers

@@ -24,6 +24,10 @@ logger = logging.getLogger(__name__)
 # repository's allow rule is the only allow that lets Auto-edit run a call
 # without asking (ExecutionPolicy.repository_allows).
 REPOSITORY = "repository"
+# The source of an organization's shell rules (lumi/policy.py). Its prompt
+# rules ask a person: a person's own permission_request hook doesn't answer
+# them where nobody can be asked (Session._permission_hook_decision).
+ORGANIZATION = "organization"
 
 
 class PolicyAction(str, Enum):
@@ -65,9 +69,10 @@ class PolicyRule:
     arg_patterns: dict[str, str] = field(default_factory=dict)  # Regex patterns for args
     arg_globs: dict[str, str | list[str]] = field(default_factory=dict)
     reason: str = ""  # Human-readable explanation
-    # REPOSITORY for a project's own rules, "" for built-in and organization
-    # rules. Set by whoever loads the rule, never read from the rule itself,
-    # so a policy file can't claim another layer's standing.
+    # REPOSITORY for a project's own rules, ORGANIZATION for the
+    # organization's, "" for built-in rules. Set by whoever loads the rule,
+    # never read from the rule itself, so a policy file can't claim another
+    # layer's standing.
     source: str = ""
 
     def matches(self, tool_name: str, tool_args: dict) -> bool:
@@ -458,7 +463,7 @@ def with_organization_rules(policy: ExecutionPolicy) -> ExecutionPolicy:
     org_policy = current_policy()
     if not org_policy or not org_policy.shell_rules:
         return policy
-    org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
+    org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules), source=ORGANIZATION).rules
     from .guardrails import policy_rules as guardrail_rules
     from .review_gate import policy_rules as review_rules
 

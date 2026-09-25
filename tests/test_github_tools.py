@@ -107,9 +107,14 @@ class TestRemotes:
         assert server.api == "https://github.example.com/api/v3"
         monkeypatch.setenv("GITHUB_API_URL", "https://ghe.internal/api/v3")
         assert server.api == "https://ghe.internal/api/v3"
-        git(repo, "remote", "set-url", "origin", "https://user:hunter2@gitlab.com/acme/widgets.git")
+        git(repo, "remote", "set-url", "origin", "https://user:hunter2@git.example.org/acme/widgets.git")
         result = call("github_pr_view", {"cwd": str(repo)})
         assert result.is_error and "isn't a GitHub repository" in result.output and "hunter2" not in result.output
+        # GitLab, Bitbucket and Azure DevOps have their own path (engine/code_hosts.py).
+        monkeypatch.delenv("GITLAB_TOKEN", raising=False)
+        git(repo, "remote", "set-url", "origin", "https://user:hunter2@gitlab.com/acme/widgets.git")
+        result = call("github_pr_view", {"cwd": str(repo)})
+        assert result.is_error and "No GitLab token" in result.output and "hunter2" not in result.output
 
 
 class TestReading:

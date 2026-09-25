@@ -4170,13 +4170,31 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
+    width: 100%;
     padding: 8px 14px;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     cursor: pointer;
     transition: background 0.12s;
 }
 
 .perm-option:hover {
     background: var(--bg-hover);
+}
+
+/* The menu is operable from the keyboard (arrow keys, Escape); focus shows. */
+.perm-option:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    background: var(--bg-hover);
+}
+
+.perm-opt-name,
+.perm-opt-desc {
+    display: block;
 }
 
 .perm-opt-icon {
@@ -10290,6 +10308,33 @@ body {
     color: var(--text-secondary);
 }
 
+/* Off screen until keyboard focus reaches it (WCAG 2.4.1). */
+.skip-link {
+    position: fixed;
+    left: 12px;
+    top: -80px;
+    z-index: 10000;
+    padding: 8px 14px;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+    top: 12px;
+    outline: none;
+}
+
+/* Keyboard focus needs more than hover's faint border (WCAG 2.4.7). */
+.titlebar-command:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .titlebar-command kbd {
     flex: none;
     white-space: nowrap;
@@ -13597,7 +13642,7 @@ body.is-window-dragging * {
 /* Keep the settings light palette independent of legacy dark shell overrides. */
 [data-theme="light"] #settings-view {
     --bg: #fbfaf6; --bg-sidebar: #efece3; --bg-panel: #f6f4ee; --bg-hover: #e6e2d6;
-    --text: #15172e; --muted: #64667d; --dim: #6e7087;
+    --text: #15172e; --muted: #55576c; --dim: #626378;
     --border: #e3dfd3; --border-strong: #cfc9b8; --brand: #8a5600;
 }
 
@@ -13643,8 +13688,9 @@ body.is-window-dragging * {
     --file: #7bc8ff;
     --text: #ecebf6;
     --text-secondary: #b7b9d4;
-    --muted: #8d90b0;
-    --dim: #6a6d8f;
+    /* Every text token reaches 4.5:1 (WCAG 2.1 AA) on every surface, hover included. */
+    --muted: #a3a6c4;
+    --dim: #8e91aa;
     --dimmer: #464a6b;
     --border: rgba(236,235,246,.08);
     --border-strong: rgba(236,235,246,.15);
@@ -13661,8 +13707,8 @@ body.is-window-dragging * {
     --chat-composer-border: rgba(236,235,246,.12);
     --chat-soft-hover: rgba(236,235,246,.06);
 }
-/* Light: text tokens reach 4.5:1 on paper and panels (--dim, for hints and
-   counts, stays above 4:1 on the darker sidebar). */
+/* Light: every text token reaches 4.5:1 (WCAG 2.1 AA) on every surface,
+   the sidebar and hover included. */
 [data-theme="light"] {
     color-scheme: light;
     --brand: #8a5600;
@@ -13684,8 +13730,8 @@ body.is-window-dragging * {
     --file: #0369a1;
     --text: #15172e;
     --text-secondary: #45475f;
-    --muted: #64667d;
-    --dim: #6e7087;
+    --muted: #55576c;
+    --dim: #626378;
     --dimmer: #dcd8cc;
     --border: rgba(21,23,46,.1);
     --border-strong: rgba(21,23,46,.18);

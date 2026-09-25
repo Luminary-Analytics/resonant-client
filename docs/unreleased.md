@@ -8,6 +8,45 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 accessibility review and conformance report — source only, not released
+
+- **[`docs/accessibility.md`](accessibility.md)** reports conformance with
+  WCAG 2.1 A and AA in the VPAT 2.5 format, for the app and Lumi Cloud's
+  portal.
+  - It's a self-assessed draft, not independently verified.
+  - It says what was checked and how. Screen readers haven't been tried.
+- **Fixed during the review:**
+  - **Contrast.** The dark theme's secondary text (`--dim`) reached 3.0:1 on
+    some surfaces, and the light theme's 3.7:1. The light theme's `--muted`
+    reached 4.34:1. Every text token now reaches 4.5:1 on every surface in
+    both themes, hover included (`styles.css`).
+  - **The permission-mode menu couldn't be used from the keyboard.** Its
+    options were plain elements. It's now a menu of radio items: Enter,
+    Space or the arrows open it on the current mode, the arrows, Home and
+    End move, and Escape closes it and returns focus. `aria-expanded` and
+    `aria-checked` report its state.
+  - **A skip control**, "Skip to the message box" (or "Skip to the Settings
+    page"), is the first thing in the tab order. It's a button because the
+    launch code travels in the URL fragment.
+  - **Window titles** name the screen: "Settings · Lumi".
+  - **The command-palette button** now shows a focus ring, not just hover's
+    faint border.
+  - **The daily budget field** in Usage & cost has a label.
+
+Validation on September 25, 2026, in the browser pane. A checker ran on
+rendered pages in each theme, rendered from load. It covered names, labels,
+duplicate ids, headings, language, landmarks and composited text contrast:
+
+- The app: the main view and all 25 Settings pages, clean after the fixes.
+- The portal: 21 pages as an owner, clean.
+- With real key presses: the Tab order, focus rings, the permission menu
+  (open, move, choose, Escape), the command palette and model picker
+  returning focus, and the skip control.
+- Switching themes in place left CSS transitions half-done in the hidden
+  pane and gave false contrast results, so each theme was rendered from load.
+
+The full suite and the node UI tests pass.
+
 ## September 25 the organization's pack registry — source only, not released
 
 - **The registry in policy** (`lumi/policy.py`, `lumi/engine/capability_packs.py`,

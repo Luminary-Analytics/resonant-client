@@ -424,12 +424,125 @@ class LumiSettingsView {
             ['Permission modes', list(policy.allowed_modes, 'all')],
             ['Models allowed', list(policy.models_allowed, 'all')],
             ['Models blocked', list(policy.models_blocked, 'none')],
+            ['Zero data retention', policy.require_zero_retention ? `Required: local models, connections marked zero retention${(policy.zero_retention_providers || []).length ? ', and ' + esc(policy.zero_retention_providers.join(', ')) : ''}` : 'Not required'],
             ['Files never read', list(policy.exclude, 'none')],
             ['Shell rules', String(policy.shell_rules || 0)],
             ['MCP servers', `${list(policy.mcp_allowed, 'all')}${policy.mcp_allow_stdio ? '' : ' · command-based servers off'}`],
             ['Capability packs', list(policy.packs_allowed, 'all')],
         ];
         return rows.map(([label, value]) => `<div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">${label}</span></div><div class="settings-row-value settings-policy-value">${value}</div></div>`).join('');
+    }
+
+    _renderScheduledTasks() {
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const data = this.schedules;
+        if (!data) return '<p class="editor-help">Loading…</p>';
+        const days = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+        const modes = {ask: 'Read only (ask)', 'auto-edit': 'Edit files (auto-edit)', bypass: 'Everything (bypass)'};
+        const when = value => esc(String(value || '').replace('T', ' ').replace(/\+00:00$/, ' UTC'));
+        const rows = (data.items || []).map(item => {
+            const last = item.last_run || {};
+            const cost = typeof last.cost_usd === 'number' ? ` · $${last.cost_usd.toFixed(2)}` : '';
+            const status = item.running ? 'Running now'
+                : last.started_at ? `Last run ${when(last.started_at)}: ${esc(last.status)}${cost}`
+                : 'Not run yet';
+            const model = item.model ? esc(item.provider ? `${item.provider}: ${item.model}` : item.model) : 'default model';
+            const changed = Array.isArray(last.changed_files) && last.changed_files.length && !item.running
+                ? ` · changed ${esc(last.changed_files.slice(0, 3).join(', '))}${last.changed_files.length > 3 ? ` and ${last.changed_files.length - 3} more` : ''}` : '';
+            const failure = (last.error && !item.running ? ` · ${esc(String(last.error).slice(0, 200))}` : '') + changed;
+            const answer = last.answer && !item.running
+                ? `<details class="schedule-answer"><summary>Last answer</summary><div class="schedule-answer-body message-content" data-plain>${esc(last.answer)}</div></details>` : '';
+            const name = esc(item.name);
+            const id = esc(item.id);
+            return `<div class="settings-row schedule-row">
+                <div class="settings-row-copy"><span class="settings-row-label">${name}${item.enabled ? '' : ' <span class="connection-badge">Paused</span>'}</span>
+                <div class="settings-row-hint">${esc(item.when)} · ${esc(modes[item.mode] || item.mode)} · ${model} · up to ${esc(item.max_minutes)} min</div>
+                <div class="settings-row-hint"><code>${esc(item.project)}</code></div>
+                <div class="settings-row-hint">${status}${failure}</div>
+                ${answer}</div>
+                <div class="settings-row-value schedule-actions">
+                    <button type="button" class="btn-sm" id="schedule-run-${id}" data-schedule-action="run" data-schedule-id="${id}" aria-disabled="${item.running ? 'true' : 'false'}" aria-label="${item.running ? `${name} is running` : `Run ${name} now`}">${item.running ? 'Running…' : 'Run now'}</button>
+                    <button type="button" class="btn-sm" id="schedule-toggle-${id}" data-schedule-action="${item.enabled ? 'pause' : 'resume'}" data-schedule-id="${id}" aria-label="${item.enabled ? 'Pause' : 'Resume'} ${name}">${item.enabled ? 'Pause' : 'Resume'}</button>
+                    <button type="button" class="btn-sm" id="schedule-remove-${id}" data-schedule-action="remove" data-schedule-id="${id}" aria-label="Remove ${name}">Remove</button>
+                </div></div>`;
+        }).join('');
+        // What's typed survives the list refreshing (a run finishing) and a failed save.
+        const draft = this._scheduleDraft || (this._scheduleDraft = {
+            name: '', prompt: '', project: this.currentCwd || '', time: '02:00', days: [], mode: 'ask',
+            model: '', max_minutes: 60});
+        const labels = this._getBackendLabels ? this._getBackendLabels() : {};
+        const modelOptions = Object.entries(this.backends || {})
+            .filter(([, info]) => (info?.models || []).length)
+            .map(([backend, info]) => `<optgroup label="${esc(labels[backend] || backend)}">${info.models.map(model => {
+                const value = `${backend}|${model}`;
+                return `<option value="${esc(value)}" ${draft.model === value ? 'selected' : ''}>${esc(model)}</option>`;
+            }).join('')}</optgroup>`).join('');
+        const error = this.scheduleError ? `<div class="settings-error-banner" role="alert">${esc(this.scheduleError)}</div>` : '';
+        const off = data.turned_off ? `<div class="settings-error-banner">${esc(data.turned_off)} Schedules can still be paused or removed.</div>` : '';
+        const dayBoxes = days.map(day => `<label><input type="checkbox" name="days" value="${day}" ${draft.days.includes(day) ? 'checked' : ''}> ${day.charAt(0).toUpperCase() + day.slice(1)}</label>`).join('');
+        const modeOptions = Object.entries(modes).map(([value, label]) => `<option value="${value}" ${draft.mode === value ? 'selected' : ''}>${label}</option>`).join('');
+        return `<p class="editor-help">A saved task that runs at set times through ${esc(data.scheduler)} (this computer's time), even when Lumi is closed. Each run is an unattended <code>lumi run</code>: your organization's policy and budgets apply, repository instructions apply only if you trust the project, and nobody is asked anything, so choose what it may do with care.</p>
+            ${off}
+            ${rows || '<p class="editor-help">No schedules yet.</p>'}
+            <h4 class="settings-subheading">Add a schedule</h4>
+            ${error}
+            <form class="schedule-form" data-schedule-form>
+                <label>Name <input class="settings-input" id="schedule-name" name="name" maxlength="80" required value="${esc(draft.name)}" placeholder="Nightly dependency check"></label>
+                <label>Task <textarea class="settings-input" id="schedule-prompt" name="prompt" rows="3" required placeholder="Check for outdated dependencies and summarize what to update.">${esc(draft.prompt)}</textarea></label>
+                <label>Project folder <input class="settings-input" id="schedule-project" name="project" value="${esc(draft.project)}" required spellcheck="false"></label>
+                <div class="schedule-when">
+                    <label>Time <input class="settings-input" id="schedule-time" name="time" type="time" value="${esc(draft.time)}" required></label>
+                    <label>Stop after (minutes) <input class="settings-input" id="schedule-minutes" name="max_minutes" type="number" min="1" max="720" value="${esc(draft.max_minutes)}" required></label>
+                </div>
+                <fieldset class="schedule-days"><legend>Days (none: every day)</legend>${dayBoxes}</fieldset>
+                <label>What it may do <select class="settings-select" id="schedule-mode" name="mode">${modeOptions}</select></label>
+                <label>Model <select class="settings-select" id="schedule-model" name="model"><option value="">Your default model</option>${modelOptions}</select></label>
+                <div><button type="submit" class="btn-sm">Add schedule</button></div>
+            </form>`;
+    }
+
+    _bindScheduledTasks() {
+        const root = this.settingsBody;
+        // The answer is model output: Markdown through the chat's sanitizer,
+        // or left as plain text when either library is missing.
+        if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
+            root?.querySelectorAll('.schedule-answer-body[data-plain]').forEach(body => {
+                body.innerHTML = DOMPurify.sanitize(marked.parse(body.textContent));
+                body.removeAttribute('data-plain');
+            });
+        }
+        root?.querySelectorAll('[data-schedule-action]').forEach(button => button.addEventListener('click', () => {
+            const action = button.dataset.scheduleAction;
+            // aria-disabled rather than disabled, so keyboard focus stays put.
+            if (button.getAttribute('aria-disabled') === 'true') return;
+            if (action === 'remove' && !window.confirm('Remove this schedule and its kept results?')) return;
+            button.setAttribute('aria-disabled', 'true');
+            if (action === 'run') button.textContent = 'Starting…';
+            this.scheduleError = '';
+            this.send({command: 'schedule_change', id: button.dataset.scheduleId, action});
+        }));
+        const form = root?.querySelector('[data-schedule-form]');
+        if (!form) return;
+        const read = () => {
+            const fields = new FormData(form);
+            this._scheduleDraft = {
+                name: fields.get('name') || '', prompt: fields.get('prompt') || '', project: fields.get('project') || '',
+                time: fields.get('time') || '', days: fields.getAll('days'), mode: fields.get('mode') || 'ask',
+                model: fields.get('model') || '', max_minutes: fields.get('max_minutes') || ''};
+            return this._scheduleDraft;
+        };
+        form.addEventListener('input', read);
+        form.addEventListener('change', read);
+        form.addEventListener('submit', event => {
+            event.preventDefault();
+            const draft = read();
+            const [provider, ...model] = draft.model ? draft.model.split('|') : ['', ''];
+            this.scheduleError = '';
+            form.querySelector('[type="submit"]').disabled = true;
+            this.send({command: 'schedule_save', schedule: {
+                name: draft.name, prompt: draft.prompt, project: draft.project, time: draft.time, days: draft.days,
+                mode: draft.mode, provider, model: model.join('|'), max_minutes: Number(draft.max_minutes)}});
+        });
     }
 
     _renderFileExclusions() {
@@ -456,13 +569,15 @@ class LumiSettingsView {
         const brings = [...(current.instructions || [])];
         if (current.notes) brings.push('project notes (.lumi/memory.json)');
         if (current.policy_file) brings.push(current.policy_allows ? `${current.policy_file} (${current.policy_allows} approval-skipping rule${current.policy_allows === 1 ? '' : 's'})` : current.policy_file);
-        const state = !brings.length ? 'This project brings no instructions or policy.'
-            : current.policy_changed ? 'Trusted, but its policy changed since; approval-skipping rules are off until you trust the change.'
-            : current.decision === 'trusted' ? 'Trusted: Lumi uses what it brings.'
-            : current.decision === 'restricted' ? 'Restricted: Lumi ignores what it brings.'
-            : 'Not decided yet: Lumi ignores what it brings until you trust it.';
+        // Trust also lets Lumi run the project's code on its own (language
+        // servers, automatic lint and tests), so it's offered for every
+        // project, not only ones that bring instructions.
+        const state = current.policy_changed ? 'Trusted, but its policy changed since; approval-skipping rules are off until you trust the change.'
+            : current.decision === 'trusted' ? 'Trusted: Lumi uses what it brings and may run its code for language servers and automatic checks.'
+            : current.decision === 'restricted' ? 'Restricted: Lumi ignores what it brings and doesn’t run its code on its own.'
+            : 'Not decided yet: Lumi ignores what it brings and doesn’t run its code on its own until you trust it.';
         const path = esc(current.project_path);
-        const actions = brings.length ? `<div class="editor-actions">
+        const actions = current.project_path ? `<div class="editor-actions">
                 <button type="button" class="btn-sm" data-trust-decision="trusted" data-trust-path="${path}">Trust this project</button>
                 <button type="button" class="btn-sm" data-trust-decision="restricted" data-trust-path="${path}">Restrict</button>
             </div>` : '';
@@ -471,9 +586,9 @@ class LumiSettingsView {
                 <div class="settings-row-hint">${item.decision === 'trusted' ? 'Trusted' : 'Restricted'} since ${esc(item.at)}${item.note ? ` · ${esc(item.note)}` : ''}</div></div>
                 <div class="settings-row-value"><button type="button" class="btn-sm" data-trust-decision="forget" data-trust-path="${esc(item.path)}" aria-label="Forget the decision for ${esc(item.path)}">Forget</button></div>
             </div>`).join('');
-        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the approval-skipping rules in its lumi-policy.json apply only after you trust it, and automatic lint and test runs wait for trust because they execute the project’s code. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
+        return `<p class="editor-help">A project’s instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), its notes and codebase summary, and the approval-skipping rules in its lumi-policy.json apply only after you trust it, and language servers (code intelligence) and automatic lint and test runs wait for trust because they execute the project’s code. Its deny and ask rules always apply, because they only make Lumi more careful. Capability packs keep their own approval.</p>
             <div class="settings-row"><div class="settings-row-copy"><span class="settings-row-label">This project</span>
-                <div class="settings-row-hint">${esc(brings.length ? `Brings ${brings.join(', ')}. ${state}` : state)}</div></div></div>
+                <div class="settings-row-hint">${esc(`${brings.length ? `Brings ${brings.join(', ')}.` : 'Brings no instructions or policy.'} ${state}`)}</div></div></div>
             ${actions}
             <h4 class="settings-subheading">Remembered decisions</h4>
             ${rows || '<p class="editor-help">None yet.</p>'}`;
@@ -525,7 +640,7 @@ class LumiSettingsView {
     _blankConnectionDraft() {
         return { name: '', type: 'openai-compatible', base_url: '', auth: 'bearer', auth_header: '', models: '',
                  region: '', project: '', api_version: '', aws_profile: '', context_window: '', vision: false,
-                 headers: '', max_tokens_param: 'max_tokens', reasoning_effort: '', api_key: '',
+                 headers: '', max_tokens_param: 'max_tokens', reasoning_effort: '', api_key: '', zero_retention: false,
                  tenant_id: '', client_id: '', token_url: '', scope: '', audience: '', client_cert: '', client_key: '' };
     }
 
@@ -533,7 +648,8 @@ class LumiSettingsView {
         return { ...this._blankConnectionDraft(), ...item,
                  models: (item.models || []).join(', '),
                  headers: Object.entries(item.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n'),
-                 context_window: item.context_window || '', vision: Boolean(item.vision), api_key: '' };
+                 context_window: item.context_window || '', vision: Boolean(item.vision),
+                 zero_retention: Boolean(item.zero_retention), api_key: '' };
     }
 
     _connectionSecret(draft) {
@@ -559,6 +675,7 @@ class LumiSettingsView {
         if (this._connectionEdit?.originalId) payload.id = this._connectionEdit.originalId;
         if (String(draft.context_window || '').trim()) payload.context_window = Number(draft.context_window);
         if (draft.vision) payload.vision = true;
+        payload.zero_retention = Boolean(draft.zero_retention);
         return payload;
     }
 
@@ -571,7 +688,7 @@ class LumiSettingsView {
         const rows = (data.items || []).map(item => {
             const confirm = this._connectionDeleteId === item.id;
             return `<li class="connection-row">
-                <div class="connection-row-main"><strong>${this.escapeHtml(item.name)}</strong>
+                <div class="connection-row-main"><strong>${this.escapeHtml(item.name)}</strong>${item.zero_retention ? ' <span class="connection-badge">Zero retention</span>' : ''}
                 <span class="connection-meta">${this.escapeHtml(types[item.type] || item.type)}${item.base_url ? ' · ' + this.escapeHtml(item.base_url) : ''}</span>
                 <span class="connection-meta">${item.models?.length ? this.escapeHtml(item.models.slice(0, 4).join(', ')) + (item.models.length > 4 ? ` +${item.models.length - 4}` : '') : 'Models discovered from the endpoint'}${item.auth === 'none' || item.auth === 'aws' || item.auth === 'google' || (item.auth === 'entra' && !item.client_id) ? '' : item.has_key ? ` · ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} stored` : ` · no ${['oauth', 'entra'].includes(item.auth) ? 'secret' : 'key'} yet`}</span></div>
                 <div class="connection-row-actions">${confirm
@@ -624,6 +741,7 @@ class LumiSettingsView {
                 ${d.type === 'openai-compatible' ? field('reasoning_effort', 'Reasoning effort', `<select class="settings-select" id="conn-f-reasoning_effort" data-conn-field="reasoning_effort">${['', 'low', 'medium', 'high'].map(v => `<option value="${v}" ${d.reasoning_effort === v ? 'selected' : ''}>${v || 'Don\u2019t send'}</option>`).join('')}</select>`) : ''}
                 ${field('headers', 'Extra headers (optional)', `<textarea class="settings-input" id="conn-f-headers" data-conn-field="headers" rows="3" placeholder="Header-Name: value" spellcheck="false">${this.escapeHtml(d.headers || '')}</textarea>`, 'One per line. Put secrets in the key field instead.')}
                 <label class="connection-check"><input type="checkbox" id="conn-f-vision" data-conn-field="vision" ${d.vision ? 'checked' : ''}> Models accept images</label>
+                <label class="connection-check"><input type="checkbox" id="conn-f-zero_retention" data-conn-field="zero_retention" ${d.zero_retention ? 'checked' : ''}> This endpoint keeps no prompts or responses (a zero data retention agreement)</label>
                 </div>
                 <div class="provider-actions"><button class="btn-sm" type="button" data-conn-action="test">Test connection</button>
                 <button class="btn-sm connection-save" type="submit">${edit.originalId ? 'Save changes' : 'Add connection'}</button>
@@ -1242,6 +1360,7 @@ class LumiSettingsView {
             {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
             {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
+            {id:'scheduled_tasks', title:'Scheduled tasks', group:'Coding', icon:'clock', description:'Run a saved task at set times, even when Lumi is closed.', sections:['scheduled_tasks'], keywords:'schedule cron nightly recurring automation task scheduler launchd unattended'},
             {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
@@ -1306,6 +1425,7 @@ class LumiSettingsView {
     _renderSettingsNavigation(pages) {
         const icons = {
             settings:'M6 2h4l1 3 3 1v4l-3 1-1 3H6l-1-3-3-1V6l3-1z M6 8a2 2 0 1 0 4 0 2 2 0 0 0-4 0',
+            clock:'M8 2a6 6 0 1 0 0 12A6 6 0 0 0 8 2 M8 5v3.5l2.5 1.5',
             person:'M5 5a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M2 14c0-6 12-6 12 0',
             sun:'M5 8a3 3 0 1 0 6 0 3 3 0 0 0-6 0 M8 1v1m0 12v1M1 8h1m12 0h1M3 3l1 1m8 8 1 1M3 13l1-1m8-8 1-1',
             pet:'M3 6 2 2l5 2h2l5-2-1 4c4 10-14 10-10 0z M5 8h.1M11 8h.1M6 11h4',
@@ -1342,6 +1462,7 @@ class LumiSettingsView {
             this.send({command: 'project_trust_list'});
             this.send({command: 'audit_status'});
         }
+        if (page === 'scheduled_tasks') this.send({command: 'schedules_list'});
         const command = {creative_editors:'editor_list', capability_packs:'capability_pack_list', cost_tracking:'get_costs', model_evaluations:'evaluation_list', iteration_checkpoints:'checkpoint_list', updates:'update_status', about:'about_info', lumi_account:'cloud_status'}[page];
         if (command) this.send({command});
     }
@@ -1523,6 +1644,8 @@ class LumiSettingsView {
                       hint: 'Screenshots and mouse and keyboard control of this computer. Off removes these tools from every session.' },
                     { key: 'chat_gateway', label: 'Chat gateway', type: 'toggle', default: true,
                       hint: 'Lets `lumi gateway` answer messages from Telegram. Off makes it refuse to start.' },
+                    { key: 'scheduled_tasks', label: 'Scheduled tasks', type: 'toggle', default: true,
+                      hint: 'Saved tasks that run unattended at set times (Settings > Scheduled tasks). Off stops them running and stops new ones being added.' },
                 ]
             },
             {
@@ -1563,6 +1686,7 @@ class LumiSettingsView {
             },
             { id: 'audit_status', title: 'Audit log status', custom: true },
             { id: 'project_trust', title: 'Project trust', custom: true },
+            { id: 'scheduled_tasks', title: 'Scheduled tasks', custom: true },
             {
                 id: 'updates', title: 'Updates',
                 note: 'Changes apply the next time Lumi starts. Your organization’s policy can set these for you.',
@@ -1670,6 +1794,8 @@ class LumiSettingsView {
                 bodyHtml = this._renderFileExclusions();
             } else if (section.id === 'project_trust') {
                 bodyHtml = this._renderProjectTrust();
+            } else if (section.id === 'scheduled_tasks') {
+                bodyHtml = this._renderScheduledTasks();
             } else if (section.id === 'capability_packs') {
                 bodyHtml = this._renderCapabilityPacks();
             } else if (section.id === 'cost_tracking') {
@@ -1914,6 +2040,7 @@ class LumiSettingsView {
         document.getElementById('audit-verify')?.addEventListener('click', () => this.send({command: 'audit_status'}));
         this._bindUpdateCheck();
         this._bindLumiAccount();
+        this._bindScheduledTasks();
         this.settingsBody.querySelectorAll('[data-trust-decision]').forEach(button => {
             button.addEventListener('click', () => {
                 button.disabled = true;

@@ -83,6 +83,106 @@ Validation on September 25, 2026:
 Not exercised: a live model, a packaged build, Codex or Claude Code, macOS and
 Linux.
 
+## September 25 code intelligence — source only, not released
+
+- **`code_intel`** ([guide](code-intelligence.md), `lumi/engine/lsp.py`):
+  the agent asks a language server for a symbol's definition, its
+  references, its type and documentation, a file's diagnostics, or a file's
+  outline. Lumi starts the server named in Settings' `lsp_servers` for the
+  file's type, or a well-known one found on PATH (Pyright, pylsp,
+  typescript-language-server, rust-analyzer, gopls, clangd, csharp-ls,
+  OmniSharp, jdtls, lua-language-server), keeps it per project and stops it
+  after 10 idle minutes or when Lumi exits.
+- Servers start only in trusted projects, get the children's environment,
+  pass the guardrails and run in the shell sandbox when it's on. Answers
+  leave out excluded files, and a server that reports nothing isn't taken
+  to mean a file is clean.
+- **Project trust** can now be given to any project in Settings, not only
+  one that brings instructions, since trust also lets Lumi run the project's
+  code (language servers, automatic lint and tests).
+- The status popover's LSP tab lists the servers Lumi would use and which
+  are running or failed. `lumi run` passes Settings to its tools, as the app
+  does, so it uses `lsp_servers` too.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,996 passed, 4 skipped. `test_lsp.py` (15 tests) against
+  `tests/fake_lsp_server.py`: settings
+  entries, choosing a server, UTF-16 positions, `file:///c%3A/` URIs,
+  definition, references (with excluded files left out), hover, symbols,
+  pushed and pulled diagnostics following file changes, a silent server,
+  the trust requirement, a server that fails to start and isn't restarted
+  at once, idle stopping and restarting, the session's path checks, process
+  cleanup and the inventory.
+- In the browser pane, with an isolated home, the stub model calling the tool
+  and the fake server configured in `lsp_servers`: before trust the call was
+  refused; **Trust this project** appeared for the plain project and trusted
+  it; then references showed "5 found" with the list, and diagnostics
+  "1 warning"; the LSP inventory showed the server running; after the app
+  stopped, no server process was left. No real language server was run.
+
+## September 25 scheduled tasks — source only, not released
+
+- **Settings > Scheduled tasks** and `lumi schedule`
+  ([guide](scheduled-tasks.md)): a saved prompt, project, model, permission
+  mode and time limit that runs at set times through Task Scheduler,
+  launchd or cron, so the app needn't be open. Each run is an unattended
+  `lumi run`, so policy, budgets, exclusions, the audit log and the sandboxes
+  apply, and a schedule never trusts a repository itself.
+- Each run's result (status, answer, changed files, error, cost and the
+  full `lumi run` summary) is kept, the last 30 per schedule. Settings shows
+  the last run and its answer, and **Run now** starts a run in the
+  background. A schedule never runs twice at once.
+- `security.scheduled_tasks` (**Settings > Privacy & security**, lockable by
+  policy) turns the feature off; a run the operating system still starts is
+  refused and recorded. A schedule can't use a permission mode the policy
+  doesn't allow.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,981 passed, 4 skipped. `test_schedules.py` (17 tests):
+  validation, registering on save, unregistering on pause and removal, a refused registration saving nothing,
+  the `lumi run` arguments, kept and pruned results, a real `lumi run`
+  without a model recording why it failed, the running claim and its
+  hand-over from **Run now**, the Task Scheduler, crontab and LaunchAgent
+  entries (commands mocked), the command line, the Settings commands, the
+  switch turning everything but pausing and removing off, and the policy's
+  permission modes. No real scheduled task was registered.
+- In the browser pane, with an isolated home, the stub model and a logging
+  stand-in for Task Scheduler: a save with a missing folder showed the error
+  and kept what was typed; a save registered the schedule; **Run now**
+  (mouse and keyboard) started a real `lumi schedule run` process that
+  completed against the stub, and the page showed "Running now", then the
+  result and its answer, without losing keyboard focus; pause, resume and
+  remove updated the entry and deleted the results. Turning **Scheduled
+  tasks** off in Privacy & security showed a notice on the page and refused
+  an add, keeping what was typed. Checked in the dark and light themes. The
+  remove confirmation was answered by a stubbed `window.confirm`, since the
+  pane can't press a native dialog's buttons.
+
+## September 25 zero data retention — source only, not released
+
+- **Connections that keep no data**: a custom connection can be marked
+  **This endpoint keeps no prompts or responses** (`zero_retention`), shown
+  as a "Zero retention" badge.
+- **Policies can require it** (`models.require_zero_retention`,
+  [organization policy](enterprise-policy.md)): only local Ollama and EXO
+  models (Ollama's `-cloud` models run on ollama.com, so they don't count),
+  marked connections, and providers the policy names in
+  `models.zero_retention_providers` stay in the model menu; others are
+  refused. The check is part of `Policy.model_allowed`, so every place that
+  already checks models enforces it.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,963 passed, 4 skipped. `test_zero_retention.py`: the
+  flag, each kind of provider under the requirement, Ollama cloud models,
+  other rules still applying, invalid fields, an unreadable connection.
+- In the browser pane, a custom connection saved with the box ticked showed
+  the "Zero retention" badge and was stored with `zero_retention: true`.
+  The first try stored `false`: the form's save payload lists its fields and
+  didn't include the new one, which this check caught and which is fixed.
+
 ## September 25 an organization's shared model credit — source only, not released
 
 - **Shared credit from Lumi Cloud** (`lumi/budgets.py`,

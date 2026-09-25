@@ -128,6 +128,7 @@ DEFAULTS = {
         "cli_adapters": True,     # Codex and Claude Code backends
         "computer_use": True,     # screenshots, mouse and keyboard control
         "chat_gateway": True,     # `lumi gateway` (Telegram)
+        "scheduled_tasks": True,  # `lumi schedule`: unattended runs at set times
         # "project": the agent's commands, jobs and previews run in an OS
         # sandbox that writes only to the project and temporary folders
         # (lumi/engine/os_sandbox.py, macOS and Linux).

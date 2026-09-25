@@ -1331,7 +1331,8 @@ class Session:
             prepared["calls"] = normalized_calls
             return prepared
 
-        file_tools = {"file_write", "file_read", "file_edit"}
+        # code_intel names one file, checked like a read.
+        file_tools = {"file_write", "file_read", "file_edit", "code_intel"}
         search_tools = {"glob", "grep"}
         cwd_tools = {
             "bash",
@@ -3235,6 +3236,7 @@ class Session:
                             session_name=self.browser_session_name,
                             exclusions=self.exclusions,
                             sandbox_roots=self._sandbox_roots(),
+                            project_trusted=self.project_content_trusted,
                         )
                         if self.action_guard is not None:
                             try:

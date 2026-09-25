@@ -2097,6 +2097,10 @@ class AppState:
         from ..engine import github_tools
 
         github_tools.configure(self.settings)
+        # Which connections keep no data, for a policy that requires it.
+        from .. import connections, policy as org_policy
+
+        org_policy.set_zero_retention_resolver(connections.zero_retention_resolver(self.settings))
         # And whether the agent's commands run in the shell sandbox.
         from ..engine import os_sandbox
 

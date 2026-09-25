@@ -134,6 +134,9 @@ records and the audit log are in `/home/lumi/.lumi`; mount a volume there to
 keep them. An organization policy file can be mounted and named with
 `LUMI_POLICY_FILE`.
 
+To run a task at set times on this computer, even with the app closed, use a
+[scheduled task](scheduled-tasks.md): each run is a `lumi run`.
+
 ## Not covered yet
 
 - MCP servers, capability packs, hooks and the codebase index aren't

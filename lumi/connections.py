@@ -13,7 +13,7 @@ import ipaddress
 import os
 import re
 import urllib.parse
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 
@@ -203,6 +203,10 @@ def normalize_connection(raw: Any, existing_ids: set[str] | None = None) -> dict
     if effort not in {"", "low", "medium", "high"}:
         raise ValueError("Reasoning effort must be empty, low, medium or high.")
     connection["reasoning_effort"] = effort
+    # The endpoint keeps no prompts or responses (a zero data retention
+    # agreement). A policy that requires it allows only such connections
+    # and local models (lumi/policy.py).
+    connection["zero_retention"] = raw.get("zero_retention") is True
     return connection
 
 
@@ -224,6 +228,16 @@ def list_connections(settings) -> list[dict[str, Any]]:
 
 def find_connection(settings, connection_id: str) -> dict[str, Any] | None:
     return next((c for c in list_connections(settings) if c["id"] == connection_id), None)
+
+
+def zero_retention_resolver(settings) -> Callable[[str], bool]:
+    """For lumi/policy.py: whether a ``conn-<id>`` backend's connection is marked zero retention."""
+
+    def resolve(backend: str) -> bool:
+        connection = find_connection(settings, connection_id_from_backend(backend))
+        return bool(connection and connection.get("zero_retention"))
+
+    return resolve
 
 
 def capability_overrides(connection: dict[str, Any]) -> dict[str, Any]:

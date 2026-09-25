@@ -20,6 +20,7 @@ const TOOL_DISPLAY = {
     codex_web_search: { icon: '/', label: 'Codex web search', color: 'tool' },
     glob:       { icon: '✱', label: 'Glob',  color: 'tool' },
     grep:       { icon: '/', label: 'Grep',  color: 'tool' },
+    code_intel: { icon: 'λ', label: 'Code intelligence', color: 'tool' },
     task:       { icon: '│', label: 'Task',  color: 'brand2' },
     batch:      { icon: '⚡', label: 'Batch', color: 'brand' },
     browser_navigate:   { icon: '⊕', label: 'Navigate',   color: 'brand2', category: 'browser' },
@@ -35,7 +36,7 @@ const TOOL_DISPLAY = {
 };
 
 const COLLAPSIBLE_TOOLS = new Set([
-    'file_read', 'glob', 'grep', 'browser_read', 'computer_screenshot', 'browser_screenshot'
+    'file_read', 'glob', 'grep', 'code_intel', 'browser_read', 'computer_screenshot', 'browser_screenshot'
 ]);
 
 const BLOCK_TOOLS = new Set(['bash', 'file_write', 'file_edit', 'browser_js']);
@@ -756,7 +757,7 @@ class LumiApp {
             });
         }
         return items.map((item) => this._statusRow({
-            dot: item.status === 'available' || item.status === 'connected' ? 'ok' : item.status === 'disabled' ? 'muted' : 'warn',
+            dot: ['available', 'connected', 'running'].includes(item.status) ? 'ok' : item.status === 'disabled' ? 'muted' : 'warn',
             title: item.name || item.id || 'Language server',
             detail: item.detail || item.command || (Array.isArray(item.languages) ? item.languages.join(', ') : ''),
             meta: this._statusPill(item.status || 'unknown'),
@@ -3990,6 +3991,17 @@ class LumiApp {
                 this.updateStatus = event.data;
                 if (this.currentView === 'settings' && !this.refreshUpdateStatus()) this.renderSettingsView();
                 break;
+            case 'schedules':
+                this.schedules = event.data;
+                if (event.data?.saved) { this._scheduleDraft = null; this.scheduleError = ''; }
+                // A saved form is emptied at once; a run finishing waits until
+                // nobody is typing (renderSettingsView defers for a focused field).
+                if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.saved)});
+                break;
+            case 'schedule_error':
+                this.scheduleError = event.message || 'That did not work.';
+                if (this.schedules && this.currentView === 'settings') this.renderSettingsView({force: true});
+                break;
             case 'project_trust':
                 this.projectTrust = event;
                 if (this._runtimeBannerState) {
@@ -5176,6 +5188,14 @@ class LumiApp {
         if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
         else if (name === 'glob' && meta.count != null) metaText = `${meta.count} files`;
         else if (name === 'grep' && meta.count != null) metaText = `${meta.count} matches`;
+        else if (name === 'code_intel' && meta.code_intel) {
+            const intel = meta.code_intel;
+            if (intel.counts) {
+                metaText = Object.entries(intel.counts).map(([kind, n]) => `${n} ${kind}${n === 1 ? '' : 's'}`).join(', ') || 'no problems';
+            } else if (intel.count != null) {
+                metaText = `${intel.count} found`;
+            }
+        }
 
         const metaEl = line.querySelector('.tool-meta');
         if (metaEl) metaEl.textContent = metaText;
@@ -5427,7 +5447,7 @@ class LumiApp {
         const name = event.name || '';
         const callId = event.call_id || '';
         const nameLower = name.toLowerCase();
-        const readTools = new Set(['file_read', 'glob', 'grep', 'git_status', 'git_diff']);
+        const readTools = new Set(['file_read', 'glob', 'grep', 'git_status', 'git_diff', 'code_intel']);
         const writeTools = new Set(['file_write', 'file_edit', 'apply_patch', 'git_commit', 'codex_file_change']);
         const validationTools = new Set(['check_run']);
         if (readTools.has(nameLower)) {
@@ -5637,6 +5657,10 @@ class LumiApp {
             case 'grep':
                 desc = `'${this.escapeHtml(args.pattern || '')}'`;
                 meta = args.path || '.';
+                break;
+            case 'code_intel':
+                desc = `${this.escapeHtml(args.action || 'Ask')}${args.symbol ? ` '${this.escapeHtml(args.symbol)}'` : ''}`;
+                meta = `${args.path || ''}${args.line ? `:${args.line}` : ''}`;
                 break;
             case 'browser_navigate':
                 desc = `<span style="color:var(--file)">${this.escapeHtml(args.url || '')}</span>`;

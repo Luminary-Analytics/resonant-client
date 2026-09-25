@@ -144,7 +144,8 @@ Director-only tools are exposed only to a root session with an active
 
 The ordinary `task` and `task_batch` tools gain `director_task_id`, `worker_id`,
 and `artifact_ids` fields. Child sessions never receive Director tools or task
-spawning tools, which prevents recursive orchestration.
+spawning tools, and a child session refuses any tool outside its list, which
+prevents recursive orchestration.
 
 ## Evaluation
 

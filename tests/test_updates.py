@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -195,3 +196,78 @@ class TestSettingsCommands:
         from lumi.gui.ws_commands import _update_check_message
 
         assert message in _update_check_message(info, started)
+
+
+class TestInstallingAnUpdate:
+    """The handshake with WinSparkle before its installer runs, and what goes to the audit log."""
+
+    @pytest.fixture
+    def records(self, tmp_path):
+        from lumi import audit
+        from lumi.audit import AuditLog
+
+        log = AuditLog(tmp_path / "audit")
+        audit.set_for_tests(log)
+        return lambda: [json.loads(line) for path in log._files()
+                        for line in path.read_text(encoding="utf-8").splitlines()]
+
+    def start(self, monkeypatch):
+        fake = FakeWinSparkle()
+        monkeypatch.setattr(updater, "_load_dll", lambda: fake)
+        assert updater.init_updater(UpdatePreferences(channel="beta"))
+        return fake
+
+    def callback(self, fake, name):
+        [(thunk,)] = fake.called(f"win_sparkle_set_{name}_callback")
+        return thunk
+
+    def test_callbacks_are_set_before_winsparkle_starts(self, monkeypatch):
+        fake = self.start(monkeypatch)
+        names = [name for name, _ in fake.calls]
+        for name in ("can_shutdown", "shutdown_request", "error", "did_find_update", "did_not_find_update",
+                     "update_cancelled", "update_skipped", "update_postponed"):
+            assert names.index(f"win_sparkle_set_{name}_callback") < names.index("win_sparkle_init")
+
+    def test_an_update_waits_for_the_running_turn(self, monkeypatch, records):
+        fake = self.start(monkeypatch)
+        can_shutdown = self.callback(fake, "can_shutdown")
+        busy = [True]
+        closed = []
+        updater.set_host(busy=lambda: busy[0], shutdown=lambda: closed.append(1))
+        assert can_shutdown() == 0
+        busy[0] = False
+        assert can_shutdown() == 1
+        self.callback(fake, "shutdown_request")()
+        assert closed == [1]
+        kinds = [(r["type"], r["data"].get("reason")) for r in records()]
+        assert kinds == [("update.deferred", "an agent turn is running"), ("update.install", None)]
+        assert records()[-1]["data"]["feed"].endswith("/appcast-beta.xml")
+
+    def test_when_unsure_the_turn_is_kept(self, monkeypatch, records):
+        fake = self.start(monkeypatch)
+
+        def broken():
+            raise RuntimeError("state unavailable")
+
+        updater.set_host(busy=broken)
+        assert self.callback(fake, "can_shutdown")() == 0
+        # With no app to close (the terminal UI), the installer asks to close Lumi itself.
+        updater.set_host()
+        self.callback(fake, "shutdown_request")()
+
+    def test_what_the_updater_finds_is_recorded(self, monkeypatch, records):
+        fake = self.start(monkeypatch)
+        for name in ("did_find_update", "did_not_find_update", "error", "update_skipped",
+                     "update_postponed", "update_cancelled"):
+            self.callback(fake, name)()
+        assert [(r["type"], r["data"].get("result")) for r in records()] == [
+            ("update.check", "found"), ("update.check", "none"), ("update.check", "error"),
+            ("update.skipped", None), ("update.postponed", None), ("update.cancelled", None)]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="WinSparkle.dll is Windows-only")
+def test_the_vendored_winsparkle_exports_every_function_lumi_uses(monkeypatch):
+    # Loading the DLL and declaring signatures calls nothing, so no check
+    # runs and nothing is written to the registry.
+    monkeypatch.setenv("LUMI_UPDATER_FROM_SOURCE", "1")
+    assert updater._load_dll() is not None

@@ -17,6 +17,11 @@ Architecture
 - Which feed, and whether WinSparkle checks at all, comes from the update
   mode, channel and pin (lumi/update_channels.py): Settings > Updates or the
   organization's policy, read once at startup.
+- Before the installer runs, WinSparkle asks whether Lumi can close. The app
+  says no while an agent turn runs (``set_host``), so an update never cuts
+  a turn off; afterwards it asks Lumi to close so the installer can replace
+  its files. What the updater finds and does goes to the audit log
+  (``update.*`` records).
 
 Usage
 -----
@@ -77,6 +82,14 @@ _dll: ctypes.CDLL | None = None
 _initialized = False
 # The update settings applied at startup; a change in Settings waits for a restart.
 _preferences: UpdatePreferences | None = None
+
+# WinSparkle calls these from its own threads, never the main one.
+_CAN_SHUTDOWN = ctypes.CFUNCTYPE(ctypes.c_int)
+_EVENT = ctypes.CFUNCTYPE(None)
+# The ctypes thunks must outlive the DLL's use of them.
+_callbacks: dict[str, object] = {}
+# How the running app answers "is work in progress?" and closes itself.
+_host: dict[str, object] = {"busy": None, "shutdown": None}
 
 
 def _find_dll() -> Path | None:
@@ -164,7 +177,85 @@ def _load_dll() -> ctypes.CDLL | None:
     dll.win_sparkle_get_last_check_time.argtypes = []
     dll.win_sparkle_get_last_check_time.restype = ctypes.c_int64  # time_t, -1 before the first check
 
+    dll.win_sparkle_set_can_shutdown_callback.argtypes = [_CAN_SHUTDOWN]
+    dll.win_sparkle_set_can_shutdown_callback.restype = None
+    for name in ("shutdown_request", "error", "did_find_update", "did_not_find_update",
+                 "update_cancelled", "update_skipped", "update_postponed"):
+        setter = getattr(dll, f"win_sparkle_set_{name}_callback")
+        setter.argtypes = [_EVENT]
+        setter.restype = None
+
     return dll
+
+
+def set_host(*, busy=None, shutdown=None) -> None:
+    """How the running app reports work in progress and closes itself for an update.
+
+    ``busy()`` returns True while an agent turn runs; ``shutdown()`` closes
+    the app gracefully and must be safe to call from any thread.
+    """
+    _host["busy"] = busy
+    _host["shutdown"] = shutdown
+
+
+def _record(event_type: str, **fields) -> None:
+    try:
+        from lumi import audit
+
+        prefs = _preferences or UpdatePreferences()
+        audit.record(event_type, version=__version__, feed=prefs.feed_url, **fields)
+    except Exception:  # an audit problem must never break the updater's thread
+        logger.debug("Couldn't record %s", event_type, exc_info=True)
+
+
+def _can_shutdown() -> int:
+    """1 if the installer may close Lumi now; 0 while an agent turn runs."""
+    busy = _host.get("busy")
+    try:
+        running = bool(busy()) if callable(busy) else False
+    except Exception:
+        running = True  # unsure: keep the turn, the person can install later
+    if running:
+        _record("update.deferred", reason="an agent turn is running")
+        return 0
+    return 1
+
+
+def _shutdown_request() -> None:
+    """WinSparkle started the installer: close so it can replace Lumi's files."""
+    _record("update.install")
+    shutdown = _host.get("shutdown")
+    if callable(shutdown):
+        try:
+            shutdown()
+        except Exception:
+            logger.exception("Closing for the update failed; the installer will ask to close Lumi")
+
+
+def _event(event_type: str, **fields):
+    def handler() -> None:
+        _record(event_type, **fields)
+
+    return handler
+
+
+def _register_callbacks(dll) -> None:
+    """Hook WinSparkle's callbacks before init; keeps the thunks alive."""
+    _callbacks.clear()
+    _callbacks["can_shutdown"] = _CAN_SHUTDOWN(_can_shutdown)
+    dll.win_sparkle_set_can_shutdown_callback(_callbacks["can_shutdown"])
+    events = {
+        "shutdown_request": _shutdown_request,
+        "error": _event("update.check", result="error"),
+        "did_find_update": _event("update.check", result="found"),
+        "did_not_find_update": _event("update.check", result="none"),
+        "update_cancelled": _event("update.cancelled"),
+        "update_skipped": _event("update.skipped"),
+        "update_postponed": _event("update.postponed"),
+    }
+    for name, handler in events.items():
+        _callbacks[name] = _EVENT(handler)
+        getattr(dll, f"win_sparkle_set_{name}_callback")(_callbacks[name])
 
 
 # ---- Public API --------------------------------------------------------------
@@ -213,6 +304,7 @@ def init_updater(preferences: UpdatePreferences | None = None) -> bool:
         # the checkbox in WinSparkle's own dialog.
         _dll.win_sparkle_set_automatic_check_for_updates(1 if _preferences.mode == "automatic" else 0)
         _dll.win_sparkle_set_update_check_interval(UPDATE_CHECK_INTERVAL_SEC)
+        _register_callbacks(_dll)
 
         # Init kicks off the background thread.
         _dll.win_sparkle_init()
@@ -289,6 +381,8 @@ def reset_for_tests() -> None:
     """Forget the startup state (tests only). From source WinSparkle never loads."""
     global _dll, _initialized, _preferences
     _dll, _initialized, _preferences = None, False, None
+    _callbacks.clear()
+    set_host()
 
 
 def cleanup_updater() -> None:

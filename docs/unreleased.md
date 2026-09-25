@@ -8,6 +8,31 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 updates that wait for running turns — source only, not released
+
+- **An update never cuts off an agent turn** (`lumi/updater.py`, [guide](updates.md#installing-an-update)):
+  - WinSparkle asks whether Lumi can close before running a verified
+    installer. While a turn runs, Lumi says no, and WinSparkle holds the
+    installer back.
+  - Otherwise Lumi closes itself once the installer starts: the window closes
+    and the local server stops, instead of the installer forcing it closed.
+  - When Lumi can't tell whether a turn is running, it keeps the turn.
+- **Update events in the audit log:** `update.check` (found, none, error),
+  `update.deferred`, `update.install`, `update.skipped`, `update.postponed`
+  and `update.cancelled`, with the version and feed.
+
+Validation on September 25, 2026:
+
+- 5 tests in `test_updates.py`:
+  - the callbacks are registered before WinSparkle starts;
+  - an update waits for a running turn, then closes the app;
+  - an unknown state keeps the turn;
+  - each event is recorded;
+  - the vendored `WinSparkle.dll` exports every function Lumi declares (it is
+    loaded, and nothing in it is called).
+- The callbacks were called directly in these tests. A real WinSparkle update
+  hasn't been installed with them yet, because that needs a published release.
+
 ## September 25 MSI for Intune, Configuration Manager and Group Policy — source only, not released
 
 - **`lumi-X.Y.Z.msi`** ([guide](deploy-windows.md), `packaging/lumi.wxs`,

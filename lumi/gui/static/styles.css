@@ -1128,26 +1128,6 @@ body {
 }
 .pgd-btn:hover { background: var(--bg-hover); }
 
-/* "Preview ▶" button on the run-summary card next to HTML files */
-.agent-file-preview-btn {
-    margin-left: 8px;
-    padding: 1px 8px;
-    font-size: 10.5px;
-    font-weight: 500;
-    background: var(--bg-elem);
-    color: var(--brand);
-    border: 1px solid color-mix(in srgb, var(--brand) 40%, transparent);
-    border-radius: var(--radius-xs);
-    cursor: pointer;
-    flex-shrink: 0;
-    transition: background var(--duration-fast), color var(--duration-fast);
-}
-.agent-file-preview-btn:hover {
-    background: var(--brand);
-    color: var(--on-brand);
-    border-color: var(--brand);
-}
-
 /* Cold-start banner — shown above the input while the backend model loads */
 .model-warmup-banner {
     display: flex;
@@ -1931,7 +1911,7 @@ body {
 }
 
 /* Git badge removed in v0.6.7 (composer declutter). The git popover now
-   opens from the agent-run-card Review button and the command palette. */
+   opens from the task card's Review button and the command palette. */
 .git-badge {
     display: none !important;
 }
@@ -5021,73 +5001,6 @@ body {
     border-color: rgba(99, 102, 241, 0.4);
 }
 
-/* Agent run complete — summary card shown on session.end */
-.agent-run-card {
-    margin: 18px auto 24px;
-    max-width: var(--content-max-width);
-}
-
-.agent-run-card-inner {
-    background: var(--bg-elem);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    padding: 16px 18px 14px;
-}
-
-.agent-run-kicker {
-    display: inline-block;
-    font-size: 10px;
-    font-weight: 600;
-    letter-spacing: 0.6px;
-    text-transform: uppercase;
-    color: var(--brand);
-    background: rgba(99, 102, 241, 0.1);
-    border: 1px solid rgba(99, 102, 241, 0.3);
-    border-radius: 999px;
-    padding: 1px 8px;
-    margin-bottom: 8px;
-}
-
-.agent-run-title {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--text);
-    line-height: 1.35;
-    margin-bottom: 14px;
-    letter-spacing: -0.005em;
-}
-
-.agent-todo-strip {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 12px;
-    background: color-mix(in srgb, var(--bg-elem) 85%, var(--ok));
-    border: 1px solid color-mix(in srgb, var(--ok) 25%, var(--border));
-    border-radius: 10px;
-    margin-bottom: 12px;
-}
-
-.agent-todo-check {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: color-mix(in srgb, var(--ok) 18%, transparent);
-    color: var(--ok);
-    font-size: 13px;
-    font-weight: 700;
-    flex-shrink: 0;
-}
-
-.agent-todo-text {
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text);
-}
-
 .agent-live-todo-strip {
     margin: 8px 0 10px;
     padding: 8px 10px;
@@ -5142,100 +5055,6 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-}
-
-.agent-run-blurb {
-    font-size: 13px;
-    color: var(--muted);
-    margin: 0 0 12px;
-    line-height: 1.45;
-}
-
-.agent-changes-heading {
-    font-size: 14px;
-    font-weight: 700;
-    color: var(--text);
-    margin: 4px 0 10px;
-}
-
-.agent-changes-list {
-    margin: 0 0 14px;
-    padding-left: 1.25rem;
-    color: var(--text);
-    font-size: 13px;
-    line-height: 1.5;
-}
-
-.agent-change-item {
-    margin-bottom: 10px;
-}
-
-.agent-change-item::marker {
-    font-weight: 600;
-    color: var(--muted);
-}
-
-.agent-file-path {
-    display: inline;
-    font-family: var(--font-mono);
-    font-size: 12px;
-    color: var(--brand);
-    background: rgba(99, 102, 241, 0.08);
-    padding: 1px 6px;
-    border-radius: 4px;
-    cursor: default;
-    border: 1px solid rgba(99, 102, 241, 0.18);
-}
-
-.agent-change-detail {
-    display: block;
-    margin-top: 4px;
-    margin-left: 0;
-    color: var(--muted);
-    font-size: 12px;
-}
-
-.agent-run-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    padding-top: 4px;
-    border-top: 1px solid var(--border);
-    margin-top: 4px;
-}
-
-.agent-run-btn {
-    padding: 6px 12px;
-    font-size: 12px;
-    font-weight: 500;
-    border-radius: var(--radius-xs);
-    border: 1px solid var(--border);
-    background: transparent;
-    color: var(--text);
-    cursor: pointer;
-    transition: background var(--duration-fast) ease, border-color var(--duration-fast) ease, color var(--duration-fast) ease;
-}
-
-.agent-run-btn:hover:not(:disabled) {
-    background: var(--bg-hover);
-    border-color: var(--border-strong);
-}
-
-.agent-run-btn:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-}
-
-.agent-run-btn-primary {
-    background: var(--brand);
-    border-color: var(--brand);
-    color: var(--on-brand);
-}
-
-.agent-run-btn-primary:hover:not(:disabled) {
-    background: var(--brand);
-    filter: brightness(1.1);
-    border-color: var(--brand);
 }
 
 /* ── Resume Banner ── */
@@ -6672,36 +6491,6 @@ body {
     animation: collapsed-running-pulse 1.4s ease-in-out infinite;
 }
 
-/* ── Stopped / errored agent-run card variant ──
-   When the run terminated before completion (doom loop, step limit,
-   cancellation), shift accents from "ok" green to "warn" amber so the
-   card reads as "didn't ship" rather than "succeeded". */
-.agent-run-card.agent-run-stopped .agent-run-kicker {
-    color: var(--warn);
-    background: color-mix(in srgb, var(--warn) 12%, transparent);
-    border-color: color-mix(in srgb, var(--warn) 35%, transparent);
-}
-
-.agent-run-card.agent-run-stopped .agent-todo-strip {
-    background: color-mix(in srgb, var(--bg-elem) 85%, var(--warn));
-    border-color: color-mix(in srgb, var(--warn) 30%, var(--border));
-}
-
-.agent-run-card.agent-run-stopped .agent-todo-check {
-    background: color-mix(in srgb, var(--warn) 18%, transparent);
-    color: var(--warn);
-}
-
-.agent-run-blurb.agent-run-error-blurb {
-    color: var(--text);
-    background: color-mix(in srgb, var(--bg-input) 70%, transparent);
-    border-left: 3px solid var(--warn);
-    padding: 8px 10px;
-    border-radius: 6px;
-    font-size: 12.5px;
-    line-height: 1.5;
-}
-
 /* ── Smart auto-scroll pill — "↓ New messages" state ──
    When the user has scrolled up and new content arrives during streaming,
    the existing scroll-to-bottom pill turns brand-colored and pulses to
@@ -6742,9 +6531,8 @@ body {
     animation: collapsed-group-enter 0.18s ease-out;
 }
 
-/* Same gentle entrance for the agent-run summary card and the inline error
-   block — both arrive at terminal moments where a hard pop reads as glitchy. */
-.agent-run-card,
+/* Same gentle entrance for the inline error block — it arrives at a
+   terminal moment where a hard pop reads as glitchy. */
 .error-block {
     animation: collapsed-group-enter 0.18s ease-out;
 }
@@ -7186,89 +6974,6 @@ body {
     margin: 0 6px;
     color: var(--dimmer, var(--muted));
 }
-
-/* ── Compact agent-run-card (default) ──
-   Banner is the always-visible row; .compact hides the detail panel.
-   Click the banner to toggle. Full panel keeps the existing styling so
-   we don't have to re-style it twice. */
-.agent-run-card.compact {
-    margin: 14px auto 18px;
-}
-
-.agent-run-banner {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 10px 14px;
-    background: var(--bg-elem);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    font: inherit;
-    color: var(--text);
-    text-align: left;
-    cursor: pointer;
-    transition: background-color var(--duration-fast) ease,
-                border-color var(--duration-fast) ease;
-}
-
-.agent-run-banner:hover {
-    background: var(--bg-hover);
-    border-color: color-mix(in srgb, var(--border) 50%, var(--text));
-}
-
-.agent-run-banner .agent-run-kicker {
-    margin: 0;
-    flex-shrink: 0;
-}
-
-.agent-run-banner .agent-run-title {
-    margin: 0;
-    flex: 1;
-    font-size: 13.5px;
-    font-weight: 500;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    min-width: 0;
-}
-
-.agent-run-summary-meta {
-    font-size: 12px;
-    color: var(--muted);
-    flex-shrink: 0;
-    white-space: nowrap;
-}
-
-.agent-run-banner-chevron {
-    color: var(--muted);
-    font-size: 11px;
-    transition: transform var(--duration-fast) ease;
-    flex-shrink: 0;
-}
-
-.agent-run-card:not(.compact) .agent-run-banner {
-    border-bottom-left-radius: 0;
-    border-bottom-right-radius: 0;
-}
-
-.agent-run-card-detail {
-    margin: 0;
-}
-
-.agent-run-card-detail .agent-run-card-inner {
-    border: 1px solid var(--border);
-    border-top: none;
-    border-radius: 0 0 var(--radius-sm) var(--radius-sm);
-}
-
-.agent-run-card.compact .agent-run-card-detail {
-    display: none;
-}
-
-/* Old layout (non-compact mode renders the original full panel) — no
-   changes needed; the existing .agent-run-card-inner / .agent-run-kicker
-   / .agent-todo-strip / etc. rules from earlier in this file still apply. */
 
 /* ── Mission spec → roadmap handoff button ──
    Rendered beneath the assistant message that contained `## Final spec`
@@ -11195,16 +10900,14 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
     opacity: .65;
 }
 
-.task-change-path,
-.agent-file-path[data-file-path] {
+.task-change-path {
     cursor: pointer;
     text-decoration: underline;
     text-decoration-color: rgba(255, 194, 75, .42);
     text-underline-offset: 3px;
 }
 
-.task-change-path:hover,
-.agent-file-path[data-file-path]:hover {
+.task-change-path:hover {
     color: var(--brand-text);
     text-decoration-color: rgba(255, 194, 75, .9);
 }

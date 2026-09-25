@@ -9474,8 +9474,9 @@ class LumiApp {
             this._releaseNewSessionGuard();
         }
 
-        // Track error state so the run-card can drop the "Build" framing and
-        // hide Review/Commit actions when there's nothing successfully to act on.
+        // Track error state: the task card's summary reports the turn as
+        // failed with this message and no Review, the live run ends as
+        // failed, and no next prompt is suggested.
         this._agentRunErrored = true;
         this._agentRunErrorMessage = event.message || '';
 

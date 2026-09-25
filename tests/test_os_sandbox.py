@@ -155,9 +155,14 @@ def test_the_session_passes_its_writable_folders(tmp_path):
 
 @live
 def test_a_sandboxed_command_writes_in_the_project_and_nowhere_else(tmp_path):
+    import pwd  # the live test runs only on macOS and Linux
+
     project = tmp_path / "project"
     (project / ".git").mkdir(parents=True)
-    outside = Path.home() / f".lumi-sandbox-test-{uuid.uuid4().hex}"
+    # The account's real home: the suite points HOME at a folder under the
+    # temporary folder, which the sandbox lets commands write to.
+    real_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    outside = real_home / f".lumi-sandbox-test-{uuid.uuid4().hex}"
     in_temp = Path(tempfile.gettempdir()) / f"lumi-sandbox-test-{uuid.uuid4().hex}"
     os_sandbox.set_for_tests("project", HERE)
 
@@ -174,7 +179,7 @@ def test_a_sandboxed_command_writes_in_the_project_and_nowhere_else(tmp_path):
         assert run(f"echo out > '{outside}'").is_error and not outside.exists()
         assert run("echo x > .git/hook-test").is_error and not (project / ".git" / "hook-test").exists()
         # Reading outside the project still works.
-        assert not run(f"ls '{Path.home()}'").is_error
+        assert not run(f"ls '{real_home}'").is_error
     finally:
         for path in (outside, in_temp):
             if path.exists():

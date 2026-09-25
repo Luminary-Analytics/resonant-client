@@ -83,6 +83,22 @@ An organization policy uses the same prices as JSON:
 "pricing": {"prices": {"anthropic:claude-opus-*": {"input": 3.2, "output": 16, "cached_input": 0.16}}}
 ```
 
+## Cost per verified task
+
+Settings > Usage & cost also counts this month's tasks (`lumi/activity.py`):
+
+- **Tasks this month:** turns, how many finished and how many ended in an
+  error.
+- **Verified tasks:** turns in which a check the agent ran (`check_run`)
+  passed, so something was tested rather than only claimed.
+- **Cost per verified task:** this month's spend divided by verified tasks.
+  Models without a known price are left out of the spend, as everywhere else.
+
+Each finished turn, in the app or `lumi run`, adds one line to
+`~/.lumi/activity.jsonl`: its time, outcome, whether a check passed and how
+many files changed. No prompts, answers, file names or paths. Lines are kept
+90 days.
+
 ## Exporting
 
 ```bash

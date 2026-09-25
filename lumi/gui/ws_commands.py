@@ -652,18 +652,23 @@ async def _get_costs(ctx: CommandContext) -> None:
     def gather() -> dict:
         from datetime import datetime, timezone
 
-        from .. import pricing, usage
+        from .. import activity, pricing, usage
 
         # This month's calls from the usage records, and the prices in effect.
         month = datetime.now(timezone.utc).strftime("%Y-%m")
         rows = usage.ledger().records(since=month)
         from .. import budgets
 
+        totals = usage.totals(rows)
+        done = activity.month_summary()
         return {
             **ctx.state.costs.get_all_costs(),
             "budgets": budgets.status(getattr(getattr(ctx.state, "project", None), "project_path", "") or ""),
-            "month": {"period": month, **usage.totals(rows), "by_model": usage.breakdown(rows, "model"),
-                      "by_purpose": usage.breakdown(rows, "purpose")},
+            "month": {"period": month, **totals, "by_model": usage.breakdown(rows, "model"),
+                      "by_purpose": usage.breakdown(rows, "purpose"), "activity": done,
+                      # Turns with a passing check_run: what a verified task costs.
+                      "cost_per_verified_task": (round(float(totals.get("cost_usd") or 0) / done["verified"], 4)
+                                                 if done["verified"] else None)},
             "pricing": pricing.describe_catalog(),
         }
 

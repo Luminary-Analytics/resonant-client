@@ -109,8 +109,8 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private
   key live in `api_keys` (`lumi_cloud_refresh`, `lumi_cloud_device_key`), in the
   credential store; status sent to the page never includes them. Check-ins
-  send versions and usage counts per model, never prompts, code, paths or
-  titles. A downloaded policy applies only when it verifies against machine
+  send versions, usage counts per model and turn outcome counts
+  (`activity.py`), never prompts, code, paths or titles. A downloaded policy applies only when it verifies against machine
   keys, or keys pinned when the person joined, and a joined organization
   never replaces a machine policy (`policy._with_cloud_policy`).
 - `lumi run` (`headless.py`) builds its session from the same pieces as the

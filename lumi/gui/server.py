@@ -347,6 +347,10 @@ def main():
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.WARNING,
     )
+    # Count the app's own crashes for fleet health (lumi/activity.py).
+    from .. import activity
+
+    activity.install_crash_counter()
 
     # Materialize new bundled skills on GUI startup, as the skill CLI does.
     # Existing user-edited skills are preserved by the installer's default.

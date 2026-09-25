@@ -83,9 +83,12 @@ project-local single-agent versus Director outcome comparison. See
 [`director-mode.md`](director-mode.md) for the complete contract and extension
 guide.
 
-The Agents pane is the runtime control surface. It exposes current and past
-workers, transcripts and handoffs, plus pause, resume, cancel, and non-cancelling
-steering.
+The desktop app shows each worker's handoff under the worker's block in the
+task's activity: its result line, then changed files, checks, blockers and the
+next step. The Agents pane, which listed current and past workers with their
+transcripts and pause, resume, cancel and non-cancelling steering, left the page
+in v0.14.0. The `agent_runtime_*` commands remain on the server; the desktop app
+has no control for them yet.
 
 ## Checkpoint and rewind semantics
 
@@ -97,7 +100,10 @@ the model conversation, replayable display events, and workspace state.
 - Non-Git projects use ZIP snapshots.
 - Restoring files first preserves the replaced state as a Git recovery branch
   or recovery archive.
-- The Timeline UI offers files-only, conversation-only, or both.
+- A restore can be files-only, conversation-only, or both
+  (`session_timeline_restore`). The Timeline view that offered it left the
+  desktop page with the Agents pane in v0.14.0, so the app has no restore
+  control yet.
 - Compare reports the checkpoint-to-current Git delta where available.
 
 Restores are refused while an agent is running. Every restore is a lifecycle

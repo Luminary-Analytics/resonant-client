@@ -338,6 +338,13 @@ review changes, like the task card's **Changed files**, counts only edits whose
 own result succeeded: an edit you reject, that a policy blocks, that fails or
 that never ran doesn't count.
 
+When the agent hands work to a worker (`task`), the worker's block in the
+task's activity ends with its result, for example "✓ build · 2 steps · 12.2s ·
+1 file changed". Open that line to read the worker's handoff: the files it
+changed, its checks, any blockers and its suggested next step. Select a file,
+or focus it and press **Enter**, to open it. A failed or blocked worker's
+handoff opens by itself.
+
 New sessions also get a short task title from the first prompt. A local title
 appears immediately. With native model connections, a small tool-free request
 refines it after the first turn; slow or failed requests keep the local title.

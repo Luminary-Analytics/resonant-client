@@ -3413,6 +3413,70 @@ body {
     border-top: 1px solid var(--border);
 }
 
+.subagent-result.is-error {
+    color: var(--err);
+}
+
+/* A finished worker's handoff: its result line opens the details. */
+.subagent-handoff > summary {
+    cursor: pointer;
+}
+
+.subagent-handoff-fields {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 4px 12px;
+    margin: 0;
+    padding: 0 12px 10px 26px;
+    color: var(--muted);
+    font-size: 12px;
+}
+
+.subagent-handoff-fields dt {
+    color: var(--text);
+    font-weight: 600;
+}
+
+.subagent-handoff-fields dd {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+}
+
+.subagent-handoff-fields ul {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.subagent-handoff-file {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--brand2);
+    font: inherit;
+    font-family: var(--font-mono, monospace);
+    text-align: left;
+    text-decoration: underline;
+    text-decoration-color: rgba(255, 194, 75, .42);
+    text-underline-offset: 3px;
+    cursor: pointer;
+}
+
+.subagent-handoff-file:hover {
+    text-decoration-color: rgba(255, 194, 75, .9);
+}
+
+.subagent-handoff-file:focus-visible {
+    outline: 2px solid var(--brand);
+    outline-offset: 2px;
+    border-radius: 2px;
+}
+
+.subagent-handoff-more {
+    color: var(--dim);
+}
+
 .subagent-children {
     display: none;
     padding: 6px 12px 8px;

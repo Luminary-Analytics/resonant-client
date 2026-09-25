@@ -287,6 +287,37 @@ test('CLI and worker tool events count only the run\'s own successful changes', 
     assert.deepEqual(app.changes(), ['parent.txt: Diff +1 −1']);
 });
 
+test('a finished worker shows its handoff under its result line', () => {
+    const app = setup(() => {});
+    const done = app._subagentHandoffView({agent_type: 'build', steps: 3, elapsed: 2.14, handoff: {
+        outcome: 'completed', summary: 'Edited the file.', changed_files: ['notes.txt'],
+        validation: ['check_run: not run'], blockers: [],
+        evidence: ['3 worker steps', '2.1s elapsed', 'Budget exhausted after useful output: step limit'],
+        artifacts: [], recommended_next_action: 'Review and integrate the change.'}}, false);
+    assert.equal(done.line, '✓ build · 3 steps · 2.1s · 1 file changed');
+    assert.deepEqual(Array.from(done.sections, s => `${s.label}: ${s.items.join(' | ')}`),
+        ['Changed files: notes.txt', 'Checks: check_run: not run', 'Evidence: Budget exhausted after useful output: step limit']);
+    assert.equal(done.next, 'Review and integrate the change.');
+    assert.equal(done.open, false);
+
+    // A worker whose edit was rejected says so, and a failure opens its details.
+    const rejected = app._subagentHandoffView({agent_type: 'build', steps: 1, elapsed: 0, handoff: {
+        outcome: 'failed', changed_files: [], blockers: ['Tool execution denied by user.']}}, true);
+    assert.equal(rejected.line, '✗ build · 1 step · 0.0s · no files changed');
+    assert.equal(rejected.open, true);
+    // Without a handoff nothing is claimed about files.
+    assert.equal(app._subagentHandoffView({agent_type: 'explore', steps: 2, elapsed: 1}, false).line, '✓ explore · 2 steps · 1.0s');
+
+    const html = app._subagentHandoffHtml(app._subagentHandoffView({agent_type: 'build', handoff: {
+        changed_files: ['a"b<c>.txt', ...Array.from({length: 13}, (_, i) => `f${i}.py`)],
+        blockers: ['<img src=x onerror=alert(1)>']}}, true));
+    for (const unsafe of ['<img', 'a"b', '<c>']) assert.ok(!html.includes(unsafe), unsafe);
+    assert.match(html, /data-file-path="a&quot;b&lt;c&gt;\.txt"/);
+    assert.equal(html.match(/class="subagent-handoff-file"/g).length, 12);
+    assert.match(html, /2 more/);
+    assert.match(html, /<summary class="subagent-result is-error">✗ build · 0 steps · 0\.0s · 14 files changed<\/summary>/);
+});
+
 test('replay rebuilds changed files from saved results, not saved calls', () => {
     const app = toolEventApp();
     const rejected = editCall('call_1', 'notes.txt'), accepted = editCall('call_2', 'notes.txt');

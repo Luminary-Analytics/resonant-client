@@ -38,6 +38,16 @@ Validation on September 25, 2026:
   - a pack in a subfolder;
   - the Settings flow through the socket: install, approve, reinstall (back
     to needing approval), remove, and the audit records.
+- In the browser pane (isolated home; a local repository stood in for the
+  https remote, allowed only by the fixture):
+  - an `http://` address was refused on the page, with the typed values
+    kept;
+  - the local repository at tag `v1` installed as "Not approved · off", with
+    "Installed from … at commit 15d389f6ff93" and its hook listed;
+  - **Approve and enable** made it "Approved · active";
+  - **Remove** deleted it from `~/.lumi/packs` and from the settings.
+  - This check found that a refusal wasn't shown while the form kept focus;
+    install results now always redraw the page.
 
 ## September 25 macOS app and DMG — source only, not released
 
@@ -61,9 +71,19 @@ Validation on September 25, 2026:
   alternation, `+` and groups mean what they do in ripgrep.
 - Third-party notices list ripgrep and WinSparkle only in Windows builds.
 
-Validation on September 25, 2026: see this PR's macOS build job. No Mac was
-available locally, so the native window, dictation, computer use and the
-Keychain are untested.
+Validation on September 25, 2026, from PR #23's macOS build (`macos-latest`,
+Apple silicon):
+
+- The bundle was 85.4 MiB (232 files) and passed its policy. The DMG was
+  32 MB, unsigned, with the expected warning.
+- `lumi --version` and `lumi updates` ran.
+- The GUI server served the page (52 KB), redeemed the launch code, refused
+  the WebSocket without the token (403) and accepted it with the token (101),
+  and its log was clean.
+- The first run found that the launch link stayed in a frozen app's stdout
+  buffer; those lines are now flushed.
+- No Mac was available locally, so the native window, dictation, computer use
+  and the Keychain are untested.
 
 ## September 25 updates that wait for running turns — source only, not released
 

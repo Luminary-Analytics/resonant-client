@@ -54,6 +54,8 @@ NOT bundled (runtime-optional):
                        OS-shell fallbacks).
 """
 
+import json
+import os
 import sys
 from pathlib import Path
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules
@@ -224,6 +226,17 @@ excludes = [
     "uiautomation",     # runtime-optional, not bundled
 ]
 
+# Installed dependencies the bundle must not contain, with the reason, from
+# packaging/third-party-components.json (the notices leave them out too). Today
+# these are PyAutoGUI's GPL-3.0 helpers, which it imports optionally and Lumi
+# never calls.
+excludes += [
+    name for name in json.loads(
+        (PROJECT_ROOT / "packaging" / "third-party-components.json").read_text(encoding="utf-8")
+    )["not_shipped"]
+    if not name.startswith("_")
+]
+
 # ---- Analysis ----------------------------------------------------------------
 
 # ---- Native binaries ---------------------------------------------------------
@@ -257,6 +270,14 @@ if RIPGREP_EXE.exists():
         license_path = RIPGREP_EXE.parent / license_name
         if license_path.exists():
             datas.append((str(license_path), "licenses/ripgrep"))
+
+# License texts of every third-party part of the bundle, generated from the
+# build environment by packaging/third_party_notices.py; build_clean.ps1 passes
+# the path. Like ripgrep, bundle-policy.json requires the file, so a build
+# without it fails the policy gate.
+NOTICES = os.environ.get("LUMI_THIRD_PARTY_NOTICES", "")
+if NOTICES and Path(NOTICES).is_file():
+    datas.append((NOTICES, "licenses"))
 
 a = Analysis(
     [str(PKG_ROOT / "__main__.py")],

@@ -1,0 +1,80 @@
+{
+  "_comment": "Third-party parts of the Lumi installer that are not Python packages. packaging/third_party_notices.py adds them to THIRD_PARTY_NOTICES.txt and the release SBOM. Keep versions in step with the fetch scripts and the spec; tests/test_release_supply_chain.py checks that they agree.",
+  "not_shipped": {
+    "_comment": "Installed as dependencies but excluded from the bundle (packaging/lumi.spec reads this list). The notices leave them out.",
+    "mouseinfo": "GPL-3.0-or-later. A PyAutoGUI dependency for its mouseInfo() tool, which Lumi never calls; PyAutoGUI works without it.",
+    "pymsgbox": "GPL-3.0-or-later. A PyAutoGUI dependency for alert/confirm/prompt dialogs, which Lumi never calls; PyAutoGUI works without it."
+  },
+  "license_reviews": {
+    "_comment": "Python packages with copyleft licenses that were reviewed and may ship: package name to the reason. third_party_notices.py fails the build for any other GPL, AGPL or LGPL package."
+  },
+  "components": [
+    {
+      "name": "Python",
+      "version": "3.13",
+      "license": "PSF-2.0",
+      "url": "https://www.python.org/",
+      "cyclonedx_type": "platform",
+      "note": "The Python runtime embedded by PyInstaller. The minor version is the build's; see the executable for the exact release."
+    },
+    {
+      "name": "PyInstaller bootloader",
+      "version": "6",
+      "license": "GPL-2.0-or-later WITH Bootloader-exception",
+      "url": "https://pyinstaller.org/",
+      "note": "The bootloader's exception permits distributing it with programs under any license."
+    },
+    {
+      "name": "ripgrep",
+      "version": "15.2.0",
+      "license": "MIT OR Unlicense",
+      "url": "https://github.com/BurntSushi/ripgrep",
+      "purl": "pkg:github/BurntSushi/ripgrep@15.2.0",
+      "license_files": ["packaging/ripgrep/LICENSE-MIT", "packaging/ripgrep/UNLICENSE"]
+    },
+    {
+      "name": "WinSparkle",
+      "version": "0.9.2",
+      "license": "MIT",
+      "url": "https://winsparkle.org/",
+      "purl": "pkg:github/vslavik/winsparkle@0.9.2",
+      "license_files": [
+        "packaging/winsparkle/WinSparkle-0.9.2/COPYING",
+        "packaging/winsparkle/WinSparkle-0.9.2/COPYING.expat"
+      ],
+      "note": "Windows update checks. Includes the Expat XML parser (MIT)."
+    },
+    {
+      "name": "marked",
+      "version": "12.0.2",
+      "license": "MIT",
+      "url": "https://github.com/markedjs/marked",
+      "purl": "pkg:npm/marked@12.0.2",
+      "note": "The copyright notice is kept at the top of marked.min.js."
+    },
+    {
+      "name": "highlight.js",
+      "version": "11.9.0",
+      "license": "BSD-3-Clause",
+      "url": "https://github.com/highlightjs/highlight.js",
+      "purl": "pkg:npm/highlight.js@11.9.0",
+      "note": "Includes the github-dark-dimmed theme. The notice is kept at the top of highlight.min.js."
+    },
+    {
+      "name": "DOMPurify",
+      "version": "3.0.6",
+      "license": "Apache-2.0 OR MPL-2.0",
+      "url": "https://github.com/cure53/DOMPurify",
+      "purl": "pkg:npm/dompurify@3.0.6",
+      "note": "The license notice is kept at the top of purify.min.js."
+    },
+    {
+      "name": "Inter",
+      "version": "5.0.17",
+      "license": "OFL-1.1",
+      "url": "https://github.com/rsms/inter",
+      "purl": "pkg:npm/%40fontsource/inter@5.0.17",
+      "note": "Latin subset, weights 400 to 700, from the @fontsource/inter package."
+    }
+  ]
+}

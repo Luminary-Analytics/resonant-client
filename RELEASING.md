@@ -27,9 +27,20 @@ node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs
 git diff --check
 ```
 
-On Windows, run `./scripts/build_clean.ps1`. It builds in a fresh environment,
-fetches verified ripgrep/web assets, runs PyInstaller, and enforces the bundle
-policy. Do not build from an arbitrary environment with accumulated packages.
+On Windows, run `./scripts/build_clean.ps1`. It builds in a fresh environment
+from the hash-pinned `packaging/requirements-release.txt`, fetches verified
+ripgrep/web assets, writes the third-party notices (failing on unreviewed
+copyleft licenses), runs PyInstaller, and enforces the bundle policy. Add
+`-SbomPath dist/lumi-sbom.cdx.json` for the CycloneDX SBOM; that needs the
+pinned tools (`python -m pip install --require-hashes -r
+packaging/tools-requirements.txt`) in the Python running the script. Do not
+build from an arbitrary environment with accumulated packages.
+
+When dependencies in `pyproject.toml` change, run `python scripts/lock_release.py`
+(needs [uv](https://docs.astral.sh/uv/)), review the lock diff, and commit it.
+The tests fail while the lock misses a declared dependency, and the weekly
+**Dependency audit** workflow reports newly published vulnerabilities in pinned
+versions.
 
 For UI/provider changes, test the source UI's affected flows and the packaged
 `dist/lumi/lumi.exe`. Use an isolated profile and fixture project; do
@@ -112,6 +123,12 @@ source control. WinSparkle tools are under `packaging/winsparkle/`.
 EdDSA validates the installer bytes against the update feed. It is separate
 from Windows Authenticode publisher signing; do not describe an update-feed
 signature as a SmartScreen-trusted publisher certificate.
+
+Authenticode signing of `lumi.exe` and the installer runs through
+`packaging/sign_windows.ps1` when credentials are configured, and otherwise
+leaves a warning on the run; see
+[pipeline architecture](docs/release-pipeline.md#authenticode). Buying a
+certificate or a signing service is an account decision for the owner.
 
 ## Failures and recovery
 

@@ -1,6 +1,10 @@
 param(
     [string]$BundleRoot = "dist/lumi",
     [string]$ManifestPath = "dist/bundle-manifest.json",
+    # Also write a CycloneDX SBOM of the build environment and the bundled
+    # non-Python parts. Needs cyclonedx-bom in the Python that runs this script:
+    #   python -m pip install --require-hashes -r packaging/tools-requirements.txt
+    [string]$SbomPath = "",
     [switch]$KeepEnvironment,
     [switch]$ValidateOnly
 )
@@ -66,8 +70,22 @@ try {
     $python = Join-Path $tempRoot "Scripts/python.exe"
     & $python -m pip install --disable-pip-version-check --no-cache-dir --upgrade pip
     if ($LASTEXITCODE -ne 0) { throw "pip upgrade failed with exit code $LASTEXITCODE" }
-    & $python -m pip install --disable-pip-version-check --no-cache-dir "${repo}[gui,desktop]" pyinstaller
-    if ($LASTEXITCODE -ne 0) { throw "Build dependency install failed with exit code $LASTEXITCODE" }
+    # Exact, hash-checked versions of everything the bundle is built from
+    # (packaging/requirements-release.txt, made by scripts/lock_release.py), then
+    # Lumi itself without resolving anything again.
+    & $python -m pip install --disable-pip-version-check --no-cache-dir --require-hashes `
+        -r (Join-Path $repo "packaging/requirements-release.txt")
+    if ($LASTEXITCODE -ne 0) { throw "Locked dependency install failed with exit code $LASTEXITCODE" }
+    & $python -m pip install --disable-pip-version-check --no-cache-dir --no-deps $repo
+    if ($LASTEXITCODE -ne 0) { throw "Lumi install failed with exit code $LASTEXITCODE" }
+
+    # License texts of every third-party part, from this environment's metadata.
+    # The spec ships the file and the bundle policy requires it.
+    $notices = Join-Path $tempRoot "THIRD_PARTY_NOTICES.txt"
+    & $python (Join-Path $repo "packaging/third_party_notices.py") --out $notices
+    if ($LASTEXITCODE -ne 0) { throw "Third-party notices failed with exit code $LASTEXITCODE" }
+    $env:LUMI_THIRD_PARTY_NOTICES = $notices
+
     & $python -m PyInstaller (Join-Path $repo "packaging/lumi.spec") --clean --noconfirm
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed with exit code $LASTEXITCODE" }
     if (-not (Test-Path -LiteralPath (Join-Path $bundle "lumi.exe"))) {
@@ -78,7 +96,19 @@ try {
         --policy (Join-Path $repo "packaging/bundle-policy.json") `
         --manifest (Join-Path $repo $ManifestPath)
     if ($LASTEXITCODE -ne 0) { throw "Bundle policy gate failed" }
+
+    if ($SbomPath) {
+        $sbom = [IO.Path]::GetFullPath((Join-Path $repo $SbomPath))
+        # The generator runs from the calling Python so it isn't listed in the
+        # SBOM of the build environment it describes.
+        python -m cyclonedx_py environment --pyproject (Join-Path $repo "pyproject.toml") `
+            --of JSON -o $sbom $python
+        if ($LASTEXITCODE -ne 0) { throw "SBOM generation failed with exit code $LASTEXITCODE" }
+        python (Join-Path $repo "packaging/third_party_notices.py") --sbom $sbom --validate
+        if ($LASTEXITCODE -ne 0) { throw "Adding bundled components to the SBOM failed" }
+    }
 } finally {
+    Remove-Item Env:LUMI_THIRD_PARTY_NOTICES -ErrorAction SilentlyContinue
     if ($pushed) { Pop-Location }
     if (Test-Path -LiteralPath $eggInfo) {
         Assert-ChildPath $eggInfo $repo

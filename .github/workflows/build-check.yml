@@ -12,11 +12,14 @@ name: Build check
 #
 # What this DOES:
 #   - Checks out the PR branch / main commit
-#   - Builds the PyInstaller bundle from packaging/lumi.spec
+#   - Builds the PyInstaller bundle from packaging/lumi.spec, installing the
+#     hash-pinned packaging/requirements-release.txt
+#   - Writes the third-party notices (license gate included) and the CycloneDX
+#     SBOM, and uploads both, so they are exercised before any release
 #   - Runs `lumi.exe --version` to confirm the frozen exe boots
 #
 # What this does NOT do:
-#   - Sign the bundle (no EdDSA, no secrets needed)
+#   - Sign the bundle (no Authenticode or EdDSA, no secrets needed)
 #   - Wrap it into an Inno Setup installer (saves ~40 sec)
 #   - Publish anywhere
 #
@@ -26,11 +29,8 @@ on:
   pull_request:
     paths:
       - 'lumi/**'
-      - 'packaging/lumi.spec'
-      - 'packaging/check_bundle.py'
-      - 'packaging/bundle-policy.json'
+      - 'packaging/**'
       - 'scripts/build_clean.ps1'
-      - 'packaging/winsparkle/**'
       - 'pyproject.toml'
       - '.github/workflows/build-check.yml'
   push:
@@ -38,11 +38,8 @@ on:
       - main
     paths:
       - 'lumi/**'
-      - 'packaging/lumi.spec'
-      - 'packaging/check_bundle.py'
-      - 'packaging/bundle-policy.json'
+      - 'packaging/**'
       - 'scripts/build_clean.ps1'
-      - 'packaging/winsparkle/**'
       - 'pyproject.toml'
 
 jobs:
@@ -60,10 +57,13 @@ jobs:
           python-version: '3.13'
           cache: 'pip'
 
+      - name: Install the pinned SBOM tools
+        run: python -m pip install --require-hashes -r packaging/tools-requirements.txt
+
       - name: Build PyInstaller bundle
         shell: pwsh
         run: |
-          ./scripts/build_clean.ps1
+          ./scripts/build_clean.ps1 -SbomPath "dist/lumi-sbom.cdx.json"
           if (-not (Test-Path "dist/lumi/lumi.exe")) {
               throw "PyInstaller did not produce dist/lumi/lumi.exe — likely an untracked file referenced by the spec, or a missing hidden import. See https://github.com/Luminary-Analytics/resonant-client/blob/main/docs/known-issues.md#12 for context."
           }
@@ -94,6 +94,14 @@ jobs:
         with:
           name: lumi-bundle-manifest
           path: dist/bundle-manifest.json
+
+      - name: Upload SBOM and third-party notices
+        uses: actions/upload-artifact@v4
+        with:
+          name: lumi-supply-chain
+          path: |
+            dist/lumi-sbom.cdx.json
+            dist/lumi/_internal/licenses/THIRD_PARTY_NOTICES.txt
 
       - name: Verify WinSparkle DLL bundled
         shell: pwsh

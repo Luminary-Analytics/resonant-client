@@ -4,10 +4,14 @@ name: Release
 # Tag-only — never on plain commits to main, never on branches.
 #
 # What this workflow does end-to-end:
-#   1. Builds the PyInstaller bundle for the tagged version
-#   2. Wraps it into an Inno Setup installer (lumi-setup-X.Y.Z.exe)
+#   1. Builds the PyInstaller bundle for the tagged version from the
+#      hash-pinned packaging/requirements-release.txt, with third-party
+#      notices and a CycloneDX SBOM
+#   2. Authenticode-signs lumi.exe, wraps the bundle into an Inno Setup
+#      installer (lumi-setup-X.Y.Z.exe) and Authenticode-signs that, when
+#      signing credentials are configured (packaging/sign_windows.ps1)
 #   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
-#   4. Creates a GitHub Release, uploads the signed installer
+#   4. Creates a GitHub Release with the installer, SBOM and notices
 #   5. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
 #      keeps the newest three installers and updates appcast.xml to point there
 #   6. Publishes gh-pages as one fresh commit. WinSparkle in installed copies
@@ -72,13 +76,18 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
+      - name: Install the pinned SBOM tools
+        run: python -m pip install --require-hashes -r packaging/tools-requirements.txt
+
       - name: Build PyInstaller bundle
         shell: pwsh
         run: |
-          ./scripts/build_clean.ps1
+          ./scripts/build_clean.ps1 -SbomPath "dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json"
           if (-not (Test-Path "dist/lumi/lumi.exe")) {
               throw "PyInstaller did not produce dist/lumi/lumi.exe"
           }
+          Copy-Item "dist/lumi/_internal/licenses/THIRD_PARTY_NOTICES.txt" `
+              "dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt"
 
       - name: Smoke-test bundled exe
         shell: pwsh
@@ -98,6 +107,17 @@ jobs:
               throw "Bundled exe reported wrong version: $output"
           }
           Write-Host "Smoke test passed: $output"
+
+      # Authenticode is Windows' publisher signature (SmartScreen, company
+      # policies); EdDSA below is the update feed's. Unsigned, with a warning,
+      # until a certificate is configured: see docs/release-pipeline.md.
+      - name: Authenticode-sign lumi.exe
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+        run: ./packaging/sign_windows.ps1 -Files "dist/lumi/lumi.exe"
 
       # NOTE: windows-latest GitHub-hosted runners ship Inno Setup pre-installed
       # (v6.7+ as of late 2025). No need to install — the "Build installer" step
@@ -119,6 +139,15 @@ jobs:
           }
           $size = (Get-Item $installer).Length
           Write-Host "Installer: $installer ($([math]::Round($size / 1MB, 1)) MB)"
+
+      # Before the EdDSA signature, so the update feed signs the final bytes.
+      - name: Authenticode-sign the installer
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+        run: ./packaging/sign_windows.ps1 -Files "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
 
       - name: Sign installer with EdDSA
         id: sign
@@ -157,6 +186,8 @@ jobs:
           generate_release_notes: true
           files: |
             dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe
+            dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json
+            dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt
 
       # Installed apps poll the GitHub Pages feed and download installers
       # anonymously. The source repository may be private, so Release assets

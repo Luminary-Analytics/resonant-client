@@ -186,6 +186,12 @@ node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs
 git diff --check
 ```
 
+Release builds install the hash-pinned `packaging/requirements-release.txt`.
+After changing dependencies in `pyproject.toml`, run `python scripts/lock_release.py`
+and commit the locks. A shipped package under GPL, AGPL or LGPL needs a
+`license_reviews` entry in `packaging/third-party-components.json`, or exclusion
+under `not_shipped`; the build fails otherwise.
+
 Use `scripts/build_clean.ps1` for Windows release builds. Never clean a running
 bundle; use a separate source copy for a candidate build while testing. The
 script's `-ValidateOnly` checks the running-target guard without cleanup. Verify the packaged

@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme-setting="{{ appearance.theme }}"{% if appearance.theme == 'light' %} data-theme="light"{% endif %}{% if appearance.density == 'compact' %} data-density="compact"{% endif %}{% if appearance.font_size %} style="--text-base: {{ appearance.font_size }}px"{% endif %}>
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -20,8 +20,10 @@
          10+) / SF Mono (macOS) / Consolas. -->
     <link rel="stylesheet" href="/static/fonts.css?v={{ asset_version }}">
     <link rel="stylesheet" href="/static/styles.css?v={{ asset_version }}">
-    <!-- Syntax highlighting theme -->
+    <!-- Syntax highlighting theme (dark); styles.css recolors it for the light theme -->
     <link rel="stylesheet" href="/static/vendor/github-dark-dimmed.min.css?v={{ asset_version }}">
+    <!-- Not deferred: resolves "Match system" before the first paint. -->
+    <script src="/static/appearance.js?v={{ asset_version }}"></script>
     <!-- Markdown rendering, syntax highlighting, sanitizer. Deferred: none is
          needed before first paint, so they no longer block rendering.
 

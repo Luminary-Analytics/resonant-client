@@ -903,8 +903,13 @@ class LumiSettingsView {
             {
                 id: 'appearance', title: 'Appearance', open: false,
                 fields: [
-                    { key: 'theme', label: 'Theme', type: 'select',
-                      options: [{ value: 'dark', label: 'Dark' }, { value: 'light', label: 'Light' }]
+                    { key: 'theme', label: 'Theme', type: 'select', default: 'dark',
+                      options: [
+                          { value: 'dark', label: 'Dark' },
+                          { value: 'light', label: 'Light' },
+                          { value: 'system', label: 'Match system' },
+                      ],
+                      hint: 'Match system follows your computer’s light or dark setting.'
                     },
                     { key: 'density', label: 'Density', type: 'select',
                       options: [{ value: 'comfortable', label: 'Comfortable' }, { value: 'compact', label: 'Compact' }]

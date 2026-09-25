@@ -108,6 +108,14 @@ Text fields save when focus leaves them; switches and selects save when changed.
 Background responses defer rebuilding an actively edited field. Account, editor,
 usage, and diagnostic requests load on the relevant page rather than all at once.
 
+**Appearance** offers the Dark, Light and Match system themes, density and base
+font size. The server renders the saved values into the page (`gui/appearance.py`),
+so they apply from the first paint and survive restarts; the desktop window
+keeps no browser storage between launches. Match system follows the operating
+system's light or dark setting as it changes (`static/appearance.js`). Styles use
+theme tokens rather than color literals, because the light theme redefines
+every token.
+
 ## Permission modes and approvals
 
 The composer's mode menu applies immediately to the current conversation,

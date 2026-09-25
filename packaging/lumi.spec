@@ -90,6 +90,8 @@ datas = [
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "local_access.js"),
      "lumi/gui/static"),
+    (str(PKG_ROOT / "gui" / "static" / "appearance.js"),
+     "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "fonts.css"),
      "lumi/gui/static"),
     (str(PKG_ROOT / "gui" / "static" / "styles.css"),

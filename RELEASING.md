@@ -23,7 +23,7 @@ python -m ruff check .
 python -m pytest -q
 node --check lumi/gui/static/app.js
 node --check lumi/gui/static/settings_view.js
-node --test tests/ui_recovery.test.cjs
+node --test tests/ui_recovery.test.cjs tests/appearance.test.cjs
 git diff --check
 ```
 

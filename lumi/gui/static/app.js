@@ -432,7 +432,6 @@ class LumiApp {
         }
 
         this.bindEvents();
-        this._restoreAppearance();
         this._bindMenuBar();
         this.showSessionSkeletons();
         this.connect();
@@ -6539,28 +6538,21 @@ class LumiApp {
     }
 
     // ── Appearance ─────────────────────────────────────────────
+    // The server renders the saved appearance into <html> (gui/appearance.py),
+    // because the desktop window keeps no browser storage between launches.
+    // This shows a change from Settings at once; Settings saves it.
 
     _applyAppearance(key, value) {
+        const root = document.documentElement;
         if (key === 'theme') {
-            document.documentElement.setAttribute('data-theme', value === 'light' ? 'light' : '');
-            localStorage.setItem('lumi:theme', value);
+            window.LumiAppearance?.setTheme(value);
         } else if (key === 'density') {
-            document.documentElement.setAttribute('data-density', value === 'compact' ? 'compact' : '');
-            localStorage.setItem('lumi:density', value);
+            if (value === 'compact') root.setAttribute('data-density', 'compact');
+            else root.removeAttribute('data-density');
         } else if (key === 'font_size') {
             const px = parseFloat(value) || 13.5;
-            document.documentElement.style.setProperty('--text-base', px + 'px');
-            localStorage.setItem('lumi:font-size', String(px));
+            root.style.setProperty('--text-base', px + 'px');
         }
-    }
-
-    _restoreAppearance() {
-        const theme = localStorage.getItem('lumi:theme');
-        if (theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
-        const density = localStorage.getItem('lumi:density');
-        if (density === 'compact') document.documentElement.setAttribute('data-density', 'compact');
-        const fontSize = localStorage.getItem('lumi:font-size');
-        if (fontSize) document.documentElement.style.setProperty('--text-base', fontSize + 'px');
     }
 
     // ── Keyboard Shortcuts ──────────────────────────────────────

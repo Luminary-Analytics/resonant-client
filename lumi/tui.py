@@ -10,6 +10,7 @@ The TUI handles ONLY display and input. All logic lives in the engine.
 """
 
 import json
+import html
 import io
 import os
 import re
@@ -171,9 +172,10 @@ _BACKSLASHES_BEFORE_PLAIN_BRACKET = re.compile(r"\\+(?=\[(?![a-z#/@][^[]*\]))")
 def _esc(value) -> str:
     """
     `value` as markup that prints exactly as written, for text the TUI didn't
-    write: tool arguments and output, the model's words, model names. Escape
-    the whole run of text before a closing tag, quotes included
-    (`_esc(f"'{pattern}'")`), and print the line with `_print`.
+    write: tool arguments and output, the model's words, model and folder
+    names, errors, what the person typed. Escape the whole run of text
+    before a closing tag, quotes included (`_esc(f"'{pattern}'")`), and
+    print the line with `_print`.
 
     `rich.markup.escape` escapes what would read as a tag. Backslashes need
     two more fixes: Rich drops one before a "[" that doesn't open a tag (a
@@ -189,12 +191,28 @@ def _esc(value) -> str:
 
 def _print(markup: str):
     """
-    Print a line of a turn's display without emoji codes or highlighting, so
-    outside text in it (see `_esc`) reads as written: ":x:" stays text and
-    Rich adds no styles of its own. Lines without outside text print this
-    way too, so numbers look the same on every line.
+    Print a line of the TUI's display without emoji codes or highlighting,
+    so outside text in it (see `_esc`) reads as written: ":x:" stays text
+    and Rich adds no styles of its own. A turn's lines without outside text
+    print this way too, so numbers look the same on every line.
     """
     console.print(markup, emoji=False, highlight=False)
+
+
+# What XML can't hold even escaped: characters below space other than tab
+# and line breaks, U+FFFE and U+FFFF, and lone surrogates (Python's
+# stand-ins for bytes of a POSIX file name that aren't UTF-8).
+_NOT_XML_CHARS = re.compile(r"[^\t\n\r\x20-\ud7ff\ue000-\ufffd\U00010000-\U0010ffff]")
+
+
+def _html_esc(value) -> str:
+    """
+    `value` as text inside a prompt_toolkit `HTML(...)` prompt, for text the
+    TUI didn't write: the working folder's name, a tool's name. `HTML`
+    parses XML, so "R&D" or "a<b" raised `ExpatError` there; a character
+    XML can't hold at all shows as U+FFFD.
+    """
+    return html.escape(_NOT_XML_CHARS.sub("\ufffd", str(value)))
 
 
 def _inline_tool(icon: str, desc: str, meta: str = "", color: str = C_MUTED):
@@ -1044,25 +1062,26 @@ def print_banner(backend=None, health_info: dict = None):
         model = health_info.get("model", "")
         label = _BACKEND_LABELS.get(backend_name, backend_name)
 
-        # Backend + model on one line with connection dot
-        console.print(f"  [{C_OK}]{G_DOT}[/{C_OK}] [{C_MUTED}]backend[/{C_MUTED}]  [{C_BRAND2}]{label}[/{C_BRAND2}]", end="")
+        # Backend + model on one line with connection dot; the backend
+        # reports both names.
+        line = f"  [{C_OK}]{G_DOT}[/{C_OK}] [{C_MUTED}]backend[/{C_MUTED}]  [{C_BRAND2}]{_esc(label)}[/{C_BRAND2}]"
         if model:
-            console.print(f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_TEXT}]{model}[/{C_TEXT}]", end="")
+            line += f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_TEXT}]{_esc(model)}[/{C_TEXT}]"
 
         # Lumi-specific status
         if backend_name == "resonant":
             patterns = health_info.get('memory_patterns', 0)
             energy = health_info.get('energy', 0)
             if patterns:
-                console.print(f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_MUTED}]{patterns:,} patterns[/{C_MUTED}]", end="")
+                line += f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_MUTED}]{patterns:,} patterns[/{C_MUTED}]"
             if energy:
-                console.print(f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_OK}]{energy:.0%}[/{C_OK}]", end="")
-        console.print()
+                line += f"  [{C_DIMMER}]·[/{C_DIMMER}]  [{C_OK}]{energy:.0%}[/{C_OK}]"
+        _print(line)
 
     # CWD and help
     cwd = os.getcwd()
     cwd_display = cwd.replace("\\", "/")  # Normalize for display
-    console.print(f"    [{C_MUTED}]cwd[/{C_MUTED}]      [{C_FILE}]{cwd_display}[/{C_FILE}]")
+    _print(f"    [{C_MUTED}]cwd[/{C_MUTED}]      [{C_FILE}]{_esc(cwd_display)}[/{C_FILE}]")
     console.print(f"    [{C_MUTED}]help[/{C_MUTED}]     [{C_DIM}]/help · /plan · /model · /backend · /quit[/{C_DIM}]")
     console.print()
 
@@ -1107,11 +1126,12 @@ def _select_model_interactive(models: list, current: str = None) -> str:
     console.print()
     console.print(f"  [{C_BRAND} bold]Models[/{C_BRAND} bold]")
     console.print(f"  [{C_BORDER}]{G_DASH * 40}[/{C_BORDER}]")
+    # The names are the server's.
     for i, model in enumerate(models):
         if model == current:
-            console.print(f"  [{C_BRAND}]{G_DOT}[/{C_BRAND}] [{C_BRAND}]{i + 1}.[/{C_BRAND}] [{C_TEXT}]{model}[/{C_TEXT}]  [{C_DIM}](current)[/{C_DIM}]")
+            _print(f"  [{C_BRAND}]{G_DOT}[/{C_BRAND}] [{C_BRAND}]{i + 1}.[/{C_BRAND}] [{C_TEXT}]{_esc(model)}[/{C_TEXT}]  [{C_DIM}](current)[/{C_DIM}]")
         else:
-            console.print(f"    [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{model}[/{C_TEXT}]")
+            _print(f"    [{C_DIM}]{i + 1}.[/{C_DIM}] [{C_TEXT}]{_esc(model)}[/{C_TEXT}]")
 
     console.print()
     try:
@@ -1125,15 +1145,21 @@ def _select_model_interactive(models: list, current: str = None) -> str:
         idx = int(answer) - 1
         if 0 <= idx < len(models):
             selected = models[idx]
-            console.print(f"  [{C_OK}]{G_CHECK} {selected}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} {_esc(selected)}[/{C_OK}]")
             return selected
     except ValueError:
         if answer in models:
-            console.print(f"  [{C_OK}]{G_CHECK} {answer}[/{C_OK}]")
+            _print(f"  [{C_OK}]{G_CHECK} {_esc(answer)}[/{C_OK}]")
             return answer
 
     console.print(f"  [{C_DIM}]Invalid — keeping current model[/{C_DIM}]")
     return current or models[0]
+
+
+def _print_model_not_found(model: str):
+    """The model asked for (`--model`, or Settings' default) isn't on the server."""
+    missing = _esc(f"Model '{model}' not found")
+    _print(f"  [{C_WARN}]{G_CROSS} {missing}[/{C_WARN}]")
 
 
 def _create_backend_from_available(target: str, available: dict):
@@ -1169,7 +1195,8 @@ def run_embedded(session: Session, user_msg: str, images: list = None):
     def on_permission(tool_name, tool_args):
         """Prompt user for tool approval."""
         try:
-            answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">    Allow {tool_name}? [Y/n] </style>'))
+            # An MCP server names its own tools.
+            answer = pt_prompt(HTML(f'<style fg="#{C_WARN[1:]}">    Allow {_html_esc(tool_name)}? [Y/n] </style>'))
             return answer.strip().lower() not in ("n", "no")
         except (EOFError, KeyboardInterrupt):
             return False
@@ -1220,7 +1247,7 @@ def run_remote(ws_url: str):
                 try:
                     cwd_short = Path(os.getcwd()).name
                     user_input = pt_prompt(
-                        HTML(f'<style fg="#{C_BRAND[1:]}"><b>{cwd_short}</b></style> <style fg="#{C_BRAND2[1:]}">{G_PROMPT}</style> '),
+                        HTML(f'<style fg="#{C_BRAND[1:]}"><b>{_html_esc(cwd_short)}</b></style> <style fg="#{C_BRAND2[1:]}">{G_PROMPT}</style> '),
                         history=history,
                     ).strip()
                 except (EOFError, KeyboardInterrupt):
@@ -1385,7 +1412,7 @@ Examples:
         console.print()
         console.print(f"  [{C_ERR}]{G_CROSS} Ollama not reachable[/{C_ERR}]")
         console.print(f"  [{C_BORDER}]{G_DASH * 50}[/{C_BORDER}]")
-        console.print(f"    [{C_DIM}]Checked: {ollama_url}[/{C_DIM}]")
+        _print(f"    [{C_DIM}]Checked: {_esc(ollama_url)}[/{C_DIM}]")
         console.print()
         console.print(f"  [{C_DIM}]Start Ollama or specify a different URL:[/{C_DIM}]")
         console.print(f"    [{C_TEXT}]ollama serve  # then re-run resonant[/{C_TEXT}]")
@@ -1453,10 +1480,11 @@ Examples:
                 hint = f"\n  [{C_DIM}]Set OPENAI_API_KEY and install: pip install resonant-client[openai][/{C_DIM}]"
             elif chosen == "lmstudio":
                 hint = f"\n  [{C_DIM}]Use --lmstudio-url or set LMSTUDIO_URL (e.g. http://192.168.1.50:1234)[/{C_DIM}]"
-            console.print(f"\n  [{C_ERR}]{G_CROSS} Backend '{chosen}' not available[/{C_ERR}]{hint}")
+            unavailable = _esc(f"Backend '{chosen}' not available")
+            _print(f"\n  [{C_ERR}]{G_CROSS} {unavailable}[/{C_ERR}]{hint}")
             if available:
                 fallback = list(available.keys())[0]
-                console.print(f"  [{C_DIM}]{G_ARROW} Falling back to {fallback}[/{C_DIM}]")
+                _print(f"  [{C_DIM}]{G_ARROW} Falling back to {_esc(fallback)}[/{C_DIM}]")
                 chosen = fallback
             else:
                 return
@@ -1471,11 +1499,11 @@ Examples:
         if not model:
             model = _select_model_interactive(ollama_info["models"])
         elif model not in ollama_info["models"]:
-            console.print(f"  [{C_WARN}]{G_CROSS} Model '{model}' not found[/{C_WARN}]")
+            _print_model_not_found(model)
             model = _select_model_interactive(ollama_info["models"])
         backend = create_backend("ollama", ollama_info["url"], model=model)
         health_info = backend.health()
-        console.print(f"  [{C_DIM}]{G_THINK} Warming up {model}[/{C_DIM}]")
+        _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(model)}[/{C_DIM}]")
         backend.warm_up()
     elif chosen == "claude":
         claude_info = available["claude"]
@@ -1483,7 +1511,7 @@ Examples:
         if not model:
             model = _select_model_interactive(claude_info["models"])
         elif model not in claude_info["models"]:
-            console.print(f"  [{C_WARN}]{G_CROSS} Model '{model}' not found[/{C_WARN}]")
+            _print_model_not_found(model)
             model = _select_model_interactive(claude_info["models"])
         backend = create_backend("claude", api_key=claude_info["api_key"], model=model)
         health_info = backend.health()
@@ -1493,7 +1521,7 @@ Examples:
         if not model:
             model = _select_model_interactive(openai_info["models"])
         elif model not in openai_info["models"]:
-            console.print(f"  [{C_WARN}]{G_CROSS} Model '{model}' not found[/{C_WARN}]")
+            _print_model_not_found(model)
             model = _select_model_interactive(openai_info["models"])
         backend = create_backend("openai", api_key=openai_info["api_key"], model=model)
         health_info = backend.health()
@@ -1503,7 +1531,7 @@ Examples:
         if not model:
             model = _select_model_interactive(lms_info["models"])
         elif model not in lms_info["models"]:
-            console.print(f"  [{C_WARN}]{G_CROSS} Model '{model}' not found[/{C_WARN}]")
+            _print_model_not_found(model)
             model = _select_model_interactive(lms_info["models"])
         backend = create_backend("lmstudio", api_key="lm-studio", model=model,
                                  base_url=lms_info["base_url"])
@@ -1570,7 +1598,7 @@ Examples:
             mode_indicator = '<style fg="ansiyellow"> plan </style>' if plan_mode else ""
             img_indicator = f'<style fg="ansigreen"> 📎{len(pending_images)} </style>' if pending_images else ""
             user_input = pt_prompt(
-                HTML(f'{img_indicator}{mode_indicator}<style fg="#{C_BRAND[1:]}"><b>{cwd_short}</b></style> <style fg="#{C_BRAND2[1:]}">{G_PROMPT}</style> '),
+                HTML(f'{img_indicator}{mode_indicator}<style fg="#{C_BRAND[1:]}"><b>{_html_esc(cwd_short)}</b></style> <style fg="#{C_BRAND2[1:]}">{G_PROMPT}</style> '),
                 history=history,
                 multiline=False,
                 key_bindings=kb,
@@ -1593,14 +1621,15 @@ Examples:
                 break
 
             elif cmd == "/cd":
+                # The error repeats the typed path ("/cd [/]").
                 if rest:
                     try:
                         os.chdir(rest)
-                        console.print(f"  [{C_FILE}]{G_ARROW} {os.getcwd()}[/{C_FILE}]")
+                        _print(f"  [{C_FILE}]{G_ARROW} {_esc(os.getcwd())}[/{C_FILE}]")
                     except Exception as e:
-                        console.print(f"  [{C_ERR}]{G_CROSS} {e}[/{C_ERR}]")
+                        _print(f"  [{C_ERR}]{G_CROSS} {_esc(e)}[/{C_ERR}]")
                 else:
-                    console.print(f"  [{C_FILE}]{os.getcwd()}[/{C_FILE}]")
+                    _print(f"  [{C_FILE}]{_esc(os.getcwd())}[/{C_FILE}]")
 
             elif cmd == "/clear":
                 session.clear()
@@ -1613,14 +1642,15 @@ Examples:
                     table = Table(show_header=False, border_style="dim", padding=(0, 1))
                     table.add_column(style=C_BRAND)
                     table.add_column()
+                    # Text cells: a str cell is markup, and these are the backend's words.
                     for k, v in health.items():
                         if k == "available_models":
-                            table.add_row(k, ", ".join(v) if isinstance(v, list) else str(v))
+                            table.add_row(Text(str(k)), Text(", ".join(v) if isinstance(v, list) else str(v)))
                         else:
-                            table.add_row(k, str(v))
+                            table.add_row(Text(str(k)), Text(str(v)))
                     console.print(table)
                 except Exception as e:
-                    console.print(f"  [{C_ERR}]{e}[/{C_ERR}]")
+                    _print(f"  [{C_ERR}]{_esc(e)}[/{C_ERR}]")
 
             elif cmd == "/model":
                 be = session.backend
@@ -1632,11 +1662,11 @@ Examples:
                             new_be = create_backend("ollama", be.base_url, model=new_model)
                             session.set_backend(new_be, reset_history=True)  # explicit user command — preserve "conversation cleared" UX
                             health_info = new_be.health()
-                            console.print(f"  [{C_DIM}]{G_THINK} Warming up {new_model}[/{C_DIM}]")
+                            _print(f"  [{C_DIM}]{G_THINK} Warming up {_esc(new_model)}[/{C_DIM}]")
                             new_be.warm_up()
-                            console.print(f"  [{C_OK}]{G_CHECK} Switched to {new_model} · conversation cleared[/{C_OK}]")
+                            _print(f"  [{C_OK}]{G_CHECK} Switched to {_esc(f'{new_model} · conversation cleared')}[/{C_OK}]")
                         else:
-                            console.print(f"  [{C_DIM}]Keeping {be.model}[/{C_DIM}]")
+                            _print(f"  [{C_DIM}]Keeping {_esc(be.model)}[/{C_DIM}]")
                     else:
                         console.print(f"  [{C_ERR}]{G_CROSS} Could not list models[/{C_ERR}]")
                 # v0.4.0 — Claude / OpenAI / Resonant Engine branches cut.
@@ -1650,7 +1680,7 @@ Examples:
                 else:
                     others = [k for k in new_available if k != session.backend.name]
                     if not others:
-                        console.print(f"  [{C_DIM}]Already using {session.backend.name} — no other backend available[/{C_DIM}]")
+                        _print(f"  [{C_DIM}]Already using {_esc(f'{session.backend.name} — no other backend available')}[/{C_DIM}]")
                     elif len(others) == 1:
                         target = others[0]
                         new_be = _create_backend_from_available(target, new_available)
@@ -1710,7 +1740,7 @@ Examples:
                     backend_desc += f" · {session.backend.model}"
 
                 console.print()
-                console.print(f"  [{C_BRAND}]{G_SPLIT}[/{C_BRAND}] [{C_BRAND} bold]Lumi Code Agent[/{C_BRAND} bold]  [{C_DIM}]{backend_desc}[/{C_DIM}]")
+                _print(f"  [{C_BRAND}]{G_SPLIT}[/{C_BRAND}] [{C_BRAND} bold]Lumi Code Agent[/{C_BRAND} bold]  [{C_DIM}]{_esc(backend_desc)}[/{C_DIM}]")
                 console.print(f"  [{C_DIMMER}]{G_DASH * 55}[/{C_DIMMER}]")
                 console.print()
                 console.print(f"  [{C_BRAND2}]Commands[/{C_BRAND2}]")
@@ -1736,7 +1766,7 @@ Examples:
                 console.print()
 
             else:
-                console.print(f"  [{C_DIM}]Unknown: {cmd} · try /help[/{C_DIM}]")
+                _print(f"  [{C_DIM}]Unknown: {_esc(f'{cmd} · try /help')}[/{C_DIM}]")
             continue
 
         # ── Run agent ──

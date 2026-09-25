@@ -73,6 +73,7 @@ nav:
       - Lumi account and Lumi Cloud: lumi-cloud.md
   - For organizations:
       - Organization policy: enterprise-policy.md
+      - Shell sandbox and command guardrails: shell-sandbox.md
       - Deploying on Windows: deploy-windows.md
       - Audit log: audit-log.md
       - Running without a UI: headless.md

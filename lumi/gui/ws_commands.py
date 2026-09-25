@@ -3165,7 +3165,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "audit_log", "audit_capture", "audit_retention_days",
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
-    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway"}),
+    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox"}),
     "updates": frozenset({"mode", "channel", "pin"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),
@@ -3224,9 +3224,14 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
     if (section, key) in {
         ("network", "system_certificates"), ("privacy", "secret_scan"), ("privacy", "audit_log"),
         ("onboarding", "dismissed"),
-    } or section == "security":
+    } or (section == "security" and key != "shell_sandbox"):
         if not isinstance(value, bool):
             raise ValueError(f"{section}.{key} must be on or off.")
+    elif (section, key) == ("security", "shell_sandbox"):
+        from ..engine.os_sandbox import MODES
+
+        if value not in MODES:
+            raise ValueError("Choose where commands can write: off or project.")
     elif (section, key) == ("privacy", "excluded_paths"):
         items = value.splitlines() if isinstance(value, str) else value
         if not isinstance(items, list) or len(items) > 500:

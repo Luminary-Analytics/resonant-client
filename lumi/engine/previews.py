@@ -14,6 +14,7 @@ import uuid
 from urllib.parse import urlsplit
 import urllib.request
 
+from lumi.engine import os_sandbox
 from lumi.processes import background_process_kwargs, windows_kill_job, close_windows_job
 from lumi.secrets_store import child_env
 
@@ -23,7 +24,7 @@ class PreviewManager:
         self._items = {}
         self._lock = threading.RLock()
 
-    def start(self, project, argv, url, *, timeout=15, cancel_event=None):
+    def start(self, project, argv, url, *, timeout=15, cancel_event=None, sandbox_roots=()):
         root = str(Path(project).resolve(strict=True))
         parsed = urlsplit(url)
         if parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost') or not parsed.port:
@@ -39,7 +40,9 @@ class PreviewManager:
             with socket.socket() as probe:
                 if probe.connect_ex(('127.0.0.1', parsed.port)) == 0:
                     raise ValueError('Preview port is already in use; choose another port.')
-            process = subprocess.Popen(argv, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
+            # Inside the shell sandbox when it's on (engine/os_sandbox.py).
+            launch = os_sandbox.prepare_argv(argv, roots=sandbox_roots or [root], cwd=root)
+            process = subprocess.Popen(launch, cwd=root, stdin=subprocess.DEVNULL, env=child_env(),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 **background_process_kwargs(new_process_group=True))
             try:

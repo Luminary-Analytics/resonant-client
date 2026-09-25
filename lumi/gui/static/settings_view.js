@@ -1209,6 +1209,17 @@ class LumiSettingsView {
     }
 
 
+    _shellSandboxNote() {
+        const sandbox = this.settings?._meta?.shell_sandbox;
+        if (!sandbox) return '';
+        if (sandbox.available === null) return 'Checking whether a sandbox can run on this computer…';
+        if (sandbox.available) {
+            return `A sandbox can run here (${sandbox.kind === 'seatbelt' ? 'macOS Seatbelt' : 'bubblewrap'}).`;
+        }
+        const note = `No sandbox can run here: ${sandbox.reason || 'unknown reason.'}`;
+        return sandbox.mode === 'project' ? `${note} While this is on, the agent can’t run commands.` : note;
+    }
+
     _secretStorageNote() {
         const storage = this.settings?._meta?.secret_storage;
         if (!storage) return '';
@@ -1231,7 +1242,7 @@ class LumiSettingsView {
             {id:'rag', title:'Codebase index', group:'Coding', icon:'book', description:'Index your project for semantic code search.', sections:['rag'], keywords:'RAG files repository'},
             {id:'hooks', title:'Hooks', group:'Coding', icon:'plug', description:'Inspect commands that run at lifecycle events.', sections:['hooks']},
             {id:'capability_packs', title:'Capability packs', group:'Coding', icon:'cube', description:'Review what a pack would run, then approve or revoke it. Nothing in a pack runs until you approve it.', sections:['capability_packs'], keywords:'plugins extensions trust approve repository pack'},
-            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM'},
+            {id:'privacy', title:'Privacy & security', group:'Security', icon:'shield', description:'Control what Lumi reads, keeps and sends, and which tools it may use.', sections:['org_policy','privacy','file_exclusions','transcripts','audit_log','audit','audit_status','security','shell_sandbox','project_trust'], keywords:'audit log opentelemetry otlp tamper evidence secrets redact scan credentials DLP exclude ignore lumiignore env retention delete trust AGENTS.md policy codex claude computer gateway organization managed group policy MDM sandbox seatbelt bubblewrap bwrap shell commands'},
             {id:'local_backends', title:'Ollama runtime', group:'Advanced', icon:'cube', description:'Tune your local model runtime.', sections:['local_backends']},
             {id:'prompt_inspector', title:'Prompt inspector', group:'Advanced', icon:'book', description:'Inspect the instructions used by the active model.', sections:['prompt_inspector']},
             {id:'model_evaluations', title:'Model evaluations', group:'Advanced', icon:'chart', description:'Review model quality and runtime diagnostics.', sections:['model_evaluations']},
@@ -1512,6 +1523,18 @@ class LumiSettingsView {
                       hint: 'Screenshots and mouse and keyboard control of this computer. Off removes these tools from every session.' },
                     { key: 'chat_gateway', label: 'Chat gateway', type: 'toggle', default: true,
                       hint: 'Lets `lumi gateway` answer messages from Telegram. Off makes it refuse to start.' },
+                ]
+            },
+            {
+                id: 'shell_sandbox', title: 'Shell sandbox', store: 'security',
+                note: this._shellSandboxNote(),
+                fields: [
+                    { key: 'shell_sandbox', label: 'Where the agent’s commands can write', type: 'select', default: 'off',
+                      options: [
+                          { value: 'off', label: 'Anywhere you can' },
+                          { value: 'project', label: 'Only the project and temporary folders' },
+                      ],
+                      hint: 'Commands, checks, jobs and previews the agent starts run in an operating-system sandbox (macOS and Linux). Reading files and the network work as before; Git’s own folder stays read-only, so commit with the agent’s Git tools. Where no sandbox can run, the agent can’t run commands while this is on. Commands that wipe a drive or your home folder, format disks or shut down are refused either way.' },
                 ]
             },
             {

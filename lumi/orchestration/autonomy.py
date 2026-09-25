@@ -332,6 +332,17 @@ def check_floor(
     approval through the chat. Everything else runs without prompting.
     """
     args = args or {}
+    # Commands that are never run (engine/guardrails.py), whatever approved
+    # them: a hook's rewrite, or a session with no execution policy.
+    from ..engine import guardrails
+
+    reason = guardrails.blocked_call(tool_name, args)
+    if reason:
+        return FloorViolation(
+            rule="never_allowed_command",
+            reason=guardrails.refusal(reason),
+            suggested_action="Ask the user to run it themselves if it's really needed.",
+        )
     if tool_name in {'check_run', 'preview_start'}:
         if tool_name == 'preview_start':
             args = {**args, 'command': ' '.join(str(v) for v in args.get('command', []))}

@@ -128,6 +128,10 @@ DEFAULTS = {
         "cli_adapters": True,     # Codex and Claude Code backends
         "computer_use": True,     # screenshots, mouse and keyboard control
         "chat_gateway": True,     # `lumi gateway` (Telegram)
+        # "project": the agent's commands, jobs and previews run in an OS
+        # sandbox that writes only to the project and temporary folders
+        # (lumi/engine/os_sandbox.py, macOS and Linux).
+        "shell_sandbox": "off",
     },
     "cost_tracking": {
         "enabled": True,
@@ -289,6 +293,9 @@ class SettingsManager:
         # Offered by Settings > Privacy & security; nothing is excluded by default.
         from ..engine.exclusions import COMMON_SECRET_PATTERNS
         meta["common_exclusions"] = list(COMMON_SECRET_PATTERNS)
+        # Whether the shell sandbox can run here; never waits for the check.
+        from ..engine import os_sandbox
+        meta["shell_sandbox"] = os_sandbox.status()
         return data
 
     def secret_storage(self) -> dict:

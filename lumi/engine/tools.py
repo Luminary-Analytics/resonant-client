@@ -18,7 +18,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 from lumi.processes import background_process_kwargs
 
@@ -1513,12 +1513,17 @@ def execute_tool(
     settings: object = None,
     session_name: str = "",
     exclusions=None,
+    sandbox_roots: Sequence[str] = (),
 ) -> ToolResult:
     """
     Execute a tool and return structured result.
 
     ``exclusions`` (engine/exclusions.ExclusionRules) removes excluded files
     from glob and grep results; Session refuses direct access before this.
+
+    ``sandbox_roots`` are the folders the session may write to (its path
+    sandbox). When the shell sandbox is on (engine/os_sandbox.py), commands,
+    jobs and previews can write only there and to temporary folders.
 
     This is the pure execution layer — no display logic, no approval prompts.
     The engine handles permission; the TUI handles display.
@@ -1602,7 +1607,8 @@ def execute_tool(
             from .jobs import jobs
             root = project_path or os.getcwd()
             if name == "job_start":
-                data = jobs.start(root, arguments.get("command"), timeout=arguments.get("timeout", 1200), cancel_event=cancel_event)
+                data = jobs.start(root, arguments.get("command"), timeout=arguments.get("timeout", 1200),
+                                  cancel_event=cancel_event, sandbox_roots=sandbox_roots)
             elif name == "job_cancel":
                 data = jobs.cancel(root, arguments.get("id", ""))
             else:
@@ -1616,7 +1622,9 @@ def execute_tool(
             from .previews import previews
             root = project_path or os.getcwd()
             if name == "preview_start":
-                data = previews.start(root, arguments.get("command"), arguments.get("url", ""), timeout=arguments.get("timeout", 15), cancel_event=cancel_event)
+                data = previews.start(root, arguments.get("command"), arguments.get("url", ""),
+                                      timeout=arguments.get("timeout", 15), cancel_event=cancel_event,
+                                      sandbox_roots=sandbox_roots)
             elif name == "preview_stop":
                 data = previews.stop(root, arguments.get("id", ""))
             else:
@@ -1626,13 +1634,14 @@ def execute_tool(
             requirement = str(arguments.get("requirement", "")).strip()
             if not requirement or not str(arguments.get("command", "")).strip():
                 return ToolResult("A check needs a command and requirement.", is_error=True)
-            result = _exec_bash({**arguments, "cwd": project_path or os.getcwd()}, start, cancel_event=cancel_event)
+            result = _exec_bash({**arguments, "cwd": project_path or os.getcwd()}, start, cancel_event=cancel_event,
+                                sandbox_roots=sandbox_roots)
             result.metadata["check"] = {"command": arguments["command"], "requirement": requirement,
                 "status": "failed" if result.is_error else "passed", "exit_code": result.metadata.get("exit_code"),
                 "checked_at": time.time()}
             return result
         if name == "bash":
-            return _exec_bash(arguments, start, cancel_event=cancel_event)
+            return _exec_bash(arguments, start, cancel_event=cancel_event, sandbox_roots=sandbox_roots)
         elif name == "file_write":
             return _exec_file_write(arguments, start)
         elif name == "file_read":
@@ -1986,11 +1995,26 @@ def _normalize_managed_bash_command(command: str) -> str:
     return managed_cmd
 
 
-def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
+def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event] = None,
+               sandbox_roots: Sequence[str] = ()) -> ToolResult:
     cmd = args.get("command", "")
     managed_cmd = _normalize_managed_bash_command(cmd)
     timeout = args.get("timeout", 30)
     cwd = args.get("cwd", os.getcwd())
+
+    # The shell sandbox (engine/os_sandbox.py), when it's on: the command runs
+    # inside it, or not at all.
+    from . import os_sandbox
+
+    try:
+        sandboxed = os_sandbox.prepare_shell(managed_cmd, roots=sandbox_roots or [cwd], cwd=cwd)
+    except os_sandbox.SandboxUnavailable as exc:
+        return ToolResult(
+            f"{exc} No command was executed.",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"command": cmd, "not_executed": True, "reason": "shell_sandbox_unavailable"},
+        )
 
     if sys.platform == "win32" and ("\n" in managed_cmd or "\r" in managed_cmd):
         # cmd.exe /c may silently truncate a quoted multiline command and still
@@ -2006,8 +2030,8 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
 
     try:
         returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
-            managed_cmd,
-            shell=True,
+            sandboxed or managed_cmd,
+            shell=sandboxed is None,
             text=True,
             timeout=timeout,
             cwd=cwd,
@@ -2050,6 +2074,7 @@ def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event]
                 "lines": result.total_lines,
                 "shown_lines": result.output_lines,
                 "truncated": result.truncated,
+                "sandboxed": sandboxed is not None,
             },
         )
     except subprocess.TimeoutExpired:

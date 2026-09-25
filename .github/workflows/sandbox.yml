@@ -1,0 +1,75 @@
+name: Shell sandbox
+
+# The shell sandbox (lumi/engine/os_sandbox.py) runs only on macOS and Linux,
+# and tests.yml runs on Windows, where its live tests are skipped. This job
+# runs them where a real sandbox starts: Seatbelt on macOS, bubblewrap on
+# Linux.
+
+on:
+  pull_request:
+    paths:
+      - 'lumi/engine/os_sandbox.py'
+      - 'lumi/engine/guardrails.py'
+      - 'lumi/engine/tools.py'
+      - 'lumi/engine/jobs.py'
+      - 'lumi/engine/previews.py'
+      - 'tests/test_os_sandbox.py'
+      - 'tests/test_guardrails.py'
+      - '.github/workflows/sandbox.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'lumi/engine/os_sandbox.py'
+      - 'lumi/engine/guardrails.py'
+      - 'lumi/engine/tools.py'
+      - 'lumi/engine/jobs.py'
+      - 'lumi/engine/previews.py'
+      - 'tests/test_os_sandbox.py'
+      - 'tests/test_guardrails.py'
+      - '.github/workflows/sandbox.yml'
+
+concurrency:
+  group: sandbox-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  live:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: 'pip'
+
+      - name: Install bubblewrap
+        if: runner.os == 'Linux'
+        # Ubuntu 24.04 restricts unprivileged user namespaces through
+        # AppArmor, and bubblewrap needs them. docs/shell-sandbox.md tells
+        # people the same.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[all,dev]"
+
+      - name: A sandbox starts here
+        # Fails the job rather than letting the live tests skip.
+        run: python -c "from lumi.engine import os_sandbox; info = os_sandbox._probe(); print(info); assert info.available, info.reason"
+
+      - name: Test
+        run: python -m pytest -q -rs tests/test_os_sandbox.py tests/test_guardrails.py

@@ -77,6 +77,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - File exclusions (`engine/exclusions.py`) are enforced at
   `Session._prepare_workspace_tool_args` and inside the listing tools. Any new
   path that reads project files for the model must check `session.exclusions`.
+- Commands the agent starts (`bash`, `check_run`, `job_start`,
+  `preview_start`) pass the guardrails (`engine/guardrails.py`: deny rules
+  first in every tier, and `check_floor` before they start) and, when
+  `security.shell_sandbox` is `"project"`, run through `engine/os_sandbox.py`
+  or not at all. A new tool that starts processes for the model must do both.
+  See [shell sandbox](docs/shell-sandbox.md).
 - Repository-provided instructions, notes, index summaries, policy `allow`
   rules and automatic lint/test runs require project trust
   (`gui/workspace_trust.py`). Repository content must never grant itself trust.

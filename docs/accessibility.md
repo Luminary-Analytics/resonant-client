@@ -55,6 +55,15 @@
   Settings page") is now the first thing in the app's tab order.
 - **Page titles.** The app's title names the screen: "Settings · Lumi".
 
+**Correction, September 25, 2026.** The contrast check above skipped colours
+Chrome reports as `color(srgb …)`, which is what `color-mix()` produces. That
+missed the portal's status chips in the light theme: green chips such as
+"Active", "Standard" and "Subscribed" were at 3.88:1 on their tint, and orange
+ones at 3.94:1. Lumi Cloud's PR #31 darkened the light theme's `--ok` and
+`--warn`, to 5.35 and 5.41. The same check, now reading those colours, found
+no other problem on the portal's Overview, Billing, Support, Security and API
+keys pages.
+
 ## WCAG 2.1 report
 
 Conformance levels: **Supports**, **Partially Supports**, **Does Not
@@ -96,7 +105,7 @@ Support**, **Not Applicable**, **Not Evaluated**.
 | 1.2.4–1.2.5 Captions and audio description | Not Applicable | Not Applicable | No media. |
 | 1.3.4 Orientation | Supports | Supports | Neither locks orientation. |
 | 1.3.5 Identify Input Purpose | Not Evaluated | Partially Supports | The portal's billing address fields have `autocomplete`. Others not checked. |
-| 1.4.3 Contrast (Minimum) | Supports | Supports | Measured in both themes after the fixes above. |
+| 1.4.3 Contrast (Minimum) | Supports | Supports | Measured in both themes after the fixes above, including the portal's status chips (see the correction). |
 | 1.4.4 Resize Text | Partially Supports | Supports | The app's text size setting goes from 12 to 15 px, and browser zoom works in the browser view. Behavior at 200% in the desktop window wasn't checked. |
 | 1.4.5 Images of Text | Supports | Supports | |
 | 1.4.10 Reflow | Partially Supports | Partially Supports | Both have layouts for narrow windows. Neither was checked at 320 px. |

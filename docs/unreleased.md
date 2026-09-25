@@ -8,6 +8,72 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 hand-offs to a teammate or a CI run — source only, not released
+
+- **Hand off…** in a conversation's menu (`lumi/handoff.py`,
+  [guide](hand-offs.md)) passes the work on with its conversation (the Share
+  copy: messages, replies and action lines, no tool results, secrets
+  removed), a note, and where the work is. That's the repository's address
+  without credentials, the branch and commit, and how much wasn't committed
+  or pushed.
+  - **To a teammate** through Lumi Cloud (Luminary-Analytics/lumi-cloud#20),
+    which emails them.
+  - **To a CI run** as `.lumi/handoffs/<name>.json` in the project, which
+    `lumi run --handoff <file>` continues from. The task defaults to
+    continuing it.
+- **Hand-offs for you** appears under **New session** when work is waiting.
+  - Each hand-off shows the note and where the work is, and suggests a recent
+    project that is a clone of the repository.
+  - It checks the chosen folder's branch and commit, and says what to do when
+    they differ. Lumi never switches branches, fetches or pulls.
+  - **Continue** keeps the hand-off in Lumi's state folder and starts a
+    conversation there, with `@handoff:<id> Continue the work …` ready to
+    review. **Dismiss** is the alternative.
+- **`@handoff:` attaches a hand-off** (by id, or a file inside the project) as
+  context framed as information, not instructions.
+  - It is the context broker's first sticky attachment: pinned for the rest of
+    the conversation.
+  - When a conversation is reopened, the session attaches hand-offs mentioned
+    in its history again (`ContextBroker.recall`).
+- **Automatic titles** leave out `@provider:selector` attachments, so a
+  continued hand-off or an `@file:` message gets a readable title.
+
+Validation on September 25, 2026: `test_handoff.py` (8 tests) covers these
+cases against a real temporary git repository:
+
+- what a hand-off holds, and the redaction of a saved key, a GitHub token and
+  a remote's credentials;
+- the branch, commit, uncommitted and unpushed counts;
+- the rendered context and its size limit;
+- CI files, ids, and what loading refuses (outside the project, excluded, not
+  a hand-off);
+- the folder check: same commit, another branch, a missing commit, another
+  repository and no repository;
+- the sticky attachment, including after a session is rebuilt from history;
+- `lumi run --handoff`;
+- the app's commands with a fake Lumi Cloud.
+
+`test_session_titles.py` covers titles without attachments.
+
+In the browser pane, Lumi Cloud of that branch and an isolated app signed in
+as Bob ran together, with a stub model on 127.0.0.1 recording its requests:
+
+- **Receiving.** "1 hand-off for you" was reached with Tab and opened with
+  Enter. The folder check said the folder was on main. After switching the
+  fixture's branch it said the folder was "at the handed-off commit". Escape
+  returned focus to the sidebar button.
+- **Continuing.** Continue, pressed with Enter, opened a new conversation with
+  the draft focused. Sending it gave the model the hand-off as a labeled
+  attachment, and a follow-up without the mention still carried it.
+- **Handing off.** Handing "Rate limit tweak" to Ada from the keyboard showed
+  it waiting in her portal, with the note, the branch and "2 commits" not
+  pushed.
+- **To CI.** A CI hand-off saved `.lumi/handoffs/rate-limit-tweak-….json` and
+  showed its `lumi run --handoff` command.
+- **Layout.** The dialog fit a 420-pixel window.
+- **Bug found and fixed.** The sidebar button's `display` rule had overridden
+  `hidden`, leaving "0 hand-offs for you" in view.
+
 ## September 25 sharing a conversation — source only, not released
 
 - **Share…** in a conversation's menu (`lumi/share.py`,

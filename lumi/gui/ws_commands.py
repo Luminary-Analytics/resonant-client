@@ -1277,6 +1277,146 @@ async def _session_share(ctx: CommandContext) -> None:
         await _share_state(ctx, session_id, error=str(exc))
 
 
+# ── Hand-offs (lumi/handoff.py) ──────────────────────────────────────────
+
+
+async def _handoff_state(ctx: CommandContext, session_id: str, **extra: Any) -> None:
+    """The Hand off dialog: where the work is, and who in the person's organizations it can go to."""
+    from .. import handoff
+
+    project_path = str(ctx.msg.get("project_path") or ctx.project_path or "")
+
+    def gather() -> dict:
+        status = ctx.state.cloud.status()
+        record = _saved_session(ctx, session_id, project_path)
+        repo = handoff.repo_state(record.project_path) if record else {}
+        organizations, error = [], ""
+        if status.get("signed_in"):
+            for org in (status.get("account") or {}).get("organizations") or []:
+                try:
+                    people = handoff.recipients(ctx.state.cloud, str(org.get("id") or ""))
+                except handoff.HandoffError as exc:
+                    people, error = [], str(exc)
+                organizations.append({"id": org.get("id"), "name": org.get("name"), "recipients": people})
+        return {"signed_in": bool(status.get("signed_in")), "organizations": organizations,
+                "saved": record is not None, "repo": repo, "repo_text": handoff.describe_repo(repo),
+                **({"error": error} if error else {})}
+
+    await ctx.send({"event": "session_handoff", "session_id": session_id, **await asyncio.to_thread(gather),
+                    **extra})
+
+
+@command("session_handoff_status")
+async def _session_handoff_status(ctx: CommandContext) -> None:
+    await _handoff_state(ctx, str(ctx.msg.get("session_id") or ""))
+
+
+@command("session_handoff")
+async def _session_handoff(ctx: CommandContext) -> None:
+    """Hand a saved conversation to a teammate through Lumi Cloud, or save it in the project for a CI run."""
+    from .. import handoff
+
+    session_id = str(ctx.msg.get("session_id") or "")
+    project_path = str(ctx.msg.get("project_path") or ctx.project_path or "")
+    target = "ci" if ctx.msg.get("target") == "ci" else "teammate"
+
+    def work() -> dict:
+        record = _saved_session(ctx, session_id, project_path)
+        if record is None:
+            raise handoff.HandoffError("That conversation isn't saved yet.")
+        account = ctx.state.cloud.status().get("account") or {}
+        # A file for CI is committed to the repository: it names the sender, without an email address.
+        name = str(account.get("name") or ctx.state.settings.get("general", "display_name", "") or "")
+        data = handoff.package(record.display_events, title=record.title, project_path=record.project_path,
+                               model=str(record.model or ""), note=str(ctx.msg.get("note") or ""),
+                               sender={"name": name} if name else {})
+        if target == "ci":
+            path = handoff.save_for_ci(record.project_path, data)
+            relative = path.relative_to(record.project_path).as_posix()
+            return {"kind": "ci", "path": relative, "command": f"lumi run --handoff {relative}"}
+        answer = handoff.send(ctx.state.cloud, data, organization_id=str(ctx.msg.get("organization_id") or ""),
+                              to=str(ctx.msg.get("to") or ""))
+        return {"kind": "teammate", "id": answer.get("id"), "to": answer.get("to") or {}}
+
+    try:
+        result = await asyncio.to_thread(work)
+    except (handoff.HandoffError, OSError) as exc:
+        await _handoff_state(ctx, session_id, error=str(exc))
+        return
+    await ctx.send({"event": "session_handoff_done", "session_id": session_id, **result})
+
+
+async def _handoffs_inbox(ctx: CommandContext, **extra: Any) -> None:
+    """Hand-offs waiting for this person, each with the recent project that holds its repository."""
+    from .. import handoff
+
+    def gather() -> dict:
+        if not ctx.state.cloud.status().get("signed_in"):
+            return {"signed_in": False, "to_me": [], "from_me": []}
+        try:
+            box = handoff.inbox(ctx.state.cloud)
+        except handoff.HandoffError as exc:
+            return {"signed_in": True, "to_me": [], "from_me": [], "error": str(exc)}
+        projects = [str(p.get("path") if isinstance(p, dict) else p) for p in ctx.state.project.get_recent_projects()]
+        for item in box["to_me"]:
+            item["suggested_project"] = handoff.suggest_project(item.get("repo") or {}, projects)
+        return {"signed_in": True, **box}
+
+    await ctx.send({"event": "handoffs", **await asyncio.to_thread(gather), **extra})
+
+
+@command("handoffs_inbox")
+async def _cmd_handoffs_inbox(ctx: CommandContext) -> None:
+    await _handoffs_inbox(ctx)
+
+
+@command("handoff_check")
+async def _cmd_handoff_check(ctx: CommandContext) -> None:
+    """Whether a folder holds a hand-off's work (its repository, branch and commit)."""
+    from .. import handoff
+
+    repo = ctx.msg.get("repo") if isinstance(ctx.msg.get("repo"), dict) else {}
+    project_path = str(ctx.msg.get("project_path") or "")
+    result = await asyncio.to_thread(handoff.check_folder, repo, project_path) if os.path.isdir(project_path) \
+        else {"ok": False, "message": "Choose a folder that exists."}
+    await ctx.send({"event": "handoff_check", "id": str(ctx.msg.get("id") or ""), "project_path": project_path,
+                    **result})
+
+
+@command("handoff_pick_up")
+async def _cmd_handoff_pick_up(ctx: CommandContext) -> None:
+    """Take a hand-off, keep it locally, and give the app the first message of a new conversation."""
+    from .. import handoff
+
+    handoff_id = str(ctx.msg.get("id") or "")
+    project_path = str(ctx.msg.get("project_path") or "")
+    if not os.path.isdir(project_path):
+        await _handoffs_inbox(ctx, error="Choose a folder that exists.")
+        return
+    try:
+        data = await asyncio.to_thread(handoff.pick_up, ctx.state.cloud, handoff_id)
+    except handoff.HandoffError as exc:
+        await _handoffs_inbox(ctx, error=str(exc))
+        return
+    sender = data["from"]["name"] or data["from"]["email"] or "your teammate"
+    await ctx.send({"event": "handoff_picked_up", "id": handoff_id, "project_path": project_path,
+                    "title": data["title"],
+                    "draft": f"@handoff:{handoff_id} Continue the work {sender} handed off: {data['title']}."})
+
+
+@command("handoff_close")
+async def _cmd_handoff_close(ctx: CommandContext) -> None:
+    """Dismiss a hand-off sent to you, or withdraw one you sent, before anyone picks it up."""
+    from .. import handoff
+
+    try:
+        await asyncio.to_thread(handoff.close, ctx.state.cloud, str(ctx.msg.get("id") or ""))
+    except handoff.HandoffError as exc:
+        await _handoffs_inbox(ctx, error=str(exc))
+        return
+    await _handoffs_inbox(ctx)
+
+
 @command("session_share_stop")
 async def _session_share_stop(ctx: CommandContext) -> None:
     from .. import share

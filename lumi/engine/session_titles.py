@@ -31,6 +31,8 @@ def fallback_session_title(prompt: str) -> str:
     text = re.split(r"(?:^|\n)\s*(?:##?\s*)?My request:\s*", prompt, flags=re.I)[-1]
     text = re.sub(r"```[\s\S]*?```", " ", text)
     text = re.sub(r"https?://\S+", "", text)
+    # Attachments such as @file:src/app.py or @handoff:hof_... say what to read, not what the task is.
+    text = re.sub(r"(?<!\w)@[a-z][a-z0-9_-]{1,30}:(?:\"[^\"]+\"|'[^']+'|[^\s,;]+)", " ", text, flags=re.I)
     clauses = re.split(r"\n+|[.!?]\s+(?=[A-Z])", text)
     verbs = r"fix|build|create|implement|add|update|improve|review|refactor|debug|investigate|explain|test|design|optimize|remove|integrate|compare|migrate"
     for clause in clauses:

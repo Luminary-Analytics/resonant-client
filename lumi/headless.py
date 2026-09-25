@@ -2,6 +2,11 @@
 
     lumi run "Fix the failing test in tests/test_api.py" --mode bypass --trust-project
     git diff origin/main | lumi run - --prompt-file review.md --output jsonl
+    lumi run --handoff .lumi/handoffs/login-loop-20260925-1200.json
+
+``--handoff`` continues work someone handed off in the app (lumi/handoff.py):
+the task defaults to continuing it, and the hand-off (their conversation,
+note and where the work is) comes with it.
 
 The run uses the same engine as the desktop app: organization policy,
 budgets, usage records, the audit log, file exclusions and the secret scan all
@@ -51,6 +56,7 @@ API_KEY_ENV = {
     "exo": "EXO_API_KEY",
 }
 SUCCESS_OUTCOMES = {"answered", "changed_verified", "changed_unverified", "no_changes_needed"}
+HANDOFF_TASK = "Continue the work in this hand-off."
 ATTENTION_OUTCOMES = {"needs_input", "incomplete"}
 
 
@@ -204,9 +210,30 @@ def _read_prompt(args: argparse.Namespace, stdin: TextIO) -> str:
     elif args.prompt:
         parts.append(args.prompt)
     prompt = "\n\n".join(part.strip() for part in parts if part and part.strip())
+    if not prompt and getattr(args, "handoff", ""):
+        prompt = HANDOFF_TASK
     if not prompt:
         raise UsageError("Give the task as an argument, with --prompt-file, or on stdin with '-'.")
     return prompt
+
+
+def _with_handoff(prompt: str, selector: str, project: str) -> str:
+    """The task followed by the hand-off it continues: a file (relative to here or the project) or a picked-up id."""
+    from . import handoff
+
+    try:
+        if handoff.ID_RE.match(selector):
+            data, _ = handoff.load(selector)
+        else:
+            path = os.path.abspath(selector)
+            if not os.path.isfile(path):
+                path = os.path.join(project, selector)
+            if not os.path.isfile(path):
+                raise UsageError(f"There's no hand-off file at {selector}.")
+            data = handoff.read_file(path)
+    except handoff.HandoffError as exc:
+        raise UsageError(str(exc)) from exc
+    return f"{prompt}\n\n--- HAND-OFF ---\n{handoff.render(data)}\n--- END HAND-OFF ---"
 
 
 def _mode(settings: Any, requested: str) -> str:
@@ -301,6 +328,9 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
     parser = argparse.ArgumentParser(prog="lumi run", description="Run one task without a UI and report the result.")
     parser.add_argument("prompt", nargs="?", default="", help="the task, or '-' to read it from stdin")
     parser.add_argument("--prompt-file", help="read the task (or extra context) from a file")
+    parser.add_argument("--handoff", default="", metavar="FILE_OR_ID",
+                        help="continue work handed off in Lumi: a hand-off file (.lumi/handoffs/<name>.json) "
+                             "or the id of one you picked up")
     parser.add_argument("--project", default="", help="the project folder (default: the current folder)")
     parser.add_argument("--provider", default=os.environ.get("LUMI_PROVIDER", ""),
                         help="anthropic, openai, openrouter, sonn, kimi, exo, ollama, codex, claude-code or conn-<id>")
@@ -330,6 +360,8 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
         project = os.path.abspath(args.project or os.getcwd())
         if not os.path.isdir(project):
             raise UsageError(f"{project} is not a folder.")
+        if args.handoff:
+            prompt = _with_handoff(prompt, args.handoff, project)
         settings = SettingsManager()
         _configure(settings)
         refusal = blocked_reason()

@@ -4018,6 +4018,21 @@ class LumiApp {
             case 'session_share':
                 this._renderShareDialog(event);
                 break;
+            case 'session_handoff':
+                this._renderHandoffDialog(event);
+                break;
+            case 'session_handoff_done':
+                this._renderHandoffDone(event);
+                break;
+            case 'handoffs':
+                this._renderHandoffsInbox(event);
+                break;
+            case 'handoff_check':
+                this._renderHandoffCheck(event);
+                break;
+            case 'handoff_picked_up':
+                this._onHandoffPickedUp(event);
+                break;
             case 'model_evals':
                 this.modelEvals = event.data;
                 if (event.data?.saved) { this._evalDraft = null; this.modelEvalError = ''; }
@@ -4166,6 +4181,15 @@ class LumiApp {
         } = event;
 
         this._activateDraft(cwd || this.currentCwd, current_session_id || '', true);
+        if (!this._handoffsRequested) {
+            this._handoffsRequested = true;
+            this.send({ command: 'handoffs_inbox' });
+        }
+        const handoffDraft = this._pendingHandoffDraft;
+        if (handoffDraft && cwd && this._projectKey(cwd) === this._projectKey(handoffDraft.project)) {
+            this._pendingHandoffDraft = null;
+            setTimeout(() => this._startHandoffDraft(handoffDraft), 0);
+        }
         // Update project info
         if (cwd) {
             const short = cwd.split('/').pop();
@@ -10568,6 +10592,7 @@ class LumiApp {
             <button type="button" role="menuitem" class="ctx-item" data-action="pin">${pinLabel}</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="rename">&#9998; Rename</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="share">&#128279; Share…</button>
+            <button type="button" role="menuitem" class="ctx-item" data-action="handoff">&#8618; Hand off…</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="replay">&#9654; Replay</button>
             <div class="ctx-separator"></div>
             <button type="button" role="menuitem" class="ctx-item danger" data-action="delete">&#128465; Delete</button>
@@ -10605,6 +10630,10 @@ class LumiApp {
             } else if (action === 'share') {
                 menu.remove();
                 this.openShareDialog(session, returnFocus);
+                return;
+            } else if (action === 'handoff') {
+                menu.remove();
+                this.openHandoffDialog(session, returnFocus);
                 return;
             } else if (action === 'replay') {
                 this.send({
@@ -10711,6 +10740,293 @@ class LumiApp {
                         visibility: body.querySelector('input[name="share-visibility"]:checked')?.value || 'organization' });
         });
         (body.querySelector('#share-copy') || body.querySelector('#share-create') || body.querySelector('#share-sign-in'))?.focus();
+    }
+
+    /** Wire a dialog overlay's close button, Escape and backdrop click, once. */
+    _wireDialog(dialog, closeButtonId, close) {
+        if (dialog.dataset.wired) return;
+        document.getElementById(closeButtonId)?.addEventListener('click', close);
+        dialog.addEventListener('keydown', event => {
+            if (event.key === 'Escape') { event.stopPropagation(); close(); }
+        });
+        dialog.addEventListener('click', event => { if (event.target === dialog) close(); });
+        dialog.dataset.wired = '1';
+    }
+
+    /** Hand a conversation to a teammate or a CI run (lumi/handoff.py). */
+    openHandoffDialog(session, returnFocus = null) {
+        const dialog = document.getElementById('handoff-dialog');
+        if (!dialog || !session) return;
+        this._handoffSession = session;
+        this._handoffForm = null;
+        this._handoffReturnFocus = returnFocus || document.activeElement;
+        document.getElementById('handoff-dialog-body').innerHTML = '<p class="share-note">Loading…</p>';
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'handoff-dialog-close', () => this.closeHandoffDialog());
+        document.getElementById('handoff-dialog-close').focus();
+        this.send({ command: 'session_handoff_status', session_id: session.id,
+                    project_path: session.project_path || '' });
+    }
+
+    closeHandoffDialog() {
+        const dialog = document.getElementById('handoff-dialog');
+        if (dialog) dialog.style.display = 'none';
+        this._handoffSession = null;
+        this._handoffReturnFocus?.focus?.();
+    }
+
+    _handoffPending(repo, tense) {
+        const pending = [];
+        const count = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+        const [isnt, arent] = tense === 'past' ? ['wasn’t', 'weren’t'] : ['isn’t', 'aren’t'];
+        if (repo.changed_files) pending.push(count(repo.changed_files, `changed file ${isnt} committed`, `changed files ${arent} committed`));
+        if (repo.unpushed) pending.push(count(repo.unpushed, `commit ${isnt} pushed`, `commits ${arent} pushed`));
+        return pending.join(' and ');
+    }
+
+    _handoffWhere(repo) {
+        const where = repo.branch ? `Branch ${repo.branch}` : 'Commit';
+        return `${where} at ${String(repo.commit).slice(0, 12)}${repo.remote ? ` of ${repo.remote}` : ''}.`;
+    }
+
+    _renderHandoffDialog(event) {
+        const session = this._handoffSession;
+        const body = document.getElementById('handoff-dialog-body');
+        if (!session || !body || event.session_id !== session.id) return;
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        // A refusal re-renders the form: keep what was typed and chosen.
+        const form = this._handoffForm || {
+            note: body.querySelector('#handoff-note')?.value || '',
+            target: body.querySelector('input[name="handoff-target"]:checked')?.value || '',
+            to: body.querySelector('#handoff-to')?.value || '',
+        };
+        const orgs = Array.isArray(event.organizations) ? event.organizations : [];
+        const people = orgs.reduce((total, org) => total + (org.recipients || []).length, 0);
+        const target = form.target || (people ? 'teammate' : 'ci');
+        const repo = event.repo || {};
+        const parts = [];
+        if (event.error) parts.push(`<p class="editor-error" role="alert">${esc(event.error)}</p>`);
+        parts.push(`<p class="share-note"><strong>${esc(session.title || 'This conversation')}</strong>: the next person or CI run gets your messages, Lumi’s replies and a line for each action, with your note and where the work is. What tools returned stays on this computer, and saved keys are removed.</p>`);
+        if (repo.commit) {
+            const pending = this._handoffPending(repo, 'present');
+            parts.push(`<p class="share-note">${esc(this._handoffWhere(repo))}${pending ? ` <strong>${esc(pending)}</strong>: commit and push first so they have your changes.` : ''}</p>`);
+        } else {
+            parts.push('<p class="share-note">This project isn’t a git repository, so they get the conversation and your note.</p>');
+        }
+        parts.push(`<label class="share-label" for="handoff-note">What’s left</label>
+            <textarea id="handoff-note" class="settings-input handoff-note" rows="4" maxlength="4000" placeholder="What should happen next, and anything they need to know">${esc(form.note)}</textarea>`);
+        const options = orgs.map(org => `<optgroup label="${esc(org.name)}">${(org.recipients || []).map(person => {
+            const value = `${org.id}|${person.id}`;
+            const label = person.name && person.email ? `${person.name} (${person.email})` : (person.name || person.email);
+            return `<option value="${esc(value)}"${value === form.to ? ' selected' : ''}>${esc(label)}</option>`;
+        }).join('')}</optgroup>`).join('');
+        const teammate = people ? `<select id="handoff-to" class="settings-select" aria-label="Teammate">${options}</select>`
+            : `<span class="share-note">${event.signed_in ? 'Nobody else is in your organization yet.' : 'Sign in to Lumi Cloud to hand work to a teammate.'}</span>`;
+        parts.push(`<fieldset class="share-who"><legend class="share-label">Hand it to</legend>
+                <label><input type="radio" name="handoff-target" value="teammate"${people ? '' : ' disabled'}${people && target === 'teammate' ? ' checked' : ''}> A teammate, through Lumi Cloud</label>
+                <div class="handoff-choice">${teammate}</div>
+                <label><input type="radio" name="handoff-target" value="ci"${!people || target === 'ci' ? ' checked' : ''}> A CI run: save a file in the project to commit with your branch</label>
+            </fieldset>
+            <div class="dialog-actions">${event.signed_in ? '' : '<button type="button" class="dialog-btn" id="handoff-sign-in">Open Lumi account</button>'}<button type="button" class="dialog-btn allow" id="handoff-send">Hand off</button></div>`);
+        body.innerHTML = parts.join('');
+        this._handoffForm = null;
+        body.querySelector('#handoff-to')?.addEventListener('change', () => {
+            const teammateChoice = body.querySelector('input[name="handoff-target"][value="teammate"]');
+            if (teammateChoice && !teammateChoice.disabled) teammateChoice.checked = true;
+        });
+        body.querySelector('#handoff-sign-in')?.addEventListener('click', () => {
+            this.closeHandoffDialog();
+            this.openSettingsPage?.('lumi_account');
+        });
+        body.querySelector('#handoff-send')?.addEventListener('click', clicked => {
+            const note = body.querySelector('#handoff-note').value;
+            const chosen = body.querySelector('input[name="handoff-target"]:checked')?.value || 'ci';
+            const to = body.querySelector('#handoff-to')?.value || '';
+            const [organization, person] = to.split('|');
+            this._handoffForm = { note, target: chosen, to };
+            clicked.target.disabled = true;
+            clicked.target.textContent = 'Handing off…';
+            this.send({ command: 'session_handoff', session_id: session.id, project_path: session.project_path || '',
+                        note, target: chosen, organization_id: organization || '', to: person || '' });
+        });
+        (event.error ? body.querySelector('#handoff-send') : body.querySelector('#handoff-note'))?.focus();
+    }
+
+    _renderHandoffDone(event) {
+        const session = this._handoffSession;
+        const body = document.getElementById('handoff-dialog-body');
+        if (!session || !body || event.session_id !== session.id) return;
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        if (event.kind === 'ci') {
+            body.innerHTML = `<p class="share-note" role="status">Saved <code>${esc(event.path)}</code> in the project. Commit it with your branch, then run this in CI:</p>
+                <div class="share-link-row"><input id="handoff-command" class="settings-input" readonly aria-label="Command for CI" value="${esc(event.command)}"><button type="button" class="dialog-btn" id="handoff-copy">Copy</button></div>
+                <div class="dialog-actions"><button type="button" class="dialog-btn allow" id="handoff-done">Done</button></div>`;
+        } else {
+            const who = event.to?.name || event.to?.email || 'your teammate';
+            body.innerHTML = `<p class="share-note" role="status">Handed to <strong>${esc(who)}</strong>. They’ll find it in Lumi under Hand-offs, and Lumi Cloud emailed them. Until they pick it up, you can withdraw it in Lumi Cloud.</p>
+                <div class="dialog-actions"><button type="button" class="dialog-btn allow" id="handoff-done">Done</button></div>`;
+        }
+        body.querySelector('#handoff-copy')?.addEventListener('click', () => {
+            const command = body.querySelector('#handoff-command');
+            navigator.clipboard?.writeText(command.value).then(() => this.showToastMessage('Command copied.'),
+                () => { command.select(); this.showToastMessage('Select the command and copy it.'); });
+        });
+        body.querySelector('#handoff-done')?.addEventListener('click', () => this.closeHandoffDialog());
+        (body.querySelector('#handoff-copy') || body.querySelector('#handoff-done'))?.focus();
+    }
+
+    /** Hand-offs waiting for you: continue one in a new conversation in a folder you choose. */
+    openHandoffsInbox() {
+        const dialog = document.getElementById('handoffs-dialog');
+        if (!dialog) return;
+        this._handoffsReturnFocus = document.activeElement;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'handoffs-dialog-close', () => this.closeHandoffsInbox());
+        this._renderHandoffsInbox(this._handoffs || { signed_in: true, to_me: [] }, true);
+        this.send({ command: 'handoffs_inbox' });
+    }
+
+    closeHandoffsInbox() {
+        const dialog = document.getElementById('handoffs-dialog');
+        if (dialog) dialog.style.display = 'none';
+        const back = this._handoffsReturnFocus;
+        (back && back.isConnected && !back.closest('[hidden]') ? back : this.userInput)?.focus?.();
+    }
+
+    _updateHandoffsButton() {
+        const button = document.getElementById('handoffs-btn');
+        if (!button) return;
+        if (!button.dataset.wired) {
+            button.addEventListener('click', () => this.openHandoffsInbox());
+            button.dataset.wired = '1';
+        }
+        const count = (this._handoffs?.to_me || []).length;
+        button.hidden = count === 0;
+        const label = count === 1 ? '1 hand-off for you' : `${count} hand-offs for you`;
+        document.getElementById('handoffs-btn-label').textContent = label;
+        button.title = label;
+    }
+
+    _handoffProjects() {
+        const projects = [];
+        const seen = new Set();
+        const add = path => {
+            const key = path ? this._projectKey(path) : '';
+            if (key && !seen.has(key)) { seen.add(key); projects.push(path); }
+        };
+        add(this.currentCwd);
+        (this.recentProjects || []).forEach(project => add(typeof project === 'string' ? project : project?.path));
+        return projects;
+    }
+
+    _renderHandoffsInbox(event, focus = false) {
+        this._handoffs = event;
+        this._updateHandoffsButton();
+        const dialog = document.getElementById('handoffs-dialog');
+        const body = document.getElementById('handoffs-dialog-body');
+        if (!dialog || !body || dialog.style.display === 'none') return;
+        const esc = value => this.escapeHtml(String(value ?? ''));
+        const items = Array.isArray(event.to_me) ? event.to_me : [];
+        const projects = this._handoffProjects();
+        const parts = [];
+        if (event.error) parts.push(`<p class="editor-error" role="alert">${esc(event.error)}</p>`);
+        if (event.signed_in === false) parts.push('<p class="share-note">Sign in to Lumi Cloud to see work handed to you.</p>');
+        else if (!items.length) parts.push('<p class="share-note">Nothing is waiting for you.</p>');
+        for (const item of items) {
+            const chosen = item.suggested_project || this.currentCwd || projects[0] || '';
+            const options = projects.map(path => {
+                const name = String(path).replace(/\\/g, '/').split('/').pop();
+                return `<option value="${esc(path)}"${this._projectKey(path) === this._projectKey(chosen) ? ' selected' : ''}>${esc(name)} (${esc(path)})</option>`;
+            }).join('');
+            const repo = item.repo || {};
+            const pending = repo.commit ? this._handoffPending(repo, 'past') : '';
+            const when = item.created_at ? this.formatRelativeTime(new Date(item.created_at)) : '';
+            parts.push(`<section class="handoff-item" data-id="${esc(item.id)}" aria-labelledby="handoff-title-${esc(item.id)}">
+                <h3 class="handoff-title" id="handoff-title-${esc(item.id)}">${esc(item.title)}</h3>
+                <p class="share-note">From ${esc(item.from?.name || item.from?.email || 'a teammate')}${when ? ` · ${esc(when)}` : ''}${item.organization?.name ? ` · ${esc(item.organization.name)}` : ''}</p>
+                ${item.note ? `<p class="handoff-note-text">${esc(item.note)}</p>` : ''}
+                ${repo.commit ? `<p class="share-note">${esc(this._handoffWhere(repo))}${pending ? ` When it was handed off, ${esc(pending)}.` : ''}</p>` : ''}
+                <label class="share-label" for="handoff-project-${esc(item.id)}">Continue in</label>
+                <select id="handoff-project-${esc(item.id)}" class="settings-select handoff-project">${options}</select>
+                <p class="share-note handoff-check" aria-live="polite"></p>
+                <div class="dialog-actions"><button type="button" class="dialog-btn deny handoff-dismiss">Dismiss</button><button type="button" class="dialog-btn allow handoff-continue">Continue</button></div>
+            </section>`);
+        }
+        body.innerHTML = parts.join('');
+        for (const section of body.querySelectorAll('.handoff-item')) {
+            const item = items.find(entry => entry.id === section.dataset.id);
+            const select = section.querySelector('.handoff-project');
+            const check = () => {
+                section.querySelector('.handoff-check').textContent = '';
+                if (item.repo?.commit && select.value) {
+                    this.send({ command: 'handoff_check', id: item.id, repo: item.repo, project_path: select.value });
+                }
+            };
+            select.addEventListener('change', check);
+            check();
+            section.querySelector('.handoff-continue').addEventListener('click', clicked => {
+                if (this.isRunning) {
+                    this.showToastMessage('Let the current run finish, or stop it, before continuing a hand-off.');
+                    return;
+                }
+                if (!select.value) { this.showToastMessage('Open a project folder first.'); return; }
+                clicked.target.disabled = true;
+                clicked.target.textContent = 'Picking up…';
+                this.send({ command: 'handoff_pick_up', id: item.id, project_path: select.value });
+            });
+            section.querySelector('.handoff-dismiss').addEventListener('click', clicked => {
+                clicked.target.disabled = true;
+                this.send({ command: 'handoff_close', id: item.id });
+            });
+        }
+        if (focus || event.error || !body.contains(document.activeElement)) {
+            (body.querySelector('.handoff-continue') || document.getElementById('handoffs-dialog-close'))?.focus();
+        }
+    }
+
+    _renderHandoffCheck(event) {
+        const section = [...document.querySelectorAll('#handoffs-dialog-body .handoff-item')]
+            .find(element => element.dataset.id === event.id);
+        const select = section?.querySelector('.handoff-project');
+        if (!section || !select || select.value !== event.project_path) return;
+        const line = section.querySelector('.handoff-check');
+        line.textContent = event.message || '';
+        line.classList.toggle('is-warning', !event.ok);
+    }
+
+    _onHandoffPickedUp(event) {
+        if (this._handoffs?.to_me) {
+            this._handoffs = { ...this._handoffs, to_me: this._handoffs.to_me.filter(item => item.id !== event.id) };
+            this._updateHandoffsButton();
+        }
+        const dialog = document.getElementById('handoffs-dialog');
+        if (dialog) dialog.style.display = 'none';
+        const pending = { project: event.project_path, draft: event.draft };
+        if (this._projectKey(event.project_path) === this._projectKey(this.currentCwd)) {
+            this._startHandoffDraft(pending);
+        } else {
+            // The draft goes in once that project is open (handleInit).
+            this._pendingHandoffDraft = pending;
+            this.startNewSession(event.project_path);
+        }
+    }
+
+    /** A new conversation in the hand-off's folder, with its first message ready to review and send. */
+    _startHandoffDraft({ project, draft }) {
+        this.startNewSession(project);
+        const scope = this._draftScope;
+        if (!scope || scope.session || this._projectKey(scope.project) !== this._projectKey(project)) {
+            this.showToastMessage(`Picked up. Start a new session there and mention ${draft.split(' ')[0]} to continue.`);
+            return;
+        }
+        this.userInput.value = `${draft} `;
+        this._markDraftEdited();
+        this._saveDraft();
+        this.userInput.dispatchEvent(new Event('input', { bubbles: true }));
+        this.userInput.focus();
+        const end = this.userInput.value.length;
+        this.userInput.setSelectionRange(end, end);
+        this.showToastMessage('Picked up. Check the message, then send it to continue.');
     }
 
     formatRelativeTime(date) {

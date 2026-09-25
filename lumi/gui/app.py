@@ -489,11 +489,12 @@ class AppState:
                 session.autonomy_tier, root, honor_allows=trust.honor_policy_allows, policy_digest=trust.policy_digest,
             )
         except Exception:
-            # Never leave the session without the tier's built-in denies.
-            from ..engine.policies import policy_for_tier
+            # Never leave the session without the tier's built-in denies or the
+            # organization's shell rules: only the repository's rules are lost.
+            from ..engine.policies import policy_for_tier, with_organization_rules
 
             logger.warning("Project execution policy could not be applied", exc_info=True)
-            session.execution_policy = policy_for_tier(session.autonomy_tier)
+            session.execution_policy = with_organization_rules(policy_for_tier(session.autonomy_tier))
 
     @staticmethod
     def normalize_session_mode(value: str) -> str:

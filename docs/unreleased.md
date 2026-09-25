@@ -8,6 +8,112 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 a broken lumi-policy.json can't drop organization rules — source only, not released
+
+**A repository could turn off its organization's shell rules.** Committing a
+`lumi-policy.json` that wasn't an object holding a list of rule objects was
+enough, whether or not the user trusted the project. `[]`, `{"rules": "x"}`
+or `{"rules": [1]}` made building the execution policy fail. The app caught
+the error and fell back to the permission mode's own rules, without the
+organization's `shell.rules`, which are meant to outrank everything but the
+guardrails. `lumi run` crashed instead. `{"rules": 5}` and `{"rules": null}`
+did the same, and also broke the project trust check. A rule with a value of
+the wrong type, such as `"arg_patterns": "x"`, loaded and then failed the
+tool calls checked against it.
+
+- **Rules are checked when they load** (`lumi/engine/policies.py`,
+  `PolicyRule.from_dict`):
+  - `tool_pattern` is text;
+  - `action` is `allow`, `prompt` or `deny`;
+  - `arg_patterns` maps argument names to regular expressions that compile;
+  - `arg_globs` maps them to a glob or a list of globs.
+
+  Keys Lumi doesn't use are still ignored.
+- **A mistake in a repository's file costs only that file's rules**
+  (`repository_rules`). A warning in the log names each mistake.
+  - A file that isn't an object with a `rules` list, or isn't readable JSON,
+    contributes no rules.
+  - A broken rule is dropped, and so are all the file's `allow` rules. Rules
+    apply in order and the first match wins, so without the broken rule a
+    later `allow` could let through what it was meant to stop. Auto-edit
+    asks again about the commands those `allow` rules would have run. The
+    file's valid `deny` and `prompt` rules still apply, since they only make
+    Lumi more careful. Fixing the file brings the `allow` rules back.
+  - A rule with an unknown action (such as `"ask"`) or a regular expression
+    that doesn't compile used to be skipped silently. It now counts as a
+    mistake, so the file's `allow` rules are off until it's fixed.
+  - The trust banner and Settings count only `allow` rules that would apply.
+- **The organization's rules always apply.** `with_organization_rules` adds
+  them to the project's policy. The app's fallback, used when a project's
+  policy can't be built, now keeps them as well as the mode's own rules.
+- **An organization shell rule that can't be applied makes the policy
+  invalid** (`lumi/policy.py`). As with any invalid policy, Lumi refuses
+  model requests until IT fixes it, instead of failing tool calls. A `shell`
+  section that isn't an object is invalid too.
+- **Not changed:** intent specialists (`orchestration/runner.py`) still run
+  with the Full-auto rules alone. They get neither the organization's shell
+  rules nor the project's policy.
+
+Validation on September 25, 2026, after merging main (including the
+repository allow rules change):
+
+- Full `pytest`: 4,223 passed, 5 skipped, after merging main again (worker
+  tool lists, hand-offs, team skills). `ruff check .` clean, the 54 Node
+  tests in AGENTS.md pass, `git diff --check` clean.
+- New tests check that the refused command's file wasn't written:
+  - `test_permission_decisions.py` covers 11 malformed files, from `[]` to
+    rules with values of the wrong type, a file that isn't UTF-8 and JSON
+    nested 100,000 deep. In each, a Full-auto `Session.run` refuses a
+    command that an organization rule denies, with the organization's
+    reason, and other calls are still checked. A file with a broken rule
+    keeps its `deny` and `prompt` rules, drops its `allow`, and logs the
+    rule's number. Once the file is fixed, the `allow` applies again.
+  - `test_repository_allow_rules.py`: in a trusted project in Auto-edit, a
+    command the file's `allow` rule would run without asking asks once the
+    file also holds a broken rule, and the file's `deny` still refuses its
+    command.
+  - `test_gui_permission_modes.py` uses the app's own run loop and `approve`
+    handler, in a trusted project whose file is `[]`, `{"rules": 5}` or
+    `{"rules": [1]}`. The command is refused without a prompt. With the
+    project's policy made to fail, the fallback refuses it too and keeps the
+    guardrails.
+  - `test_headless.py`: `lumi run --mode bypass --trust-project` with `[]`,
+    `{"rules": 5}` or a file that isn't UTF-8 refuses the command (exit 3,
+    `denied_calls` 1) instead of crashing.
+  - `test_execution_policy.py`, `test_policy.py` and
+    `test_exclusions_and_trust.py` cover each kind of bad rule, organization
+    policies with bad rules (also through `load()`), and the trust check.
+- Against main before this change, 28 of the 33 new cases in those files
+  fail. The other five are cases main already handled: a file that isn't
+  UTF-8, which the repository allow rules change skips (two cases), and
+  three trust-check shapes (`[]`, not UTF-8, not JSON). The new unit tests
+  can't import there. In the app's run loop, the command the organization
+  denies ran.
+- In the browser pane, from an isolated home with the scripted Ollama stub
+  and an organization policy for "Acme" (`LUMI_POLICY_FILE`) that denies
+  one command:
+  - with `lumi-policy.json` set to `{"rules": 5}`, the trust banner offered
+    the file, and **Trust this project** worked. In Full-auto the command
+    Acme denies was refused ("Blocked by policy: Acme: not from the agent's
+    shell") and wrote nothing, and `mkdir allowed-dir` ran;
+  - with a valid file, a `file_write` deny and an `allow` for
+    `mkdir allowed*`, trusted in Auto-edit, `mkdir allowed-dir` ran without
+    asking. The audit log recorded the approval by `project_policy`;
+  - with a broken rule added, the banner offered no approval-skipping rules.
+    After **Trust the change**, the same command opened Command Review, and
+    **Deny** kept it from running. The write was refused ("Blocked by policy:
+    repository: frozen"), and the command Acme denies was refused without a
+    prompt;
+  - the log named the mistake each time the policy was built. There were no
+    console errors;
+  - the real `~/.resonant` was unchanged afterwards. No `~/.lumi` or Lumi
+    credential entries appeared. The fixture's own `CODEX_HOME` was never
+    created. `~/.codex` logs changed during the run, as the user's own Codex
+    writes them every few minutes; those writes are unattributed.
+
+Not exercised: a packaged build, a live model, Codex or Claude Code (they run
+their own tool loops), macOS and Linux.
+
 ## September 25 worker handoffs in the conversation — source only, not released
 
 - **A worker's handoff shows under its block** (`lumi/gui/static/app.js`,

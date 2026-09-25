@@ -101,12 +101,48 @@ class PolicyRule:
 
     @classmethod
     def from_dict(cls, data: dict, *, source: str = "") -> "PolicyRule":
+        """A rule from JSON: a repository's lumi-policy.json or organization policy.
+
+        Raises ValueError, saying what's wrong, for a rule that can't be
+        applied as written, rather than returning one that fails later, when
+        a tool call is checked against it. Keys Lumi doesn't use are ignored,
+        including ``source``, which only the caller sets.
+        """
+        if not isinstance(data, dict):
+            raise ValueError("a rule must be an object")
+        tool_pattern = data.get("tool_pattern", "*")
+        if not isinstance(tool_pattern, str):
+            raise ValueError("tool_pattern must be a tool name or pattern")
+        action = data.get("action", PolicyAction.ALLOW.value)
+        if not isinstance(action, str) or action not in {item.value for item in PolicyAction}:
+            raise ValueError('action must be "allow", "prompt" or "deny"')
+        arg_patterns = data.get("arg_patterns", {})
+        if not isinstance(arg_patterns, dict) or not all(
+            isinstance(key, str) and isinstance(pattern, str) for key, pattern in arg_patterns.items()
+        ):
+            raise ValueError("arg_patterns must map argument names to regular expressions")
+        for key, pattern in arg_patterns.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                # matches() would treat it as never matching, silently.
+                raise ValueError(f"arg_patterns.{key} isn't a valid regular expression ({exc})") from exc
+        arg_globs = data.get("arg_globs", {})
+        if not isinstance(arg_globs, dict) or not all(
+            isinstance(key, str) and (
+                isinstance(globs, str)
+                or (isinstance(globs, list) and all(isinstance(glob, str) for glob in globs))
+            )
+            for key, globs in arg_globs.items()
+        ):
+            raise ValueError("arg_globs must map argument names to a glob or a list of globs")
+        reason = data.get("reason", "")
         return cls(
-            tool_pattern=data.get("tool_pattern", "*"),
-            action=data.get("action", "allow"),
-            arg_patterns=data.get("arg_patterns", {}),
-            arg_globs=data.get("arg_globs", {}),
-            reason=data.get("reason", ""),
+            tool_pattern=tool_pattern,
+            action=action,
+            arg_patterns=dict(arg_patterns),
+            arg_globs={key: list(globs) if isinstance(globs, list) else globs for key, globs in arg_globs.items()},
+            reason="" if reason is None else str(reason),
             source=source,
         )
 
@@ -174,26 +210,43 @@ class ExecutionPolicy:
 
     @classmethod
     def from_rules(cls, rules: list[dict], *, source: str = "") -> "ExecutionPolicy":
-        return cls([PolicyRule.from_dict(r, source=source) for r in rules])
+        """Rules that must all be valid, such as an organization's; raises ValueError otherwise."""
+        if not isinstance(rules, (list, tuple)):
+            raise ValueError("rules must be a list of rule objects")
+        parsed = []
+        for number, rule in enumerate(rules, 1):
+            try:
+                parsed.append(PolicyRule.from_dict(rule, source=source))
+            except ValueError as exc:
+                raise ValueError(f"rule {number}: {exc}") from exc
+        return cls(parsed)
 
     @classmethod
     def from_file(cls, path: str | Path, *, source: str = "") -> Optional["ExecutionPolicy"]:
-        """Load policy from a lumi-policy.json (or legacy resonant-policy.json) file.
+        """Load a repository's lumi-policy.json (or legacy resonant-policy.json).
 
         The file is read once, and ``digest`` is the SHA-256 of exactly the
-        bytes the rules came from.
+        bytes the rules came from. The file comes with the repository, so a
+        mistake in it must not cost more than its own rules (see
+        repository_rules); a warning says what's wrong. None when there is no
+        file or it isn't readable JSON.
         """
-        p = Path(path)
-        if not p.exists():
-            return None
         try:
-            raw = p.read_bytes()
+            raw = Path(path).read_bytes()
             data = json.loads(raw.decode("utf-8"))
-            rules = data.get("rules", [])
-            policy = cls.from_rules(rules, source=source)
-        except (ValueError, OSError) as e:  # ValueError covers bad JSON and bad UTF-8
-            logger.warning("Failed to load policy from %s: %s", path, e)
+        except FileNotFoundError:
             return None
+        except (OSError, ValueError, RecursionError) as e:
+            # ValueError: not JSON, or not UTF-8. RecursionError: nested too deeply.
+            logger.warning("Ignoring %s, which isn't readable JSON: %s", path, e)
+            return None
+        rules, problems = repository_rules(data, source=source)
+        if problems:
+            logger.warning(
+                "%s has mistakes: %s. Until the file is fixed, Lumi uses only its valid deny and prompt rules.",
+                path, "; ".join(problems),
+            )
+        policy = cls(rules)
         policy.digest = hashlib.sha256(raw).hexdigest()
         return policy
 
@@ -208,6 +261,35 @@ class ExecutionPolicy:
         denies = [rule for rule in self.rules if rule.action == PolicyAction.DENY.value]
         defaults = [rule for rule in self.rules if rule.action != PolicyAction.DENY.value]
         return ExecutionPolicy(denies + other.rules + defaults)
+
+
+def repository_rules(data: object, *, source: str = "") -> tuple[list[PolicyRule], list[str]]:
+    """The rules Lumi uses from a repository's parsed lumi-policy.json, and its mistakes.
+
+    A file that isn't an object with a ``rules`` list contributes nothing. A
+    rule that can't be applied as written is dropped, and so are the file's
+    ``allow`` rules: rules apply in order and the first match wins, so without
+    the broken rule a later ``allow`` could let through what that rule was
+    meant to refuse or ask about. The file's valid ``deny`` and ``prompt``
+    rules still apply, since they only make Lumi more careful. Fixing the
+    file brings its allow rules back. ``source`` tags the rules
+    (PolicyRule.source).
+    """
+    if not isinstance(data, dict):
+        return [], ['the file must be a JSON object with a "rules" list']
+    raw_rules = data.get("rules", [])
+    if not isinstance(raw_rules, list):
+        return [], ['"rules" must be a list of rule objects']
+    rules: list[PolicyRule] = []
+    problems: list[str] = []
+    for number, raw_rule in enumerate(raw_rules, 1):
+        try:
+            rules.append(PolicyRule.from_dict(raw_rule, source=source))
+        except ValueError as exc:
+            problems.append(f"rule {number}: {exc}")
+    if problems:
+        rules = [rule for rule in rules if rule.action != PolicyAction.ALLOW.value]
+    return rules, problems
 
 
 # ── Built-in tier policies ──────────────────────────────────────
@@ -340,6 +422,9 @@ def project_execution_policy(
     Organization shell rules (lumi/policy.py) come next: neither a repository
     nor a tier can loosen them. The guardrails (engine/guardrails.py) come
     before everything, so an organization's ``allow`` can't reach them either.
+
+    A lumi-policy.json with mistakes keeps only its valid deny and prompt
+    rules (repository_rules), and can't stop the organization's rules applying.
     """
     policy = policy_for_tier(tier)
     # lumi-policy.json; repositories from before the rebrand keep resonant-policy.json.
@@ -356,14 +441,26 @@ def project_execution_policy(
             [rule for rule in project_policy.rules if rule.action != PolicyAction.ALLOW.value]
         )
     merged = policy.merge(project_policy) if project_policy else policy
+    return with_organization_rules(merged)
+
+
+def with_organization_rules(policy: ExecutionPolicy) -> ExecutionPolicy:
+    """``policy`` with the organization's shell rules (lumi/policy.py) checked first.
+
+    Only the guardrails (engine/guardrails.py) come before them, followed
+    by the review gate's rules while agent changes need review
+    (engine/review_gate.py). The app's fallback, when a project's policy
+    can't be built, uses this too (gui/app.py). The rules were validated
+    when the organization policy loaded, so this doesn't fail on them.
+    """
     from ..policy import current as current_policy
 
     org_policy = current_policy()
-    if org_policy and org_policy.shell_rules:
-        org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
-        from .guardrails import policy_rules as guardrail_rules
-        from .review_gate import policy_rules as review_rules
+    if not org_policy or not org_policy.shell_rules:
+        return policy
+    org_rules = ExecutionPolicy.from_rules(list(org_policy.shell_rules)).rules
+    from .guardrails import policy_rules as guardrail_rules
+    from .review_gate import policy_rules as review_rules
 
-        first = guardrail_rules() + review_rules()
-        merged = ExecutionPolicy(first + org_rules + [rule for rule in merged.rules if rule not in first])
-    return merged
+    first = guardrail_rules() + review_rules()
+    return ExecutionPolicy(first + org_rules + [rule for rule in policy.rules if rule not in first])

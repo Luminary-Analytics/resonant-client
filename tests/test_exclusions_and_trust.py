@@ -121,6 +121,24 @@ class TestWorkspaceTrust:
             json.dump({"rules": ALLOW_ALL}, handle)
         assert trust.status(project).policy_changed
 
+    @pytest.mark.parametrize("content", [b'{"rules": 5}', b'{"rules": null}', b"[]", b"\xff\xfe", b"{not json"])
+    def test_a_malformed_policy_file_still_has_a_status(self, tmp_path, content):
+        project = _project(tmp_path)
+        with open(os.path.join(project, "lumi-policy.json"), "wb") as handle:
+            handle.write(content)
+        trust = WorkspaceTrust(tmp_path / "trust.json")
+        status = trust.status(project)
+        assert (status.policy_file, status.policy_allows) == ("lumi-policy.json", 0)
+        assert status.needs_decision
+        assert trust.trust(project).honor_policy_allows
+
+    def test_a_policy_file_with_mistakes_offers_no_approval_skipping_rules(self, tmp_path):
+        # Its allow rules are off until it's fixed (engine/policies.repository_rules).
+        broken = [{"tool_pattern": "bash", "action": "allow"},
+                  {"tool_pattern": "bash", "action": "deny", "arg_patterns": "rm"}]
+        project = _project(tmp_path, policy=broken)
+        assert WorkspaceTrust(tmp_path / "trust.json").status(project).policy_allows == 0
+
     def test_projects_without_content_need_nothing(self, tmp_path):
         project = _project(tmp_path, agents=False)
         assert not WorkspaceTrust(tmp_path / "trust.json").status(project).needs_decision

@@ -221,6 +221,13 @@ but their `allow` rules wait for your review once. Each call an `allow` rule
 runs is recorded in the [audit log](audit-log.md) as an approval by
 `project_policy`.
 
+If a rule has a mistake, such as `arg_patterns` that isn't an object of
+regular expressions or an action other than `allow`, `prompt` or `deny`, Lumi
+skips that rule and all of the file's `allow` rules until it's fixed. Its
+valid `deny` and `prompt` rules still apply. A file that isn't JSON, or isn't
+an object with a `rules` list, is ignored. The log names each mistake, and
+your organization's rules apply either way.
+
 ## Anthropic, OpenAI and custom connections
 
 1. Add an Anthropic or OpenAI key under **Settings > Connections > API keys**,

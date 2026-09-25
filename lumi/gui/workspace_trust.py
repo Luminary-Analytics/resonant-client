@@ -102,18 +102,21 @@ def policy_file(project_path: str) -> str:
 
 
 def _policy_facts(path: str) -> tuple[str, int]:
-    """The policy file's digest and how many allow rules it has."""
+    """The policy file's digest and how many allow rules Lumi would use from it."""
     if not path:
         return "", 0
     try:
         raw = Path(path).read_bytes()
     except OSError:
         return "", 0
+    from ..engine.policies import PolicyAction, repository_rules
+
     allows = 0
     try:
-        rules = json.loads(raw.decode("utf-8")).get("rules", [])
-        allows = sum(1 for rule in rules if isinstance(rule, dict) and rule.get("action") == "allow")
-    except (ValueError, AttributeError):
+        # A file with mistakes contributes no allow rules (repository_rules).
+        rules, _problems = repository_rules(json.loads(raw.decode("utf-8")))
+        allows = sum(1 for rule in rules if rule.action == PolicyAction.ALLOW.value)
+    except (ValueError, RecursionError):
         pass
     return hashlib.sha256(raw).hexdigest(), allows
 

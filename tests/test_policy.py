@@ -69,6 +69,17 @@ class TestParse:
         ({**BASE, "models": {"allowed": "anthropic:*"}}, "list of strings"),
         ({**BASE, "expires_at": "next week"}, "ISO 8601"),
         ({**BASE, "shell": {"rules": ["deny all"]}}, "rule objects"),
+        ({**BASE, "shell": "deny curl"}, "shell must be an object"),
+        # Rules that used to load although they can't be applied as written.
+        ({**BASE, "shell": {"rules": [{"tool_pattern": "bash", "action": "deny", "arg_patterns": "curl"}]}},
+         "shell.rules rule 1: arg_patterns"),
+        ({**BASE, "shell": {"rules": [{"tool_pattern": "bash", "action": "deny"},
+                                      {"tool_pattern": 5, "action": "deny"}]}}, "rule 2: tool_pattern"),
+        ({**BASE, "shell": {"rules": [{"tool_pattern": "bash", "action": "block"}]}}, "action must be"),
+        ({**BASE, "shell": {"rules": [{"tool_pattern": "bash", "action": "deny",
+                                       "arg_patterns": {"command": "(curl"}}]}}, "regular expression"),
+        ({**BASE, "shell": {"rules": [{"tool_pattern": "bash", "action": "deny",
+                                       "arg_globs": {"command": ["curl*", 5]}}]}}, "arg_globs"),
         ({**BASE, "settings": {"security.shell_sandbox": "strict"}}, "shell_sandbox"),
     ])
     def test_invalid_documents(self, document, message):
@@ -139,6 +150,16 @@ class TestSources:
         monkeypatch.setattr(lumi_policy, "machine_policy_file", lambda: broken)
         state = lumi_policy.load(force=True)
         assert state.policy is None and "invalid" in state.error
+        assert "administrator" in lumi_policy.blocked_reason()
+
+    def test_a_shell_rule_that_cant_be_applied_blocks_instead_of_failing_tool_calls(self, tmp_path, monkeypatch):
+        broken = tmp_path / "policy.json"
+        broken.write_text(json.dumps({**BASE, "shell": {"rules": [
+            {"tool_pattern": "bash", "action": "deny", "arg_patterns": "curl"},
+        ]}}), encoding="utf-8")
+        monkeypatch.setattr(lumi_policy, "machine_policy_file", lambda: broken)
+        state = lumi_policy.load(force=True)
+        assert state.policy is None and "shell.rules rule 1: arg_patterns" in state.error
         assert "administrator" in lumi_policy.blocked_reason()
 
     def test_signed_machine_policy_uses_machine_keys(self, tmp_path, monkeypatch):

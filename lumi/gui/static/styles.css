@@ -5799,6 +5799,11 @@ body {
 .cost-dashboard-loading { padding: 18px 8px; color: var(--dim); font-size: 11px; text-align: center; }
 .cost-dashboard-loading span { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: var(--brand2); animation: live-run-pulse 1.7s ease-out infinite; }
 .cost-dashboard-note { margin: 10px 2px 0; color: var(--dim); font-size: 10.5px; line-height: 1.45; }
+.cost-history-row .cost-model-name { overflow: hidden; color: var(--muted); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.cost-prices { margin-top: 14px; }
+.settings-error-banner { margin: 0 0 14px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--err) 45%, transparent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--err) 10%, transparent); color: var(--text); font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+.cost-prices .cost-history-title { padding-left: 0; text-align: left; }
+.cost-price-list { margin: 4px 0 10px 18px; padding: 0; color: var(--dim); font-size: 11px; }
 
 @media (max-width: 700px) {
     .cost-stat-grid { grid-template-columns: 1fr; }

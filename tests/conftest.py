@@ -39,17 +39,21 @@ _lumi_policy.set_for_tests(None)
 def _no_organization_policy():
     # Process-wide configuration must not leak between tests: a test whose
     # AppState turns the secret scan on (a policy can lock it) would otherwise
-    # mark every later test's history in the same worker. The audit log is
-    # recreated for each test, under that test's isolated home.
-    from lumi import audit, secret_scan
+    # mark every later test's history in the same worker. The audit log and
+    # usage records are recreated for each test, under its isolated home.
+    from lumi import audit, pricing, secret_scan, usage
 
-    _lumi_policy.set_for_tests(None)
-    secret_scan.reset()
-    audit.set_for_tests(None)
+    def reset():
+        _lumi_policy.set_for_tests(None)
+        secret_scan.reset()
+        audit.set_for_tests(None)
+        pricing.reset()
+        usage.set_for_tests(None)
+        usage.set_listener(None)
+
+    reset()
     yield
-    _lumi_policy.set_for_tests(None)
-    secret_scan.reset()
-    audit.set_for_tests(None)
+    reset()
 
 
 # ── Home isolation (process-wide) ──────────────────────────────────

@@ -1391,6 +1391,13 @@ class LumiSettingsView {
             {heading:'Workflow', keys:['auto_lint_after_edits','auto_test_after_edits','auto_test_command','max_model_requests','harness_enabled']},
         ].map(group => ({...section, heading:group.heading, fields:section.fields.filter(field => group.keys.includes(field.key))})) : [section]) : [];
         this.settingsBody.innerHTML = '';
+        if (this.settingsError) {
+            const alert = document.createElement('div');
+            alert.className = 'settings-error-banner';
+            alert.setAttribute('role', 'alert');
+            alert.textContent = this.settingsError;
+            this.settingsBody.appendChild(alert);
+        }
 
         for (const section of visibleSections) {
             // A section can show fields stored under another settings key.
@@ -1700,6 +1707,14 @@ class LumiSettingsView {
             });
         });
 
+        const prices = document.getElementById('cost-price-overrides');
+        prices?.addEventListener('input', () => { this._priceDraft = prices.value; });
+        document.getElementById('cost-price-save')?.addEventListener('click', () => {
+            this._priceDraft = prices.value;
+            this._pricePending = true;
+            this.send({command: 'update_settings', section: 'cost_tracking', key: 'price_overrides', value: prices.value.split('\n')});
+            this.send({command: 'get_costs'});
+        });
         this.settingsBody.querySelectorAll('.cost-refresh-btn').forEach(btn => {
             btn.addEventListener('click', () => {
                 btn.disabled = true;

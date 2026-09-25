@@ -377,7 +377,11 @@ def compress(
         if getattr(session, "_cancel_event", None) is not None:
             stream_options["cancel_event"] = session._cancel_event
         from .request_purpose import auxiliary_stream
-        for event_type, data in auxiliary_stream(backend, "compression",
+        try:
+            usage_context = session._audit_fields()
+        except AttributeError:
+            usage_context = {}
+        for event_type, data in auxiliary_stream(backend, "compression", usage_context=usage_context,
             user_msg=summary_prompt,
             conversation_history=[],
             instructions="You are a conversation summarizer. Be concise and factual.",

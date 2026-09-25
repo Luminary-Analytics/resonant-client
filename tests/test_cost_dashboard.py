@@ -31,12 +31,16 @@ def test_cost_tracker_returns_persisted_total_and_current_session(tmp_path):
         "input_tokens": 1_000_000,
         "output_tokens": 500_000,
         "cost_usd": pytest.approx(0.45),
+        "unpriced_calls": 0,
+        "subscription_calls": 0,
     }
     assert payload["today"] == payload["daily"][date.today().isoformat()]
     assert payload["total"] == {
         "input_tokens": 1_000_000,
         "output_tokens": 500_000,
         "cost_usd": pytest.approx(0.45),
+        "unpriced_calls": 0,
+        "subscription_calls": 0,
     }
 
     reloaded = CostTracker(tmp_path / "costs.json").get_all_costs()

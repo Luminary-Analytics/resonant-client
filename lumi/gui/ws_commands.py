@@ -614,7 +614,22 @@ async def _get_settings(ctx: CommandContext) -> None:
 
 @command("get_costs")
 async def _get_costs(ctx: CommandContext) -> None:
-    await ctx.send({"event": "costs", "data": ctx.state.costs.get_all_costs()})
+    def gather() -> dict:
+        from datetime import datetime, timezone
+
+        from .. import pricing, usage
+
+        # This month's calls from the usage records, and the prices in effect.
+        month = datetime.now(timezone.utc).strftime("%Y-%m")
+        rows = usage.ledger().records(since=month)
+        return {
+            **ctx.state.costs.get_all_costs(),
+            "month": {"period": month, **usage.totals(rows), "by_model": usage.breakdown(rows, "model"),
+                      "by_purpose": usage.breakdown(rows, "purpose")},
+            "pricing": pricing.describe_catalog(),
+        }
+
+    await ctx.send({"event": "costs", "data": await _in_executor(gather)})
 
 
 @command("set_permission_mode")
@@ -2988,7 +3003,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
     "network": frozenset({"ollama_url", "exo_url", "sonn_url", "proxy_url", "no_proxy", "system_certificates"}),
     "api_keys": frozenset({"sonn", "openrouter", "kimi", "anthropic", "openai", "otlp"}),
     "engram": frozenset({"enabled", "server_url"}),
-    "cost_tracking": frozenset({"enabled", "budget_alert_usd"}),
+    "cost_tracking": frozenset({"enabled", "budget_alert_usd", "price_overrides"}),
     "privacy": frozenset({
         "secret_scan", "excluded_paths", "transcript_retention_days",
         "audit_log", "audit_capture", "audit_retention_days",
@@ -3061,6 +3076,10 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
             if text and not text.startswith("#") and text not in patterns:
                 patterns.append(text)
         return patterns
+    elif (section, key) == ("cost_tracking", "price_overrides"):
+        from ..pricing import parse_override_lines
+
+        return parse_override_lines(value)
     elif (section, key) == ("privacy", "audit_capture"):
         from ..audit import CAPTURE_LEVELS
 
@@ -3115,12 +3134,16 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
         writes = list(values.items())
     else:
         writes = [(key, ctx.msg.get("value"))]
+    async def refuse(message: str) -> None:
+        # Marked so Settings shows it on the page being edited.
+        await ctx.send({"event": "error", "message": message, "source": "settings"})
+
     try:
         if not writes:
             raise ValueError("No setting was given.")
         writes = [(k, _socket_setting_value(section, k, v)) for k, v in writes]
     except ValueError as exc:
-        await ctx.send_error(str(exc))
+        await refuse(str(exc))
         return
     from .. import audit
     from ..policy import current as current_policy
@@ -3128,17 +3151,17 @@ async def _cmd_update_settings(ctx: CommandContext) -> None:
     policy = current_policy()
     managed = [k for k, _ in writes if policy and isinstance(section, str) and policy.locked(section, k)]
     if managed:
-        await ctx.send_error(f"{section}.{managed[0]} is managed by {policy.organization} and can't be changed here.")
+        await refuse(f"{section}.{managed[0]} is managed by {policy.organization} and can't be changed here.")
         return
     sonn_change = any(
         (section == "api_keys" and k == "sonn") or (section == "network" and k == "sonn_url")
         for k, _ in writes
     )
     if ctx.runs.busy and section == "security" and any(k == "cli_adapters" for k, _ in writes):
-        await ctx.send({"event": "error", "message": "Finish or stop the current run before changing which providers are allowed."})
+        await refuse("Finish or stop the current run before changing which providers are allowed.")
         return
     if ctx.runs.busy and sonn_change:
-        await ctx.send({"event": "error", "message": "Finish or stop the current run before changing SONN settings."})
+        await refuse("Finish or stop the current run before changing SONN settings.")
         return
     def current_values() -> dict:
         # Off the event loop: API keys come from the OS credential store.

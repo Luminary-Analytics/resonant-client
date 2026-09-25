@@ -127,6 +127,9 @@ DEFAULTS = {
     "cost_tracking": {
         "enabled": True,
         "budget_alert_usd": None,
+        # Your own prices (lumi/pricing.py): {"provider:model-glob": {"input": ..,
+        # "output": .., "cached_input": .., "cache_write": ..}} in USD per million tokens.
+        "price_overrides": {},
     },
     "engram": {
         "enabled": False,

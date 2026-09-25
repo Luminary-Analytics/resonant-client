@@ -58,7 +58,7 @@ from ..connections import (
 from ..sonn import SonnBackend
 from ..engine import Session
 from ..network_defaults import default_thinking_for_model, resolve_exo_url, resolve_ollama_url, resolve_sonn_url
-from .. import audit, net, secret_scan
+from .. import audit, net, pricing, secret_scan, usage
 from . import ws_commands
 from .appearance import page_appearance
 from .chat_loop import ChatRunLoop
@@ -240,6 +240,9 @@ class AppState:
             self.settings.get("general", "default_permission_mode", "bypass")
         )
         self.costs = CostTracker()
+        # Every recorded model call adds to the totals Settings shows: turns,
+        # workers, titles and compaction alike (lumi/usage.py).
+        usage.set_listener(self._count_usage)
         self._budget_alert_days: set[str] = set()
         # v0.5.9a2 — per-iteration cost + model attribution. Updated
         # from two layers: the chat-stream `status` event handler
@@ -2059,6 +2062,9 @@ class AppState:
         secret_scan.configure(self.settings)
         # And the audit log's capture level and OpenTelemetry export.
         audit.configure(self.settings)
+        # And price overrides and whether usage is recorded.
+        pricing.configure(self.settings)
+        usage.configure(self.settings)
 
     def enforce_retention(self) -> dict:
         """Delete transcripts older than the retention setting (gui/retention.py)."""
@@ -2071,6 +2077,10 @@ class AppState:
         # The audit log has its own, longer retention.
         removed["audit_days"] = audit.audit_log().purge()
         return removed
+
+    def _count_usage(self, record: dict) -> None:
+        self.costs.add(record.get("input_tokens", 0), record.get("output_tokens", 0),
+                       record.get("cost_usd"), source=str(record.get("price_source") or ""))
 
     def audit_status(self) -> dict:
         """The audit log's location, chain verification and export health."""
@@ -3405,17 +3415,19 @@ async def _run_session_streaming(
             if event_type == "status":
                 stats = event.get("stats") or {}
                 model = event.get("model", "")
-                in_tok = stats.get("input_tokens", 0)
-                out_tok = stats.get("output_tokens", 0)
+                counts = usage.token_counts(stats)
+                in_tok, out_tok = counts["input_tokens"], counts["output_tokens"]
                 if (in_tok or out_tok) and state.settings.get("cost_tracking", "enabled", True):
-                    cost = state.costs.record_usage(
-                        model,
-                        in_tok,
-                        out_tok,
-                        stats.get("cached_tokens", 0),
-                        **({"actual_cost": stats["cost_usd"]} if stats.get("cost_usd") is not None else {}),
-                    )
-                    stats["cost_usd"] = round(cost, 6)
+                    if "price_source" in stats:
+                        # Priced and counted where the call was recorded
+                        # (lumi/usage.py, AppState._count_usage).
+                        cost = stats.get("cost_usd")
+                    else:
+                        cost = state.costs.record_usage(
+                            model, in_tok, out_tok, counts["cached_tokens"], stats.get("cost_usd"),
+                            provider=str(getattr(session.backend, "name", "") or ""),
+                        )
+                    stats["cost_usd"] = round(cost, 6) if cost is not None else None
                     stats["session_cost_usd"] = state.costs.get_session_cost()["cost_usd"]
                     # v0.5.9a2 — route this status event into the
                     # active autonomous mission's per-iter bucket
@@ -3428,8 +3440,10 @@ async def _run_session_streaming(
                             state, "_active_autonomous_intent_id", "",
                         )
                         if active_intent and state.iter_cost_tracker is not None:
+                            # Mission budgets count priced calls; an unpriced
+                            # call adds its tokens only.
                             state.iter_cost_tracker.record_status(
-                                active_intent, model, in_tok, out_tok, cost,
+                                active_intent, model, in_tok, out_tok, cost or 0.0,
                             )
                     except Exception:
                         logger.debug(

@@ -309,6 +309,11 @@ There is no automatic cross-provider fallback or role routing in this workflow.
   only unless you choose a content level, can be verified under **Settings >
   Privacy & security**, and can stream to an OpenTelemetry collector. See
   [Audit log](docs/audit-log.md).
+- **Usage and cost:** one record per model call, with tokens, cost and
+  purpose, priced from what the provider reports, your organization's or
+  your own prices, or a dated list of Anthropic and OpenAI prices. Models
+  without a price show as unpriced, never $0. See **Settings > Usage &
+  cost** or run `lumi usage`, and [Usage records and prices](docs/usage-and-costs.md).
 
 ## Browser Tools
 

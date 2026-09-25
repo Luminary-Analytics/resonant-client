@@ -1546,11 +1546,12 @@ class Session:
         on_user_input: Optional[Callable] = None,
         images: Optional[list[tuple[bytes, str]]] = None,
     ) -> Iterator[dict]:
-        """Run one turn (see ``_run_turn``) and record it in the audit log.
+        """Run one turn (see ``_run_turn``), recording its usage and audit trail.
 
-        Every event the loop yields passes through here, so the audit log
-        (lumi/audit.py) sees model usage, tool calls and results, file
-        changes, redactions and errors from GUI, gateway and worker turns alike.
+        Every event the loop yields passes through here, so the usage records
+        (lumi/usage.py) and the audit log (lumi/audit.py) see model calls,
+        tool calls and results, file changes, redactions and errors from GUI,
+        gateway and worker turns alike.
         """
         from .. import audit
 
@@ -1571,9 +1572,12 @@ class Session:
         turn = self._run_turn(user_msg, on_permission, on_choice, on_user_input, images)
         try:
             for event in turn:
-                if event.get("event") == EngineEvent.ERROR.value:
-                    outcome = "error"
-                self._audit_event(event, common, written_paths)
+                # A delegated worker's events, passed on for display, were
+                # already recorded by the worker's own run().
+                if not event.get("_subagent"):
+                    if event.get("event") == EngineEvent.ERROR.value:
+                        outcome = "error"
+                    self._observe_event(event, common, written_paths)
                 yield event
         except GeneratorExit:
             outcome = "stopped"
@@ -1595,9 +1599,9 @@ class Session:
             "agent": self.agent_id,
         }
 
-    def _audit_event(self, event: dict, common: dict, written_paths: dict[str, str]) -> None:
-        """One engine event in the audit log, content per the capture level."""
-        from .. import audit
+    def _observe_event(self, event: dict, common: dict, written_paths: dict[str, str]) -> None:
+        """One engine event in the usage records and the audit log."""
+        from .. import audit, usage
 
         kind = event.get("event")
         call_id = str(event.get("call_id") or "")
@@ -1626,14 +1630,30 @@ class Session:
             for path in changed:
                 audit.record("file.change", **common, tool=name, call_id=call_id, path=audit.name(path))
         elif kind == EngineEvent.STATUS.value and isinstance(event.get("stats"), dict):
+            stats = event["stats"]
+            if stats.get("_usage_id"):
+                return  # the same call, seen again
+            provider = str(getattr(self.backend, "name", "") or "")
+            model = str(event.get("model") or getattr(self.backend, "model", "") or "")
             try:
                 elapsed = round(float(event.get("elapsed") or 0), 3)
             except (TypeError, ValueError):
                 elapsed = 0.0
-            audit.record("model.usage", **common,
-                         provider=str(getattr(self.backend, "name", "") or ""),
-                         model=str(event.get("model") or getattr(self.backend, "model", "") or ""),
-                         elapsed=elapsed, **audit.usage_counts(event["stats"]))
+            purpose = "subagent" if self.is_subagent else "turn"
+            record = usage.record(provider=provider, model=model, stats=stats, purpose=purpose,
+                                  elapsed=elapsed, **common)
+            if record is not None:
+                # Consumers (the GUI's cost display) read the priced cost from
+                # the event; None means the model is unpriced, not free.
+                stats.update(_usage_id=record["id"], cost_usd=record["cost_usd"],
+                             price_source=record["price_source"])
+                fields = {key: record[key] for key in (
+                    "input_tokens", "cached_tokens", "cache_write_tokens", "output_tokens",
+                    "cost_usd", "price_source")}
+            else:
+                fields = usage.token_counts(stats)
+            audit.record("model.usage", **common, provider=provider, model=model, purpose=purpose,
+                         elapsed=elapsed, **fields)
         elif kind == EngineEvent.BACKEND_STATUS.value and event.get("kind") == "secrets_redacted":
             audit.record("privacy.redaction", **common, kinds=dict(event.get("kinds") or {}))
         elif kind == EngineEvent.ERROR.value:

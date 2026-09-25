@@ -47,6 +47,11 @@ Lock any of the three with the organization policy's `settings` (see
   then refuses model requests until the policy is fixed.
 - To deploy Lumi yourself, set `"updates.mode": "off"` and install new versions
   through your device management.
+- A copy installed from the MSI package never updates itself, whatever the
+  settings or policy say. `lumi-install.json` beside `lumi.exe` marks it. See
+  [Deploying on Windows](deploy-windows.md).
+- `lumi updates` prints the settings in effect as JSON, without checking for
+  updates.
 
 ## How the feeds work
 

@@ -8,6 +8,46 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 MSI for Intune, Configuration Manager and Group Policy — source only, not released
+
+- **`lumi-X.Y.Z.msi`** ([guide](deploy-windows.md), `packaging/lumi.wxs`,
+  `packaging/build_msi.ps1`, WiX 5):
+  - per machine into `Program Files\Lumi`, silent with
+    `msiexec /i … /qn`, with a Start menu shortcut;
+  - upgrades in place (fixed upgrade code; a rebuild of the same version
+    replaces it too);
+  - removed with `msiexec /x`.
+- **`POLICYFILE=…`** sets the machine policy's `PolicyFile` value on install and
+  removes it on uninstall.
+- **MSI copies never update themselves.** The package puts `lumi-install.json`
+  beside `lumi.exe`, which turns updates off whatever settings or policy say.
+  Settings > Updates and Check for Updates say why.
+- **The EXE and the MSI refuse each other,** so one folder never has two
+  installers.
+- **`lumi updates`** prints the update settings in effect as JSON, for
+  administrators and detection scripts.
+- **Release workflow:** stable tags build, Authenticode-sign (when configured)
+  and attach the MSI, and the download page offers it to administrators.
+  **Build check:** every change builds the MSI, installs it silently on the
+  Windows runner, checks it, and uninstalls it.
+
+Validation on September 25, 2026:
+
+- 7 tests in `test_msi_package.py`. They check that the package, the EXE
+  installer, the policy reader and the update settings agree:
+  - per-machine scope, the upgrade code and the shortcut;
+  - the EXE's AppId in the launch condition;
+  - the policy key for `POLICYFILE`;
+  - the marker `build_msi.ps1` writes, and that it turns updates off;
+  - the Check for Updates message;
+  - `python -m lumi updates`.
+- `test_publish_pages.py` covers hosting the MSI and the download page link.
+- WiX isn't installed on this computer, and nothing was downloaded for it. The
+  MSI is built, installed and removed only by the build-check workflow; see
+  this PR's CI.
+- Not yet deployed through a real Intune tenant, Configuration Manager site or
+  Group Policy.
+
 ## September 25 update channels, pins and turning updates off — source only, not released
 
 - **Settings > Updates** ([guide](updates.md), `lumi/update_channels.py`), under

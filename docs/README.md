@@ -46,6 +46,7 @@ guides, historical plans, and dated evidence, with links to current replacements
 - [Fallback models, roles and capability overrides](models.md)
 - [Signing in to enterprise model endpoints (OAuth, Entra ID, client certificates)](connection-sign-in.md)
 - [Updates: channels, pins and turning them off](updates.md)
+- [Deploying on Windows: the MSI, Intune, Configuration Manager and Group Policy](deploy-windows.md)
 - [Product and engineering priorities](agentic-harness-north-star.md)
 - [Model execution and prompt architecture](model-prompt-architecture.md)
 - [Durable runtime services](modern-agent-runtime.md)

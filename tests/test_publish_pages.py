@@ -94,3 +94,17 @@ def test_non_release_versions_are_rejected(tmp_path, version):
     pages = _load()
     with pytest.raises(ValueError):
         pages.publish(tmp_path, _installer(tmp_path, "x"), version)
+
+
+def test_the_msi_is_hosted_beside_the_installer_and_offered_to_administrators(tmp_path):
+    pages = _load()
+    site = tmp_path / "site"
+    site.mkdir()
+    pages.publish(site, _installer(tmp_path, "0.20.0"), "0.20.0")
+    assert "MSI package" not in (site / "index.html").read_text(encoding="utf-8")
+    msi = tmp_path / "dist" / "lumi-0.21.0.msi"
+    msi.write_bytes(b"msi 0.21.0")
+    pages.publish(site, _installer(tmp_path, "0.21.0"), "0.21.0", extras=[msi])
+    assert (site / "downloads" / "v0.21.0" / "lumi-0.21.0.msi").read_bytes() == b"msi 0.21.0"
+    page = (site / "index.html").read_text(encoding="utf-8")
+    assert 'href="downloads/v0.21.0/lumi-0.21.0.msi"' in page and "msiexec /i" in page

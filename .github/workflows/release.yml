@@ -8,8 +8,9 @@ name: Release
 #      hash-pinned packaging/requirements-release.txt, with third-party
 #      notices and a CycloneDX SBOM
 #   2. Authenticode-signs lumi.exe, wraps the bundle into an Inno Setup
-#      installer (lumi-setup-X.Y.Z.exe) and Authenticode-signs that, when
-#      signing credentials are configured (packaging/sign_windows.ps1)
+#      installer (lumi-setup-X.Y.Z.exe) and, for stable tags, an MSI for device
+#      management (lumi-X.Y.Z.msi), and Authenticode-signs both when signing
+#      credentials are configured (packaging/sign_windows.ps1)
 #   3. Signs the installer with the EdDSA private key (from EDDSA_PRIVATE_KEY secret)
 #   4. Creates a GitHub Release with the installer, SBOM and notices
 #   5. Copies the installer to the GitHub Pages site (downloads/vX.Y.Z/),
@@ -142,6 +143,24 @@ jobs:
           $size = (Get-Item $installer).Length
           Write-Host "Installer: $installer ($([math]::Round($size / 1MB, 1)) MB)"
 
+      # An MSI for Intune, Configuration Manager and Group Policy. MSI versions
+      # are three numbers, so betas get none.
+      - name: Build the MSI
+        if: ${{ !contains(steps.version.outputs.version, '-') }}
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version 5.0.2
+          ./packaging/build_msi.ps1 -Version "${{ steps.version.outputs.version }}"
+
+      - name: Authenticode-sign the MSI
+        if: ${{ !contains(steps.version.outputs.version, '-') }}
+        shell: pwsh
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
+          WINDOWS_SIGN_COMMAND: ${{ vars.WINDOWS_SIGN_COMMAND }}
+        run: ./packaging/sign_windows.ps1 -Files "dist/installer/lumi-${{ steps.version.outputs.version }}.msi"
+
       # Before the EdDSA signature, so the update feed signs the final bytes.
       - name: Authenticode-sign the installer
         shell: pwsh
@@ -188,6 +207,7 @@ jobs:
           generate_release_notes: true
           files: |
             dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe
+            dist/installer/lumi-${{ steps.version.outputs.version }}.msi
             dist/lumi-${{ steps.version.outputs.version }}-sbom.cdx.json
             dist/lumi-${{ steps.version.outputs.version }}-THIRD_PARTY_NOTICES.txt
 
@@ -209,10 +229,13 @@ jobs:
           $repo = "${{ github.event.repository.name }}"
           $pages = "https://$owner.github.io/$repo"
           $installer = "dist/installer/lumi-setup-${{ steps.version.outputs.version }}.exe"
+          $extras = @()
+          $msi = "dist/installer/lumi-${{ steps.version.outputs.version }}.msi"
+          if (Test-Path $msi) { $extras = @("--extra", $msi) }
           python packaging/publish_pages.py `
               --site "gh-pages-checkout" `
               --installer $installer `
-              --version "${{ steps.version.outputs.version }}"
+              --version "${{ steps.version.outputs.version }}" @extras
           if ($LASTEXITCODE -ne 0) { throw "publish_pages.py failed" }
 
           $notes = "<p>Lumi ${{ steps.version.outputs.version }}. See <a href=`"$pages/`">$pages/</a>.</p>"

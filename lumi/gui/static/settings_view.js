@@ -275,7 +275,9 @@ class LumiSettingsView {
         const esc = value => this.escapeHtml(String(value ?? ''));
         const modes = { automatic: 'Automatic', manual: 'Only when you check', off: 'Off' };
         const describe = s => `${esc(modes[s.mode] || s.mode)}${s.mode === 'off' ? '' : `, from ${esc(s.describe)}`}`;
-        const managed = status.managed_by ? ` · managed by ${esc(status.managed_by)}` : '';
+        const managed = status.installed_by === 'msi'
+            ? ' · installed from the MSI package, so your organization’s device management updates it'
+            : status.managed_by ? ` · managed by ${esc(status.managed_by)}` : '';
         const checking = status.mode !== 'off' && status.available;
         const hints = [
             status.mode !== 'off' && !status.available ? 'This copy of Lumi doesn’t update itself: it runs from source or outside Windows.' : '',

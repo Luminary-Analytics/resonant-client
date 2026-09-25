@@ -5,6 +5,7 @@ GitHub Release assets anonymously. The Pages site therefore carries both the
 WinSparkle feeds and the installers they point to:
 
     downloads/vX.Y.Z/lumi-setup-X.Y.Z.exe
+    downloads/vX.Y.Z/lumi-X.Y.Z.msi          (stable releases, for administrators)
     downloads/vX.Y.Z-beta.N/lumi-setup-X.Y.Z-beta.N.exe
 
 This script copies the new installer into that layout and removes old ones so
@@ -27,6 +28,7 @@ import argparse
 import html
 import re
 import shutil
+from collections.abc import Sequence
 from pathlib import Path
 
 KEEP = 3
@@ -49,7 +51,9 @@ def _key(path: Path) -> tuple[int, ...]:
     return key or (-1,)
 
 
-def publish(site: Path, installer: Path, version: str, keep: int = KEEP, lines: int = LINES) -> Path:
+def publish(site: Path, installer: Path, version: str, keep: int = KEEP, lines: int = LINES,
+            extras: Sequence[Path] = ()) -> Path:
+    """Copy the installer (and ``extras``, such as the MSI) into downloads/v<version>/."""
     key = _version_key(version)
     if key is None:
         raise ValueError("expected a release version: X.Y.Z, or X.Y.Z-beta.N for a beta")
@@ -63,6 +67,8 @@ def publish(site: Path, installer: Path, version: str, keep: int = KEEP, lines: 
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / installer.name
     shutil.copyfile(installer, target)
+    for extra in extras:
+        shutil.copyfile(extra, target_dir / extra.name)
 
     releases = sorted((p for p in (site / "downloads").iterdir() if p.is_dir() and _key(p) != (-1,)),
                       key=_key, reverse=True)
@@ -85,8 +91,10 @@ def publish(site: Path, installer: Path, version: str, keep: int = KEEP, lines: 
         newest_dir = stable[0]
         newest_installer = target if newest_dir == target_dir else next(iter(sorted(newest_dir.glob("*.exe"))), target)
         href = html.escape(f"downloads/{newest_dir.name}/{newest_installer.name}")
+        msi = next(iter(sorted(newest_dir.glob("*.msi"))), None)
+        msi_html = MSI_LINE.format(href=html.escape(f"downloads/{newest_dir.name}/{msi.name}")) if msi else ""
         (site / "index.html").write_text(PAGE.format(version=html.escape(newest_dir.name[1:]), href=href,
-                                                     name=html.escape(newest_installer.name)),
+                                                     name=html.escape(newest_installer.name), msi=msi_html),
                                          encoding="utf-8", newline="\n")
     (site / ".nojekyll").touch()
     return target
@@ -111,8 +119,13 @@ PAGE = """<!doctype html>
 <p><a class="button" href="{href}">Download Lumi {version} for Windows</a></p>
 <p>Installer: <code>{name}</code>. Installed copies update themselves from
 <a href="appcast.xml">this update feed</a>, which is signed with EdDSA.</p>
-</body>
+{msi}</body>
 </html>
+"""
+
+MSI_LINE = """<p>For IT administrators: the <a href="{href}">MSI package</a> installs per machine and silently
+(<code>msiexec /i lumi-X.Y.Z.msi /qn</code>) through Intune, Configuration Manager or Group Policy.
+Copies installed from it leave updates to your device management.</p>
 """
 
 
@@ -123,8 +136,10 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--keep", type=int, default=KEEP)
     parser.add_argument("--lines", type=int, default=LINES)
+    parser.add_argument("--extra", type=Path, action="append", default=[],
+                        help="Another file for the same folder, such as the MSI (repeatable)")
     args = parser.parse_args()
-    print(publish(args.site, args.installer, args.version, args.keep, args.lines))
+    print(publish(args.site, args.installer, args.version, args.keep, args.lines, args.extra))
 
 
 if __name__ == "__main__":

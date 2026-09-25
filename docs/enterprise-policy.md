@@ -109,6 +109,11 @@ grace period.
 
 ## Group Policy and Intune
 
+The MSI package can point Lumi at a policy file as it installs:
+`msiexec /i lumi-X.Y.Z.msi /qn POLICYFILE="\\server\share\lumi-policy.json"`
+sets the `PolicyFile` value below, and uninstalling removes it. See
+[Deploying on Windows](deploy-windows.md).
+
 `packaging/policy/lumi.admx` and `packaging/policy/en-US/lumi.adml` define
 three machine policies under **Lumi** in the Group Policy editor:
 

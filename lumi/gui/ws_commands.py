@@ -2752,6 +2752,8 @@ async def _cmd_set_project(ctx: CommandContext) -> None:
 def _update_check_message(info: dict, started: bool) -> str:
     """What Check for updates tells people, from ``updater.status()``."""
     pending = info.get("pending") or {}
+    if info.get("installed_by") == "msi":
+        return "This copy was installed from the MSI package, so your organization's device management updates it."
     if info.get("mode") == "off":
         if pending and pending.get("mode") != "off":
             return "Updates are off until Lumi restarts with your new update settings."

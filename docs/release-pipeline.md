@@ -86,6 +86,14 @@ the newest three installers, the newest installer of each of the four newest
 release lines (for installs pinned to one), and betas newer than the newest
 stable release. A stable tag also regenerates the download page.
 
+For stable tags the workflow also builds `lumi-X.Y.Z.msi` with WiX 5
+(`packaging/build_msi.ps1`, `packaging/lumi.wxs`), Authenticode-signs it like
+the EXE, attaches it to the release and copies it beside the installer on
+Pages, where the download page offers it to administrators. Betas get no MSI;
+an MSI version is three numbers. The build-check workflow builds the MSI on
+every change and installs, checks and removes it on the runner. See
+[Deploying on Windows](deploy-windows.md).
+
 `packaging/update_appcast.py` then adds the release to the update feeds, with
 byte length, notes and signature, pointing at that Pages copy:
 
@@ -135,7 +143,8 @@ ordinary CI. Keep mocked wire-contract tests distinct from live model evidence.
 | `packaging/third_party_notices.py`, `packaging/third-party-components.json` | Notices, license gate, SBOM additions |
 | `packaging/sign_windows.ps1` | Authenticode signing when configured |
 | `packaging/check_bundle.py`, `packaging/bundle-policy.json` | Bundle contents and size gate |
-| `packaging/installer.iss` | Windows installer |
+| `packaging/installer.iss` | Windows installer (EXE) |
+| `packaging/lumi.wxs`, `packaging/build_msi.ps1` | MSI for device management |
 | `packaging/update_appcast.py` | Stable, beta and release-line update feeds |
 | `lumi/updater.py`, `lumi/update_channels.py` | WinSparkle client and verification key; update mode, channel and pin |
 

@@ -8,6 +8,71 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 worker handoffs report only what happened — source only, not released
+
+**A worker's handoff listed files it never changed.** The handoff a delegated
+worker (`task`, `task_batch`) returns named every file its `file_edit`,
+`file_write` or `file_replace` calls asked for. An edit the user rejected, a
+hook or policy blocked, that failed (`old_text` not found) or that a stop cut
+off before it ran still reached the parent model, the agent registry and the
+app as a changed file. The same handoff called every `check_run` without an
+error "passed". So a check the user or a hook denied, which never ran, was
+reported as passing, and Director Mode recorded it as passing validation.
+
+- **Changed files come from results** (`lumi/engine/session.py`,
+  `_execute_task`). A write call's path waits under its call id and counts
+  only when that call's own result succeeds, as the audit log already did. A
+  denial by the user or a hook isn't an error, so both `denied` and
+  `is_error` are checked. A call with no result doesn't count. Files a
+  successful result names itself, such as a Codex file change, now count
+  too. A worktree's committed changes are still added.
+- **A denied check is `not run`**, not "passed" (a policy block used to say
+  "failed"). Director Mode records it as a validation that didn't pass, so it
+  no longer satisfies the acceptance gate.
+- **CLI tool calls without results** (`Session.run`): the branch for a CLI
+  backend's `tool_call` events counted each call as a successful tool and a
+  write's path as a changed file. No shipped backend reaches it: Claude Code
+  sends only text, and Codex reports its tools as `external.tool`
+  observations with results. The branch stays, so such a call never runs
+  natively, but it no longer counts as evidence.
+
+Validation on September 25, 2026:
+
+- Full `pytest` with `main` merged in: 4,065 passed, 5 skipped. `ruff check .`
+  clean, the UI node tests (`ui_recovery`, `appearance`, `autonomous_view`)
+  46 passed, `git diff --check` clean.
+- `test_worker_handoff.py` (10 tests) delegates through `Session.run` with a
+  scripted backend. It reads the handoff from the `subagent.end` event, the
+  parent's `task` result and the agent record:
+  - an accepted edit is listed, and the file changed;
+  - an edit rejected by the user, blocked by a hook or by policy, or failed
+    is not listed, and the file is unchanged;
+  - a worker stopped after its call, before the edit ran, lists nothing;
+  - a Codex worker's file change counts only when its result succeeds;
+  - a denied check is `not run`. In a Director run it's recorded as not
+    passing, and the gate refuses the task.
+- `test_session_text_branches.py`: a display-only CLI write is no changed
+  file or successful tool.
+- Against the previous `session.py`, 9 of the 11 new tests failed. The
+  accepted edit and the failed Codex change pass on both.
+- In the browser pane, before merging `main`, with an isolated home and a
+  scripted Ollama-compatible model whose parent delegates an edit of
+  `notes.txt` to a build worker, in Ask mode, allowing the task:
+  - **Reject** left `notes.txt` unchanged. The handoff the page received in
+    `subagent.end`, and the worker's agent record, listed no changed files.
+    **Accept** changed the file and listed `notes.txt`.
+  - On the previous `session.py`, the same **Reject** listed `notes.txt` in
+    both.
+  - This build has no element for the Agents panel that used to show the
+    handoff (`agent-activity-tree`), so the handoff was read from the page's
+    state. The conversation showed the worker's edit as denied.
+  - The real `~/.resonant/settings.json` was unchanged, no `~/.lumi` was
+    created, and no Lumi credential was stored. Settings > Connections was
+    not opened.
+
+Not exercised: a live model, a packaged build, a real Codex or Claude Code
+worker, and `task_batch`, which runs each worker through the same code.
+
 ## September 25 changed files count only edits that happened — source only, not released
 
 - A task's **Changed files** and the "Review these changes" next-prompt
@@ -22,8 +87,9 @@ The dated September 15/18 records below are historical.
   change counts when its result succeeds. A worker's tool events never count
   for the parent turn and can't complete a parent call that has the same id.
   The line and diff counts shown beside each file are unchanged.
-- A worker's handoff still lists the files its write calls named, whether or
-  not they succeeded; the engine builds that list.
+- A worker's handoff is built by the engine, which now also lists only
+  changes whose results succeeded ("worker handoffs report only what
+  happened", above).
 
 Validation on September 25, 2026:
 

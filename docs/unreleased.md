@@ -67,9 +67,12 @@ Validation on September 25, 2026:
   - the Check for Updates message;
   - `python -m lumi updates`.
 - `test_publish_pages.py` covers hosting the MSI and the download page link.
-- WiX isn't installed on this computer, and nothing was downloaded for it. The
-  MSI is built, installed and removed only by the build-check workflow; see
-  this PR's CI.
+- WiX isn't installed on the development computer, so the MSI is built only
+  in CI. On PR #21's build check (WiX 5.0.2 on `windows-latest`), the MSI
+  (29.4 MB) was built and installed silently with `POLICYFILE`. The files,
+  marker, shortcut and policy value were present. The installed
+  `lumi updates` reported `mode=off installed_by=msi channel=beta
+  managed_by=CI`, and the MSI uninstalled cleanly.
 - Not yet deployed through a real Intune tenant, Configuration Manager site or
   Group Policy.
 

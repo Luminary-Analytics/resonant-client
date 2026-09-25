@@ -8,6 +8,61 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 an installer package and profiles for managed Macs — source only, not released
+
+- **`lumi-X.Y.Z.pkg`** for Jamf Pro, Intune and other device management
+  ([guide](deploy-macos.md)). `packaging/build_macos.sh` makes it after the
+  DMG, with Apple's pkgbuild and productbuild and `packaging/macos_pkg.py`.
+  - It installs `/Applications/Lumi.app` for every user.
+  - It has no choices and no scripts.
+  - It refuses Intel Macs and macOS before 12.
+  - Every version has the package id `com.luminaryanalytics.lumi` and upgrades
+    in place: the app isn't relocatable.
+  - With `MACOS_INSTALLER_IDENTITY`, it's signed, notarized and stapled.
+- **A PKG copy never updates itself**, like an MSI copy.
+  - `Lumi.app/Contents/Resources/lumi-install.json` marks it, inside what the
+    signature covers. The build signs the staged copy again: with the
+    Developer ID, or ad hoc.
+  - `lumi updates` reports `"installed_by": "pkg"`.
+  - Settings > Updates, About and Check for Updates say it came from the
+    installer package (`update_channels.MANAGED_INSTALLERS`).
+- **`packaging/policy/make_mobileconfig.py`** turns a policy file into a
+  configuration profile.
+  - It checks the policy with the app's parser first, and with `--keys` also
+    a signed policy's signature.
+  - UUIDs come from the contents.
+  - `--plist` writes the bare preferences, for Jamf's Custom Settings or an
+    Intune preference file.
+- **Profiles can carry trusted signing keys** (`PolicyKeys`), as the registry
+  does on Windows (`policy.machine_keys`). A signed policy and its keys then
+  deploy together.
+- **A profile that can't be used fails closed.** Lumi refuses model requests,
+  as for any invalid machine policy, when:
+  - its plist can't be read;
+  - its `Policy` is empty;
+  - its `Policy` is neither text nor a dictionary.
+
+  Before, each of these read as "no policy" (`policy.managed_preferences_policy`).
+
+Validation on September 25, 2026:
+
+- `tests/test_macos_pkg.py` (9 tests) covers:
+  - the marker and the installed-by check on an app bundle's layout;
+  - the non-relocatable component list, and the distribution file against
+    `lumi.spec`'s bundle id and minimum macOS;
+  - the command line;
+  - generated profiles read back by the app's reader;
+  - the generator refusing an invalid policy, a bad signature and a keys file
+    that isn't an object;
+  - a signed policy and its keys applying through managed preferences;
+  - the reader failing closed.
+- The policy, MSI and Lumi Cloud tests pass.
+- Not run locally: pkgbuild, productbuild and installer need a Mac. The macOS
+  CI job builds the PKG, installs it with `sudo installer`, and checks the
+  installed copy. It checks updates left to the MDM, a policy from managed
+  preferences made by the generator, and an empty `Policy` failing closed.
+  See the pull request for its result.
+
 ## September 25 accessibility review and conformance report — source only, not released
 
 - **[`docs/accessibility.md`](accessibility.md)** reports conformance with

@@ -368,6 +368,21 @@ test('billing-off and failed SONN discovery never appear as a paid subscription'
     assert.equal(app._accountSummary().name, 'SONN account');
 });
 
+test('Settings say device management updates an MSI or PKG copy', () => {
+    const app = accountView();
+    app.escapeHtml = value => String(value).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+    app.updateStatus = {version: '0.20.0', mode: 'off', describe: 'the stable channel', installed_by: 'pkg',
+        available: false, problems: []};
+    assert.match(app._renderUpdateStatus(),
+        /installed from the macOS installer package, so your organization’s device management updates it/);
+    app.updateStatus.installed_by = 'msi';
+    assert.match(app._renderUpdateStatus(), /installed from the MSI package, so/);
+    app.updateStatus = {...app.updateStatus, installed_by: 'someday', managed_by: 'Acme'};
+    assert.match(app._renderUpdateStatus(), /managed by Acme/);
+    app.aboutInfo = {version: '0.20.0', license: 'MIT', installed_by: 'pkg'};
+    assert.match(app._renderAbout(), /Installed by your organization’s device management\./);
+});
+
 test('Settings shortcut works from a composer draft without sending or clearing it', () => {
     const app = setup();
     app.userInput.value = 'Keep this draft';

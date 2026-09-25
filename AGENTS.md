@@ -112,7 +112,9 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 - Updates: `update_channels.py` picks the feed from `updates.mode`, `channel` and
   `pin` (Settings or policy, read at startup); `appcast.xml` keeps its address
   because every earlier install polls it. Running from source never loads
-  WinSparkle, and an MSI install (`lumi-install.json`) never updates itself.
+  WinSparkle, and an MSI or PKG install (`lumi-install.json`) never updates
+  itself. A macOS configuration profile that can't be used fails closed like
+  any machine policy (`policy.managed_preferences_policy`).
   Never change `packaging/lumi.wxs`'s UpgradeCode. Publishing a release or
   feed needs the user's go-ahead.
 - Lumi Cloud (`cloud.py`): the sign-in's refresh token and the device's private

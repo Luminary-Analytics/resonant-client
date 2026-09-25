@@ -42,6 +42,7 @@ guide belongs in that navigation; historical records stay out of it.
 - [Code editors: sending selections and files from VS Code and JetBrains IDEs, and reviewing Lumi's changes there](code-editors.md)
 - [Issue trackers: starting from a Jira, Linear, GitHub or GitLab issue, and commenting on it](issue-trackers.md)
 - [Hand-offs: passing work to a teammate or a CI run](hand-offs.md)
+- [Team skills and prompts from your organization's library](team-library.md)
 - [Autonomous sessions (experimental): specs, budgets, spending limits and stop rules](autonomous-sessions.md)
 - [Skills and learning](skills.md)
 - [Writing a capability pack: the manifest, hooks, trust and sharing](packs.md)

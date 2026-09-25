@@ -60,6 +60,50 @@ Not exercised: a live model, a packaged build, orchestration specialists and
 harness evaluators in the app (their existing tests pass), and Codex or Claude
 Code, which run their own tools.
 
+## September 25 team skills and prompts — source only, not released
+
+- **Your organization's library** (`lumi/team_library.py`,
+  [guide](team-library.md)): skills and prompts published and versioned in
+  Lumi Cloud's **Library** (Luminary-Analytics/lumi-cloud#21).
+  - Lumi syncs the latest versions when it starts, if its copy is more than
+    15 minutes old, and from **Settings > Lumi account > Team library > Sync
+    now**.
+  - It keeps a copy in its state folder (`team/library.json`) and deletes it
+    on sign-out.
+- **Team skills** that match a request are listed for the agent next to pack
+  skills (up to four), with their organization and version. `skill_view`
+  reads `team:<organization>/<slug>`.
+- **Team prompts**: a **❝** button beside the message box, shown once the
+  organization has prompts.
+  - It opens a searchable list; Enter inserts the first match into the
+    message after anything typed, and arrow keys move through the list.
+  - Nothing is sent until the person sends it.
+
+Validation on September 25, 2026: `test_team_library.py` (2 tests) covers:
+
+- syncing, and items that aren't valid being left out;
+- matching (a trigger phrase outranks shared words; no match for an
+  unrelated request);
+- the skill list and `skill_view` for team skills;
+- an archived item disappearing at the next sync, and a failed sync keeping
+  the copy;
+- the app's command syncing only when the copy is old or when asked;
+- sign-out deleting the copy.
+
+In the browser pane, Lumi Cloud of that branch and an isolated app signed in
+as Ada ran together, with a stub model recording its requests:
+
+- **Prompts.** The **❝** button appeared after the startup sync. It was
+  reached with Tab, and the list opened with Enter. Typing "check" filtered it
+  to "Review checklist", and Enter put that prompt in the message with focus
+  back in the box.
+- **Skills.** Sending "Cut the 2.0 release" gave the model Acme's "Cut a
+  release (version 1)" in the skill list.
+- **Updating.** After Ada published version 2 from the portal's form, **Sync
+  now** brought it into the app's copy.
+- **Layout.** The prompts dialog fit a 420-pixel window once its search field
+  was made full width.
+
 ## September 25 hand-offs to a teammate or a CI run — source only, not released
 
 - **Hand off…** in a conversation's menu (`lumi/handoff.py`,

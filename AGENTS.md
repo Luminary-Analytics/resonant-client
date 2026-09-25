@@ -243,6 +243,11 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Lumi's replies and one line per action, never tool results, after
   `secret_scan` removes saved keys and secret patterns. Keep new event kinds
   out of the copy unless they carry only what the person or Lumi said.
+- The team library (`team_library.py`) is the organization's published
+  skills and prompts, synced from Lumi Cloud into `team/library.json` and
+  deleted on sign-out. Team skills are listed for the agent like pack skills
+  and read with `skill_view team:<org>/<slug>`; prompts only fill the
+  composer and are never sent without the person.
 - Hand-offs (`handoff.py`) carry that same copy, the note and the
   repository's address (without credentials), branch and commit. A picked-up
   hand-off is context (`@handoff:`, sticky in `ContextBroker.STICKY`), never

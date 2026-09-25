@@ -3,8 +3,8 @@ import json
 import httpx
 import pytest
 
-from resonant_client.sonn import SonnBackend
-from resonant_client.sonn_tasks import SonnTaskController, SonnTaskError
+from lumi.sonn import SonnBackend
+from lumi.sonn_tasks import SonnTaskController, SonnTaskError
 BASE = 'https://sonn.example/v1/workspace/projects/project-test/openai/v1'
 
 

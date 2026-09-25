@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="8 8 156 48" fill="none">
+  <title>Lumi</title>
+  <path d="M16 16V48H48" stroke="#15172E" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="36" cy="28" r="9.5" fill="#10122B"/>
+  <circle cx="36" cy="28" r="7" fill="#FFC24B"/>
+  <g transform="translate(63.6 10.8) scale(0.606)">
+    <g stroke="#15172E" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 6V64"/>
+      <path d="M26 28V48A16 16 0 0 0 58 48"/>
+      <path d="M58 28V64"/>
+      <path d="M78 64V40A12 12 0 0 1 102 40V64"/>
+      <path d="M102 40A12 12 0 0 1 126 40V64"/>
+      <path d="M146 28V64"/>
+    </g>
+    <circle cx="146" cy="12" r="7" fill="#10122B"/>
+    <circle cx="146" cy="12" r="5" fill="#FFC24B"/>
+  </g>
+</svg>

@@ -3,7 +3,7 @@ import copy
 
 import pytest
 
-from resonant_client.engine.session import Session
+from lumi.engine.session import Session
 from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
 
 

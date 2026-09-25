@@ -18,13 +18,13 @@ import textwrap
 
 import pytest
 
-from resonant_client.orchestration.field_observation_ingest import (
+from lumi.orchestration.field_observation_ingest import (
     _parse_field_observation_md,
     ingest_field_observation_dir,
     ingest_field_observation_file,
 )
-from resonant_client.orchestration.skill_cli import build_parser, main
-from resonant_client.orchestration.skills import load_skill, list_skills_filtered
+from lumi.orchestration.skill_cli import build_parser, main
+from lumi.orchestration.skills import load_skill, list_skills_filtered
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -34,7 +34,7 @@ from resonant_client.orchestration.skills import load_skill, list_skills_filtere
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -194,7 +194,7 @@ class TestIngestSingleFile:
         path.write_text(body, encoding="utf-8")
         ingest_field_observation_file(path)
         # Check the procedure.md sidecar contains the full body.
-        from resonant_client.orchestration.skills import skill_dir
+        from lumi.orchestration.skills import skill_dir
         sd = skill_dir("obs", scope="global")
         procedure = (sd / "procedure.md").read_text(encoding="utf-8")
         assert "## Section" in procedure

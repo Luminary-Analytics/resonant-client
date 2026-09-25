@@ -18,8 +18,8 @@ from typing import Iterator
 
 import pytest
 
-from resonant_client.engine.agent_runtime import AgentRegistry, AgentStatus
-from resonant_client.engine.session import Session
+from lumi.engine.agent_runtime import AgentRegistry, AgentStatus
+from lumi.engine.session import Session
 
 
 class _StubBackend:
@@ -73,7 +73,7 @@ def test_restarting_an_unknown_agent_raises(tmp_path: Path):
 
 
 def test_restarting_a_completed_agent_is_refused(tmp_path: Path):
-    from resonant_client.engine.agent_runtime import AgentHandoff
+    from lumi.engine.agent_runtime import AgentHandoff
 
     session, registry = _session_with_registry(tmp_path)
     record = registry.create(agent_type="explore", prompt="Map it")

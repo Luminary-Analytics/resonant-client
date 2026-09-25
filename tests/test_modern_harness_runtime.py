@@ -5,17 +5,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-from resonant_client.engine.agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
-from resonant_client.engine.artifacts import ArtifactKind, ArtifactStore
-from resonant_client.engine.capability_packs import CapabilityPackManager, approve_pack
-from resonant_client.engine.checkpoint_timeline import SessionCheckpointStore
-from resonant_client.engine.code_intelligence import parse_code
-from resonant_client.engine.context_broker import ContextBroker
-from resonant_client.engine.flight_recorder import FlightRecorder
-from resonant_client.engine.hooks import HookDefinition, HookRunner, HookType
-from resonant_client.engine.model_roles import ModelRoleRouter
-from resonant_client.engine.tools import AGENT_TOOLS
-from resonant_client.engine.worktrees import WorktreeManager
+from lumi.engine.agent_runtime import AgentHandoff, AgentRegistry, AgentStatus
+from lumi.engine.artifacts import ArtifactKind, ArtifactStore
+from lumi.engine.capability_packs import CapabilityPackManager, approve_pack
+from lumi.engine.checkpoint_timeline import SessionCheckpointStore
+from lumi.engine.code_intelligence import parse_code
+from lumi.engine.context_broker import ContextBroker
+from lumi.engine.flight_recorder import FlightRecorder
+from lumi.engine.hooks import HookDefinition, HookRunner, HookType
+from lumi.engine.model_roles import ModelRoleRouter
+from lumi.engine.tools import AGENT_TOOLS
+from lumi.engine.worktrees import WorktreeManager
 
 
 def _git(cwd: Path, *args: str) -> str:
@@ -332,12 +332,12 @@ def test_gui_exposes_runtime_control_plane_contract():
     substring search over one file asserts where the code sits rather than
     whether the command is actually routable.
     """
-    from resonant_client.gui import ws_commands
-    from resonant_client.gui.app import websocket_endpoint  # noqa: F401
+    from lumi.gui import ws_commands
+    from lumi.gui.app import websocket_endpoint  # noqa: F401
 
     root = Path(__file__).parents[1]
-    frontend = (root / "resonant_client" / "gui" / "static" / "app.js").read_text(encoding="utf-8")
-    endpoint_source = (root / "resonant_client" / "gui" / "app.py").read_text(encoding="utf-8")
+    frontend = (root / "lumi" / "gui" / "static" / "app.js").read_text(encoding="utf-8")
+    endpoint_source = (root / "lumi" / "gui" / "app.py").read_text(encoding="utf-8")
 
     for command in (
         "agent_runtime_control", "session_timeline_restore", "flight_recorder_export",

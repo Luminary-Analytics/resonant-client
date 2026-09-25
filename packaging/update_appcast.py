@@ -2,7 +2,7 @@
 Update appcast.xml after a new release is built.
 
 Pipeline (called from .github/workflows/release.yml):
-    1. CI builds resonant-setup-X.Y.Z.exe
+    1. CI builds lumi-setup-X.Y.Z.exe
     2. CI signs it with winsparkle-tool using the EDDSA_PRIVATE_KEY secret
     3. CI uploads the .exe to the GitHub Release for tag vX.Y.Z
     4. CI checks out the gh-pages branch into ./gh-pages-checkout
@@ -13,7 +13,7 @@ Pipeline (called from .github/workflows/release.yml):
 Standalone usage (for local testing):
     python packaging/update_appcast.py \\
         --version 0.2.1 \\
-        --installer dist/installer/resonant-setup-0.2.1.exe \\
+        --installer dist/installer/lumi-setup-0.2.1.exe \\
         --signature "BASE64_EDDSA_SIG" \\
         --notes "Initial public release." \\
         --appcast gh-pages-checkout/appcast.xml \\

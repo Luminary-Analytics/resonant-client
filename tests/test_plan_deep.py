@@ -30,9 +30,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from resonant_client.gui.autonomous_session import _DEFAULT_PLANNER_SPEC
-from resonant_client.orchestration.plan_graph import NodeSpecialization
-from resonant_client.orchestration.specialists import (
+from lumi.gui.autonomous_session import _DEFAULT_PLANNER_SPEC
+from lumi.orchestration.plan_graph import NodeSpecialization
+from lumi.orchestration.specialists import (
     SPECIALISTS,
     SpecialistProfile,
     get_specialist,
@@ -155,7 +155,7 @@ class TestDefaultPlannerSpec:
         # If anyone re-adds the routing under the old name, this fails.
         # Keeping the test prevents accidental resurrection — search
         # for the symbol on import.
-        import resonant_client.gui.autonomous_session as mod
+        import lumi.gui.autonomous_session as mod
         assert not hasattr(mod, "PLANNER_BY_TIER")
         assert not hasattr(mod, "planner_for_model")
 
@@ -170,7 +170,7 @@ class TestIntentServicePlannerOverride:
     path + verify the root node's spec is what we asked for."""
 
     def _build_service(self):
-        from resonant_client.orchestration.intent_service import IntentService
+        from lumi.orchestration.intent_service import IntentService
         # Stub backend — not used for this construction test
         backend = MagicMock()
         backend.model = "deepseek-v4-pro:cloud"
@@ -186,7 +186,7 @@ class TestIntentServicePlannerOverride:
     def test_default_planner_is_plan(self, tmp_path, monkeypatch):
         # Patch save_graph + log_decision so we don't write anywhere,
         # and patch threading.Thread.start so the worker doesn't run.
-        import resonant_client.orchestration.intent_service as mod
+        import lumi.orchestration.intent_service as mod
 
         monkeypatch.setattr(mod, "save_graph", lambda *a, **k: None)
         monkeypatch.setattr(mod, "log_decision", lambda *a, **k: None)
@@ -205,7 +205,7 @@ class TestIntentServicePlannerOverride:
     def test_planner_override_routes_root_to_specified_spec(
         self, tmp_path, monkeypatch
     ):
-        import resonant_client.orchestration.intent_service as mod
+        import lumi.orchestration.intent_service as mod
 
         monkeypatch.setattr(mod, "save_graph", lambda *a, **k: None)
         monkeypatch.setattr(mod, "log_decision", lambda *a, **k: None)
@@ -225,7 +225,7 @@ class TestIntentServicePlannerOverride:
     def test_unknown_planner_raises_value_error(
         self, tmp_path, monkeypatch
     ):
-        import resonant_client.orchestration.intent_service as mod
+        import lumi.orchestration.intent_service as mod
 
         monkeypatch.setattr(mod, "save_graph", lambda *a, **k: None)
         monkeypatch.setattr(mod, "log_decision", lambda *a, **k: None)

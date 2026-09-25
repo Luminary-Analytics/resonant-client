@@ -1,5 +1,5 @@
 """
-Tests for resonant_client/engine/lint.py
+Tests for lumi/engine/lint.py
   - detect_linter
   - lint_file (skipped when ruff/eslint not on PATH)
 """
@@ -11,7 +11,7 @@ import shutil
 
 import pytest
 
-from resonant_client.engine import lint
+from lumi.engine import lint
 
 
 # ── detect_linter ───────────────────────────────────────────────────────

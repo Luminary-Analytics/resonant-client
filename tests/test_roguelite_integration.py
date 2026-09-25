@@ -37,16 +37,16 @@ from __future__ import annotations
 from typing import Optional
 
 
-from resonant_client.gui.roadmap import (
+from lumi.gui.roadmap import (
     Roadmap,
 )
-from resonant_client.orchestration.acceptance_check import (
+from lumi.orchestration.acceptance_check import (
     BashRunner,
     CheckContext,
     VisionRunner,
 )
-from resonant_client.orchestration.grill_me import extract_spec
-from resonant_client.orchestration.reflect import run_reflect_pass
+from lumi.orchestration.grill_me import extract_spec
+from lumi.orchestration.reflect import run_reflect_pass
 
 
 # ── The bootstrap-roguelite spec (verbatim from design doc §11.2) ──────

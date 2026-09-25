@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from resonant_client.codex_events import CodexEvents, check_command
-from resonant_client.engine.session import Session
+from lumi.codex_events import CodexEvents, check_command
+from lumi.engine.session import Session
 from tests.streaming_stub import StreamingBackend, error
 
 
@@ -83,7 +83,7 @@ def test_sonn_failure_then_cli_handoff_records_real_results(tmp_path, monkeypatc
     session.backend = CliFixture(tmp_path, fail_edit=fail_edit, stale=stale)
     def forbidden(*args, **kwargs):
         pytest.fail('CLI tools must not be executed again by the native engine')
-    monkeypatch.setattr('resonant_client.engine.session.execute_tool', forbidden)
+    monkeypatch.setattr('lumi.engine.session.execute_tool', forbidden)
     events = list(session.run('yes lets implement'))
     end = next(e for e in events if e['event'] == 'session.end')
     assert end['outcome'] == outcome

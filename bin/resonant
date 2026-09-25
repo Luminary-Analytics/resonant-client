@@ -5,4 +5,4 @@
 # Set RESONANT_API to point to your engine host:
 #   export RESONANT_API=http://10.0.0.133:8000
 
-exec python -m resonant_client "$@"
+exec python -m lumi "$@"

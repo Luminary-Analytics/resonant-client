@@ -22,7 +22,7 @@ import time
 
 import pytest
 
-from resonant_client.gui.roadmap import (
+from lumi.gui.roadmap import (
     AcceptanceCriterion,
     CRITERION_TYPES,
     Roadmap,
@@ -647,9 +647,9 @@ class TestFileLock:
 
 
 class TestDefaultPath:
-    def test_lives_in_dot_resonant(self, tmp_path):
+    def test_lives_in_dot_lumi(self, tmp_path):
         p = default_path(tmp_path, "intent-abc123")
-        assert p.parent.name == ".resonant"
+        assert p.parent.name == ".lumi"
         assert p.name == "roadmap-intent-abc123.md"
         assert p.parent.parent == tmp_path
 

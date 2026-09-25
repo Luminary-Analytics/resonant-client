@@ -4,7 +4,7 @@ Three things ship in this alpha:
 1. promote_skill: project → global elevation.
 2. demote_skill: global → project (the inverse).
 3. CLI now auto-installs bundled skills on every invocation
-   (idempotent, cheap), so `resonant-skill list --created-by bundled`
+   (idempotent, cheap), so `lumi-skill list --created-by bundled`
    works out of the box without a manual install step.
 """
 from __future__ import annotations
@@ -12,8 +12,8 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.orchestration.skill_cli import main as cli_main
-from resonant_client.orchestration.skills import (
+from lumi.orchestration.skill_cli import main as cli_main
+from lumi.orchestration.skills import (
     Skill,
     demote_skill,
     load_skill,
@@ -27,7 +27,7 @@ from resonant_client.orchestration.skills import (
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -253,7 +253,7 @@ class TestAutoInstallBundled:
         cli_main(["list"])
         cli_main(["list"])
         # Each bundled skill exists exactly once on disk.
-        from resonant_client.orchestration.bundled_skills import bundled_skill_ids
+        from lumi.orchestration.bundled_skills import bundled_skill_ids
         for sid in bundled_skill_ids():
             target = skill_dir(sid, scope="global")
             assert target.exists()

@@ -21,16 +21,16 @@ import time
 
 import pytest
 
-from resonant_client.gui.autonomous_factory import (
+from lumi.gui.autonomous_factory import (
     DispatchTracker,
     build_autonomous_mission_hooks,
 )
-from resonant_client.gui.roadmap import RoadmapItem
-from resonant_client.orchestration.skill_loader import (
+from lumi.gui.roadmap import RoadmapItem
+from lumi.orchestration.skill_loader import (
     SkillContext,
     build_skill_context,
 )
-from resonant_client.orchestration.skills import (
+from lumi.orchestration.skills import (
     Skill,
     load_skill,
     mark_skill_surfaced,
@@ -45,7 +45,7 @@ from resonant_client.orchestration.skills import (
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -129,7 +129,7 @@ class TestBuildSkillContext:
     ):
         # If the matcher raises, build_skill_context must return an
         # empty context (not propagate) — dispatch must never break.
-        import resonant_client.orchestration.skill_loader as loader
+        import lumi.orchestration.skill_loader as loader
 
         def boom(*a, **kw):
             raise RuntimeError("matcher exploded")
@@ -293,7 +293,7 @@ class TestDispatchItemSkillWiring:
     ):
         # Even if the skill loader explodes, dispatch_item must still
         # return a valid intent_id.
-        import resonant_client.orchestration.skill_loader as loader
+        import lumi.orchestration.skill_loader as loader
 
         def boom(*a, **kw):
             raise RuntimeError("loader exploded")

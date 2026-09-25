@@ -135,8 +135,8 @@ After the run, list concrete action items keyed back to observations.
 For posterity, paste paths to:
 
 - Roadmap markdown: `<project>/.resonant/roadmap-<intent_id>.md`
-- Audit log: `~/.resonant/projects/<hash>/intents/<intent_id>/audit.jsonl`
-- Iteration metadata: `~/.resonant/projects/<hash>/intents/<intent_id>/iterations/`
+- Audit log: `~/.lumi/projects/<hash>/intents/<intent_id>/audit.jsonl`
+- Iteration metadata: `~/.lumi/projects/<hash>/intents/<intent_id>/iterations/`
 - Diagnostics ZIP (if generated): `<path>`
 - Smoke baseline (if relevant): `<project>/.resonant/smoke-baselines/`
 

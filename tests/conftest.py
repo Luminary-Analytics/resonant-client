@@ -1,5 +1,5 @@
 """
-Shared fixtures for Resonant Client test suite.
+Shared fixtures for Lumi test suite.
 
 Provides reusable test helpers, temp directories, mock backends,
 and tool definition factories used across all test modules.
@@ -19,7 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 
 # ── Home isolation (process-wide) ──────────────────────────────────
-# Importing resonant_client.gui.app constructs the module-level
+# Importing lumi.gui.app constructs the module-level
 # `state = AppState()` singleton, which writes
 # ~/.resonant/recent_projects.json. Test modules import app at module
 # scope, so that write fires at COLLECTION time — before any fixture
@@ -37,7 +37,7 @@ Path.home = staticmethod(lambda: _SESSION_TEST_HOME)  # type: ignore[method-assi
 def _isolated_home(tmp_path_factory, monkeypatch):
     """Point Path.home() at a per-test tmp dir for EVERY test.
 
-    Code under resonant_client writes into ~/.resonant at runtime
+    Code under lumi writes into ~/.resonant at runtime
     (recent_projects.json, projects/<hash>/sessions/, settings.json…).
     Tests that forgot to isolate used to leave pytest tmp paths in the
     user's real ~/.resonant/recent_projects.json, so isolation is now
@@ -193,7 +193,7 @@ def sample_tools(make_tool):
 @pytest.fixture
 def mock_ollama_backend():
     """Create a mock OllamaBackend without network access."""
-    from resonant_client.backends import OllamaBackend
+    from lumi.backends import OllamaBackend
 
     # Clear the class-level cache
     OllamaBackend._tool_support_cache.clear()

@@ -8,7 +8,8 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
-SONN Client (formerly Resonant) is a provider-adaptive coding agent and desktop app.
+Lumi (formerly SONN Client, originally Resonant) is a provider-adaptive coding
+agent and desktop app.
 Read this file first, then the documentation relevant to the change. This is the
 shared repository guide for coding agents; `CLAUDE.md` and `RESONANT.md` point here.
 
@@ -30,9 +31,14 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
 
 ## Product and architecture
 
-- Use **SONN Client** in product copy. Keep existing `resonant-client` package,
-  repository, executable compatibility strings, and updater identifiers unless
-  a migration is part of the task.
+- Use **Lumi** in product copy and new identifiers (`lumi` package, commands,
+  executable, `~/.lumi`, `.lumi/`, `LUMI_*`). SONN is the separate model
+  service; keep its name for SONN connections, accounts and the SONN
+  conversation id. Pre-rebrand locations and names (`~/.resonant`,
+  `.resonant/`, `RESONANT_*`, `resonant*` commands, `resonant-pack.json`,
+  `resonant-policy.json`) are still read; do not write new state under them.
+  The update feed URL and repository name stay until a bridge release moves
+  the feed (see [Unreleased](docs/unreleased.md)).
 - Follow the [harness north star](docs/agentic-harness-north-star.md): correct
   completion, verification, maintainability, and time to a trustworthy result
   come before token efficiency.
@@ -66,10 +72,10 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   Preserve project instructions, permissions, history, and source-of-key settings.
 - The frontend uses classic scripts and descriptor-based mixins. Do not convert
   one file to ES modules without updating the loading/build contract. New assets
-  must be included by `packaging/resonant.spec` and the bundle policy as needed.
+  must be included by `packaging/lumi.spec` and the bundle policy as needed.
 - Inspect the working tree before editing; preserve unrelated changes. Use
   isolated fixture projects and state for evaluation, not personal sessions.
-- Keep runtime state out of the repository: normally `~/.resonant/projects/`
+- Keep runtime state out of the repository: normally `~/.lumi/projects/`
   for sessions, ledgers, notes, workers, checkpoints, artifacts, and worktrees.
 
 ## Behavior to preserve
@@ -164,8 +170,8 @@ keyboard interaction and relevant compact layouts.
 ```sh
 python -m ruff check .
 python -m pytest -q
-node --check resonant_client/gui/static/app.js
-node --check resonant_client/gui/static/settings_view.js
+node --check lumi/gui/static/app.js
+node --check lumi/gui/static/settings_view.js
 node --test tests/ui_recovery.test.cjs
 git diff --check
 ```
@@ -193,7 +199,7 @@ configuration, streaming/tool semantics, and capability behavior. Do not infer
 a new service's protocol from an old provider name or archived engine plan.
 
 Commit/push/deploy when requested. Release version changes belong in both
-`pyproject.toml` and `resonant_client/__init__.py`; publish a matching tag and
+`pyproject.toml` and `lumi/__init__.py`; publish a matching tag and
 verify the release workflow and public appcast before reporting deployment.
 
 Start with [README.md](README.md), [ARCHITECTURE.md](ARCHITECTURE.md), and the

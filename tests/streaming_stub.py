@@ -25,7 +25,7 @@ For multi-turn flows (tool calls that loop the agentic loop):
         [text_delta("Done."), done()],
     ])
 
-Stream-protocol contract (from resonant_client/backends.py):
+Stream-protocol contract (from lumi/backends.py):
 - "text.delta"      → {"delta": str}
 - "tool_call"       → {"name": str, "arguments": str (JSON), "call_id": str}
 - "done"            → {"cognitive_state": ?, "stats": dict, "model": str}

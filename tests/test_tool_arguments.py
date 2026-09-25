@@ -7,12 +7,12 @@ from unittest.mock import patch
 
 import pytest
 
-from resonant_client.engine.session import Session
-from resonant_client.engine.tool_arguments import (
+from lumi.engine.session import Session
+from lumi.engine.tool_arguments import (
     ToolArgumentError,
     normalize_tool_arguments,
 )
-from resonant_client.engine.tools import AGENT_TOOLS
+from lumi.engine.tools import AGENT_TOOLS
 from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
 
 
@@ -92,7 +92,7 @@ def test_session_returns_targeted_repair_without_executing_tool():
     ])
     session = Session(backend=backend, max_steps=3, auto_approve=True)
 
-    with patch("resonant_client.engine.session.execute_tool") as execute:
+    with patch("lumi.engine.session.execute_tool") as execute:
         events = list(session.run("read it"))
 
     execute.assert_not_called()

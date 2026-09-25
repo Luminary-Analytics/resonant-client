@@ -4,7 +4,7 @@ Loopback is not a trust boundary: other local accounts, sandboxed processes
 and any web page in the user's browser can reach 127.0.0.1. The socket runs
 shell commands and edits settings, so each request must name this server in
 Host, come from its Origin and carry the launch token.
-See resonant_client/gui/local_access.py.
+See lumi/gui/local_access.py.
 """
 
 from pathlib import Path
@@ -14,8 +14,8 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from resonant_client.gui import app as gui
-from resonant_client.gui.local_access import (
+from lumi.gui import app as gui
+from lumi.gui.local_access import (
     ACCESS_HEADER,
     LAUNCH_FRAGMENT,
     WS_ACCESS_PREFIX,
@@ -26,7 +26,7 @@ from resonant_client.gui.local_access import (
     allowed_hosts,
     same_origin,
 )
-from resonant_client.gui.server import _client_host
+from lumi.gui.server import _client_host
 from tests.gui_access import BASE_URL, LocalClient, app_protocols, launch_token
 
 WS_URL = "ws" + BASE_URL.removeprefix("http") + "/ws"
@@ -36,7 +36,7 @@ FOREIGN = "http://evil.example:48123"
 @pytest.fixture
 def gui_state(tmp_path, monkeypatch):
     """A fresh app state with a project and no provider discovery."""
-    from resonant_client.gui import sessions
+    from lumi.gui import sessions
 
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setattr(sessions, "_is_pytest_temp_path", lambda _: False)

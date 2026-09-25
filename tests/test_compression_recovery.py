@@ -1,8 +1,8 @@
 import json
 from types import SimpleNamespace
 import pytest
-from resonant_client.engine.artifacts import ArtifactStore
-from resonant_client.engine.compression import compress, estimate_tokens, model_context_budget
+from lumi.engine.artifacts import ArtifactStore
+from lumi.engine.compression import compress, estimate_tokens, model_context_budget
 
 class InvalidSummary:
     def stream(self, **kwargs):

@@ -21,8 +21,8 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.gui.roadmap import AcceptanceCriterion
-from resonant_client.orchestration.acceptance_check import (
+from lumi.gui.roadmap import AcceptanceCriterion
+from lumi.orchestration.acceptance_check import (
     BashAssertion,
     BashRunner,
     CheckContext,
@@ -581,7 +581,7 @@ class TestRoadmapIntegration:
     summarized evidence to mark the roadmap."""
 
     def test_pass_result_marks_criterion_passed(self):
-        from resonant_client.gui.roadmap import (
+        from lumi.gui.roadmap import (
             Roadmap,
             update_criterion,
         )
@@ -604,7 +604,7 @@ class TestRoadmapIntegration:
         assert rm.acceptance_criteria[0].evidence.startswith("PASS:")
 
     def test_fail_result_marks_criterion_failed(self):
-        from resonant_client.gui.roadmap import (
+        from lumi.gui.roadmap import (
             Roadmap,
             update_criterion,
         )

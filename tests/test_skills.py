@@ -6,7 +6,7 @@ import time
 
 import pytest
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     NodeSpecialization,
     PlanGraph,
     PlanNode,
@@ -33,7 +33,7 @@ from resonant_client.orchestration import (
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -252,5 +252,5 @@ def test_extract_skill_includes_intent_tokens(state_home):
 
 def skill_path_for(skill_id: str):
     """Convenience: resolve the global-scope skill dir."""
-    from resonant_client.orchestration.skills import skill_dir
+    from lumi.orchestration.skills import skill_dir
     return skill_dir(skill_id)

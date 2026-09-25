@@ -1,4 +1,4 @@
-"""Tests for v0.6.1a2 — resonant-skill CLI.
+"""Tests for v0.6.1a2 — lumi-skill CLI.
 
 The CLI is a thin wrapper around the existing skills.py +
 skill_curator.py public API. Tests verify the argparse parser
@@ -11,8 +11,8 @@ import time
 
 import pytest
 
-from resonant_client.orchestration.skill_cli import build_parser, main
-from resonant_client.orchestration.skills import (
+from lumi.orchestration.skill_cli import build_parser, main
+from lumi.orchestration.skills import (
     Skill,
     save_skill,
     skill_dir,
@@ -23,7 +23,7 @@ from resonant_client.orchestration.skills import (
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -198,13 +198,13 @@ class TestPinUnpinCommands:
         assert rc == 0
         assert "pinned" in captured.out
         # Persisted on disk.
-        from resonant_client.orchestration.skills import load_skill
+        from lumi.orchestration.skills import load_skill
         assert load_skill("x").pinned is True
 
     def test_unpin_changes_state(self, state_home, capsys):
         _seed(skill_id="x", scope="global", pinned=True)
         rc = main(["unpin", "x"])
-        from resonant_client.orchestration.skills import load_skill
+        from lumi.orchestration.skills import load_skill
         assert load_skill("x").pinned is False
 
     def test_pin_unknown_skill_fails(self, state_home, capsys):

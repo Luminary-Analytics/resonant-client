@@ -22,7 +22,7 @@ AI Employee implementation is paused at the user's request. Read the
 bundle was unchanged at that historical checkpoint. Paid research later ran
 under standing authorization and is now paused.
 
-Keep common guidance in `AGENTS.md` so Claude Code, Codex, and SONN Client use the
+Keep common guidance in `AGENTS.md` so Claude Code, Codex, and Lumi use the
 same repository conventions. Use [docs/README.md](docs/README.md) to find task-specific documentation.
 Check [documentation status](docs/documentation-status.md) before using an old
 plan or handoff; historical instructions do not define the current workflow.

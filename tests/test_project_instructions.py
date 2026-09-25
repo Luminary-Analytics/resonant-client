@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.gui.project_instructions import (
+from lumi.gui.project_instructions import (
     INSTRUCTION_FILES,
     find_instruction_file,
     load_project_instructions,
@@ -57,7 +57,7 @@ def test_no_instructions_file_returns_none(project_dir):
 
 def test_save_writes_agents_md_for_new_projects(project_dir, monkeypatch):
     """New projects (no existing instructions file) get an AGENTS.md."""
-    from resonant_client.gui.app import _save_resonant_md
+    from lumi.gui.app import _save_resonant_md
     _save_resonant_md(str(project_dir), "# fresh project conventions\n")
     assert (project_dir / "AGENTS.md").read_text(encoding="utf-8") == "# fresh project conventions\n"
     assert not (project_dir / "RESONANT.md").exists()
@@ -65,7 +65,7 @@ def test_save_writes_agents_md_for_new_projects(project_dir, monkeypatch):
 
 def test_save_preserves_existing_resonant_md_filename(project_dir):
     """Projects already using RESONANT.md keep writing to RESONANT.md."""
-    from resonant_client.gui.app import _save_resonant_md
+    from lumi.gui.app import _save_resonant_md
     (project_dir / "RESONANT.md").write_text("# legacy\n", encoding="utf-8")
     _save_resonant_md(str(project_dir), "# updated legacy\n")
     assert (project_dir / "RESONANT.md").read_text(encoding="utf-8") == "# updated legacy\n"
@@ -74,7 +74,7 @@ def test_save_preserves_existing_resonant_md_filename(project_dir):
 
 def test_save_preserves_existing_claude_md_filename(project_dir):
     """Projects with CLAUDE.md keep using it (don't fork to AGENTS.md silently)."""
-    from resonant_client.gui.app import _save_resonant_md
+    from lumi.gui.app import _save_resonant_md
     (project_dir / "CLAUDE.md").write_text("# claude code\n", encoding="utf-8")
     _save_resonant_md(str(project_dir), "# updated claude code\n")
     assert (project_dir / "CLAUDE.md").read_text(encoding="utf-8") == "# updated claude code\n"

@@ -1,5 +1,5 @@
 """
-Tests for resonant_client/engine/diff_review.py
+Tests for lumi/engine/diff_review.py
 
 Covers: generate_review routing, file edit/write reviews, bash command
 risk analysis, sensitive path detection, path resolution, hunk parsing,
@@ -11,7 +11,7 @@ import textwrap
 
 import pytest
 
-from resonant_client.engine.diff_review import (
+from lumi.engine.diff_review import (
     DiffHunk,
     DiffReview,
     _check_sensitive_path,

@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from resonant_client.engine import processes as proc
+from lumi.engine import processes as proc
 
 # These tests patch `proc.psutil`, which only exists when psutil imported
 # successfully. psutil ships with the `desktop` extra (it backs process_list /
@@ -23,7 +23,7 @@ pytestmark = pytest.mark.skipif(
     not hasattr(proc, "psutil"),
     reason="psutil not installed — install the `desktop` extra to exercise the process tools",
 )
-from resonant_client.engine.processes import (
+from lumi.engine.processes import (
     NEVER_KILL_NAMES,
     SYSTEM_PID_FLOOR,
     exec_process_kill,

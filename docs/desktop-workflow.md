@@ -1,6 +1,6 @@
 # Desktop workflow
 
-Applies to SONN Client 0.19.1. Provider connections and the unified sidebar arrived in
+Applies to Lumi 0.19.1. Provider connections and the unified sidebar arrived in
 v0.17.0; v0.17.1 added the compact toolbar and session rows, and v0.17.2 adds
 the new-session project chooser. v0.18.0 adds [SONN setup](sonn.md). See [release notes](v0.19.0-release-notes.md)
 and [Unreleased](unreleased.md).
@@ -30,7 +30,7 @@ or cancelling the chooser.
 **Browser pages (Unreleased):** the app server accepts only pages opened from
 a one-time launch link. In the desktop window, **File > Open in Browser** (also
 in the command palette) opens the running app in your default browser.
-`resonant-gui --browser` prints a one-time link instead. A used link cannot open
+`lumi-gui --browser` prints a one-time link instead. A used link cannot open
 another browser, but the tab it opened keeps working through reloads and
 reconnects, as do new tabs of that browser at the same address, until SONN
 Client exits. After a restart, paste the new link into an existing tab. A page
@@ -51,7 +51,7 @@ touch devices. The active session has a quiet background highlight.
 
 ## Search and toolbar
 
-**Search SONN Client** (`Ctrl+K`) opens the command palette for actions, projects,
+**Search Lumi** (`Ctrl+K`) opens the command palette for actions, projects,
 and sessions. It complements the sidebar's local filter.
 
 The toolbar provides runtime status, managed project previews,
@@ -116,7 +116,7 @@ and asks before other actions; file edits and shell commands stay blocked.
 **Auto-edit** also accepts file edits and asks before shell, MCP, browser,
 desktop and git actions. **Plan** uses Auto-edit approvals for native providers.
 **Full-auto** runs everything inside the project sandbox. A project's
-`resonant-policy.json` can require more approval but cannot lift a built-in
+`lumi-policy.json` can require more approval but cannot lift a built-in
 block.
 
 **Deny** is final: nothing, including a hook, runs the call afterward. The
@@ -125,8 +125,8 @@ answer it. **Tab** reaches **Deny** and **Allow**, and **Escape** denies. Work
 that runs without an approval dialog, such as background sprint roles, skips
 calls that need approval instead of running them.
 
-**Settings > Capability packs** lists packs from the project's `.resonant/packs`
-and `~/.resonant/packs`, with the hooks and MCP servers each would run. Nothing
+**Settings > Capability packs** lists packs from the project's `.lumi/packs`
+(and a legacy `.resonant/packs`) and `~/.lumi/packs`, with the hooks and MCP servers each would run. Nothing
 in a pack runs until you approve it there; a pack's own manifest cannot approve
 it. Editing an approved pack turns it off until you review it again. When the
 open project has packs waiting for review, the banner above the composer links
@@ -206,5 +206,5 @@ session yourself; automatic naming never overrides a manual title.
 
 Settings > Creative editors provides guided Blender, Unity, and Unreal Engine 5
 connections. Connect a running bridge, check its open scene, and return to chat.
-Disable removes it from subsequent turns; reconnect after restarting SONN Client.
+Disable removes it from subsequent turns; reconnect after restarting Lumi.
 See [setup, model support, and validation](creative-editors.md).

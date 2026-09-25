@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.harness.service import HarnessService
-from resonant_client.harness.state import (
+from lumi.harness.service import HarnessService
+from lumi.harness.state import (
     EvaluatorReport,
     HarnessWorkspace,
     ProductSpec,
@@ -45,7 +45,7 @@ def service():
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -65,7 +65,7 @@ def populated_workspace(state_home, project_dir):
     ws.ensure_layout()
 
     ws.write_spec(ProductSpec(
-        title="Resonant Client",
+        title="Lumi",
         summary="Ollama-native agentic coder",
     ))
     ws.write_sprint_contract(SprintContract(
@@ -74,7 +74,7 @@ def populated_workspace(state_home, project_dir):
         objective="Codify the 5-beat grill exemplar",
         deliverables=["update prompt block"],
         acceptance_checks=["check 1", "check 2", "check 3", "check 4", "check 5", "check 6"],
-        target_files=["resonant_client/orchestration/grill_me.py"],
+        target_files=["lumi/orchestration/grill_me.py"],
         target_line_hints=["EXEMPLAR section near top"],
         validation_commands=["pytest -q tests/test_rigorous_grill.py"],
         edit_strategy="surgical",
@@ -216,7 +216,7 @@ class TestBuildResumePromptSpecLines:
             project_path=str(project_dir),
             session_mode="sprint", session_role="planner",
         )
-        assert "Product title: Resonant Client" in out
+        assert "Product title: Lumi" in out
         assert "Product summary: Ollama-native agentic coder" in out
 
     def test_evaluator_omits_product_title(

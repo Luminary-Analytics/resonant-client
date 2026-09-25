@@ -13,19 +13,19 @@ from __future__ import annotations
 
 
 
-from resonant_client.gui import roadmap as roadmap_module
-from resonant_client.gui.autonomous_loop import (
+from lumi.gui import roadmap as roadmap_module
+from lumi.gui.autonomous_loop import (
     AutonomousMissionConfig,
     AutonomousMissionDaemon,
     DaemonHooks,
     DispatchOutcome,
     FullReflectOutcome,
 )
-from resonant_client.gui.roadmap import (
+from lumi.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
 )
-from resonant_client.orchestration.acceptance_check import CheckContext
+from lumi.orchestration.acceptance_check import CheckContext
 
 
 def _build_roadmap_with_chrome(tmp_path):

@@ -1,0 +1,2617 @@
+"""
+Tool definitions and execution for the Lumi engine.
+
+Extracted from tui.py — this is the "hands" of the agent.
+Tools run server-side (same machine as the engine).
+"""
+
+import json
+import logging
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from functools import lru_cache
+from pathlib import Path
+from typing import Optional
+
+from lumi.processes import background_process_kwargs
+
+from .truncation import (
+    GREP_MAX_LINE_LENGTH,
+    render_truncation_footer,
+    truncate_head,
+    truncate_line,
+    truncate_tail,
+)
+from .editing import EditMatchError, apply_text_edit
+
+logger = logging.getLogger(__name__)
+
+
+# ── Tool Definitions (OpenAI function-calling format) ──────────────────
+
+AGENT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "artifact_read",
+            "description": "Retrieve archived historical tool evidence by artifact id without rerunning a command. Offsets and limits are characters.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "artifact_id": {"type": "string"},
+                    "offset": {"type": "integer", "minimum": 0},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 16000},
+                },
+                "required": ["artifact_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": "Execute a non-interactive, time-limited shell command. Use check_run for acceptance tests and preview_start for development servers; shell children are cleaned up when the command ends. Do not attempt detached server launches. Interactive apps need actual browser/input checks, not just file existence.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute"
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default: 30). Increase for long-running builds."
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_write",
+            "description": "Create or overwrite a file with the given content.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path (relative to working directory)"
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The complete file content to write"
+                    },
+                    "allow_leading_dash": {
+                        "type": "boolean",
+                        "description": "Set to true ONLY when you genuinely want a filename or directory whose name starts with '-'. Default: false. Without this flag, paths whose basename or any segment begins with '-' are rejected as a foot-gun guard (e.g. tokenization slips where 'mkdir -p src' becomes three args)."
+                    }
+                },
+                "required": ["path", "content"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_read",
+            "description": "Read the contents of a file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path to read"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Zero-based line offset (default: 0). Use next_offset from a prior result to continue."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum lines to return (default: 400, maximum: 2000)."
+                    }
+                },
+                "required": ["path"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "file_edit",
+            "description": (
+                "Edit a file by replacing old_text with new_text. Include enough surrounding "
+                "context for a unique match; minor whitespace drift is repaired automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "File path to edit"
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "The exact text to find and replace"
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "The replacement text"
+                    },
+                    "replace_all": {
+                        "type": "boolean",
+                        "description": "Replace every match only when intentionally editing repeated text. Default: false."
+                    },
+                    "allow_leading_dash": {
+                        "type": "boolean",
+                        "description": "Set to true ONLY when you genuinely want a filename or directory whose name starts with '-'. Default: false."
+                    }
+                },
+                "required": ["path", "old_text", "new_text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "glob",
+            "description": "Find files matching a glob pattern.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Glob pattern like '**/*.py' or 'src/*.ts'"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "Base directory to search from (default: current directory)"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Zero-based result offset for pagination (default: 0)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum paths to return (default: 50, maximum: 200)."
+                    }
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "grep",
+            "description": "Search for a regex pattern in files.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regex pattern to search for"
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "File or directory to search in (default: current directory)"
+                    },
+                    "glob": {
+                        "type": "string",
+                        "description": "File glob filter like '*.py'"
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Zero-based match offset for pagination (default: 0)."
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum matches to return (default: 50, maximum: 200)."
+                    }
+                },
+                "required": ["pattern"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task",
+            "description": (
+                "Spawn a sub-agent to handle a subtask independently. The sub-agent gets its "
+                "own context window and runs to completion, then returns a structured handoff. "
+                "Use 'explore' for fast read-only codebase searches, 'plan' for analysis without "
+                "modification, and 'build' for isolated writing/editing work. Delegate only a "
+                "bounded, non-duplicative assignment; the parent must review and integrate it."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Complete assignment contract: objective, read/write scope, relevant "
+                            "context, constraints, expected evidence, and return format"
+                        )
+                    },
+                    "agent_type": {
+                        "type": "string",
+                        "enum": ["build", "explore", "plan"],
+                        "description": "Type of agent: 'explore' (fast, read-only), 'plan' (analyze, no edits), 'build' (full coding)"
+                    },
+                    "model_role": {
+                        "type": "string",
+                        "enum": ["plan", "explore", "implement", "apply", "test", "review", "vision", "summarize"],
+                        "description": "Optional explicit quality-pipeline role; defaults from agent_type"
+                    },
+                    "director_task_id": {
+                        "type": "string",
+                        "description": "Required in Director Mode: ID of the ready task being dispatched"
+                    },
+                    "worker_id": {
+                        "type": "string",
+                        "description": "Optional configured worker ID; the Director scheduler selects one when omitted"
+                    },
+                    "artifact_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Durable input artifact IDs to deliver to this worker, including future multimodal inputs"
+                    },
+                    "isolation": {
+                        "type": "string",
+                        "enum": ["shared", "worktree"],
+                        "description": "Workspace isolation. Writing agents default to a git worktree when available"
+                    },
+                    "max_steps": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional bounded step budget for this worker"
+                    },
+                },
+                "required": ["prompt", "agent_type"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "task_batch",
+            "description": (
+                "Run two to four independent sub-agents concurrently. Read-only workers may "
+                "share the project; every writing worker is forced into its own git worktree. "
+                "Use this only for bounded tasks that do not depend on each other's output."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array", "minItems": 2, "maxItems": 4,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "prompt": {"type": "string"},
+                                "agent_type": {"type": "string", "enum": ["build", "explore", "plan"]},
+                                "model_role": {"type": "string", "enum": ["plan", "explore", "implement", "apply", "test", "review", "vision", "summarize"]},
+                                "director_task_id": {"type": "string"},
+                                "worker_id": {"type": "string"},
+                                "artifact_ids": {"type": "array", "items": {"type": "string"}},
+                                "max_steps": {"type": "integer", "minimum": 1}
+                            },
+                            "required": ["prompt", "agent_type"]
+                        }
+                    }
+                },
+                "required": ["tasks"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "skill_view",
+            "description": (
+                "Read the full procedure and verification notes for a relevant "
+                "Lumi skill surfaced in the prompt."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "skill_id": {
+                        "type": "string",
+                        "description": "Skill identifier from the relevant-skills prompt block."
+                    }
+                },
+                "required": ["skill_id"]
+            }
+        }
+    },
+    # `await_user` is reserved for focused, consequential questions whose
+    # answers cannot be established from repository evidence.
+    {
+        "type": "function",
+        "function": {
+            "name": "search_tools",
+            "description": (
+                "Discover specialized Lumi tools that are not in the current core tool set. "
+                "Search by capability such as browser interaction, desktop control, git writes, "
+                "process management, clipboard, recording, or Python/Node REPL. Call once with a "
+                "specific capability query, then use the returned tools directly."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Specific capability needed, for example 'click and inspect a browser page'.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 12,
+                        "default": 8,
+                        "description": "Maximum matching tool definitions to load.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "await_user",
+            "description": (
+                "Last-resort clarification tool. Before using it, inspect the "
+                "relevant code, docs, tests, configuration, project instructions, "
+                "and git history. Resolve implementation details from established "
+                "project patterns and proceed with reasonable reversible defaults. "
+                "Use this only when a missing requirement or external fact remains "
+                "unknowable, materially changes the result, and would be costly to "
+                "assume incorrectly. Do not use it to ask for confirmation, permission "
+                "to continue, an obvious next step, or a preference the repository "
+                "already implies. When asked for a recommendation, make the best "
+                "evidence-based recommendation yourself instead of using this tool "
+                "to hand the judgment back to the user. Ask during initial alignment, "
+                "before implementation starts. After implementation starts, use this "
+                "only for an imminent catastrophic and irreversible blocker. Never ask "
+                "what is next, whether to continue, or whether the user wants another "
+                "task performed; finish and state optional recommendations instead. Use this "
+                "for EVERY question directed to the user instead of asking in "
+                "ordinary assistant text, and INSTEAD of cycling through "
+                "speculative searches. Examples of "
+                "good uses: clarifying ambiguous requirements ('should the "
+                "export include or exclude tool calls?'), choosing between "
+                "valid implementation paths ('use sqlite or just JSON?'), "
+                "asking where to put new files when conventions are unclear. "
+                "When meaningful answers can be enumerated, provide 2-5 options "
+                "and set recommended_option to the exact option you recommend "
+                "so Lumi renders its native recommended-answer prompt. "
+                "Do NOT use for things you can answer yourself by reading code "
+                "(file paths, API shapes, existing function names). The user's "
+                "answer is returned as the tool result."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "question": {
+                        "type": "string",
+                        "description": (
+                            "One concise, specific question, written as a single sentence. "
+                            "Do not include rationale, analysis, recommendations, or repeat "
+                            "the option descriptions here. Bad: 'what should I do next'. "
+                            "Good: 'Should the /export command include tool-call activity, "
+                            "or only user/assistant messages?'"
+                        )
+                    },
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional concise quick-reply choices, displayed as separate full-width rows. Keep to 2-5 options, put your recommended option first, and put detail in the option instead of the question. Omit for free-text questions."
+                    },
+                    "recommended_option": {
+                        "type": "string",
+                        "description": "The exact entry from options that you recommend. Always set this when options are provided. The UI marks it as Recommended; if omitted or invalid, the engine recommends the first option."
+                    },
+                    "unresolved_reason": {
+                        "type": "string",
+                        "description": "Private one-sentence audit note naming what repository evidence you inspected and why it cannot answer this material question. Always provide this before asking; it is not shown in the decision prompt."
+                    },
+                    "urgency": {
+                        "type": "string",
+                        "enum": ["alignment", "catastrophic"],
+                        "description": "Use alignment only during preflight before implementation. Use catastrophic after implementation starts only for imminent destructive data loss, security exposure, or another irreversible consequence. Ordinary blockers, failed commands, and next-step uncertainty are not catastrophic."
+                    },
+                },
+                "required": ["question"]
+            }
+        }
+    },
+    # ── Browser tools (native Chrome DevTools Protocol) ──────────────
+    # Chrome runs under a dedicated Lumi profile and is launched on first
+    # use; no MCP server and no Playwright involved.
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_navigate",
+            "description": "Navigate Lumi's dedicated Chrome profile to a URL. Starts it automatically and identifies its tabs in a purple group named for this session. Use this to open web pages, follow links, or search the web.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL to open (e.g. 'https://example.com'). A bare domain is assumed to be https."
+                    }
+                },
+                "required": ["url"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_click",
+            "description": "Click an element on the page. Prefer `text` (the visible label) — it is the most robust. Fall back to a CSS selector, or explicit viewport coordinates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Visible text of the element to click (most natural approach)"},
+                    "selector": {"type": "string", "description": "CSS selector of the element to click"},
+                    "x": {"type": "integer", "description": "X viewport coordinate"},
+                    "y": {"type": "integer", "description": "Y viewport coordinate"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_type",
+            "description": "Type text into a form field. Set `submit` to press Enter afterwards — the usual way to run a search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector of the input field"},
+                    "text": {"type": "string", "description": "Text to type"},
+                    "clear": {"type": "boolean", "description": "Clear the field first (default false)"},
+                    "submit": {"type": "boolean", "description": "Press Enter after typing (default false)"}
+                },
+                "required": ["selector", "text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_read",
+            "description": "Read the current page. Use mode 'text' for readable content, 'accessibility' to list the interactive elements you can click, or 'html' for markup.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["text", "html", "accessibility"],
+                        "description": "What to return (default 'text')"
+                    },
+                    "selector": {"type": "string", "description": "Limit to one element (optional)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_screenshot",
+            "description": "Capture the page as a PNG for visual inspection. Defaults to the viewport; pass `full_page` for the whole document or `selector` for one element.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "Capture just this element (optional)"},
+                    "full_page": {"type": "boolean", "description": "Capture the entire scrollable page (default false)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_js",
+            "description": "Evaluate JavaScript in the page and return the result. Use for extracting structured data or reaching state the other tools do not expose.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "code": {"type": "string", "description": "JavaScript expression to evaluate. Promises are awaited."}
+                },
+                "required": ["code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_scroll",
+            "description": "Scroll the page — by an amount, to top/bottom, or to bring an element into view.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "top", "bottom"],
+                        "description": "Scroll direction (default 'down')"
+                    },
+                    "amount": {"type": "integer", "description": "Pixels to scroll for up/down (default 500)"},
+                    "selector": {"type": "string", "description": "Scroll this element into view instead"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_hover",
+            "description": "Move the pointer over an element, to reveal a dropdown menu or tooltip.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector of the element to hover"}
+                },
+                "required": ["selector"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_select",
+            "description": "Choose an option in a <select> dropdown, by option value or visible label.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector of the <select> element"},
+                    "value": {"type": "string", "description": "Option value or visible text to select"}
+                },
+                "required": ["selector", "value"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_wait",
+            "description": "Wait for an element to appear, or for a fixed delay. Use after an action that loads content asynchronously.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "selector": {"type": "string", "description": "CSS selector to wait for (omit to just sleep)"},
+                    "timeout": {"type": "number", "description": "Seconds to wait (default 10)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_back",
+            "description": "Go back in the tab's history, or forward with `forward` set.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "forward": {"type": "boolean", "description": "Go forward instead of back (default false)"}
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "browser_tabs",
+            "description": "List, switch to, open, or close browser tabs. Agent tabs are collected into a labelled Chrome tab group automatically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "switch", "new", "close"],
+                        "description": "What to do (default 'list')"
+                    },
+                    "index": {"type": "integer", "description": "Tab index for switch/close"},
+                    "url": {"type": "string", "description": "URL to open for action 'new'"}
+                }
+            }
+        }
+    },
+    # ── Desktop / Computer Use tools ─────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_screenshot",
+            "description": "Take a screenshot. Defaults to full primary monitor; pass `target_window` to capture just one window, `monitor` for a specific display, or `region` for an explicit bbox. Precedence: region > target_window > monitor. A red crosshair marks the current cursor position — after clicking, compare the crosshair to your target and correct proportionally if it missed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "region": {
+                        "type": "object",
+                        "description": "Explicit region to capture: {x, y, width, height}",
+                        "properties": {
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"}
+                        }
+                    },
+                    "target_window": {
+                        "type": "string",
+                        "description": "Substring of a window title; capture just that window (full window rect, including title bar)."
+                    },
+                    "monitor": {
+                        "type": "integer",
+                        "description": "Monitor index (0 = primary). Use monitors_list to enumerate."
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_click",
+            "description": "Click at a position. By default (x,y) are coordinates in the last screenshot you received (they are mapped to real screen pixels automatically). With `target_window`, (x,y) are relative to that window's top-left. With `monitor`, relative to that monitor's top-left. Auto-captures a follow-up screenshot — check the red crosshair in it to verify where the click landed. Prefer keyboard shortcuts (computer_type with `key`) over clicking when possible; aim for the center of elements, not their edges.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X coordinate (interpretation depends on target_window/monitor)"},
+                    "y": {"type": "integer", "description": "Y coordinate (interpretation depends on target_window/monitor)"},
+                    "button": {
+                        "type": "string",
+                        "enum": ["left", "right", "middle"],
+                        "description": "Mouse button (default: left)"
+                    },
+                    "clicks": {
+                        "type": "integer",
+                        "description": "Number of clicks (1=single, 2=double). Default: 1"
+                    },
+                    "screenshot": {
+                        "type": "boolean",
+                        "description": "Take a follow-up screenshot after clicking (default: true)"
+                    },
+                    "target_window": {
+                        "type": "string",
+                        "description": "If set, (x,y) are interpreted relative to this window's top-left."
+                    },
+                    "monitor": {
+                        "type": "integer",
+                        "description": "If set, (x,y) are interpreted relative to this monitor's top-left."
+                    }
+                },
+                "required": ["x", "y"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_type",
+            "description": "Type text or press key combinations on the desktop. Use 'text' for typing strings, 'key' for hotkeys like 'ctrl+s' or 'enter'. Automatically captures a follow-up screenshot. Always prefer keyboard shortcuts over mouse clicks where possible — they are far more reliable than coordinate-based clicking.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Text to type character by character"
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Key or key combo to press (e.g. 'enter', 'ctrl+s', 'alt+tab')"
+                    },
+                    "hotkey": {
+                        "type": "string",
+                        "description": "Alias for 'key' — key combo to press"
+                    },
+                    "screenshot": {
+                        "type": "boolean",
+                        "description": "Take a follow-up screenshot after typing (default: true)"
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_scroll",
+            "description": "Scroll the mouse wheel at a position on the desktop. Automatically captures a follow-up screenshot.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X coordinate (optional)"},
+                    "y": {"type": "integer", "description": "Y coordinate (optional)"},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["up", "down", "left", "right"],
+                        "description": "Scroll direction (default: down)"
+                    },
+                    "amount": {
+                        "type": "integer",
+                        "description": "Number of scroll clicks (default: 3)"
+                    },
+                    "screenshot": {
+                        "type": "boolean",
+                        "description": "Take a follow-up screenshot after scrolling (default: true)"
+                    }
+                }
+            }
+        }
+    },
+    # ── Enhanced Computer Use tools ──────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_drag",
+            "description": "Drag from one screen position to another. Use for moving windows, selecting text, drag-and-drop.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start_x": {"type": "integer", "description": "Starting X coordinate"},
+                    "start_y": {"type": "integer", "description": "Starting Y coordinate"},
+                    "end_x": {"type": "integer", "description": "Ending X coordinate"},
+                    "end_y": {"type": "integer", "description": "Ending Y coordinate"},
+                    "button": {
+                        "type": "string",
+                        "enum": ["left", "right", "middle"],
+                        "description": "Mouse button (default: left)"
+                    },
+                    "duration": {
+                        "type": "number",
+                        "description": "Drag duration in seconds (default: 0.5)"
+                    }
+                },
+                "required": ["start_x", "start_y", "end_x", "end_y"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_hover",
+            "description": "Move the mouse cursor to a position without clicking. Use to trigger hover menus, tooltips, or preview effects.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X coordinate"},
+                    "y": {"type": "integer", "description": "Y coordinate"},
+                    "duration": {
+                        "type": "number",
+                        "description": "Movement duration in seconds (default: 0.3)"
+                    }
+                },
+                "required": ["x", "y"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_cursor_position",
+            "description": "Get the current cursor position in the coordinate space of the last screenshot (plus real screen pixels). Useful to verify aim before clicking or to correlate with the crosshair.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "window_list",
+            "description": "List all visible windows on the desktop with their titles, positions, and sizes.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "window_focus",
+            "description": "Bring a window to the foreground by matching its title. Uses substring match.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "Partial window title to match (e.g. 'Chrome', 'Visual Studio')"
+                    }
+                },
+                "required": ["title"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "computer_wait",
+            "description": "Wait for the screen to change or pause for a duration. Use 'change' mode after clicking something that triggers a load. Pass `region` to watch only a bbox (cheaper, fewer false positives than whole-screen watching).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["duration", "change"],
+                        "description": "'duration' = wait N seconds; 'change' = wait until screen changes (default: duration)"
+                    },
+                    "seconds": {
+                        "type": "number",
+                        "description": "Seconds to wait (duration mode, default: 1.0)"
+                    },
+                    "timeout": {
+                        "type": "number",
+                        "description": "Max seconds to wait for change (change mode, default: 10)"
+                    },
+                    "region": {
+                        "type": "object",
+                        "description": "Optional bbox to watch instead of whole screen (change mode only).",
+                        "properties": {
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"}
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_ocr",
+            "description": "Extract text from the screen using OCR. Useful for reading text that's in images, non-selectable UI, or desktop applications.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "region": {
+                        "type": "object",
+                        "description": "Optional region to OCR: {x, y, width, height}. Omit for full screen.",
+                        "properties": {
+                            "x": {"type": "integer"},
+                            "y": {"type": "integer"},
+                            "width": {"type": "integer"},
+                            "height": {"type": "integer"}
+                        }
+                    }
+                }
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "open_application",
+            "description": "Open a desktop application by name. Cross-platform: uses 'start' on Windows, 'open -a' on macOS, direct exec on Linux.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Application name or path (e.g. 'chrome', 'notepad', 'Firefox', 'code')"
+                    }
+                },
+                "required": ["name"]
+            }
+        }
+    },
+    # ── Batch tool ────────────────────────────────────────────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "batch",
+            "description": (
+                "Execute multiple read-only workspace calls in parallel. Use when you need to "
+                "read several files, search for multiple patterns, or inspect git state. "
+                "Maximum 25 calls. Mutating, shell, UI, task, and nested batch tools are refused."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "calls": {
+                        "type": "array",
+                        "description": "Array of tool calls to execute in parallel",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Tool name (file_read, glob, grep, git_status, git_diff, git_log)"
+                                },
+                                "arguments": {
+                                    "type": "object",
+                                    "description": "Tool arguments"
+                                }
+                            },
+                            "required": ["name", "arguments"]
+                        }
+                    }
+                },
+                "required": ["calls"]
+            }
+        }
+    },
+    # ── Git tools (first-class, structured output) ──────────────
+    {
+        "type": "function",
+        "function": {
+            "name": "git_status",
+            "description": "Show the working tree status with structured output: branch, ahead/behind counts, staged/unstaged/untracked files. Prefer over `bash(git status)` — output is structured for the UI.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_diff",
+            "description": "Show diff for working tree (or staged area). Returns structured hunks with addition/deletion counts per file. Prefer over `bash(git diff)`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                    "staged": {"type": "boolean", "description": "If true, show diff of staged changes (--cached)"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional file paths to limit the diff"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_commit",
+            "description": "Create a NEW git commit. Optionally stages `paths` first. Always creates a new commit (never amends, never skips hooks).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                    "message": {"type": "string", "description": "Commit message (supports multi-line)"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional paths to stage before committing"}
+                },
+                "required": ["message"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_branch_create",
+            "description": "Create AND check out a new branch from `from_ref` (default HEAD). Refuses if branch already exists.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                    "branch": {"type": "string", "description": "New branch name"},
+                    "from_ref": {"type": "string", "description": "Ref to branch from (default: HEAD)"}
+                },
+                "required": ["branch"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "git_log",
+            "description": "Show recent commits as a structured table: short_sha, date, author, subject. Prefer over `bash(git log)`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: project root)"},
+                    "limit": {"type": "integer", "description": "Max commits to return (default: 20, max: 200)"},
+                    "paths": {"type": "array", "items": {"type": "string"}, "description": "Optional paths to filter the log"}
+                },
+                "required": []
+            }
+        }
+    },
+    # ── Multi-monitor / clipboard / process tools ──
+    {
+        "type": "function",
+        "function": {
+            "name": "monitors_list",
+            "description": "List physical monitors with their bounds and primary flag. Use the returned indices with computer_screenshot(monitor=N) or computer_click(monitor=N).",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clipboard_read",
+            "description": "Read the current text contents of the system clipboard. Returns empty string if non-text or empty.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clipboard_write",
+            "description": "Replace the system clipboard with the given text. Useful for stashing snippets the user can paste elsewhere.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to copy to clipboard"}
+                },
+                "required": ["text"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "process_list",
+            "description": "List running processes (pid, name, memory, command line). Optionally filter by name substring.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name_filter": {"type": "string", "description": "Case-insensitive substring match on process name or cmdline"},
+                    "limit": {"type": "integer", "description": "Max rows to return (default: 100)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "process_kill",
+            "description": "Terminate a process by pid OR exact name (case-insensitive). Refuses system PIDs and critical names. Specify exactly one of pid/name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pid": {"type": "integer", "description": "Process ID to kill"},
+                    "name": {"type": "string", "description": "Exact process name to kill (matches all instances)"}
+                },
+                "required": []
+            }
+        }
+    },
+    # ── Screen recording + visual diff ──
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_record_start",
+            "description": "Start recording the screen to an MP4 file (~/.lumi/recordings/). Useful for debugging long-running automation. Use screen_record_stop when done.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fps": {"type": "integer", "description": "Frames per second (default: 10, max: 30)"},
+                    "monitor": {"type": "integer", "description": "Monitor index (default: 0 = primary)"},
+                    "region": {
+                        "type": "object",
+                        "properties": {
+                            "x": {"type": "integer"}, "y": {"type": "integer"},
+                            "width": {"type": "integer"}, "height": {"type": "integer"}
+                        }
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_record_stop",
+            "description": "Stop the active screen recording. Returns the MP4 file path, duration, and size.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "screen_diff",
+            "description": "Detect changed regions between two screenshots. Defaults to (prev = last computer_* screenshot, current = a fresh screenshot now). Returns a list of bounding boxes where pixels changed.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prev_id": {"type": "string", "description": "Cached screenshot id; defaults to penultimate"},
+                    "current_id": {"type": "string", "description": "Cached screenshot id; defaults to fresh capture"},
+                    "threshold": {"type": "integer", "description": "Per-pixel max-channel-delta to count as 'changed' (0–255, default 30)"}
+                },
+                "required": []
+            }
+        }
+    },
+    # ── Accessibility-tree targeting (semantic, more reliable than pixel coords) ──
+    {
+        "type": "function",
+        "function": {
+            "name": "accessibility_tree",
+            "description": "Return the OS accessibility tree for a window (or the desktop). Each node has role/name/automation_id/bounds. Use this BEFORE accessibility_click to discover element identifiers — far more reliable than pixel-coord clicking. Windows: requires `pip install uiautomation`.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "window_title": {"type": "string", "description": "Optional substring of a window title; scopes the tree to that window"},
+                    "verbose": {"type": "boolean", "description": "Return more rows in the text summary (full tree always in metadata)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "accessibility_click",
+            "description": "Click an element in the OS accessibility tree by its semantic identifiers (role / name / automation_id). Resilient to DPI changes, theme changes, and window moves. Use accessibility_tree first to discover identifiers.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "role": {"type": "string", "description": "Control type (e.g. 'Button', 'Edit', 'Tab')"},
+                    "name": {"type": "string", "description": "Substring match on element name (e.g. 'Save', '7')"},
+                    "automation_id": {"type": "string", "description": "Exact AutomationId (Windows UIA)"},
+                    "window_title": {"type": "string", "description": "Optional window scope"}
+                },
+                "required": []
+            }
+        }
+    },
+    # ── Persistent REPLs (long-lived interpreter for incremental work) ──
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_python_start",
+            "description": "Start a long-lived Python REPL. Returns a repl_id you pass to repl_python_eval. Prefer over repeated `bash(python -c ...)` for incremental work — state persists across calls.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: current)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_python_eval",
+            "description": "Eval Python code in an existing REPL. State (variables, imports) persists across calls. Hard timeout per call.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repl_id": {"type": "string", "description": "ID returned by repl_python_start"},
+                    "code": {"type": "string", "description": "Python source to evaluate"},
+                    "timeout": {"type": "number", "description": "Max seconds to wait for output (default: 30)"}
+                },
+                "required": ["repl_id", "code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_python_stop",
+            "description": "Terminate a Python REPL. Always stop REPLs you started when you're done with them.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repl_id": {"type": "string", "description": "ID returned by repl_python_start"}
+                },
+                "required": ["repl_id"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_node_start",
+            "description": "Start a long-lived Node.js REPL. Returns a repl_id for repl_node_eval. State persists across calls.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cwd": {"type": "string", "description": "Working directory (default: current)"}
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_node_eval",
+            "description": "Eval JavaScript code in an existing Node REPL. State persists across calls.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repl_id": {"type": "string", "description": "ID returned by repl_node_start"},
+                    "code": {"type": "string", "description": "JavaScript source to evaluate"},
+                    "timeout": {"type": "number", "description": "Max seconds to wait for output (default: 30)"}
+                },
+                "required": ["repl_id", "code"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repl_node_stop",
+            "description": "Terminate a Node REPL. Always stop REPLs you started when done.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "repl_id": {"type": "string", "description": "ID returned by repl_node_start"}
+                },
+                "required": ["repl_id"]
+            }
+        }
+    },
+]
+
+
+# Opt-in supervisory tools. These are appended only to a root session with an
+# active DirectorRun, keeping the ordinary single-agent prompt and behavior
+# byte-for-byte compatible.
+AGENT_TOOLS.extend([
+    {"type": "function", "function": {"name": name, "description": description,
+        "parameters": {"type": "object", "properties": properties, "required": required}}}
+    for name, description, properties, required in [
+        ("job_start", "Start a bounded project-owned background task such as a Blender render. Pass the actual foreground worker program and arguments, not a launcher that exits early. Returns promptly; job_status reports progress logs and exit state. One running job per project, maximum 20 minutes. Survives tool completion and browser reconnect, but client exit stops its process tree. Save application checkpoints and inspect them before explicitly resuming after restart. Completion only proves the process exited; verify artifacts separately.",
+         {"command": {"type": "array", "items": {"type": "string"}}, "timeout": {"type": "integer", "minimum": 1, "maximum": 1200}}, ["command"]),
+        ("job_status", "Read this project's background jobs, elapsed time, bounded output and exit state. Poll with useful intervals, not a tight loop. Old client-process handles are not adopted after restart.", {"id": {"type": "string"}}, []),
+        ("job_cancel", "Cancel this project's managed job and its process tree. Partial application checkpoints remain for explicit recovery. Use this before starting a replacement worker.", {"id": {"type": "string"}}, ["id"]),
+        ("preview_start", "Start a project-owned development server that survives tool completion. Use program/arguments (no shell operators), a free loopback port, and wait for readiness. Returns a handle, URL and bounded logs. Stop with preview_stop.",
+         {"command": {"type": "array", "items": {"type": "string"}}, "url": {"type": "string"}, "timeout": {"type": "integer"}}, ["command", "url"]),
+        ("preview_status", "Read this project's managed previews and recent logs.", {"id": {"type": "string"}}, []),
+        ("preview_stop", "Stop a managed preview and its process tree owned by this project.", {"id": {"type": "string"}}, ["id"]),
+        ("check_run", "Execute a named acceptance check and record its actual exit status as verification evidence. Identify the requirement tested. Use the project's test command; a successful setup command or page load does not prove behavior. Rerun a failed check after fixing it.",
+         {"command": {"type": "string"}, "requirement": {"type": "string"}, "timeout": {"type": "integer"}}, ["command", "requirement"]),
+        ("memory_save", "Save or update a concise project fact, constraint or decision with its source. Agent notes are labeled model assertions. Include relative source files for automatic freshness checks. Do not store credentials or conversation dumps.",
+         {"text": {"type": "string"}, "source": {"type": "string"}, "kind": {"type": "string", "enum": ["fact", "constraint", "decision", "procedure", "build_command", "convention", "fix"]}, "sources": {"type": "array", "items": {"type": "string"}}, "id": {"type": "string"}}, ["text", "source"]),
+    ]
+])
+
+DIRECTOR_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "director_plan",
+            "description": (
+                "Create or replace the durable Director task graph. Every task must be bounded, "
+                "have explicit dependencies, and include objective, role, scope, and acceptance evidence."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "title": {"type": "string"},
+                                "objective": {"type": "string"},
+                                "role": {"type": "string", "enum": ["plan", "explore", "implement", "apply", "test", "review", "vision", "summarize"]},
+                                "agent_type": {"type": "string", "enum": ["build", "explore", "plan"]},
+                                "dependencies": {"type": "array", "items": {"type": "string"}},
+                                "write_scope": {"type": "array", "items": {"type": "string"}},
+                                "acceptance_checks": {"type": "array", "items": {"type": "string"}},
+                                "required_capabilities": {"type": "array", "items": {"type": "string"}},
+                                "artifact_ids": {"type": "array", "items": {"type": "string"}},
+                                "preferred_worker_id": {"type": "string"},
+                            },
+                            "required": ["id", "objective", "role", "agent_type"],
+                        },
+                    }
+                },
+                "required": ["tasks"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_status",
+            "description": "Read the current durable task graph, ready work, assignments, evidence, and decisions.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_validate",
+            "description": "Attach deterministic validation evidence from an observed tool result to a Director task.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "passed": {"type": "boolean"},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["task_id", "name", "passed", "evidence"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_decide",
+            "description": (
+                "Accept, revise, reassign, block, escalate, or integrate one worker result. "
+                "Acceptance and integration fail closed unless all required evidence gates pass."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string"},
+                    "action": {"type": "string", "enum": ["accept", "revise", "reassign", "block", "escalate", "integrate"]},
+                    "reason": {"type": "string"},
+                    "evidence": {"type": "array", "items": {"type": "string"}},
+                    "requested_changes": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["task_id", "action", "reason"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "director_complete",
+            "description": "Complete the Director run after every task is accepted or integrated.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+]
+
+
+# ── Tool-specific icons (inspired by opencode) ────────────────────────
+
+TOOL_ICONS = {
+    "file_read":  "→",   # Read arrow
+    "file_write": "←",   # Write arrow
+    "file_edit":  "~",   # Edit tilde
+    "bash":       "$",   # Shell prompt
+    "glob":       "✱",   # Glob star
+    "grep":       "/",   # Search slash
+    "task":       "│",   # Sub-agent
+    "batch":      "⚡",   # Parallel execution
+    # Browser tools
+    "browser_navigate":      "🌐",
+    "browser_click":         "☞",
+    "browser_type":          "⌨",
+    "browser_read":          "📄",
+    "browser_screenshot":    "📷",
+    "browser_js":            "ƒ",
+    "browser_scroll":        "↕",
+    "browser_hover":         "☟",
+    "browser_select":        "▼",
+    "browser_wait":          "⏳",
+    "browser_back":          "←",
+    "browser_tabs":          "▤",
+    # Desktop / Computer Use tools
+    "computer_screenshot": "▣",
+    "computer_click":      "◎",
+    "computer_type":       "⌨",
+    "computer_scroll":     "↕",
+    "computer_drag":       "↗",
+    "computer_hover":      "⊙",
+    "computer_wait":       "⏳",
+    "computer_cursor_position": "✛",
+    "window_list":         "☰",
+    "window_focus":        "◉",
+    "screen_ocr":          "🔍",
+    "open_application":    "▶",
+    # Git tools
+    "git_status":          "±",
+    "git_diff":            "≠",
+    "git_commit":          "✓",
+    "git_branch_create":   "⎇",
+    "git_log":             "☷",
+    # REPL tools
+    "repl_python_start":   "🐍",
+    "repl_python_eval":    "▶",
+    "repl_python_stop":    "■",
+    "repl_node_start":     "⬢",
+    "repl_node_eval":      "▶",
+    "repl_node_stop":      "■",
+    # Multi-monitor / clipboard / process
+    "monitors_list":       "🖥",
+    "clipboard_read":      "📋",
+    "clipboard_write":     "📋",
+    "process_list":        "⚙",
+    "process_kill":        "✗",
+    # Recording / diff
+    "screen_record_start": "●",
+    "screen_record_stop":  "■",
+    "screen_diff":         "◇",
+    # Accessibility
+    "accessibility_tree":  "🌳",
+    "accessibility_click": "◉",
+}
+
+
+def get_tool_icon(name: str) -> str:
+    """Get the display icon for a tool."""
+    return TOOL_ICONS.get(name, "⚙")
+
+
+# ── Tool Execution ─────────────────────────────────────────────────────
+
+class ToolResult:
+    """Result of executing a tool."""
+    __slots__ = ("output", "is_error", "elapsed", "metadata")
+
+    def __init__(self, output: str, is_error: bool = False, elapsed: float = 0.0, metadata: Optional[dict] = None):
+        self.output = output
+        self.is_error = is_error
+        self.elapsed = elapsed
+        self.metadata = metadata or {}
+
+    def to_dict(self) -> dict:
+        return {
+            "output": self.output,
+            "is_error": self.is_error,
+            "elapsed": self.elapsed,
+            "metadata": self.metadata,
+        }
+
+
+# Tools that physically drive the user's machine — mouse, keyboard, windows,
+# or the screen itself. These are what the on-screen indicator announces.
+DESKTOP_TOOL_NAMES = frozenset({
+    "computer_screenshot", "computer_click", "computer_type", "computer_scroll",
+    "computer_drag", "computer_hover", "computer_wait", "computer_cursor_position",
+    "window_list", "window_focus", "monitors_list",
+    "screen_ocr", "open_application",
+})
+
+
+def _computer_use_indicator_enabled(settings: object) -> bool:
+    """Whether to show the on-screen indicator. Defaults to on.
+
+    Deliberately opt-*out*. Someone watching their own mouse move needs to know
+    it is Lumi; making that visibility something you have to switch on
+    inverts the default that matters.
+    """
+    if settings is None:
+        return True
+    try:
+        value = settings.get("general", "computer_use_indicator", True)
+    except Exception:
+        return True
+    return bool(value)
+
+
+def execute_tool(
+    name: str,
+    arguments: dict,
+    cancel_event: Optional[threading.Event] = None,
+    *,
+    project_path: str = "",
+    settings: object = None,
+    session_name: str = "",
+) -> ToolResult:
+    """
+    Execute a tool and return structured result.
+
+    This is the pure execution layer — no display logic, no approval prompts.
+    The engine handles permission; the TUI handles display.
+
+    Full Autonomy floor: before dispatching, run the irreversibility-floor
+    checks (`autonomy.check_floor`). On violation, return a ToolResult flagged
+    with `metadata["floor_violation"]` so Session can pause for the user via
+    the existing tool.permission flow. Routine actions never trigger the
+    floor — only the ones that can't be undone.
+
+    Per-tool-call auditing happens upstream in the orchestrator's specialist
+    runner (it observes `tool.call` events from Session); this layer only
+    handles dispatch + floor enforcement.
+
+    Note: 'task' tool is handled by Session (needs backend access), not here.
+    """
+    start = time.time()
+
+    # ── Computer-use indicator ──
+    # Signal before dispatch, not after: the point is to tell the user their
+    # machine is being driven *while* it happens. The overlay lingers for a few
+    # seconds so a burst of clicks and screenshots keeps it lit rather than
+    # strobing, and it is taken down automatically for screen captures.
+    if name in DESKTOP_TOOL_NAMES:
+        try:
+            from .screen_overlay import monitor_index_for_args, note_activity
+
+            if _computer_use_indicator_enabled(settings):
+                note_activity(monitor_index_for_args(arguments or {}))
+        except Exception:
+            logger.debug("Computer-use indicator failed", exc_info=True)
+
+    # Give the dedicated Chrome profile a human session label before the
+    # first browser call launches it. Subsequent calls also refresh the active
+    # tab's purple group when the user switches Lumi sessions.
+    if name.startswith("browser_"):
+        try:
+            from .browser import set_browser_session_name
+
+            set_browser_session_name(
+                session_name,
+                activity_indicator=_computer_use_indicator_enabled(settings),
+            )
+        except Exception:
+            logger.debug("Browser session indicator failed", exc_info=True)
+
+    # ── Irreversibility floor check ──
+    if name not in ("task",):  # task isn't dispatched here at all
+        try:
+            from ..orchestration.autonomy import check_floor
+            violation = check_floor(
+                tool_name=name,
+                args=arguments or {},
+                project_path=project_path or "",
+                settings=settings,
+            )
+        except Exception:
+            violation = None
+        if violation is not None:
+            return ToolResult(
+                output=(
+                    f"FLOOR_VIOLATION: {violation.rule}\n"
+                    f"{violation.reason}\n"
+                    f"Suggested: {violation.suggested_action or '(none)'}"
+                ),
+                is_error=True,
+                elapsed=time.time() - start,
+                metadata={
+                    "floor_violation": {
+                        "rule": violation.rule,
+                        "reason": violation.reason,
+                        "severity": violation.severity,
+                        "suggested_action": violation.suggested_action,
+                        "tool_name": name,
+                    },
+                },
+            )
+
+    try:
+        if name in {"job_start", "job_status", "job_cancel"}:
+            from .jobs import jobs
+            root = project_path or os.getcwd()
+            if name == "job_start":
+                data = jobs.start(root, arguments.get("command"), timeout=arguments.get("timeout", 1200), cancel_event=cancel_event)
+            elif name == "job_cancel":
+                data = jobs.cancel(root, arguments.get("id", ""))
+            else:
+                data = jobs.status(root, arguments["id"]) if arguments.get("id") else jobs.list(root)
+            return ToolResult(json.dumps(data), elapsed=time.time()-start, metadata={"job": data})
+        if name == "memory_save":
+            from .project_memory import ProjectMemory
+            data = ProjectMemory(project_path or os.getcwd()).save(arguments.get('text', ''), source=arguments.get('source', ''), kind=arguments.get('kind', 'decision'), sources=arguments.get('sources', []), memory_id=arguments.get('id', ''))
+            return ToolResult(json.dumps(data), metadata={"memory": data})
+        if name.startswith("preview_"):
+            from .previews import previews
+            root = project_path or os.getcwd()
+            if name == "preview_start":
+                data = previews.start(root, arguments.get("command"), arguments.get("url", ""), timeout=arguments.get("timeout", 15), cancel_event=cancel_event)
+            elif name == "preview_stop":
+                data = previews.stop(root, arguments.get("id", ""))
+            else:
+                data = previews.status(root, arguments["id"]) if arguments.get("id") else previews.list(root)
+            return ToolResult(json.dumps(data), is_error=name == "preview_start" and data['state'] != 'ready', elapsed=time.time()-start, metadata={"preview": data})
+        if name == "check_run":
+            requirement = str(arguments.get("requirement", "")).strip()
+            if not requirement or not str(arguments.get("command", "")).strip():
+                return ToolResult("A check needs a command and requirement.", is_error=True)
+            result = _exec_bash({**arguments, "cwd": project_path or os.getcwd()}, start, cancel_event=cancel_event)
+            result.metadata["check"] = {"command": arguments["command"], "requirement": requirement,
+                "status": "failed" if result.is_error else "passed", "exit_code": result.metadata.get("exit_code"),
+                "checked_at": time.time()}
+            return result
+        if name == "bash":
+            return _exec_bash(arguments, start, cancel_event=cancel_event)
+        elif name == "file_write":
+            return _exec_file_write(arguments, start)
+        elif name == "file_read":
+            return _exec_file_read(arguments, start)
+        elif name == "file_edit":
+            return _exec_file_edit(arguments, start)
+        elif name == "glob":
+            return _exec_glob(arguments, start)
+        elif name == "grep":
+            return _exec_grep(arguments, start, cancel_event=cancel_event)
+        elif name == "skill_view":
+            if str(arguments.get('skill_id', '')).startswith('pack:'):
+                from .capability_packs import CapabilityPackManager
+                manager = CapabilityPackManager(project_path or os.getcwd(), configured=(settings.get('plugins') or {}) if settings else {})
+                body = manager.read_skill(arguments['skill_id'])
+                return ToolResult(body, metadata={'skill_id': arguments['skill_id'], 'scope': 'pack'})
+            return _exec_skill_view(arguments, start, project_path=project_path)
+        elif name == "batch":
+            return _exec_batch(
+                arguments,
+                start,
+                cancel_event=cancel_event,
+                project_path=project_path,
+                settings=settings,
+            )
+        elif name == "task":
+            # Task tool requires session context — handled by Session, not here
+            return ToolResult(
+                "Error: 'task' tool must be executed through Session (needs backend access).",
+                is_error=True, elapsed=time.time() - start,
+            )
+        # Browser tools (native CDP — see engine/browser.py)
+        elif name == "browser_navigate":
+            from .browser import exec_browser_navigate
+            return exec_browser_navigate(arguments, start)
+        elif name == "browser_click":
+            from .browser import exec_browser_click
+            return exec_browser_click(arguments, start)
+        elif name == "browser_type":
+            from .browser import exec_browser_type
+            return exec_browser_type(arguments, start)
+        elif name == "browser_read":
+            from .browser import exec_browser_read
+            return exec_browser_read(arguments, start)
+        elif name == "browser_screenshot":
+            from .browser import exec_browser_screenshot
+            return exec_browser_screenshot(arguments, start)
+        elif name == "browser_js":
+            from .browser import exec_browser_js
+            return exec_browser_js(arguments, start)
+        elif name == "browser_scroll":
+            from .browser import exec_browser_scroll
+            return exec_browser_scroll(arguments, start)
+        elif name == "browser_hover":
+            from .browser import exec_browser_hover
+            return exec_browser_hover(arguments, start)
+        elif name == "browser_select":
+            from .browser import exec_browser_select
+            return exec_browser_select(arguments, start)
+        elif name == "browser_wait":
+            from .browser import exec_browser_wait
+            return exec_browser_wait(arguments, start)
+        elif name == "browser_back":
+            from .browser import exec_browser_back
+            return exec_browser_back(arguments, start)
+        elif name == "browser_tabs":
+            from .browser import exec_browser_tabs
+            return exec_browser_tabs(arguments, start)
+        # Desktop / Computer Use tools
+        elif name == "computer_screenshot":
+            from .computer import exec_computer_screenshot
+            return exec_computer_screenshot(arguments, start)
+        elif name == "computer_click":
+            from .computer import exec_computer_click
+            return exec_computer_click(arguments, start)
+        elif name == "computer_type":
+            from .computer import exec_computer_type
+            return exec_computer_type(arguments, start)
+        elif name == "computer_scroll":
+            from .computer import exec_computer_scroll
+            return exec_computer_scroll(arguments, start)
+        elif name == "computer_cursor_position":
+            from .computer import exec_computer_cursor_position
+            return exec_computer_cursor_position(arguments, start)
+        # Enhanced Computer Use tools
+        elif name == "computer_drag":
+            from .computer_use import exec_computer_drag
+            return exec_computer_drag(arguments, start)
+        elif name == "computer_hover":
+            from .computer_use import exec_computer_hover
+            return exec_computer_hover(arguments, start)
+        elif name == "window_list":
+            from .computer_use import exec_window_list
+            return exec_window_list(arguments, start)
+        elif name == "window_focus":
+            from .computer_use import exec_window_focus
+            return exec_window_focus(arguments, start)
+        elif name == "computer_wait":
+            from .computer_use import exec_computer_wait
+            return exec_computer_wait(arguments, start)
+        elif name == "screen_ocr":
+            from .computer_use import exec_screen_ocr
+            return exec_screen_ocr(arguments, start)
+        elif name == "open_application":
+            from .computer_use import exec_open_application
+            return exec_open_application(arguments, start)
+        # Git tools
+        elif name == "git_status":
+            from .git_tools import exec_git_status
+            return exec_git_status(arguments, start)
+        elif name == "git_diff":
+            from .git_tools import exec_git_diff
+            return exec_git_diff(arguments, start)
+        elif name == "git_commit":
+            from .git_tools import exec_git_commit
+            return exec_git_commit(arguments, start)
+        elif name == "git_branch_create":
+            from .git_tools import exec_git_branch_create
+            return exec_git_branch_create(arguments, start)
+        elif name == "git_log":
+            from .git_tools import exec_git_log
+            return exec_git_log(arguments, start)
+        # REPL tools
+        elif name == "repl_python_start":
+            from .repl import exec_repl_python_start
+            return exec_repl_python_start(arguments, start)
+        elif name == "repl_python_eval":
+            from .repl import exec_repl_python_eval
+            return exec_repl_python_eval(arguments, start)
+        elif name == "repl_python_stop":
+            from .repl import exec_repl_python_stop
+            return exec_repl_python_stop(arguments, start)
+        elif name == "repl_node_start":
+            from .repl import exec_repl_node_start
+            return exec_repl_node_start(arguments, start)
+        elif name == "repl_node_eval":
+            from .repl import exec_repl_node_eval
+            return exec_repl_node_eval(arguments, start)
+        elif name == "repl_node_stop":
+            from .repl import exec_repl_node_stop
+            return exec_repl_node_stop(arguments, start)
+        # Multi-monitor / clipboard / process tools
+        elif name == "monitors_list":
+            from .computer_use import exec_monitors_list
+            return exec_monitors_list(arguments, start)
+        elif name == "clipboard_read":
+            from .clipboard import exec_clipboard_read
+            return exec_clipboard_read(arguments, start)
+        elif name == "clipboard_write":
+            from .clipboard import exec_clipboard_write
+            return exec_clipboard_write(arguments, start)
+        elif name == "process_list":
+            from .processes import exec_process_list
+            return exec_process_list(arguments, start)
+        elif name == "process_kill":
+            from .processes import exec_process_kill
+            return exec_process_kill(arguments, start)
+        elif name == "screen_record_start":
+            from .recording import exec_screen_record_start
+            return exec_screen_record_start(arguments, start)
+        elif name == "screen_record_stop":
+            from .recording import exec_screen_record_stop
+            return exec_screen_record_stop(arguments, start)
+        elif name == "screen_diff":
+            from .screen_diff import exec_screen_diff
+            return exec_screen_diff(arguments, start)
+        elif name == "accessibility_tree":
+            from .accessibility import exec_accessibility_tree
+            return exec_accessibility_tree(arguments, start)
+        elif name == "accessibility_click":
+            from .accessibility import exec_accessibility_click
+            return exec_accessibility_click(arguments, start)
+        else:
+            return ToolResult(f"Error: Unknown tool '{name}'", is_error=True, elapsed=time.time() - start)
+
+    except Exception as e:
+        return ToolResult(f"Error: {e}", is_error=True, elapsed=time.time() - start)
+
+
+def _run_subprocess_with_cancel(
+    cmd,
+    *,
+    timeout: float,
+    shell: bool,
+    text: bool,
+    cwd: str,
+    stdin=None,
+    cancel_event: Optional[threading.Event] = None,
+):
+    def _create_windows_kill_job(process):
+        if sys.platform != "win32":
+            return None
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            class _BasicLimitInfo(ctypes.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", ctypes.c_longlong),
+                    ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD),
+                ]
+
+            class _IoCounters(ctypes.Structure):
+                _fields_ = [
+                    ("ReadOperationCount", ctypes.c_ulonglong),
+                    ("WriteOperationCount", ctypes.c_ulonglong),
+                    ("OtherOperationCount", ctypes.c_ulonglong),
+                    ("ReadTransferCount", ctypes.c_ulonglong),
+                    ("WriteTransferCount", ctypes.c_ulonglong),
+                    ("OtherTransferCount", ctypes.c_ulonglong),
+                ]
+
+            class _ExtendedLimitInfo(ctypes.Structure):
+                _fields_ = [
+                    ("BasicLimitInformation", _BasicLimitInfo),
+                    ("IoInfo", _IoCounters),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t),
+                ]
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            job = kernel32.CreateJobObjectW(None, None)
+            if not job:
+                return None
+            info = _ExtendedLimitInfo()
+            info.BasicLimitInformation.LimitFlags = 0x00002000  # KILL_ON_JOB_CLOSE
+            configured = kernel32.SetInformationJobObject(
+                job, 9, ctypes.byref(info), ctypes.sizeof(info),
+            )
+            assigned = configured and kernel32.AssignProcessToJobObject(job, int(process._handle))
+            if not assigned:
+                kernel32.CloseHandle(job)
+                return None
+            return job
+        except Exception:
+            return None
+
+    def _close_windows_job(job):
+        if not job or sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(job)
+        except Exception:
+            pass
+
+    process_group_args = background_process_kwargs(new_process_group=True)
+    proc = subprocess.Popen(
+        cmd,
+        shell=shell,
+        cwd=cwd,
+        stdin=stdin,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=text,
+        **process_group_args,
+    )
+    windows_job = _create_windows_kill_job(proc)
+
+    def _terminate_tree():
+        if sys.platform == "win32" and windows_job:
+            try:
+                import ctypes
+                ctypes.WinDLL("kernel32", use_last_error=True).TerminateJobObject(windows_job, 1)
+            except Exception:
+                pass
+            return
+        if proc.poll() is not None:
+            return
+        try:
+            if sys.platform == "win32":
+                subprocess.run(
+                    ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                    check=False,
+                    **background_process_kwargs(),
+                )
+            else:
+                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                try:
+                    proc.wait(timeout=0.75)
+                except subprocess.TimeoutExpired:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    watcher = None
+    process_finished = threading.Event()
+    if cancel_event is not None:
+        def _watch_cancel():
+            while not process_finished.is_set():
+                if cancel_event.wait(timeout=0.1):
+                    _terminate_tree()
+                    return
+
+        watcher = threading.Thread(target=_watch_cancel, daemon=True)
+        watcher.start()
+
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        return proc.returncode, stdout, stderr, False
+    except subprocess.TimeoutExpired:
+        _terminate_tree()
+        stdout, stderr = proc.communicate()
+        return proc.returncode, stdout, stderr, True
+    finally:
+        process_finished.set()
+        if watcher:
+            watcher.join(timeout=0.25)
+        _close_windows_job(windows_job)
+
+
+def _normalize_managed_bash_command(command: str) -> str:
+    """Keep background-launch syntax inside Lumi's managed lifecycle."""
+    managed_cmd = str(command or "")
+    if sys.platform == "win32":
+        # Detached `start /B` children outlive cmd.exe and retain its pipes,
+        # making the agent impossible to steer. Keep the command foreground
+        # and under the process group that cancellation can terminate.
+        managed_cmd = re.sub(
+            r"(?i)\bstart\s+(?:\"[^\"]*\"\s+)?/b\s+",
+            "",
+            managed_cmd,
+        )
+    return managed_cmd
+
+
+def _exec_bash(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
+    cmd = args.get("command", "")
+    managed_cmd = _normalize_managed_bash_command(cmd)
+    timeout = args.get("timeout", 30)
+    cwd = args.get("cwd", os.getcwd())
+
+    if sys.platform == "win32" and ("\n" in managed_cmd or "\r" in managed_cmd):
+        # cmd.exe /c may silently truncate a quoted multiline command and still
+        # return zero. Never report that as a completed diagnostic or test.
+        return ToolResult(
+            "Multiline shell commands are not supported by this Windows runner. "
+            "No command was executed. Write the script to a project file, then run "
+            "it with a single-line command (for example: node diagnostic.cjs).",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"command": cmd, "not_executed": True, "reason": "windows_multiline_command"},
+        )
+
+    try:
+        returncode, stdout, stderr, timed_out = _run_subprocess_with_cancel(
+            managed_cmd,
+            shell=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            cancel_event=cancel_event,
+        )
+        elapsed = time.time() - start
+        if cancel_event is not None and cancel_event.is_set():
+            return ToolResult(
+                "Command cancelled.",
+                is_error=True,
+                elapsed=elapsed,
+                metadata={"command": cmd, "cancelled": True},
+            )
+        if timed_out:
+            return ToolResult(
+                f"Command timed out after {timeout}s.",
+                is_error=True,
+                elapsed=timeout,
+                metadata={"command": cmd, "timed_out": True},
+            )
+        output = stdout
+        if stderr:
+            output += ("\n" if output else "") + stderr
+        if returncode != 0:
+            output += f"\n(exit code: {returncode})"
+        output = output.strip() or "(no output)"
+        # Tail truncation — for shell output the model needs the *end* (errors,
+        # final exit codes, last lines of a build log). Previously bash had no
+        # truncation at all, so a `cat huge.log` could blow the context.
+        result = truncate_tail(output)
+        output = result.content + render_truncation_footer(result)
+        return ToolResult(
+            output,
+            is_error=returncode != 0,
+            elapsed=elapsed,
+            metadata={
+                "command": cmd,
+                "exit_code": returncode,
+                "lines": result.total_lines,
+                "shown_lines": result.output_lines,
+                "truncated": result.truncated,
+            },
+        )
+    except subprocess.TimeoutExpired:
+        return ToolResult(
+            f"Command timed out after {timeout}s.",
+            is_error=True,
+            elapsed=timeout,
+            metadata={"command": cmd, "timed_out": True},
+        )
+
+
+def _validate_write_path(fpath: str, allow_leading_dash: bool) -> str:
+    """v0.5.7a3 — reject writes whose path basename starts with `-`
+    unless the caller explicitly opts in via `allow_leading_dash=true`.
+
+    Linux-bridge field-observation #8: a file literally named `-p`
+    appeared at the project root mid-iteration, almost certainly from
+    a tokenization slip where `mkdir -p src` got split into three
+    separate args `mkdir`, `-p`, `src` and `-p` landed in the path
+    field of the wrong tool. Files with leading-dash names are also
+    a known foot-gun for shell command-line parsers (a later
+    `rm <pattern>` may misinterpret the file as a flag).
+
+    Returns "" on validation success; a non-empty error message
+    when the path is rejected.
+    """
+    if allow_leading_dash:
+        return ""
+    if not fpath:
+        return ""
+    # Check the basename and every intermediate path segment. A
+    # tokenization slip can land `-` anywhere in the path, not just
+    # the last component (e.g. `-p/foo.txt` would create a directory
+    # named `-p`).
+    parts = Path(fpath).parts
+    for seg in parts:
+        # Skip Windows drive specs like 'C:\\' which surface as 'C:'
+        # plus the separator. Drive specs end with `:`.
+        if seg.endswith(":") or seg in (".", ".."):
+            continue
+        if seg.startswith("-"):
+            return (
+                f"Refusing to write to '{fpath}': path segment "
+                f"'{seg}' starts with '-' which is almost always a "
+                f"tokenization slip (e.g. shell flag mistakenly "
+                f"routed into a path argument). If you genuinely "
+                f"need this filename, retry with allow_leading_dash=true."
+            )
+    return ""
+
+
+def _exec_file_write(args: dict, start: float) -> ToolResult:
+    fpath = args.get("path", "")
+    content = args.get("content", "")
+    allow_dash = bool(args.get("allow_leading_dash", False))
+    err = _validate_write_path(fpath, allow_dash)
+    if err:
+        return ToolResult(
+            f"Error: {err}",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
+    path = Path(fpath)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    lines = len(content.split("\n"))
+    elapsed = time.time() - start
+    return ToolResult(
+        f"File written: {fpath} ({lines} lines, {len(content)} characters)",
+        elapsed=elapsed,
+        metadata={"path": fpath, "lines": lines, "chars": len(content), "content": content},
+    )
+
+
+def _exec_file_read(args: dict, start: float) -> ToolResult:
+    fpath = args.get("path", "")
+    offset = max(0, int(args.get("offset", 0) or 0))
+    limit = min(2_000, max(1, int(args.get("limit", 400) or 400)))
+    path = Path(fpath)
+    if not path.exists():
+        return ToolResult(f"Error: File not found: {fpath}", is_error=True, elapsed=time.time() - start)
+    content = path.read_text(encoding="utf-8")
+    lines = content.split("\n")
+    total_lines = len(lines)
+    selected = "\n".join(lines[offset:offset + limit])
+    result = truncate_head(selected, max_lines=limit)
+    output = result.content
+    shown_lines = result.output_lines
+    next_offset = offset + shown_lines
+    has_more = next_offset < total_lines
+    if has_more:
+        output += (
+            f"\n\n[showing lines {offset + 1}-{next_offset} of {total_lines}. "
+            f"Continue with file_read {{\"path\": {json.dumps(str(fpath))}, "
+            f"\"offset\": {next_offset}, \"limit\": {limit}}}]"
+        )
+    elif result.truncated:
+        output += render_truncation_footer(result)
+    elapsed = time.time() - start
+    return ToolResult(
+        output,
+        elapsed=elapsed,
+        metadata={
+            "path": fpath,
+            "lines": total_lines,
+            "shown_lines": shown_lines,
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset if has_more else None,
+            "truncated": has_more or result.truncated,
+        },
+    )
+
+
+def _exec_file_edit(args: dict, start: float) -> ToolResult:
+    fpath = args.get("path", "")
+    old_text = args.get("old_text", "")
+    new_text = args.get("new_text", "")
+    replace_all = bool(args.get("replace_all", False))
+    allow_dash = bool(args.get("allow_leading_dash", False))
+    err = _validate_write_path(fpath, allow_dash)
+    if err:
+        return ToolResult(
+            f"Error: {err}",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
+    path = Path(fpath)
+
+    if not path.exists():
+        return ToolResult(f"Error: File not found: {fpath}", is_error=True, elapsed=time.time() - start)
+
+    content = path.read_text(encoding="utf-8")
+    try:
+        application = apply_text_edit(
+            content,
+            old_text,
+            new_text,
+            replace_all=replace_all,
+        )
+    except EditMatchError as exc:
+        return ToolResult(
+            f"Error editing {fpath}: {exc}",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
+
+    path.write_text(application.content, encoding="utf-8")
+    elapsed = time.time() - start
+    return ToolResult(
+        (
+            f"File edited: {fpath} "
+            f"({application.strategy} match, line {application.line}, "
+            f"{application.replacements} replacement(s))"
+        ),
+        elapsed=elapsed,
+        metadata={
+            "path": fpath,
+            "old_text": old_text,
+            "new_text": new_text,
+            "match_strategy": application.strategy,
+            "replacements": application.replacements,
+            "line": application.line,
+        },
+    )
+
+
+def _exec_glob(args: dict, start: float) -> ToolResult:
+    pattern = args.get("pattern", "")
+    base = args.get("path", ".")
+    offset = max(0, int(args.get("offset", 0) or 0))
+    limit = min(200, max(1, int(args.get("limit", 50) or 50)))
+
+    # Models often pass absolute patterns (e.g. "D:/Repos/proj/**/*.py") —
+    # Python's Path.glob refuses those with "Non-relative patterns are
+    # unsupported." Split absolute patterns into (longest non-glob prefix,
+    # relative pattern remainder) so callers don't need to know the convention.
+    pat = Path(pattern)
+    if pat.is_absolute():
+        parts = pat.parts
+        meta_chars = ("*", "?", "[")
+        split_at = None
+        for i, part in enumerate(parts):
+            if any(c in part for c in meta_chars):
+                split_at = i
+                break
+        if split_at is None:
+            base = str(pat.parent) if pat.parent != pat else str(pat.anchor or ".")
+            pattern = pat.name
+        elif split_at == 0:
+            base = pat.anchor or "."
+            pattern = str(Path(*parts))
+        else:
+            base = str(Path(*parts[:split_at]))
+            pattern = str(Path(*parts[split_at:]))
+
+    try:
+        all_matches = sorted(Path(base).glob(pattern))
+    except (NotImplementedError, OSError) as exc:
+        return ToolResult(
+            f"Error: glob pattern not supported ({exc}). "
+            f"Try a relative pattern like '**/*.py' with the project root as base.",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
+    total = len(all_matches)
+    matches = all_matches[offset:offset + limit]
+    result = "\n".join(str(m) for m in matches)
+    next_offset = offset + len(matches)
+    if next_offset < total:
+        result += (
+            f"\n\n[showing paths {offset + 1}-{next_offset} of {total}. "
+            f"Continue with glob {{\"pattern\": {json.dumps(str(pattern))}, "
+            f"\"path\": {json.dumps(str(base))}, \"offset\": {next_offset}, "
+            f"\"limit\": {limit}}}]"
+        )
+    elapsed = time.time() - start
+    return ToolResult(
+        result or "(no matches)",
+        elapsed=elapsed,
+        metadata={
+            "pattern": pattern,
+            "count": total,
+            "shown": len(matches),
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset if next_offset < total else None,
+            "base": base,
+        },
+    )
+
+
+# Where packaging/fetch_ripgrep.ps1 puts the verified binary in a source
+# checkout. Module-level so tests can point it somewhere deterministic instead
+# of depending on whether the developer happens to have run the fetch script —
+# the kind of "works on my machine" coupling that hid the undeclared psutil
+# dependency for months.
+_VENDORED_RIPGREP_DIR = Path(__file__).resolve().parent.parent.parent / "packaging" / "ripgrep"
+
+
+@lru_cache(maxsize=1)
+def _ripgrep_executable() -> Optional[str]:
+    """Locate ripgrep once per process. None when it isn't available.
+
+    The bundled copy wins over PATH. A packaged install ships a pinned,
+    checksum-verified rg (see packaging/fetch_ripgrep.ps1), and preferring it
+    means every user gets the same search behaviour regardless of what happens
+    to be installed on their machine — including users with no `rg` at all,
+    who previously fell back to `findstr` and its far weaker regex dialect.
+
+    `sys._MEIPASS` is set only in a PyInstaller bundle; from a source checkout
+    this falls straight through to PATH.
+    """
+    binary = "rg.exe" if sys.platform == "win32" else "rg"
+    bundle_dir = getattr(sys, "_MEIPASS", "")
+    if bundle_dir:
+        # Both layouts, matching updater._find_dll: one-file extracts to
+        # _MEIPASS directly, one-folder puts contents under _internal/.
+        candidates = [
+            Path(bundle_dir) / binary,
+            Path(bundle_dir) / "_internal" / binary,
+        ]
+    else:
+        # Source checkout: use the build-time copy if a developer has fetched
+        # one, so `grep` behaves the same here as in a packaged install.
+        candidates = [_VENDORED_RIPGREP_DIR / binary]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("rg")
+
+
+def _build_grep_command(pattern: str, path: str, file_glob: str) -> list[str]:
+    """Argv for a recursive content search, best available tool first.
+
+    ripgrep is strongly preferred. The fallbacks are correct but weak: Windows
+    `findstr /r` implements a regex dialect with no alternation, no `+`, and no
+    groups, so ordinary model-written patterns silently return nothing, and it
+    walks `node_modules`/`.venv` at full cost. POSIX `grep -rn` is closer but
+    still ignores `.gitignore`.
+
+    Every branch returns argv for `shell=False`. Never interpolate a
+    model-controlled pattern into a shell command — a quoted string is not a
+    security boundary, and a pattern containing a quote would turn this
+    read-only tool into arbitrary shell execution.
+    """
+    ripgrep = _ripgrep_executable()
+    if ripgrep:
+        cmd = [
+            ripgrep,
+            "--line-number",
+            "--no-heading",
+            "--with-filename",
+            "--color", "never",
+            # Search dotfiles — `.github/`, `.claude/`, and `.env.example` are
+            # ordinary working files for a coding agent, and ripgrep hides them
+            # by default. `.gitignore` filtering is kept (that is the point:
+            # no node_modules noise); only the VCS internals are force-excluded.
+            "--hidden",
+            "--glob", "!.git/",
+        ]
+        if file_glob:
+            cmd.extend(["--glob", file_glob])
+        # `-e` keeps a pattern beginning with `-` from being parsed as a flag;
+        # `--` does the same for the path.
+        cmd.extend(["-e", pattern, "--", path])
+        return cmd
+
+    if sys.platform == "win32":
+        target = os.path.join(path, file_glob or "*") if os.path.isdir(path) else path
+        return ["findstr", "/s", "/n", "/r", f"/c:{pattern}", target]
+
+    cmd = ["grep", "-rn"]
+    if file_glob:
+        cmd.extend([f"--include={file_glob}"])
+    cmd.extend(["--", pattern, path])
+    return cmd
+
+
+def _exec_grep(args: dict, start: float, cancel_event: Optional[threading.Event] = None) -> ToolResult:
+    pattern = args.get("pattern", "")
+    path = args.get("path", ".")
+    file_glob = args.get("glob", "")
+    offset = max(0, int(args.get("offset", 0) or 0))
+    limit = min(200, max(1, int(args.get("limit", 50) or 50)))
+
+    cmd = _build_grep_command(pattern, path, file_glob)
+
+    returncode, stdout, _stderr, timed_out = _run_subprocess_with_cancel(
+        cmd,
+        shell=False,
+        text=False,
+        timeout=30,
+        cwd=os.getcwd(),
+        cancel_event=cancel_event,
+    )
+
+    if cancel_event is not None and cancel_event.is_set():
+        return ToolResult(
+            "Search cancelled.",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"pattern": pattern, "cancelled": True},
+        )
+
+    if timed_out:
+        return ToolResult(
+            "Search timed out after 30s.",
+            is_error=True,
+            elapsed=30,
+            metadata={"pattern": pattern, "timed_out": True},
+        )
+
+    try:
+        output = stdout.decode("utf-8").strip()
+    except (UnicodeDecodeError, AttributeError):
+        try:
+            output = stdout.decode("latin-1").strip()
+        except (UnicodeDecodeError, AttributeError):
+            output = str(stdout).strip()
+
+    lines = output.split("\n") if output else []
+    count = len(lines)
+    # Cap each match line at 500 chars so a single minified-JS hit can't
+    # dominate the result list. Then head-truncate the overall match set.
+    if lines:
+        capped: list[str] = []
+        any_line_truncated = False
+        for ln in lines:
+            t, was = truncate_line(ln, GREP_MAX_LINE_LENGTH)
+            capped.append(t)
+            any_line_truncated = any_line_truncated or was
+        selected = capped[offset:offset + limit]
+        joined = "\n".join(selected)
+        result = truncate_head(joined, max_lines=limit)
+        output = result.content
+        shown = result.output_lines if selected else 0
+        next_offset = offset + shown
+        if next_offset < count:
+            output += (
+                f"\n\n[showing matches {offset + 1}-{next_offset} of {count}. "
+                f"Continue with grep {{\"pattern\": {json.dumps(str(pattern))}, "
+                f"\"path\": {json.dumps(str(path))}, \"offset\": {next_offset}, "
+                f"\"limit\": {limit}}}]"
+            )
+        if any_line_truncated:
+            output += "\n[note: some match lines were individually truncated]"
+    else:
+        shown = 0
+        next_offset = offset
+
+    if not output:
+        # ripgrep honours .gitignore, which is the right default (no
+        # node_modules noise) but makes an empty result ambiguous: the agent
+        # cannot tell "not in this codebase" from "in a file I chose not to
+        # read". Say so, so it can decide rather than conclude.
+        output = "(no matches)"
+        if _ripgrep_executable():
+            output += (
+                "\nNote: .gitignore'd files were not searched. "
+                "Re-run with bash `rg --no-ignore ...` to include them."
+            )
+
+    elapsed = time.time() - start
+    return ToolResult(
+        output,
+        elapsed=elapsed,
+        metadata={
+            "pattern": pattern,
+            "count": count,
+            "shown": shown,
+            "offset": offset,
+            "limit": limit,
+            "next_offset": next_offset if next_offset < count else None,
+            "exit_code": returncode,
+        },
+    )
+
+
+def _exec_skill_view(args: dict, start: float, *, project_path: str = "") -> ToolResult:
+    """Read a project/global skill body without exposing skill storage paths."""
+    skill_id = str(args.get("skill_id", "") or "").strip()
+    from ..orchestration.skills import load_skill, skill_dir
+
+    skill = None
+    resolved_scope = ""
+    for scope in ("project", "global"):
+        if scope == "project" and not project_path:
+            continue
+        skill = load_skill(
+            skill_id,
+            scope=scope,
+            project_path=project_path if scope == "project" else None,
+        )
+        if skill:
+            resolved_scope = scope
+            break
+    if not skill:
+        return ToolResult(
+            f"Error: skill not found: {skill_id}",
+            is_error=True,
+            elapsed=time.time() - start,
+        )
+
+    directory = skill_dir(
+        skill.id,
+        scope=resolved_scope,
+        project_path=project_path if resolved_scope == "project" else None,
+    )
+    sections = [f"# {skill.id}\n\n{skill.description}".strip()]
+    for filename, heading in (
+        ("procedure.md", "Procedure"),
+        ("verification.md", "Verification"),
+    ):
+        path = directory / filename
+        if path.is_file():
+            body = path.read_text(encoding="utf-8").strip()
+            if body:
+                sections.append(f"## {heading}\n\n{body}")
+    output = "\n\n".join(sections)
+    result = truncate_head(output, max_lines=800, max_bytes=24 * 1024)
+    return ToolResult(
+        result.content + render_truncation_footer(result),
+        elapsed=time.time() - start,
+        metadata={
+            "skill_id": skill.id,
+            "scope": resolved_scope,
+            "truncated": result.truncated,
+        },
+    )
+
+
+# ── Batch tool (parallel execution) ──────────────────────────────────
+
+# Batch is deliberately limited to workspace reads.  The outer ``batch`` call
+# receives one policy/permission decision; allowing arbitrary child tools would
+# let a model smuggle writes, shell commands, or desktop actions past specialist
+# allowlists and the session sandbox.
+BATCH_ALLOWED_TOOL_NAMES = frozenset({
+    "file_read", "glob", "grep", "git_status", "git_diff", "git_log", "skill_view",
+})
+BATCH_MAX_CALLS = 25
+BATCH_MAX_WORKERS = 10
+
+
+def _exec_batch(
+    args: dict,
+    start: float,
+    cancel_event: Optional[threading.Event] = None,
+    *,
+    project_path: str = "",
+    settings: object = None,
+) -> ToolResult:
+    """
+    Execute approved read-only tool calls in parallel using ThreadPoolExecutor.
+
+    - Max 25 calls per batch
+    - Cannot batch 'batch' or 'task' (recursion guard)
+    - Each call runs independently; one failure doesn't stop others
+    - Returns aggregated results
+    """
+    calls = args.get("calls", [])
+    if not calls:
+        return ToolResult("Error: No calls provided", is_error=True, elapsed=time.time() - start)
+
+    if cancel_event is not None and cancel_event.is_set():
+        return ToolResult(
+            "Batch cancelled.",
+            is_error=True,
+            elapsed=time.time() - start,
+            metadata={"cancelled": True, "results": []},
+        )
+
+    if len(calls) > BATCH_MAX_CALLS:
+        calls = calls[:BATCH_MAX_CALLS]
+
+    results = [None] * len(calls)
+    forbidden_indices = set()
+
+    with ThreadPoolExecutor(max_workers=min(len(calls), BATCH_MAX_WORKERS)) as pool:
+        futures = {}
+        for i, call in enumerate(calls):
+            name = call.get("name", "")
+            call_args = call.get("arguments", {})
+
+            if name not in BATCH_ALLOWED_TOOL_NAMES:
+                results[i] = {
+                    "index": i, "name": name, "status": "error",
+                    "output": (
+                        f"Cannot batch '{name}' tool. Batch only supports: "
+                        f"{sorted(BATCH_ALLOWED_TOOL_NAMES)}"
+                    ),
+                    "elapsed": 0,
+                }
+                forbidden_indices.add(i)
+                continue
+
+            future = pool.submit(
+                execute_tool,
+                name,
+                call_args,
+                cancel_event,
+                project_path=project_path,
+                settings=settings,
+            )
+            futures[future] = (i, name)
+
+        for future in as_completed(futures):
+            i, name = futures[future]
+            try:
+                result = future.result()
+                results[i] = {
+                    "index": i, "name": name,
+                    "status": "error" if result.is_error else "success",
+                    "output": result.output,
+                    "elapsed": result.elapsed,
+                    "metadata": result.metadata,
+                }
+            except Exception as e:
+                results[i] = {
+                    "index": i, "name": name,
+                    "status": "error", "output": str(e),
+                    "elapsed": 0,
+                }
+
+    # Build summary
+    successes = sum(1 for r in results if r and r["status"] == "success")
+    failures = len(results) - successes
+
+    summary_lines = [f"{successes}/{len(results)} succeeded\n"]
+    for r in results:
+        if r:
+            status_icon = "✓" if r["status"] == "success" else "✗"
+            # Truncate long output
+            output = r["output"]
+            if len(output) > 500:
+                output = output[:497] + "..."
+            summary_lines.append(f"[{status_icon} {r['name']}] {output}")
+
+    elapsed = time.time() - start
+    return ToolResult(
+        output="\n".join(summary_lines),
+        is_error=failures > 0 or (cancel_event is not None and cancel_event.is_set()),
+        elapsed=elapsed,
+        metadata={
+            "results": results,
+            "successes": successes,
+            "failures": failures,
+            "total": len(results),
+            "cancelled": bool(cancel_event is not None and cancel_event.is_set()),
+        },
+    )

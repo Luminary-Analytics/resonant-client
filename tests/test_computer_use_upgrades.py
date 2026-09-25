@@ -28,7 +28,7 @@ import pytest
 
 class TestRegistration:
     def test_all_new_tools_registered(self):
-        from resonant_client.engine import tools as tools_mod
+        from lumi.engine import tools as tools_mod
         names = {t["function"]["name"] for t in tools_mod.AGENT_TOOLS}
         for n in [
             "monitors_list",
@@ -41,14 +41,14 @@ class TestRegistration:
             assert n in names, f"missing {n}"
 
     def test_dispatch_routes_each(self):
-        from resonant_client.engine.tools import execute_tool
+        from lumi.engine.tools import execute_tool
         # These should not raise — they may return errors but the dispatcher must route.
         for n in ["monitors_list", "process_list", "accessibility_tree"]:
             r = execute_tool(n, {})
             assert hasattr(r, "output")
 
     def test_read_only_classification(self):
-        from resonant_client.engine.sandbox import READ_ONLY_TOOLS
+        from lumi.engine.sandbox import READ_ONLY_TOOLS
         for n in ["monitors_list", "clipboard_read", "process_list",
                   "accessibility_tree", "screen_diff"]:
             assert n in READ_ONLY_TOOLS
@@ -63,7 +63,7 @@ class TestRegistration:
 
 class TestMonitors:
     def test_list_monitors_shape(self):
-        from resonant_client.engine.computer_use import list_monitors
+        from lumi.engine.computer_use import list_monitors
         monitors = list_monitors()
         # On a CI box without mss this can be empty — that's fine
         for m in monitors:
@@ -73,7 +73,7 @@ class TestMonitors:
             assert sum(1 for m in monitors if m["primary"]) <= 1
 
     def test_exec_wrapper(self):
-        from resonant_client.engine.computer_use import exec_monitors_list
+        from lumi.engine.computer_use import exec_monitors_list
         r = exec_monitors_list({}, start=0.0)
         assert hasattr(r, "metadata")
         assert "monitors" in r.metadata
@@ -84,20 +84,20 @@ class TestMonitors:
 
 class TestResolveWindowOrMonitor:
     def test_default_returns_none(self):
-        from resonant_client.engine.computer import _resolve_window_or_monitor
+        from lumi.engine.computer import _resolve_window_or_monitor
         region, label = _resolve_window_or_monitor({})
         assert region is None
         assert "primary monitor" in label
 
     def test_unknown_window(self):
-        from resonant_client.engine.computer import _resolve_window_or_monitor
+        from lumi.engine.computer import _resolve_window_or_monitor
         region, label = _resolve_window_or_monitor({"target_window": "definitely-not-a-real-window-xyz"})
         assert region is None
         assert "not found" in label
 
     def test_monitor_index(self):
-        from resonant_client.engine.computer import _resolve_window_or_monitor
-        from resonant_client.engine.computer_use import list_monitors
+        from lumi.engine.computer import _resolve_window_or_monitor
+        from lumi.engine.computer_use import list_monitors
         if not list_monitors():
             pytest.skip("no monitors detected in this env")
         region, label = _resolve_window_or_monitor({"monitor": 0})
@@ -110,13 +110,13 @@ class TestResolveWindowOrMonitor:
 
 class TestComputerWait:
     def test_duration_mode_short(self):
-        from resonant_client.engine.computer_use import exec_computer_wait
+        from lumi.engine.computer_use import exec_computer_wait
         r = exec_computer_wait({"mode": "duration", "seconds": 0.1}, start=time.time())
         assert "Waited" in r.output
 
     def test_change_mode_with_region_param_accepted(self):
         """Region param must be accepted (no schema error). With static screen we expect timeout."""
-        from resonant_client.engine.computer_use import exec_computer_wait
+        from lumi.engine.computer_use import exec_computer_wait
         # Tiny region, very short timeout — should return without throwing
         r = exec_computer_wait(
             {"mode": "change", "region": {"x": 0, "y": 0, "width": 5, "height": 5}, "timeout": 0.5},
@@ -143,19 +143,19 @@ def _has_text_clipboard() -> bool:
 @pytest.mark.skipif(not _has_text_clipboard(), reason="no working text clipboard backend")
 class TestClipboardText:
     def test_round_trip(self):
-        from resonant_client.engine.clipboard import read_clipboard_text, write_clipboard_text
+        from lumi.engine.clipboard import read_clipboard_text, write_clipboard_text
         write_clipboard_text("hello resonant")
         assert read_clipboard_text() == "hello resonant"
 
     def test_exec_wrappers(self):
-        from resonant_client.engine.clipboard import exec_clipboard_read, exec_clipboard_write
+        from lumi.engine.clipboard import exec_clipboard_read, exec_clipboard_write
         w = exec_clipboard_write({"text": "tool round trip"}, start=0.0)
         assert w.is_error is False
         r = exec_clipboard_read({}, start=0.0)
         assert "tool round trip" in r.output
 
     def test_write_requires_text(self):
-        from resonant_client.engine.clipboard import exec_clipboard_write
+        from lumi.engine.clipboard import exec_clipboard_write
         r = exec_clipboard_write({}, start=0.0)
         assert r.is_error is True
 
@@ -174,7 +174,7 @@ def _has_psutil() -> bool:
 @pytest.mark.skipif(not _has_psutil(), reason="psutil not installed")
 class TestProcesses:
     def test_list_processes_returns_self(self):
-        from resonant_client.engine.processes import list_processes
+        from lumi.engine.processes import list_processes
         data = list_processes()
         assert "processes" in data
         # We should see at least our own python process somewhere
@@ -183,7 +183,7 @@ class TestProcesses:
         assert len(names) > 0
 
     def test_kill_self_refused(self):
-        from resonant_client.engine.processes import kill_process
+        from lumi.engine.processes import kill_process
         data = kill_process(os.getpid())
         # self should be skipped (or unable due to system PID floor)
         assert data["killed"] == [] or data.get("error")
@@ -191,17 +191,17 @@ class TestProcesses:
             assert data["skipped"], "expected self to be skipped"
 
     def test_kill_low_pid_refused(self):
-        from resonant_client.engine.processes import kill_process
+        from lumi.engine.processes import kill_process
         data = kill_process(1)
         assert data["killed"] == []
 
     def test_exec_list(self):
-        from resonant_client.engine.processes import exec_process_list
+        from lumi.engine.processes import exec_process_list
         r = exec_process_list({"limit": 5}, start=0.0)
         assert r.is_error is False
 
     def test_exec_kill_requires_one(self):
-        from resonant_client.engine.processes import exec_process_kill
+        from lumi.engine.processes import exec_process_kill
         r = exec_process_kill({}, start=0.0)
         assert r.is_error is True
 
@@ -233,7 +233,7 @@ class TestScreenDiff:
         return buf.getvalue()
 
     def test_no_change(self):
-        from resonant_client.engine.screen_diff import diff_images
+        from lumi.engine.screen_diff import diff_images
         a = self._make_png((100, 100, 100))
         b = self._make_png((100, 100, 100))
         data = diff_images(a, b)
@@ -241,7 +241,7 @@ class TestScreenDiff:
         assert data["changed_pixel_pct"] == 0.0
 
     def test_known_changed_rect(self):
-        from resonant_client.engine.screen_diff import diff_images
+        from lumi.engine.screen_diff import diff_images
         a = self._make_png((50, 50, 50))
         # Add a 20x20 red patch at (30, 40)
         b = self._make_png((50, 50, 50), patch=(30, 40, 20, 20, (255, 0, 0)))
@@ -255,7 +255,7 @@ class TestScreenDiff:
         assert 18 <= first["height"] <= 25
 
     def test_screenshot_cache(self):
-        from resonant_client.engine.screen_diff import (
+        from lumi.engine.screen_diff import (
             remember_screenshot, get_remembered_screenshot, previous_two_ids,
             _screenshot_cache, _cache_order,
         )
@@ -278,13 +278,13 @@ class TestScreenDiff:
 class TestAccessibility:
     def test_tree_returns_dict(self):
         """Either returns a tree, or returns {error: ...} — never raises."""
-        from resonant_client.engine.accessibility import get_tree
+        from lumi.engine.accessibility import get_tree
         result = get_tree()
         assert isinstance(result, dict)
         assert ("error" in result) or ("role" in result)
 
     def test_exec_click_requires_a_field(self):
-        from resonant_client.engine.accessibility import exec_accessibility_click
+        from lumi.engine.accessibility import exec_accessibility_click
         r = exec_accessibility_click({}, start=0.0)
         assert r.is_error is True
 
@@ -319,7 +319,7 @@ def _has_mss() -> bool:
                     reason="opencv/ffmpeg or mss not installed")
 class TestRecording:
     def test_short_recording(self, tmp_path):
-        from resonant_client.engine.recording import _RECORDER
+        from lumi.engine.recording import _RECORDER
         # If a previous test left it active, stop first
         if _RECORDER.is_active:
             _RECORDER.stop()
@@ -334,7 +334,7 @@ class TestRecording:
         assert data["frames"] >= 1
 
     def test_double_start_returns_existing(self, tmp_path):
-        from resonant_client.engine.recording import _RECORDER
+        from lumi.engine.recording import _RECORDER
         if _RECORDER.is_active:
             _RECORDER.stop()
         out = tmp_path / "double.mp4"

@@ -25,21 +25,21 @@ from __future__ import annotations
 
 import pytest
 
-from resonant_client.gui.roadmap import (
+from lumi.gui.roadmap import (
     AcceptanceCriterion,
     Roadmap,
 )
-from resonant_client.orchestration.acceptance_check import (
+from lumi.orchestration.acceptance_check import (
     BashRunner,
     CheckContext,
     VisionRunner,
 )
-from resonant_client.orchestration.plan_graph import NodeSpecialization
-from resonant_client.orchestration.reflect import (
+from lumi.orchestration.plan_graph import NodeSpecialization
+from lumi.orchestration.reflect import (
     ReflectPassResult,
     run_reflect_pass,
 )
-from resonant_client.orchestration.specialists import (
+from lumi.orchestration.specialists import (
     SPECIALISTS,
     SpecialistProfile,
     filter_tools_for_specialist,

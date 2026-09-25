@@ -4,7 +4,7 @@ The source repository may be private, so installed apps cannot download
 GitHub Release assets anonymously. The Pages site therefore carries both the
 WinSparkle feed (appcast.xml) and the installers it points to:
 
-    downloads/vX.Y.Z/resonant-setup-X.Y.Z.exe
+    downloads/vX.Y.Z/lumi-setup-X.Y.Z.exe
 
 This script copies the new installer into that layout, removes all but the
 newest KEEP installers so the site stays small, and rewrites index.html with a
@@ -56,7 +56,7 @@ PAGE = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SONN Client download</title>
+<title>Lumi download</title>
 <style>
   :root {{ color-scheme: light dark; }}
   body {{ font-family: system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; }}
@@ -65,9 +65,9 @@ PAGE = """<!doctype html>
 </style>
 </head>
 <body>
-<h1>SONN Client</h1>
-<p>Desktop coding client for <a href="https://getsonn.com">SONN</a> by Luminary Analytics.</p>
-<p><a class="button" href="{href}">Download SONN Client {version} for Windows</a></p>
+<h1>Lumi</h1>
+<p>The coding agent by Luminary Analytics. Runs on the model endpoints you choose, including <a href="https://getsonn.com">SONN</a>.</p>
+<p><a class="button" href="{href}">Download Lumi {version} for Windows</a></p>
 <p>Installer: <code>{name}</code>. Installed copies update themselves from
 <a href="appcast.xml">this update feed</a>, which is signed with EdDSA.</p>
 </body>

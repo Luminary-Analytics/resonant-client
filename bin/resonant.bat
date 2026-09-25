@@ -10,4 +10,4 @@ REM   resonant --api http://10.0.0.133:8000
 
 if "%RESONANT_API%"=="" set RESONANT_API=http://10.0.0.133:8000
 
-python -m resonant_client --api %RESONANT_API% %*
+python -m lumi --api %RESONANT_API% %*

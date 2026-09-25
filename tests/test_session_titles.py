@@ -6,10 +6,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from resonant_client.engine.session_titles import fallback_session_title, generate_session_title
-from resonant_client.gui.session_titles import cancel_title_refinement, schedule_title_refinement
-from resonant_client.gui.sessions import ProjectManager, SessionRecord
-from resonant_client.gui.ws_commands import CommandContext, _cmd_rename_session
+from lumi.engine.session_titles import fallback_session_title, generate_session_title
+from lumi.gui.session_titles import cancel_title_refinement, schedule_title_refinement
+from lumi.gui.sessions import ProjectManager, SessionRecord
+from lumi.gui.ws_commands import CommandContext, _cmd_rename_session
 
 
 @pytest.mark.parametrize(('prompt', 'expected'), [
@@ -68,7 +68,7 @@ def test_cli_loop_and_cancelled_requests_are_never_invoked():
 
 @pytest.fixture
 def manager(tmp_path, monkeypatch):
-    from resonant_client.gui import sessions
+    from lumi.gui import sessions
     monkeypatch.setattr(sessions.Path, 'home', lambda: tmp_path)
     return ProjectManager(str(tmp_path / 'project'))
 
@@ -88,7 +88,7 @@ def test_title_is_persisted_immediately_and_manual_names_are_preserved(manager):
 @pytest.mark.parametrize('interference', ['none', 'rename', 'navigate', 'new_turn'])
 def test_background_refinement_is_scoped_and_yields_to_user_work(manager, monkeypatch, interference):
     async def run():
-        from resonant_client.gui import session_titles
+        from lumi.gui import session_titles
         started, release = threading.Event(), threading.Event()
         def generate(backend, prompt, cancel):
             started.set()
@@ -148,7 +148,7 @@ def test_provider_failure_before_streaming_keeps_local_title():
 
 def test_slow_title_request_is_cancelled_without_changing_title(manager, monkeypatch):
     async def run():
-        from resonant_client.gui import session_titles
+        from lumi.gui import session_titles
         finished = threading.Event()
         def slow(backend, prompt, cancel):
             assert cancel.wait(2)

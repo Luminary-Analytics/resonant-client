@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.engine.session import Session
+from lumi.engine.session import Session
 
 
 _RUFF_AVAILABLE = shutil.which("ruff") is not None

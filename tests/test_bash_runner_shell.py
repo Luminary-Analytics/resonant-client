@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from resonant_client.orchestration.acceptance_check import (
+from lumi.orchestration.acceptance_check import (
     BashRunner,
     _detect_bash,
     _reset_bash_detection_cache,
@@ -82,7 +82,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/usr/bin/bash")
         with patch(
-            "resonant_client.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.subprocess.run",
             side_effect=fake_run,
         ):
             runner.run("echo hello")
@@ -102,10 +102,10 @@ class TestBashRunnerShell:
         # Stub bash detection to return None
         runner = BashRunner()
         with patch(
-            "resonant_client.orchestration.acceptance_check._detect_bash",
+            "lumi.orchestration.acceptance_check._detect_bash",
             return_value=None,
         ), patch(
-            "resonant_client.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.subprocess.run",
             side_effect=fake_run,
         ):
             runner.run("echo hello")
@@ -125,10 +125,10 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/custom/path/to/bash")
         with patch(
-            "resonant_client.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.subprocess.run",
             side_effect=fake_run,
         ), patch(
-            "resonant_client.orchestration.acceptance_check._detect_bash"
+            "lumi.orchestration.acceptance_check._detect_bash"
         ) as detect:
             runner.run("echo hi")
             # _detect_bash should NOT have been consulted because
@@ -147,7 +147,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_run=stub_run)
         with patch(
-            "resonant_client.orchestration.acceptance_check._detect_bash"
+            "lumi.orchestration.acceptance_check._detect_bash"
         ) as detect:
             runner.run("echo hello")
             detect.assert_not_called()
@@ -166,7 +166,7 @@ class TestBashRunnerShell:
             timeout_seconds=15.0,
         )
         with patch(
-            "resonant_client.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.subprocess.run",
             side_effect=fake_run,
         ):
             runner.run("ls")
@@ -179,7 +179,7 @@ class TestBashRunnerShell:
 
         runner = BashRunner(_bash_path="/bin/bash", timeout_seconds=0.1)
         with patch(
-            "resonant_client.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.subprocess.run",
             side_effect=sp.TimeoutExpired(cmd="x", timeout=0.1),
         ):
             rc, out, err = runner.run("anything")
@@ -190,7 +190,7 @@ class TestBashRunnerShell:
     def test_subprocess_error_returns_127(self):
         runner = BashRunner(_bash_path="/bin/bash")
         with patch(
-            "resonant_client.orchestration.acceptance_check.subprocess.run",
+            "lumi.orchestration.acceptance_check.subprocess.run",
             side_effect=OSError("no such bash"),
         ):
             rc, out, err = runner.run("anything")

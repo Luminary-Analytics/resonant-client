@@ -1,4 +1,4 @@
-# SONN Client documentation index
+# Lumi documentation index
 
 **September 23, 2026: AI Employee work remains PAUSED by the user.**
 The [consolidated product checkpoint](D:/Repos/Lumina_DO/SelfOrganizingNN/product/AI_EMPLOYEES_CHECKPOINT_2026_09_23.md)
@@ -17,7 +17,7 @@ local dev11 capabilities, actual native-engine/browser runs, remaining gaps and
 the source-only project-picker fix. Consult it before interpreting older setup
 or evaluation notes as the current candidate state.
 
-The current release is [SONN Client 0.19.1](v0.19.1-release-notes.md).
+The current release is [Lumi 0.19.1](v0.19.1-release-notes.md).
 [Unreleased changes](unreleased.md) describe work in the checkout that has not
 yet shipped. Versioned release notes and dated evaluations record their own
 point in time; they are not instructions to restore an old design.
@@ -25,7 +25,7 @@ point in time; they are not instructions to restore an old design.
 The [documentation status catalog](documentation-status.md) identifies active
 guides, historical plans, and dated evidence, with links to current replacements.
 
-## Using SONN Client
+## Using Lumi
 
 - [Install, configure providers, and run](../README.md)
 - [Projects, sessions, search, and provider selection](desktop-workflow.md)

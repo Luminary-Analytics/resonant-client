@@ -1,5 +1,5 @@
 """
-Tests for resonant_client/engine/auto_test.py
+Tests for lumi/engine/auto_test.py
   - find_test_target heuristics
   - run_tests_for_edit (uses pytest as the runner)
 """
@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from resonant_client.engine import auto_test
+from lumi.engine import auto_test
 
 
 # ── find_test_target ───────────────────────────────────────────────────

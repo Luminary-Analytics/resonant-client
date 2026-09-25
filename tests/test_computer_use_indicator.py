@@ -10,10 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from resonant_client.capabilities import ModelCapabilities, infer_model_capabilities
-from resonant_client.engine import screen_overlay
-from resonant_client.engine.session import Session
-from resonant_client.engine.tools import (
+from lumi.capabilities import ModelCapabilities, infer_model_capabilities
+from lumi.engine import screen_overlay
+from lumi.engine.session import Session
+from lumi.engine.tools import (
     AGENT_TOOLS,
     DESKTOP_TOOL_NAMES,
     _computer_use_indicator_enabled,
@@ -219,7 +219,7 @@ def two_monitors(monkeypatch):
         {"index": 1, "x": 0, "y": 0, "width": 2560, "height": 1080, "primary": True},
     ]
     monkeypatch.setattr(
-        "resonant_client.engine.computer_use.list_monitors", lambda: monitors
+        "lumi.engine.computer_use.list_monitors", lambda: monitors
     )
     return monitors
 

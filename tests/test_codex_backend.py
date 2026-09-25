@@ -3,7 +3,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from resonant_client.backends import (
+from lumi.backends import (
     CodexCliBackend,
     EVENT_DONE,
     EVENT_TEXT_DELTA,
@@ -15,7 +15,7 @@ from resonant_client.backends import (
 
 
 def test_codex_models_include_configured_model(monkeypatch):
-    monkeypatch.delenv("RESONANT_CODEX_MODELS", raising=False)
+    monkeypatch.delenv("LUMI_CODEX_MODELS", raising=False)
 
     models = codex_cli_models({"model": "gpt-6-preview"})
 
@@ -25,8 +25,8 @@ def test_codex_models_include_configured_model(monkeypatch):
 
 
 def test_codex_astra_is_available_without_changing_the_default(monkeypatch):
-    monkeypatch.delenv("RESONANT_CODEX_MODELS", raising=False)
-    monkeypatch.setattr("resonant_client.backends._load_codex_config", lambda: {})
+    monkeypatch.delenv("LUMI_CODEX_MODELS", raising=False)
+    monkeypatch.setattr("lumi.backends._load_codex_config", lambda: {})
 
     assert codex_cli_models()[0] == "gpt-5.5"
     assert "gpt-6-astra" in codex_cli_models()
@@ -34,7 +34,7 @@ def test_codex_astra_is_available_without_changing_the_default(monkeypatch):
 
 
 def test_codex_models_can_be_overridden_by_env(monkeypatch):
-    monkeypatch.setenv("RESONANT_CODEX_MODELS", "alpha,beta")
+    monkeypatch.setenv("LUMI_CODEX_MODELS", "alpha,beta")
 
     assert codex_cli_models({"model": "alpha"}) == ["alpha", "beta"]
 
@@ -44,13 +44,13 @@ def test_resolve_codex_cli_path_prefers_configured_bundled_cli(monkeypatch, tmp_
     configured.write_text("", encoding="utf-8")
     path_cli = tmp_path / "path-codex.exe"
     path_cli.write_text("", encoding="utf-8")
-    monkeypatch.delenv("RESONANT_CODEX_CLI", raising=False)
+    monkeypatch.delenv("LUMI_CODEX_CLI", raising=False)
     monkeypatch.delenv("CODEX_CLI_PATH", raising=False)
     monkeypatch.setattr(
-        "resonant_client.backends._load_codex_config",
+        "lumi.backends._load_codex_config",
         lambda: {"mcp_servers": {"node_repl": {"env": {"CODEX_CLI_PATH": str(configured)}}}},
     )
-    monkeypatch.setattr("resonant_client.backends.shutil.which", lambda _: str(path_cli))
+    monkeypatch.setattr("lumi.backends.shutil.which", lambda _: str(path_cli))
 
     assert resolve_codex_cli_path() == str(configured)
 
@@ -70,7 +70,7 @@ def test_codex_prompt_uses_native_tools_not_resonant_xml():
         cwd="D:/Repo",
     )
 
-    assert "Do not emit Resonant <tool_call> XML" in prompt
+    assert "Do not emit Lumi <tool_call> XML" in prompt
     assert "Keep it tight." in prompt
     assert "prior" in prompt
     assert "fix it" in prompt
@@ -163,7 +163,7 @@ class _FakeProc:
 
 def test_codex_stream_parses_jsonl_final_message(monkeypatch, tmp_path):
     fake_proc = _FakeProc()
-    monkeypatch.setattr("resonant_client.backends.subprocess.Popen", lambda *a, **k: fake_proc)
+    monkeypatch.setattr("lumi.backends.subprocess.Popen", lambda *a, **k: fake_proc)
 
     backend = CodexCliBackend("gpt-5.5", cwd=str(tmp_path), cli_path="codex")
     events = list(backend.stream(
@@ -190,7 +190,7 @@ def test_codex_yields_message_before_process_exits(monkeypatch, tmp_path):
     proc.stdout = GatedOutput(json.dumps({'type': 'item.completed', 'item': {
         'id': 'first', 'type': 'agent_message', 'text': 'Starting the change.'}}) + '\n')
     proc.poll = lambda: 0 if release.is_set() else None
-    monkeypatch.setattr('resonant_client.backends.subprocess.Popen', lambda *a, **kw: proc)
+    monkeypatch.setattr('lumi.backends.subprocess.Popen', lambda *a, **kw: proc)
     backend = CodexCliBackend('astra', cwd=str(tmp_path), cli_path='codex')
     stream = backend.stream('fix it', [], '', [])
     with ThreadPoolExecutor() as pool:
@@ -209,7 +209,7 @@ def test_codex_partial_text_does_not_hide_terminal_failure(monkeypatch, tmp_path
         {'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'Working.'}},
         {'type': 'turn.failed', 'error': {'message': 'Connection lost'}},
     ]) + '\n')
-    monkeypatch.setattr('resonant_client.backends.subprocess.Popen', lambda *a, **kw: proc)
+    monkeypatch.setattr('lumi.backends.subprocess.Popen', lambda *a, **kw: proc)
     backend = CodexCliBackend('astra', cwd=str(tmp_path), cli_path='codex')
     events = list(backend.stream('fix it', [], '', []))
     assert events[-1] == ('error', {'message': 'Connection lost'})
@@ -219,7 +219,7 @@ def test_codex_partial_text_does_not_hide_terminal_failure(monkeypatch, tmp_path
 def test_closing_codex_stream_stops_its_process(monkeypatch, tmp_path):
     proc = _FakeProc()
     proc.poll = lambda: 0 if proc.killed else None
-    monkeypatch.setattr('resonant_client.backends.subprocess.Popen', lambda *a, **kw: proc)
+    monkeypatch.setattr('lumi.backends.subprocess.Popen', lambda *a, **kw: proc)
     backend = CodexCliBackend('astra', cwd=str(tmp_path), cli_path='codex')
     stream = backend.stream('fix it', [], '', [])
     assert next(stream)[0] == EVENT_TEXT_DELTA

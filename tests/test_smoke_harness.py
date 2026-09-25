@@ -1,4 +1,4 @@
-"""Tests for `resonant_client.smoke` — the autonomous-mission smoke
+"""Tests for `lumi.smoke` — the autonomous-mission smoke
 harness.
 
 These cover the testable parts (specs, statistics, data structures, CLI
@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from resonant_client.smoke import (
+from lumi.smoke import (
     MODELS,
     FlakyPlannerBackend,
     SmokeResult,
@@ -24,13 +24,13 @@ from resonant_client.smoke import (
     resolve_model_id,
     summarize_runs,
 )
-from resonant_client.smoke.cli import _print_run_result, build_parser
-from resonant_client.smoke.flaky import (
+from lumi.smoke.cli import _print_run_result, build_parser
+from lumi.smoke.flaky import (
     _MALFORMED_PLANNER_RESPONSE,
     _PLANNER_PROMPT_SIGNATURES,
 )
-from resonant_client.smoke.report import _fmt_duration
-from resonant_client.smoke.variance import _median, _stddev
+from lumi.smoke.report import _fmt_duration
+from lumi.smoke.variance import _median, _stddev
 
 
 # ── specs.py ────────────────────────────────────────────────────────────
@@ -47,7 +47,7 @@ class TestSpecRegistry:
         # The whole point of the harness is that bundled specs are
         # `build_roadmap_from_spec`-ready. Ensure each spec parses
         # cleanly + emits at least one typed criterion.
-        from resonant_client.orchestration.grill_me import extract_spec
+        from lumi.orchestration.grill_me import extract_spec
         for name in list_spec_names():
             spec = get_spec(name)
             parsed = extract_spec(spec.spec_markdown)
@@ -526,8 +526,8 @@ class TestFlakyPlannerBackend:
         # the real PLAN / PLAN_DEEP prompts. If specialists.py changes
         # the role-identifier wording, this fails loud rather than
         # silently disabling the intercept.
-        from resonant_client.orchestration.specialists import SPECIALISTS
-        from resonant_client.orchestration.plan_graph import NodeSpecialization
+        from lumi.orchestration.specialists import SPECIALISTS
+        from lumi.orchestration.plan_graph import NodeSpecialization
         plan = SPECIALISTS[NodeSpecialization.PLAN].system_block
         plan_deep = SPECIALISTS[NodeSpecialization.PLAN_DEEP].system_block
         # PLAN: "You are a PLANNER" should match.
@@ -743,7 +743,7 @@ class TestCLIReportFlag:
 # ── v0.5.5a1: baseline + variance diff ─────────────────────────────────
 
 
-from resonant_client.smoke import (
+from lumi.smoke import (
     BaselineDiff,
     baseline_path,
     diff_against_baseline,
@@ -751,7 +751,7 @@ from resonant_client.smoke import (
     load_baseline,
     save_baseline,
 )
-from resonant_client.smoke.baseline import (
+from lumi.smoke.baseline import (
     _is_improvement,
     _is_regression,
     _safe_subtract,
@@ -1084,7 +1084,7 @@ class TestBaselineCLIParser:
 # ── v0.5.5a3: ci subcommand ────────────────────────────────────────────
 
 
-from resonant_client.smoke import (
+from lumi.smoke import (
     DEFAULT_CI_SPECS,
     CISpecResult,
     CISuiteResult,
@@ -1367,7 +1367,7 @@ class TestDefaultCISpecs:
         assert "roguelite" not in DEFAULT_CI_SPECS
 
     def test_all_default_specs_are_real_specs(self):
-        from resonant_client.smoke import list_spec_names
+        from lumi.smoke import list_spec_names
         valid = set(list_spec_names())
         for name in DEFAULT_CI_SPECS:
             assert name in valid

@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.orchestration.skill_curator import (
+from lumi.orchestration.skill_curator import (
     _curator_root,
     _state_file,
     read_state,
@@ -27,7 +27,7 @@ from resonant_client.orchestration.skill_curator import (
     should_run_curation,
     write_state,
 )
-from resonant_client.orchestration.skills import (
+from lumi.orchestration.skills import (
     Skill,
     save_skill,
     skill_dir,
@@ -38,7 +38,7 @@ from resonant_client.orchestration.skills import (
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 

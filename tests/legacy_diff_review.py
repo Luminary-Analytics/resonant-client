@@ -9,7 +9,7 @@ import tempfile
 # Add project to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-from resonant_client.engine.diff_review import (
+from lumi.engine.diff_review import (
     DiffHunk,
     DiffReview,
     generate_review,

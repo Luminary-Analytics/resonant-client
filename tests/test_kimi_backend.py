@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from resonant_client.backends import (
+from lumi.backends import (
     EVENT_BACKEND_STATUS,
     EVENT_DONE,
     EVENT_ERROR,
@@ -17,10 +17,10 @@ from resonant_client.backends import (
     KimiBackend,
     create_backend,
 )
-from resonant_client.engine.session import Session
-from resonant_client.gui.app import AppState
-from resonant_client.gui.costs import CostTracker
-from resonant_client.gui.runtime import BackendSpec
+from lumi.engine.session import Session
+from lumi.gui.app import AppState
+from lumi.gui.costs import CostTracker
+from lumi.gui.runtime import BackendSpec
 
 
 def _sse_response(events: list[dict]) -> str:
@@ -474,7 +474,7 @@ def test_kimi_rate_limit_remains_retryable(monkeypatch):
             {"id": "chatcmpl-retry", "choices": [{"delta": {"content": "OK"}}]},
         ]))
 
-    monkeypatch.setattr("resonant_client.backends._wait_with_cancel", lambda *_: False)
+    monkeypatch.setattr("lumi.backends._wait_with_cancel", lambda *_: False)
     backend = KimiBackend("secret-key", transport=httpx.MockTransport(handler))
     events = list(backend.stream("Hi", [], "system", [], None))
 

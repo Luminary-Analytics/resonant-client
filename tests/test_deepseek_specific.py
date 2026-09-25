@@ -13,9 +13,9 @@ from __future__ import annotations
 
 import os
 
-from resonant_client.backends import OllamaBackend
-from resonant_client.gui.runtime import BackendSpec
-from resonant_client.gui.sessions import SessionRecord
+from lumi.backends import OllamaBackend
+from lumi.gui.runtime import BackendSpec
+from lumi.gui.sessions import SessionRecord
 
 
 # ── Thinking-mode option plumbing ───────────────────────────────────────
@@ -109,43 +109,43 @@ class _SettingsStub:
 
 class TestBigContextPreset:
     def test_disabled_does_not_set_env(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_OLLAMA_NUM_CTX", raising=False)
-        monkeypatch.delenv("RESONANT_OLLAMA_NUM_BATCH", raising=False)
+        monkeypatch.delenv("LUMI_OLLAMA_NUM_CTX", raising=False)
+        monkeypatch.delenv("LUMI_OLLAMA_NUM_BATCH", raising=False)
 
         # Use the AppState method directly without instantiating a full AppState
-        from resonant_client.gui import app as app_module
+        from lumi.gui import app as app_module
         AppState = app_module.AppState
         instance = AppState.__new__(AppState)
         instance.settings = _SettingsStub({"general": {"big_context_profile": False}})
         instance._apply_big_context_preset()
-        assert "RESONANT_OLLAMA_NUM_CTX" not in os.environ
-        assert "RESONANT_OLLAMA_NUM_BATCH" not in os.environ
+        assert "LUMI_OLLAMA_NUM_CTX" not in os.environ
+        assert "LUMI_OLLAMA_NUM_BATCH" not in os.environ
 
     def test_enabled_sets_defaults(self, monkeypatch):
-        monkeypatch.delenv("RESONANT_OLLAMA_NUM_CTX", raising=False)
-        monkeypatch.delenv("RESONANT_OLLAMA_NUM_BATCH", raising=False)
+        monkeypatch.delenv("LUMI_OLLAMA_NUM_CTX", raising=False)
+        monkeypatch.delenv("LUMI_OLLAMA_NUM_BATCH", raising=False)
 
-        from resonant_client.gui import app as app_module
+        from lumi.gui import app as app_module
         AppState = app_module.AppState
         instance = AppState.__new__(AppState)
         instance.settings = _SettingsStub({"general": {"big_context_profile": True}})
         instance._apply_big_context_preset()
-        assert os.environ["RESONANT_OLLAMA_NUM_CTX"] == "131072"
-        assert os.environ["RESONANT_OLLAMA_NUM_BATCH"] == "2048"
+        assert os.environ["LUMI_OLLAMA_NUM_CTX"] == "131072"
+        assert os.environ["LUMI_OLLAMA_NUM_BATCH"] == "2048"
 
     def test_env_takes_precedence(self, monkeypatch):
-        monkeypatch.setenv("RESONANT_OLLAMA_NUM_CTX", "64000")
-        monkeypatch.delenv("RESONANT_OLLAMA_NUM_BATCH", raising=False)
+        monkeypatch.setenv("LUMI_OLLAMA_NUM_CTX", "64000")
+        monkeypatch.delenv("LUMI_OLLAMA_NUM_BATCH", raising=False)
 
-        from resonant_client.gui import app as app_module
+        from lumi.gui import app as app_module
         AppState = app_module.AppState
         instance = AppState.__new__(AppState)
         instance.settings = _SettingsStub({"general": {"big_context_profile": True}})
         instance._apply_big_context_preset()
         # Env value preserved
-        assert os.environ["RESONANT_OLLAMA_NUM_CTX"] == "64000"
+        assert os.environ["LUMI_OLLAMA_NUM_CTX"] == "64000"
         # Batch was unset → preset applies
-        assert os.environ["RESONANT_OLLAMA_NUM_BATCH"] == "2048"
+        assert os.environ["LUMI_OLLAMA_NUM_BATCH"] == "2048"
 
 
 # ── Telemetry (offline tolerance) ──────────────────────────────────────

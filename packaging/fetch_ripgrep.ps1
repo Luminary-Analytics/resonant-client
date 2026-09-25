@@ -23,7 +23,7 @@
 .NOTES
     ripgrep is dual-licensed MIT / Unlicense. Redistributing the binary
     requires shipping its license text, so COPYING / LICENSE-MIT / UNLICENSE
-    are extracted alongside rg.exe and bundled by packaging/resonant.spec.
+    are extracted alongside rg.exe and bundled by packaging/lumi.spec.
 #>
 param(
     [string]$Destination = (Join-Path $PSScriptRoot "ripgrep")

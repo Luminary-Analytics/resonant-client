@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.gui.diagnostics import (
+from lumi.gui.diagnostics import (
     build_diagnostics_zip,
     default_output_dir,
     redact,
@@ -41,11 +41,11 @@ class TestRedactPrefixedTokens:
 
     def test_redacts_gui_launch_links(self):
         # A packaged --browser launch prints its link into the startup log.
-        from resonant_client.gui.local_access import LocalAccess
+        from lumi.gui.local_access import LocalAccess
 
         line = f"  Open in browser (one-time link): {LocalAccess().launch_url('http://127.0.0.1:5000')}"
         result = redact(line)
-        assert result == "  Open in browser (one-time link): http://127.0.0.1:5000/#sonn-launch=[REDACTED]"
+        assert result == "  Open in browser (one-time link): http://127.0.0.1:5000/#lumi-launch=[REDACTED]"
 
     def test_does_not_clobber_normal_text(self):
         # Pattern is anchored on the prefix — random text shouldn't trip.
@@ -169,7 +169,7 @@ class TestBuildDiagnosticsZip:
         out = tmp_path / "out"
         zip_path = build_diagnostics_zip(sample_resonant_dir, out, version="0.3.4")
         assert zip_path.exists()
-        assert zip_path.name.startswith("resonant-diagnostics-")
+        assert zip_path.name.startswith("lumi-diagnostics-")
         assert zip_path.suffix == ".zip"
 
     def test_meta_includes_version_and_platform(self, sample_resonant_dir, tmp_path):
@@ -404,7 +404,7 @@ class TestDiagnosticsEnrichments:
     def test_iter_metadata_capped(self, tmp_path):
         # Pile of iter files; only LATEST_N_ITERS_PER_INTENT should
         # be bundled.
-        from resonant_client.gui.diagnostics import LATEST_N_ITERS_PER_INTENT
+        from lumi.gui.diagnostics import LATEST_N_ITERS_PER_INTENT
         rd = tmp_path / ".resonant"
         intent_dir = rd / "projects" / "p1" / "intents" / "i1"
         intent_dir.mkdir(parents=True)

@@ -20,11 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.engine.capability_packs import CapabilityPackManager
-from resonant_client.engine.hooks import HookRunner, HookType
-from resonant_client.engine.mcp import MCPManager
-from resonant_client.gui import app as gui_app
-from resonant_client.gui import ws_commands
+from lumi.engine.capability_packs import CapabilityPackManager
+from lumi.engine.hooks import HookRunner, HookType
+from lumi.engine.mcp import MCPManager
+from lumi.gui import app as gui_app
+from lumi.gui import ws_commands
 from tests.streaming_stub import StreamingBackend, done, text_delta
 
 
@@ -68,7 +68,7 @@ def _only(manager: CapabilityPackManager):
 
 
 def _approved(project: Path, plugins: dict | None = None) -> tuple[dict, object]:
-    from resonant_client.engine.capability_packs import approve_pack
+    from lumi.engine.capability_packs import approve_pack
 
     pack = _only(CapabilityPackManager(project, configured=plugins or {}))
     return approve_pack(plugins or {}, pack, reviewed_digest=pack.digest), pack
@@ -114,7 +114,7 @@ def test_user_approval_activates_the_reviewed_pack(tmp_path):
 
 
 def test_approval_refuses_content_the_user_did_not_review(tmp_path):
-    from resonant_client.engine.capability_packs import CapabilityPackError, approve_pack
+    from lumi.engine.capability_packs import CapabilityPackError, approve_pack
 
     project = _project(tmp_path)
     pack_dir = _write_pack(project / ".resonant" / "packs")
@@ -215,7 +215,7 @@ def test_pinned_trust_by_id_covers_user_packs_but_not_repository_packs(tmp_path)
 
 
 def test_revoking_an_approval_returns_the_pack_to_review(tmp_path):
-    from resonant_client.engine.capability_packs import revoke_pack_approval
+    from lumi.engine.capability_packs import revoke_pack_approval
 
     project = _project(tmp_path)
     _write_pack(project / ".resonant" / "packs")
@@ -227,7 +227,7 @@ def test_revoking_an_approval_returns_the_pack_to_review(tmp_path):
 
 
 def test_a_pack_containing_a_link_cannot_be_verified(tmp_path):
-    from resonant_client.engine.capability_packs import CapabilityPackError, approve_pack
+    from lumi.engine.capability_packs import CapabilityPackError, approve_pack
 
     project = _project(tmp_path)
     pack_dir = _write_pack(project / ".resonant" / "packs")

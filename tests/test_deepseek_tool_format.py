@@ -25,7 +25,7 @@ from __future__ import annotations
 import json
 
 
-from resonant_client.protocol import parse_tool_calls
+from lumi.protocol import parse_tool_calls
 
 
 # ── Sanity baseline ────────────────────────────────────────────────────

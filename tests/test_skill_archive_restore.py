@@ -1,7 +1,7 @@
 """Tests for v0.6.2a4 — archive list + restore.
 
-The user-facing surface is `resonant-skill list --archived` +
-`resonant-skill restore <id>`. These tests cover both the underlying
+The user-facing surface is `lumi-skill list --archived` +
+`lumi-skill restore <id>`. These tests cover both the underlying
 public API (`list_archived_skills`, `restore_skill`) and the CLI
 wiring on top of it.
 """
@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from resonant_client.orchestration.skills import (
+from lumi.orchestration.skills import (
     Skill,
     archive_skill,
     list_archived_skills,
@@ -20,7 +20,7 @@ from resonant_client.orchestration.skills import (
     restore_skill,
     save_skill,
 )
-from resonant_client.orchestration.skill_cli import build_parser, main
+from lumi.orchestration.skill_cli import build_parser, main
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ from resonant_client.orchestration.skill_cli import build_parser, main
 def state_home(tmp_path, monkeypatch):
     home = tmp_path / "state-home"
     home.mkdir()
-    monkeypatch.setenv("RESONANT_STATE_HOME", str(home))
+    monkeypatch.setenv("LUMI_STATE_HOME", str(home))
     return home
 
 
@@ -106,7 +106,7 @@ class TestListArchivedSkills:
 
     def test_malformed_archive_dir_skipped(self, state_home):
         # Create a directory with the wrong shape inside _archive/global
-        from resonant_client.orchestration.skills import _skills_root
+        from lumi.orchestration.skills import _skills_root
         bad = _skills_root() / "_archive" / "global" / "no-double-underscore"
         bad.mkdir(parents=True, exist_ok=True)
         (bad / "skill.json").write_text("{}", encoding="utf-8")
@@ -115,7 +115,7 @@ class TestListArchivedSkills:
         assert all(e["archive_dir"] != bad for e in entries)
 
     def test_missing_skill_json_skipped(self, state_home):
-        from resonant_client.orchestration.skills import _skills_root
+        from lumi.orchestration.skills import _skills_root
         bad = _skills_root() / "_archive" / "global" / "1700000000__incomplete"
         bad.mkdir(parents=True, exist_ok=True)
         # No skill.json at all
@@ -184,7 +184,7 @@ class TestRestoreSkill:
         time.sleep(1.1)
         s2 = _seed_archivable(skill_id="dup")
         # Modify s2 so we can tell archives apart on restore
-        from resonant_client.orchestration.skills import save_skill
+        from lumi.orchestration.skills import save_skill
         s2.description = "second-archive-version"
         save_skill(s2, procedure_md="# v2 body")
         archive_skill(s2, reason="archive-2")

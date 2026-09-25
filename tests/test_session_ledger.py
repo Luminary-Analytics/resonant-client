@@ -6,9 +6,9 @@ import json
 
 import pytest
 
-from resonant_client.gui import sessions as sessions_mod
-from resonant_client.gui.session_ledger import SessionEventLedger
-from resonant_client.gui.sessions import ProjectManager, SessionRecord
+from lumi.gui import sessions as sessions_mod
+from lumi.gui.session_ledger import SessionEventLedger
+from lumi.gui.sessions import ProjectManager, SessionRecord
 
 
 def _task(index: int) -> list[dict]:

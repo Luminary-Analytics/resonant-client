@@ -16,12 +16,12 @@ from __future__ import annotations
 import subprocess
 
 
-from resonant_client.orchestration.grill_me import extract_spec
-from resonant_client.smoke.specs import (
+from lumi.orchestration.grill_me import extract_spec
+from lumi.smoke.specs import (
     get_spec,
     list_spec_names,
 )
-from resonant_client.smoke.runner import make_fresh_project
+from lumi.smoke.runner import make_fresh_project
 
 
 # ── Spec registration ──────────────────────────────────────────────────

@@ -14,8 +14,8 @@ from unittest.mock import patch
 
 import pytest
 
-from resonant_client.gui import ws_commands
-from resonant_client.gui.app import websocket_endpoint  # noqa: F401  (import smoke)
+from lumi.gui import ws_commands
+from lumi.gui.app import websocket_endpoint  # noqa: F401  (import smoke)
 
 
 class _StubWS:
@@ -342,7 +342,7 @@ def test_git_status_runs_against_the_active_project():
         seen["path"] = project_path
         return {"is_repo": True, "branch": "main"}
 
-    with patch("resonant_client.gui.ws_commands._git_status", _fake_status):
+    with patch("lumi.gui.ws_commands._git_status", _fake_status):
         sent = _run(ws_commands.HANDLERS["git_status"], _ctx())
 
     assert seen["path"] == "/tmp/project"
@@ -356,7 +356,7 @@ def test_git_quick_passes_the_action_and_project():
         seen.update(action=action, project_path=project_path, count=msg.get("count"))
         return {"output": "abc123 commit"}
 
-    with patch("resonant_client.gui.ws_commands._git_quick", _fake_quick):
+    with patch("lumi.gui.ws_commands._git_quick", _fake_quick):
         sent = _run(
             ws_commands.HANDLERS["git_quick"],
             _ctx(msg={"action": "log", "count": 3}),

@@ -12,9 +12,9 @@ from pathlib import Path
 
 import pytest
 
-from resonant_client.engine.policies import PolicyAction
-from resonant_client.gui import app as gui_app
-from resonant_client.gui import ws_commands
+from lumi.engine.policies import PolicyAction
+from lumi.gui import app as gui_app
+from lumi.gui import ws_commands
 from tests.streaming_stub import StreamingBackend, done, text_delta, tool_call
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-from resonant_client.orchestration import (
+from lumi.orchestration import (
     DEFAULT_BUDGET_USD_MAX,
     check_floor,
 )

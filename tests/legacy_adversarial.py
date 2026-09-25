@@ -34,8 +34,8 @@ def test(name, condition, detail=""):
 # ═══════════════════════════════════════════════════════════════
 print("\n=== Feature 1: Adaptive Tool Calling ===\n")
 
-from resonant_client.backends import OllamaBackend
-from resonant_client.protocol import (
+from lumi.backends import OllamaBackend
+from lumi.protocol import (
     build_tool_system_prompt,
     parse_tool_calls,
     _tool_prompt_cache,
@@ -164,7 +164,7 @@ test("tool_mode: text", b.tool_mode == "text")
 # ═══════════════════════════════════════════════════════════════
 print("\n=== Feature 2: Diff Review ===\n")
 
-from resonant_client.engine.diff_review import generate_review
+from lumi.engine.diff_review import generate_review
 
 # --- Bash reviews ---
 r = generate_review("bash", {"command": "echo hi"})
@@ -281,7 +281,7 @@ test("Serialization round-trip", loaded["tool_name"] == "bash" and loaded["comma
 # ═══════════════════════════════════════════════════════════════
 print("\n=== Feature 3: RAG / Codebase Indexing ===\n")
 
-from resonant_client.engine.rag import (
+from lumi.engine.rag import (
     CodebaseIndex,
     _detect_language,
     _extract_symbols,

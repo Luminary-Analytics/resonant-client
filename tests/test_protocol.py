@@ -1,5 +1,5 @@
 """
-Comprehensive tests for resonant_client/protocol.py
+Comprehensive tests for lumi/protocol.py
 
 Covers: build_tool_system_prompt, strip_think_tags, _try_parse_tool_json,
 parse_tool_calls, and _tool_prompt_cache thread safety.
@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pytest
 
-from resonant_client.protocol import (
+from lumi.protocol import (
     _tool_prompt_cache,
     _try_parse_tool_json,
     build_tool_system_prompt,
@@ -522,7 +522,7 @@ class TestParseToolCalls:
         """Completely garbled tool_call content triggers a warning log."""
         text = "<tool_call>\nnot json not xml\n</tool_call>"
         import logging
-        with caplog.at_level(logging.WARNING, logger="resonant_client.protocol"):
+        with caplog.at_level(logging.WARNING, logger="lumi.protocol"):
             _, calls = parse_tool_calls(text)
         assert calls == []
         assert "Failed to parse" in caplog.text

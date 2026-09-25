@@ -10,7 +10,7 @@ from __future__ import annotations
 import threading
 
 
-from resonant_client.gui.autonomous_iter_cost import (
+from lumi.gui.autonomous_iter_cost import (
     AutonomousIterCostTracker,
 )
 

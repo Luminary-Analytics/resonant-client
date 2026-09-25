@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 
-from resonant_client.backends import (
+from lumi.backends import (
     EVENT_BACKEND_STATUS,
     EVENT_DONE,
     EVENT_ERROR,
@@ -17,8 +17,8 @@ from resonant_client.backends import (
     ExoBackend,
     create_backend,
 )
-from resonant_client.gui.app import AppState
-from resonant_client.gui.runtime import BackendSpec
+from lumi.gui.app import AppState
+from lumi.gui.runtime import BackendSpec
 
 
 def _sse_response(events: list[dict]) -> str:
@@ -302,8 +302,8 @@ def test_exo_warmup_uses_short_native_tool_call():
 
 
 def test_exo_has_no_default_progress_or_read_timeout(monkeypatch):
-    monkeypatch.delenv("RESONANT_EXO_READ_TIMEOUT_SEC", raising=False)
-    monkeypatch.delenv("RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("LUMI_EXO_READ_TIMEOUT_SEC", raising=False)
+    monkeypatch.delenv("LUMI_EXO_STREAM_IDLE_TIMEOUT_SEC", raising=False)
 
     backend = ExoBackend("local/model")
 
@@ -313,7 +313,7 @@ def test_exo_has_no_default_progress_or_read_timeout(monkeypatch):
 
 
 def test_exo_allows_an_explicit_operator_idle_timeout(monkeypatch):
-    monkeypatch.setenv("RESONANT_EXO_STREAM_IDLE_TIMEOUT_SEC", "600")
+    monkeypatch.setenv("LUMI_EXO_STREAM_IDLE_TIMEOUT_SEC", "600")
 
     backend = ExoBackend("local/model")
 
@@ -501,7 +501,7 @@ def test_exo_replays_uncommitted_step_after_runner_shutdown(monkeypatch):
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
 
     monkeypatch.setattr(
-        "resonant_client.backends._wait_with_cancel",
+        "lumi.backends._wait_with_cancel",
         lambda _seconds, _cancel_event: False,
     )
     backend = ExoBackend(
@@ -558,7 +558,7 @@ def test_exo_runner_recovery_is_bounded_and_discards_last_partial(monkeypatch):
         raise AssertionError(f"Unexpected request: {request.method} {request.url}")
 
     monkeypatch.setattr(
-        "resonant_client.backends._wait_with_cancel",
+        "lumi.backends._wait_with_cancel",
         lambda _seconds, _cancel_event: False,
     )
     backend = ExoBackend(

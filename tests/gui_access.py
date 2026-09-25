@@ -2,7 +2,7 @@
 
 The server refuses its WebSocket and private HTTP endpoints unless a request
 names the server in Host, comes from the server's own Origin, and carries the
-launch's access token (resonant_client/gui/local_access.py). These helpers get
+launch's access token (lumi/gui/local_access.py). These helpers get
 a token the way the page does: by redeeming a one-time launch code.
 """
 
@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 
 from starlette.testclient import TestClient
 
-from resonant_client.gui.local_access import (
+from lumi.gui.local_access import (
     ACCESS_HEADER,
     WS_ACCESS_PREFIX,
     WS_PROTOCOL,

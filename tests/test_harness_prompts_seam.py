@@ -13,8 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from resonant_client.gui.app import AppState
-from resonant_client.harness.prompts import HarnessPrompts
+from lumi.gui.app import AppState
+from lumi.harness.prompts import HarnessPrompts
 
 # Everything HarnessPrompts is allowed to reach for on its host. Adding to this
 # list is a real design decision, not a detail — it widens the coupling the
@@ -62,7 +62,7 @@ def test_the_dependency_on_the_host_stays_within_the_stated_surface():
     the addition has to be justified rather than absorbed silently.
     """
     import re
-    import resonant_client.harness.prompts as module
+    import lumi.harness.prompts as module
 
     text = Path(module.__file__).read_text(encoding="utf-8")
     reached = {m.group(1) for m in re.finditer(r"self\._app\.([A-Za-z_]\w*)", text)}

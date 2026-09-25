@@ -41,6 +41,22 @@ const COLLAPSIBLE_TOOLS = new Set([
 
 const BLOCK_TOOLS = new Set(['bash', 'file_write', 'file_edit', 'browser_js']);
 
+// The result the engine gives the model when the person answers Deny
+// (Session._resolve_tool_permission). A refused call's row shows why it
+// didn't run, except for this one: "denied" already says it.
+const USER_DENIAL_OUTPUT = 'Tool execution denied by user.';
+
+// What a plan's card calls each specialist (orchestration/plan_graph.py,
+// NodeSpecialization).
+const PLAN_SPECIALIST_LABELS = {
+    plan: 'Planner', plan_deep: 'Planner', implement: 'Implementer', verify: 'Verifier',
+    repair: 'Repair', explore: 'Explorer', research: 'Researcher', reflect: 'Reflection',
+};
+
+// The specialist events a plan's card draws; the rest describe the
+// specialist's own session (its start and end, steps, model, context).
+const PLAN_TRACE_EVENTS = new Set(['text.delta', 'text.done', 'tool.call', 'tool.result', 'error']);
+
 function shouldGroupAsEvidence(name, args = {}) {
     if (COLLAPSIBLE_TOOLS.has(name)) return true;
     if (name !== 'bash') return false;
@@ -227,6 +243,9 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;  // live-rendering DOM tracker for inline-only streaks
+        // Evidence groups that closed while calls in them still waited to
+        // run; those calls' results settle their items for the rest of the turn.
+        this._closedEvidenceGroups = [];
         this.lastModel = '';
         this.lastStats = null;
 
@@ -276,8 +295,6 @@ class LumiApp {
         this.runtimeView = 'agents';
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimeTraces = [];
-        this.runtimeArtifacts = [];
         this.runtimePacks = [];
         this.agentActivityOrder = [];
         this.agentActivityStack = [];
@@ -1040,6 +1057,8 @@ class LumiApp {
         if (missionToggle) {
             missionToggle.addEventListener('click', () => this.openMissionComposer());
         }
+        const timelineButton = document.getElementById('timeline-button');
+        timelineButton?.addEventListener('click', () => this.openTimeline(timelineButton));
         // The composer's entry to autonomous sessions (shown when Settings
         // turns them on); the header toggle above is hidden in this layout.
         document.getElementById('composer-autonomous-btn')
@@ -1186,19 +1205,67 @@ class LumiApp {
             });
         }
 
+        // The skip button goes to where the work is: the message box, or the Settings page.
+        document.getElementById('skip-to-main')?.addEventListener('click', () => {
+            const target = this.currentView === 'settings' ? this.settingsBody : document.getElementById('user-input');
+            if (!target) return;
+            if (target === this.settingsBody) target.setAttribute('tabindex', '-1');
+            target.focus();
+        });
+
         // Permission dropdown
         this.permissionMode = 'bypass'; // default: bypass permissions
         const permToggle = document.getElementById('permission-toggle');
         const permMenu = document.getElementById('permission-menu');
 
+        // A menu of radio items (WAI-ARIA menu button): Enter, Space or the
+        // arrow keys open it on the current mode, arrows move, Escape returns.
+        const options = () => [...permMenu.querySelectorAll('.perm-option')].filter(option => !option.hidden);
+        const setOpen = (open, {focus = null} = {}) => {
+            permMenu.classList.toggle('open', open);
+            permToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+            if (open && focus) {
+                const items = options();
+                const target = focus === 'last' ? items[items.length - 1]
+                    : items.find(item => item.dataset.mode === this.permissionMode) || items[0];
+                target?.focus();
+            } else if (!open && focus === 'toggle') {
+                permToggle.focus();
+            }
+        };
         permToggle.addEventListener('click', (e) => {
             e.stopPropagation();
-            permMenu.classList.toggle('open');
+            // detail is 0 for a click made with Enter or Space: move into the menu then.
+            setOpen(!permMenu.classList.contains('open'), {focus: e.detail === 0 ? 'current' : null});
+        });
+        permToggle.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                setOpen(true, {focus: e.key === 'ArrowUp' ? 'last' : 'current'});
+            }
+        });
+        permMenu.addEventListener('keydown', (e) => {
+            const items = options();
+            const index = items.indexOf(document.activeElement);
+            if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                e.preventDefault();
+                const step = e.key === 'ArrowDown' ? 1 : -1;
+                items[(index + step + items.length) % items.length]?.focus();
+            } else if (e.key === 'Home' || e.key === 'End') {
+                e.preventDefault();
+                (e.key === 'Home' ? items[0] : items[items.length - 1])?.focus();
+            } else if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                setOpen(false, {focus: 'toggle'});
+            } else if (e.key === 'Tab') {
+                setOpen(false);
+            }
         });
 
         document.addEventListener('click', (e) => {
-            if (!permMenu.contains(e.target) && e.target !== permToggle) {
-                permMenu.classList.remove('open');
+            if (!permMenu.contains(e.target) && !permToggle.contains(e.target)) {
+                setOpen(false);
             }
         });
 
@@ -1207,7 +1274,7 @@ class LumiApp {
             if (!option) return;
             const mode = option.dataset.mode;
             this.setPermissionMode(mode);
-            permMenu.classList.remove('open');
+            setOpen(false, {focus: e.detail === 0 ? 'toggle' : null});
         });
     }
 
@@ -1621,6 +1688,7 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;
+        this._closedEvidenceGroups = [];
         this._currentTurn = this._freshTurnAggregate();
         this._resetTaskCardState();
         this.addUserMessage(text, images);
@@ -2066,14 +2134,15 @@ class LumiApp {
 
     /**
      * Send the user text as an intent — kicks off the orchestrator pipeline,
-     * not a one-shot Session.run. The plan-graph viz auto-opens; status events
-     * land in the chat as small status messages.
+     * not a one-shot Session.run. The plan-graph viz auto-opens, and the
+     * plan's specialists report under the /plan card rather than as a turn
+     * of the conversation (see "Plan activity").
      */
     startIntent(text) {
         text = (text || '').trim();
         if (!text) return;
         this.send({ command: 'intent_start', text });
-        this.addUserMessage('/plan ' + text);
+        this._beginPlanRun(text);
         this.showStatusMessage('Intent dispatched — plan-graph populating in the preview panel.');
         this.openPlanTab(true);
     }
@@ -2901,7 +2970,7 @@ class LumiApp {
         this._setLiveRunPhase('Stopping', 'Draining the active session');
     }
 
-    _finishCancelledTask() {
+    _finishCancelledTask(event = {}) {
         const task = this._activeTask;
         if (task) {
             task.card.classList.remove('task-card-running');
@@ -2909,7 +2978,8 @@ class LumiApp {
             task.stateEl.className = 'task-card-state is-stopped';
             task.stateEl.textContent = 'Stopped';
             this._completeLiveRun(true);
-            this._collapseTaskActivity({});
+            // A stopped turn's session.end still names its trace.
+            this._collapseTaskActivity({ trace: event.trace });
             this._setActiveTask(null);
         }
         this.removeThinking();
@@ -3319,6 +3389,18 @@ class LumiApp {
             return;
         }
 
+        // A plan's specialists run sessions of their own, and IntentService
+        // tags their events `_source: "intent"`. They report under the plan's
+        // card and never act as the conversation's turn: no completion
+        // verdict, Retry or suggestion, no change to isRunning or the live
+        // progress, and no focus change (see "Plan activity").
+        if (event._source === 'intent') {
+            this._handlePlanSpecialistEvent(event);
+            return;
+        }
+        if (type === 'plan.snapshot' || String(type || '').startsWith('intent.')) this._trackPlanRun(event);
+        if (type === 'error' && this._failStartingPlan(event)) return;
+
         if (
             this._liveRun?.active
             && [
@@ -3386,9 +3468,20 @@ class LumiApp {
                     this.renderSettingsView({force: true});
                     break;
                 }
+                // A trace or saved file that can't be read says so in its dialog.
+                if (event.source === 'trace' || event.source === 'artifact') {
+                    this._runRecordError(event);
+                    break;
+                }
                 if (event.request_id && event.request_id === this._newSessionRequestId) this._releaseNewSessionGuard();
                 // A refused mission dispatch un-marks its Build button or card (autonomous_view.js).
                 if (event.source === 'mission_dispatch') this._missionDispatchRefused();
+                if (this._timelinePending) {
+                    // The server refused the restore (a run started, or the
+                    // checkpoint can't restore that): the user can try again.
+                    this._timelinePending = '';
+                    this._renderTimeline();
+                }
                 if (
                     projectSwitchId
                     && projectSwitchId === this._pendingProjectSwitchId
@@ -3986,44 +4079,48 @@ class LumiApp {
                 break;
             case 'session.timeline_list':
                 this.runtimeTimeline = event.checkpoints || [];
-                this.renderRuntimeView();
+                this._renderTimeline();
                 break;
             case 'session.timeline_comparison':
-                this.showRuntimePayload('Checkpoint comparison', event.data || {});
+                this._timelineComparison = { id: event.checkpoint_id || '', data: event.data || {} };
+                this._renderTimeline();
                 break;
             case 'session.timeline_restored':
-                this.showStatusMessage('Checkpoint restored');
-                this._historyPage = event.history_page || null;
-                this._loadedHistoryEvents = Array.isArray(event.display_events)
-                    ? event.display_events.slice()
-                    : [];
-                this._historyLoading = false;
-                this._historyWindowDroppedTail = false;
-                if (event.display_events) {
+                this._timelinePending = '';
+                this.closeTimeline();
+                this.showStatusMessage(this._timelineRestoredMessage(event.data || {}));
+                // Without a saved conversation, a files-only restore leaves
+                // the chat as it is (no events to redraw it from).
+                if (Array.isArray(event.display_events)) {
+                    this._historyPage = event.history_page || null;
+                    this._loadedHistoryEvents = event.display_events.slice();
+                    this._historyLoading = false;
+                    this._historyWindowDroppedTail = false;
                     this.chatMessages.innerHTML = '';
                     this._resetTaskCardState();
                     this.replayDisplayEvents(event.display_events);
+                    this._renderHistoryPageControl();
                 }
-                this._renderHistoryPageControl();
                 this.send({ command: 'session_timeline_list' });
                 break;
-            case 'flight.recorder_list':
-                this.runtimeTraces = event.runs || [];
-                this.renderRuntimeView();
-                break;
             case 'flight.recorder_detail':
-                this.showRuntimePayload('Run trace', { manifest: event.manifest, events: event.events });
-                break;
-            case 'flight.recorder_comparison':
-                this.showRuntimePayload('Trajectory comparison', event.data || {});
-                break;
-            case 'artifact.list':
-                this.runtimeArtifacts = event.artifacts || [];
-                this.renderRuntimeView();
+                if (this._runTrace && event.turn_id && event.turn_id === this._runTrace.turn_id) {
+                    this._runTrace.data = event.trace || null;
+                    this._renderRunTrace();
+                }
                 break;
             case 'artifact.created':
-                if (event.artifact) this.runtimeArtifacts.unshift(event.artifact);
-                this.renderRuntimeView();
+                // A trace saved from its Trace dialog. (A run's own
+                // artifact.created events carry `artifact_id` instead.)
+                if (this._runTrace && event.artifact && event.turn_id === this._runTrace.turn_id) {
+                    this._runTrace.exporting = false;
+                    this._runTrace.exported = event.artifact;
+                    this._renderRunTrace();
+                    this._focusIn('run-trace-body', '[data-trace-action="open"]');
+                }
+                break;
+            case 'artifact.view':
+                this._receiveArtifactView(event);
                 break;
             case 'audit_status':
                 this.auditStatus = event;
@@ -4775,6 +4872,7 @@ class LumiApp {
         document.querySelectorAll('.perm-option').forEach(opt => {
             const isActive = opt.dataset.mode === mode;
             opt.classList.toggle('active', isActive);
+            opt.setAttribute('aria-checked', isActive ? 'true' : 'false');
             // Remove existing checkmarks
             const existingCheck = opt.querySelector('.perm-check');
             if (existingCheck) existingCheck.remove();
@@ -4782,6 +4880,7 @@ class LumiApp {
             if (isActive) {
                 const check = document.createElement('span');
                 check.className = 'perm-check';
+                check.setAttribute('aria-hidden', 'true');  // aria-checked says it
                 check.textContent = '✓';
                 opt.appendChild(check);
             }
@@ -5268,10 +5367,48 @@ class LumiApp {
         t.footerEl = el;
     }
 
-    /** Update an in-flight live item with result metadata (line counts, error state). */
-    _updateLiveCollapsedItemResult(resultEvent) {
-        if (!this._liveCollapsedGroup) return;
-        const live = this._liveCollapsedGroup;
+    /**
+     * Whether a result answers one of a group's items still waiting for it:
+     * the item for its call id, or else the last item of its tool when that
+     * call came without an id.
+     */
+    _collapsedGroupAwaits(group, resultEvent) {
+        const callId = resultEvent.call_id || '';
+        if (callId && group.callIdToItem.has(callId)) return true;
+        return Boolean(group._lastItem) && group._lastItemTool === (resultEvent.name || '');
+    }
+
+    /**
+     * Settle the item of a call that ran after its Evidence group closed.
+     * The engine announces every call of a response before it runs any, so
+     * a later command or edit in the same response, or a screenshot's image,
+     * closes the group first (_finalizeLiveCollapsedGroup keeps such groups
+     * for the rest of the turn). Only a group where the result would draw
+     * can answer it, so an earlier turn's card or a worker's lane never
+     * takes a result, even when a backend that derives ids from the call
+     * repeats one. False when no closed group was waiting for this result.
+     */
+    _settleClosedEvidenceItem(resultEvent) {
+        const groups = this._closedEvidenceGroups || [];
+        if (!groups.length) return false;
+        const target = this.getRenderTarget();
+        for (let i = groups.length - 1; i >= 0; i--) {
+            const group = groups[i];
+            if (group.container.parentNode !== target || !this._collapsedGroupAwaits(group, resultEvent)) continue;
+            this._updateLiveCollapsedItemResult(resultEvent, group);
+            if (!group.callIdToItem.size && !group._lastItem) groups.splice(i, 1);
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Update a group's item with its call's result: metadata (line counts,
+     * matches), error or refusal. The live group's by default; a closed
+     * group's for a call that ran after it closed.
+     */
+    _updateLiveCollapsedItemResult(resultEvent, live = this._liveCollapsedGroup) {
+        if (!live) return;
         const name = resultEvent.name || '';
         const callId = resultEvent.call_id || '';
 
@@ -5288,10 +5425,13 @@ class LumiApp {
 
         const meta = resultEvent.metadata || {};
         const isError = resultEvent.is_error || false;
-        const output = String(resultEvent.output || '');
+        // A refused call never ran, so its output is the reason why.
+        const denied = Boolean(resultEvent.denied);
+        const output = denied ? this._toolDenialReason(resultEvent) : String(resultEvent.output || '');
 
         let metaText = '';
-        if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
+        if (denied) metaText = output ? 'not run' : 'denied';
+        else if (name === 'file_read' && meta.lines) metaText = `${meta.lines} lines`;
         else if (name === 'glob' && meta.count != null) metaText = `${meta.count} files`;
         else if (name === 'grep' && meta.count != null) metaText = `${meta.count} matches`;
         else if (name === 'code_intel' && meta.code_intel) {
@@ -5308,8 +5448,8 @@ class LumiApp {
 
         const statusEl = line.querySelector('.tool-status');
         if (statusEl) {
-            statusEl.textContent = isError ? '✗' : '✓';
-            statusEl.style.color = isError ? 'var(--err)' : 'var(--ok)';
+            statusEl.textContent = isError || denied ? '✗' : '✓';
+            statusEl.style.color = denied ? 'var(--warn)' : (isError ? 'var(--err)' : 'var(--ok)');
         }
         line.classList.remove('pending');
         if (output) {
@@ -5321,41 +5461,31 @@ class LumiApp {
             line.appendChild(preview);
             line.classList.add('has-output');
         }
-        if (isError) {
-            live.errorCount += 1;
-            line.classList.add('is-error', 'show-output');
-            const errorIcon = live.header.querySelector('.collapsed-icon');
-            if (errorIcon) errorIcon.textContent = '\u25be';
-            live.container.classList.add('has-errors', 'expanded');
+        if (isError || denied) {
+            // Open what needs attention: an error's output or a refusal's reason.
+            if (denied) live.deniedCount = (live.deniedCount || 0) + 1;
+            else live.errorCount += 1;
+            line.classList.add(denied ? 'is-denied' : 'is-error');
+            if (output) line.classList.add('show-output');
             const icon = live.header.querySelector('.collapsed-icon');
-            if (icon) icon.textContent = 'â–¾';
+            if (icon) icon.textContent = '▾';
+            live.container.classList.add('expanded');
+            if (!denied) live.container.classList.add('has-errors');
         }
-        this._updateLiveCollapsedHeader();
+        if (output) line.setAttribute('aria-expanded', String(line.classList.contains('show-output')));
+        this._updateLiveCollapsedHeader(live);
     }
 
-    /** Refresh the live group's summary label, step range, and call count. */
-    _updateLiveCollapsedHeader() {
-        if (!this._liveCollapsedGroup) return;
-        const live = this._liveCollapsedGroup;
+    /** Refresh a group's summary label, step range, and call count: the live group's by default. */
+    _updateLiveCollapsedHeader(live = this._liveCollapsedGroup) {
+        if (!live) return;
         const summaryEl = live.header.querySelector('.collapsed-summary');
         const metaEl = live.header.querySelector('.collapsed-meta');
         if (summaryEl) {
             const action = inferActionLabel(live.toolCounts);
-            summaryEl.textContent = live.errorCount
-                ? `Evidence · ${action} · ${live.errorCount} failed`
-                : `Evidence · ${action}`;
-            summaryEl.textContent = `◆ ${action}`;
-        }
-        if (summaryEl) {
-            const action = inferActionLabel(live.toolCounts);
-            summaryEl.textContent = live.errorCount
-                ? `Evidence · ${action} · ${live.errorCount} failed`
-                : `Evidence · ${action}`;
-        }
-        if (summaryEl) {
-            const action = inferActionLabel(live.toolCounts);
             const parts = ['Evidence', action];
             if (live.errorCount) parts.push(`${live.errorCount} failed`);
+            if (live.deniedCount) parts.push(`${live.deniedCount} not run`);
             summaryEl.textContent = parts.join(' \u00b7 ');
         }
         if (metaEl) {
@@ -5646,6 +5776,10 @@ class LumiApp {
 
     handleToolResult(event) {
         if (event.metadata?.preview && !this.isReplaying) this.send({command: 'preview_list'});
+        // A long output or a screenshot the run saved (engine/artifacts.py),
+        // a worker's included: listed at the end of the card's work details.
+        const saved = event.metadata?.artifact;
+        if (saved?.id && this._activeTask) (this._activeTask.artifacts ||= []).push(saved);
         const check = event.metadata?.check;
         if (check && this._liveRun) {
             const run = this._liveRun;
@@ -5714,16 +5848,15 @@ class LumiApp {
         }
 
         const liveOwnsResult = Boolean(
-            this._liveCollapsedGroup && (
-                (callId && this._liveCollapsedGroup.callIdToItem.has(callId))
-                || (this._liveCollapsedGroup._lastItemTool === name)
-            )
+            this._liveCollapsedGroup && this._collapsedGroupAwaits(this._liveCollapsedGroup, event)
         );
         if (this.stepIsInlineOnly && liveOwnsResult) {
             // Update the live item with status + metadata (e.g. "5 matches")
             this._updateLiveCollapsedItemResult(event);
             this.stepToolResults.push(event);
         } else {
+            // A call whose group already closed settles its item there
+            // (renderToolResult → _settleClosedEvidenceItem).
             if (!this.stepRendered) this.ensureStepRendered();
             this.renderToolResult(event);
         }
@@ -5738,12 +5871,14 @@ class LumiApp {
         if (BLOCK_TOOLS.has(name)) {
             this.renderBlockToolCall(name, args, info, category, event);
         } else {
-            this.renderInlineToolCall(name, args, info, category);
+            this.renderInlineToolCall(name, args, info, category, event);
         }
         this.scrollToBottom();
     }
 
     getRenderTarget() {
+        // A plan specialist's rows go in its own step (_withPlanLane).
+        if (this._planLaneEl) return this._planLaneEl;
         const agentId = String(this._activeRenderEvent?._agent_id || '');
         const parallelTarget = agentId ? this.subagentContainers.get(agentId) : null;
         if (parallelTarget) return parallelTarget;
@@ -5752,7 +5887,7 @@ class LumiApp {
         return (task && task.activityEl) || this.chatMessages;
     }
 
-    renderInlineToolCall(name, args, info, category) {
+    renderInlineToolCall(name, args, info, category, event = {}) {
         let desc = '';
         let meta = '';
 
@@ -5821,6 +5956,8 @@ class LumiApp {
         const el = document.createElement('div');
         el.className = `tool-inline ${category}`;
         el.setAttribute('data-tool', name);
+        // Its result finds this row by call id when a step calls the tool twice.
+        if (event.call_id) el.setAttribute('data-call-id', event.call_id);
         el.innerHTML = `
             <span class="tool-icon" style="color:var(--${info.color})">${info.icon}</span>
             <span class="tool-desc">${desc}</span>
@@ -5921,6 +6058,7 @@ class LumiApp {
         const detail = el.querySelector('[data-detail]');
         if (!detail || detail.dataset.rendered === 'true') return;
         const kind = el.dataset.detailKind || '';
+        const noOutput = el.dataset.denied === 'true' ? '(not run)' : '(no output)';
 
         if (kind === 'bash') {
             const cmd = el.dataset.fullCommand || '';
@@ -5931,7 +6069,7 @@ class LumiApp {
                 <pre class="tool-row-detail-output ${isError ? 'err' : ''}"></pre>
             `;
             detail.querySelector('code').textContent = cmd;
-            detail.querySelector('pre').textContent = output || '(no output)';
+            detail.querySelector('pre').textContent = output || noOutput;
         } else if (kind === 'file_write') {
             const content = el.dataset.fullContent || '';
             detail.innerHTML = `<pre class="tool-row-detail-content"></pre>`;
@@ -5956,7 +6094,7 @@ class LumiApp {
                 <pre class="tool-row-detail-output"></pre>
             `;
             detail.querySelector('.tool-row-detail-content').textContent = code;
-            detail.querySelector('.tool-row-detail-output').textContent = output || '(no output)';
+            detail.querySelector('.tool-row-detail-output').textContent = output || noOutput;
         }
 
         detail.dataset.rendered = 'true';
@@ -5991,21 +6129,29 @@ class LumiApp {
         const denied = event.denied || false;
         const image = event.image || null;
 
-        if (denied) {
-            if (BLOCK_TOOLS.has(name)) this._settleDeniedBlockRow(name, event.call_id);
-            this.appendToolStatus(name, '✗ denied', 'warn');
+        // A call that ran after its Evidence group closed: its result, or
+        // its refusal's reason, goes on its own item there.
+        if (this._settleClosedEvidenceItem(event)) {
+            if (image && image.data) this.renderScreenshotImage(image.data, image.media_type || 'image/png', name);
+            this.scrollToBottom();
             return;
         }
 
-        // Splice call_id into meta so the block-row lookup can match the
-        // exact call (multiple parallel calls of the same tool exist with
-        // tool batching). Inline result path doesn't need this.
+        if (denied) {
+            this._settleDeniedToolRow(event);
+            this.scrollToBottom();
+            return;
+        }
+
+        // Splice call_id into meta so the row lookup can match the exact
+        // call (multiple parallel calls of the same tool exist with tool
+        // batching).
         const metaWithId = event.call_id ? { ...meta, _call_id: event.call_id } : meta;
 
         if (BLOCK_TOOLS.has(name)) {
             this.renderBlockToolResult(name, output, isError, elapsed, metaWithId);
         } else {
-            this.renderInlineToolResult(name, output, isError, elapsed, meta);
+            this.renderInlineToolResult(name, output, isError, elapsed, metaWithId);
         }
 
         // Render screenshot image if present
@@ -6016,11 +6162,33 @@ class LumiApp {
         this.scrollToBottom();
     }
 
+    /**
+     * The inline row a result belongs to: the one for its call id, or else
+     * the last row of its tool that has no call id. A row for another call
+     * is never the answer, even when a step calls the same tool twice.
+     */
+    _inlineToolRow(name, callId) {
+        // Only this lane's own rows. A worker's rows sit inside the parent's
+        // activity, and a worker can reuse one of the parent's call ids.
+        const rows = Array.from(this.getRenderTarget().children || []).filter((row) =>
+            row.classList.contains('tool-inline') && row.getAttribute('data-tool') === name);
+        // A backend that derives the id from the call gives a repeated call
+        // the same id: the latest row with it is the one still waiting.
+        const own = callId ? rows.filter((row) => row.getAttribute('data-call-id') === callId) : [];
+        const candidates = own.length ? own : rows.filter((row) => !row.hasAttribute('data-call-id'));
+        return candidates[candidates.length - 1] || null;
+    }
+
+    _setInlineToolStatus(row, text, statusClass) {
+        const status = document.createElement('span');
+        status.className = `tool-status ${statusClass}`;
+        status.textContent = text;
+        row.querySelector('.tool-status')?.remove();
+        row.appendChild(status);
+    }
+
     renderInlineToolResult(name, output, isError, elapsed, meta) {
-        // Find the last matching inline tool and add status
-        const target = this.getRenderTarget();
-        const tools = target.querySelectorAll(`.tool-inline[data-tool="${CSS.escape(name)}"]`);
-        const last = tools[tools.length - 1];
+        const last = this._inlineToolRow(name, meta._call_id);
         if (!last) return;
 
         let statusText = '';
@@ -6055,14 +6223,7 @@ class LumiApp {
                 statusText = isError ? '✗' : '✓';
         }
 
-        const status = document.createElement('span');
-        status.className = `tool-status ${statusClass}`;
-        status.textContent = statusText;
-
-        // Remove existing status if any
-        const existing = last.querySelector('.tool-status');
-        if (existing) existing.remove();
-        last.appendChild(status);
+        this._setInlineToolStatus(last, statusText, statusClass);
     }
 
     /**
@@ -6160,8 +6321,47 @@ class LumiApp {
         }
     }
 
+    /**
+     * Why a refused call didn't run, as the model was told: a hook's message,
+     * a policy rule, a tool boundary, an approval nobody could answer. Empty
+     * for the person's own Deny, which needs no explanation.
+     */
+    _toolDenialReason(event) {
+        const reason = String(event.output ?? '').trim();
+        return reason === USER_DENIAL_OUTPUT ? '' : reason;
+    }
+
+    /**
+     * A refused call never ran. Its row stops reading "running…", says
+     * "denied" or "not run", and shows the reason under it. The reason can
+     * come from a hook, a policy, a repository or the model, so it is only
+     * ever set as text.
+     */
+    _settleDeniedToolRow(event) {
+        const name = event.name || '';
+        const reason = this._toolDenialReason(event);
+        const label = reason ? 'not run' : 'denied';
+        let row = BLOCK_TOOLS.has(name)
+            ? this._settleDeniedBlockRow(name, event.call_id, label)
+            : this._settleDeniedInlineRow(name, event.call_id, label);
+        if (!row) {
+            // The call has no row here; the refusal still gets a line.
+            row = document.createElement('div');
+            row.className = 'tool-inline is-denied';
+            this._setInlineToolStatus(row, `✗ ${label}`, 'denied');
+            this.getRenderTarget().appendChild(row);
+        }
+        row.querySelector('.tool-denial-reason')?.remove();
+        if (!reason) return;
+        const why = document.createElement('div');
+        why.className = 'tool-denial-reason';
+        why.textContent = reason;
+        // A block row's reason sits above its expandable detail.
+        row.insertBefore(why, row.querySelector('[data-detail]'));
+    }
+
     /** A denied call never ran; its row must not keep reading "running…". */
-    _settleDeniedBlockRow(name, callId) {
+    _settleDeniedBlockRow(name, callId, label) {
         let row = null;
         if (callId && this._blockToolRows && this._blockToolRows.has(callId)) {
             row = this._blockToolRows.get(callId);
@@ -6170,23 +6370,26 @@ class LumiApp {
             const all = this.getRenderTarget().querySelectorAll(`.tool-row[data-tool="${CSS.escape(name)}"]`);
             row = all[all.length - 1] || null;
         }
-        if (!row) return;
+        if (!row) return null;
         const statusEl = row.querySelector('[data-status]');
         if (statusEl) {
             statusEl.classList.remove('pending');
-            statusEl.classList.add('err');
+            statusEl.classList.add('denied');
             statusEl.textContent = '✗';
         }
         const metaEl = row.querySelector('[data-meta]');
-        if (metaEl) metaEl.textContent = 'not run';
-        row.dataset.isError = 'true';
+        if (metaEl) metaEl.textContent = label;
+        row.classList.add('denied');
+        row.dataset.denied = 'true';
+        return row;
     }
 
-    appendToolStatus(name, text, color) {
-        const el = document.createElement('div');
-        el.className = 'tool-inline';
-        el.innerHTML = `<span class="tool-status" style="color:var(--${color})">${text}</span>`;
-        this.getRenderTarget().appendChild(el);
+    _settleDeniedInlineRow(name, callId, label) {
+        const row = this._inlineToolRow(name, callId);
+        if (!row) return null;
+        row.classList.add('is-denied');
+        this._setInlineToolStatus(row, `✗ ${label}`, 'denied');
+        return row;
     }
 
     // ── Screenshot Image ────────────────────────────────────────
@@ -6498,8 +6701,6 @@ class LumiApp {
         this.contextState = null;
         this.runtimeAgents = [];
         this.runtimeTimeline = [];
-        this.runtimeTraces = [];
-        this.runtimeArtifacts = [];
         this.runtimePacks = [];
         this.renderAgentActivityTree();
         this.renderContextCockpit();
@@ -6542,6 +6743,10 @@ class LumiApp {
         if (viewName === 'settings' && this.currentView !== 'settings') this._settingsLoadedPage = null;
         this.currentView = viewName;
         document.body.classList.toggle('settings-open', viewName === 'settings');
+        // The window title names the screen, for window switchers and screen readers (WCAG 2.4.2).
+        document.title = viewName === 'settings' ? 'Settings · Lumi' : 'Lumi';
+        const skip = document.getElementById('skip-to-main');
+        if (skip) skip.textContent = viewName === 'settings' ? 'Skip to the Settings page' : 'Skip to the message box';
 
         // Hide all views
         this.welcomeScreen.style.display = 'none';
@@ -6622,7 +6827,7 @@ class LumiApp {
             <div class="settings-row">
                 <span class="settings-row-label">Daily budget alert ($)</span>
                 <div class="settings-row-value">
-                    <input class="settings-input" type="number" min="0" step="0.01" value="${budget || ''}" data-section="cost_tracking" data-key="budget_alert_usd" placeholder="None" />
+                    <input class="settings-input" type="number" min="0" step="0.01" value="${budget || ''}" data-section="cost_tracking" data-key="budget_alert_usd" placeholder="None" aria-label="Daily budget alert, in dollars" />
                     <div class="settings-row-hint">Shows an alert after tracked daily spend crosses this amount.</div>
                 </div>
             </div>
@@ -7029,6 +7234,7 @@ class LumiApp {
             { id: 'settings',   icon: '\u2699', label: 'Open Settings',            hint: 'Ctrl+,', action: () => this.switchView('settings') },
             { id: 'sessions',   icon: '\u2190', label: 'Back to Sessions',         hint: 'Alt+1',  action: () => this.switchView('agents') },
             { id: 'git',        icon: '\u2387', label: 'Git changes & commits',    hint: '',       action: () => { if (this.gitData?.is_repo) this.toggleGitPopover(); else this.showStatusMessage('Not a git repository.'); } },
+            { id: 'timeline',   icon: '\u27f2', label: 'Timeline: restore a checkpoint', hint: '', action: () => this.openTimeline() },
             { id: 'preview',    icon: '\u25A1', label: 'Toggle preview panel',     hint: '',        action: () => document.getElementById('preview-toggle')?.click() },
             { id: 'sidebar',    icon: '\u2261', label: 'Toggle sidebar',           hint: 'Ctrl+Shift+D', action: () => document.getElementById('sidebar-toggle')?.click() },
             { id: 'shortcuts',  icon: '\u2328', label: 'Keyboard shortcuts',       hint: 'Ctrl+/', action: () => this.toggleShortcutsOverlay() },
@@ -7372,6 +7578,7 @@ class LumiApp {
         while (activity.firstChild) {
             details.appendChild(activity.firstChild);
         }
+        this._appendRunRecords(details, task, event.trace);
         activity.appendChild(details);
     }
 
@@ -7396,9 +7603,11 @@ class LumiApp {
 
         // Flush collapsed group
         this.flushCollapsedGroup();
+        // The turn is over; nothing will answer its calls now.
+        this._closedEvidenceGroups = [];
 
         if (this._cancelInFlight || this._cancelInterrupted) {
-            this._finishCancelledTask();
+            this._finishCancelledTask(event);
             this._cancelInterrupted = false;
             this.scrollToBottom();
             return;
@@ -7570,35 +7779,431 @@ class LumiApp {
         }));
     }
 
+    // ── Plan activity ───────────────────────────────────────────
+    //
+    // A plan (/plan, a Mission's roadmap, an autonomous iteration's task)
+    // runs specialists in sessions of their own (orchestration/
+    // intent_service.py). Its card in the conversation shows one step per
+    // specialist, open while it runs, with the specialist's tool rows and
+    // prose, and a status line for the whole plan. None of it touches the
+    // conversation's turn: the task card and its live progress, isRunning,
+    // the completion verdict with Retry, the next-prompt suggestion, or focus.
+    // Plan activity isn't saved with the conversation; the Plan tab's History
+    // keeps the plan's snapshots.
+
+    /**
+     * Plans shown on this page, by intent id, and /plan cards whose plan
+     * hasn't named its id yet. Made on first use.
+     */
+    _planRegistry() {
+        this._planRuns ||= new Map();
+        this._pendingPlanRuns ||= [];
+        return { runs: this._planRuns, pending: this._pendingPlanRuns };
+    }
+
+    _newPlanRun(intentId) {
+        return {
+            intentId, intentText: '', request: '', fromUser: false, card: null,
+            steps: new Map(), currentNodeId: '', status: 'running', error: '',
+            toolCount: 0, firstTs: 0, lastTs: 0, allDone: null,
+        };
+    }
+
+    /**
+     * The card a /plan request shows at once, as the person's message. The
+     * plan it starts names the same text in its first event (intent.accepted,
+     * plan.snapshot or intent.started), which claims the card (_planRunFor).
+     */
+    _beginPlanRun(text) {
+        const run = this._newPlanRun('');
+        run.intentText = text;
+        run.request = `/plan ${text}`;
+        run.fromUser = true;
+        run.status = 'starting';
+        this._planRegistry().pending.push(run);
+        this._planCard(run);
+        return run;
+    }
+
+    /** The plan an event belongs to. A /plan card waiting for it is claimed by its text. */
+    _planRunFor(event) {
+        const intentId = String(event.intent_id || '');
+        if (!intentId) return null;
+        const { runs, pending } = this._planRegistry();
+        // Only these name the plan's text; a specialist's text.done is prose.
+        const text = String({
+            'plan.snapshot': (event.snapshot || event.data || {}).intent,
+            'intent.accepted': event.text,
+            'intent.started': event.text,
+        }[event.event] || '').trim();
+        let run = runs.get(intentId);
+        if (!run) {
+            const waiting = text ? pending.findIndex(item => item.intentText === text) : -1;
+            run = waiting >= 0 ? pending.splice(waiting, 1)[0] : this._newPlanRun(intentId);
+            run.intentId = intentId;
+            if (run.card) run.card.el.dataset.intentId = intentId;
+            runs.set(intentId, run);
+        }
+        if (!run.intentText && text) {
+            run.intentText = text;
+            if (run.card && !run.fromUser) run.card.requestEl.textContent = this._planTitle(text);
+        }
+        return run;
+    }
+
+    /** A plan's lifecycle event (plan.snapshot, intent.*), on its card. */
+    _trackPlanRun(event) {
+        const type = event.event;
+        const lifecycle = ['plan.snapshot', 'intent.accepted', 'intent.started', 'intent.paused',
+            'intent.resumed', 'intent.complete', 'intent.cancelled', 'intent.failed'];
+        if (!lifecycle.includes(type)) return;
+        const run = this._planRunFor(event);
+        if (!run) return;
+        if (['plan.snapshot', 'intent.accepted', 'intent.started'].includes(type)) {
+            if (run.status === 'starting') this._setPlanStatus(run, 'running');
+        } else if (type === 'intent.paused') {
+            if (['starting', 'running'].includes(run.status)) this._setPlanStatus(run, 'paused');
+        } else if (type === 'intent.resumed') {
+            if (run.status === 'paused') this._setPlanStatus(run, 'running');
+        } else {
+            this._finishPlanRun(run, type.slice('intent.'.length), event.error);
+        }
+    }
+
+    /**
+     * The server refuses a /plan it can't start (no model connected, say)
+     * with an error that names no plan: it belongs to the oldest waiting card.
+     */
+    _failStartingPlan(event) {
+        const { pending } = this._planRegistry();
+        const message = String(event.message || '');
+        const refusal = /^(?:Connect a backend before starting an intent|intent_start failed|intent text is required)/;
+        if (!pending.length || !refusal.test(message)) return false;
+        const run = pending.shift();
+        run.error = message;
+        this._setPlanStatus(run, 'not_started');
+        return true;
+    }
+
+    /** A plan's walker event (plan.event): each specialist it starts becomes a step. */
     trackPlanAgentEvent(event) {
         const wrapped = event.event_payload || event;
         const payload = wrapped.payload || {};
-        const nodeId = wrapped.node_id || '';
-        if (!nodeId || !['node.start', 'node.done'].includes(wrapped.kind)) return;
-        const id = `specialist:${event.intent_id || 'intent'}:${nodeId}`;
-        const existing = this.agentActivities.get(id) || {
-            id,
-            kind: 'specialist',
-            label: payload.specialization || 'specialist',
-            prompt: payload.goal || '',
-            parentId: '',
-            startedAt: (wrapped.ts || Date.now() / 1000) * 1000,
-        };
-        if (!this.agentActivities.has(id)) this.agentActivityOrder.push(id);
-        if (wrapped.kind === 'node.start') {
-            existing.status = 'running';
-            existing.label = payload.specialization || existing.label;
-            existing.prompt = payload.goal || existing.prompt;
-        } else {
-            existing.status = payload.status || 'done';
-            existing.finishedAt = (wrapped.ts || Date.now() / 1000) * 1000;
-            existing.handoff = payload.summary || payload.error || '';
-            existing.confidence = payload.confidence;
-            existing.verdict = payload.verdict || '';
+        const run = this._planRunFor(event);
+        if (!run) return;
+        if (wrapped.kind === 'plan.complete') {
+            run.allDone = payload.all_done === true;
+            return;
         }
-        this.agentActivities.set(id, existing);
-        this.renderAgentActivityTree();
-        this._markAgentTabUnread();
+        const nodeId = String(wrapped.node_id || '');
+        if (!nodeId || !['node.start', 'node.done'].includes(wrapped.kind)) return;
+        const ts = Number(wrapped.ts) || 0;
+        const step = this._planStep(run, nodeId, payload);
+        if (wrapped.kind === 'node.start') {
+            run.currentNodeId = nodeId;
+            step.status = 'running';
+            step.startTs = ts;
+            if (!run.firstTs) run.firstTs = ts;
+        } else {
+            this._finishPlanText(step);
+            step.status = payload.status || 'done';
+            step.verdict = payload.verdict || '';
+            step.endTs = ts;
+            if (ts) run.lastTs = ts;
+            if (payload.error) this._appendPlanError(step, payload.error);
+            if (run.currentNodeId === nodeId) run.currentNodeId = '';
+        }
+        this._renderPlanStep(run, step);
+        this._setPlanStatus(run, run.status === 'starting' ? 'running' : run.status);
+    }
+
+    /** A plan specialist's engine event, drawn in its step and nowhere else. */
+    _handlePlanSpecialistEvent(event) {
+        if (!PLAN_TRACE_EVENTS.has(event.event)) return;
+        const run = this._planRunFor(event);
+        if (!run) return;
+        // The walker runs one specialist at a time, and IntentService sends
+        // a node's node.start before its session's events.
+        const step = this._planStep(run, run.currentNodeId || 'specialist');
+        switch (event.event) {
+            case 'text.delta':
+                this._appendPlanText(step, event.delta || '');
+                break;
+            case 'text.done':
+                this._finishPlanText(step, event.text || '');
+                break;
+            case 'tool.call':
+                run.toolCount += 1;
+                step.toolCount += 1;
+                this._withPlanLane(step, () => this.renderToolCall(event));
+                this._renderPlanStep(run, step);
+                break;
+            case 'tool.result':
+                this._withPlanLane(step, () => this.renderToolResult(event));
+                break;
+            case 'error':
+                if (event.discard_partial_output) this._dropPlanText(step);
+                else this._finishPlanText(step);
+                this._appendPlanError(step, event.message);
+                break;
+        }
+    }
+
+    /** The plan's card: the /plan message, or a "Plan" card for a plan started elsewhere. */
+    _planCard(run) {
+        if (run.card) return run.card;
+        this._removeChatEmptyState();
+        const card = document.createElement('article');
+        card.className = 'task-card plan-card task-card-running';
+        // Not a message of the session: forking from a later message counts
+        // only the session's own (_forkFromUserMessage).
+        card.dataset.userMessage = 'plan';
+        if (run.intentId) card.dataset.intentId = run.intentId;
+        const header = document.createElement('div');
+        header.className = 'task-card-header';
+        const main = document.createElement('div');
+        main.className = 'task-card-main';
+        const label = document.createElement('div');
+        label.className = 'task-card-label';
+        label.textContent = run.fromUser ? 'You' : 'Plan';
+        const request = document.createElement('div');
+        request.className = 'task-request-text';
+        request.textContent = run.request || this._planTitle(run.intentText) || 'Plan';
+        main.appendChild(label);
+        main.appendChild(request);
+        header.appendChild(main);
+        const activity = document.createElement('div');
+        activity.className = 'task-activity plan-activity';
+        const footer = document.createElement('div');
+        footer.className = 'task-card-footer';
+        const status = document.createElement('div');
+        status.setAttribute('role', 'status');
+        const mark = document.createElement('span');
+        mark.className = 'task-run-mark';
+        mark.setAttribute('aria-hidden', 'true');
+        const statusLabel = document.createElement('span');
+        statusLabel.className = 'task-run-label';
+        const detail = document.createElement('span');
+        detail.className = 'task-run-detail';
+        status.appendChild(mark);
+        status.appendChild(statusLabel);
+        status.appendChild(detail);
+        footer.appendChild(status);
+        card.appendChild(header);
+        card.appendChild(activity);
+        card.appendChild(footer);
+        this.chatMessages.appendChild(card);
+        run.card = {
+            el: card, requestEl: request, activityEl: activity,
+            statusEl: status, markEl: mark, labelEl: statusLabel, detailEl: detail,
+        };
+        this._showPlanStatus(run);
+        this.scrollToBottom();
+        return run.card;
+    }
+
+    /** A specialist's step under its plan's card: a disclosure holding its trace. */
+    _planStep(run, nodeId, payload = {}) {
+        let step = run.steps.get(nodeId);
+        const created = !step;
+        if (created) {
+            const card = this._planCard(run);
+            const el = document.createElement('details');
+            el.className = 'task-activity-details plan-step is-running';
+            el.dataset.nodeId = nodeId;
+            el.open = true;
+            const summary = document.createElement('summary');
+            const caret = document.createElement('span');
+            caret.className = 'task-activity-caret';
+            caret.setAttribute('aria-hidden', 'true');
+            const title = document.createElement('span');
+            title.className = 'task-activity-title';
+            const goal = document.createElement('span');
+            goal.className = 'plan-step-goal';
+            const meta = document.createElement('span');
+            meta.className = 'task-activity-meta';
+            summary.appendChild(caret);
+            summary.appendChild(title);
+            summary.appendChild(goal);
+            summary.appendChild(meta);
+            const body = document.createElement('div');
+            body.className = 'plan-step-body';
+            el.appendChild(summary);
+            el.appendChild(body);
+            card.activityEl.appendChild(el);
+            step = {
+                nodeId, el, titleEl: title, goalEl: goal, metaEl: meta, bodyEl: body,
+                blockRows: new Map(), specialization: '', goal: '', status: 'running', verdict: '',
+                toolCount: 0, startTs: 0, endTs: 0, textEl: null, textBuffer: '', textTimer: null,
+            };
+            run.steps.set(nodeId, step);
+        }
+        if (payload.specialization) step.specialization = payload.specialization;
+        if (payload.goal) step.goal = payload.goal;
+        if (created) {
+            this._renderPlanStep(run, step);
+            this.scrollToBottom();
+        }
+        return step;
+    }
+
+    /** A step's line: who, what, and how it went. A finished step folds to it. */
+    _renderPlanStep(run, step) {
+        // The walker asks a planner again with a hint before its goal.
+        const cut = step.goal.indexOf('\n\n');
+        const retry = step.goal.startsWith('[RETRY:') && cut > 0;
+        const goal = retry ? step.goal.slice(cut + 2) : step.goal;
+        const label = PLAN_SPECIALIST_LABELS[step.specialization] || 'Specialist';
+        step.titleEl.textContent = retry ? `${label} (retry)` : label;
+        step.goalEl.textContent = this._planTitle(goal);
+        step.goalEl.title = goal.slice(0, 600);
+        const verdict = { pass: 'passed', revise: 'asked for a repair', blocked: 'blocked' }[step.verdict] || step.verdict;
+        const parts = [step.status === 'done' && verdict ? verdict : ({ abandoned: 'stopped' }[step.status] || step.status)];
+        if (step.toolCount) parts.push(`${step.toolCount} action${step.toolCount === 1 ? '' : 's'}`);
+        if (step.startTs && step.endTs > step.startTs) parts.push(this._formatRunDuration(step.endTs - step.startTs));
+        step.metaEl.textContent = parts.join(' · ');
+        const settled = step.status === 'done' && (!step.verdict || step.verdict === 'pass');
+        step.el.classList.remove('is-running', 'is-done', 'is-attention');
+        step.el.classList.add(step.status === 'running' ? 'is-running' : (settled ? 'is-done' : 'is-attention'));
+        // A step that didn't finish, or whose check asked for more, stays
+        // open. So does one the person is reading from the keyboard.
+        const focused = typeof document === 'undefined' ? null : document.activeElement;
+        if (settled && !(focused && step.bodyEl.contains(focused))) step.el.open = false;
+    }
+
+    _setPlanStatus(run, status) {
+        run.status = status;
+        this._showPlanStatus(run);
+    }
+
+    /** The plan's status line under its steps. */
+    _showPlanStatus(run) {
+        const card = run.card;
+        if (!card) return;
+        const current = run.steps.get(run.currentNodeId);
+        const counts = this._planCounts(run);
+        const [state, label, detail] = {
+            starting: ['running', 'Starting plan', ''],
+            running: ['running', 'Plan running', current ? `${current.titleEl.textContent}: ${current.goalEl.textContent}` : ''],
+            paused: ['warning', 'Plan paused', 'No new step starts until you resume it in the Plan tab.'],
+            complete: ['done', 'Plan complete', counts],
+            finished: ['warning', 'Plan finished', `Not every step finished · ${counts}`],
+            cancelled: ['warning', 'Plan cancelled', counts],
+            failed: ['error', 'Plan failed', run.error || 'The plan stopped with an error.'],
+            not_started: ['error', 'Plan not started', run.error],
+        }[run.status] || ['running', 'Plan running', ''];
+        card.statusEl.className = `task-run-summary plan-run-status is-${state}`;
+        card.markEl.textContent = { done: 'OK', warning: '!', error: '!' }[state] || '';
+        card.labelEl.textContent = label;
+        card.detailEl.textContent = detail;
+        card.el.classList.remove('task-card-running', 'task-card-done', 'task-card-warning', 'task-card-error');
+        card.el.classList.add(`task-card-${state}`);
+    }
+
+    _planCounts(run) {
+        const steps = run.steps.size;
+        const parts = [`${steps} step${steps === 1 ? '' : 's'}`];
+        if (run.toolCount) parts.push(`${run.toolCount} action${run.toolCount === 1 ? '' : 's'}`);
+        if (run.firstTs && run.lastTs > run.firstTs) parts.push(this._formatRunDuration(run.lastTs - run.firstTs));
+        return parts.join(' · ');
+    }
+
+    /** intent.complete, intent.cancelled or intent.failed. */
+    _finishPlanRun(run, outcome, error = '') {
+        // A cancel is announced at once, and the running specialist still
+        // reports until it stops (its node.done). Complete and failed come
+        // once the walker has stopped: a step still running never finished.
+        if (outcome !== 'cancelled') {
+            for (const step of run.steps.values()) {
+                this._finishPlanText(step);
+                if (step.status !== 'running') continue;
+                step.status = 'abandoned';
+                this._renderPlanStep(run, step);
+            }
+            run.currentNodeId = '';
+        }
+        if (outcome === 'failed') run.error = String(error || '');
+        // The walker reports whether every node of the graph finished
+        // (plan.complete), including any that never got to start.
+        const clean = run.allDone === true && [...run.steps.values()].every(step => step.status === 'done');
+        this._setPlanStatus(run, outcome === 'complete' && !clean ? 'finished' : outcome);
+    }
+
+    /** Draw a tool row into a step, with the step's own row lookup. */
+    _withPlanLane(step, render) {
+        const lane = this._planLaneEl;
+        const rows = this._blockToolRows;
+        this._planLaneEl = step.bodyEl;
+        this._blockToolRows = step.blockRows;
+        try {
+            return render();
+        } finally {
+            this._planLaneEl = lane;
+            this._blockToolRows = rows;
+        }
+    }
+
+    _planTextBlock(step) {
+        const el = document.createElement('div');
+        el.className = 'msg-assistant plan-step-text';
+        const content = document.createElement('div');
+        content.className = 'message-content';
+        el.appendChild(content);
+        step.bodyEl.appendChild(el);
+        return el;
+    }
+
+    _appendPlanText(step, delta) {
+        if (!delta) return;
+        if (!step.textEl) step.textEl = this._planTextBlock(step);
+        step.textBuffer += delta;
+        if (step.textTimer) return;
+        // Streamed like the conversation's replies: parsed at most every 80 ms.
+        step.textTimer = setTimeout(() => {
+            step.textTimer = null;
+            if (step.textEl) this.renderMarkdown(step.textEl, step.textBuffer, true);
+        }, 80);
+    }
+
+    /**
+     * End a step's streamed prose. `text` is text.done's full text; it comes
+     * after the tool calls of the same response, which stay below the prose.
+     */
+    _finishPlanText(step, text = '') {
+        clearTimeout(step.textTimer);
+        step.textTimer = null;
+        const finalText = String(text.trim() ? text : step.textBuffer).trim();
+        if (!step.textEl && finalText) step.textEl = this._planTextBlock(step);
+        if (step.textEl) {
+            if (finalText) this.renderMarkdown(step.textEl, finalText, false);
+            else step.textEl.remove();
+        }
+        step.textEl = null;
+        step.textBuffer = '';
+    }
+
+    _dropPlanText(step) {
+        clearTimeout(step.textTimer);
+        step.textTimer = null;
+        step.textEl?.remove();
+        step.textEl = null;
+        step.textBuffer = '';
+    }
+
+    _appendPlanError(step, message) {
+        const el = document.createElement('div');
+        el.className = 'error-block';
+        el.textContent = `✗ ${message || 'Unknown error'}`;
+        step.bodyEl.appendChild(el);
+    }
+
+    /** One line for a plan or a step: its text's first line that isn't a heading. */
+    _planTitle(text) {
+        const lines = String(text || '').split('\n')
+            .map(line => line.replace(/\*\*|__/g, '').trim())
+            .filter(Boolean);
+        const line = lines.find(item => !item.startsWith('#')) || (lines[0] || '').replace(/^#+\s*/, '');
+        return line.length > 160 ? `${line.slice(0, 159)}…` : line;
     }
 
     switchRuntimeView(view) {
@@ -7613,8 +8218,6 @@ class LumiApp {
         const commands = {
             agents: 'agent_runtime_list',
             timeline: 'session_timeline_list',
-            traces: 'flight_recorder_list',
-            artifacts: 'artifact_list',
             packs: 'capability_pack_list',
         };
         this.send({ command: commands[this.runtimeView] || commands.agents });
@@ -7660,8 +8263,6 @@ class LumiApp {
         }
         const collections = {
             timeline: this.runtimeTimeline,
-            traces: this.runtimeTraces,
-            artifacts: this.runtimeArtifacts,
             packs: this.runtimePacks,
         };
         const items = collections[this.runtimeView] || [];
@@ -7670,57 +8271,12 @@ class LumiApp {
             tree.innerHTML = `<div class="agent-activity-empty">No ${this.escapeHtml(this.runtimeView)} recorded yet.</div>`;
             return;
         }
-        if (this.runtimeView === 'timeline') {
-            tree.innerHTML = items.map((item) => `
-                <article class="runtime-card" data-checkpoint-id="${this.escapeHtml(item.id)}">
-                    <div><strong>${this.escapeHtml(item.reason || item.id)}</strong><small>#${Number(item.sequence || 0)} · ${new Date(Number(item.created_at || 0) * 1000).toLocaleString()}</small></div>
-                    <span>${this.escapeHtml(item.tool_name || (item.workspace_ref ? 'git snapshot' : 'archive snapshot'))}</span>
-                    <div class="runtime-actions"><button data-action="compare">Compare</button><button data-action="conversation">Restore chat</button><button data-action="files">Restore files</button><button data-action="both">Restore both</button></div>
-                </article>`).join('');
-            tree.querySelectorAll('.runtime-card').forEach((card) => {
-                card.querySelectorAll('[data-action]').forEach((button) => button.addEventListener('click', () => {
-                    const action = button.dataset.action;
-                    if (action === 'compare') this.send({ command: 'session_timeline_compare', checkpoint_id: card.dataset.checkpointId });
-                    else this.send({ command: 'session_timeline_restore', checkpoint_id: card.dataset.checkpointId, mode: action });
-                }));
-            });
-            return;
-        }
-        if (this.runtimeView === 'traces') {
-            tree.innerHTML = items.map((item) => `
-                <article class="runtime-card" data-run-id="${this.escapeHtml(item.run_id)}">
-                    <div><strong>${this.escapeHtml(item.model || item.run_id)}</strong><small>${this.escapeHtml(item.model_role || 'primary')} · ${this.escapeHtml(item.status || '')}</small></div>
-                    <span>${new Date(Number(item.updated_at || 0) * 1000).toLocaleString()}</span>
-                    <div class="runtime-actions"><button data-action="inspect">Inspect</button><button data-action="export">Export OTLP</button></div>
-                </article>`).join('');
-            tree.querySelectorAll('.runtime-card').forEach((card) => {
-                card.querySelector('[data-action="inspect"]')?.addEventListener('click', () => this.send({ command: 'flight_recorder_detail', run_id: card.dataset.runId }));
-                card.querySelector('[data-action="export"]')?.addEventListener('click', () => this.send({ command: 'flight_recorder_export', run_id: card.dataset.runId }));
-            });
-            return;
-        }
-        if (this.runtimeView === 'artifacts') {
-            tree.innerHTML = items.map((item) => `
-                <article class="runtime-card">
-                    <div><strong>${this.escapeHtml(item.label || item.id)}</strong><small>${this.escapeHtml(item.kind || '')} · ${Number(item.size || 0).toLocaleString()} bytes</small></div>
-                    <span title="${this.escapeHtml(item.path || '')}">${this.escapeHtml((item.path || '').split(/[\\/]/).pop() || '')}</span>
-                </article>`).join('');
-            return;
-        }
         tree.innerHTML = items.map((item) => `
             <article class="runtime-card">
                 <div><strong>${this.escapeHtml(item.name || item.id)}</strong><small>v${this.escapeHtml(item.version || '0.0.0')}</small></div>
                 <span>${this.escapeHtml(item.description || '')}</span>
                 <div class="runtime-badges"><b class="${item.enabled ? 'is-on' : ''}">${item.enabled ? 'enabled' : 'disabled'}</b><b class="${item.trusted ? 'is-on' : ''}">${item.trusted ? 'trusted' : 'untrusted'}</b><b>${(item.agents || []).length} agents</b><b>${(item.skills || []).length} skills</b></div>
             </article>`).join('');
-    }
-
-    showRuntimePayload(title, payload) {
-        const detail = document.getElementById('agent-handoff-detail');
-        if (!detail) return;
-        detail.innerHTML = `<div class="agent-handoff-header"><strong>${this.escapeHtml(title)}</strong><button class="agent-handoff-close" type="button">×</button></div><pre>${this.escapeHtml(JSON.stringify(payload, null, 2))}</pre>`;
-        detail.style.display = 'block';
-        detail.querySelector('.agent-handoff-close')?.addEventListener('click', () => { detail.style.display = 'none'; });
     }
 
     renderAgentActivityTree() {
@@ -8334,6 +8890,527 @@ class LumiApp {
         this.closeWorkerSteer();
     }
 
+    // ── Timeline ────────────────────────────────────────────────
+    // Before each change it makes, Lumi saves a checkpoint of the project's
+    // files and this conversation (engine/checkpoint_timeline.py). The
+    // Timeline view that restored them left the page in v0.14.0; this dialog
+    // lists the open conversation's checkpoints and restores the files, the
+    // conversation or both (session_timeline_list/compare/restore).
+
+    openTimeline(returnFocus = null) {
+        const dialog = document.getElementById('timeline-dialog');
+        if (!dialog) return;
+        this._timelineOpen = true;
+        this._timelineConfirm = null;
+        this._timelineComparison = null;
+        this._timelinePending = '';
+        this._timelineReturnFocus = returnFocus || document.activeElement;
+        this.runtimeTimeline = null;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'timeline-dialog-close', () => this.closeTimeline());
+        if (!dialog.dataset.timelineWired) {
+            const body = document.getElementById('timeline-dialog-body');
+            body?.addEventListener('click', (event) => {
+                const button = event.target.closest('[data-timeline-action]');
+                if (button) this._onTimelineAction(button);
+            });
+            body?.addEventListener('change', (event) => {
+                if (event.target.name === 'timeline-restore-mode' && this._timelineConfirm) {
+                    this._timelineConfirm.mode = event.target.value;
+                    this._renderTimeline();
+                    document.querySelector(`#timeline-dialog-body input[value="${event.target.value}"]`)?.focus();
+                }
+            });
+            dialog.dataset.timelineWired = '1';
+        }
+        this._renderTimeline();
+        document.getElementById('timeline-dialog-close')?.focus();
+        this.send({ command: 'session_timeline_list' });
+    }
+
+    closeTimeline() {
+        const dialog = document.getElementById('timeline-dialog');
+        if (!dialog || !this._timelineOpen) return;
+        dialog.style.display = 'none';
+        this._timelineOpen = false;
+        this._timelineConfirm = null;
+        const back = this._timelineReturnFocus;
+        (back && back.isConnected && !back.closest('[hidden]') ? back : this.userInput)?.focus?.();
+    }
+
+    /**
+     * Checkpoints come from Lumi's own tool loop. Codex and Claude Code run
+     * their own tools, so their changes have none.
+     */
+    _timelineIntro() {
+        const backend = String(this.modelSelector?.value || '').split(':', 1)[0];
+        const cli = { codex: 'Codex', 'claude-code': 'Claude Code' }[backend];
+        return cli
+            ? `${cli} changes files with its own tools, so Lumi saves no checkpoints of its changes. Turns with a native model connection have them.`
+            : 'Before each change it makes, Lumi saves a checkpoint of your files and this conversation. Newest first.';
+    }
+
+    /** What a checkpoint was saved before, in words. */
+    _timelineLabel(item = {}) {
+        const target = String(item.target || '').trim();
+        const short = target.length > 60 ? `${target.slice(0, 57)}…` : target;
+        const path = target ? this.shortenPath(target) : '';
+        switch (item.tool_name) {
+            case 'file_write': return path ? `Before writing ${path}` : 'Before writing a file';
+            case 'file_edit':
+            case 'file_replace': return path ? `Before editing ${path}` : 'Before editing a file';
+            case 'bash': return short ? `Before running ${short}` : 'Before running a command';
+            case 'git_commit': return 'Before committing';
+            case 'git_branch_create': return short ? `Before creating branch ${short}` : 'Before creating a branch';
+            case 'batch': return 'Before a batch of changes';
+            default: return item.reason || 'Checkpoint';
+        }
+    }
+
+    /**
+     * What a checkpoint can put back. A worker's snapshot holds the worker's
+     * own conversation, so it restores files only; one without a workspace
+     * snapshot restores the conversation only.
+     */
+    _timelineRestoreModes(item = {}) {
+        const modes = [];
+        if (item.snapshot) modes.push('files');
+        if (!item.subagent) modes.push('conversation');
+        if (item.snapshot && !item.subagent) modes.push('both');
+        return modes;
+    }
+
+    /** What restoring does, said before the user confirms it. */
+    _timelineRestoreNote(item = {}, mode = 'files') {
+        const kept = item.snapshot === 'git'
+            ? 'Your current files are kept first, on a lumi-recovery branch.'
+            : 'Your current files are kept first, in a recovery archive.';
+        const files = `The project's files go back to how they were at this point. ${kept}`;
+        const conversation = 'The conversation goes back to this point; later messages leave it.';
+        if (mode === 'conversation') return `${conversation} Your files don't change.`;
+        if (mode === 'both') return `${files} ${conversation}`;
+        return `${files} The conversation doesn't change.`;
+    }
+
+    _timelineRestoredMessage(data = {}) {
+        const what = { files: 'Files', conversation: 'Conversation', both: 'Files and conversation' }[data.mode] || 'Checkpoint';
+        const point = this._timelineLabel(data.checkpoint || {}).replace(/^Before /, 'before ');
+        const workspace = data.workspace || {};
+        const kept = workspace.recovery_branch
+            ? ` Your previous files are on ${workspace.recovery_branch}.`
+            : workspace.recovery_archive ? ' Your previous files are in a recovery archive.' : '';
+        return `${what} restored to ${point}.${kept}`;
+    }
+
+    /** The chat's record of a restore, where it happened. */
+    _addTimelineRestoredNote(event = {}) {
+        const note = document.createElement('div');
+        note.className = 'timeline-restored-note';
+        note.textContent = this._timelineRestoredMessage({ mode: event.mode, checkpoint: event.checkpoint });
+        this.chatMessages.appendChild(note);
+    }
+
+    _onTimelineAction(button) {
+        const action = button.dataset.timelineAction || '';
+        const id = button.closest('[data-checkpoint-id]')?.dataset.checkpointId || '';
+        const item = (this.runtimeTimeline || []).find((entry) => entry.id === id);
+        if (!item) return;
+        if (action === 'compare') {
+            this._timelineComparison = { id, data: null };
+            this._renderTimeline();
+            this.send({ command: 'session_timeline_compare', checkpoint_id: id });
+        } else if (action === 'restore') {
+            this._timelineConfirm = { id, mode: this._timelineRestoreModes(item)[0] || '' };
+            this._renderTimeline();
+            document.querySelector('#timeline-dialog-body input[name="timeline-restore-mode"]:checked')?.focus();
+        } else if (action === 'cancel') {
+            this._timelineConfirm = null;
+            this._renderTimeline();
+            document.querySelector(`#timeline-dialog-body [data-checkpoint-id="${CSS.escape(id)}"] [data-timeline-action="restore"]`)?.focus();
+        } else if (action === 'confirm' && this._timelineConfirm?.id === id) {
+            if (this.isRunning) {
+                this.showStatusMessage('Stop the current run before restoring a checkpoint.');
+                return;
+            }
+            this._timelinePending = id;
+            this._renderTimeline();
+            this.send({ command: 'session_timeline_restore', checkpoint_id: id, mode: this._timelineConfirm.mode });
+        }
+    }
+
+    _renderTimeline() {
+        const body = document.getElementById('timeline-dialog-body');
+        if (!body || !this._timelineOpen) return;
+        const esc = (value) => this.escapeHtml(value);
+        const items = this.runtimeTimeline;
+        if (!Array.isArray(items)) {
+            body.innerHTML = '<p class="share-note">Loading…</p>';
+            return;
+        }
+        const intro = `<p class="share-note">${esc(this._timelineIntro())}</p>`;
+        if (!items.length) {
+            body.innerHTML = `${intro}<p class="share-note">No checkpoints yet.</p>`;
+            return;
+        }
+        const running = Boolean(this.isRunning);
+        const modeNames = { files: 'Files', conversation: 'Conversation', both: 'Files and conversation' };
+        const rows = items.map((item) => {
+            const when = Number(item.created_at || 0)
+                ? new Date(Number(item.created_at) * 1000).toLocaleString()
+                : '';
+            const meta = [
+                when,
+                item.subagent ? 'by a worker' : '',
+                item.snapshot === 'git' ? 'Git snapshot' : item.snapshot === 'archive' ? 'file snapshot' : 'conversation only',
+            ].filter(Boolean).join(' · ');
+            const modes = this._timelineRestoreModes(item);
+            const pending = this._timelinePending === item.id;
+            const confirming = this._timelineConfirm?.id === item.id;
+            const comparison = this._timelineComparison?.id === item.id ? this._timelineComparison.data : undefined;
+            let detail = '';
+            if (comparison !== undefined) {
+                const text = comparison === null
+                    ? 'Comparing…'
+                    : comparison.message || [comparison.name_status, comparison.stat].filter(Boolean).join('\n') || 'No changes since this checkpoint.';
+                detail += `<div class="timeline-comparison"><span>Changes since this checkpoint</span><pre>${esc(text)}</pre></div>`;
+            }
+            if (confirming) {
+                const mode = this._timelineConfirm.mode;
+                const choices = modes.map((value) => `<label class="timeline-mode"><input type="radio" name="timeline-restore-mode" value="${value}"${value === mode ? ' checked' : ''}> ${modeNames[value]}</label>`).join('');
+                detail += `<fieldset class="timeline-confirm"><legend>Restore</legend>${choices}`
+                    + `<p class="timeline-confirm-note">${esc(this._timelineRestoreNote(item, mode))}</p>`
+                    + `<div class="timeline-confirm-actions">`
+                    + `<button type="button" class="dialog-btn deny" data-timeline-action="cancel">Cancel</button>`
+                    + `<button type="button" class="dialog-btn allow" data-timeline-action="confirm"${running || pending ? ' disabled' : ''}>${pending ? 'Restoring…' : 'Restore'}</button>`
+                    + `</div>${running ? '<p class="timeline-confirm-note">Stop the current run to restore.</p>' : ''}</fieldset>`;
+            }
+            const label = this._timelineLabel(item);
+            // Checkpoints often share a label; the time tells their buttons apart.
+            const named = when ? `${label}, ${when}` : label;
+            return `<li class="timeline-item" data-checkpoint-id="${esc(item.id)}">`
+                + `<div class="timeline-item-head"><div class="timeline-item-copy"><strong>${esc(label)}</strong><small>${esc(meta)}</small></div>`
+                + `<div class="timeline-item-actions">`
+                + (item.snapshot === 'git' ? `<button type="button" class="subagent-action" data-timeline-action="compare" aria-label="${esc(`Compare the files with: ${named}`)}">Compare</button>` : '')
+                + (modes.length ? `<button type="button" class="subagent-action" data-timeline-action="restore" aria-label="${esc(`Restore: ${named}`)}" aria-expanded="${confirming}"${pending ? ' disabled' : ''}>Restore…</button>` : '')
+                + `</div></div>${detail}</li>`;
+        });
+        body.innerHTML = `${intro}<ol class="timeline-list">${rows.join('')}</ol>`;
+    }
+
+    // ── A run's trace and saved files ───────────────────────────
+    // A finished run card's work details end with its trace (the flight
+    // recorder's slice for that turn, which its session.end names) and the
+    // files the run saved: a long output, a screenshot (engine/artifacts.py).
+
+    _appendRunRecords(details, task, trace) {
+        const artifacts = Array.isArray(task?.artifacts) ? task.artifacts : [];
+        const hasTrace = Boolean(trace?.run_id && trace?.turn_id);
+        if (!details || (!hasTrace && !artifacts.length)) return;
+        const row = document.createElement('div');
+        row.className = 'task-run-records';
+        const button = (text, title, onClick) => {
+            const el = document.createElement('button');
+            el.type = 'button';
+            el.className = 'task-review-btn';
+            el.textContent = text;
+            el.title = title;
+            el.addEventListener('click', (event) => {
+                event.stopPropagation();
+                onClick(el);
+            });
+            return el;
+        };
+        if (hasTrace) {
+            row.appendChild(button('Trace', "This run's steps, timings and model", (el) => this.openRunTrace(trace, el)));
+        }
+        if (artifacts.length) {
+            const label = document.createElement('span');
+            label.className = 'task-run-records-label';
+            label.textContent = 'Saved';
+            row.appendChild(label);
+            for (const artifact of artifacts) {
+                const name = this._artifactName(artifact);
+                row.appendChild(button(name, `Open ${name}`, (el) => this.openArtifact(artifact, el)));
+            }
+        }
+        details.appendChild(row);
+    }
+
+    _artifactName(artifact = {}) {
+        const size = this._formatBytes(artifact.size);
+        return `${artifact.label || artifact.id || 'Saved file'}${size ? ` · ${size}` : ''}`;
+    }
+
+    _formatBytes(size) {
+        const bytes = Number(size || 0);
+        if (!(bytes > 0)) return '';
+        if (bytes < 1024) return `${bytes} B`;
+        if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+        return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    openRunTrace(trace, returnFocus = null) {
+        const dialog = document.getElementById('run-trace-dialog');
+        if (!dialog || !trace?.run_id || !trace?.turn_id) return;
+        this._runTrace = { run_id: trace.run_id, turn_id: trace.turn_id, data: null, error: '' };
+        this._runTraceReturnFocus = returnFocus || document.activeElement;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'run-trace-close', () => this.closeRunTrace());
+        if (!dialog.dataset.traceWired) {
+            document.getElementById('run-trace-body')?.addEventListener('click', (event) => {
+                const action = event.target.closest('[data-trace-action]')?.dataset.traceAction;
+                if (action) this._onRunTraceAction(action, event.target.closest('button'));
+            });
+            dialog.dataset.traceWired = '1';
+        }
+        this._renderRunTrace();
+        document.getElementById('run-trace-close')?.focus();
+        this.send({ command: 'flight_recorder_detail', run_id: trace.run_id, turn_id: trace.turn_id });
+    }
+
+    closeRunTrace() {
+        const dialog = document.getElementById('run-trace-dialog');
+        if (!dialog || !this._runTrace) return;
+        dialog.style.display = 'none';
+        this._runTrace = null;
+        const back = this._runTraceReturnFocus;
+        (back && back.isConnected ? back : this.userInput)?.focus?.();
+    }
+
+    _onRunTraceAction(action, button) {
+        const view = this._runTrace;
+        if (!view) return;
+        if (action === 'export' && !view.exporting) {
+            view.exporting = true;
+            view.exportError = '';
+            this._renderRunTrace();
+            this._focusIn('run-trace-body', '[data-trace-action="export"]');
+            this.send({ command: 'flight_recorder_export', run_id: view.run_id, turn_id: view.turn_id });
+        } else if (action === 'copy' && view.exported?.path) {
+            this._copyPath(view.exported.path);
+        } else if (action === 'open' && view.exported) {
+            this.openArtifact(view.exported, button);
+        }
+    }
+
+    /**
+     * Re-rendering a dialog replaces the button that was just used: keep
+     * keyboard focus on its successor instead of letting it fall to the page.
+     */
+    _focusIn(bodyId, selector) {
+        document.getElementById(bodyId)?.querySelector(selector)?.focus();
+    }
+
+    _copyPath(path) {
+        Promise.resolve()
+            .then(() => navigator.clipboard.writeText(path))
+            .then(() => this.showStatusMessage('Path copied.'))
+            .catch(() => this.showStatusMessage("Couldn't copy the path; select it instead."));
+    }
+
+    _traceTime(seconds) {
+        return `+${this._traceDuration(seconds, true)}`;
+    }
+
+    /** A trace's durations are short and precise (_formatRunDuration rounds to seconds). */
+    _traceDuration(seconds, offset = false) {
+        const s = Math.max(0, Number(seconds || 0));
+        if (s < 1 && !offset) return `${Math.round(s * 1000)} ms`;
+        if (s < 60) return `${s.toFixed(2)}s`;
+        return `${Math.floor(s / 60)}m ${Math.round(s % 60)}s`;
+    }
+
+    /** One trace row (ws_commands._trace_rows) in words. */
+    _traceRowLabel(row = {}) {
+        const name = row.name || 'a tool';
+        const target = row.target ? `: ${row.target}` : '';
+        const took = Number(row.elapsed) > 0 ? ` in ${this._traceDuration(row.elapsed)}` : '';
+        const outcomes = {
+            answered: 'answered', changed_verified: 'changed, named checks passed',
+            changed_unverified: 'changed, not verified', no_changes_needed: 'no changes needed',
+            needs_input: 'needs input', incomplete: 'incomplete', failed: 'failed',
+        };
+        switch (row.event) {
+            case 'session.start': return row.model ? `Started with ${row.model}` : 'Started';
+            case 'session.end': return row.outcome ? `Finished: ${outcomes[row.outcome] || row.outcome}` : 'Finished';
+            case 'step.start': return `Step ${row.step || 1}${row.detail ? ` (${row.detail})` : ''}`;
+            case 'step.end': return `Step ${row.step || 1} done${took}`;
+            case 'tool.call': return `Called ${name}${target}`;
+            case 'tool_permission': return `Asked to approve ${name}${target}`;
+            case 'tool.result': {
+                const how = row.denied ? 'was refused' : row.is_error ? `failed${took}` : `finished${took}`;
+                const size = Number(row.chars) > 0 ? ` · ${Number(row.chars).toLocaleString()} characters` : '';
+                return `${name} ${how}${size}${row.artifact ? ` · saved “${row.artifact}”` : ''}`;
+            }
+            case 'status': {
+                const [inTokens, outTokens] = Array.isArray(row.tokens) ? row.tokens.map(Number) : [0, 0];
+                return inTokens || outTokens
+                    ? `Model call: ${inTokens.toLocaleString()} token${inTokens === 1 ? '' : 's'} in, ${outTokens.toLocaleString()} out`
+                    : 'Model call';
+            }
+            case 'text.done': return Number(row.chars) > 0 ? `Replied (${Number(row.chars).toLocaleString()} characters)` : 'Replied';
+            case 'checkpoint.created': return 'Checkpoint saved';
+            case 'artifact.created': return row.artifact ? `Saved “${row.artifact}”` : 'Saved a file';
+            case 'subagent.start': return `Started a ${row.agent_type || 'worker'} worker`;
+            case 'subagent.end': return `Worker finished${Number(row.steps) > 0 ? ` after ${row.steps} steps` : ''}`;
+            case 'error': return `Error: ${row.message || 'unknown'}`;
+            default: return row.event || 'Event';
+        }
+    }
+
+    _renderRunTrace() {
+        const body = document.getElementById('run-trace-body');
+        const view = this._runTrace;
+        if (!body || !view) return;
+        const esc = (value) => this.escapeHtml(value);
+        const data = view.data;
+        if (view.error || !data) {
+            body.innerHTML = `<p class="share-note">${esc(view.error || 'Loading…')}</p>`;
+            return;
+        }
+        const when = Number(data.started_at) ? new Date(Number(data.started_at) * 1000).toLocaleString() : '';
+        const meta = [
+            data.model,
+            data.backend,
+            when,
+            Number(data.duration) > 0 ? this._traceDuration(data.duration) : '',
+            `${Number(data.events || 0).toLocaleString()} events recorded`,
+        ].filter(Boolean).join(' · ');
+        const rows = (data.rows || []).map((row) => {
+            const failed = row.event === 'error' || row.is_error || row.denied;
+            return `<li class="run-trace-row${failed ? ' is-error' : ''}">`
+                + `<span class="run-trace-at">${esc(this._traceTime(row.at))}</span>`
+                + `<span class="run-trace-text">${row.worker ? `<b>${esc(row.worker)}</b> ` : ''}${esc(this._traceRowLabel(row))}</span></li>`;
+        }).join('');
+        const exported = view.exported;
+        const actions = exported
+            ? `<p class="run-trace-saved">Saved as <code>${esc(exported.path || exported.id)}</code></p>`
+                + `<button type="button" class="task-review-btn" data-trace-action="open">Open</button>`
+                + `<button type="button" class="task-review-btn" data-trace-action="copy">Copy path</button>`
+            // aria-disabled, not disabled: a disabled button drops keyboard focus.
+            : `<button type="button" class="task-review-btn" data-trace-action="export" aria-disabled="${Boolean(view.exporting)}">`
+                + `${view.exporting ? 'Saving…' : 'Save for OpenTelemetry'}</button>`
+                + (view.exportError ? `<p class="share-note">${esc(view.exportError)}</p>` : '');
+        body.innerHTML = `<p class="share-note">${esc(meta)}</p>`
+            + `<ol class="run-trace-list">${rows}</ol>`
+            + (data.truncated ? `<p class="share-note">Showing the first ${(data.rows || []).length.toLocaleString()} events.</p>` : '')
+            + `<div class="run-trace-actions">${actions}</div>`;
+    }
+
+    openArtifact(artifact, returnFocus = null) {
+        const dialog = document.getElementById('artifact-dialog');
+        if (!dialog || !artifact?.id) return;
+        this._artifactView = { id: artifact.id, artifact, text: null, next: null, image: '', note: '', error: '', loading: true };
+        this._artifactReturnFocus = returnFocus || document.activeElement;
+        dialog.style.display = 'flex';
+        this._wireDialog(dialog, 'artifact-dialog-close', () => this.closeArtifact());
+        if (!dialog.dataset.artifactWired) {
+            document.getElementById('artifact-dialog-body')?.addEventListener('click', (event) => {
+                const action = event.target.closest('[data-artifact-action]')?.dataset.artifactAction;
+                if (action) this._onArtifactAction(action);
+            });
+            dialog.dataset.artifactWired = '1';
+        }
+        this._renderArtifact();
+        document.getElementById('artifact-dialog-close')?.focus();
+        this.send({ command: 'artifact_view', artifact_id: artifact.id });
+    }
+
+    closeArtifact() {
+        const dialog = document.getElementById('artifact-dialog');
+        if (!dialog || !this._artifactView) return;
+        dialog.style.display = 'none';
+        this._artifactView = null;
+        const back = this._artifactReturnFocus;
+        (back && back.isConnected ? back : this.userInput)?.focus?.();
+    }
+
+    _onArtifactAction(action) {
+        const view = this._artifactView;
+        if (!view) return;
+        if (action === 'more' && view.next != null && !view.loading) {
+            view.loading = true;
+            this._renderArtifact();
+            this._focusIn('artifact-dialog-body', '[data-artifact-action="more"]');
+            this.send({ command: 'artifact_view', artifact_id: view.id, offset: view.next });
+        } else if (action === 'copy' && view.artifact?.path) {
+            this._copyPath(view.artifact.path);
+        }
+    }
+
+    _receiveArtifactView(event) {
+        const view = this._artifactView;
+        if (!view || event.artifact?.id !== view.id) return;
+        view.artifact = { ...view.artifact, ...event.artifact };
+        view.loading = false;
+        const morePage = Number(event.offset) > 0 && Boolean(view.text);
+        if (typeof event.text === 'string') {
+            // "Show more" asks for the next page; the first page replaces.
+            view.text = morePage ? view.text + event.text : event.text;
+            view.next = event.next_offset ?? null;
+        }
+        view.image = event.image || '';
+        view.note = event.note || '';
+        this._renderArtifact();
+        // After "Show more", stay on it, or on the text once it's all shown.
+        if (morePage) this._focusIn('artifact-dialog-body', view.next != null ? '[data-artifact-action="more"]' : '.artifact-text');
+    }
+
+    _runRecordError(event) {
+        const message = event.message || "This couldn't be read.";
+        if (event.source === 'trace' && this._runTrace && (!event.turn_id || event.turn_id === this._runTrace.turn_id)) {
+            // Saving an export failed, or the trace itself can't be read.
+            const exporting = this._runTrace.exporting;
+            if (exporting) {
+                this._runTrace.exporting = false;
+                this._runTrace.exportError = message;
+            } else {
+                this._runTrace.error = message;
+            }
+            this._renderRunTrace();
+            if (exporting) this._focusIn('run-trace-body', '[data-trace-action="export"]');
+        } else if (event.source === 'artifact' && this._artifactView
+            && (!event.artifact_id || event.artifact_id === this._artifactView.id)) {
+            this._artifactView.loading = false;
+            this._artifactView.error = message;
+            this._renderArtifact();
+        }
+    }
+
+    _renderArtifact() {
+        const body = document.getElementById('artifact-dialog-body');
+        const view = this._artifactView;
+        if (!body || !view) return;
+        const esc = (value) => this.escapeHtml(value);
+        const artifact = view.artifact || {};
+        const title = document.getElementById('artifact-dialog-title');
+        if (title) title.textContent = artifact.label || 'Saved file';
+        const meta = [
+            artifact.kind,
+            this._formatBytes(artifact.size),
+            Number(artifact.created_at) ? new Date(Number(artifact.created_at) * 1000).toLocaleString() : '',
+        ].filter(Boolean).join(' · ');
+        let content;
+        if (view.error) {
+            content = `<p class="share-note">${esc(view.error)}</p>`;
+        } else if (view.image) {
+            content = `<img class="artifact-image" src="${esc(view.image)}" alt="${esc(artifact.label || 'Saved image')}">`;
+        } else if (typeof view.text === 'string') {
+            // The text scrolls on its own, so it takes focus for the keyboard.
+            content = `<pre class="artifact-text" tabindex="0">${esc(view.text)}</pre>`
+                + (view.next != null
+                    ? `<button type="button" class="task-review-btn" data-artifact-action="more" aria-disabled="${Boolean(view.loading)}">${view.loading ? 'Loading…' : 'Show more'}</button>`
+                    : '');
+        } else {
+            content = `<p class="share-note">${esc(view.note || (view.loading ? 'Loading…' : ''))}</p>`;
+        }
+        const path = artifact.path
+            ? `<p class="artifact-path"><code>${esc(artifact.path)}</code></p>`
+                + '<button type="button" class="task-review-btn" data-artifact-action="copy">Copy path</button>'
+            : '';
+        body.innerHTML = `<p class="share-note">${esc(meta)}</p>${content}<div class="artifact-actions">${path}</div>`;
+    }
+
     handleSubagentError(event) {
         // Worker failures are activity within the current user turn. Promoting
         // them through handleError() creates a second top-level failure card,
@@ -8841,6 +9918,7 @@ class LumiApp {
             this.stepRendered = false;
             this.collapsedGroup = [];
             this._liveCollapsedGroup = null;
+            this._closedEvidenceGroups = [];
         }
     }
 
@@ -10338,6 +11416,7 @@ class LumiApp {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;
+        this._closedEvidenceGroups = [];
         this._currentTurn = this._freshTurnAggregate();
         this._blockToolRows = new Map();
         this.subagentDepth = 0;
@@ -10365,9 +11444,20 @@ class LumiApp {
                 // A card still running here belongs to a turn that never
                 // ended (Lumi closed during it).
                 this._settleInterruptedCard();
+                // Each turn counts its own steps and tools, as a live turn
+                // does (_prepareTurnUI).
+                this._currentTurn = this._freshTurnAggregate();
                 this._resetAgentRunSummary(event.text || '');
                 // Replay user message bubble
                 this.addUserMessage(event.text);
+                continue;
+            }
+
+            if (type === 'timeline.restored') {
+                // A restored conversation can end mid-turn: that turn
+                // stopped at the checkpoint, it didn't crash.
+                this._settleInterruptedCard('Restored');
+                this._addTimelineRestoredNote(event);
                 continue;
             }
 
@@ -10444,7 +11534,7 @@ class LumiApp {
         if (userIndex < 0) return null;
 
         const turn = tail.slice(userIndex + 1);
-        const terminal = new Set(['session.end', 'text.done', 'error', 'await_user']);
+        const terminal = new Set(['session.end', 'text.done', 'error', 'await_user', 'timeline.restored']);
         if (turn.some((event) => terminal.has(event?.event))) return null;
 
         const started = turn.some((event) => event?.event === 'step.start');
@@ -10473,6 +11563,9 @@ class LumiApp {
             task.stateEl.className = 'task-card-state is-stopped';
             task.stateEl.textContent = label;
         }
+        // The replayed step's "thinking" indicator would otherwise keep
+        // ticking inside the collapsed details.
+        this.removeThinking();
         this._collapseTaskActivity({});
     }
 
@@ -11031,6 +12124,9 @@ class LumiApp {
             <button type="button" role="menuitem" class="ctx-item" data-action="rename">&#9998; Rename</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="share">&#128279; Share…</button>
             <button type="button" role="menuitem" class="ctx-item" data-action="handoff">&#8618; Hand off…</button>
+            ${session.id === this.currentSessionId
+                ? '<button type="button" role="menuitem" class="ctx-item" data-action="timeline">&#10226; Timeline…</button>'
+                : ''}
             <button type="button" role="menuitem" class="ctx-item" data-action="replay">&#9654; Replay</button>
             <div class="ctx-separator"></div>
             <button type="button" role="menuitem" class="ctx-item danger" data-action="delete">&#128465; Delete</button>
@@ -11072,6 +12168,10 @@ class LumiApp {
             } else if (action === 'handoff') {
                 menu.remove();
                 this.openHandoffDialog(session, returnFocus);
+                return;
+            } else if (action === 'timeline') {
+                menu.remove();
+                this.openTimeline(returnFocus);
                 return;
             } else if (action === 'replay') {
                 this.send({

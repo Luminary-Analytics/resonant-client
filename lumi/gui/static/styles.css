@@ -3284,6 +3284,7 @@ body {
 
 .tool-inline .tool-status.ok { color: var(--ok); }
 .tool-inline .tool-status.err { color: var(--err); }
+.tool-inline .tool-status.denied { color: var(--warn); }
 
 /* ── Block Tool (panel) ── */
 .tool-block {
@@ -3345,6 +3346,33 @@ body {
 /* Desktop tool border color */
 .tool-block.desktop { border-left-color: var(--warn); }
 .tool-inline.desktop { border-left-color: var(--warn); }
+
+/* A refused call (amber: it didn't run, so it didn't fail). */
+.tool-inline.is-denied {
+    border-left-color: var(--warn);
+}
+
+/* A refusal's reason, or an evidence call's output, takes a line of its own
+   under the row instead of squeezing the row beside it. */
+.tool-inline.is-denied,
+.tool-inline.evidence-item {
+    flex-wrap: wrap;
+    row-gap: 2px;
+}
+.tool-inline.is-denied .tool-meta {
+    min-width: 0;
+    max-width: 40%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.tool-inline .tool-denial-reason {
+    flex: 1 0 100%;
+    padding-left: 22px;
+}
+.tool-inline .tool-evidence-output {
+    flex: 1 1 100%;
+}
 
 /* ── Diff Lines ── */
 .diff-line { display: block; white-space: pre-wrap; word-break: break-all; }
@@ -4170,13 +4198,31 @@ body {
     display: flex;
     align-items: center;
     gap: 10px;
+    width: 100%;
     padding: 8px 14px;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
     cursor: pointer;
     transition: background 0.12s;
 }
 
 .perm-option:hover {
     background: var(--bg-hover);
+}
+
+/* The menu is operable from the keyboard (arrow keys, Escape); focus shows. */
+.perm-option:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+    background: var(--bg-hover);
+}
+
+.perm-opt-name,
+.perm-opt-desc {
+    display: block;
 }
 
 .perm-opt-icon {
@@ -6982,6 +7028,11 @@ body {
     background: color-mix(in srgb, var(--bg-elem) 45%, color-mix(in srgb, var(--err) 16%, transparent));
 }
 
+/* A refused call keeps its amber edge when expanded, like an error's. */
+.tool-row.denied {
+    border-left-color: var(--warn);
+}
+
 .tool-row-status {
     font-family: var(--font-mono, monospace);
     font-weight: 600;
@@ -6996,6 +7047,7 @@ body {
 
 .tool-row-status.ok  { color: var(--ok); }
 .tool-row-status.err { color: var(--err); }
+.tool-row-status.denied { color: var(--warn); }
 
 @keyframes tool-row-pulse {
     0%, 100% { opacity: 1; }
@@ -7099,6 +7151,24 @@ body {
 .tool-row-detail-empty {
     color: var(--muted);
     font-style: italic;
+}
+
+/* Why a refused call didn't run: a hook's message, a policy rule. It comes
+   from hooks, policies and models, so a long path or JSON wraps anywhere
+   rather than widening the conversation, and a long message scrolls. */
+.tool-denial-reason {
+    min-width: 0;
+    max-height: 12em;
+    overflow-y: auto;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.tool-row .tool-denial-reason {
+    grid-column: 3 / -1;
 }
 
 /* ── Per-turn footer ── */
@@ -8024,7 +8094,10 @@ body {
     background: color-mix(in srgb, #d97706 14%, var(--bg-hover));
 }
 
-.mission-toggle {
+/* The Timeline button has the same look but its own class: autonomous
+   sessions hide every .mission-toggle while they are off. */
+.mission-toggle,
+.timeline-toggle {
     display: inline-flex;
     align-items: center;
     gap: 6px;
@@ -8042,7 +8115,8 @@ body {
                 border-color var(--duration-fast) ease;
 }
 
-.mission-toggle:hover {
+.mission-toggle:hover,
+.timeline-toggle:hover {
     color: var(--text);
     border-color: color-mix(in srgb, var(--brand) 40%, var(--border));
     background: color-mix(in srgb, var(--brand) 8%, transparent);
@@ -8055,7 +8129,8 @@ body {
     transition: filter var(--duration-fast) ease;
 }
 
-.mission-toggle:hover .mission-toggle-icon {
+.mission-toggle:hover .mission-toggle-icon,
+.timeline-toggle:hover .mission-toggle-icon {
     filter: none;
 }
 
@@ -10290,6 +10365,33 @@ body {
     color: var(--text-secondary);
 }
 
+/* Off screen until keyboard focus reaches it (WCAG 2.4.1). */
+.skip-link {
+    position: fixed;
+    left: 12px;
+    top: -80px;
+    z-index: 10000;
+    padding: 8px 14px;
+    border: 2px solid var(--accent);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+.skip-link:focus,
+.skip-link:focus-visible {
+    top: 12px;
+    outline: none;
+}
+
+/* Keyboard focus needs more than hover's faint border (WCAG 2.4.7). */
+.titlebar-command:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .titlebar-command kbd {
     flex: none;
     white-space: nowrap;
@@ -11813,6 +11915,13 @@ body:not([data-autonomous-sessions="1"]) .autonomous-mission-browser,
     color: var(--text);
     background: var(--bg-hover);
     outline: none;
+}
+
+/* Keyboard focus needs a ring, not just hover's color change (WCAG 2.4.7). */
+.model-selector:focus-visible,
+.reasoning-selector:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
 }
 
 .window-resize-edge {
@@ -13597,7 +13706,7 @@ body.is-window-dragging * {
 /* Keep the settings light palette independent of legacy dark shell overrides. */
 [data-theme="light"] #settings-view {
     --bg: #fbfaf6; --bg-sidebar: #efece3; --bg-panel: #f6f4ee; --bg-hover: #e6e2d6;
-    --text: #15172e; --muted: #64667d; --dim: #6e7087;
+    --text: #15172e; --muted: #55576c; --dim: #626378;
     --border: #e3dfd3; --border-strong: #cfc9b8; --brand: #8a5600;
 }
 
@@ -13643,8 +13752,9 @@ body.is-window-dragging * {
     --file: #7bc8ff;
     --text: #ecebf6;
     --text-secondary: #b7b9d4;
-    --muted: #8d90b0;
-    --dim: #6a6d8f;
+    /* Every text token reaches 4.5:1 (WCAG 2.1 AA) on every surface, hover included. */
+    --muted: #a3a6c4;
+    --dim: #8e91aa;
     --dimmer: #464a6b;
     --border: rgba(236,235,246,.08);
     --border-strong: rgba(236,235,246,.15);
@@ -13661,8 +13771,8 @@ body.is-window-dragging * {
     --chat-composer-border: rgba(236,235,246,.12);
     --chat-soft-hover: rgba(236,235,246,.06);
 }
-/* Light: text tokens reach 4.5:1 on paper and panels (--dim, for hints and
-   counts, stays above 4:1 on the darker sidebar). */
+/* Light: every text token reaches 4.5:1 (WCAG 2.1 AA) on every surface,
+   the sidebar and hover included. */
 [data-theme="light"] {
     color-scheme: light;
     --brand: #8a5600;
@@ -13684,8 +13794,8 @@ body.is-window-dragging * {
     --file: #0369a1;
     --text: #15172e;
     --text-secondary: #45475f;
-    --muted: #64667d;
-    --dim: #6e7087;
+    --muted: #55576c;
+    --dim: #626378;
     --dimmer: #dcd8cc;
     --border: rgba(21,23,46,.1);
     --border-strong: rgba(21,23,46,.18);
@@ -13826,6 +13936,57 @@ body.is-window-dragging * {
 .sidebar-handoffs[hidden] { display: none; }
 .sidebar-handoffs .sns-icon { font-size: 15px; line-height: 1; }
 
+/* The conversation's checkpoints (app.js, openTimeline). */
+.timeline-dialog { width: 620px; max-height: 85vh; display: flex; flex-direction: column; }
+.timeline-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.timeline-dialog .dialog-body { overflow: auto; }
+.timeline-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.timeline-item { padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.timeline-item-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.timeline-item-copy { flex: 1; min-width: 0; }
+.timeline-item-copy strong, .timeline-item-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.timeline-item-copy small { margin-top: 2px; color: var(--muted); font-size: 11.5px; }
+.timeline-item-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.timeline-comparison { margin: 8px 0 0; }
+.timeline-comparison span { color: var(--muted); font-size: 11.5px; }
+.timeline-comparison pre { max-height: 200px; margin: 4px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11.5px; }
+.timeline-confirm { margin: 10px 0 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.timeline-confirm legend { padding: 0 4px; color: var(--muted); font-size: 11.5px; }
+.timeline-mode { display: inline-flex; align-items: center; gap: 6px; margin: 0 14px 4px 0; cursor: pointer; }
+.timeline-confirm-note { margin: 6px 0 0; color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.timeline-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.timeline-confirm-actions .dialog-btn:disabled { opacity: .6; cursor: default; }
+@media (max-width: 520px) {
+    .timeline-item-head { flex-wrap: wrap; }
+    .timeline-item-actions { justify-content: flex-start; }
+    .timeline-item-copy strong, .timeline-item-copy small { white-space: normal; overflow-wrap: anywhere; }
+}
+/* A run's trace and saved files (app.js, _appendRunRecords, openRunTrace, openArtifact). */
+.task-run-records { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0 2px; }
+.task-run-records .task-review-btn, .run-trace-actions .task-review-btn, .artifact-actions .task-review-btn { margin-left: 0; }
+.task-review-btn[aria-disabled="true"] { opacity: .6; cursor: default; }
+.task-run-records-label { margin-left: 4px; color: var(--muted); font-size: 11.5px; }
+.run-trace-dialog, .artifact-dialog { width: 680px; max-height: 85vh; display: flex; flex-direction: column; }
+.run-trace-dialog .dialog-header, .artifact-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.run-trace-dialog .dialog-body, .artifact-dialog .dialog-body { overflow: auto; }
+.run-trace-list { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; font-size: 12.5px; }
+.run-trace-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; padding: 3px 6px; border-radius: var(--radius-sm); }
+.run-trace-row:nth-child(odd) { background: color-mix(in srgb, var(--border) 25%, transparent); }
+.run-trace-row.is-error .run-trace-text { color: var(--err); }
+.run-trace-at { color: var(--muted); font-variant-numeric: tabular-nums; text-align: right; }
+.run-trace-text { min-width: 0; overflow-wrap: anywhere; }
+.run-trace-text b { margin-right: 4px; color: var(--text-secondary); font-weight: 600; }
+.run-trace-actions, .artifact-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.run-trace-saved, .artifact-path { flex-basis: 100%; margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+.artifact-text { max-height: 55vh; margin: 8px 0 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.artifact-image { display: block; max-width: 100%; height: auto; margin: 8px auto 0; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+@media (max-width: 520px) {
+    .run-trace-row { grid-template-columns: 52px minmax(0, 1fr); gap: 6px; }
+}
+/* Where the chat was restored (a display-only timeline.restored event). */
+.timeline-restored-note { margin: 8px 16px; padding: 6px 12px; border: 1px dashed var(--border); border-radius: var(--radius-sm); color: var(--muted); font-size: 12px; text-align: center; overflow-wrap: anywhere; }
+.timeline-restored-note::before { content: "\27F2\00a0"; }
+
 /* A worker's transcript and steering (app.js, openWorkerTranscript and openWorkerSteer). */
 .worker-transcript-dialog { width: 640px; max-height: 85vh; display: flex; flex-direction: column; }
 .worker-transcript-dialog .dialog-header, .worker-steer-dialog .dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
@@ -13861,3 +14022,19 @@ body.is-window-dragging * {
 .share-link-row input { flex: 1; min-width: 0; }
 .share-who { display: grid; gap: 6px; margin: 12px 0 0; padding: 0; border: 0; }
 .share-who label { display: flex; align-items: center; gap: 8px; }
+
+/* A plan's specialists under its card, one step each (app.js, "Plan activity").
+   A step's line spans the card, so a long goal ends in an ellipsis before its status. */
+.plan-step > summary { display: flex; min-width: 0; }
+.plan-step > summary:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; border-radius: 6px; }
+.plan-step-goal { flex: 1; min-width: 0; overflow: hidden; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.plan-step > summary .task-activity-meta { flex-shrink: 0; margin-left: 0; white-space: nowrap; }
+.plan-step.is-running > summary .task-activity-meta { color: var(--brand-text); }
+.plan-step.is-attention > summary .task-activity-meta { color: var(--warn-soft-text); }
+.plan-step-body { display: flex; flex-direction: column; gap: 6px; }
+.plan-step-body .msg-assistant { margin: 0; }
+.plan-step-body .message-content { font-size: 13px; }
+.plan-run-status .task-run-detail { white-space: normal; overflow-wrap: anywhere; }
+.plan-run-status.is-running .task-run-mark { background: transparent; }
+.plan-run-status.is-running .task-run-mark::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--brand); animation: live-run-pulse 1.8s ease-out infinite; }
+@media (prefers-reduced-motion: reduce) { .plan-run-status.is-running .task-run-mark::before { animation: none; } }

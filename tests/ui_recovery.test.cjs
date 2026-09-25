@@ -368,6 +368,25 @@ test('billing-off and failed SONN discovery never appear as a paid subscription'
     assert.equal(app._accountSummary().name, 'SONN account');
 });
 
+test('Settings say device management updates an MSI or PKG copy', () => {
+    const app = accountView();
+    app.escapeHtml = value => String(value).replace(/[&<>"']/g, c => `&#${c.charCodeAt(0)};`);
+    app.updateStatus = {version: '0.20.0', mode: 'off', describe: 'the stable channel', installed_by: 'pkg',
+        available: false, problems: []};
+    assert.match(app._renderUpdateStatus(),
+        /installed from the macOS installer package, so your organization’s device management updates it/);
+    app.updateStatus.installed_by = 'msi';
+    assert.match(app._renderUpdateStatus(), /installed from the MSI package, so/);
+    app.updateStatus = {...app.updateStatus, installed_by: 'someday', managed_by: 'Acme'};
+    assert.match(app._renderUpdateStatus(), /managed by Acme/);
+    app.updateStatus.installed_by = 'deb';
+    assert.match(app._renderUpdateStatus(), /installed from the Debian package, so your package manager updates it/);
+    app.aboutInfo = {version: '0.20.0', license: 'MIT', installed_by: 'pkg'};
+    assert.match(app._renderAbout(), /Installed from the macOS installer package; your organization’s device management updates it\./);
+    app.aboutInfo.installed_by = 'rpm';
+    assert.match(app._renderAbout(), /Installed from the RPM package; your package manager updates it\./);
+});
+
 test('Settings shortcut works from a composer draft without sending or clearing it', () => {
     const app = setup();
     app.userInput.value = 'Keep this draft';
@@ -860,6 +879,8 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
     const app = setup(() => {});
     const collapsed = [];
     app._collapseTaskActivity = () => collapsed.push('collapsed');
+    // The replayed step's ticking "thinking" row goes before the collapse.
+    app.removeThinking = () => collapsed.push('thinking');
     const card = (classes, connected = true) => {
         const set = new Set(classes);
         return {isConnected: connected, classList: {
@@ -876,7 +897,7 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
     app._activeTask = task(card(['task-card', 'task-card-running']));
     app._settleInterruptedCard('Paused');
     assert.equal(app._activeTask.stateEl.textContent, 'Paused');
-    assert.deepEqual(collapsed, ['collapsed', 'collapsed']);
+    assert.deepEqual(collapsed, ['thinking', 'collapsed', 'thinking', 'collapsed']);
 
     // A finished card, or one no longer on the page, is left alone.
     for (const other of [task(card(['task-card', 'task-card-done'])), task(card(['task-card', 'task-card-running'], false))]) {
@@ -884,5 +905,895 @@ test('a replayed turn that never ended is shown stopped, with its work reachable
         app._settleInterruptedCard();
         assert.equal(other.stateEl.textContent, 'Running');
     }
-    assert.equal(collapsed.length, 2);
+    assert.equal(collapsed.length, 4);
+});
+
+// The Timeline: the open conversation's checkpoints, and what each restores.
+test('a checkpoint is named by what it was saved before', () => {
+    const app = setup(() => {});
+    const label = (tool_name, target = '') => app._timelineLabel({tool_name, target});
+    assert.equal(label('file_write', 'docs/notes.md'), 'Before writing docs/notes.md');
+    assert.equal(label('file_edit', 'notes.txt'), 'Before editing notes.txt');
+    assert.equal(label('bash', 'npm test'), 'Before running npm test');
+    assert.equal(label('bash', 'x'.repeat(80)), `Before running ${'x'.repeat(57)}…`);
+    assert.equal(label('git_commit', 'Fix it'), 'Before committing');
+    assert.equal(label('git_branch_create', 'feature'), 'Before creating branch feature');
+    assert.equal(label('batch'), 'Before a batch of changes');
+    assert.equal(app._timelineLabel({tool_name: 'mystery', reason: 'Before mystery'}), 'Before mystery');
+});
+
+test('the Timeline never promises checkpoints for a CLI connection\'s own changes', () => {
+    const app = setup(() => {});
+    for (const [value, expected] of [['ollama:qwen3', /^Before each change it makes, Lumi saves a checkpoint/],
+        ['codex:gpt-5.3-codex', /^Codex changes files with its own tools, so Lumi saves no checkpoints/],
+        ['claude-code:sonnet', /^Claude Code changes files with its own tools/]]) {
+        app.modelSelector = {value};
+        assert.match(app._timelineIntro(), expected);
+    }
+});
+
+test('a checkpoint restores only what it holds, and says so first', () => {
+    const app = setup(() => {});
+    const modes = (item) => Array.from(app._timelineRestoreModes(item));
+    assert.deepEqual(modes({snapshot: 'git'}), ['files', 'conversation', 'both']);
+    // A worker's checkpoint holds the worker's conversation: files only.
+    assert.deepEqual(modes({snapshot: 'archive', subagent: true}), ['files']);
+    assert.deepEqual(modes({snapshot: ''}), ['conversation']);
+    assert.match(app._timelineRestoreNote({snapshot: 'git'}, 'files'), /kept first, on a lumi-recovery branch\. The conversation doesn't change/);
+    assert.match(app._timelineRestoreNote({snapshot: 'archive'}, 'both'), /recovery archive\. The conversation goes back to this point/);
+    assert.match(app._timelineRestoreNote({snapshot: 'git'}, 'conversation'), /later messages leave it\. Your files don't change/);
+    assert.equal(app._timelineRestoredMessage({mode: 'files', checkpoint: {tool_name: 'file_edit', target: 'notes.txt'},
+        workspace: {recovery_branch: 'lumi-recovery/20260925'}}),
+        'Files restored to before editing notes.txt. Your previous files are on lumi-recovery/20260925.');
+    assert.equal(app._timelineRestoredMessage({mode: 'conversation', checkpoint: {tool_name: 'bash', target: 'make'}}),
+        'Conversation restored to before running make.');
+});
+
+test('restoring asks first, waits for the current run, and recovers from a refusal', () => {
+    // Focus moves within the dialog; the rows under test aren't rendered here.
+    const app = setup(() => {}, {document: {getElementById: () => null, querySelector: () => null},
+        CSS: {escape: (value) => value}});
+    const sent = [], messages = [];
+    app.send = (message) => sent.push(`${message.command}:${message.checkpoint_id || ''}:${message.mode || ''}`);
+    app.showStatusMessage = (text) => messages.push(text);
+    app._renderTimeline = () => {};
+    app.runtimeTimeline = [{id: 'cp_1', tool_name: 'file_edit', target: 'notes.txt', snapshot: 'git'},
+        {id: 'cp_2', tool_name: 'file_write', target: 'w.txt', snapshot: 'archive', subagent: true}];
+    const button = (action, id) => ({dataset: {timelineAction: action}, closest: () => ({dataset: {checkpointId: id}})});
+
+    app._onTimelineAction(button('restore', 'cp_2'));
+    assert.deepEqual({...app._timelineConfirm}, {id: 'cp_2', mode: 'files'});
+    app._onTimelineAction(button('cancel', 'cp_2'));
+    assert.equal(app._timelineConfirm, null);
+    app._onTimelineAction(button('compare', 'cp_1'));
+    app._onTimelineAction(button('restore', 'cp_1'));
+    assert.equal(sent.length, 1);  // choosing isn't restoring
+
+    app.isRunning = true;
+    app._onTimelineAction(button('confirm', 'cp_1'));
+    assert.match(messages.at(-1), /Stop the current run/);
+    app.isRunning = false;
+    app._onTimelineAction(button('confirm', 'cp_1'));
+    assert.deepEqual(sent, ['session_timeline_compare:cp_1:', 'session_timeline_restore:cp_1:files']);
+    assert.equal(app._timelinePending, 'cp_1');
+
+    // A refusal (an error event) lets the user try again; showing the error
+    // itself is handleError's job.
+    app.handleError = () => {};
+    app.handleEvent({event: 'error', message: 'Stop the active run before restoring a checkpoint'});
+    assert.equal(app._timelinePending, '');
+});
+
+test('a restored conversation stops at its checkpoint instead of replaying as a crash', () => {
+    const notes = [];
+    const app = setup(() => {}, {document: {getElementById: () => null, createElement: () => ({})}});
+    app.chatMessages = {appendChild: (el) => notes.push(el)};
+    // Saved before the turn's first change: the turn had only started.
+    const turn = [{event: 'user_message', text: 'write the notes'}, {event: 'step.start', step: 1}];
+    const marker = {event: 'timeline.restored', mode: 'both', checkpoint: {tool_name: 'file_write', target: 'notes.txt'}};
+    assert.equal(app._interruptedReplayRecovery(turn).kind, 'not_started');
+    assert.equal(app._interruptedReplayRecovery([...turn, marker]), null);
+    // A later turn that stopped still offers its Retry.
+    const later = [...turn, marker, {event: 'user_message', text: 'again'}, {event: 'step.start', step: 1}];
+    assert.equal(app._interruptedReplayRecovery(later).kind, 'not_started');
+
+    app._addTimelineRestoredNote(marker);
+    assert.equal(notes[0].className, 'timeline-restored-note');
+    assert.equal(notes[0].textContent, 'Files and conversation restored to before writing notes.txt.');
+});
+
+// A run's trace and saved files, at the end of its card's work details.
+test('a trace row says what happened, never what a call contained', () => {
+    const app = setup(() => {});
+    const label = (row) => app._traceRowLabel(row);
+    assert.equal(label({event: 'tool.call', name: 'file_write', target: 'notes.txt'}), 'Called file_write: notes.txt');
+    assert.equal(label({event: 'tool.result', name: 'bash', elapsed: 0.25, chars: 600, artifact: 'bash result'}),
+        'bash finished in 250 ms · 600 characters · saved “bash result”');
+    assert.equal(label({event: 'tool.result', name: 'bash', is_error: true, elapsed: 1.5}), 'bash failed in 1.50s');
+    assert.equal(label({event: 'tool.result', name: 'task', denied: true}), 'task was refused');
+    assert.equal(label({event: 'status', tokens: [120, 30]}), 'Model call: 120 tokens in, 30 out');
+    assert.equal(label({event: 'status', tokens: [1, 1]}), 'Model call: 1 token in, 1 out');
+    assert.equal(label({event: 'step.start', step: 2, detail: 'after file_write'}), 'Step 2 (after file_write)');
+    assert.equal(label({event: 'session.end', outcome: 'changed_unverified'}), 'Finished: changed, not verified');
+    assert.equal(label({event: 'mystery.event'}), 'mystery.event');
+    assert.equal(app._traceTime(0.5), '+0.50s');
+    assert.equal(app._traceTime(75), '+1m 15s');
+});
+
+test('a run keeps the files it saved, a worker\'s included', () => {
+    const app = setup(() => {});
+    app._liveRun = null;
+    app.renderToolResult = () => {};
+    app._activeTask = {};
+    const result = (metadata) => ({event: 'tool.result', name: 'bash', _subagent: true, metadata});
+    app.handleToolResult(result({artifact: {id: 'art_1', label: 'bash result', size: 61000}}));
+    app.handleToolResult(result({}));
+    assert.deepEqual(Array.from(app._activeTask.artifacts, (saved) => saved.id), ['art_1']);
+    assert.equal(app._artifactName(app._activeTask.artifacts[0]), 'bash result · 60 KB');
+    assert.equal(app._formatBytes(0), '');
+    assert.equal(app._formatBytes(512), '512 B');
+    assert.equal(app._formatBytes(3.5 * 1024 * 1024), '3.5 MB');
+});
+
+test('a trace or saved file that can\'t be read says so in its own dialog', () => {
+    const app = setup(() => {});
+    const renders = [];
+    app._renderRunTrace = () => renders.push('trace');
+    app._renderArtifact = () => renders.push('artifact');
+    app.handleError = () => renders.push('chat');
+    app._runTrace = {turn_id: 'turn_1', data: null};
+    app.handleEvent({event: 'error', source: 'trace', turn_id: 'turn_1', message: "This run's trace is no longer saved."});
+    assert.equal(app._runTrace.error, "This run's trace is no longer saved.");
+    // A failed save keeps the trace on show.
+    app._runTrace = {turn_id: 'turn_1', data: {rows: []}, exporting: true};
+    app.handleEvent({event: 'error', source: 'trace', turn_id: 'turn_1', message: 'The disk is full.'});
+    assert.equal(app._runTrace.exportError, 'The disk is full.');
+    assert.equal(app._runTrace.exporting, false);
+    assert.equal(app._runTrace.error, undefined);
+    app._artifactView = {id: 'art_1', loading: true};
+    app.handleEvent({event: 'error', source: 'artifact', artifact_id: 'art_1', message: 'This file is no longer saved.'});
+    assert.equal(app._artifactView.error, 'This file is no longer saved.');
+    assert.deepEqual(renders, ['trace', 'trace', 'artifact']);  // never a chat error
+});
+
+test('the saved-file viewer adds each page it is shown, and only its own', () => {
+    const app = setup(() => {});
+    app._renderArtifact = () => {};
+    app._artifactView = {id: 'art_1', artifact: {id: 'art_1'}, text: null, next: null, loading: true};
+    app._receiveArtifactView({artifact: {id: 'art_1', label: 'bash result'}, text: 'aaa', offset: 0, next_offset: 3});
+    app._receiveArtifactView({artifact: {id: 'art_2'}, text: 'zzz', offset: 3});
+    app._receiveArtifactView({artifact: {id: 'art_1'}, text: 'bbb', offset: 3, next_offset: null});
+    assert.equal(app._artifactView.text, 'aaabbb');
+    assert.equal(app._artifactView.next, null);
+    assert.equal(app._artifactView.artifact.label, 'bash result');
+});
+
+test('a turn\'s trace is saved for OpenTelemetry once, from its own dialog', () => {
+    const app = setup(() => {});
+    const sent = [];
+    app.send = (message) => sent.push(`${message.command}:${message.run_id}:${message.turn_id}`);
+    app._renderRunTrace = () => {};
+    app._runTrace = {run_id: 'run_1', turn_id: 'turn_1', data: {rows: []}};
+    app._onRunTraceAction('export');
+    app._onRunTraceAction('export');
+    assert.deepEqual(sent, ['flight_recorder_export:run_1:turn_1']);
+    app.handleEvent({event: 'artifact.created', turn_id: 'turn_2', artifact: {id: 'art_8'}});
+    assert.equal(app._runTrace.exported, undefined);
+    app.handleEvent({event: 'artifact.created', turn_id: 'turn_1', artifact: {id: 'art_9', path: 'C:/trace.json'}});
+    assert.equal(app._runTrace.exported.id, 'art_9');
+    assert.equal(app._runTrace.exporting, false);
+});
+
+// ── A plan's specialists report under the plan's card ─────────────────
+// A plan (/plan, a Mission's roadmap) runs specialists in sessions of their
+// own. IntentService forwards their engine events tagged `_source: "intent"`;
+// they draw under the plan's card and never act as the conversation's turn.
+
+const PLAN = 'intent-1';
+const planEvent = (kind, nodeId, payload = {}, ts = 0, intentId = PLAN) =>
+    ({event: 'plan.event', intent_id: intentId, event_payload: {kind, node_id: nodeId, payload, ts}});
+const fromSpecialist = (intentId, ...events) => events.map(event => ({...event, intent_id: intentId, _source: 'intent'}));
+
+// The real handlers and plan cards, drawing into a fake conversation. Every
+// call into the conversation's own turn is recorded instead of run.
+function planApp() {
+    const dom = fakeDom();
+    const timers = [];
+    const context = vm.createContext({console, document: dom.document, CSS: dom.CSS, window: {},
+        setTimeout: fn => timers.push(fn), clearTimeout: () => {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/run_cards.js'), 'utf8'), context);
+    const app = Object.create(context.App.prototype);
+    const turnCalls = [];
+    for (const name of ['setRunning', 'handleSessionStart', 'handleSessionEnd', 'handleStepStart', 'handleStepEnd',
+        'handleTextDelta', 'handleTextDone', 'handleToolCall', 'handleToolResult', 'handleError', 'handleStatus',
+        '_offerPromptSuggestion', '_startLiveRun', '_setLiveRunPhase']) {
+        app[name] = () => turnCalls.push(name);
+    }
+    const chatActivity = dom.document.createElement('div');
+    Object.assign(app, {
+        chatMessages: dom.document.createElement('div'),
+        userInput: {value: '', style: {}, focus: () => turnCalls.push('focus')},
+        isRunning: false,
+        _formatRunDuration: context.window.LumiRunCards.prototype._formatRunDuration,
+        _ensureTaskCard: () => ({activityEl: chatActivity}),
+        scrollToBottom: () => {}, showStatusMessage: () => {}, openPlanTab: () => {}, pushPreviewConsole: () => {},
+        send: () => {},
+        activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(), _blockToolRows: new Map(),
+    });
+    Object.assign(app, {
+        dom, turnCalls, chatActivity,
+        play: (...events) => events.flat().forEach(event => app.handleEvent(event)),
+        flushText: () => timers.splice(0).forEach(fn => fn()),
+        card: (intentId = PLAN) => app.chatMessages.children.find(card => card.getAttribute('data-intent-id') === intentId),
+        steps: (intentId = PLAN) => app.card(intentId).querySelectorAll('.plan-step'),
+    });
+    return app;
+}
+
+test('a plan\'s specialists report under its card, never as the conversation\'s turn', () => {
+    const app = planApp();
+    const sent = [];
+    app.send = message => sent.push(message.command);
+    app.startIntent('add a dark mode toggle');
+    assert.deepEqual(sent, ['intent_start']);
+    const [card] = app.chatMessages.children;
+    assert.equal(card.querySelector('.task-request-text').textContent, '/plan add a dark mode toggle');
+    assert.equal(card.querySelector('.task-run-label').textContent, 'Starting plan');
+
+    const edit = editCall('call_1', 'settings.css');
+    app.play({event: 'intent.accepted', intent_id: PLAN, text: 'add a dark mode toggle'},
+        {event: 'plan.snapshot', intent_id: PLAN, snapshot: {intent_id: PLAN, intent: 'add a dark mode toggle', nodes: []}},
+        {event: 'intent.started', intent_id: PLAN, text: 'add a dark mode toggle'},
+        planEvent('node.start', 'n1', {goal: 'add a dark mode toggle', specialization: 'plan'}, 100),
+        fromSpecialist(PLAN, {event: 'session.start', model: 'stub'}, {event: 'step.start', step: 1},
+            {event: 'text.delta', delta: 'Two steps: '}, {event: 'text.delta', delta: 'add the toggle, then check it.'},
+            {event: 'text.done', text: 'Two steps: add the toggle, then check it.'},
+            {event: 'status', model: 'stub', stats: {input_tokens: 10, output_tokens: 5}},
+            {event: 'step.end', step: 1, elapsed: 2},
+            // The planner edits nothing, so its own session calls itself incomplete.
+            {event: 'session.end', outcome: 'incomplete', evidence: {requires_workspace_change: true}}),
+        planEvent('node.done', 'n1', {status: 'done', confidence: 0.9, summary: 'Two steps'}, 102),
+        planEvent('node.start', 'n2', {goal: 'Add a toggle to the settings page', specialization: 'implement'}, 103),
+        fromSpecialist(PLAN, {event: 'session.start'}, {event: 'step.start', step: 1}, edit,
+            {event: 'text.done', text: ''}, toolResult(edit), {event: 'step.end', step: 1},
+            {event: 'step.start', step: 2}, {event: 'text.delta', delta: 'Added the toggle.'},
+            {event: 'text.done', text: 'Added the toggle.'}, {event: 'step.end', step: 2},
+            {event: 'session.end', outcome: 'changed_unverified'}),
+        planEvent('node.done', 'n2', {status: 'done', confidence: 0.95}, 110),
+        planEvent('plan.complete', null, {all_done: true, node_count: 2}, 110),
+        {event: 'intent.complete', intent_id: PLAN, extracted_skill_id: null});
+
+    // Not a turn: no verdict, Retry or suggestion, no run state, no focus change.
+    assert.deepEqual(app.turnCalls, []);
+    assert.equal(app.isRunning, false);
+    assert.equal(app._activeTask, undefined);
+    assert.equal(app.chatMessages.children.length, 1, 'no card of the conversation\'s own');
+    assert.equal(card.getAttribute('data-intent-id'), PLAN);
+    assert.equal(card.getAttribute('data-user-message'), 'plan', 'forks count only the session\'s messages');
+    assert.equal(card.querySelectorAll('[data-recovery]').length, 0);
+
+    // One step per specialist, each folded to its line once done.
+    const [planner, implementer] = app.steps();
+    assert.equal(planner.querySelector('.task-activity-title').textContent, 'Planner');
+    assert.equal(planner.querySelector('.plan-step-goal').textContent, 'add a dark mode toggle');
+    assert.equal(planner.querySelector('.task-activity-meta').textContent, 'done · 2s');
+    assert.equal(planner.querySelector('.message-content').textContent, 'Two steps: add the toggle, then check it.');
+    assert.equal(implementer.querySelector('.task-activity-title').textContent, 'Implementer');
+    assert.equal(implementer.querySelector('.task-activity-meta').textContent, 'done · 1 action · 7s');
+    const row = implementer.querySelector('.tool-row');
+    assert.equal(row.getAttribute('data-tool'), 'file_edit');
+    assert.equal(row.querySelector('[data-status]').textContent, '✓');
+    assert.equal(row.querySelector('[data-meta]').textContent, '+1 −1');
+    assert.equal(implementer.querySelector('.message-content').textContent, 'Added the toggle.');
+    assert.deepEqual([planner.open, implementer.open], [false, false]);
+
+    assert.equal(card.querySelector('.task-run-label').textContent, 'Plan complete');
+    assert.equal(card.querySelector('.task-run-detail').textContent, '2 steps · 1 action · 10s');
+});
+
+test('a plan beside a running turn leaves the turn\'s rows, progress and state alone', () => {
+    const app = planApp();
+    // The conversation's own turn runs a command that is still waiting.
+    app.isRunning = true;
+    app._liveRun = {active: true, lastEventAt: 1};
+    app.renderToolCall({event: 'tool.call', name: 'bash', call_id: 'call_1', arguments: {command: 'npm test'}});
+    const turnRows = app._blockToolRows;
+
+    // A Mission's roadmap runs meanwhile, and its specialist reuses the call id.
+    const build = {event: 'tool.call', name: 'bash', call_id: 'call_1', arguments: {command: 'npm run build'}};
+    const spec = '## Final spec\n\n**Refined intent:** Add a dark mode toggle.\n\n**In scope:** settings';
+    app.play({event: 'plan.snapshot', intent_id: 'roadmap', snapshot: {intent: spec, nodes: []}},
+        {event: 'intent.started', intent_id: 'roadmap', text: spec},
+        planEvent('node.start', 'n1', {goal: spec, specialization: 'plan'}, 5, 'roadmap'),
+        fromSpecialist('roadmap', {event: 'session.start'}, {event: 'step.start', step: 1}, build,
+            toolResult(build, {output: 'built', metadata: {exit_code: 0}}), {event: 'step.end', step: 1},
+            {event: 'error', message: 'Step limit reached'}, {event: 'session.end', outcome: 'failed'}));
+
+    assert.deepEqual(app.turnCalls, []);
+    assert.equal(app.isRunning, true);
+    assert.equal(app._liveRun.lastEventAt, 1, 'the turn\'s progress heard nothing');
+    assert.equal(app._blockToolRows, turnRows);
+    const [turnRow] = app.chatActivity.children;
+    assert.ok(turnRow.querySelector('[data-status]').classList.contains('pending'), 'the turn\'s command still waits');
+    assert.ok(turnRows.has('call_1'));
+
+    // The roadmap's card is named from its spec, and holds its own rows.
+    const card = app.card('roadmap');
+    assert.equal(card.querySelector('.task-card-label').textContent, 'Plan');
+    assert.equal(card.querySelector('.task-request-text').textContent, 'Refined intent: Add a dark mode toggle.');
+    const [step] = app.steps('roadmap');
+    assert.equal(step.querySelector('.plan-step-goal').textContent, 'Refined intent: Add a dark mode toggle.');
+    assert.equal(step.querySelector('.tool-row').querySelector('[data-status]').textContent, '✓');
+    assert.equal(step.querySelector('.error-block').textContent, '✗ Step limit reached');
+    assert.equal(card.querySelector('.task-run-label').textContent, 'Plan running');
+});
+
+test('each plan counts only its own steps and actions', () => {
+    const app = planApp();
+    const runPlan = (intentId, text, calls) => {
+        app.startIntent(text);
+        app.play({event: 'intent.accepted', intent_id: intentId, text},
+            planEvent('node.start', `${intentId}-1`, {goal: text, specialization: 'implement'}, 1, intentId),
+            fromSpecialist(intentId, ...calls.flatMap(call => [call, toolResult(call)])),
+            planEvent('node.done', `${intentId}-1`, {status: 'done'}, 2, intentId),
+            planEvent('plan.complete', null, {all_done: true}, 2, intentId),
+            {event: 'intent.complete', intent_id: intentId});
+    };
+    runPlan('first', 'add a toggle', [editCall('c1', 'a.css'), editCall('c2', 'b.css'), editCall('c3', 'c.css')]);
+    runPlan('second', 'add a footer', [editCall('c1', 'd.css')]);
+    assert.equal(app.card('first').querySelector('.task-run-detail').textContent, '1 step · 3 actions · 1s');
+    assert.equal(app.card('second').querySelector('.task-run-detail').textContent, '1 step · 1 action · 1s');
+    assert.equal(app.card('second').querySelector('.task-request-text').textContent, '/plan add a footer');
+    assert.deepEqual(app.turnCalls, []);
+});
+
+test('a plan\'s card says when it pauses, stops, fails or can\'t start, and keeps unfinished steps open', () => {
+    const app = planApp();
+    const label = intentId => app.card(intentId).querySelector('.task-run-label').textContent;
+    const detail = intentId => app.card(intentId).querySelector('.task-run-detail').textContent;
+    const meta = step => step.querySelector('.task-activity-meta').textContent;
+
+    app.startIntent('add a toggle');
+    app.play({event: 'intent.accepted', intent_id: 'p1', text: 'add a toggle'},
+        planEvent('node.start', 'n1', {goal: 'Add it', specialization: 'implement'}, 1, 'p1'),
+        {event: 'intent.paused', intent_id: 'p1'});
+    assert.equal(label('p1'), 'Plan paused');
+    assert.match(detail('p1'), /resume it in the Plan tab/);
+    app.play({event: 'intent.resumed', intent_id: 'p1'});
+    assert.equal(label('p1'), 'Plan running');
+    assert.equal(detail('p1'), 'Implementer: Add it');
+    // A cancel is announced at once; the running specialist reports until it stops.
+    app.play({event: 'intent.cancelled', intent_id: 'p1'},
+        fromSpecialist('p1', {event: 'error', message: 'Interrupted'}, {event: 'session.end', outcome: 'interrupted'}),
+        planEvent('node.done', 'n1', {status: 'abandoned'}, 3, 'p1'),
+        {event: 'intent.cancelled', intent_id: 'p1'});
+    assert.equal(label('p1'), 'Plan cancelled');
+    const [stopped] = app.steps('p1');
+    assert.equal(app.steps('p1').length, 1);
+    assert.equal(meta(stopped), 'stopped · 2s');
+    assert.equal(stopped.open, true);
+    assert.equal(stopped.querySelector('.error-block').textContent, '✗ Interrupted');
+
+    // A blocked step, or a check that asked for a repair, stays open.
+    app.play({event: 'intent.started', intent_id: 'p2', text: 'check the toggle'},
+        planEvent('node.start', 'n1', {goal: 'Verify the result of: Add it', specialization: 'verify'}, 1, 'p2'),
+        planEvent('node.done', 'n1', {status: 'done', verdict: 'revise'}, 2, 'p2'),
+        planEvent('node.start', 'n2', {goal: 'Fix the issues flagged by verification', specialization: 'repair'}, 2, 'p2'),
+        planEvent('node.done', 'n2', {status: 'blocked', error: 'runner exception: boom'}, 3, 'p2'),
+        {event: 'intent.complete', intent_id: 'p2'});
+    const [verifier, repair] = app.steps('p2');
+    assert.deepEqual([meta(verifier), verifier.open], ['asked for a repair · 1s', true]);
+    assert.deepEqual([meta(repair), repair.open], ['blocked · 1s', true]);
+    assert.equal(repair.querySelector('.error-block').textContent, '✗ runner exception: boom');
+    assert.equal(label('p2'), 'Plan finished');
+    assert.equal(detail('p2'), 'Not every step finished · 2 steps · 2s');
+
+    // A plan whose walker failed: the step it was running never finished.
+    app.play({event: 'intent.started', intent_id: 'p3', text: 'rename the setting'},
+        planEvent('node.start', 'n1', {goal: 'Rename it', specialization: 'implement'}, 1, 'p3'),
+        {event: 'intent.failed', intent_id: 'p3', error: 'walker crashed'});
+    assert.deepEqual([label('p3'), detail('p3')], ['Plan failed', 'walker crashed']);
+    assert.equal(meta(app.steps('p3')[0]), 'stopped');
+
+    // A /plan the server refuses says so on its own card.
+    app.startIntent('add a footer');
+    app.play({event: 'error', message: 'Connect a backend before starting an intent.'});
+    const refused = app.chatMessages.children.at(-1);
+    assert.equal(refused.querySelector('.task-request-text').textContent, '/plan add a footer');
+    assert.equal(refused.querySelector('.task-run-label').textContent, 'Plan not started');
+    assert.equal(refused.querySelector('.task-run-detail').textContent, 'Connect a backend before starting an intent.');
+    assert.deepEqual(app.turnCalls, []);
+    // Other errors are still the conversation's.
+    app.play({event: 'error', message: 'Could not fork the session.'});
+    assert.deepEqual(app.turnCalls, ['handleError']);
+});
+
+test('a step\'s prose stays above its calls, and a finished step stays open while the keyboard is in it', () => {
+    const app = planApp();
+    app.play({event: 'intent.started', intent_id: PLAN, text: 'tidy the styles'},
+        planEvent('node.start', 'n1', {goal: 'tidy the styles', specialization: 'implement'}, 1));
+    // Live, a response streams its prose, announces its calls, then ends its text.
+    app.play(fromSpecialist(PLAN, {event: 'text.delta', delta: 'Reading the '}, {event: 'text.delta', delta: 'styles first.'}));
+    app.flushText();
+    const [step] = app.steps();
+    const body = step.querySelector('.plan-step-body');
+    assert.equal(body.querySelector('.message-content').textContent, 'Reading the styles first.');
+    const read = {event: 'tool.call', name: 'file_read', call_id: 'r1', arguments: {path: 'app.css'}};
+    app.play(fromSpecialist(PLAN, read, {event: 'text.done', text: 'Reading the styles first.'},
+        {event: 'tool.result', name: 'file_read', call_id: 'r1', output: 'body {}', is_error: false, denied: false,
+         metadata: {lines: 1}}));
+    const [prose, readRow] = body.children;
+    assert.equal(body.children.length, 2);
+    assert.ok(prose.classList.contains('plan-step-text'));
+    assert.equal(prose.querySelector('.message-content').textContent, 'Reading the styles first.');
+    assert.equal(readRow.getAttribute('data-tool'), 'file_read');
+    assert.equal(readRow.querySelector('.tool-status').textContent, '1 lines');
+
+    // Someone tabbed into the step's rows before it finished: it stays open.
+    Object.getPrototypeOf(body).contains = function (node) {
+        for (let at = node; at; at = at.parentNode) if (at === this) return true;
+        return false;
+    };
+    app.dom.document.activeElement = readRow;
+    app.play(planEvent('node.done', 'n1', {status: 'done'}, 2));
+    assert.equal(step.open, true);
+    assert.equal(step.querySelector('.task-activity-meta').textContent, 'done · 1 action · 1s');
+    assert.deepEqual(app.turnCalls, []);
+});
+
+// ── A refused call says why ───────────────────────────────────────────
+// Its row shows the reason the model was told: a hook's message, a policy
+// rule, an approval nobody could answer. The person's own Deny needs none.
+
+// Enough DOM for tool rows. innerHTML is parsed into elements and every
+// write is kept, so a test can check untrusted text never became markup.
+// querySelector reads only the compound selectors the rows use (tag,
+// .class, [attr], [attr="value"], :not([attr])) and throws on anything
+// else, so a selector built from an unescaped name fails.
+function fakeDom() {
+    const htmlWrites = [];
+    const entities = {amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'"};
+    const decode = text => text.replace(/&(amp|lt|gt|quot|#39);/g, (_, name) => entities[name]);
+    const unescapeCss = text => text.replace(/\\([0-9a-f]{1,6} ?|[^0-9a-f])/gi,
+        (_, code) => (/^[0-9a-f]/i.test(code) ? String.fromCodePoint(parseInt(code, 16)) : code));
+    const compile = selector => {
+        const checks = [];
+        let rest = selector;
+        const take = pattern => {
+            const match = pattern.exec(rest);
+            if (match) rest = rest.slice(match[0].length);
+            return match;
+        };
+        let match = take(/^[a-z]+/i);
+        if (match) {
+            const tag = match[0].toUpperCase();
+            checks.push(el => el.tagName === tag);
+        }
+        while (rest) {
+            if ((match = take(/^\.([\w-]+)/))) {
+                const name = match[1];
+                checks.push(el => el.classList.contains(name));
+            } else if ((match = take(/^\[([\w-]+)(?:="((?:\\.|[^"\\])*)")?\]/))) {
+                const [, attr, raw] = match;
+                checks.push(el => el.hasAttribute(attr) && (raw === undefined || el.getAttribute(attr) === unescapeCss(raw)));
+            } else if ((match = take(/^:not\(\[([\w-]+)\]\)/))) {
+                const attr = match[1];
+                checks.push(el => !el.hasAttribute(attr));
+            } else {
+                throw new Error(`fake DOM cannot read the selector ${JSON.stringify(selector)}`);
+            }
+        }
+        return el => checks.every(check => check(el));
+    };
+    const detach = node => {
+        if (node.parentNode) node.parentNode.childNodes.splice(node.parentNode.childNodes.indexOf(node), 1);
+        node.parentNode = null;
+    };
+    class Text {
+        constructor(text) { this.nodeType = 3; this.textContent = text; this.parentNode = null; }
+    }
+    class Element {
+        constructor(tag) {
+            this.tagName = tag.toUpperCase();
+            this.nodeType = 1;
+            this.childNodes = [];
+            this.parentNode = null;
+            this.attributes = new Map();
+            this.style = {};
+            this.listeners = {};
+            const attr = key => `data-${key.replace(/[A-Z]/g, c => `-${c.toLowerCase()}`)}`;
+            this.dataset = new Proxy({}, {
+                get: (_, key) => (typeof key === 'string' && this.hasAttribute(attr(key)) ? this.getAttribute(attr(key)) : undefined),
+                set: (_, key, value) => { this.setAttribute(attr(key), value); return true; },
+            });
+            const classes = () => this.className.split(/\s+/).filter(Boolean);
+            this.classList = {
+                contains: name => classes().includes(name),
+                add: (...names) => { this.className = [...new Set([...classes(), ...names])].join(' '); },
+                remove: (...names) => { this.className = classes().filter(name => !names.includes(name)).join(' '); },
+                toggle: name => {
+                    const on = !classes().includes(name);
+                    if (on) this.classList.add(name); else this.classList.remove(name);
+                    return on;
+                },
+            };
+        }
+        get className() { return this.getAttribute('class') || ''; }
+        set className(value) { this.setAttribute('class', value); }
+        get children() { return this.childNodes.filter(node => node.nodeType === 1); }
+        get nextElementSibling() {
+            const siblings = this.parentNode ? this.parentNode.children : [];
+            return siblings[siblings.indexOf(this) + 1] || null;
+        }
+        get textContent() { return this.childNodes.map(node => node.textContent).join(''); }
+        set textContent(value) {
+            this.childNodes.slice().forEach(detach);
+            if (String(value)) this.appendChild(new Text(String(value)));
+        }
+        set innerHTML(html) {
+            html = String(html);
+            htmlWrites.push(html);
+            this.childNodes.slice().forEach(detach);
+            const open = [this];
+            let at = 0;
+            for (const token of html.matchAll(/<\/([a-z]+)\s*>|<([a-z]+)((?:\s+[\w-]+(?:="[^"]*")?)*)\s*>|[^<]+/gi)) {
+                if (token.index !== at) break;
+                at += token[0].length;
+                const parent = open[open.length - 1];
+                if (token[1]) {
+                    if (parent.tagName !== token[1].toUpperCase()) break;
+                    open.pop();
+                } else if (token[2]) {
+                    const el = parent.appendChild(new Element(token[2]));
+                    for (const [, name, value = ''] of token[3].matchAll(/([\w-]+)(?:="([^"]*)")?/g)) {
+                        el.setAttribute(name, decode(value));
+                    }
+                    open.push(el);
+                } else if (token[0].trim()) {
+                    parent.appendChild(new Text(decode(token[0])));
+                }
+            }
+            if (at !== html.length || open.length !== 1) throw new Error(`fake DOM cannot parse ${JSON.stringify(html)}`);
+        }
+        setAttribute(name, value) { this.attributes.set(name, String(value)); }
+        getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+        hasAttribute(name) { return this.attributes.has(name); }
+        addEventListener(type, handler) { this.listeners[type] = handler; }
+        appendChild(node) { return this.insertBefore(node, null); }
+        insertBefore(node, reference) {
+            detach(node);
+            const index = reference ? this.childNodes.indexOf(reference) : this.childNodes.length;
+            assert.ok(index >= 0, 'insertBefore needs a child of this element');
+            this.childNodes.splice(index, 0, node);
+            node.parentNode = this;
+            return node;
+        }
+        remove() { detach(this); }
+        matches(selector) { return compile(selector)(this); }
+        querySelectorAll(selector) {
+            const matches = compile(selector);
+            const found = [];
+            const visit = el => el.children.forEach(child => {
+                if (matches(child)) found.push(child);
+                visit(child);
+            });
+            visit(this);
+            return found;
+        }
+        querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
+    }
+    return {
+        htmlWrites,
+        document: {createElement: tag => new Element(tag), getElementById: () => null, querySelector: () => null},
+        // Like the browser's CSS.escape for these values: every character
+        // that can't stand bare in an identifier becomes a hex escape.
+        CSS: {escape: value => String(value).replace(/[^\w\u00a0-\uffff-]/g, c => `\\${c.codePointAt(0).toString(16)} `)},
+    };
+}
+
+// The real tool-call and tool-result handlers, drawing into a task card's
+// activity, with the Evidence group mixed in from run_cards.js.
+function toolRowApp() {
+    const dom = fakeDom();
+    const context = vm.createContext({console, document: dom.document, CSS: dom.CSS, window: {}});
+    vm.runInContext(source + '\nthis.App = LumiApp;', context);
+    vm.runInContext(fs.readFileSync(path.join(__dirname, '../lumi/gui/static/run_cards.js'), 'utf8'), context);
+    const cards = context.window.LumiRunCards.prototype;
+    const app = Object.create(context.App.prototype);
+    const noop = () => {};
+    const activity = dom.document.createElement('div');
+    Object.assign(app, {
+        _appendToLiveCollapsedGroup: cards._appendToLiveCollapsedGroup,
+        _finalizeLiveCollapsedGroup: cards._finalizeLiveCollapsedGroup,
+        removeThinking: noop, addThinking: noop, _setLiveRunPhase: noop, _advanceLiveMilestone: noop,
+        ensureStepRendered: noop, scrollToBottom: noop,
+        trackTerminalStart: noop, trackTerminalEnd: noop,
+        _liveRunToolActivity: () => ({active: 'Working', completed: 'Worked'}),
+        _ensureTaskCard: () => ({activityEl: activity}),
+        activeTerminals: new Map(), subagentContainers: new Map(), subagentStreams: new Map(),
+        _blockToolRows: new Map(), stepToolCalls: [], stepToolResults: [], stepIsInlineOnly: false,
+        collapsedGroup: [], handlesTools: false, _agentRunSummary: {title: '', fileChanges: [], todos: null},
+    });
+    app.activity = activity;
+    app.htmlWrites = dom.htmlWrites;
+    app.element = tag => dom.document.createElement(tag);
+    app.play = (...events) => events.forEach(event => app.handleEvent(event));
+    return app;
+}
+
+const refusal = (call, output, fields = {}) => ({event: 'tool.result', name: call.name, call_id: call.call_id,
+    output, is_error: false, denied: true, elapsed: 0, ...fields});
+const HOOK_TIMEOUT = 'Blocked by hook: pre_tool_use hook `slow-guard` timed out after 2 s; gate hooks block when '
+    + 'they give no answer. Raise its timeout_seconds if it needs longer.';
+const NO_PROMPT = 'Tool execution requires approval, but no approval prompt is available for this run, so grep '
+    + 'was not executed. Continue without it, or ask the user to switch to a permission mode that allows it.';
+
+test('a refused command says why in its own row; the person\'s own Deny only says denied', () => {
+    const app = toolRowApp();
+    const bash = (id, command) => ({event: 'tool.call', name: 'bash', call_id: id, arguments: {command}});
+    const guarded = bash('call_1', 'rm -rf build');
+    const policed = bash('call_2', 'rm -rf dist');
+    const declined = bash('call_3', 'make deploy');
+    app.play(guarded, refusal(guarded, `${HOOK_TIMEOUT}\n`),
+        policed, refusal(policed, 'Blocked by policy: Recursive delete blocked', {is_error: true}),
+        declined, refusal(declined, 'Tool execution denied by user.'));
+
+    // The refusal settles the call's own row; no second "denied" line.
+    const rows = app.activity.children;
+    assert.equal(rows.length, 3);
+    for (const row of rows) {
+        const status = row.querySelector('[data-status]');
+        assert.equal(status.textContent, '✗');
+        assert.ok(status.classList.contains('denied') && !status.classList.contains('pending'));
+        assert.ok(row.classList.contains('denied'));
+    }
+    const [hookRow, policyRow, deniedRow] = rows;
+    assert.equal(hookRow.querySelector('[data-meta]').textContent, 'not run');
+    const why = hookRow.querySelector('.tool-denial-reason');
+    assert.equal(why.textContent, HOOK_TIMEOUT);
+    assert.equal(why.nextElementSibling, hookRow.querySelector('[data-detail]'), 'above the expandable detail');
+    assert.equal(policyRow.querySelector('.tool-denial-reason').textContent, 'Blocked by policy: Recursive delete blocked');
+    assert.equal(deniedRow.querySelector('[data-meta]').textContent, 'denied');
+    assert.equal(deniedRow.querySelector('.tool-denial-reason'), null);
+
+    // Expanded, a command that never ran has no output to show.
+    app._toggleBlockRowDetail(hookRow);
+    assert.equal(hookRow.querySelector('code').textContent, 'rm -rf build');
+    assert.equal(hookRow.querySelector('pre').textContent, '(not run)');
+});
+
+test('refusal reasons from hooks, policies and models render as text on their own call\'s row', () => {
+    const app = toolRowApp();
+    // A model or MCP server names the tool; a hook writes the reason.
+    const first = {event: 'tool.call', name: UNTRUSTED, call_id: `${UNTRUSTED}:1`, arguments: {}};
+    const second = {event: 'tool.call', name: UNTRUSTED, call_id: `${UNTRUSTED}:2`, arguments: {}};
+    const reason = `Blocked by hook: ${UNTRUSTED}`;
+    app.play(first, second,
+        {event: 'tool.result', name: UNTRUSTED, call_id: first.call_id, output: 'fetched', is_error: false, denied: false},
+        refusal(second, reason));
+
+    const [done, refused] = app.activity.children;
+    assert.equal(app.activity.children.length, 2);
+    assert.equal(done.querySelector('.tool-status').textContent, '✓');
+    assert.equal(done.querySelector('.tool-denial-reason'), null);
+    assert.equal(refused.querySelector('.tool-status').textContent, '✗ not run');
+    assert.ok(refused.querySelector('.tool-status').classList.contains('denied'));
+    assert.ok(refused.classList.contains('is-denied'));
+    const why = refused.querySelector('.tool-denial-reason');
+    assert.equal(why.textContent, reason);
+    assert.equal(why.children.length, 0);
+
+    // A refusal whose call has no row still shows, on a line of its own.
+    app.play(refusal({name: 'web_fetch', call_id: 'call_9'}, `Blocked by policy: ${UNTRUSTED}`));
+    const line = app.activity.children[2];
+    assert.ok(line.classList.contains('is-denied'));
+    assert.equal(line.querySelector('.tool-status').textContent, '✗ not run');
+    assert.equal(line.querySelector('.tool-denial-reason').textContent, `Blocked by policy: ${UNTRUSTED}`);
+
+    // Only the two call rows were markup, and the name in them stayed text.
+    assert.equal(app.htmlWrites.length, 2);
+    app.htmlWrites.forEach((html, index) => assertRenderedAsText(html, `tool row ${index}`));
+});
+
+test('a refused evidence call reads ✗ with its reason, never ✓, and keeps the group open', () => {
+    const app = toolRowApp();
+    app.stepIsInlineOnly = true;
+    const grep = (id, pattern) => ({event: 'tool.call', name: 'grep', call_id: id, arguments: {pattern, path: '.'}});
+    const found = grep('g1', 'TODO'), unanswered = grep('g2', 'FIXME'), declined = grep('g3', 'XXX');
+    app.play(found, unanswered, declined,
+        {event: 'tool.result', name: 'grep', call_id: 'g1', output: 'a.py:1: TODO', is_error: false, denied: false,
+         metadata: {count: 1}},
+        refusal(unanswered, NO_PROMPT),
+        refusal(declined, 'Tool execution denied by user.'));
+
+    const [ok, blocked, denied] = app.activity.querySelectorAll('.evidence-item');
+    assert.equal(ok.querySelector('.tool-status').textContent, '✓');
+    // A refusal the person didn't make is open, with its reason as the output.
+    assert.equal(blocked.querySelector('.tool-status').textContent, '✗');
+    assert.equal(blocked.querySelector('.tool-status').style.color, 'var(--warn)');
+    assert.equal(blocked.querySelector('.tool-meta').textContent, 'not run');
+    assert.equal(blocked.querySelector('.tool-evidence-output').textContent, NO_PROMPT);
+    assert.ok(blocked.classList.contains('is-denied') && blocked.classList.contains('show-output'));
+    assert.equal(blocked.getAttribute('aria-expanded'), 'true');
+    assert.equal(ok.getAttribute('aria-expanded'), 'false');
+    // The person's own Deny: marked, with nothing to open.
+    assert.equal(denied.querySelector('.tool-status').textContent, '✗');
+    assert.equal(denied.querySelector('.tool-meta').textContent, 'denied');
+    assert.equal(denied.querySelector('.tool-evidence-output'), null);
+    assert.ok(!denied.classList.contains('show-output'));
+
+    const group = app.activity.querySelector('.collapsed-group');
+    assert.match(group.querySelector('.collapsed-summary').textContent, / · 2 not run$/);
+    app._finalizeLiveCollapsedGroup();
+    assert.ok(group.classList.contains('expanded'), 'refusals stay in view');
+    assert.ok(!group.classList.contains('has-errors'), 'a refusal is not a failure');
+});
+
+test('a worker\'s refused call shows its reason in the worker\'s own rows', () => {
+    const app = toolRowApp();
+    const parentTask = {event: 'tool.call', name: 'task', call_id: 'call_2', arguments: {prompt: 'Explore'}};
+    app.play(parentTask);
+    // The worker it starts draws in its own lane, inside the parent's activity.
+    const lane = app.activity.appendChild(app.element('div')).appendChild(app.element('div'));
+    app.subagentContainers.set('w1', lane);
+    const worker = event => ({...event, _subagent: true, _agent_id: 'w1', _agent_type: 'explore'});
+    const allowlist = tool => `Tool '${tool}' is not in this session's allowlist. Allowed tools: ['file_read', 'grep']`;
+    const write = worker({event: 'tool.call', name: 'file_write', call_id: 'call_1', arguments: {path: 'a.txt', content: 'x'}});
+    const workerTask = worker({event: 'tool.call', name: 'task', call_id: 'call_2', arguments: {prompt: 'Build'}});
+    app.play(write, workerTask,
+        worker(refusal(write, allowlist('file_write'), {is_error: true})),
+        worker(refusal(workerTask, allowlist('task'), {is_error: true})),
+        {event: 'tool.result', name: 'task', call_id: 'call_2', output: 'handoff', is_error: false, denied: false});
+
+    const [writeRow, taskRow] = lane.children;
+    assert.equal(writeRow.querySelector('[data-meta]').textContent, 'not run');
+    assert.equal(writeRow.querySelector('.tool-denial-reason').textContent, allowlist('file_write'));
+    assert.equal(taskRow.querySelector('.tool-status').textContent, '✗ not run');
+    assert.equal(taskRow.querySelector('.tool-denial-reason').textContent, allowlist('task'));
+    // The parent's call with the same id is answered by its own result.
+    const parentRow = app.activity.children[0];
+    assert.equal(parentRow.getAttribute('data-call-id'), 'call_2');
+    assert.equal(parentRow.querySelector('.tool-status').textContent, '✓');
+    assert.equal(parentRow.querySelector('.tool-denial-reason'), null);
+});
+
+// ── Evidence answered after its group closed ──────────────────────────
+// The engine announces every call of a response before it runs any. A
+// command or an edit after an Evidence call therefore closes the group while
+// that call still waits to run, and its result arrives afterwards. It still
+// belongs on its own item.
+
+const stepStart = step => ({event: 'step.start', step});
+const stepEnd = step => ({event: 'step.end', step, elapsed: 0.5});
+const grepCall = (id, pattern) => ({event: 'tool.call', name: 'grep', call_id: id, arguments: {pattern, path: '.'}});
+const bashCall = (id, command) => ({event: 'tool.call', name: 'bash', call_id: id, arguments: {command}});
+const answer = (call, output, fields = {}) => ({event: 'tool.result', name: call.name, call_id: call.call_id,
+    output, is_error: false, denied: false, elapsed: 0.2, ...fields});
+
+test('an Evidence call answered after a command closed its group settles its own item', () => {
+    const app = toolRowApp();
+    const early = grepCall('g1', 'TODO'), late = grepCall('g2', 'FIXME');
+    const build = bashCall('b1', 'make build');
+    app.play(stepStart(1), early, answer(early, 'a.py:1: TODO', {metadata: {count: 1}}), stepEnd(1),
+        stepStart(2), late, build);
+    const [group, buildRow] = app.activity.children;
+    assert.ok(!group.classList.contains('running'), 'the command closed the group');
+
+    app.play(answer(late, 'b.py:4: FIXME\nc.py:9: FIXME', {metadata: {count: 2}}),
+        answer(build, 'built', {metadata: {exit_code: 0}}), stepEnd(2));
+    const item = group.querySelectorAll('.evidence-item')[1];
+    assert.equal(item.querySelector('.tool-status').textContent, '✓');
+    assert.ok(!item.classList.contains('pending'));
+    assert.equal(item.querySelector('.tool-meta').textContent, '2 matches');
+    assert.equal(item.querySelector('.tool-evidence-output').textContent, 'b.py:4: FIXME\nc.py:9: FIXME');
+    assert.ok(item.classList.contains('has-output') && !item.classList.contains('show-output'));
+    // The header still counts both steps' calls and no failures, and stays closed.
+    assert.equal(group.querySelector('.collapsed-meta').textContent, 'steps 1–2 · 2 calls');
+    assert.doesNotMatch(group.querySelector('.collapsed-summary').textContent, /failed|not run/);
+    assert.ok(!group.classList.contains('expanded'));
+    assert.equal(buildRow.querySelector('[data-status]').textContent, '✓');
+    assert.equal(app.activity.children.length, 2, 'the result drew no line of its own');
+});
+
+test('a late Evidence command never lends its result to another command\'s row', () => {
+    const app = toolRowApp();
+    const install = bashCall('b1', 'npm install');
+    app.play(stepStart(1), install, answer(install, 'added 12 packages', {metadata: {exit_code: 0}}), stepEnd(1));
+    const checks = bashCall('b2', 'pytest -q');  // Evidence
+    const deploy = bashCall('b3', 'make deploy');  // a command row of its own
+    app.play(stepStart(2), checks, deploy,
+        answer(checks, '1 failed, 3 passed', {is_error: true, metadata: {exit_code: 1}}));
+
+    const [installRow, group, deployRow] = app.activity.children;
+    assert.equal(installRow.dataset.fullOutput, 'added 12 packages');
+    assert.match(installRow.querySelector('[data-meta]').textContent, /^exit 0/);
+    assert.ok(deployRow.querySelector('[data-status]').classList.contains('pending'), 'still waiting to run');
+    assert.equal(deployRow.dataset.fullOutput, undefined);
+    // It failed on its own item, which opens with its output, and the closed
+    // group opens again and counts it.
+    const item = group.querySelector('.evidence-item');
+    assert.equal(item.querySelector('.tool-status').textContent, '✗');
+    assert.ok(item.classList.contains('is-error') && item.classList.contains('show-output'));
+    assert.equal(item.getAttribute('aria-expanded'), 'true');
+    assert.equal(item.querySelector('.tool-evidence-output').textContent, '1 failed, 3 passed');
+    assert.match(group.querySelector('.collapsed-summary').textContent, / · 1 failed$/);
+    assert.ok(group.classList.contains('expanded') && group.classList.contains('has-errors'));
+    assert.equal(group.querySelector('.collapsed-icon').textContent, '▾');
+
+    app.play(answer(deploy, 'deployed', {metadata: {exit_code: 0}}));
+    assert.equal(deployRow.dataset.fullOutput, 'deployed');
+    assert.equal(deployRow.querySelector('[data-status]').textContent, '✓');
+});
+
+test('a refusal answered after its group closed opens its reason on its item, not on a line of its own', () => {
+    const app = toolRowApp();
+    const unanswered = grepCall('g1', 'FIXME'), declined = grepCall('g2', 'XXX');
+    const deploy = bashCall('b1', 'make deploy');
+    app.play(stepStart(1), unanswered, declined, deploy,
+        refusal(unanswered, NO_PROMPT), refusal(declined, 'Tool execution denied by user.'),
+        answer(deploy, 'deployed', {metadata: {exit_code: 0}}));
+
+    const rows = app.activity.children;
+    assert.equal(rows.length, 2);
+    assert.ok(!rows.some(row => row.classList.contains('is-denied')));
+    const group = rows[0];
+    const [blocked, denied] = group.querySelectorAll('.evidence-item');
+    assert.equal(blocked.querySelector('.tool-status').textContent, '✗');
+    assert.equal(blocked.querySelector('.tool-status').style.color, 'var(--warn)');
+    assert.equal(blocked.querySelector('.tool-meta').textContent, 'not run');
+    assert.equal(blocked.querySelector('.tool-evidence-output').textContent, NO_PROMPT);
+    assert.ok(blocked.classList.contains('is-denied') && blocked.classList.contains('show-output'));
+    assert.equal(blocked.getAttribute('aria-expanded'), 'true');
+    // The person's own Deny: marked, with nothing to open.
+    assert.equal(denied.querySelector('.tool-status').textContent, '✗');
+    assert.equal(denied.querySelector('.tool-meta').textContent, 'denied');
+    assert.equal(denied.querySelector('.tool-evidence-output'), null);
+    // The group counts both, opens again, and doesn't call them failures.
+    assert.match(group.querySelector('.collapsed-summary').textContent, / · 2 not run$/);
+    assert.ok(group.classList.contains('expanded') && !group.classList.contains('has-errors'));
+    assert.equal(group.querySelector('.collapsed-icon').textContent, '▾');
+});
+
+test('a screenshot settles its item when its image closes the group, or a later call already did', () => {
+    const app = toolRowApp();
+    const images = [];
+    app.renderScreenshotImage = (data, type, name) => images.push(`${name}:${data}`);
+    const shot = id => ({event: 'tool.call', name: 'browser_screenshot', call_id: id, arguments: {}});
+    const image = data => ({image: {data, media_type: 'image/png'}});
+    const alone = shot('s1');
+    app.play(stepStart(1), alone, answer(alone, 'Captured the page', image('AAAA')), stepEnd(1));
+    const followed = shot('s2');
+    const script = {event: 'tool.call', name: 'browser_js', call_id: 'j1', arguments: {code: 'document.title'}};
+    app.play(stepStart(2), followed, script, answer(followed, 'Captured the page', image('BBBB')));
+
+    const items = app.activity.querySelectorAll('.evidence-item');
+    assert.equal(items.length, 2);
+    for (const item of items) {
+        assert.equal(item.querySelector('.tool-status').textContent, '✓');
+        assert.ok(!item.classList.contains('pending'));
+    }
+    assert.equal(images.join(' '), 'browser_screenshot:AAAA browser_screenshot:BBBB');
+    assert.equal(app.activity.children.length, 3, 'two groups and the script\'s row, no other lines');
+});
+
+test('a closed group\'s waiting item answers only results drawn in its own turn', () => {
+    const app = toolRowApp();
+    // A turn that never finished (Lumi closed while its search waited to run),
+    // as a replay shows it: no session end cleared its closed group.
+    const stale = grepCall('call_5f2a9c01', 'TODO');
+    app.play(stepStart(1), stale, bashCall('b1', 'make build'));
+    const staleItem = app.activity.querySelector('.evidence-item');
+    // The next turn draws in a new task card. A backend that derives ids from
+    // the call gives the same search the same id there.
+    const nextActivity = app.element('div');
+    app._ensureTaskCard = () => ({activityEl: nextActivity});
+    const again = grepCall('call_5f2a9c01', 'TODO');
+    app.play(stepStart(1), bashCall('b2', 'make lint'), again,
+        answer(again, 'a.py:1: TODO', {metadata: {count: 1}}));
+
+    const row = nextActivity.children.find(el => el.getAttribute('data-call-id') === 'call_5f2a9c01');
+    assert.equal(row.querySelector('.tool-status').textContent, '1 matches');
+    assert.ok(staleItem.classList.contains('pending'));
+    assert.equal(staleItem.querySelector('.tool-status').textContent, '…');
 });

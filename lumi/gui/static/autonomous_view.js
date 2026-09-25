@@ -85,6 +85,7 @@ class LumiAutonomousView {
         this.stepRendered = false;
         this.collapsedGroup = [];
         this._liveCollapsedGroup = null;
+        this._closedEvidenceGroups = [];
         if (this._currentTurn !== undefined) {
             this._currentTurn = this._freshTurnAggregate();
         }

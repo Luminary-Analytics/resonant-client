@@ -1966,6 +1966,30 @@ class AppState:
             self.costs.reset_session()
             return True
 
+    def bind_conversation_checkpoints(self, session=None):
+        """Point the chat session's checkpoints at its saved conversation.
+
+        A session gets a store keyed by a per-build id when it's wired, often
+        before its conversation is saved (a draft is saved on its first
+        message). Keying the store by the conversation keeps its Timeline
+        across restarts and rebuilt sessions. Runs of the chat session and the
+        Timeline commands call this; other sessions keep their own stores.
+        Returns the session's store.
+        """
+        session = session if session is not None else self.session
+        store = getattr(session, "checkpoint_store", None)
+        record = self.project.current_session
+        if store is None or record is None or store.session_id == record.id:
+            return store
+        from ..engine.checkpoint_timeline import SessionCheckpointStore
+
+        bound = SessionCheckpointStore(store.project_path, session_id=record.id)
+        session.checkpoint_store = bound
+        broker = getattr(session, "context_broker", None)
+        if broker is not None:
+            broker.checkpoint_store = bound
+        return bound
+
     def ensure_persisted_current_session(self, *, session_role: str = "generator"):
         """Create the on-disk session record lazily on first user message."""
         if self.project.current_session or not self.backend:
@@ -3429,6 +3453,8 @@ async def _run_session_streaming(
     active_record = getattr(state.project, "current_session", None)
     # Audit records of this run name the saved conversation.
     session.audit_session_id = str(getattr(active_record, "id", "") or "")
+    # So do its checkpoints, which its Timeline lists.
+    state.bind_conversation_checkpoints(session)
     if event_source is None:
         bind_sonn_conversation(
             session.backend,

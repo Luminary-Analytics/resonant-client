@@ -363,12 +363,62 @@ original keeps its transcript and is marked restarted. After a reload, a turn
 that Lumi closed during shows as interrupted, with its work under **Work
 details**.
 
+A turn's **Work details** (the "Worked for …" line) end with its records.
+**Trace** lists what happened and when: each step, tool call and result, model
+call and checkpoint, a worker's included. **Save for OpenTelemetry** saves that
+trace as a file for an observability tool, and the dialog shows where. Under
+**Saved** are the files the turn kept: an output too long for the
+conversation, a screenshot. Open one to read it a page at a time, or see the
+image; **Copy path** copies where it's stored. A reply that did no work has no
+work details, so nothing is added to it.
+
+A plan (a `/plan` message, or a Mission's **Build this roadmap**) reports
+under its own card (Unreleased): the `/plan` message, or a "Plan" card named
+from the roadmap's spec. Each specialist has a line, for example "Implementer
+· Add a toggle to the settings page · done · 2 actions · 1s", open while it
+runs with its commands, edits and prose. A finished line folds; one that
+didn't finish, or whose check asked for a repair, stays open. A status line
+says whether the plan is running (and which step), paused, complete or
+stopped. A plan isn't a turn of the conversation: it gets no suggested next
+prompt or Retry, the message box stays free, and keyboard focus stays where
+you put it, on the Plan tab's **Pause** for example. Plan activity isn't saved
+with the conversation; the Plan tab's **History** keeps the plan's snapshots.
+See [Unreleased](unreleased.md).
+
 New sessions also get a short task title from the first prompt. A local title
 appears immediately. With native model connections, a small tool-free request
 refines it after the first turn; slow or failed requests keep the local title.
 This uses the chosen model and can incur provider usage. Codex and Claude Code
 use the local title without starting a separate CLI run. You can rename any
 session yourself; automatic naming never overrides a manual title.
+
+## Undoing changes: the Timeline
+
+Before each change its tools make (writing or editing a file, a command that
+may change files, a commit or new branch), Lumi saves a checkpoint of the
+project's files and the conversation. **Timeline** in the chat header lists the
+open conversation's checkpoints, newest first, by what each was saved before:
+"Before writing notes.txt", "Before running npm test". It is also in the
+command palette and the session's menu. In a Git project, **Compare** shows
+what has changed since a checkpoint.
+
+**Restore…** asks what to put back before it does anything:
+
+- **Files**: the project's files go back to that point. Your current files are
+  kept first, on a `lumi-recovery/…` branch in a Git project or in a recovery
+  archive otherwise; the message after the restore says where.
+- **Conversation**: the conversation goes back to that point, and later
+  messages leave it. Your files don't change.
+- **Files and conversation**: both.
+
+A restore waits for the current run to stop. A checkpoint a worker saved
+restores files only, since the conversation it holds is the worker's. The chat
+notes each restore where it happened; send a message to carry on from there.
+Checkpoints belong to the saved conversation, so its Timeline is still there
+after Lumi restarts. Codex and Claude Code change files with their own tools,
+so their changes have no checkpoints. **Settings > Checkpoints & recovery**
+also lists a Git project's checkpoints.
+
 ## Creative editors
 
 Settings > Creative editors provides guided Blender, Unity, and Unreal Engine 5

@@ -18,7 +18,7 @@ Lumi uses the first of these that exists:
 | --- | --- |
 | Windows | Registry `HKLM\SOFTWARE\Policies\Luminary Analytics\Lumi`: value `Policy` (the JSON document) or `PolicyFile` (a path; environment variables are expanded). Set them with the ADMX template below, Intune or any registry tool. |
 | Windows | `%ProgramData%\Lumi\policy.json` |
-| macOS | The `Policy` key of the `com.luminaryanalytics.lumi` managed preferences, from a configuration profile (`packaging/policy/lumi-policy.mobileconfig`) |
+| macOS | The `Policy` key of the `com.luminaryanalytics.lumi` managed preferences, from a device-scope configuration profile (`packaging/policy/make_mobileconfig.py` makes one; see [Deploying on macOS](deploy-macos.md)) |
 | macOS | `/Library/Application Support/Lumi/policy.json` |
 | Linux | `/etc/lumi/policy.json` |
 
@@ -142,6 +142,17 @@ fall back to "no policy". It refuses model requests, and Settings shows the
 error, until the policy is fixed. The same happens after an expired policy's
 grace period.
 
+Invalid includes a section that isn't an object, such as
+`"permissions": "ask only"`, and a true-or-false value written as text, such
+as `"allow_stdio": "no"`. It also covers a policy file that isn't UTF-8 text,
+such as the UTF-16 that Windows PowerShell 5.1's `Out-File` writes by
+default. UTF-8 with or without a byte order mark is fine, and a section that
+is missing or `null` counts as empty.
+
+A downloaded Lumi Cloud policy that can't be used doesn't block requests. The
+machine policy stays in force, or no policy for an organization someone
+joined in the app, and Settings shows why.
+
 ## Group Policy and Intune
 
 The MSI package can point Lumi at a policy file as it installs:
@@ -159,6 +170,11 @@ three machine policies under **Lumi** in the Group Policy editor:
 Copy the ADMX to `%SystemRoot%\PolicyDefinitions` or the central store, and
 the ADML to its `en-US` folder. For Intune, import the ADMX as a custom
 administrative template, or set the registry values with a script.
+
+On macOS, a configuration profile carries the policy (`Policy`) and, if
+needed, the trusted signing keys (`PolicyKeys`) for Jamf Pro, Intune or
+another MDM. `packaging/policy/make_mobileconfig.py` makes the profile from
+your policy file and checks it first. See [Deploying on macOS](deploy-macos.md).
 
 ## What policy doesn't cover yet
 

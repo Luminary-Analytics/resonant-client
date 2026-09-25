@@ -22,10 +22,20 @@ def cancel_title_refinement(state) -> None:
 def schedule_title_refinement(state, ws, record, prompt: str) -> None:
     """Refine only this active auto-title after the first coding turn finishes."""
     cancel_title_refinement(state)
-    if (not record or record.title_source != "auto" or not state.backend
-            or getattr(state.backend, "handles_tools", True)):
+    if not record or record.title_source != "auto" or not state.backend:
         return
-    backend = copy.copy(state.backend)
+    # A configured summarize model names sessions; otherwise the chat model.
+    router = getattr(getattr(state, "session", None), "model_role_router", None)
+    try:
+        chosen = router.backend_for("summarize", state.backend) if router else state.backend
+    except Exception:
+        chosen = state.backend
+    # Never start a CLI tool loop just to name a session.
+    if getattr(chosen, "handles_tools", True):
+        return
+    backend = copy.copy(chosen) if chosen is state.backend else chosen
+    usage_context = {"session": str(getattr(record, "id", "") or ""),
+                     "project": str(getattr(state.project, "project_path", "") or "")}
     expected = record.title
     cancel = threading.Event()
     state._session_title_cancel = cancel
@@ -33,7 +43,8 @@ def schedule_title_refinement(state, ws, record, prompt: str) -> None:
     async def refine():
         try:
             title = await asyncio.wait_for(
-                asyncio.to_thread(generate_session_title, backend, prompt, cancel), timeout=TITLE_TIMEOUT_SECONDS,
+                asyncio.to_thread(generate_session_title, backend, prompt, cancel, usage_context=usage_context),
+                timeout=TITLE_TIMEOUT_SECONDS,
             )
             # Never activate another session, overwrite a manual rename, or write
             # an old record after navigation/new work has replaced its context.

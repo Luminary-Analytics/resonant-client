@@ -19,6 +19,10 @@ DEFAULTS = {
         "show_companion": False,
         "default_backend": "",
         "default_model": "",
+        # Models a turn continues with when a request fails, in order
+        # ("provider:model"), and models for roles ("role provider:model").
+        "fallback_models": [],
+        "role_models": [],
         "default_permission_mode": "bypass",
         "theme": "dark",
         "max_model_requests": 0,

@@ -15,7 +15,7 @@ the log alone; export to a collector for a copy off the machine.
 Event types: ``turn.start``, ``turn.end``, ``model.usage``, ``tool.call``,
 ``tool.result``, ``file.change``, ``approval``, ``privacy.redaction``,
 ``settings.change``, ``trust.decision``, ``budget.warning``, ``budget.approval``,
-``budget.block`` and ``error``.
+``budget.block``, ``model.fallback`` and ``error``.
 
 **Capture levels** (``privacy.audit_capture``, lockable by policy):
 

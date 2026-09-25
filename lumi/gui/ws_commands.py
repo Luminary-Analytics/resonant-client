@@ -2999,7 +2999,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "display_name", "show_companion", "default_backend", "default_model",
         "default_permission_mode", "auto_lint_after_edits", "auto_test_after_edits",
         "auto_test_command", "max_model_requests", "big_context_profile",
-        "harness_enabled",
+        "harness_enabled", "fallback_models", "role_models",
     }),
     "appearance": frozenset({"theme", "density", "font_size"}),
     "local_backends": frozenset({"ollama_host", "ollama_num_ctx", "ollama_keep_alive"}),
@@ -3080,6 +3080,15 @@ def _socket_setting_value(section: Any, key: Any, value: Any) -> Any:
             if text and not text.startswith("#") and text not in patterns:
                 patterns.append(text)
         return patterns
+    elif (section, key) == ("general", "fallback_models"):
+        from ..engine.model_roles import parse_fallback_models
+
+        return parse_fallback_models(value)
+    elif (section, key) == ("general", "role_models"):
+        from ..engine.model_roles import parse_role_models
+
+        parsed = parse_role_models(value)
+        return [f"{role} {entry['backend_type']}:{entry['model']}" for role, entry in parsed.items()]
     elif section == "cost_tracking" and key in {"budget_alert_usd", "daily_limit_usd", "turn_limit_usd"}:
         if value in (None, ""):
             return None  # an emptied field removes the limit

@@ -90,7 +90,7 @@ def test_background_refinement_is_scoped_and_yields_to_user_work(manager, monkey
     async def run():
         from lumi.gui import session_titles
         started, release = threading.Event(), threading.Event()
-        def generate(backend, prompt, cancel):
+        def generate(backend, prompt, cancel, **kwargs):
             started.set()
             assert release.wait(5)
             return 'Improve session navigation'
@@ -150,7 +150,7 @@ def test_slow_title_request_is_cancelled_without_changing_title(manager, monkeyp
     async def run():
         from lumi.gui import session_titles
         finished = threading.Event()
-        def slow(backend, prompt, cancel):
+        def slow(backend, prompt, cancel, **kwargs):
             assert cancel.wait(2)
             finished.set()
             return 'Late title'

@@ -36,6 +36,7 @@ day. `LUMI_STATE_HOME` moves the whole folder.
 | `privacy.redaction` | The secret scan removed credentials before a request | counts by kind |
 | `settings.change` | Settings saves a change | section and key names, never values |
 | `trust.decision` | A project is trusted, restricted or forgotten | project, decision |
+| `model.fallback` | A request failed and the turn continued with a [fallback model](models.md) | from and to model, reason by capture level |
 | `budget.warning`, `budget.approval`, `budget.block` | A [budget](usage-and-costs.md#budgets) alerts, asks (with the answer) or stops a turn | owner, scope, period, spend, threshold, `decision` |
 | `error` | A turn reports an error | code, message by capture level |
 

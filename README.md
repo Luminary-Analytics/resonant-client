@@ -412,6 +412,10 @@ Actions example and `packaging/docker/Dockerfile`. With a GitHub token, the
 agent can read a pull request's reviews and failing checks, open pull
 requests, and reply to reviews; see [GitHub pull requests](docs/github.md).
 
+If a model request fails, a turn can continue with fallback models you list,
+and a separate model can name sessions and compact long conversations; see
+[Fallback models, roles and capabilities](docs/models.md).
+
 ## Develop
 
 Read [AGENTS.md](AGENTS.md) for shared contributor instructions. `CLAUDE.md`

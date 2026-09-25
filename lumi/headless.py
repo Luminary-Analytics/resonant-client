@@ -135,6 +135,25 @@ def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_pr
     return session
 
 
+def _fallbacks(settings: Any, requested: list[str], project: str, mode: str):
+    """``--fallback`` models, then Settings', each built only if it's needed."""
+    from .engine.model_roles import parse_fallback_models, parse_model_ref
+
+    refs = parse_fallback_models(list(requested or []) + list(settings.get("general", "fallback_models", []) or []))
+    chain = []
+    for ref in refs:
+        provider, model = parse_model_ref(ref)
+
+        def factory(provider=provider, model=model):
+            spec = build_spec(settings, provider, model, project)
+            if provider in {"codex", "claude-code"}:
+                spec.permission_mode = mode
+            return spec.create_backend(settings)
+
+        chain.append((ref, factory))
+    return lambda: chain
+
+
 def _configure(settings: Any) -> None:
     from . import audit, budgets, net, pricing, secret_scan, usage
 
@@ -264,6 +283,8 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
                         help="what the agent may do without asking (default: auto-edit)")
     parser.add_argument("--trust-project", action="store_true",
                         help="apply the repository's instructions, notes and policy allow rules for this run")
+    parser.add_argument("--fallback", action="append", default=[], metavar="PROVIDER:MODEL",
+                        help="a model to continue with if a request fails (repeatable; adds to Settings')")
     parser.add_argument("--max-requests", type=int, default=0, help="stop after this many model requests")
     parser.add_argument("--timeout", type=float, default=0, help="stop after this many seconds")
     parser.add_argument("--output", choices=("json", "text", "jsonl"), default="json")
@@ -299,6 +320,7 @@ def main(argv: list[str] | None = None, *, stdin: TextIO | None = None, stdout: 
             spec.permission_mode = mode
         session = build_session(settings, spec, project=project, mode=mode, trust_project=args.trust_project,
                                 max_requests=args.max_requests or None, run_id=run_id)
+        session.fallback_provider = _fallbacks(settings, args.fallback, project, mode)
     except (UsageError, ValueError, OSError) as exc:
         stderr.write(f"lumi run: {exc}\n")
         return EXIT_USAGE

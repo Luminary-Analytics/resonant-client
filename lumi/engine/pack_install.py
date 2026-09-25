@@ -138,8 +138,13 @@ def resolve(url: str, ref: str, *, allow_local: bool = False) -> str:
 
 
 def install_from_git(url: str, commit: str, *, subdir: str = "", dest_root: Path | None = None,
-                     allowed_sources: tuple[str, ...] | None = None, allow_local: bool = False) -> InstalledPack:
-    """Fetch ``commit`` and install the pack it contains; it still needs approval."""
+                     allowed_sources: tuple[str, ...] | None = None, allow_local: bool = False,
+                     expect_id: str = "", expect_digest: str = "") -> InstalledPack:
+    """Fetch ``commit`` and install the pack it contains; it still needs approval.
+
+    ``expect_id`` and ``expect_digest`` (an organization registry's pin) are
+    checked before anything already installed is replaced.
+    """
     from .capability_packs import CapabilityPackError, CapabilityPackManager, _manifest_path
 
     url = normalize_url(url, allow_local=allow_local)
@@ -179,6 +184,14 @@ def install_from_git(url: str, commit: str, *, subdir: str = "", dest_root: Path
             raise PackInstallError(f"The pack's manifest is invalid: {exc}") from exc
         if not data.get("id") or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", pack.id):
             raise PackInstallError("The pack's manifest needs an id usable as a folder name.")
+        if expect_id and pack.id != expect_id:
+            raise PackInstallError(f"That commit holds the pack {pack.id}, not {expect_id}.")
+        if expect_digest:
+            from .pack_signing import signed_digest
+
+            if signed_digest(source) != expect_digest:
+                raise PackInstallError("The files at that commit don't match the content digest your organization "
+                                       "pinned, so nothing was installed.")
         target = root / pack.id
         staged = Path(scratch) / "staged"
         shutil.move(str(source), str(staged))

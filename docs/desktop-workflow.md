@@ -369,6 +369,34 @@ refines it after the first turn; slow or failed requests keep the local title.
 This uses the chosen model and can incur provider usage. Codex and Claude Code
 use the local title without starting a separate CLI run. You can rename any
 session yourself; automatic naming never overrides a manual title.
+
+## Undoing changes: the Timeline
+
+Before each change its tools make (writing or editing a file, a command that
+may change files, a commit or new branch), Lumi saves a checkpoint of the
+project's files and the conversation. **Timeline** in the chat header lists the
+open conversation's checkpoints, newest first, by what each was saved before:
+"Before writing notes.txt", "Before running npm test". It is also in the
+command palette and the session's menu. In a Git project, **Compare** shows
+what has changed since a checkpoint.
+
+**Restore…** asks what to put back before it does anything:
+
+- **Files**: the project's files go back to that point. Your current files are
+  kept first, on a `lumi-recovery/…` branch in a Git project or in a recovery
+  archive otherwise; the message after the restore says where.
+- **Conversation**: the conversation goes back to that point, and later
+  messages leave it. Your files don't change.
+- **Files and conversation**: both.
+
+A restore waits for the current run to stop. A checkpoint a worker saved
+restores files only, since the conversation it holds is the worker's. The chat
+notes each restore where it happened; send a message to carry on from there.
+Checkpoints belong to the saved conversation, so its Timeline is still there
+after Lumi restarts. Codex and Claude Code change files with their own tools,
+so their changes have no checkpoints. **Settings > Checkpoints & recovery**
+also lists a Git project's checkpoints.
+
 ## Creative editors
 
 Settings > Creative editors provides guided Blender, Unity, and Unreal Engine 5

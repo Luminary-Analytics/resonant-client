@@ -83,6 +83,27 @@ def test_a_changed_pack_or_signature_is_invalid(tmp_path, key, tamper, reason):
     assert result["status"] == "invalid" and reason in result["reason"]
 
 
+def test_a_checkout_on_another_system_still_matches(tmp_path, key):
+    # Git on Windows often checks text out with CRLF, and elsewhere with LF:
+    # the same commit must keep its signature (and a registry's pin).
+    folder = _pack(tmp_path)
+    skill, blob = folder / "skills" / "review.md", folder / "logo.bin"
+    skill.write_bytes(b"description: Review\r\nCheck the change.\r\n")
+    blob.write_bytes(b"\x00\x01\r\n\x02")
+    pack_signing.sign(folder, key[0], "Acme")
+    before = pack_signing.signed_digest(folder)
+    skill.write_bytes(b"description: Review\nCheck the change.\n")
+    assert pack_signing.signed_digest(folder) == before
+    assert pack_signing.check(folder)["status"] == "unknown_publisher"
+    # A file with a NUL byte is binary and counts byte for byte.
+    blob.write_bytes(b"\x00\x01\n\x02")
+    assert pack_signing.check(folder)["status"] == "invalid"
+    # A lone CR is content, not a line ending.
+    blob.write_bytes(b"\x00\x01\r\n\x02")
+    skill.write_bytes(b"description: Review\rCheck the change.\n")
+    assert pack_signing.check(folder)["status"] == "invalid"
+
+
 def test_signing_needs_an_ed25519_key_and_a_publisher(tmp_path, key):
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import rsa

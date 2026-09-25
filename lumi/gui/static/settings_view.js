@@ -204,7 +204,16 @@ class LumiSettingsView {
         const publisherRows = (data.publishers || []).map(p => `<li><strong>${esc(p.name)}</strong> · key <code>${keyId(p.key_id)}</code> · ${p.source
             ? `from ${esc(p.source)}’s policy`
             : `<button type="button" class="btn-sm" data-pack-action="forget-publisher" data-key-id="${esc(p.key_id)}" aria-label="Stop trusting ${esc(p.name)}">Forget</button>`}</li>`).join('');
-        const publishers = `<h4 class="settings-subheading">Trusted publishers</h4>
+        const org = esc(data.organization || 'Your organization');
+        const registryRows = (data.registry || []).map(entry => {
+            const state = !entry.installed ? 'Not installed' : entry.matches ? 'Installed at this version' : 'Installed, but not this version';
+            const action = entry.installed && entry.matches ? '' : `<button type="button" class="btn-sm" data-pack-action="install-registry" data-pack-id="${esc(entry.id)}" aria-label="${entry.installed ? 'Install the pinned version of' : 'Install'} ${esc(entry.name)}">${entry.installed ? 'Install this version' : 'Install'}</button>`;
+            return `<li><strong>${esc(entry.name)}</strong> · <code>${esc(entry.url)}</code>${entry.subdir ? ` (<code>${esc(entry.subdir)}</code>)` : ''} at <code>${esc(entry.commit.slice(0, 12))}</code>${entry.digest ? ' · content pinned' : ''} · ${state} ${action}</li>`;
+        }).join('');
+        const registry = registryRows || data.registry_only ? `<h4 class="settings-subheading">${org}’s registry</h4>
+            <p class="editor-help">Packs your organization approves, each at one version. Installing one still asks you to review and approve it.${data.registry_only ? ' Your organization turns off packs that aren’t here, or aren’t at the version it pins.' : ''}</p>
+            ${registryRows ? `<ul class="pack-publishers">${registryRows}</ul>` : '<p class="editor-help">It lists no packs yet.</p>'}` : '';
+        const publishers = `${registry}<h4 class="settings-subheading">Trusted publishers</h4>
             <p class="editor-help">Packs signed with these keys show who made them. Trusting a publisher approves nothing; you still review each pack.${data.require_signed ? ' Your organization turns off packs its own trusted publishers didn’t sign.' : ''}</p>
             ${publisherRows ? `<ul class="pack-publishers">${publisherRows}</ul>` : '<p class="editor-help">None yet. A signed pack offers to trust its publisher.</p>'}`;
         if (!packs.length) {
@@ -254,6 +263,7 @@ class LumiSettingsView {
                 <div class="pack-card-head"><h3>${esc(pack.name)} <small>v${esc(pack.version)}</small></h3><span class="pack-status" role="status">${esc(statusText[pack.status] || pack.status)}</span></div>
                 ${pack.description ? `<p class="editor-help">${esc(pack.description)}</p>` : ''}
                 <p class="pack-meta">${pack.scope === 'project' ? 'From this repository' : 'Personal pack'} · <code>${esc(pack.path)}</code></p>
+                ${pack.registry?.commit ? `<p class="pack-meta">In ${esc(pack.registry.organization)}’s registry at <code>${esc(pack.registry.commit.slice(0, 12))}</code> · ${pack.registry.matches ? 'this is that version' : 'this isn’t that version'}</p>` : ''}
                 ${signature.status === 'invalid' && pack.problem ? '' : `<p class="pack-meta pack-signature signature-${esc(signature.status || 'unsigned')}">${signed}</p>`}
                 ${pack.source?.type === 'git' ? `<p class="pack-meta">Installed from <code>${esc(pack.source.url)}</code>${pack.source.subdir ? ` (<code>${esc(pack.source.subdir)}</code>)` : ''} at commit <code>${esc(String(pack.source.commit || '').slice(0, 12))}</code></p>` : ''}
                 ${pack.problem ? `<p class="editor-error">${esc(pack.problem)}</p>` : ''}
@@ -2469,6 +2479,12 @@ class LumiSettingsView {
                     this.send({command: 'capability_pack_remove', pack_id: btn.dataset.packId});
                     btn.disabled = true;
                     btn.textContent = 'Removing…';
+                    return;
+                }
+                if (action === 'install-registry') {
+                    this.send({command: 'capability_pack_install_registry', pack_id: btn.dataset.packId});
+                    btn.disabled = true;
+                    btn.textContent = 'Installing…';
                     return;
                 }
                 if (action === 'trust-publisher' || action === 'forget-publisher') {

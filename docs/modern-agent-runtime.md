@@ -1,7 +1,7 @@
 # Modern agent runtime
 
 Status: implemented foundation and canonical extension guide
-Last updated: 2026-09-24 (capability-pack trust and tool approvals)
+Last updated: 2026-09-25 (repository allow rules answer Auto-edit's prompt)
 
 This document describes the runtime Resonant uses for long-horizon coding with
 its native provider adapters. The design favors correct, verified
@@ -122,6 +122,20 @@ the autonomy tier. Built-in policy denies are checked before a project's
 `lumi-policy.json`, so a repository can tighten the policy but cannot
 weaken a built-in deny. A policy `prompt` rule requires approval even in
 Full-auto.
+
+A trusted project's `allow` rules answer Auto-edit's prompt (Plan uses the
+same tier). A call the tier would ask about runs without asking when the policy
+as a whole allows it and the first matching rule in the project's own
+`lumi-policy.json` is `allow` (`ExecutionPolicy.repository_allows`). The
+guardrails, organization rules and built-in denies still decide first, and an
+organization `allow` alone never skips a prompt. A command that chains, pipes,
+substitutes or redirects (`;`, `&`, `|`, `<`, `>`, backquotes, `$(` or a line
+break) still asks, because a rule's glob matches the whole command text. Ask
+never lets a repository answer. The project's `allow` rules are in the policy
+only while the user trusts the project and the file is the version they
+trusted: `project_execution_policy` compares the digest the trust check read
+(`gui/workspace_trust.py`) with the bytes it parses. The audit log records
+such a call as an `approval` by `project_policy`.
 
 When approval is required, the user's answer is final and only an explicit
 `true` approves. A PERMISSION_REQUEST hook can neither run a call the user

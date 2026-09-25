@@ -176,6 +176,42 @@ to that page.
 - Symbolic links are refused, and the pack's manifest must have its own `id`.
 Settings follows the app theme: dark, light or match system.
 
+## Project trust and lumi-policy.json
+
+A project can bring instruction files (AGENTS.md, LUMI.md, CLAUDE.md and
+similar), notes, a codebase summary and a `lumi-policy.json` (or a legacy
+`resonant-policy.json`). Lumi uses them only after you choose **Trust this
+project** in the banner or in **Settings > Project trust**.
+
+Each rule in the policy names a tool and, optionally, patterns for its
+arguments. The first rule that matches a call decides:
+
+- `deny` refuses the call and `prompt` asks before it, in every mode and even
+  before you trust the project, since they only make Lumi more careful.
+- `allow` runs the call without asking in **Auto-edit** and **Plan**, once you
+  trust the project. **Ask** still asks, and **Full-auto** doesn't ask anyway.
+
+```json
+{"rules": [
+  {"tool_pattern": "bash", "action": "prompt", "arg_globs": {"command": "npm run deploy*"}},
+  {"tool_pattern": "bash", "action": "allow", "arg_globs": {"command": ["npm test", "npm run lint*"]}}
+]}
+```
+
+Some things come before a project's rules, so no `allow` reaches them: the
+command guardrails, your organization's rules, and Auto-edit's own refusals
+(a recursive `rm`, `chmod` on a system path, a download piped into a shell).
+An allowed shell command still asks when it chains, pipes, substitutes or
+redirects anything (`;`, `&`, `|`, `<`, `>`, backquotes, `$(` or a line
+break), because a pattern like `npm run lint*` would match whatever follows.
+
+If the file changes after you trusted the project, including an edit the
+agent makes, its `allow` rules are off until you trust the new version.
+Projects that were already in Recent projects when trust arrived are trusted,
+but their `allow` rules wait for your review once. Each call an `allow` rule
+runs is recorded in the [audit log](audit-log.md) as an approval by
+`project_policy`.
+
 ## Anthropic, OpenAI and custom connections
 
 1. Add an Anthropic or OpenAI key under **Settings > Connections > API keys**,

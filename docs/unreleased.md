@@ -8,6 +8,91 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 repository allow rules — source only, not released
+
+The trust banner, Settings and docs said a trusted repository's
+`lumi-policy.json` `allow` rules skip approval, but the engine never did that.
+It read a policy `allow` only as "not denied", as the policy design had since
+April, so Auto-edit still asked. Now they skip Auto-edit's prompt:
+
+- **Auto-edit and Plan** (`engine/session.py` `_repository_preapproves`,
+  `engine/policies.py` `ExecutionPolicy.repository_allows`): a call the tier
+  would ask about runs without asking when the policy as a whole allows it
+  and the first matching rule in the project's own policy is `allow`. Rules
+  now record where they came from (`PolicyRule.source`). So an organization
+  `allow` that matches first neither skips the prompt itself nor hides the
+  repository's answer.
+- **Still decided first:** the guardrails, organization deny and ask rules,
+  and Auto-edit's built-in denies. **Ask never skips** its prompt, and
+  Full-auto doesn't ask anyway. Delegated workers inherit the same rules.
+- **Chained commands still ask.** A rule's glob matches the whole command
+  text, so `npm test*` also matched `npm test && …`. A `bash` or `check_run`
+  command containing `;`, `&`, `|`, `<`, `>`, backquotes, `$(` or a line break
+  isn't pre-approved, nor is a `job_start` or `preview_start` word containing
+  one.
+- **Unattended runs:** in `lumi run --trust-project --mode auto-edit`, and in a
+  scheduled task set to **Edit files** on a trusted project, commands an allow
+  rule matches now run instead of being refused.
+- **Trust binds to the file it read.** `TrustStatus.policy_digest` is the
+  SHA-256 the trust check read. `project_execution_policy(policy_digest=…)`
+  honors the allow rules only if the bytes it parses match that digest, so an
+  edit made between the two reads doesn't slip through. A policy that isn't
+  valid UTF-8 is now skipped with a warning, like invalid JSON.
+- **Upgrades:** projects trusted on first run because they were in Recent
+  projects keep their instructions, but a policy with allow rules waits for one
+  review. Those rules never skipped a prompt before, so honoring them
+  unreviewed would change what Lumi does there without asking.
+- **Audit log:** such a call is an `approval` with `by: "project_policy"`.
+- **Wording** (`static/app.js`, `static/settings_view.js`): "N rules that skip
+  approval in Auto-edit". A policy that isn't the trusted version reads "You
+  haven't reviewed this version of lumi-policy.json".
+- Docs: [desktop workflow](desktop-workflow.md#project-trust-and-lumi-policyjson)
+  (new section), [agent runtime](modern-agent-runtime.md#tool-approvals),
+  [`lumi run`](headless.md), [scheduled tasks](scheduled-tasks.md),
+  [organization policy](enterprise-policy.md) and [audit log](audit-log.md).
+
+Validation on September 25, 2026:
+
+- `tests/test_repository_allow_rules.py` (29 tests): each runs `Session.run`
+  with a scripted model and an approval callback, and checks the folder the
+  command creates. It covers the skip, what still asks (no match, chaining,
+  untrusted), the repository's own rule order, guardrails and built-in denies,
+  organization deny, ask and allow rules, Auto-edit versus suggest, unattended
+  runs, delegated workers, the digest check and the audit record.
+- GUI (`tests/test_gui_permission_modes.py`, through the real
+  `_run_session_streaming` loop and `approve` handler): Auto-edit and Plan run
+  a trusted rule's command without a prompt; Ask doesn't run it. Before trust
+  and after a policy edit, it asks.
+- `tests/test_headless.py`: `lumi run` refuses the command without
+  `--trust-project` and runs it with the flag. `tests/test_exclusions_and_trust.py`
+  covers the one review after upgrade and the reported digest.
+- Seven mutants, each switching off one part (the skip, the chaining check,
+  the tier check, per-layer matching twice, the digest, the upgrade review),
+  each fail at least one of these tests.
+- Full suite: 4031 passed, 5 skipped. Ruff, `node --check` and the node UI
+  tests (34) pass.
+- Browser, isolated fixture (temporary home and state, `LUMI_KEYCHAIN=off`, a
+  scripted Ollama-compatible model, CLI adapters off):
+  - The banner listed "lumi-policy.json with 2 rules that skip approval in
+    Auto-edit".
+  - Untrusted, `mkdir made` showed Command Review; after **Trust this
+    project**, it ran with no dialog.
+  - `mkdir other`, which no rule matches, still asked, and keyboard **Deny**
+    kept it from running.
+  - After an on-disk edit to the policy, the banner read "You haven't reviewed
+    this version…" and the command asked again. **Trust the change**, reached
+    with Shift+Tab, restored the skip.
+  - Settings > Privacy & security > Project trust showed the new wording for a
+    trusted project, the banner wrapped at 375 px, and the fixture's audit log
+    recorded `project_policy` approvals.
+  - Settings' text for a policy that isn't the trusted version was changed
+    afterwards, and was checked by rendering `settings_view.js` in Node, not in
+    the browser.
+- Not exercised: Ask with a tier that asks about shell commands. Ask uses the
+  read-only `suggest` tier here, which refuses `bash` before any prompt. So in
+  the GUI test, Ask shows only that the command doesn't run, and the
+  tier check itself is covered by the engine test with `check_run`.
+
 ## September 25 code intelligence — source only, not released
 
 - **`code_intel`** ([guide](code-intelligence.md), `lumi/engine/lsp.py`):
@@ -1119,14 +1204,17 @@ Cloud (not built yet), and the packaged app.
   - its instruction files (AGENTS.md, LUMI.md, CLAUDE.md and similar), including
     in a Mission's first message;
   - its committed notes (`.lumi/memory.json`) and codebase summary;
-  - the `allow` rules in its `lumi-policy.json`, which previously let a cloned
-    repository skip approval prompts (its deny and ask rules still apply);
+  - the `allow` rules in its `lumi-policy.json` (its deny and ask rules still
+    apply). This entry first said those rules let a cloned repository skip
+    approval prompts; they didn't until "September 25 repository allow rules"
+    above;
   - automatic lint and test runs, which execute the repository's own code.
 
   A banner in the chat offers **Trust this project** or **Keep restricted**.
   A policy file that changes after trust needs review again. Projects already in
   Recent projects are trusted on first run, so upgrading changes nothing for
-  existing work.
+  existing work (their policy's allow rules wait for one review; see
+  "September 25 repository allow rules").
 - **Transcript retention** (`lumi/gui/retention.py`): "Delete transcripts after
   (days)" deletes everything holding conversation content that was last touched
   before then, at startup and daily:

@@ -403,11 +403,12 @@ class AppState:
         return cls._MODE_TIERS.get(cls.normalize_permission_mode(mode), "suggest")
 
     @staticmethod
-    def _execution_policy_for(tier: str, project_root: str, *, honor_allows: bool = True):
+    def _execution_policy_for(tier: str, project_root: str, *, honor_allows: bool = True,
+                              policy_digest: Optional[str] = None):
         """The tier's rules with the project's and the organization's (engine/policies.py)."""
         from ..engine.policies import project_execution_policy
 
-        return project_execution_policy(tier, project_root, honor_allows=honor_allows)
+        return project_execution_policy(tier, project_root, honor_allows=honor_allows, policy_digest=policy_digest)
 
     def cli_adapters_allowed(self) -> bool:
         return self.settings.get("security", "cli_adapters", True) is not False
@@ -478,8 +479,10 @@ class AppState:
         session.autonomy_tier = self.autonomy_tier_for_mode(mode)
         root = getattr(session, "project_path", None) or self.project.project_path
         try:
+            trust = self.project_trust(root)
+            # The digest ties the allow rules to the file content trust saw.
             session.execution_policy = self._execution_policy_for(
-                session.autonomy_tier, root, honor_allows=self.project_trust(root).honor_policy_allows,
+                session.autonomy_tier, root, honor_allows=trust.honor_policy_allows, policy_digest=trust.policy_digest,
             )
         except Exception:
             # Never leave the session without the tier's built-in denies.

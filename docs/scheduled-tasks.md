@@ -29,7 +29,8 @@ applies to one applies here:
   command guardrails and the [shell sandbox](shell-sandbox.md) apply.
 - A repository's own instructions, notes and policy allow rules apply only if
   the project is trusted in the app (**Settings > Project trust**). A schedule
-  never trusts a project itself.
+  never trusts a project itself. In **Edit files**, those allow rules run the
+  commands they match; other commands are refused.
 - Model requests are counted in **Usage & cost** like any other.
 
 A schedule never runs twice at once. If a run is still going when the next

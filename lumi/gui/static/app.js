@@ -9024,14 +9024,16 @@ class LumiApp {
             const parts = [];
             if ((trust.instructions || []).length) parts.push(`instructions (${trust.instructions.join(', ')})`);
             if (trust.notes) parts.push('project notes (.lumi/memory.json)');
-            if (trust.policy_file) {
-                const one = trust.policy_allows === 1;
-                parts.push(trust.policy_allows
-                    ? `${trust.policy_file} with ${trust.policy_allows} rule${one ? '' : 's'} that skip${one ? 's' : ''} approval`
-                    : trust.policy_file);
-            }
+            // Allow rules let Auto-edit (and Plan) run the calls they match
+            // without asking; Ask always asks (engine/policies.py).
+            const one = trust.policy_allows === 1;
+            const allowRules = `${trust.policy_allows} rule${one ? '' : 's'} that skip${one ? 's' : ''} approval in Auto-edit`;
+            if (trust.policy_file) parts.push(trust.policy_allows ? `${trust.policy_file} with ${allowRules}` : trust.policy_file);
+            // Changed since the user trusted it, added after, or never
+            // reviewed (a project trusted on upgrade).
             trustNote = trust.policy_changed
-                ? `${trust.policy_file} changed since you trusted this project. Its approval-skipping rules are off until you review it.`
+                ? `You haven't reviewed this version of ${trust.policy_file}.`
+                    + (trust.policy_allows ? ` Its ${allowRules} ${one ? 'is' : 'are'} off until you trust it.` : '')
                 : `This project brings ${parts.join(' and ')}. Lumi isn't using them until you trust the project.`;
         }
 

@@ -103,6 +103,24 @@ class TestRuns:
         assert not (tmp_path / "notes.txt").exists()
         assert (code, result["status"], result["denied_calls"]) == (3, "needs_attention", 1)
 
+    def test_a_trusted_repositorys_allow_rules_run_their_commands(self, monkeypatch, tmp_path, ledger):
+        (tmp_path / "lumi-policy.json").write_text(json.dumps({"rules": [
+            {"tool_pattern": "bash", "action": "allow", "arg_globs": {"command": "mkdir made"}},
+        ]}), encoding="utf-8")
+
+        def attempt(*args):
+            backend = scripted(call(0.01, tool_call("bash", {"command": "mkdir made"})),
+                               call(0.01, text_delta("Done.")))
+            code, out, _ = run(monkeypatch, tmp_path, backend, "Make the folder", "--mode", "auto-edit", *args)
+            return code, json.loads(out)
+
+        # Nobody can answer a prompt, so an untrusted repository's command is refused.
+        code, result = attempt()
+        assert (code, result["denied_calls"]) == (3, 1) and not (tmp_path / "made").exists()
+        code, result = attempt("--trust-project")
+        assert (code, result["status"], result["denied_calls"]) == (0, "completed", 0)
+        assert (tmp_path / "made").is_dir()
+
     def test_a_provider_error_fails_the_run(self, monkeypatch, tmp_path, ledger):
         code, out, _ = run(monkeypatch, tmp_path, scripted([error("upstream exploded")]), "Go")
         result = json.loads(out)

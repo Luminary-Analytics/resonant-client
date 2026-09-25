@@ -124,8 +124,11 @@ def build_session(settings: Any, spec: Any, *, project: str, mode: str, trust_pr
     # File tools stay inside the project, as in the app (gui/app.py).
     session.sandbox = PathSandbox(project, enabled=True)
     session.autonomy_tier = MODES[mode]
+    # --trust-project trusts whatever the policy says now; otherwise its allow
+    # rules must be the version trusted in the app.
     session.execution_policy = project_execution_policy(
-        session.autonomy_tier, project, honor_allows=trust_project or status.honor_policy_allows)
+        session.autonomy_tier, project, honor_allows=trust_project or status.honor_policy_allows,
+        policy_digest=None if trust_project else status.policy_digest)
     session.exclusions = ExclusionRules.for_project(
         project,
         settings_patterns=lambda: settings.get("privacy", "excluded_paths", []) or [],

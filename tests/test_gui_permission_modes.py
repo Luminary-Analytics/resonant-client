@@ -115,6 +115,52 @@ def test_auto_edit_runs_shell_after_the_user_allows_it(gui_state):
     assert (project / "ran.txt").exists()
 
 
+# ── A trusted repository's allow rules answer Auto-edit's prompt ───────
+
+
+def _allow_mkdir(project: Path, *extra: dict) -> None:
+    rules = [{"tool_pattern": "bash", "action": "allow", "arg_globs": {"command": "mkdir made"}}, *extra]
+    (project / "lumi-policy.json").write_text(json.dumps({"rules": rules}), encoding="utf-8")
+
+
+@pytest.mark.parametrize(("mode", "runs"), [("auto-edit", True), ("plan", True), ("ask", False)])
+def test_a_trusted_repositorys_allow_rule_answers_auto_edits_prompt(gui_state, mode, runs):
+    project = Path(gui_state.project.project_path)
+    _allow_mkdir(project)
+    gui_state.set_project_trust("trusted", str(project))
+    gui_state.apply_permission_mode(mode)
+
+    socket = _turn(gui_state, "bash", {"command": "mkdir made"}, {"approved": False})
+
+    assert (project / "made").exists() is runs
+    assert socket.events("tool.result")[0]["denied"] is (not runs)
+    if runs:
+        assert socket.events("tool_permission") == []
+
+
+def test_allow_rules_wait_for_trust_and_for_review_after_a_change(gui_state):
+    project = Path(gui_state.project.project_path)
+    _allow_mkdir(project)
+    gui_state.apply_permission_mode("auto-edit")
+
+    untrusted = _turn(gui_state, "bash", {"command": "mkdir made"}, {"approved": False})
+    assert [prompt["name"] for prompt in untrusted.events("tool_permission")] == ["bash"]
+    assert not (project / "made").exists()
+
+    gui_state.set_project_trust("trusted", str(project))
+    trusted = _turn(gui_state, "bash", {"command": "mkdir made"}, {"approved": False})
+    assert trusted.events("tool_permission") == []
+    assert (project / "made").is_dir()
+
+    # Any edit to the policy, including one the agent makes, needs review again.
+    (project / "made").rmdir()
+    _allow_mkdir(project, {"tool_pattern": "*", "action": "allow"})
+    assert gui_state.project_trust(str(project)).needs_decision
+    changed = _turn(gui_state, "bash", {"command": "mkdir made"}, {"approved": False})
+    assert [prompt["name"] for prompt in changed.events("tool_permission")] == ["bash"]
+    assert not (project / "made").exists()
+
+
 @pytest.mark.parametrize("answer", [{}, {"approved": "false"}, {"approved": 1}])
 def test_only_an_explicit_true_approves(gui_state, answer):
     gui_state.apply_permission_mode("ask")

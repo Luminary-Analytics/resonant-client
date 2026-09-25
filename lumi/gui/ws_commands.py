@@ -534,6 +534,73 @@ async def _audit_status(ctx: CommandContext) -> None:
     await ctx.send(await _in_executor(ctx.state.audit_status))
 
 
+def _schedules_payload(settings: Any = None, **extra: Any) -> dict:
+    from .. import schedules
+
+    return {"event": "schedules", "data": {**schedules.overview(settings), **extra}}
+
+
+# "Run now" processes being watched, so a finished run refreshes the page.
+_SCHEDULE_RUNS: set[asyncio.Task] = set()
+
+
+@command("schedules_list")
+async def _schedules_list(ctx: CommandContext) -> None:
+    settings = getattr(ctx.state, "settings", None)
+    await ctx.send(await _in_executor(lambda: _schedules_payload(settings)))
+
+
+@command("schedule_save")
+async def _schedule_save(ctx: CommandContext) -> None:
+    # Registering with the operating system's scheduler runs schtasks,
+    # launchctl or crontab: off the event loop.
+    from .. import schedules
+
+    raw = ctx.msg.get("schedule")
+    if not isinstance(raw, dict):
+        await ctx.send_error("Send the schedule's fields.")
+        return
+    settings = getattr(ctx.state, "settings", None)
+    try:
+        saved = await _in_executor(lambda: schedules.save(raw, str(ctx.msg.get("id") or ""), settings=settings))
+    except schedules.ScheduleError as exc:
+        await ctx.send({"event": "schedule_error", "message": str(exc)})
+        return
+    await ctx.send(await _in_executor(lambda: _schedules_payload(settings, saved=saved.id)))
+
+
+@command("schedule_change")
+async def _schedule_change(ctx: CommandContext) -> None:
+    """Run now, pause, resume or remove a schedule."""
+    from .. import schedules
+
+    schedule_id, action = str(ctx.msg.get("id") or ""), str(ctx.msg.get("action") or "")
+    settings = getattr(ctx.state, "settings", None)
+    try:
+        if action == "remove":
+            await _in_executor(lambda: schedules.remove(schedule_id))
+        elif action in ("pause", "resume"):
+            await _in_executor(lambda: schedules.set_enabled(schedule_id, action == "resume", settings=settings))
+        elif action == "run":
+            # Its own process, like a scheduled run, so a long task never
+            # holds this connection and keeps going if the app closes.
+            process = await _in_executor(lambda: schedules.start(schedule_id, settings=settings))
+
+            async def refresh_when_done() -> None:
+                await asyncio.to_thread(process.wait)
+                await ctx.send(await _in_executor(lambda: _schedules_payload(settings)))
+
+            task = asyncio.create_task(refresh_when_done())
+            _SCHEDULE_RUNS.add(task)
+            task.add_done_callback(_SCHEDULE_RUNS.discard)
+        else:
+            raise schedules.ScheduleError("Choose run, pause, resume or remove.")
+    except schedules.ScheduleError as exc:
+        await ctx.send({"event": "schedule_error", "message": str(exc)})
+        return
+    await ctx.send(await _in_executor(lambda: _schedules_payload(settings)))
+
+
 @command("project_trust_list")
 async def _project_trust_list(ctx: CommandContext) -> None:
     # The open project's status plus every remembered decision, for Settings.
@@ -3170,7 +3237,7 @@ _SOCKET_SETTING_KEYS: dict[str, frozenset[str]] = {
         "audit_log", "audit_capture", "audit_retention_days",
     }),
     "audit": frozenset({"otlp_endpoint", "otlp_auth_header"}),
-    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox"}),
+    "security": frozenset({"cli_adapters", "computer_use", "chat_gateway", "shell_sandbox", "scheduled_tasks"}),
     "updates": frozenset({"mode", "channel", "pin"}),
     "onboarding": frozenset({"dismissed"}),
     "model_favorites": frozenset({"models"}),

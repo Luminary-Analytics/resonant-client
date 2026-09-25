@@ -117,6 +117,12 @@ host enrollment and actual packaged/learned-benefit qualification remain open.
   app: `engine/policies.project_execution_policy`, `ExclusionRules`, workspace
   trust and policy checks. Keep the two in step, and never let a headless run
   trust a repository unless it was trusted in the app or `--trust-project` is set.
+- Scheduled tasks (`schedules.py`) run `lumi schedule run <id>`, which is a
+  `lumi run`; a schedule never passes `--trust-project`. Only `save`,
+  `set_enabled` and `remove` touch the OS scheduler (schtasks, launchctl,
+  crontab), and tests use `set_registrar_for_tests`: never register real
+  tasks from tests or fixtures. A run writes only its results folder, and
+  `running.json` keeps a schedule from running twice at once.
 
 ## Working in the codebase
 

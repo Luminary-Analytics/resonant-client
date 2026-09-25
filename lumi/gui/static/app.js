@@ -3990,6 +3990,17 @@ class LumiApp {
                 this.updateStatus = event.data;
                 if (this.currentView === 'settings' && !this.refreshUpdateStatus()) this.renderSettingsView();
                 break;
+            case 'schedules':
+                this.schedules = event.data;
+                if (event.data?.saved) { this._scheduleDraft = null; this.scheduleError = ''; }
+                // A saved form is emptied at once; a run finishing waits until
+                // nobody is typing (renderSettingsView defers for a focused field).
+                if (this.currentView === 'settings') this.renderSettingsView({force: Boolean(event.data?.saved)});
+                break;
+            case 'schedule_error':
+                this.scheduleError = event.message || 'That did not work.';
+                if (this.schedules && this.currentView === 'settings') this.renderSettingsView({force: true});
+                break;
             case 'project_trust':
                 this.projectTrust = event;
                 if (this._runtimeBannerState) {

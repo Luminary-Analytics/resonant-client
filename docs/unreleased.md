@@ -8,6 +8,45 @@ The heartbeat remains paused. Documentation maintenance does not resume work,
 spending or grants, and changes no native implementation or installed bundle.
 The dated September 15/18 records below are historical.
 
+## September 25 scheduled tasks — source only, not released
+
+- **Settings > Scheduled tasks** and `lumi schedule`
+  ([guide](scheduled-tasks.md)): a saved prompt, project, model, permission
+  mode and time limit that runs at set times through Task Scheduler,
+  launchd or cron, so the app needn't be open. Each run is an unattended
+  `lumi run`, so policy, budgets, exclusions, the audit log and the sandboxes
+  apply, and a schedule never trusts a repository itself.
+- Each run's result (status, answer, changed files, error, cost and the
+  full `lumi run` summary) is kept, the last 30 per schedule. Settings shows
+  the last run and its answer, and **Run now** starts a run in the
+  background. A schedule never runs twice at once.
+- `security.scheduled_tasks` (**Settings > Privacy & security**, lockable by
+  policy) turns the feature off; a run the operating system still starts is
+  refused and recorded. A schedule can't use a permission mode the policy
+  doesn't allow.
+
+Validation on September 25, 2026:
+
+- Full `pytest`: 3,981 passed, 4 skipped. `test_schedules.py` (17 tests):
+  validation, registering on save, unregistering on pause and removal, a refused registration saving nothing,
+  the `lumi run` arguments, kept and pruned results, a real `lumi run`
+  without a model recording why it failed, the running claim and its
+  hand-over from **Run now**, the Task Scheduler, crontab and LaunchAgent
+  entries (commands mocked), the command line, the Settings commands, the
+  switch turning everything but pausing and removing off, and the policy's
+  permission modes. No real scheduled task was registered.
+- In the browser pane, with an isolated home, the stub model and a logging
+  stand-in for Task Scheduler: a save with a missing folder showed the error
+  and kept what was typed; a save registered the schedule; **Run now**
+  (mouse and keyboard) started a real `lumi schedule run` process that
+  completed against the stub, and the page showed "Running now", then the
+  result and its answer, without losing keyboard focus; pause, resume and
+  remove updated the entry and deleted the results. Turning **Scheduled
+  tasks** off in Privacy & security showed a notice on the page and refused
+  an add, keeping what was typed. Checked in the dark and light themes. The
+  remove confirmation was answered by a stubbed `window.confirm`, since the
+  pane can't press a native dialog's buttons.
+
 ## September 25 zero data retention — source only, not released
 
 - **Connections that keep no data**: a custom connection can be marked

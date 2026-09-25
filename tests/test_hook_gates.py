@@ -326,8 +326,8 @@ def test_a_permission_hook_that_times_out_denies_with_its_reason(tmp_path):
     hook = {"hook_type": "permission_request", "name": "slow-approver", "command": _sleeper(tmp_path),
             "timeout_seconds": 1}
     session = _session(tmp_path, _one_call("file_write", {"path": "asked.txt", "content": "x"}), [hook])
-    session.auto_approve = False
-    session.autonomy_tier = "suggest"
+    # Ask, with nobody to answer: the read-only tier never asks a permission hook.
+    session.autonomy_tier = "ask"
 
     events = list(session.run("write it"))
 
